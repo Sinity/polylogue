@@ -77,6 +77,13 @@ class ReadViewChronicleOptions:
     edge_limit: int = 8
 
 
+@dataclass(frozen=True, slots=True)
+class ReadViewEventsOptions:
+    """Options owned by the raw session-events read view."""
+
+    limit: int | None = None
+
+
 ReadViewOptions = (
     ReadViewMessageOptions
     | ReadViewContextOptions
@@ -84,6 +91,7 @@ ReadViewOptions = (
     | ReadViewNeighborOptions
     | ReadViewCorrelationOptions
     | ReadViewChronicleOptions
+    | ReadViewEventsOptions
 )
 ReadViewOptionValues = Mapping[str, object]
 ReadViewOptionBuilder = Callable[[ReadViewOptionValues], ReadViewOptions | None]
@@ -181,6 +189,7 @@ __all__ = [
     "ReadViewContextImageOptions",
     "ReadViewCorrelationOptions",
     "ReadViewChronicleOptions",
+    "ReadViewEventsOptions",
     "ReadViewHandler",
     "ReadViewHandlerFunc",
     "ReadViewInvocation",

@@ -865,7 +865,7 @@ class TestDeleteCardinalityLargeNonMocked:
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db)
 
-        env = make_app_env()
+        env = make_app_env(archive_root=workspace_env["archive_root"])
         request = RootModeRequest.from_params({"query": (self.TOKEN,)})
 
         # 1. Guard set: the full matched set, not a default page.

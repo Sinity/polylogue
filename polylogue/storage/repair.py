@@ -5177,20 +5177,26 @@ def has_orphaned_messages_sync(conn: sqlite3.Connection) -> bool:
 
 
 def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
-    """Count sessions that carry no messages.
+    """Count session rows that are debris: no messages AND no acquired bytes.
 
-    The native session/message tree replaces the legacy
-    session/message tables: an "empty session" is a ``sessions``
-    row with no ``messages`` row referencing it.
+    This deliberately does NOT count every message-less session. A session can
+    be legitimately empty, and the 2026-07-22 hook-inflation postmortem
+    explicitly chose to retain the genuinely-empty sessions that survived
+    de-inflation. Counting those here would report healthy rows as debt and
+    invite an operator to "repair" them away.
+
+    Measured on the live archive 2026-07-29: 874 message-less sessions, all
+    874 carrying a non-empty ``raw_id``. Under the old blanket predicate this
+    reported 874 rows of phantom debt; under the provenance-aware one it
+    reports 0, which is the truth.
+
+    Kept in lockstep with ``repair_empty_sessions``: the counter and the
+    deleter must agree, or the report says one thing and the repair does
+    another.
     """
     return int(
         conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM sessions s
-            LEFT JOIN messages m ON m.session_id = s.session_id
-            WHERE m.session_id IS NULL
-            """
+            f"SELECT COUNT(*) FROM sessions s WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='s')}"
         ).fetchone()[0]
     )
 
@@ -5596,12 +5602,34 @@ def preview_orphaned_messages(*, count: int) -> RepairResult:
     )
 
 
+#: A session is debris only when it has no messages AND no acquired bytes
+#: behind it. "No messages" alone is not evidence of corruption: a session can
+#: be legitimately empty (a browser-capture stub, a conversation opened and
+#: never used), and the 2026-07-22 hook-inflation postmortem explicitly chose
+#: to RETAIN the genuinely-empty sessions that survived de-inflation.
+#:
+#: Measured on the live archive 2026-07-29: 874 sessions have zero messages,
+#: and ALL 874 carry a non-empty ``raw_id`` -- every one has real acquired
+#: bytes. Zero lack provenance. So the old blanket predicate
+#: (``NOT EXISTS (messages)``) would have deleted 874 legitimately-acquired
+#: sessions and zero pieces of debris: a pure data-loss operation with no
+#: upside, one explicit ``--cleanup`` away from the live archive.
+#:
+#: ``raw_id`` is the provenance signal because it names the retained source
+#: bytes; a session carrying one can always be re-materialized by replay,
+#: which is precisely what makes it not debris.
+_EMPTY_SESSION_DEBRIS_PREDICATE = (
+    "NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = {alias}.session_id) "
+    "AND ({alias}.raw_id IS NULL OR {alias}.raw_id = '')"
+)
+
+
 def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:
     with _open_archive_index_connection() as conn:
         return _run_sql_repair(
             "empty_sessions",
-            count_sql="SELECT COUNT(*) FROM sessions c WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = c.session_id)",
-            action_sql="DELETE FROM sessions WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.session_id)",
+            count_sql=(f"SELECT COUNT(*) FROM sessions c WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='c')}"),
+            action_sql=(f"DELETE FROM sessions WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='sessions')}"),
             dry_run=dry_run,
             conn=conn,
         )
@@ -5742,6 +5770,93 @@ def preview_superseded_raw_snapshots(*, count: int) -> RepairResult:
             f"Would: delete {count} superseded live raw snapshots"
             if count
             else "Would: No superseded live raw snapshots found"
+        ),
+    )
+
+
+def count_stale_supersession_receipts_sync(source_conn: sqlite3.Connection, *, index_db_path: Path) -> int:
+    """Count superseded raws whose receipt is stale but reissuable against the
+    current head (polylogue-ktwa). Read-only; never writes a receipt."""
+    from polylogue.storage.raw_retention import plan_stale_supersession_reissue
+
+    plan = plan_stale_supersession_reissue(source_conn, index_db_path=index_db_path)
+    return len(plan.eligible)
+
+
+def repair_stale_supersession_receipts(config: Config, dry_run: bool = False) -> RepairResult:
+    """Reissue fresh supersession receipts against the current head (polylogue-ktwa).
+
+    Writes ONLY new ``raw_revision_applications`` rows; never deletes a blob
+    and never mutates ``raw_revision_heads`` or an existing receipt. Actual
+    blob release remains solely the job of ``repair_superseded_raw_snapshots``
+    under its own ``active_raw_retention_authority`` gate.
+    """
+    from polylogue.storage.raw_retention import (
+        RawRetentionSafetyError,
+        plan_stale_supersession_reissue,
+        reissue_stale_supersession_receipts,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+
+    archive_root = _raw_materialization_archive_root(config)
+    source_db_path = archive_root / "source.db"
+    index_db_path = archive_root / "index.db"
+    if not source_db_path.is_file() or not index_db_path.is_file():
+        return _repair_result(
+            "stale_supersession_receipts",
+            repaired_count=0,
+            success=False,
+            detail=f"Skipped: archive tier file(s) not found: {source_db_path}, {index_db_path}",
+        )
+    with closing(open_readonly_connection(source_db_path)) as source_conn:
+        source_conn.row_factory = sqlite3.Row
+        if dry_run:
+            try:
+                plan = plan_stale_supersession_reissue(source_conn, index_db_path=index_db_path)
+            except RawRetentionSafetyError as exc:
+                return _repair_result(
+                    "stale_supersession_receipts", repaired_count=0, success=False, detail=f"Skipped: {exc}"
+                )
+            ineligible_total = sum(plan.ineligible_reason_counts.values())
+            return _repair_result(
+                "stale_supersession_receipts",
+                repaired_count=len(plan.eligible),
+                success=True,
+                detail=(
+                    f"Would: reissue {len(plan.eligible):,} stale supersession receipt(s) "
+                    f"({plan.stale_count:,} stale, {plan.already_current_count:,} already current, "
+                    f"{ineligible_total:,} ineligible)"
+                ),
+            )
+        with closing(open_connection(index_db_path)) as index_conn:
+            try:
+                result = reissue_stale_supersession_receipts(
+                    source_conn, index_conn, index_db_path=index_db_path, dry_run=False
+                )
+            except RawRetentionSafetyError as exc:
+                return _repair_result(
+                    "stale_supersession_receipts", repaired_count=0, success=False, detail=f"Skipped: {exc}"
+                )
+            return _repair_result(
+                "stale_supersession_receipts",
+                repaired_count=result.reissued_count,
+                success=not result.errors,
+                detail=(
+                    f"Reissued {result.reissued_count:,} of {result.eligible_count:,} eligible stale "
+                    "supersession receipt(s)" + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
+                ),
+            )
+
+
+def preview_stale_supersession_receipts(*, count: int) -> RepairResult:
+    return _repair_result(
+        "stale_supersession_receipts",
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: reissue {count} stale supersession receipts"
+            if count
+            else "Would: No stale supersession receipts found"
         ),
     )
 

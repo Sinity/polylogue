@@ -272,10 +272,13 @@ unlink + `gc_generations` bookkeeping do the actual deletion:
 # in _archive_reference_surfaces / _reference_surfaces, before checking
 # raw_sessions / blob_refs / attachments:
 if _table_exists(conn, "blob_prefix_references"):
-    if conn.execute(
-        "SELECT 1 FROM blob_prefix_references WHERE blob_hash = ? LIMIT 1",
-        (blob_bytes,),
-    ).fetchone() is not None:
+    if (
+        conn.execute(
+            "SELECT 1 FROM blob_prefix_references WHERE blob_hash = ? LIMIT 1",
+            (blob_bytes,),
+        ).fetchone()
+        is not None
+    ):
         return []  # reconstructible: not "still referenced" for GC purposes
 ```
 

@@ -17,7 +17,8 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.runtime import AttachmentRecord, MessageRecord, SessionRecord
+from polylogue.storage.runtime import AttachmentRecord, FileEditRecord, MessageRecord, SessionRecord, SessionRefRecord
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 
 if TYPE_CHECKING:
     from polylogue.core.types import SessionId
@@ -109,6 +110,50 @@ class RepositoryArchiveSessionMixin:
 
     async def get_messages(self, session_id: str) -> list[MessageRecord]:
         return await self.queries.get_messages(session_id)
+
+    async def get_agent_policies(self, session_id: str) -> list[ArchiveAgentPolicy]:
+        """Read agent-policy facts (sandbox/approval/network policy) for a session.
+
+        The writer diverts Codex ``agent_policy`` events out of
+        ``session_events`` into the dedicated ``session_agent_policies``
+        table (fully re-derivable, zero evidence loss -- see
+        ``archive_tiers/write.py:_SESSION_EVENTS_REDUNDANT_TYPES``), but
+        until this method existed nothing on the repository/API/MCP surface
+        could read it back: the sole prior reader was a sync helper
+        (``read_session_agent_policies``) exercised only by tests.
+        """
+        return await self.queries.get_session_agent_policies(session_id)
+
+    async def get_agent_policies_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[ArchiveAgentPolicy]]:
+        return await self.queries.get_session_agent_policies_batch(session_ids)
+
+    async def get_file_edits(self, session_id: str) -> list[FileEditRecord]:
+        """Read file-edit tool-call evidence (structuredPatch/originalFile/...) for a session.
+
+        polylogue-2qx.4: the writer materializes ``ParsedFileEdit`` evidence
+        into the dedicated ``file_edits`` table, keyed by the tool_use block
+        that made the edit -- this is the read surface for it.
+        """
+        return await self.queries.get_file_edits_for_session(session_id)
+
+    async def get_file_edits_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[FileEditRecord]]:
+        return await self.queries.get_file_edits_for_session_batch(session_ids)
+
+    async def get_session_refs(self, session_id: str) -> list[SessionRefRecord]:
+        """Read tracker-agnostic external references (pr-link, ...) for a session."""
+        return await self.queries.get_session_refs(session_id)
+
+    async def get_session_refs_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[SessionRefRecord]]:
+        return await self.queries.get_session_refs_batch(session_ids)
 
     async def get_messages_paginated(
         self,

@@ -25,6 +25,7 @@ _NON_QUERY_ROOT_COMMANDS = frozenset(
         "facets",
         "generate",
         "import",
+        "judge",
         "mark",
         "mcp",
         "ops",

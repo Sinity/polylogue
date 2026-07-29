@@ -33,11 +33,14 @@ Mapping, grounded entirely in existing ``ArchiveDelegationQueryRow`` fields
   own ``association_state`` carries the honest unresolved/contradicted fact
   instead of fabricating a one-to-one attempt.
 - ``mapping_state`` maps onto :data:`~polylogue.insights.work_evidence.WorkEvidenceAssociationState`
-  without reinterpretation: ``resolved``/``unresolved``/``ambiguous`` pass
-  through directly, ``edge_only`` (an asserted link with no resolved child)
-  becomes ``unresolved``, and ``quarantined`` (a cycle-break) becomes
+  without reinterpretation: ``resolved``/``unresolved`` pass through
+  directly, ``edge_only`` (an asserted link with no resolved child) becomes
+  ``unresolved``, and ``quarantined`` (a cycle-break) becomes
   ``contradicted`` -- the same vocabulary ``session_links``'s own
   ``TopologyEdgeStatus`` already uses for the identical concept.
+  ``WorkEvidenceAssociationState`` retains its own ``ambiguous`` value for
+  other producers (e.g. Claude Workflow evidence); ``delegation_facts.
+  mapping_state`` itself no longer produces it (polylogue-1vpm.7).
 - A dispatch's own ``artifact_text`` (the child's self-reported result
   artifact), when present, becomes a ``claim`` node ``produced``-linked from
   the attempt -- a first-class, evidence-backed claim about outcome, never a
@@ -66,7 +69,6 @@ if TYPE_CHECKING:
 _MAPPING_STATE_TO_ASSOCIATION: dict[str, WorkEvidenceAssociationState] = {
     "resolved": "resolved",
     "unresolved": "unresolved",
-    "ambiguous": "ambiguous",
     "edge_only": "unresolved",
     "quarantined": "contradicted",
 }

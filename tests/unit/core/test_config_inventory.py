@@ -564,3 +564,62 @@ class TestMCPCapabilityBooleanFailsClosed:
 
         with pytest.raises(ConfigError, match=re.escape(f"{cfg_property}='flase'")):
             getattr(cfg, cfg_property)
+
+
+class TestForcePlainBooleanEnvParsing:
+    """``POLYLOGUE_FORCE_PLAIN`` uses the same fail-closed bool parsing as the
+    MCP capability flags above (``_coerce_env_value``/``_parse_bool_token``
+    apply uniformly to every ``_BOOL_CONFIG_KEYS`` entry).
+
+    This is the actual place ``POLYLOGUE_FORCE_PLAIN`` truthy/falsy env-value
+    resolution is pinned (#3079 moved that responsibility out of
+    ``polylogue.cli.shared.formatting.should_use_plain``, which is now a pure
+    passthrough of an already-resolved bool -- see
+    ``tests/unit/cli/test_deterministic_output.py::test_should_use_plain_contract``
+    and ``tests/unit/cli/test_check_support_runtime.py``).
+    """
+
+    @pytest.mark.parametrize("token", ["false", "0", "no", "off", "FALSE", "Off"])
+    def test_falsy_tokens_disable(
+        self,
+        token: str,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", token)
+
+        cfg = load_polylogue_config()
+
+        assert cfg.force_plain is False
+
+    @pytest.mark.parametrize("token", ["true", "1", "yes", "on", "TRUE", "On"])
+    def test_truthy_tokens_enable(
+        self,
+        token: str,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", token)
+
+        cfg = load_polylogue_config()
+
+        assert cfg.force_plain is True
+
+    def test_unrecognized_env_value_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        from polylogue.config import ConfigError, load_polylogue_config
+
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "flase")
+
+        with pytest.raises(ConfigError, match=re.escape("POLYLOGUE_FORCE_PLAIN='flase'")):
+            load_polylogue_config()

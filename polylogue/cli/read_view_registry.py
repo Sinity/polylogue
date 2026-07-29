@@ -35,6 +35,7 @@ CORRELATION_READ_VIEW_OPTION_NAMES = frozenset(
     {"confidence_threshold", "github_api", "otlp", "repo_path", "since_hours"}
 )
 CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
+EVENTS_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +55,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "messages": ReadViewHandlerMetadata("messages", "required", MESSAGE_READ_VIEW_OPTION_NAMES),
     "raw": ReadViewHandlerMetadata("raw", "required", MESSAGE_READ_VIEW_OPTION_NAMES),
     "hooks": ReadViewHandlerMetadata("hooks", "required"),
+    "events": ReadViewHandlerMetadata("events", "required", EVENTS_READ_VIEW_OPTION_NAMES),
     "context": ReadViewHandlerMetadata("context", "required", CONTEXT_READ_VIEW_OPTION_NAMES),
     "context-image": ReadViewHandlerMetadata("context-image", "none", CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES),
     "neighbors": ReadViewHandlerMetadata("neighbors", "query_or_session", NEIGHBOR_READ_VIEW_OPTION_NAMES),
@@ -100,6 +102,7 @@ __all__ = [
     "CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES",
     "CONTEXT_READ_VIEW_OPTION_NAMES",
     "CORRELATION_READ_VIEW_OPTION_NAMES",
+    "EVENTS_READ_VIEW_OPTION_NAMES",
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "NEIGHBOR_READ_VIEW_OPTION_NAMES",
     "READ_VIEW_HANDLER_METADATA",

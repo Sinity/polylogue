@@ -1151,3 +1151,136 @@ def test_message_usage_payload_without_server_tool_use_key() -> None:
         model_effort=None,
     )
     assert "server_tool_use" not in payload
+
+
+# ---------------------------------------------------------------------------
+# polylogue-cijx.3: typed git evidence is read instead of discarded.
+# ---------------------------------------------------------------------------
+
+
+def test_git_branch_captured_from_first_record_that_carries_it() -> None:
+    """``gitBranch`` is stamped sparsely across record types; the parser must
+    read it wherever it appears, not only on message-shaped records, and keep
+    the first non-empty value seen (closest to a session-start snapshot).
+
+    Before this fix, ``ParsedSession.git_branch`` for claude-code sessions was
+    only ever populated by the legacy, often-absent sessions-index.json
+    sidecar merge -- never from the per-record ``gitBranch`` field the
+    provider actually writes into the JSONL itself.
+    """
+    items = [
+        {"type": "queue-operation", "sessionId": "sess-branch", "gitBranch": ""},
+        {
+            "type": "user",
+            "uuid": "u-1",
+            "sessionId": "sess-branch",
+            "gitBranch": "feature/refactor/schema-v1",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {
+            "type": "assistant",
+            "uuid": "a-1",
+            "sessionId": "sess-branch",
+            "gitBranch": "feature/refactor/schema-v1-safety-net",
+            "message": {"role": "assistant", "content": "hi"},
+        },
+    ]
+
+    result = parse_code(items, "fallback-branch")
+
+    assert result.git_branch == "feature/refactor/schema-v1"
+
+
+def test_pr_link_record_persisted_as_session_event_not_dropped() -> None:
+    """A ``pr-link`` record is typed session->PR evidence (prNumber/prUrl/
+    prRepository); it must reach the archive as a session_event, not be
+    silently discarded by the sidecar skip-set."""
+    items = [
+        {
+            "type": "user",
+            "uuid": "u-1",
+            "sessionId": "sess-pr",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {
+            "type": "pr-link",
+            "sessionId": "sess-pr",
+            "prNumber": 166,
+            "prUrl": "https://github.com/Sinity/polylogue/pull/166",
+            "prRepository": "Sinity/polylogue",
+            "timestamp": "2026-04-03T06:46:20.984Z",
+        },
+    ]
+
+    result = parse_code(items, "fallback-pr")
+
+    assert [message.provider_message_id for message in result.messages] == ["u-1"]
+    pr_events = [event for event in result.session_events if event.event_type == "claude_pr_link"]
+    assert len(pr_events) == 1
+    # Containment, not equality: the parser also carries the record's own
+    # `summary` text. Pinning an exact dict would make every future field
+    # addition a test failure rather than a contract change.
+    assert (
+        pr_events[0].payload.items()
+        >= {
+            "pr_number": 166,
+            "pr_url": "https://github.com/Sinity/polylogue/pull/166",
+            "pr_repository": "Sinity/polylogue",
+        }.items()
+    )
+
+
+def test_file_history_snapshot_persisted_as_session_event_not_dropped() -> None:
+    """A ``file-history-snapshot`` record carries ``trackedFileBackups`` (path
+    -> per-file backup pointer), typed checkpoint evidence for the files an
+    agent touched; it must reach the archive as a session_event instead of
+    being silently discarded."""
+    items = [
+        {
+            "type": "user",
+            "uuid": "u-1",
+            "sessionId": "sess-fhs",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {
+            "type": "file-history-snapshot",
+            "messageId": "snap-1",
+            "snapshot": {
+                "messageId": "snap-1",
+                "trackedFileBackups": {
+                    "/realm/project/sinnix/modules/foundation.nix": {
+                        "backupFileName": "14bc6e6dfb7d6325@v1",
+                        "version": 1,
+                        "backupTime": "2026-02-05T17:38:08.755Z",
+                    },
+                    "/realm/project/sinnix/hosts/sinnix-prime/storage.nix": {
+                        "backupFileName": "191fa2baa5c36763@v1",
+                        "version": 1,
+                        "backupTime": "2026-02-05T17:38:14.094Z",
+                    },
+                },
+                "timestamp": "2026-02-05T17:32:58.442Z",
+            },
+            "isSnapshotUpdate": False,
+        },
+    ]
+
+    result = parse_code(items, "fallback-fhs")
+
+    assert [message.provider_message_id for message in result.messages] == ["u-1"]
+    fhs_events = [event for event in result.session_events if event.event_type == "claude_file_history_snapshot"]
+    assert len(fhs_events) == 1
+    event = fhs_events[0]
+    assert event.source_message_provider_id == "snap-1"
+    # Containment, not equality -- see the pr-link assertion above.
+    assert (
+        event.payload.items()
+        >= {
+            "is_snapshot_update": False,
+            "file_count": 2,
+            "files": [
+                "/realm/project/sinnix/hosts/sinnix-prime/storage.nix",
+                "/realm/project/sinnix/modules/foundation.nix",
+            ],
+        }.items()
+    )

@@ -11,7 +11,7 @@ import pytest
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.scenarios import CorpusSpec
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
     SHARED_CONVERSATION_INDEX_INGEST_FLAG,
     _coerce_float,
@@ -447,6 +447,37 @@ CHATGPT_METADATA_CASES: list[MetadataCase] = [
     ({}, None, "no metadata"),
     (None, None, "None metadata"),
 ]
+
+
+def test_chatgpt_block_content_type_routes_to_session_events() -> None:
+    """``ParsedContentBlock.metadata={"content_type": ...}`` must reach ``session_events``.
+
+    The ``blocks`` table has no metadata column and the write path only
+    reads a ``language`` key back out of it (bd polylogue-9x22), so the
+    "reasoning_recap" vs "thoughts" distinction on a THINKING block --
+    otherwise indistinguishable once both collapse to the same BlockType --
+    would be silently dropped at write time. Deleting the
+    ``session_events.extend(_block_metadata_evidence_events(messages))``
+    call in ``parse()`` makes this fail.
+    """
+    mapping: dict[str, object] = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "assistant"},
+                "content": {"content_type": "reasoning_recap", "parts": [], "text": "Thought about it"},
+            },
+        }
+    }
+
+    session = chatgpt_parse({"mapping": mapping}, "fallback")
+
+    events = [event for event in session.session_events if event.event_type == "chatgpt_block_metadata"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.source_message_provider_id == "msg1"
+    assert event.payload == {"block_index": 0, "content_type": "reasoning_recap"}
 
 
 @pytest.mark.parametrize("metadata,expected_type,desc", CHATGPT_METADATA_CASES)
@@ -1173,8 +1204,9 @@ def test_chatgpt_generation_timing_is_invariant_to_equivalent_provider_timestamp
     assert utc_session.reported_duration_ms == offset_session.reported_duration_ms == 5_190_000
     assert utc_session.messages[0].duration_ms == offset_session.messages[0].duration_ms == 5_190_000
     assert utc_session.session_events == offset_session.session_events
-    assert len(utc_session.session_events) == 1
-    payload = utc_session.session_events[0].payload
+    lifecycle_events = [event for event in utc_session.session_events if event.event_type == "generation_lifecycle"]
+    assert len(lifecycle_events) == 1
+    payload = lifecycle_events[0].payload
     assert payload == {
         "state": "completed",
         "evidence_source": "provider_native",
@@ -1210,7 +1242,8 @@ def test_chatgpt_generation_timing_fallback_rejects_malformed_values(
 
     assert session.messages[0].duration_ms == expected_duration_ms
     assert session.reported_duration_ms == expected_duration_ms
-    assert len(session.session_events) == (1 if expected_duration_ms is not None else 0)
+    lifecycle_events = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
+    assert len(lifecycle_events) == (1 if expected_duration_ms is not None else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1258,10 +1291,210 @@ def test_code_interpreter_content_is_preserved() -> None:
     # Content-block types reflect the code-interpreter semantics.
     from polylogue.core.enums import BlockType
 
+    # bd polylogue-4fm3: code-interpreter calls are TOOL_USE (not CODE), so
+    # they join their execution_output TOOL_RESULT via action_pairs/actions
+    # (which only joins block_type='tool_use' rows).
     code_msg = next(m for m in conv.messages if m.text == "print(1)")
-    assert any(b.type == BlockType.CODE for b in code_msg.blocks)
+    assert any(b.type == BlockType.TOOL_USE for b in code_msg.blocks)
     out_msg = next(m for m in conv.messages if m.text == "1\n")
     assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.blocks)
+
+
+# ---------------------------------------------------------------------------
+# polylogue-grub -- execution_output status -> tool_result_is_error
+# ---------------------------------------------------------------------------
+
+
+def _code_and_output_nodes(status: str | None, *, recipient: str = "python") -> list[ChatGPTMapping]:
+    return [
+        _branch_node("u1", "user", "run this", parent=None, children=["tool"]),
+        {
+            "id": "tool",
+            "message": {
+                "id": "tool",
+                "author": {"role": "assistant", "name": recipient},
+                "recipient": recipient,
+                "content": {"content_type": "code", "text": "print(1)"},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool"},
+                "content": {"content_type": "execution_output", "text": "1\n"},
+                "status": status,
+                "create_time": None,
+            },
+            "parent": "tool",
+            "children": [],
+        },
+    ]
+
+
+def _parse_execution_output(status: str | None) -> ParsedContentBlock:
+    from polylogue.core.enums import BlockType
+
+    nodes = _code_and_output_nodes(status)
+    payload = {
+        "title": "Code interpreter status",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+    return next(b for b in out_msg.blocks if b.type == BlockType.TOOL_RESULT)
+
+
+def test_execution_output_finished_successfully_is_not_error() -> None:
+    """The provider's own terminal status resolves the tool_result outcome.
+
+    Before this fix every ChatGPT ``tool_result`` block was
+    ``tool_result_is_error IS NULL`` (100% unknown, live-measured) even though
+    ``finished_successfully``/``finished_partial_completion`` are exactly the
+    export's terminal success/failure states. Deleting the status->is_error
+    mapping in the ``execution_output`` branch of
+    ``polylogue/sources/parsers/chatgpt.py`` makes this fail.
+    """
+    block = _parse_execution_output("finished_successfully")
+    assert block.is_error is False
+
+
+def test_execution_output_finished_partial_completion_is_error() -> None:
+    block = _parse_execution_output("finished_partial_completion")
+    assert block.is_error is True
+
+
+def test_execution_output_in_progress_stays_unknown() -> None:
+    """A still-running tool call has no concluded outcome -- must stay NULL,
+    never guessed as success or failure."""
+    block = _parse_execution_output("in_progress")
+    assert block.is_error is None
+
+
+def test_execution_output_missing_status_stays_unknown() -> None:
+    block = _parse_execution_output(None)
+    assert block.is_error is None
+
+
+def test_code_block_carries_recipient_as_tool_name() -> None:
+    """A recipient-addressed code-interpreter call's tool identity (e.g.
+    "python", "container.exec") is the provider's own ``recipient`` field --
+    not something to infer from prose."""
+    from polylogue.core.enums import BlockType
+
+    nodes = _code_and_output_nodes("finished_successfully", recipient="container.exec")
+    payload = {
+        "title": "Code interpreter recipient",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    code_msg = next(m for m in conv.messages if m.provider_message_id == "tool")
+    code_block = next(b for b in code_msg.blocks if b.type == BlockType.TOOL_USE)
+    assert code_block.tool_name == "container.exec"
+
+
+# ---------------------------------------------------------------------------
+# polylogue-ah21 -- tool_use/tool_result tool_id pairing
+# ---------------------------------------------------------------------------
+
+
+def test_recipient_tool_use_and_result_share_a_tool_id() -> None:
+    """A recipient-addressed tool call and its result node must be joinable.
+
+    Exercises ``polylogue.sources.parsers.chatgpt.extract_messages_from_mapping``
+    (via ``parse``): the TOOL_USE block emitted for a recipient-addressed
+    assistant node and the TOOL_RESULT block emitted for its
+    ``execution_output`` child must carry a matching, non-null ``tool_id`` --
+    before this fix both were unconditionally ``None`` (verified live: 100% of
+    ChatGPT capture tool_use/tool_result blocks had ``tool_id IS NULL``,
+    dropping every pair from the ``action_pairs``/``actions`` join). Deleting
+    either ``tool_id=str(msg_id)`` on the TOOL_USE branch or
+    ``tool_id=parent_message_provider_id`` on the ``execution_output`` branch
+    in ``polylogue/sources/parsers/chatgpt.py`` makes this fail.
+    """
+    from polylogue.core.enums import BlockType
+
+    nodes = [
+        _branch_node("u1", "user", "search for x", parent=None, children=["call"]),
+        {
+            "id": "call",
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant"},
+                "recipient": "web",
+                "content": {"content_type": "text", "parts": ['{"search_query": ["x"]}']},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["result"],
+        },
+        {
+            "id": "result",
+            "message": {
+                "id": "result",
+                "author": {"role": "tool"},
+                "content": {"content_type": "execution_output", "text": "found x"},
+                "create_time": None,
+            },
+            "parent": "call",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Tool call pairing",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "result",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    by_id = {m.provider_message_id: m for m in conv.messages}
+
+    tool_use_blocks = [b for b in by_id["call"].blocks if b.type == BlockType.TOOL_USE]
+    tool_result_blocks = [b for b in by_id["result"].blocks if b.type == BlockType.TOOL_RESULT]
+    assert len(tool_use_blocks) == 1
+    assert len(tool_result_blocks) == 1
+    assert tool_use_blocks[0].tool_id is not None
+    assert tool_use_blocks[0].tool_id == tool_result_blocks[0].tool_id == "call"
+
+
+def test_code_interpreter_call_and_result_share_a_tool_id() -> None:
+    """A code-interpreter call and its execution_output must be joinable too.
+
+    bd polylogue-4fm3: live-measured ~4.6:1 tool_result:tool_use skew on
+    browser-captured chatgpt sessions traced to this exact gap -- the
+    content_type=="code" branch used to emit BlockType.CODE with no
+    tool_id, so `action_pairs` (which only joins block_type='tool_use'
+    rows) never saw the call, leaving every execution_output permanently
+    unpaired. Deleting either `tool_id=str(msg_id)` on the "code" branch or
+    the existing `tool_id=parent_message_provider_id` on the
+    "execution_output" branch makes this fail.
+    """
+    from polylogue.core.enums import BlockType
+
+    nodes = _code_and_output_nodes("finished_successfully")
+    payload = {
+        "title": "Code interpreter pairing",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    by_id = {m.provider_message_id: m for m in conv.messages}
+
+    tool_use_blocks = [b for b in by_id["tool"].blocks if b.type == BlockType.TOOL_USE]
+    tool_result_blocks = [b for b in by_id["out"].blocks if b.type == BlockType.TOOL_RESULT]
+    assert len(tool_use_blocks) == 1
+    assert len(tool_result_blocks) == 1
+    assert tool_use_blocks[0].tool_id is not None
+    assert tool_use_blocks[0].tool_id == tool_result_blocks[0].tool_id == "tool"
+    assert tool_use_blocks[0].tool_input == {"code": "print(1)"}
 
 
 # SANDBOX FILE LINKS (assistant-generated downloadable deliverables)

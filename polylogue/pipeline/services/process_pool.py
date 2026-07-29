@@ -43,13 +43,28 @@ def process_pool_context() -> multiprocessing.context.BaseContext:
 def resolve_parse_worker_count(*, env_var: str = "POLYLOGUE_INGEST_PARSE_WORKERS") -> int:
     """Resolve a CPU-bound parse worker count from ``env_var`` or CPU count.
 
-    Default is ``min(8, cpus-1)`` clamped to at least 1. A value of ``1``
-    (including an invalid override) disables pooling entirely and preserves
-    exact sequential parse behavior as an escape hatch. Shared by every
-    read-only blob->parsed-session decode stage (direct ingest, raw-authority
-    census) so one operator knob bounds all of them consistently.
+    The ceiling is interpreter-dependent, because the two builds have opposite
+    scaling. Under the GIL, CPU-bound parse workers were a spawn-based process
+    pool and ``min(8, cpus-1)`` bounded fork cost and memory; going wider bought
+    nothing (``parallel_threads_effective`` records 0.93x-0.96x for threads
+    there). On a free-threaded build the same parse code measured **3.9x at
+    w=4 rising to 9.6x at w=16** (polylogue-7mtf control run), so the historical
+    cap of 8 discards most of the available speedup -- on a 24-thread host it
+    left 16 threads idle during a 9.2-hour rebuild.
+
+    So: ``min(16, cpus-2)`` free-threaded, ``min(8, cpus-1)`` otherwise. 16 is
+    where the measurement ends, not a guess about what lies beyond it, and the
+    -2 leaves room for the single SQLite writer plus the daemon's own work.
+    Raising it further is an empirical question the rebuild's RebuildPassCost
+    instrumentation (mib_per_s against parse_workers) can answer directly.
+
+    A value of ``1`` (including an invalid override) disables pooling entirely
+    and preserves exact sequential parse behavior as an escape hatch. Shared by
+    every read-only blob->parsed-session decode stage (direct ingest,
+    raw-authority census) so one operator knob bounds all of them consistently.
     """
-    default = max(1, min(8, (os.cpu_count() or 2) - 1))
+    cpus = os.cpu_count() or 2
+    default = max(1, min(16, cpus - 2)) if parallel_threads_effective() else max(1, min(8, cpus - 1))
     raw = os.environ.get(env_var)
     if raw is None:
         return default

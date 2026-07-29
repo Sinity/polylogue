@@ -9,10 +9,12 @@
     --repair                        Run safe derived-data maintenance repairs
     --cleanup                       Run destructive archive cleanup for orphaned
                                     or empty persisted data
-    --target [session_insights|message_type_backfill|orphaned_messages|empty_sessi
-  ons|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+    --target [session_insights|message_type_backfill|session_timestamp_backfill|or
+  phaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_ra
+  w_snapshots]
                                     Limit maintenance to named targets such as
                                     session_insights, message_type_backfill,
+                                    session_timestamp_backfill,
                                     orphaned_messages, empty_sessions,
                                     orphaned_attachments, orphaned_blobs, or
                                     superseded_raw_snapshots
@@ -198,6 +200,12 @@
                                     shell pipelines and LLM tool-use harnesses.
     --explain                       Explain query DSL parsing and lowering
                                     instead of executing the query.
+    --why                           On zero results, show the full miss
+                                    breakdown: which predicate(s) zeroed the
+                                    result, nearest since<PATH> relaxation, and
+                                    FTS-vs-structured disagreement (the default
+                                    already names the zeroing predicate(s), just
+                                    without those extras).
     --stream                        Stream output (low memory). Requires
                                     --latest or -i ID.
     --set TEXT...                   Set metadata key value
@@ -444,6 +452,17 @@
                                     parsing and lowering
                                     instead of executing the
                                     query.
+    --why                           On zero results, show
+                                    the full miss breakdown:
+                                    which predicate(s)
+                                    zeroed the result,
+                                    nearest since<PATH>
+                                    relaxation, and FTS-vs-
+                                    structured disagreement
+                                    (the default already
+                                    names the zeroing
+                                    predicate(s), just
+                                    without those extras).
     --stream                        Stream output (low
                                     memory). Requires
                                     --latest or -i ID.
@@ -642,6 +661,12 @@
                                     shell pipelines and LLM tool-use harnesses.
     --explain                       Explain query DSL parsing and lowering
                                     instead of executing the query.
+    --why                           On zero results, show the full miss
+                                    breakdown: which predicate(s) zeroed the
+                                    result, nearest since<PATH> relaxation, and
+                                    FTS-vs-structured disagreement (the default
+                                    already names the zeroing predicate(s), just
+                                    without those extras).
     --stream                        Stream output (low memory). Requires
                                     --latest or -i ID.
     --set TEXT...                   Set metadata key value

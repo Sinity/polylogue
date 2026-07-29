@@ -26,7 +26,7 @@ from devtools.archive_schema_fast_forward import reflink_clone
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
@@ -387,7 +387,7 @@ def _transform_clone(path: Path, *, before_rootpages: dict[str, int], canonical:
         if key.split(":", 1)[1] not in RETIRED_TABLES
         and not any(key.split(":", 1)[1].startswith(f"idx_{table}") for table in RETIRED_TABLES)
     }
-    if version != INDEX_SCHEMA_VERSION or version != TO_VERSION:
+    if version != TO_VERSION:
         raise IndexV37FastForwardError(f"clone ended at unexpected index version {version}")
     if checks["quick_check"] != ["ok"] or checks["attachment_native_ids_foreign_key_check"]:
         raise IndexV37FastForwardError(f"clone postflight failed: {checks}")

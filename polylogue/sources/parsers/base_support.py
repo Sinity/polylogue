@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, WebConstructType
+from polylogue.core.enums import BlockType, ToolResultUnknownReason, WebConstructType
 from polylogue.core.hashing import hash_text
 
 from .base_models import (
@@ -61,21 +61,43 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                 ]
                 result_text = "\n".join(part for part in text_parts if part) or None
             raw_is_error = seg.get("is_error")
+            is_error = raw_is_error if isinstance(raw_is_error, bool) else None
+            # polylogue-2qx.4 / polylogue-cuxz.8: this is the shared
+            # Anthropic-protocol tool_result segment shape (Claude Code,
+            # Claude common, Codex). When the segment itself carries no
+            # boolean ``is_error`` the provider structurally emitted nothing
+            # for this record -- NOT_REPORTED, not a bare unknown. Origin-
+            # specific overlays (e.g. Claude Code's own toolUseResult
+            # verdicts) may resolve or override this afterward.
+            outcome_unknown_reason = None if is_error is not None else ToolResultUnknownReason.NOT_REPORTED.value
             blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     tool_id=seg.get("tool_use_id"),
                     text=result_text,
-                    is_error=raw_is_error if isinstance(raw_is_error, bool) else None,
+                    is_error=is_error,
+                    outcome_unknown_reason=outcome_unknown_reason,
                 )
             )
         elif seg_type in ("image", "document"):
             block_type = BlockType.from_string(seg_type)
+            # bd polylogue-9x22: this ``metadata`` dict is never persisted --
+            # the ``blocks`` table has no metadata column and the write path
+            # only reads a ``language`` key back out of it -- but unlike
+            # every other polylogue-9x22 site, it is NOT routed to
+            # session_events here. The Anthropic-protocol image/document
+            # segment shape's remaining keys after `type`/`media_type` are
+            # dominated by `source` (the inline base64 payload itself, or a
+            # file/url reference already captured by the attachment
+            # pipeline) -- verbatim-copying this dict the way the other
+            # sites do would duplicate large binary/attachment data into a
+            # durable evidence table meant for small JSON payloads. Re-audit
+            # with real corpus evidence if a genuinely small, non-blob,
+            # non-attachment-duplicate field is ever found on these segments.
             blocks.append(
                 ParsedContentBlock(
                     type=block_type,
                     media_type=seg.get("media_type"),
-                    metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
                 )
             )
         elif seg_type == "token_budget":

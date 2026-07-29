@@ -357,6 +357,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "get_metadata": ("archive_routed", "user", "reads user metadata through user.db"),
     "get_raw_artifacts_for_session": ("archive_routed", "source", "reads raw artifacts through source.db"),
     "get_recall_pack": ("archive_routed", "user", "reads recall packs through user.db"),
+    "get_session_events": ("archive_routed", "index", "reads raw session-timeline events from index.db"),
     "get_session_insight_status": ("archive_routed", "index", "reads insight readiness from index.db"),
     "get_session_latency_profile_insight": ("archive_routed", "index", "reads latency profiles from index.db"),
     "get_session_phase_insights": ("archive_routed", "index", "reads phases from index.db"),
@@ -473,6 +474,16 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "correlates Hermes lifecycle events with delivery receipts from user.db",
     ),
     "get_context_delivery": ("archive_routed", "user", "reads a durable context-delivery receipt from user.db"),
+    "get_hook_event_summary_for_session": (
+        "archive_routed",
+        "source",
+        "reads per-event-type hook-event counts from source.db raw_hook_events",
+    ),
+    "hermes_integration_health": (
+        "archive_routed",
+        "index",
+        "composes bounded Hermes integration health evidence from multi-tier archive reads (fs1.15)",
+    ),
     "import_annotation_batch": (
         "archive_routed",
         "user",

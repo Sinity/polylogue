@@ -6,9 +6,11 @@ from polylogue.storage.sqlite.queries.mappers_archive import (
     _ms_to_iso,
     _row_to_artifact_observation,
     _row_to_content_block,
+    _row_to_file_edit,
     _row_to_message,
     _row_to_raw_session,
     _row_to_session,
+    _row_to_session_ref,
 )
 from polylogue.storage.sqlite.queries.mappers_insight_aggregates import (
     _row_to_day_session_summary_record,
@@ -45,7 +47,9 @@ __all__ = [
     "_row_text",
     "_row_to_artifact_observation",
     "_row_to_content_block",
+    "_row_to_file_edit",
     "_row_to_session",
+    "_row_to_session_ref",
     "_row_to_day_session_summary_record",
     "_row_to_message",
     "_row_to_raw_session",

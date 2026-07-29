@@ -467,6 +467,40 @@ class TestCodexAssemblySpec:
         assert result is conv
         assert result.title == "Already has a title"
 
+    def test_enrich_session_downgrades_thread_name_that_echoes_first_prompt(self) -> None:
+        """bd polylogue-6e7m: a sidecar title that just restates the opening
+        prompt is not independent curation -- ORIGIN would overstate that."""
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "Take over Claude's session 755b624d")],
+        )
+        sidecar_data = _thread_sidecars({"thread-1": "take over claude's session 755b624d"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "take over claude's session 755b624d"
+        assert enriched.title_source == TitleSource.HEURISTIC
+        assert enriched.title_confidence == 0.5
+
+    def test_enrich_session_keeps_thread_name_distinct_from_first_prompt(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "Take over Claude's session 755b624d")],
+        )
+        sidecar_data = _thread_sidecars({"thread-1": "Session handoff triage"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Session handoff triage"
+        assert enriched.title_source == TitleSource.ORIGIN
+        assert enriched.title_confidence == 1.0
+
 
 class TestParseCodexSessionIndex:
     def test_parses_valid_jsonl(self, tmp_path: Path) -> None:
@@ -561,6 +595,7 @@ class TestLooksLikeGitBranch:
             "docs/readme",
             "ci/pipeline",
             "perf/query-optimization",
+            "claude/phase_3",
         ],
     )
     def test_rejects_git_branch_names(self, value: str) -> None:
@@ -633,6 +668,70 @@ class TestLooksLikeGitBranch:
 
         assert enriched.title == "Hello world"
         assert enriched.title_source == "heuristic"
+
+    def test_git_branch_claude_prefix_skipped(self) -> None:
+        """Claude Code's own auto-branch namespace (claude/phase_3) is rejected as a title.
+
+        polylogue-cijx.3 triage (2026-07-29): the corpus observes real
+        ``gitBranch`` values under a ``claude/`` prefix that the original
+        ``_GIT_BRANCH_PREFIXES`` list did not cover.
+        """
+        conv = _parsed_session(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
+        )
+        entry = SessionIndexEntry(
+            session_id="sess-1",
+            full_path="/tmp/sess-1.jsonl",
+            first_prompt="Hello world",
+            summary="claude/phase_3",
+            message_count=1,
+            created=None,
+            modified=None,
+            git_branch=None,
+            project_path="/project",
+            is_sidechain=False,
+        )
+
+        enriched = enrich_session_from_index(conv, entry)
+
+        assert enriched.title == "Hello world"
+        assert enriched.title_source == "heuristic"
+
+    def test_typed_git_branch_preferred_over_shape_heuristic(self) -> None:
+        """A summary that merely resembles a branch name, but isn't the known one, is kept.
+
+        When typed ``gitBranch`` evidence exists, ``enrich_session_from_index``
+        must compare the summary against that exact value rather than guessing
+        from shape alone -- a shape-only guess both over-matches (this case)
+        and under-matches (the previous ``claude/phase_3`` gap) real titles.
+        """
+        conv = _parsed_session(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
+        ).model_copy(update={"git_branch": "main"})
+        entry = SessionIndexEntry(
+            session_id="sess-1",
+            full_path="/tmp/sess-1.jsonl",
+            first_prompt="Hello world",
+            summary="release/v2.0",  # shape-heuristic would reject this, but it isn't the real branch
+            message_count=1,
+            created=None,
+            modified=None,
+            git_branch=None,
+            project_path="/project",
+            is_sidechain=False,
+        )
+
+        enriched = enrich_session_from_index(conv, entry)
+
+        assert enriched.title == "release/v2.0"
+        assert enriched.title_source == "origin"
+        assert enriched.git_branch == "main"
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +817,25 @@ class TestCodexHistoryTitles:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "B" * 80 + "..."
+
+    def test_history_downgrades_when_it_echoes_the_first_prompt(self) -> None:
+        """history_titles is *by construction* the earliest authored prompt
+        (see _parse_codex_history's docstring) -- it is essentially always
+        an echo, and this test proves the runtime check catches it rather
+        than trusting the sidecar label alone."""
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "familiarize yourself with the repo and its full beads-set")],
+        )
+        sidecar_data = _thread_sidecars(None, {"thread-1": "familiarize yourself with the repo and its full beads-set"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title_source == TitleSource.HEURISTIC
+        assert enriched.title_confidence == 0.5
 
     def test_history_never_replaces_real_title(self) -> None:
         spec = CodexAssemblySpec()
@@ -952,6 +1070,26 @@ class TestCodexStateTitles:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "C" * 80 + "..."
+
+    def test_state_title_downgrades_when_it_echoes_the_first_prompt(self) -> None:
+        """bd polylogue-6e7m's live scan found 166 of 2,771 state_5.sqlite
+        threads.title values shared by >1 thread (worst case 78x) -- all
+        confirmed echoes of the opening prompt, not curated titles."""
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "find, using whatever means, either directly ~/.codex or polylogue")],
+        )
+        sidecar_data = _thread_sidecars(
+            state_titles={"thread-1": "find, using whatever means, either directly ~/.codex or polylogue"}
+        )
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title_source == TitleSource.HEURISTIC
+        assert enriched.title_confidence == 0.5
 
     def test_state_title_never_replaces_real_title(self) -> None:
         spec = CodexAssemblySpec()

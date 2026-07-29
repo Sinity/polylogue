@@ -369,6 +369,40 @@
     return "unknown";
   }
 
+  // polylogue-ah21: project this mapping node's own content_type/recipient
+  // evidence into typed BrowserCaptureBlock entries instead of leaving tool
+  // call/result turns as opaque prose. rawProviderPayload (the full mapping)
+  // is what the parser trusts when present, so this is mainly defense in
+  // depth for whatever falls back to these turns -- but it also means a
+  // captured turn is never the ONLY place this evidence could have lived.
+  // tool_id pairing is constructed from mapping-tree identity: a call node's
+  // own id is its tool_id, and its result's tool_id is the call node's id
+  // (the result's parent), so a call and its result always pair 1:1.
+  function nativeTurnBlocks({ contentType, recipient, text, ownId, parentId }) {
+    if (recipient && text) {
+      let parsedInput = null;
+      try {
+        const candidate = JSON.parse(text);
+        if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) parsedInput = candidate;
+      } catch {
+        parsedInput = null;
+      }
+      if (parsedInput) {
+        return [{ type: "tool_use", tool_name: recipient, tool_id: ownId, tool_input: parsedInput, metadata: { content_type: contentType } }];
+      }
+    }
+    if (contentType === "code") {
+      return [{ type: "tool_use", tool_name: "code_interpreter", tool_id: ownId, tool_input: { code: text }, metadata: { content_type: contentType } }];
+    }
+    if (contentType === "execution_output") {
+      return [{ type: "tool_result", tool_id: parentId, text, metadata: { content_type: contentType } }];
+    }
+    if (contentType === "thoughts" || contentType === "reasoning_recap") {
+      return [{ type: "thinking", text, metadata: { content_type: contentType } }];
+    }
+    return [];
+  }
+
   function collectNativeTurns(payload) {
     const mapping = payload && payload.mapping;
     if (!mapping || typeof mapping !== "object") return [];
@@ -388,15 +422,25 @@
           )
         ));
       if (!text && !hasAttachmentEvidence) continue;
+      const providerTurnId = String(message.id || node.id || nodeId);
+      const parentTurnId = node.parent ? String(node.parent) : null;
+      const contentType = content.content_type || "text";
       turns.push({
-        provider_turn_id: String(message.id || node.id || nodeId),
+        provider_turn_id: providerTurnId,
         role,
         text,
         timestamp: timestampFromSeconds(message.create_time),
-        parent_turn_id: node.parent ? String(node.parent) : null,
+        parent_turn_id: parentTurnId,
+        blocks: nativeTurnBlocks({
+          contentType,
+          recipient: message.recipient || null,
+          text,
+          ownId: providerTurnId,
+          parentId: parentTurnId
+        }),
         provider_meta: {
           node_id: nodeId,
-          content_type: content.content_type || "text",
+          content_type: contentType,
           status: message.status || null,
           model_slug: metadata.model_slug || null,
           capture_source: "chatgpt_backend_api"

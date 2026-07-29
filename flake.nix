@@ -25,7 +25,21 @@
         # original, still-broken derivations).
         overlays = [ freeThreadedNoCheckOverlay ];
       };
-      python = pkgs.python314;
+
+      # Free-threaded Python 3.14 (PEP 703/779) is the sole interpreter this
+      # flake packages (operator decision 2026-07-19, polylogue-xikl: "adopt
+      # free-threaded Python across polylogue, fully"). It used to also build
+      # a standard (GIL) `polylogue` package + `.#gil` devShell as a parallel
+      # deployment target, but that variant had no consumer: sinnix's
+      # `polyloguePkg` always pinned `packages.polylogue-freethreaded`
+      # (polylogue-dcz5), and nothing else referenced the GIL build outside
+      # this flake's own CI checks. Keeping a fully-maintained alternative
+      # that ships nowhere is exactly the pattern this project rejects, so
+      # the GIL variant is gone and `.#polylogue` -- the attribute CI and
+      # sinnix both already resolve -- IS the free-threaded build now, not a
+      # separately named alias of it.
+      python = pkgs.python314FreeThreading;
+      pythonPackages = python.pkgs;
 
       # Script body lives in nix/devtools-wrapper.sh so it can be unit-tested
       # directly (see tests/unit/devtools/test_cli_wrapper.py).
@@ -50,17 +64,7 @@
         else
           "unknown";
 
-      # Shared package builder for both the standard (GIL) interpreter and the
-      # free-threaded (3.14t) variant (polylogue-xikl phase-0/deployment-edge:
-      # CLI-first rebuild lane on 3.14t while the daemon stays standard). The
-      # two variants differ ONLY in which interpreter/package set they build
-      # against and which fast-JSON accelerator they carry -- orjson has no
-      # cp314t wheels and its build refuses to compile free-threaded, so the
-      # free-threaded variant carries `msgspec` instead (polylogue.core.json's
-      # facade picks whichever backend is importable, no code change needed).
-      mkPolylogue =
-        { python', pythonPackages, jsonAccelerator }:
-        pythonPackages.buildPythonPackage {
+      polylogue = pythonPackages.buildPythonPackage {
         pname = "polylogue";
         # Single authoritative version: pyproject.toml (release-please owns bumps).
         version = (builtins.fromTOML (builtins.readFile ./pyproject.toml)).project.version;
@@ -82,7 +86,12 @@
           pkgs.makeWrapper
         ];
 
-        dependencies = (with pythonPackages; [
+        # `msgspec` is the sole fast-JSON accelerator: `orjson` ships no
+        # cp314t wheel and its build refuses to compile free-threaded, so it
+        # can never load on this interpreter (polylogue.core.json's facade
+        # falls back to stdlib json when no accelerator is importable; on
+        # this build msgspec is always the one it picks).
+        dependencies = with pythonPackages; [
           google-auth-oauthlib
           google-api-python-client
           google-auth-httplib2
@@ -106,7 +115,8 @@
           mcp
           pyyaml
           watchfiles
-        ]) ++ [ jsonAccelerator ];
+          msgspec
+        ];
 
         doCheck = false;
         pythonImportsCheck = [
@@ -115,20 +125,20 @@
         dontCheckRuntimeDeps = true;
 
         # _PYTHON_SYSCONFIGDATA_NAME/_PYTHON_HOST_PLATFORM: a caller devshell
-        # for a DIFFERENT interpreter (e.g. the repo's own 3.13 devshell)
+        # for a DIFFERENT interpreter (e.g. a contributor's own system Python)
         # commonly exports these. If either leaks through into this program's
         # env, sysconfig._get_sysconfigdata_name() trusts the inherited value
-        # instead of computing its own -- and the free-threaded build's real
-        # module is named with a `t` abiflag segment
-        # (`_sysconfigdata_t_linux_x86_64-linux-gnu`) that a 3.13-derived name
-        # (`_sysconfigdata__linux_x86_64-linux-gnu`, no `t`) does not match,
-        # so any command doing real work (not just --version/--help) fails
-        # with `ModuleNotFoundError: No module named
+        # instead of computing its own -- and this build's real module is
+        # named with a `t` abiflag segment
+        # (`_sysconfigdata_t_linux_x86_64-linux-gnu`) that a non-free-threaded
+        # name (`_sysconfigdata__linux_x86_64-linux-gnu`, no `t`) does not
+        # match, so any command doing real work (not just --version/--help)
+        # fails with `ModuleNotFoundError: No module named
         # '_sysconfigdata__linux_x86_64-linux-gnu'` (polylogue-xikl, reproduced
         # 2026-07-19: PYTHONPATH alone was NOT the trigger -- isolated to this
         # one env var via `env -i` bisection).
         postFixup = ''
-          test -f "$out/${python'.sitePackages}/polylogue/daemon/static/dist/manifest.json"
+          test -f "$out/${python.sitePackages}/polylogue/daemon/static/dist/manifest.json"
           for program in polylogue polylogued polylogue-mcp polylogue-hook; do
             wrapProgram "$out/bin/$program" \
               --unset PYTHONPATH \
@@ -150,19 +160,6 @@
         };
       };
 
-      polylogue = mkPolylogue {
-        python' = python;
-        pythonPackages = pkgs.python314Packages;
-        jsonAccelerator = pkgs.python314Packages.orjson;
-      };
-
-      # Free-threaded (3.14t, PEP 779) build variant (polylogue-xikl /
-      # polylogue-7mtf): same package, built against
-      # `python314FreeThreading.pkgs` so the CLI can run with the GIL
-      # disabled. This is the offline/bulk-rebuild deployment edge -- the
-      # daemon stays on the standard build until the free-threading adoption
-      # gate + thread-safety audit (phase 1/3 of polylogue-xikl) land.
-      #
       # `python314FreeThreading` is uncached at this nixpkgs pin (2026-07-19):
       # nothing in its `.pkgs` set has a prebuilt binary on cache.nixos.org
       # yet, so *every* Python package in the closure builds from source with
@@ -182,7 +179,7 @@
       # OTHER packages' test suites, not by anything polylogue needs at
       # runtime).
       #
-      # `pythonFreeThreadedPkgs` disables `doCheck`/`doInstallCheck` across the
+      # `mkNoCheckOverride` disables `doCheck`/`doInstallCheck` across the
       # whole package set by wrapping `buildPythonPackage`/
       # `buildPythonApplication` themselves via `overrideScope`, rather than
       # patching already-built package derivations after the fact. Two other
@@ -216,9 +213,9 @@
       # function", hit and fixed while developing this).
       #
       # Packaging-only: upstream test suites for these packages still run on
-      # the standard (GIL) build via `pkgs.python314Packages`, and polylogue's
-      # own test suite is unaffected (`doCheck = false` was already set on the
-      # `polylogue` derivation itself, standard build included). Filed as a
+      # the standard (GIL) `pkgs.python314Packages` set (nixpkgs' own default),
+      # and polylogue's own test suite is unaffected (`doCheck = false` was
+      # already set on the `polylogue` derivation itself). Filed as a
       # nixpkgs-upstream gap, not fixed here (out of this lane's packaging
       # scope): see polylogue-xikl for the tracking note.
       mkNoCheckOverride =
@@ -279,9 +276,7 @@
               # SQLite `.so` extension, ABI-independent of the Python build).
               # nixpkgs' `pythonRuntimeDepsCheckHook` fails the build because
               # this free-threaded package set has no `numpy` in this
-              # closure; the standard (GIL) build silently passes only
-              # because numpy happens to already be resolvable there for
-              # unrelated reasons. `dontCheckRuntimeDeps = true` mirrors what
+              # closure. `dontCheckRuntimeDeps = true` mirrors what
               # `polylogue`'s own derivation already sets for the same class
               # of over-strict wheel-metadata check.
               sqlite-vec = pySuper.sqlite-vec.overrideAttrs (_old: {
@@ -291,10 +286,7 @@
               # polylogue transitive dependency) lists only `dependencies =
               # [ anyio ]`, but the package's actual wheel metadata declares
               # `starlette` as a required runtime import -- a genuine, narrow
-              # nixpkgs packaging gap (present for the standard build too;
-              # just never triggers the failure there because `mcp`'s other
-              # direct dependencies already happen to pull `starlette` into
-              # that build's closure). Adding it here is the correct fix
+              # nixpkgs packaging gap. Adding it here is the correct fix
               # (starlette is a real runtime need), not merely suppressing
               # the check the way `sqlite-vec` above does.
               sse-starlette = pySuper.sse-starlette.overrideAttrs (old: {
@@ -303,12 +295,6 @@
             }
           );
         };
-      };
-      pythonFreeThreaded = pkgs.python314FreeThreading;
-      polylogueFreeThreaded = mkPolylogue {
-        python' = pythonFreeThreaded;
-        pythonPackages = pythonFreeThreaded.pkgs;
-        jsonAccelerator = pythonFreeThreaded.pkgs.msgspec;
       };
 
       # Python environment with polylogue pre-installed (for scripting/notebooks).
@@ -327,10 +313,11 @@
             name=$(basename "$f")
             case "$name" in
               python|python3|python3.*)
-                # Same sanitization as `mkPolylogue`'s postFixup above,
-                # including the _PYTHON_SYSCONFIGDATA_NAME/_PYTHON_HOST_PLATFORM
-                # scrub (polylogue-xikl) -- a caller devshell for a different
-                # interpreter version can leak these in just as easily here.
+                # Same sanitization as the `polylogue` derivation's postFixup
+                # above, including the _PYTHON_SYSCONFIGDATA_NAME/
+                # _PYTHON_HOST_PLATFORM scrub (polylogue-xikl) -- a caller
+                # devshell for a different interpreter can leak these in just
+                # as easily here.
                 makeWrapper "$f" "$out/bin/$name" \
                   --unset PYTHONPATH \
                   --unset PYTHONHOME \
@@ -358,28 +345,19 @@
         default = polylogue;
         api-python = polylogueApiPythonWrapped;
         api-python-raw = polylogueApiPython;
-        polylogue-freethreaded = polylogueFreeThreaded;
       };
 
-      devShells.${system} = {
-      default = pkgs.mkShell {
-        buildInputs = with pkgs; [
+      devShells.${system}.default = pkgs.mkShell {
+        buildInputs = [
           python
-          uv
+          pkgs.uv
           devtoolsCli
-          git
-          ruff
-          py-spy
-          python.pkgs.pyinstrument
-          bat
-          glow
-          openssl
-          vhs
+          pkgs.git
+          pkgs.ruff
         ];
 
         shellHook = ''
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
-          export HYPOTHESIS_STORAGE_DIRECTORY="$PWD/.cache/hypothesis"
           export PYTHONDONTWRITEBYTECODE=1
           export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache"
           export POLYLOGUE_REPO_ROOT="$PWD"
@@ -428,20 +406,37 @@
             touch "$pyc_stamp"
           fi
 
-          # Create venv if it doesn't exist
+          # The venv must track the devShell interpreter. This previously ran
+          # `uv venv` only when .venv was absent, so a venv created against an
+          # older interpreter survived a toolchain bump forever and shadowed
+          # the nix-provided python on PATH -- recreate whenever the
+          # interpreter identity moves (version + free-threaded flag).
+          devshell_python_id="$(python3 -c 'import sys; print(sys.version.split()[0], sys._is_gil_enabled())')"
+          venv_python_id=""
+          if [ -x .venv/bin/python ]; then
+            venv_python_id="$(.venv/bin/python -c 'import sys; print(sys.version.split()[0], getattr(sys, "_is_gil_enabled", lambda: True)())' 2>/dev/null || true)"
+          fi
           if [ ! -d .venv ]; then
-            echo "devshell: creating virtual environment" >&2
+            echo "devshell: creating virtual environment ($devshell_python_id)" >&2
+            uv venv
+          elif [ "$venv_python_id" != "$devshell_python_id" ]; then
+            echo "devshell: interpreter changed ($venv_python_id -> $devshell_python_id); recreating .venv" >&2
+            rm -rf .venv
             uv venv
           fi
 
           # Activate venv
           source .venv/bin/activate
 
-          # Sync dependencies when pyproject.toml, uv.lock, or Python version change.
+          # Sync dependencies when pyproject.toml, uv.lock, or Python version
+          # change. The interpreter component is the devShell's identity
+          # captured BEFORE activation -- reading `python --version` here would
+          # report the venv that was just activated, which is precisely the
+          # value that cannot detect a toolchain bump.
           sync_fingerprint_file=".venv/.uv-sync-fingerprint"
           sync_fingerprint="$(
             cat pyproject.toml uv.lock 2>/dev/null
-            python --version 2>&1
+            printf '%s' "$devshell_python_id"
           )"
           sync_fingerprint="$(printf '%s' "$sync_fingerprint" | sha256sum | cut -d' ' -f1)"
           current_fingerprint=""
@@ -460,37 +455,6 @@
             export POLYLOGUE_MOTD_RENDERED=1
           fi
         '';
-      };
-
-      # Free-threaded (3.14t) devShell variant (polylogue-xikl / polylogue-7mtf
-      # experiment gate). Deliberately lean: it provides the free-threaded
-      # interpreter for interactive smoke/benchmark work, but it does NOT
-      # auto-sync `--extra dev` into a venv the way the standard shell does,
-      # because pyproject.toml's `dev` extra pulls in `orjson` unconditionally
-      # -- orjson has no cp314t wheels and its build refuses to compile
-      # free-threaded, so a frozen sync targeting this interpreter would fail
-      # outright. Running the unit suite here today means a manual,
-      # non-frozen `uv pip install` of the test tooling (pytest/hypothesis/
-      # etc.) plus `msgspec` in place of `orjson`; a proper `dev-freethreaded`
-      # pyproject extra + uv.lock entry is tracked as follow-up, not done
-      # here to keep this lane scoped to packaging.
-      freethreaded = pkgs.mkShell {
-        buildInputs = with pkgs; [
-          pythonFreeThreaded
-          uv
-          devtoolsCli
-          git
-          ruff
-        ];
-
-        shellHook = ''
-          export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
-          export PYTHONDONTWRITEBYTECODE=1
-          export POLYLOGUE_REPO_ROOT="$PWD"
-          echo "devshell(freethreaded): $(python3 -c 'import sys; print(sys.version, "GIL enabled:", sys._is_gil_enabled())')" >&2
-          echo "devshell(freethreaded): venv not auto-synced -- see flake.nix comment above this shell for the manual setup" >&2
-        '';
-      };
       };
 
       checks.${system} = {

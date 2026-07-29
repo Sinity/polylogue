@@ -32,12 +32,12 @@ one prompt with N candidate rollouts; the JSONL writer emits one group per line)
 
 ```python
 class ScoredDataGroup(TypedDict):
-    tokens: List[List[int]]                                  # per-member token ids
-    masks: List[List[int]]                                   # per-member loss mask (-100 / token-id convention)
-    scores: List[float]                                      # per-member scalar reward
-    advantages: Optional[List[List[float]]]                 # per-token advantages
+    tokens: List[List[int]]  # per-member token ids
+    masks: List[List[int]]  # per-member loss mask (-100 / token-id convention)
+    scores: List[float]  # per-member scalar reward
+    advantages: Optional[List[List[float]]]  # per-token advantages
     ref_logprobs: Optional[List[List[float]]]
-    messages: Optional[List[List[Message]]]                 # per-member OpenAI-style message list
+    messages: Optional[List[List[Message]]]  # per-member OpenAI-style message list
     generation_params: Optional[Dict[str, Any]]
     inference_logprobs: Optional[List[List[float]]]
     group_overrides: Optional[Dict]
@@ -52,10 +52,12 @@ Supporting types (`atroposlib/type_definitions.py`):
 ```python
 number = int | float
 
+
 class Message(TypedDict):
     role: Literal["system", "user", "assistant", "tool"]
-    content: Content                  # str (or multimodal content blocks)
+    content: Content  # str (or multimodal content blocks)
     reward: Optional[float]
+
 
 Item = Any
 ```
@@ -73,8 +75,7 @@ Key structural facts:
   `messages is None`, `base.py` auto-fills it by decoding `tokens`:
   ```python
   group["messages"] = [
-      [{"role": "user", "content": self.tokenizer.decode(group["tokens"][i])}]
-      for i in range(len(group["tokens"]))
+      [{"role": "user", "content": self.tokenizer.decode(group["tokens"][i])}] for i in range(len(group["tokens"]))
   ]
   ```
   i.e. messages can be supplied directly and Atropos will *not* overwrite them.

@@ -3124,7 +3124,7 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
     ).fetchone()
     session_repo = conn.execute(
         """
-        SELECT session_id, repo_id, branch_name, observed_at_ms
+        SELECT session_id, repo_id, root_path, branch_name, observed_at_ms
         FROM session_repos
         """
     ).fetchone()
@@ -3135,25 +3135,36 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
         FROM session_commits
         """
     ).fetchone()
+    checkout = conn.execute(
+        """
+        SELECT repo_id, root_path, first_seen_at_ms, last_seen_at_ms
+        FROM repo_checkouts
+        """
+    ).fetchone()
 
+    # polylogue-cijx.4 decision 1: repo_id is now the canonicalized remote
+    # (`remote:<host>/<path>`), NOT `origin_url || root_path` -- two
+    # worktree checkouts of this same remote must resolve to this same id.
+    expected_repo_id = "remote:github.com/sinity/polylogue"
     assert dict(repo) == {
         "origin_url": "https://github.com/Sinity/polylogue.git",
         "root_path": "/realm/project/polylogue",
-        "repo_id": "https://github.com/Sinity/polylogue.git\x1f/realm/project/polylogue",
+        "repo_id": expected_repo_id,
         "repo_name": "polylogue",
         "first_seen_at_ms": 1_767_225_605_000,
         "last_seen_at_ms": 1_767_225_605_000,
     }
     assert dict(session_repo) == {
         "session_id": session_id,
-        "repo_id": "https://github.com/Sinity/polylogue.git\x1f/realm/project/polylogue",
+        "repo_id": expected_repo_id,
+        "root_path": "/realm/project/polylogue",
         "branch_name": "feature/archive",
         "observed_at_ms": 1_767_225_605_000,
     }
     assert dict(commit) == {
         "session_id": session_id,
         "commit_sha": "0123456789abcdef0123456789abcdef01234567",
-        "repo_id": "https://github.com/Sinity/polylogue.git\x1f/realm/project/polylogue",
+        "repo_id": expected_repo_id,
         "detection_type": "explicit_ref",
         "method": "parser-git-meta",
         "confidence": 1.0,
@@ -3164,6 +3175,130 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
         ),
         "created_at_ms": 1_767_225_605_000,
     }
+    assert dict(checkout) == {
+        "repo_id": expected_repo_id,
+        "root_path": "/realm/project/polylogue",
+        "first_seen_at_ms": 1_767_225_605_000,
+        "last_seen_at_ms": 1_767_225_605_000,
+    }
+
+
+def test_archive_tiers_writer_collapses_worktree_cwds_to_one_repo_row(tmp_path: Path) -> None:
+    """polylogue-cijx.4 decision 1: a worktree/subdirectory cwd is a checkout of
+    a repository, not a repository of its own.
+
+    Before this fix, ``_repo_name``/``_repo_id`` used the raw session cwd
+    verbatim, so a session whose cwd was an agent-worktree subdirectory (e.g.
+    ``<repo>/.claude/worktrees/agent-<hash>``) surfaced ``agent-<hash>`` as
+    the repo name -- worse than the id it replaced. Two sessions recorded
+    from different subdirectories of the SAME checkout, with no reported git
+    remote, must now resolve to the SAME real repo root/name and the SAME
+    ``repos`` row, because both cwds share one discoverable ``.git``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    repo_root = tmp_path / "myrepo"
+    (repo_root / ".git").mkdir(parents=True)
+    worktree_cwd = repo_root / ".claude" / "worktrees" / "agent-ad682bc849a1cd0f0"
+    worktree_cwd.mkdir(parents=True)
+    subdir_cwd = repo_root / "polylogue" / "pipeline"
+    subdir_cwd.mkdir(parents=True)
+
+    first = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="worktree-session",
+        working_directories=[str(worktree_cwd)],
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="from a worktree cwd")],
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="subdir-session",
+        working_directories=[str(subdir_cwd)],
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="from a plain subdirectory cwd")],
+            )
+        ],
+    )
+
+    write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second)
+
+    repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
+    assert repos == [{"root_path": str(repo_root), "repo_name": "myrepo"}]
+
+
+def test_archive_tiers_writer_collapses_same_remote_different_checkouts_to_one_repo_row(
+    tmp_path: Path,
+) -> None:
+    """polylogue-cijx.4 decision 1: identity is the normalized remote, not
+    ``origin_url || root_path``.
+
+    Two sessions reporting the SAME git remote but checked out at two
+    *different* worktree paths (the realistic worktree-fanout case: e.g.
+    ``/realm/project/polylogue`` and a ``.claude/worktrees/agent-<hash>``
+    checkout of the identical remote) must collapse to one ``repos`` row.
+    Before this fix, ``repo_id`` was the SQLite-generated
+    ``origin_url || char(31) || root_path``, so these were two distinct
+    rows purely because the checkout path differed -- this is the exact
+    defect measured as "polylogue holds 106 distinct repo_ids" for what was
+    really one repository checked out many places, and the source of the
+    3.5% session-label collision baseline. Each checkout's own root_path
+    must still be recoverable per-session (decision 2 repo-relative
+    stripping needs the CORRECT checkout root for each session, not
+    whichever checkout happened to write the shared repos row first) and
+    fully enumerated in ``repo_checkouts``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="checkout-a",
+        git_repository_url="https://github.com/Sinity/polylogue.git",
+        working_directories=["/realm/project/polylogue"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="from the main checkout")],
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="checkout-b",
+        git_repository_url="git@github.com:Sinity/polylogue.git",
+        working_directories=["/realm/worktrees/polylogue-agent-x"],
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="from a worktree checkout")],
+            )
+        ],
+    )
+
+    first_id = write_parsed_session_to_archive(conn, first)
+    second_id = write_parsed_session_to_archive(conn, second)
+
+    repos = [dict(row) for row in conn.execute("SELECT repo_id, repo_name FROM repos").fetchall()]
+    assert repos == [{"repo_id": "remote:github.com/sinity/polylogue", "repo_name": "polylogue"}]
+
+    checkouts = {
+        row["root_path"]
+        for row in conn.execute("SELECT root_path FROM repo_checkouts WHERE repo_id = ?", (repos[0]["repo_id"],))
+    }
+    assert checkouts == {"/realm/project/polylogue", "/realm/worktrees/polylogue-agent-x"}
+
+    session_root_paths = dict(conn.execute("SELECT session_id, root_path FROM session_repos").fetchall())
+    assert session_root_paths[first_id] == "/realm/project/polylogue"
+    assert session_root_paths[second_id] == "/realm/worktrees/polylogue-agent-x"
 
 
 def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: Path) -> None:

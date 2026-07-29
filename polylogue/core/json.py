@@ -2,19 +2,23 @@
 
 Backend selection happens once at import time, in priority order:
 
-1. ``orjson`` -- fastest, but ships no ``cp314t`` (free-threaded Python 3.14)
-   wheels and its build explicitly refuses to compile under free-threaded
-   Python (polylogue-xikl phase 1 gate finding, 2026-07-19).
-2. ``msgspec`` -- ships ``cp314t`` wheels since 0.20.0 (Nov 2025); used as
-   the fast fallback whenever orjson is unavailable (e.g. under 3.14t, or
-   any environment that installed polylogue without the ``speed`` extra).
-3. stdlib ``json`` -- always available; the final fallback.
+1. ``msgspec`` -- the fast backend; ships ``cp314t`` wheels since 0.20.0
+   (Nov 2025), so it works on free-threaded Python 3.14, the only
+   interpreter polylogue ships on (operator decision 2026-07-19: adopt
+   free-threaded Python across polylogue, fully). ``orjson`` used to be
+   tried first here, but it ships no ``cp314t`` wheel and its build refuses
+   to compile free-threaded (polylogue-xikl phase 1 gate finding,
+   2026-07-19) -- it could never load on the shipped interpreter, so it was
+   removed rather than kept as a dead accelerator option.
+2. stdlib ``json`` -- always available; the fallback when msgspec isn't
+   installed (e.g. an environment that installed polylogue without the
+   ``speed`` extra).
 
-Every direct ``import orjson`` / ``import msgspec`` elsewhere in the
-codebase should route through this facade instead, so backend selection,
-bytes/str normalization, and decode-error unification live in one place.
-See polylogue-xikl (free-threading adoption epic) and polylogue-7mtf (the
-3.14t experiment that surfaced the orjson blocker).
+Every direct ``import msgspec`` elsewhere in the codebase should route
+through this facade instead, so backend selection, bytes/str normalization,
+and decode-error unification live in one place. See polylogue-xikl
+(free-threading adoption epic) and polylogue-7mtf (the 3.14t experiment
+that surfaced the orjson blocker).
 
 Callers must not assume byte-for-byte output parity *across* backends for
 anything beyond what this module's parameters guarantee (compact vs.
@@ -23,16 +27,18 @@ encoding). Within one process the active backend is fixed at import time,
 so output is self-consistent for hashing/idempotency purposes.
 
 **Float exponent formatting** (byte-stability guarantee, and its limit): the
-facade normalizes msgspec's float-exponent output to match orjson's exactly
-(msgspec omits the ``+`` sign on positive exponents -- ``1e30`` vs orjson's
-``1e+30`` -- everything else already agrees), so canonical/content-hash
-dumps (`material_protocol/v1/canonical.py`) stay byte-identical whether the
-active backend is orjson or msgspec. stdlib json's float formatter is a
+facade normalizes msgspec's float-exponent output to a fixed canonical form
+(msgspec omits the ``+`` sign on positive exponents -- ``1e30`` -- this
+facade always writes ``1e+30``, the format previously established by
+orjson and still required for existing content hashes computed under it),
+so canonical/content-hash dumps (`material_protocol/v1/canonical.py`) stay
+byte-identical across every archive ever written by this facade, regardless
+of which accelerator produced them. stdlib json's float formatter is a
 *larger* departure (a different decimal-vs-exponent threshold entirely, e.g.
-``1e-05`` where orjson/msgspec write ``0.00001``) that this facade does not
-reconcile -- stdlib is a best-effort last resort used only when neither
-accelerator is installed; canonical byte-stability is guaranteed between
-orjson and msgspec, not into the stdlib-only tier.
+``1e-05`` where this facade writes ``0.00001``) that is not reconciled --
+stdlib is a best-effort last resort used only when msgspec isn't installed;
+canonical byte-stability is guaranteed only when msgspec is the active
+backend.
 """
 
 from __future__ import annotations
@@ -51,7 +57,7 @@ JSONDocument: TypeAlias = dict[str, JSONValue]
 JSONDocumentList: TypeAlias = list[JSONDocument]
 JSONEncoder: TypeAlias = Callable[[object], object]
 
-JSONBackend = Literal["orjson", "msgspec", "stdlib"]
+JSONBackend = Literal["msgspec", "stdlib"]
 
 
 class JSONDecodeError(ValueError):
@@ -59,8 +65,8 @@ class JSONDecodeError(ValueError):
 
     Raised by :func:`loads` regardless of which backend is active, so
     callers never need to import or catch a backend-specific exception
-    type (``orjson.JSONDecodeError``, ``msgspec.DecodeError``,
-    ``json.JSONDecodeError``) -- catch this instead.
+    type (``msgspec.DecodeError``, ``json.JSONDecodeError``) -- catch this
+    instead.
     """
 
 
@@ -82,14 +88,11 @@ def _try_import(name: str) -> ModuleType | None:
         return None
 
 
-_orjson = _try_import("orjson")
 _msgspec = _try_import("msgspec")
 _msgspec_json = _try_import("msgspec.json")
 
-if _orjson is not None:
-    _BACKEND: JSONBackend = "orjson"
-elif _msgspec_json is not None:
-    _BACKEND = "msgspec"
+if _msgspec_json is not None:
+    _BACKEND: JSONBackend = "msgspec"
 else:
     _BACKEND = "stdlib"
 
@@ -97,11 +100,29 @@ else:
 def backend() -> JSONBackend:
     """Return the JSON backend selected at import time.
 
-    One of ``"orjson"``, ``"msgspec"``, or ``"stdlib"``. Exposed for
+    One of ``"msgspec"`` or ``"stdlib"``. Exposed for
     diagnostics/benchmarking; production code should not branch on this --
     the whole point of the facade is that callers don't need to know.
     """
     return _BACKEND
+
+
+def available_backends() -> tuple[JSONBackend, ...]:
+    """Return the JSON backends whose modules actually import in this interpreter.
+
+    ``"stdlib"`` is always available. ``"msgspec"`` is included only when its
+    module imported successfully at module load time. Forcing ``_BACKEND``
+    (e.g. via test monkeypatching) to a backend outside this set is a
+    misuse, not a real code path: every encode/decode function raises
+    ``RuntimeError`` for a selected-but-absent backend by design (see module
+    docstring). Cross-backend parity tests should parametrize over this, not
+    over a hardcoded literal of both names, and skip (with a stated reason)
+    whichever backend this interpreter doesn't have.
+    """
+    backends: list[JSONBackend] = ["stdlib"]
+    if _msgspec is not None and _msgspec_json is not None:
+        backends.append("msgspec")
+    return tuple(backends)
 
 
 def is_json_value(value: object) -> TypeGuard[JSONValue]:
@@ -159,6 +180,48 @@ def normalize_json_decimal(value: object) -> object:
     if isinstance(value, dict):
         return {key: normalize_json_decimal(item) for key, item in value.items()}
     return value
+
+
+# The type vocabulary JSON itself defines (plus `tuple`, which every backend
+# already serializes as an array with no special-casing needed). Anything
+# outside this set is a candidate for cross-backend divergence below.
+_JSON_NATIVE_SCALAR: tuple[type, ...] = (type(None), bool, int, float, str)
+
+
+def _prepare_for_msgspec(value: object, encoder: JSONEncoder) -> object:
+    """Normalize a payload so msgspec only ever encodes JSON-native shapes.
+
+    ``msgspec.json.encode`` has built-in support for a much wider set of
+    Python types than JSON itself -- and silently encodes several of them
+    in ways orjson/stdlib json *reject* outright with ``TypeError``:
+
+    - ``decimal.Decimal`` -> JSON string (never calls ``enc_hook``), rather
+      than raising so `default`/``enc_hook`` can convert it to a number.
+    - ``set``/``frozenset`` -> JSON array, silently baking in whatever
+      order Python's hash-randomized iteration happened to produce.
+    - ``bytes``/``bytearray``/``memoryview`` -> base64-encoded JSON string.
+    - ``datetime``/``date``/``time``/``timedelta``/``uuid.UUID`` -> ISO/str.
+
+    Encoding these natively under msgspec but raising under orjson/stdlib
+    would make the facade's error contract depend on which backend happens
+    to be active -- exactly what this module exists to prevent (pinned by
+    `test_set_raises_type_error`, `test_decimal_encodes_to_float`,
+    `test_dumps_custom_handler_takes_precedence_for_decimal`: a caller's
+    `default` handler must get first say, and anything still unhandled must
+    raise `TypeError`, identically to orjson/stdlib).
+
+    So every value outside JSON's own vocabulary (``None``, ``bool``,
+    ``int``, ``float``, ``str``, ``list``/``tuple``, ``dict``) is routed
+    through *encoder* before msgspec ever sees it -- exactly mirroring the
+    orjson/stdlib `default`-hook path.
+    """
+    if isinstance(value, dict):
+        return {key: _prepare_for_msgspec(item, encoder) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_prepare_for_msgspec(item, encoder) for item in value]
+    if isinstance(value, _JSON_NATIVE_SCALAR):
+        return value
+    return encoder(value)
 
 
 def _reject_non_finite_token(token: str) -> JSONValue:
@@ -253,20 +316,23 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
 
 def _raw_loads(data: str | bytes | bytearray) -> object:
     result: object
-    if _BACKEND == "orjson":
-        if _orjson is None:
-            raise RuntimeError("core.json backend is 'orjson' but the orjson module is unavailable")
-        try:
-            result = _orjson.loads(data)
-        except _orjson.JSONDecodeError as exc:
-            raise JSONDecodeError(str(exc)) from exc
-        return result
     if _BACKEND == "msgspec":
         if _msgspec_json is None or _msgspec is None:
             raise RuntimeError("core.json backend is 'msgspec' but the msgspec module is unavailable")
         try:
             result = _msgspec_json.decode(data)
-        except _msgspec.DecodeError as exc:
+        except (_msgspec.DecodeError, UnicodeDecodeError) as exc:
+            # msgspec validates JSON *structure* through its own DecodeError,
+            # but invalid UTF-8 bytes embedded inside a string's content leak
+            # as a raw stdlib UnicodeDecodeError instead (confirmed against
+            # msgspec directly, not just through this facade) -- orjson wraps
+            # the equivalent case in its own JSONDecodeError, and stdlib
+            # json's decode-before-parse step raises the same
+            # UnicodeDecodeError already caught by the `ValueError` branch
+            # below (UnicodeDecodeError is a ValueError subclass). Without
+            # this, a payload with a merely-malformed *value* -- not a
+            # malformed document -- crashes the caller instead of raising
+            # the facade's unified decode error like every other backend.
             raise JSONDecodeError(str(exc)) from exc
         return result
     try:
@@ -278,28 +344,14 @@ def _raw_loads(data: str | bytes | bytearray) -> object:
 
 def _raw_dumps_bytes(obj: object, *, encoder: JSONEncoder, sort_keys: bool, indent: int | None) -> bytes | None:
     """Attempt the fast-backend encode; return ``None`` to signal a stdlib fallback."""
-    if _BACKEND == "orjson":
-        if _orjson is None:
-            raise RuntimeError("core.json backend is 'orjson' but the orjson module is unavailable")
-        option = 0
-        if sort_keys:
-            option |= _orjson.OPT_SORT_KEYS
-        if indent == 2:
-            option |= _orjson.OPT_INDENT_2
-        try:
-            # cast: `_orjson`'s declared type is `ModuleType | None` (for the
-            # optional-import None check above), which widens attribute access
-            # to `Any` -- orjson's own stub types `.dumps()` as `-> bytes`.
-            return cast(bytes, _orjson.dumps(obj, default=encoder, option=option or None))
-        except TypeError:
-            return None
     if _BACKEND == "msgspec":
         if _msgspec_json is None:
             raise RuntimeError("core.json backend is 'msgspec' but the msgspec module is unavailable")
         # msgspec encodes decimal.Decimal natively as a JSON *string* (unlike
         # orjson/stdlib, which raise and defer to the default/enc_hook callback
-        # below) -- pre-normalize so all three backends agree it's a number.
-        prepared = normalize_json_decimal(obj)
+        # below) -- pre-normalize so all three backends agree it's a number
+        # and so a caller's custom `default` handler still gets first say.
+        prepared = _prepare_for_msgspec(obj, encoder)
         try:
             raw = _msgspec_json.encode(
                 prepared,
@@ -387,6 +439,7 @@ __all__ = [
     "JSONEncoder",
     "JSONScalar",
     "JSONValue",
+    "available_backends",
     "backend",
     "dumps",
     "dumps_bytes",

@@ -45,6 +45,28 @@ tool, approval, error, subagent, context, and unknown-event evidence as
 observer events. It still does not physically merge either observer source
 into the state-db transcript session.
 
+``extra`` telemetry (polylogue-2qx.3 parser-diff triage, 2026-07-29): NeMo
+Relay's real ATIF export nests a much richer telemetry bag under each step's
+``extra`` key -- ``ancestry``/``tool_ancestry`` (the tool-call delegation
+chain), ``invocation``/``tool_invocations`` (which framework ran the step and
+when), ``llm_response.usage`` / the sibling top-level ``metrics`` (per-step
+token accounting), and ``llm_request`` (the actual model-call configuration,
+including the full tool-definition schema offered to the model at that step).
+None of this is conversation text, so the payload-hygiene rule above does not
+apply to it -- it is bounded, structural, or purely numeric evidence, and is
+captured verbatim: ancestry/invocation identifiers, usage/metrics dicts, and
+-- distinctly from a *called* tool in ``hermes_tool_execution_span`` -- an
+``hermes_tool_availability_span`` per llm-request step recording every tool
+*offered* to the model (name/description/parameters), which is the one
+signal the archive previously had no way to represent at all. The one field
+inside ``extra`` that *is* conversation text, ``event_payload.conversation_history``
+(a second, complete copy of this session's own messages embedded by the
+producer), is deliberately dropped under the same payload-hygiene rule --
+capturing it would duplicate content the archive already owns from the
+state-db transcript. Per-tool-call ``arguments`` and per-result ``content``
+stay bounded-evidence-only (presence, not value) for the same reason ATOF's
+own arguments/content already are.
+
 Payload hygiene: unlike a raw ATOF hook (ids/timings/outcomes only), a real
 ATIF step's ``message``/``observation`` fields carry actual response text --
 that is ATIF's purpose (replay/evaluation). To keep this importer consistent
@@ -148,7 +170,7 @@ from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider
-from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -163,6 +185,7 @@ ATIF_SCHEMA_VERSION_PREFIX = "ATIF"
 HermesSpanEventType: TypeAlias = Literal[
     "hermes_llm_request_span",
     "hermes_tool_execution_span",
+    "hermes_tool_availability_span",
     "hermes_subagent_span",
     "hermes_decision_span",
     "hermes_error_span",
@@ -889,6 +912,7 @@ def parse_atif_document(
                         "and any ATOF observer session (observer:atof:<id>[@profile-<key>]) sharing this "
                         "raw Hermes session id."
                     ),
+                    **_atif_document_evidence(payload, agent),
                 },
             ),
             *events,
@@ -969,15 +993,178 @@ def _atif_subagent_child_session(
     )
 
 
+def _observation_results(observation: object) -> list[JSONDocument]:
+    """The ``observation.results`` array, positionally aligned with ``tool_calls``."""
+    return json_document_list(json_document(observation).get("results"))
+
+
+def _observation_result_evidence(result: JSONDocument) -> dict[str, object]:
+    """Bounded, non-content evidence for one ``observation.results[]`` entry.
+
+    ``content`` is the actual tool-output text (the ATIF payload-hygiene
+    field this module's docstring already covers) and is deliberately never
+    read here -- only the correlation id and producer-reported outcome tag.
+    """
+    evidence: dict[str, object] = {}
+    source_call_id = result.get("source_call_id")
+    if isinstance(source_call_id, str) and source_call_id:
+        evidence["observation_source_call_id"] = source_call_id
+    extra = json_document(result.get("extra"))
+    event_name = extra.get("event_name")
+    if isinstance(event_name, str) and event_name:
+        evidence["observation_event_name"] = event_name
+    status = extra.get("status")
+    if isinstance(status, str) and status:
+        evidence["observation_status"] = status
+    metadata = json_document(extra.get("metadata"))
+    for field in ("api_request_id", "telemetry_schema_version", "trajectory_id"):
+        value = metadata.get(field)
+        if isinstance(value, str) and value:
+            evidence[f"observation_metadata_{field}"] = value
+    return evidence
+
+
+def _tool_call_provider_evidence(tool_call: JSONDocument) -> dict[str, object]:
+    """Provider-side correlation ids NeMo Relay threads onto a tool call.
+
+    Structural identifiers only (never the call's own ``arguments``), so
+    this is safe under the same payload-hygiene rule as the rest of the
+    module.
+    """
+    provider_data = json_document(json_document(tool_call.get("extra")).get("provider_data"))
+    evidence: dict[str, object] = {}
+    call_id = provider_data.get("call_id")
+    if isinstance(call_id, str) and call_id:
+        evidence["provider_call_id"] = call_id
+    response_item_id = provider_data.get("response_item_id")
+    if isinstance(response_item_id, str) and response_item_id:
+        evidence["provider_response_item_id"] = response_item_id
+    return evidence
+
+
+def _step_ancestry_evidence(extra: JSONDocument) -> dict[str, object]:
+    """The tool-call delegation chain a step's ``extra`` telemetry carries."""
+    evidence: dict[str, object] = {}
+    ancestry = json_document(extra.get("ancestry"))
+    for field in ("function_id", "function_name", "parent_id", "parent_name"):
+        value = ancestry.get(field)
+        if isinstance(value, str) and value:
+            evidence[f"ancestry_{field}"] = value
+    chain = json_document_list(extra.get("tool_ancestry"))
+    if chain:
+        evidence["tool_ancestry_chain"] = chain
+    return evidence
+
+
+def _step_invocation_evidence(extra: JSONDocument) -> dict[str, object]:
+    """Which runtime framework executed a step, and when.
+
+    ``start_timestamp``/``end_timestamp`` are producer epoch numbers, not
+    strings, unlike every other field on this object.
+    """
+    evidence: dict[str, object] = {}
+    invocation = json_document(extra.get("invocation"))
+    for field in ("invocation_id", "framework", "status"):
+        value = invocation.get(field)
+        if isinstance(value, str) and value:
+            evidence[f"invocation_{field}"] = value
+    for field in ("start_timestamp", "end_timestamp"):
+        value = invocation.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            evidence[f"invocation_{field}"] = value
+    invocations = json_document_list(extra.get("tool_invocations"))
+    if invocations:
+        evidence["tool_invocations"] = invocations
+    return evidence
+
+
+def _step_usage_evidence(step: JSONDocument, extra: JSONDocument) -> dict[str, object]:
+    """Per-step token accounting: ``llm_response.usage``, else the sibling ``metrics``."""
+    evidence: dict[str, object] = {}
+    usage = json_document(json_document(extra.get("llm_response")).get("usage"))
+    if usage:
+        evidence["llm_response_usage"] = dict(usage)
+    else:
+        metrics = step.get("metrics")
+        if isinstance(metrics, dict) and metrics:
+            evidence["step_metrics"] = dict(metrics)
+    call_count = step.get("llm_call_count")
+    if isinstance(call_count, int) and not isinstance(call_count, bool):
+        evidence["llm_call_count"] = call_count
+    return evidence
+
+
+def _tool_availability_events(extra: JSONDocument, index: int, step_id: object) -> list[ParsedSessionEvent]:
+    """The tool-definition schema offered to the model at an llm-request step.
+
+    Materially distinct from ``hermes_tool_execution_span`` (a tool the model
+    *called*): this is every tool the model *could have* called, which the
+    archive previously had no representation for at all (parser-diff
+    evidence: 100% of the mainstream Hermes session-document shape carries an
+    equivalent top-level ``tools`` list -- see polylogue-2qx.3). A tool
+    schema is not conversation content, so it is stored verbatim rather than
+    bounded to presence/length.
+    """
+    llm_request = json_document(extra.get("llm_request"))
+    if not llm_request:
+        return []
+    payload: dict[str, object] = {"step_index": index}
+    if step_id is not None:
+        payload["step_id"] = step_id
+    tools = json_document_list(llm_request.get("tools"))
+    if tools:
+        payload["tool_count"] = len(tools)
+        payload["tools"] = [
+            {"name": tool.get("name"), "description": tool.get("description"), "parameters": tool.get("parameters")}
+            for tool in tools
+        ]
+    instructions = llm_request.get("instructions")
+    payload["has_instructions"] = isinstance(instructions, str) and bool(instructions)
+    payload["has_input"] = llm_request.get("input") is not None
+    tool_choice = llm_request.get("tool_choice")
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
+    parallel_tool_calls = llm_request.get("parallel_tool_calls")
+    if isinstance(parallel_tool_calls, bool):
+        payload["parallel_tool_calls"] = parallel_tool_calls
+    reasoning_effort = json_document(llm_request.get("reasoning")).get("effort")
+    if isinstance(reasoning_effort, str) and reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+    return [ParsedSessionEvent(event_type="hermes_tool_availability_span", payload=payload)]
+
+
+def _atif_document_evidence(payload: JSONDocument, agent: JSONDocument) -> dict[str, object]:
+    """Document-level ATIF evidence: trajectory id, agent plugin, and the
+    producer's own aggregate token/step totals -- previously unread
+    (polylogue-2qx.3 parser-diff triage: 100% of live ATIF documents carry
+    ``trajectory_id``/``agent.extra.plugin``/``final_metrics``, none parsed)."""
+    evidence: dict[str, object] = {}
+    trajectory_id = payload.get("trajectory_id")
+    if isinstance(trajectory_id, str) and trajectory_id:
+        evidence["trajectory_id"] = trajectory_id
+    plugin = json_document(agent.get("extra")).get("plugin")
+    if isinstance(plugin, str) and plugin:
+        evidence["agent_plugin"] = plugin
+    final_metrics = json_document(payload.get("final_metrics"))
+    for field in ("total_completion_tokens", "total_prompt_tokens", "total_steps"):
+        value = final_metrics.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            evidence[f"final_metrics_{field}"] = value
+    return evidence
+
+
 def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> tuple[list[ParsedSessionEvent], int]:
     tool_calls = step.get("tool_calls")
     message = step.get("message")
     observation = step.get("observation")
+    extra = json_document(step.get("extra"))
+    step_id = step.get("step_id")
+    observation_results = _observation_results(observation)
     events: list[ParsedSessionEvent] = []
     skipped = 0
 
     if isinstance(tool_calls, list) and tool_calls:
-        for tool_call_raw in tool_calls:
+        for position, tool_call_raw in enumerate(tool_calls):
             tool_call = json_document(tool_call_raw)
             tool_call_id = tool_call.get("tool_call_id") if tool_call else None
             function_name = tool_call.get("function_name") if tool_call else None
@@ -987,50 +1174,53 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
                 skipped += 1
                 continue
             arguments = tool_call.get("arguments")
-            events.append(
-                ParsedSessionEvent(
-                    event_type="hermes_tool_execution_span",
-                    payload={
-                        "step_index": index,
-                        "tool_call_id": tool_call_id,
-                        "function_name": function_name,
-                        "has_arguments": arguments is not None,
-                        "has_observation": observation is not None,
-                    },
-                )
-            )
+            payload: dict[str, object] = {
+                "step_index": index,
+                "tool_call_id": tool_call_id,
+                "function_name": function_name,
+                "has_arguments": arguments is not None,
+                "has_observation": observation is not None,
+            }
+            if step_id is not None:
+                payload["step_id"] = step_id
+            payload.update(_tool_call_provider_evidence(tool_call))
+            if position < len(observation_results):
+                payload.update(_observation_result_evidence(observation_results[position]))
+            payload.update(_step_ancestry_evidence(extra))
+            events.append(ParsedSessionEvent(event_type="hermes_tool_execution_span", payload=payload))
+        events.extend(_tool_availability_events(extra, index, step_id))
         return events, skipped
 
     if isinstance(message, str) and message:
-        events.append(
-            ParsedSessionEvent(
-                event_type="hermes_llm_request_span",
-                payload={
-                    "step_index": index,
-                    "model": model_name,
-                    "message_char_len": len(message),
-                },
-            )
-        )
+        payload = {
+            "step_index": index,
+            "model": model_name,
+            "message_char_len": len(message),
+        }
+        if step_id is not None:
+            payload["step_id"] = step_id
+        payload.update(_step_ancestry_evidence(extra))
+        payload.update(_step_invocation_evidence(extra))
+        payload.update(_step_usage_evidence(step, extra))
+        events.append(ParsedSessionEvent(event_type="hermes_llm_request_span", payload=payload))
+        events.extend(_tool_availability_events(extra, index, step_id))
         return events, skipped
 
     if observation is not None:
-        events.append(
-            ParsedSessionEvent(
-                event_type="hermes_observer_span",
-                payload={"step_index": index, "shape": "observation_only"},
-            )
-        )
+        payload = {"step_index": index, "shape": "observation_only"}
+        if step_id is not None:
+            payload["step_id"] = step_id
+        payload.update(_step_ancestry_evidence(extra))
+        events.append(ParsedSessionEvent(event_type="hermes_observer_span", payload=payload))
         return events, skipped
 
     # No recognized shape (no tool_calls, no message, no observation): ambiguous
     # input is never dropped, per AC -- surfaced as a generic observer span.
-    events.append(
-        ParsedSessionEvent(
-            event_type="hermes_observer_span",
-            payload={"step_index": index, "shape": "unrecognized", "source": step.get("source")},
-        )
-    )
+    payload = {"step_index": index, "shape": "unrecognized", "source": step.get("source")}
+    if step_id is not None:
+        payload["step_id"] = step_id
+    payload.update(_step_ancestry_evidence(extra))
+    events.append(ParsedSessionEvent(event_type="hermes_observer_span", payload=payload))
     return events, skipped
 
 
@@ -1088,6 +1278,23 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
     )
     is_delegated_child_session = session.branch_type == BranchType.SUBAGENT
     topology_edges_observed = materialized_delegation_edges + (1 if is_delegated_child_session else 0)
+    step_telemetry_observed = sum(
+        1
+        for event in span_events
+        if any(
+            key in event.payload
+            for key in (
+                "ancestry_function_id",
+                "invocation_id",
+                "invocation_framework",
+                "llm_response_usage",
+                "step_metrics",
+            )
+        )
+    )
+    tool_availability_spans = sum(
+        1 for event in session.session_events if event.event_type == "hermes_tool_availability_span"
+    )
 
     def capability(
         observed: int,
@@ -1155,6 +1362,20 @@ def import_fidelity_declaration(session: ParsedSession) -> HermesImportFidelity:
             ),
         ),
         "parent_session_link": _parent_session_link_capability(session),
+        "step_telemetry": capability(
+            step_telemetry_observed,
+            "Step-level ancestry (delegation chain), invocation (framework/timing), and per-step "
+            "token usage from each step's extra telemetry bag; confirmed by the real NeMo Relay "
+            "ATIF-v1.7 fixture (polylogue-2qx.3 parser-diff triage).",
+            verified_by_real_fixture=True,
+        ),
+        "tool_availability": capability(
+            tool_availability_spans,
+            "The tool-definition schema (name/description/parameters) offered to the model at each "
+            "llm-request step, distinct from tool_execution_spans (tools actually called); confirmed "
+            "by the real NeMo Relay ATIF-v1.7 fixture (polylogue-2qx.3 parser-diff triage).",
+            verified_by_real_fixture=True,
+        ),
     }
     if generic_spans:
         capabilities["unrecognized_step_shapes"] = HermesFidelityCapability(

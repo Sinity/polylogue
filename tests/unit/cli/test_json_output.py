@@ -86,7 +86,9 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["config"], False),  # TOML output with root --json (not JSON, but pipeable)
     (["continue"], True),
     (["continue", "--candidates"], True),
-    (["mark", "candidates", "list"], False),
+    # `mark candidates list` was consolidated into the root `judge` command
+    # (#3138, db9447cf4); `judge --list` is its replacement.
+    (["judge", "--list"], False),
     # ── Insights subcommands ─────────────────────────────────────────
     (["ops", "insights", "status"], False),
     (["ops", "insights", "audit"], False),

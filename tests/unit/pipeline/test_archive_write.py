@@ -908,7 +908,14 @@ class TestValidationService:
     ) -> None:
         from polylogue.storage.blob_store import get_blob_store
 
-        raw_content = b'[{"id":"conv-1","mapping":{}}]'
+        # A minimal but *complete* ChatGPT export document: chatgpt.looks_like()
+        # (dispatch.py's document-tier detector) requires a non-empty mapping,
+        # current_node, create_time, and an id/conversation_id -- not just a
+        # "mapping" key -- to distinguish a real export from an arbitrary
+        # unrelated payload that happens to carry that key (polylogue-t0ta).
+        raw_content = (
+            b'[{"id":"conv-1","current_node":"node-1","create_time":1700000000.0,"mapping":{"node-1":{"id":"node-1"}}}]'
+        )
         blob_store = get_blob_store()
         raw_id, blob_size = blob_store.write_from_bytes(raw_content)
 

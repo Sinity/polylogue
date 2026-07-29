@@ -360,6 +360,80 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # reprocess instead of a full-corpus replay.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=45,
+        # polylogue-1vpm.7: delegation_facts_source stops pairing a dispatch
+        # to a resolved child by cardinality-gated ordinal position (rank N
+        # dispatch <-> rank N child) and instead joins on identity -- a
+        # trivial 1:1 cohort (no second candidate on either side), or,
+        # non-trivially, provider-asserted content equality between the
+        # dispatch's own instruction text and the child's first turn.
+        # 'ambiguous' is retired from the mapping_state vocabulary. Every
+        # input this recomputation reads (actions, session_links, messages,
+        # blocks) is already fully parsed and persisted in index.db -- no
+        # RAW evidence is reparsed. But delegation_facts is a materialized
+        # TABLE (not the view), and _apply_replace_table's generic copy-
+        # forward only carries EXISTING rows onto a same-shaped schema
+        # (no column added or dropped here); it cannot re-derive VALUES
+        # from the new join logic. A plain REPLACE_TABLE fast-forward would
+        # therefore silently retain stale, ordinal-paired rows -- including
+        # 'ambiguous' ones the whole point of this delta is to make
+        # unreachable. As in v42/v44, DerivedDeltaClass has no category for
+        # "clone-safe shape, values via targeted reprocess of already-
+        # persisted derived rows" (tracked by polylogue-9rw0.1);
+        # SEMANTIC_REPARSE is the honest, conservative classification until
+        # that vocabulary gap is closed, and it keeps the existing
+        # `polylogue ops reset --index && polylogued run` full-rebuild
+        # behaviour rather than risk a fast-forwarded clone disagreeing with
+        # a cold rebuild.
+        #
+        # v45 also folds in the session_provider_usage_events.payload_json
+        # retirement: the column is dropped and its 8 billing-provenance
+        # keys (estimated_cost_usd, actual_cost_usd, cost_status,
+        # cost_source, pricing_version, billing_provider, billing_base_url,
+        # billing_mode) become nullable typed columns on the same table
+        # (archive_tiers/index.py). Considered in isolation that delta is
+        # clone-safe -- the values already live in the row as JSON, the
+        # backfill is `json_extract(payload_json, '$.key')` against
+        # already-persisted rows, not a raw reparse -- and would deserve its
+        # own CONSTRAINT_ONLY declaration with a REPLACE_TABLE operation.
+        # But IndexDeltaDeclaration is one classification per *version*, not
+        # per DDL object, and v45 already carries the delegation_facts
+        # SEMANTIC_REPARSE above. Declaring this version
+        # `(CONSTRAINT_ONLY, SEMANTIC_REPARSE)` would not change behaviour
+        # (`requires_semantic_reparse` short-circuits `eligible_for_sql_
+        # fast_forward` the moment SEMANTIC_REPARSE is present) but would
+        # misstate the version as partially fast-forwardable when it is
+        # not: every archive touching v45 goes through
+        # `polylogue ops reset --index && polylogued run` regardless of
+        # which of the two DDL changes triggered it. The truthful
+        # declaration for the whole version therefore stays
+        # `(SEMANTIC_REPARSE,)`; the CONSTRAINT_ONLY-shaped sub-delta is
+        # recorded here in prose so a future split (polylogue-9rw0.1) can
+        # recover it once per-object declarations exist.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=46,
+        # polylogue-2qx.4: the unread-wire batch (polylogue-cgfy/cuxz.8/9x22
+        # field-landing decisions), landed as ONE bump covering every field
+        # rather than one per origin -- see index.py's v46 header comment for
+        # the full per-field list (messages.stop_reason,
+        # blocks.tool_result_outcome_unknown_reason, sessions.display_name,
+        # sessions.run_settings_json, session_links.parent_tool_use_block_id,
+        # and the new file_edits/session_refs tables).
+        #
+        # Every new column's/table's VALUES depend on parser semantics to
+        # populate honestly -- a shape-only copy-forward would leave every
+        # row/table empty, exactly the v42/v44/v45 precedent recorded above.
+        # As in those versions, DerivedDeltaClass has no category for
+        # "clone-safe shape, values via targeted reprocess"
+        # (tracked by polylogue-9rw0.1); SEMANTIC_REPARSE is the honest,
+        # conservative classification, and it keeps the existing
+        # `polylogue ops reset --index && polylogued run` full-rebuild
+        # behaviour.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
@@ -419,26 +493,85 @@ def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclaratio
     }
 
 
-def index_fast_forward_plan(source_version: int, target_version: int) -> IndexFastForwardPlan | None:
-    """Build a contiguous SQL plan, or ``None`` when rebuild/reprocess is required."""
+def index_fast_forward_plan(
+    source_version: int,
+    target_version: int,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> IndexFastForwardPlan | None:
+    """Build a contiguous SQL plan, or ``None`` when rebuild/reprocess is required.
+
+    Args:
+        source_version: Starting version.
+        target_version: Target version.
+        declarations: Custom declaration table for testing. Uses INDEX_DELTA_DECLARATIONS if None.
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+
     if source_version < INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR or source_version >= target_version:
         return None
-    declarations = tuple(
+    filtered_declarations = tuple(
         sorted(
-            (
-                declaration
-                for declaration in INDEX_DELTA_DECLARATIONS
-                if source_version < declaration.version <= target_version
-            ),
+            (declaration for declaration in declarations if source_version < declaration.version <= target_version),
             key=lambda declaration: declaration.version,
         )
     )
-    if tuple(declaration.version for declaration in declarations) != tuple(
+    if tuple(declaration.version for declaration in filtered_declarations) != tuple(
         range(source_version + 1, target_version + 1)
     ):
         return None
-    plan = IndexFastForwardPlan(source_version, target_version, declarations)
+    plan = IndexFastForwardPlan(source_version, target_version, filtered_declarations)
     return plan if plan.eligible_for_sql_fast_forward else None
+
+
+def get_latest_sql_fast_forwardable_version(
+    target_version: int | None = None,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> int | None:
+    """Return the highest version that CAN fast-forward to the given target.
+
+    Useful for tests that need a source version that will actually fast-forward
+    without a rebuild. Returns None if no version below the target is fast-forwardable.
+
+    Args:
+        target_version: Target version. Defaults to max of declarations.
+        declarations: Custom declaration table for testing. Uses INDEX_DELTA_DECLARATIONS if None.
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+    if target_version is None:
+        target_version = max(d.version for d in declarations)
+
+    for version in range(target_version - 1, INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR - 1, -1):
+        plan = index_fast_forward_plan(version, target_version, declarations)
+        if plan is not None and plan.eligible_for_sql_fast_forward:
+            return version
+    return None
+
+
+def get_semantic_reparse_blocking_version_pair(
+    target_version: int | None = None,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> tuple[int, int] | None:
+    """Return a (source, target) pair where a SEMANTIC_REPARSE delta blocks the fast-forward.
+
+    Useful for tests that want to verify that semantic-reparse gaps correctly require
+    a rebuild. Returns None if all deltas to the target can be fast-forwarded.
+
+    Args:
+        target_version: Target version. Defaults to max of declarations.
+        declarations: Custom declaration table for testing. Uses INDEX_DELTA_DECLARATIONS if None.
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+    if target_version is None:
+        target_version = max(d.version for d in declarations)
+
+    for source in range(INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR, target_version):
+        plan = index_fast_forward_plan(source, target_version, declarations)
+        if plan is not None and plan.requires_semantic_reparse:
+            return (source, target_version)
+    return None
 
 
 __all__ = [
@@ -450,6 +583,8 @@ __all__ = [
     "IndexDeltaDeclaration",
     "IndexDeltaDeclarationReport",
     "IndexFastForwardPlan",
+    "get_latest_sql_fast_forwardable_version",
+    "get_semantic_reparse_blocking_version_pair",
     "index_delta_declaration_report",
     "index_fast_forward_plan",
     "resolve_canonical_index_objects",

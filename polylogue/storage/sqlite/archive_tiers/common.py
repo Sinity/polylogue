@@ -34,6 +34,39 @@ def nullable_check(column: str, enum_type: type[PolylogueStrEnum]) -> str:
     return nullable_sql_check_in(column, enum_type)
 
 
+def order_check(later: str, earlier: str, *, nullable: bool = True) -> str:
+    """Return a same-row ordering CHECK expression: ``later >= earlier``.
+
+    Mirrors :func:`literal_check` / :func:`json_check` — a relationship
+    between two columns of the *same row* generated from a single call site
+    instead of hand-written per table, so every ordering constraint reads
+    identically (see ``raw_authority_blockers.resolved_at_ms`` in
+    ``archive_tiers/source.py``, the one existing hand-written instance this
+    generalizes).
+
+    ``nullable=True`` (the default) treats either side being ``NULL`` as
+    satisfying the constraint — appropriate for optional timestamp pairs
+    where "unknown" must stay representable and is not itself a violation.
+    Pass ``nullable=False`` only when both columns are declared ``NOT NULL``;
+    SQLite's three-valued CHECK logic would otherwise silently accept rows
+    where a NOT NULL column is unexpectedly NULL.
+
+    Not currently applied to any table. See polylogue-cuxz.10: the archive's
+    inverted-range defect (session_phases/session_work_events, 13,743 rows,
+    ~99% chatgpt-export) lives entirely in tables a sibling bead deletes
+    outright, so no CHECK is warranted there. The other same-row order
+    candidates found while measuring that bead (session_profiles,
+    session_latency_profiles, threads: first_message_at/last_message_at)
+    still have a small number of producer-side sentinel-date rows that would
+    make this a rejecting CHECK reject genuinely-produced rows today — the
+    materializer defect must be fixed first. This helper is prepared for
+    those tables once that lands, to ride the next index-tier rebuild rather
+    than force its own.
+    """
+    mutual_null = f"{later} IS NULL OR {earlier} IS NULL OR " if nullable else ""
+    return f"({mutual_null}{later} >= {earlier})"
+
+
 CONTENT_HASH_CHECK = "CHECK(length(content_hash) = 32)"
 JSON_TEXT_DEFAULT = "TEXT NOT NULL DEFAULT '{}'"
 
@@ -73,4 +106,5 @@ __all__ = [
     "json_object_check",
     "literal_check",
     "nullable_check",
+    "order_check",
 ]

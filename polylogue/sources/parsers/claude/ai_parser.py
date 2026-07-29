@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
+from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource, WebConstructType
 
 from ..base import (
     ParsedAttachment,
@@ -81,6 +81,21 @@ def _design_project_id(value: object) -> str | None:
     return None
 
 
+def _resolve_claude_ai_title(
+    payload: Mapping[str, object], resolved_session_id: str, *, ref_prefix: str
+) -> tuple[str, TitleSource, str | None, float | None]:
+    """Claude AI's web UI auto-titles every conversation with a short
+    generated summary of the exchange (distinct from Codex's raw
+    first-prompt echoes, bd polylogue-6e7m -- see assembly_codex.py's
+    ``_is_prompt_echo``). ``title``/``name`` is genuine provider curation
+    when present, not a parser guess, so it is worth marking ORIGIN rather
+    than leaving ``title_source`` unset (as this parser did before)."""
+    raw_title = payload.get("title") or payload.get("name")
+    if isinstance(raw_title, str) and raw_title.strip():
+        return raw_title, TitleSource.ORIGIN, f"{ref_prefix}:{resolved_session_id}", 1.0
+    return str(resolved_session_id), TitleSource.UNKNOWN, None, None
+
+
 def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     messages: list[ParsedMessage] = []
     attachments = []
@@ -142,10 +157,17 @@ def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> Parse
             )
             for message in messages
         ]
+    resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
+    title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
+        payload, resolved_session_id, ref_prefix="claude-ai-design-title"
+    )
     return ParsedSession(
         source_name=Provider.CLAUDE_AI,
-        provider_session_id=str(payload.get("uuid") or payload.get("id") or fallback_id),
-        title=str(payload.get("title") or payload.get("name") or fallback_id),
+        provider_session_id=resolved_session_id,
+        title=str(title),
+        title_source=title_source,
+        title_ref=title_ref,
+        title_confidence=title_confidence,
         session_kind=_session_kind(payload),
         created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
         updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
@@ -242,13 +264,32 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
                 payload={"status": provider_status},
             )
         )
+    # Claude AI's own generated conversation summary (top-level ``summary``,
+    # distinct from ``name``/``title``) was read nowhere -- parser-diff triage
+    # (2026-07-29) found it populated with real multi-paragraph provider
+    # summaries on the live corpus.
+    provider_summary = _first_string_field(payload, "summary")
+    if provider_summary:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_ai_conversation_summary",
+                timestamp=updated_at or created_at,
+                payload={"summary": provider_summary},
+            )
+        )
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
-    title = payload.get("title") or payload.get("name") or fallback_id
+    resolved_session_id = conversation_id or fallback_id
+    title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
+        payload, resolved_session_id, ref_prefix="claude-ai-title"
+    )
     return ParsedSession(
         source_name=Provider.CLAUDE_AI,
-        provider_session_id=conversation_id or fallback_id,
+        provider_session_id=resolved_session_id,
         title=str(title),
+        title_source=title_source,
+        title_ref=title_ref,
+        title_confidence=title_confidence,
         session_kind=_session_kind(payload),
         created_at=created_at,
         updated_at=updated_at,

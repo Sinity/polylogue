@@ -1813,7 +1813,14 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) ->
         has_paste=message.has_paste,
         paste_boundary_state=message.paste_boundary_state,
         duration_ms=message.duration_ms,
+        # variant_index is creation order, NOT display state (polylogue-9qq7):
+        # for a regenerated/edited turn, index 0 is the first attempt, not
+        # necessarily the accepted one. is_active_path is the provider's
+        # "currently accepted sibling" signal and is authoritative for
+        # mainline selection; ArchiveMessageRow.is_active_path is always a
+        # concrete bool (schema default), never a guess.
         branch_index=message.variant_index,
+        is_active_path=message.is_active_path,
         parent_id=message.parent_message_id,
         attachments=[_archive_attachment_to_domain(att) for att in message.attachments],
     )
@@ -3892,8 +3899,9 @@ class PolylogueArchiveMixin:
         ``instruction_tool_use_block_id`` verbatim; edge-only refs carry the
         deterministic ``edge:<parent>::<child>`` relation identity (no
         parent-side dispatch action exists to key off for edge_only/
-        quarantined attempts). Missing, ambiguous, edge_only, and quarantined
-        states are returned as typed payloads, never silently guessed."""
+        quarantined attempts). Missing, unresolved, edge_only, and
+        quarantined states are returned as typed payloads, never silently
+        guessed."""
 
         from polylogue.surfaces.payloads import (
             DELEGATION_STATE_CAVEATS,
@@ -5064,6 +5072,57 @@ class PolylogueArchiveMixin:
             projection="hook-event-summary",
             stable_order="session_id",
         )
+
+    async def get_session_events(
+        self,
+        session_id: str,
+        *,
+        event_type: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict[str, object]] | None:
+        """Return the raw session-timeline events for one session, newest last.
+
+        ``Session.session_events`` is the substrate's schema-free evidence
+        axis for artifacts that ride the session timeline rather than a
+        dialogue message -- ``event_type`` has no CHECK vocabulary by design
+        (docs/internals.md), so new provider evidence needs no schema bump to
+        start landing here. Before this reader, nothing on any surface could
+        reach it: it was populated on every full session read (for content
+        hashing and a couple of insight materializers) but never rendered or
+        queried. This is the generic reader that makes it visible -- Codex
+        ``world_state``/``agent_policy``/``turn_context`` policy facts
+        (sandbox/truncation policy, rate limits, ghost commits, developer
+        instructions), every Claude Code sidecar event (``claude_todo_state``,
+        ``claude_tool_result_sidecar``, ``claude_attachment``, ``micro_compaction``,
+        etc.), Hermes ``hermes_tool_availability_span``/``hermes_*`` step
+        telemetry, and ``claude_ai_conversation_summary`` all surface through
+        the same one reader instead of a bespoke accessor per event type.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, which means the session exists but has no matching
+        events). ``event_type`` narrows to an exact match; an unrecognized
+        value yields an empty list rather than an error, matching the
+        substrate's schema-free vocabulary.
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        session = await self.repository.get(str(resolved) if resolved is not None else session_id)
+        if session is None:
+            return None
+        events = session.session_events
+        if event_type is not None:
+            events = tuple(event for event in events if event.event_type == event_type)
+        if limit is not None:
+            events = events[:limit]
+        return [
+            {
+                "event_id": str(event.id),
+                "event_index": event.event_index,
+                "event_type": event.event_type,
+                "timestamp": event.timestamp.isoformat() if event.timestamp is not None else None,
+                "payload": event.payload,
+            }
+            for event in events
+        ]
 
     async def query_sessions(
         self,

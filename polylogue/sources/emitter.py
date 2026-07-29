@@ -18,7 +18,7 @@ from .cursor import _ParseContext
 from .decoder_json import JsonValue
 from .decoders import _iter_json_stream
 from .dispatch import GROUP_PROVIDERS, detect_provider, is_jsonl_source_path, parse_payload
-from .parsers.base import ParsedSession, RawSessionData
+from .parsers.base import ParsedSession, ParsedSessionEvent, RawSessionData
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
@@ -418,8 +418,58 @@ class _SessionEmitter:
         p = provider or self._ctx.provider_hint
         spec = get_assembly_spec(p)
         if spec is not None:
-            return spec.enrich_session(conv, self._ctx.sidecar_data)
+            conv = spec.enrich_session(conv, self._ctx.sidecar_data)
+        return _append_repo_identity_evidence(conv)
+
+
+def _append_repo_identity_evidence(conv: ParsedSession) -> ParsedSession:
+    """Record whether a session has real git evidence or is merely a cwd.
+
+    polylogue-cijx.2 (measured 2026-07-29 on the live archive): for ~84% of
+    sessions the only "repository" evidence is ``working_directories`` --
+    the archive's ``repos``/``session_repos`` tables key on that cwd today,
+    so a session opened in ``/home/sinity`` is recorded as being in the
+    "sinity" repository, when no git evidence of a repository exists at all.
+    Per cijx.4 decision 1, a session with no git evidence resolves to a
+    DIRECTORY, not a repository, and read surfaces must be able to say which.
+
+    The storage-side identity rework (a content-addressed repository key,
+    separate checkout/observation entities) is out of this lane's write scope
+    (a concurrent lane owns storage/sqlite/** this cycle). This function is
+    the parser-side half: it stamps the grade this session's evidence
+    actually supports as a typed, schema-free session_event (event_type has
+    no CHECK vocabulary, so this needs no migration) so a downstream reader
+    -- or the storage-side rework once it lands -- can tell a real
+    repository observation from a bare directory without re-deriving it from
+    working_directories.
+
+    Runs once, at the emitter's enrichment boundary -- after all
+    provider-specific sidecar enrichment (e.g. Claude Code's sessions-index.json
+    git_branch merge) has already applied, and before the session leaves
+    sources/** for pipeline/storage.
+    """
+    has_git_evidence = bool(
+        (conv.git_repository_url and conv.git_repository_url.strip())
+        or (conv.git_branch and conv.git_branch.strip())
+        or (conv.git_commit_hash and conv.git_commit_hash.strip())
+    )
+    root_paths = sorted({path.strip() for path in conv.working_directories if path.strip()})
+    if not has_git_evidence and not root_paths:
+        # No location evidence of any kind -- nothing to grade.
         return conv
+    payload: dict[str, object] = {
+        "grade": "git_evidence" if has_git_evidence else "directory_only",
+        "root_paths": root_paths,
+        "git_repository_url": conv.git_repository_url,
+        "git_branch": conv.git_branch,
+        "git_commit_hash": conv.git_commit_hash,
+    }
+    event = ParsedSessionEvent(
+        event_type="repo_identity_evidence",
+        timestamp=conv.created_at,
+        payload=payload,
+    )
+    return conv.model_copy(update={"session_events": [*conv.session_events, event]})
 
 
 __all__ = [

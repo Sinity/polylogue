@@ -473,3 +473,92 @@ def test_multi_field_sql_lowerer_covers_assertion_defaults_and_session_join(
     result = cast(dict[str, object], envelope.pipeline["result"])
     assert result["missing_counts"] == {"status": 0, "session.repo": 0}
     assert result["unknown_counts"] == {"status": 0, "session.repo": 0}
+
+
+@pytest.mark.asyncio
+async def test_codex_mcp_tool_calls_are_reachable_through_existing_tool_and_action_surfaces(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Codex's ``mcp_tool_call_end`` parses into an ordinary tool_use/tool_result
+    block pair named ``mcp__<server>__<tool>`` (``_mcp_invocation_tool_name``,
+    ``polylogue/sources/parsers/codex.py``) -- so it needs zero new query-DSL
+    or insight machinery: the existing ``tool:`` field, ``actions`` unit, and
+    ``tool_usage`` insight's ``mcp_server`` filter already reach it, because
+    ``extract_mcp_server`` (``core/tool_identity.py``) recognizes that exact
+    naming convention. This test proves the whole path end-to-end rather than
+    asserting it from reading the code.
+
+    Anti-vacuity: deleting the ``mcp__`` prefix from the seeded tool name (so
+    it degrades to a plain unstructured tool name) makes both assertions
+    below fail -- the query-DSL row count drops to zero and the insight's
+    ``mcp_server`` entry disappears -- proving neither is a fixture artifact.
+    """
+
+    index_db = workspace_env["archive_root"] / "index.db"
+    (
+        SessionBuilder(index_db, "codex-mcp")
+        .provider("codex")
+        .add_message(
+            "mcp-call-1",
+            role="assistant",
+            text="mcp__github__search_code",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "mcp__github__search_code",
+                    "tool_id": "mcp-call-1",
+                    "input": {"query": "topic:polylogue"},
+                }
+            ],
+        )
+        .add_message(
+            "mcp-call-1-result",
+            role="tool",
+            text="1 result",
+            blocks=[
+                {
+                    "type": "tool_result",
+                    "tool_id": "mcp-call-1",
+                    "text": "1 result",
+                }
+            ],
+        )
+        .add_message(
+            "shell-call-1",
+            role="assistant",
+            text="bash",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "bash",
+                    "tool_id": "shell-call-1",
+                    "input": {"command": "ls"},
+                }
+            ],
+        )
+        .save()
+    )
+
+    # 1. The query DSL's existing `tool:` field / `actions` unit already
+    #    matches the MCP tool name exactly, with no new grammar.
+    source = parse_unit_source_expression("actions where tool:mcp__github__search_code")
+    assert source is not None
+    with ArchiveStore.open_existing(index_db.parent) as archive:
+        envelope = query_unit_rows(archive, source, query="mcp-tool-call", limit=10)
+    assert envelope.total >= 1
+    tool_names = {cast(dict[str, object], item.model_dump())["tool_name"] for item in envelope.items}
+    assert "mcp__github__search_code" in tool_names
+    assert "bash" not in tool_names
+
+    # 2. The pre-existing `tool_usage` insight already derives the MCP server
+    #    identity from the same naming convention, with no new insight code.
+    from polylogue import Polylogue
+    from polylogue.insights.tool_usage import ToolUsageInsightQuery
+
+    async with Polylogue(archive_root=index_db.parent) as api:
+        insights = await api.list_tool_usage_insights(ToolUsageInsightQuery(mcp_server="github"))
+    assert len(insights) == 1
+    entries = insights[0].entries
+    assert any(
+        entry.normalized_tool_name == "mcp__github__search_code" and entry.mcp_server == "github" for entry in entries
+    )

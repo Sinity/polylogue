@@ -23,6 +23,7 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.field_stats.stats import FieldStats, _collect_field_stats
+from polylogue.schemas.generation.field_annotations import annotate_schema
 from polylogue.schemas.generation.support import (
     _annotate_semantic_and_relational,
 )
@@ -609,6 +610,41 @@ class TestFieldStatsCollection:
         stats = _collect_field_stats(samples)
         ts_stats = stats["$.ts"]
         assert "unix-epoch" in ts_stats.detected_formats
+
+
+class TestFieldFirstLastSeenAnnotation:
+    """polylogue-2qx.3: per-field first/last-seen, from field_annotations.py.
+
+    The generator already reads each record's own timestamp once per
+    sample (for the schema/package-level ``x-polylogue-element-first-seen``/
+    ``-last-seen`` window); this rolls that same value up per FIELD, so a
+    field's age is visible without a re-inference run.
+    """
+
+    def test_annotate_schema_emits_field_first_last_seen(self) -> None:
+        schema: JSONDocument = {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+            },
+        }
+        samples: list[JSONDocument] = [{"title": "a"}, {"title": "b"}]
+        stats = _collect_field_stats(
+            samples,
+            observed_ats=["2026-01-01T00:00:00Z", "2026-06-01T00:00:00Z"],
+        )
+        annotated = annotate_schema(schema, stats)
+        title_schema = schema_property(annotated, "title")
+        assert title_schema.get("x-polylogue-field-first-seen") == "2026-01-01T00:00:00+00:00"
+        assert title_schema.get("x-polylogue-field-last-seen") == "2026-06-01T00:00:00+00:00"
+
+    def test_annotate_schema_omits_field_first_last_seen_without_timestamps(self) -> None:
+        schema: JSONDocument = {"type": "object", "properties": {"title": {"type": "string"}}}
+        stats = _collect_field_stats([{"title": "a"}])
+        annotated = annotate_schema(schema, stats)
+        title_schema = schema_property(annotated, "title")
+        assert "x-polylogue-field-first-seen" not in title_schema
+        assert "x-polylogue-field-last-seen" not in title_schema
 
 
 # =============================================================================

@@ -102,8 +102,8 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
     conn.execute(
         """
         INSERT INTO session_provider_usage_events (
-            session_id, position, provider_event_type, payload_json
-        ) VALUES (?, ?, 'token_count', '{}')
+            session_id, position, provider_event_type
+        ) VALUES (?, ?, 'token_count')
         """,
         ("codex-session:provider-usage-report", 99),
     )

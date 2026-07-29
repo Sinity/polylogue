@@ -1062,7 +1062,12 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
             owned_inactive_generation=(generation.generation_id, generation.owner_id),
         )
     )
-    assert rebuild_result == {
+    # Timing fields (parse_s / apply_s / stage_timings_s, added for the
+    # rebuild cost split) are wall-clock and differ run to run. Two rebuilds
+    # producing identical content in different durations ARE equivalent, so
+    # equivalence is asserted over the content counts only.
+    _TIMING_KEYS = {"parse_s", "apply_s", "stage_timings_s"}
+    assert {k: v for k, v in rebuild_result.items() if k not in _TIMING_KEYS} == {
         "scanned_raw_count": 4,
         "classified_full_count": 4,
         "replayed_logical_source_count": 3,

@@ -88,13 +88,13 @@ unresolved/resolved/repaired/**quarantined** (cycle-break).
 
 ### The five tiers (durability is the axis)
 
-| Tier | ver | durability | holds |
-| --- | --- | --- | --- |
-| `source.db` | 3 | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob/GC substrate (`blob_refs`, `gc_generations`), hook events, sidecars |
-| `index.db` | 24 | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
-| `embeddings.db` | 1 | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
-| `user.db` | 6 | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
-| `ops.db` | 1 | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs, otlp |
+| Tier | durability | holds |
+| --- | --- | --- |
+| `source.db` | durable | raw acquired bytes (`raw_sessions`), artifact taxonomy, blob/GC substrate (`blob_refs`, `gc_generations`), hook events, sidecars |
+| `index.db` | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
+| `embeddings.db` | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
+| `user.db` | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
+| `ops.db` | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs, otlp |
 
 `user.db` is a **single unified `assertions` table** keyed by a closed
 `AssertionKind` (mark / tag / correction / annotation / suppression / metadata /
@@ -166,10 +166,15 @@ Two evolution regimes, enforced by `devtools lab policy schema-versioning`:
   migrations under `storage/sqlite/migrations/{source,user}/NNN_*.sql`, one
   `PRAGMA user_version` step at a time, behind a **verified backup manifest**.
   Destructive durable changes need a copy-forward design + explicit consent.
-- **Derived tiers** (`index.db`, `embeddings.db`): **no migration chain**. A
-  schema mismatch rebuilds/blue-green-replaces the tier from source
-  (`polylogue ops reset --index && polylogued run`). Bumping their schema edits
-  the canonical DDL + a rebuild plan, never an upgrade helper.
+- **Derived tiers** (`index.db`, `embeddings.db`): no migration *chain*, but not
+  "always rebuild" either. Every index bump above the compatibility floor
+  declares a delta class in `storage/sqlite/lifecycle.py`; a declared
+  non-semantic delta upgrades an existing generation **in place** through
+  `index_fast_forward_plan()` on connect. Only a `SEMANTIC_REPARSE` delta — one
+  whose result depends on parser semantics — routes to
+  `polylogue ops reset --index && polylogued run`. A bump without a declaration
+  is a policy violation, not a free rebuild: the lint fails and the archive
+  silently falls back to full raw replay.
 
 Before editing schema, classify the change: metadata-only, index-only,
 additive-derived, additive-durable, or semantic-reparse-required. Batch
@@ -201,7 +206,7 @@ commit the updated `docs/plans/topology-target.yaml` + `docs/topology-status.md`
     over unit sources sessions/actions/messages/observed-events, lowered to SQL.
 - **Python API** (`api/__init__.py`): the `Polylogue` facade is deliberately
   thin — it holds config/services and exposes `repository`/`backend`. The rich
-  verbs live on the **10-mixin** `SessionRepository`
+  verbs live on the mixin-composed `SessionRepository`
   (`storage/repository/__init__.py`: archive reads, archive writes, raw,
   vectors, + six insight readers — profile, run-projection, timeline, thread,
   summary, topology) and on `services.py`.
@@ -241,12 +246,9 @@ Three origin-related vocabularies with different scopes (`core/enums.py`,
   public surfaces.
 - **`Source`** — richer identity (`family`, `runtime_root`, `originating_lab`).
 
-The provider→origin retirement is complete for normalized archive identity:
-sessions, messages, actions, insights, query filters, CLI/API/MCP/daemon read
-payloads, and topology/resume models carry `Origin` natively. There is no
-payload-rewrite shim. Older `source_name` columns in rebuildable storage rows
-are persistence details and are converted while hydrating their typed models,
-not exposed as a second public identity vocabulary.
+Normalized archive identity carries `Origin`; `source_name` in rebuildable
+storage rows is a persistence detail converted while hydrating typed models,
+never a second public identity vocabulary.
 
 `Provider` deliberately remains at raw acquisition/parser/schema boundaries
 and in genuinely provider-scoped concepts such as embedding backends, pricing
@@ -279,46 +281,13 @@ follow-up work rather than leaving markdown TODOs as the source of truth.
 `bd dolt push` follows the same policy as `git push` (feature branches / PR
 updates after verification; no direct push to protected default).
 
-**Branch-switching resets bd's live query state — this is bd's correct,
-documented behavior, not a bug, but it actively fights a workflow that spins
-up many short-lived branches.** `post-checkout`/`post-merge` hooks
-(`.beads-hooks/`, `bd hooks run ...`) re-import whichever `.beads/issues.jsonl`
-is committed on the branch you just checked out into the live database. If
-branch A has a bead closed and branch B (checked out later, created earlier
-from an older `master`) doesn't have that commit yet, `bd show`/`bd ready` on
-branch B will report the bead as still open — nothing is lost (the close is
-safe in branch A's git history), but the live query layer is stale until a
-commit carrying that state lands on whatever branch you're now on. Concretely
-seen this session: a bead closed, then re-opened by a later unrelated
-checkout, three separate times, before being caught.
-
-To avoid this:
-- **Don't spin up a new dedicated `chore(beads): ...` branch while one is
-  already open and unmerged.** Merge (or rebase onto) it first, or add commits
-  to the same branch, rather than creating a sibling branch from a
-  possibly-stale `master`.
-- **Merge bd-only bookkeeping branches immediately** — they are small and
-  fast to verify; don't let one sit open while starting unrelated work on
-  other branches, since every branch created off `master` in the meantime
-  will diverge from it and need its own conflict resolution later.
-- **Prefer folding a `bd claim`/`bd close` into the same commit/branch as the
-  actual code change** it accompanies, rather than a separate tiny branch per
-  mutation — this was the single biggest source of divergent branches this
-  session. Reserve a dedicated bookkeeping branch for bd-only changes that
-  don't accompany code (e.g. batching several investigation closes together).
-- **After any `git checkout`/`git merge`/`git worktree add`, re-verify with
-  `bd show <id> --json` before trusting `bd ready`/`bd show` output for a bead
-  you just mutated** — treat it as possibly stale relative to your last
-  action, the same as any other memory-recalled fact.
-- **When resolving a `.beads/*.jsonl` merge conflict, do not run `bd export`
-  to "fix" it.** `bd export` (and the pre-commit hook that calls it) writes to
-  a FIXED path resolved from bd's own database location, independent of the
-  invoking shell's cwd — inside a temporary conflict-resolution worktree this
-  silently no-ops on that worktree's own file, leaving literal `<<<<<<<`
-  conflict markers in place. Extract both sides directly (`git show
-  :2:.beads/issues.jsonl` / `:3:...`), hand-merge bead-by-id preferring
-  whichever side has the later `updated_at`, write the result back, then
-  `git add`. Verify every line parses as JSON before committing.
+**bd hazards are documented in the global agent instructions** (branch-switch
+reimport, `bd export`'s cwd-independent output path, conflict-marker recovery).
+They apply here unchanged; that text is not duplicated in this file. The one
+project-specific consequence worth repeating: fold a `bd claim`/`close` into the
+same branch as the code change it accompanies rather than opening a sibling
+`chore(beads):` branch, because this repo's PR cadence makes divergent
+bookkeeping branches the common failure.
 
 ### Issue-first for non-trivial work
 
@@ -479,9 +448,9 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
   breaks `render all --check` (see [Schema regimes](#schema-regimes-durability-keyed)).
 - New Click params on query verbs must go **last** — a positional shift silently
   reroutes args.
-- New MCP tool → update `EXPECTED_TOOL_NAMES` (lives in `tests/infra/mcp.py`,
-  10 role-gated dispatcher tools currently) + tool contract, or discovery
-  tests fail.
+- New MCP tool → add its tool contract. `EXPECTED_TOOL_NAMES` is *derived*
+  (`set(declared_tool_names(ALL_CAPABILITIES))` in `tests/infra/mcp.py`), so it
+  needs no hand-editing; a missing contract is what fails discovery tests.
 - New `AssertionKind` is schema-free (`TEXT`, no CHECK) but its enum is embedded
   in `render openapi` + `render cli-output-schemas` — regenerate them.
 - Per-PR CI **skips the heavy `test` suite** (runs post-merge on master). A green

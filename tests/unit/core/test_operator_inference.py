@@ -88,6 +88,18 @@ def test_infer_schema_builds_schema_from_source_tier_raw(workspace_env: dict[str
 
 
 def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: dict[str, Path]) -> None:
+    # This test's isolated storage root has no chatgpt catalog of its own, so
+    # SchemaRegistry falls back to whatever is really committed under
+    # polylogue/schemas/providers/chatgpt -- register_schema/promote_cluster
+    # then append new versions on top of that real, growing version list.
+    # Don't hardcode which version numbers that produces; derive them from
+    # the actual pre-promotion state so this test survives future provider
+    # promotions instead of re-baking today's committed version count in.
+    baseline_registry = SchemaRegistry()
+    baseline_versions = baseline_registry.list_versions("chatgpt")
+    next_version = f"v{int(baseline_versions[-1][1:]) + 1}" if baseline_versions else "v1"
+    version_after_next = f"v{int(next_version[1:]) + 1}"
+
     index_db = _seed_chatgpt_raw(workspace_env)
     inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
 
@@ -104,26 +116,68 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
         )
     )
 
-    assert promoted.package_version == "v2"
+    assert promoted.package_version == next_version
     assert promoted.schema is not None
     specs = list_inferred_corpus_specs(provider="chatgpt")
     registry = SchemaRegistry()
     registry.register_schema("chatgpt", {"type": "object", "properties": {"mapping": {"type": "object"}}})
     registry.register_schema("codex", {"type": "object", "properties": {"session_id": {"type": "string"}}})
     scenarios = list_inferred_corpus_scenarios()
-    comparison = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v2", to_version="v3"))
+    comparison = compare_schema_versions(
+        SchemaCompareRequest(provider="chatgpt", from_version=next_version, to_version=version_after_next)
+    )
     selected = list_schemas(SchemaListRequest(provider="chatgpt"))
     listing = list_schemas(SchemaListRequest())
 
-    assert comparison.diff.version_a == "v2"
-    assert comparison.diff.version_b == "v3"
+    assert comparison.diff.version_a == next_version
+    assert comparison.diff.version_b == version_after_next
     assert selected.selected is not None
-    assert selected.selected.versions == ["v1", "v2", "v3"]
+    # Only the two versions promoted into THIS workspace's isolated registry
+    # are listed. baseline_versions is read from the bundled catalog purely to
+    # derive non-colliding version NAMES; it is deliberately not expected in
+    # the listing. Until 2026-07-30 write_schema_version() silently inherited
+    # bundled-catalog versions into an isolated registry, so this assertion
+    # used to see them -- that leak is fixed, and an isolated registry now
+    # contains exactly what was written to it.
+    assert selected.selected.versions == [next_version, version_after_next]
     assert {spec.provider for spec in specs} == {"chatgpt"}
-    assert specs[0].package_version == "v2"
+    assert specs[0].package_version == next_version
     assert specs[0].profile.family_ids == (cluster_id,)
     assert {scenario.provider for scenario in scenarios} >= {"chatgpt", "codex"}
     assert {snapshot.provider for snapshot in listing.providers} >= {"chatgpt", "codex"}
+
+
+def test_cluster_promotion_with_samples_matches_the_cluster_it_was_built_from(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Regression: promote_schema_cluster's with_samples path re-derives a
+    fingerprint per candidate sample to find which ones belong to the
+    requested cluster. schema_cluster_id() hashes (artifact_kind,
+    structure_fingerprint) -- not the structure fingerprint alone -- and
+    infer_schema(cluster=True) stamps every cluster "unspecified" (it never
+    passes artifact_kinds through to cluster_samples()). Re-deriving sample
+    fingerprints without threading that same artifact_kind through raised
+    "No samples match cluster ..." for every real cluster ever produced by
+    plain infer_schema(cluster=True) (verified live against gemini-cli's real
+    exact-structure clusters before this fix).
+    """
+    index_db = _seed_chatgpt_raw(workspace_env)
+    inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
+    assert inferred.manifest is not None
+    cluster_id = inferred.manifest.clusters[0].cluster_id
+    assert inferred.manifest.clusters[0].artifact_kind == "unspecified"
+
+    promoted = promote_schema_cluster(
+        SchemaPromoteRequest(
+            provider="chatgpt",
+            cluster_id=cluster_id,
+            db_path=index_db,
+            with_samples=True,
+            max_samples=100,
+        )
+    )
+
+    assert promoted.schema is not None
 
 
 def test_infer_schema_normalizes_operator_privacy_configuration(workspace_env: dict[str, Path]) -> None:

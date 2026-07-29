@@ -41,6 +41,7 @@ _MESSAGE_RECORD_SELECT = """
     1 AS version,
     m.parent_message_id,
     m.variant_index AS branch_index,
+    m.is_active_path,
     s.origin AS source_name,
     m.word_count,
     m.has_tool_use,
@@ -53,7 +54,8 @@ _MESSAGE_RECORD_SELECT = """
     m.input_tokens,
     m.output_tokens,
     m.cache_read_tokens,
-    m.cache_write_tokens
+    m.cache_write_tokens,
+    m.stop_reason
 """
 
 

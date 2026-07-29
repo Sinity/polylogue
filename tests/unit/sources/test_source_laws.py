@@ -962,7 +962,10 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
         )
 
     monkeypatch.setattr(chatgpt_parser, "parse", fake_parse)
-    payloads = [{"id": "one"}, {"id": "two"}]
+    # Each bundle item must look like a ChatGPT conversation-mapping fragment
+    # (chatgpt.looks_like_fragment) or _chatgpt_bundle_record_specs drops it
+    # as bundle-sibling noise (#3391) -- a bare {"id": ...} no longer counts.
+    payloads = [{"id": "one", "mapping": {"n1": {}}}, {"id": "two", "mapping": {"n1": {}}}]
 
     sessions = parse_payload(Provider.CHATGPT.value, payloads, "bundle")
 
@@ -973,7 +976,12 @@ def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pyte
 def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 
-    def fake_parse_code(payload: object, fallback_id: str) -> ParsedSession:
+    def fake_parse_code(
+        payload: object,
+        fallback_id: str,
+        *,
+        tool_result_sidecars: object | None = None,
+    ) -> ParsedSession:
         calls.append((payload, fallback_id))
         return _parsed_session(
             source_name=Provider.CLAUDE_CODE,
@@ -1619,6 +1627,38 @@ def test_claude_code_stream_payload_splits_contiguous_session_groups(
     ]
 
 
+def test_claude_code_stream_chunk_merge_preserves_git_branch_from_either_chunk() -> None:
+    """polylogue-cijx.3: a session split across non-contiguous JSONL chunks
+    (interleaved by another session's records) must not lose typed
+    ``gitBranch`` evidence that only appears in a later chunk -- the merge in
+    ``merge_parsed_session_chunks`` must fill the field from whichever chunk
+    carries it, not silently keep the first chunk's (possibly empty) value.
+    """
+    records: Iterable[object] = iter(
+        [
+            {
+                "type": "user",
+                "sessionId": "session-1",
+                "uuid": "u-1",
+                "message": {"role": "user", "content": "one"},
+            },
+            {"type": "user", "sessionId": "session-2", "uuid": "u-2", "message": {"role": "user", "content": "x"}},
+            {
+                "type": "assistant",
+                "sessionId": "session-1",
+                "uuid": "a-1",
+                "gitBranch": "feature/perf/pipeline-quality-consolidation",
+                "message": {"role": "assistant", "content": "two"},
+            },
+        ]
+    )
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "fallback")
+
+    session_one = next(session for session in sessions if session.provider_session_id == "session-1")
+    assert session_one.git_branch == "feature/perf/pipeline-quality-consolidation"
+
+
 def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1777,6 +1817,87 @@ def test_session_emitter_enriches_gemini_display_labels_contract() -> None:
     # display_label enrichment).
     assert enriched.title == "Summarize the roadmap"
     assert enriched.title_source == TitleSource.HEURISTIC
+
+
+def _emitter_for_repo_identity_tests() -> _SessionEmitter:
+    ctx = _ParseContext(
+        provider_hint=Provider.CODEX,
+        should_group=False,
+        source_path_str="/tmp/session.jsonl",
+        fallback_id="session",
+        file_mtime="2026-03-11T00:00:00+00:00",
+        capture_raw=False,
+        sidecar_data={},
+    )
+    return _SessionEmitter(ctx)
+
+
+def test_repo_identity_evidence_grades_directory_only_with_cwd_but_no_git() -> None:
+    """polylogue-cijx.2: a session with a cwd but no git evidence at all is
+    honestly a DIRECTORY, not a repository -- the emitter must say so rather
+    than let a downstream reader assume ``working_directories`` alone proves
+    a repository (cijx.4 decision 1)."""
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session-cwd-only",
+        title="t",
+        created_at="2026-01-01T00:00:00Z",
+        messages=[_parsed_message("m1", role="user", text="hello")],
+        working_directories=["/home/sinity"],
+    )
+
+    enriched = _emitter_for_repo_identity_tests()._maybe_enrich(session, Provider.CHATGPT)
+
+    events = [event for event in enriched.session_events if event.event_type == "repo_identity_evidence"]
+    assert len(events) == 1
+    assert events[0].payload == {
+        "grade": "directory_only",
+        "root_paths": ["/home/sinity"],
+        "git_repository_url": None,
+        "git_branch": None,
+        "git_commit_hash": None,
+    }
+
+
+def test_repo_identity_evidence_grades_git_evidence_when_branch_or_commit_present() -> None:
+    """A session carrying real git evidence (branch/url/commit) grades as
+    ``git_evidence``, distinct from the cwd-only case."""
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="session-git",
+        title="t",
+        created_at="2026-01-01T00:00:00Z",
+        messages=[_parsed_message("m1", role="user", text="hello")],
+        working_directories=["/realm/project/polylogue"],
+        git_branch="master",
+        git_commit_hash="abc123",
+    )
+
+    enriched = _emitter_for_repo_identity_tests()._maybe_enrich(session, Provider.CODEX)
+
+    events = [event for event in enriched.session_events if event.event_type == "repo_identity_evidence"]
+    assert len(events) == 1
+    assert events[0].payload["grade"] == "git_evidence"
+    assert events[0].payload["root_paths"] == ["/realm/project/polylogue"]
+    assert events[0].payload["git_branch"] == "master"
+    assert events[0].payload["git_commit_hash"] == "abc123"
+
+
+def test_repo_identity_evidence_omitted_when_no_location_evidence_at_all() -> None:
+    """A session with neither a cwd nor git evidence gets no repo_identity_evidence
+    event -- there is nothing to grade, and emitting an empty-payload event on
+    every such session would just be noise."""
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session-bare",
+        title="t",
+        created_at="2026-01-01T00:00:00Z",
+        messages=[_parsed_message("m1", role="user", text="hello")],
+    )
+
+    enriched = _emitter_for_repo_identity_tests()._maybe_enrich(session, Provider.CHATGPT)
+
+    assert not [event for event in enriched.session_events if event.event_type == "repo_identity_evidence"]
 
 
 def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.ZipInfo:

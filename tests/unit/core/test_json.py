@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from hypothesis import given
@@ -24,12 +24,35 @@ from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 
 # Every backend-parametrized test forces `core_json._BACKEND` via monkeypatch
-# rather than requiring any backend to be actually absent -- the dev/CI
-# environment installs both orjson and msgspec (pyproject.toml `dev` extra)
-# specifically so all three code paths in polylogue/core/json.py get real
-# coverage, not just whichever backend happened to win import-time selection
-# (polylogue-xikl: orjson is optional, msgspec is the free-threaded fallback).
-ALL_BACKENDS: tuple[core_json.JSONBackend, ...] = ("orjson", "msgspec", "stdlib")
+# rather than requiring any backend to be actually absent -- the `dev` extra
+# (pyproject.toml) installs msgspec so both code paths in
+# polylogue/core/json.py get real coverage, not just whichever backend
+# happened to win import-time selection. `orjson` used to be a second
+# backend tested this same way, but it ships no cp314t wheel and its build
+# refuses to compile free-threaded -- the only interpreter polylogue ships
+# on (operator decision 2026-07-19: adopt free-threaded Python fully) -- so
+# it was removed from the facade and the dependency graph entirely rather
+# than kept as a permanently-skipped parametrize case.
+#
+# So: parametrize over both nominal backend names for stable test IDs across
+# interpreters, but skip (with a stated reason) whichever backend's module
+# this interpreter doesn't actually have, via `_backend_params()`.
+ALL_BACKENDS: tuple[core_json.JSONBackend, ...] = ("msgspec", "stdlib")
+_AVAILABLE_BACKENDS = core_json.available_backends()
+
+
+def _backend_params(backends: tuple[core_json.JSONBackend, ...] = ALL_BACKENDS) -> list[Any]:
+    return [
+        pytest.param(
+            b,
+            marks=pytest.mark.skipif(
+                b not in _AVAILABLE_BACKENDS,
+                reason=f"'{b}' backend module is not installed in this interpreter",
+            ),
+        )
+        for b in backends
+    ]
+
 
 SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
 
@@ -125,12 +148,12 @@ def test_loads_known_invalid_json_raises(fragment: str) -> None:
         core_json.loads(fragment)
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 @pytest.mark.parametrize("fragment", _INVALID_JSON_FRAGMENTS)
 def test_loads_known_invalid_json_raises_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend, fragment: str
 ) -> None:
-    """Every backend (orjson, msgspec, stdlib) rejects the same invalid fragments.
+    """Every backend (msgspec, stdlib) rejects the same invalid fragments.
 
     Anti-vacuity: this fails if any backend's decode-error mapping silently
     swallows a malformed-JSON case (e.g. a backend that tolerates NaN/Infinity
@@ -247,24 +270,24 @@ def test_dumps_preserves_non_type_errors_from_custom_handler() -> None:
 
 
 def test_dumps_sort_keys_produces_deterministic_key_order() -> None:
-    """`sort_keys=True` is a backend-neutral semantic flag, not an orjson option bitmask."""
+    """`sort_keys=True` is a backend-neutral semantic flag, not a raw accelerator option bitmask."""
     payload = {"b": 1, "a": 2}
     output = core_json.dumps(payload, sort_keys=True)
     assert output == '{"a":2,"b":1}'
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_sort_keys_byte_identical_across_backends(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
-    """Compact sort_keys output is byte-identical across orjson/msgspec/stdlib.
+    """Compact sort_keys output is byte-identical across msgspec/stdlib.
 
     This is the property `material_protocol/v1/canonical.py` depends on for
     content-hash stability (polylogue-xikl): canonical hashing must not
     silently change bytes merely because the active JSON backend changed.
 
-    This corpus deliberately stays within the range where all three backends
-    already agree (see `test_dumps_sort_keys_exponent_floats_orjson_msgspec_parity`
+    This corpus deliberately stays within the range where both backends
+    already agree (see `test_dumps_sort_keys_exponent_floats_msgspec_canonical_format`
     below for the exponent-notation float corpus, where stdlib's float
     formatter is a documented, accepted exception to this guarantee).
     """
@@ -276,25 +299,26 @@ def test_dumps_sort_keys_byte_identical_across_backends(
 
 # Backends the exponent-float byte-identity guarantee actually covers.
 # Coordinator repro (PR #3155 review): dumps_bytes({"exp": 1e30, "big": ...,
-# "tiny": 5e-324}, sort_keys=True) -- orjson and msgspec agree on every float
-# formatting decision except one: orjson always writes a `+` for a positive
-# exponent (`1e+30`) while msgspec omits it (`1e30`); `core.json` normalizes
-# msgspec's output to close that seam (`_normalize_msgspec_float_exponents`).
-# stdlib json is a *larger*, unreconciled departure (different decimal-vs-
-# exponent threshold entirely -- see `test_stdlib_diverges_from_orjson_for_small_exponents`
-# below) and is therefore NOT part of this guarantee.
-_CANONICAL_FLOAT_PARITY_BACKENDS: tuple[core_json.JSONBackend, ...] = ("orjson", "msgspec")
+# "tiny": 5e-324}, sort_keys=True) established a fixed canonical exponent
+# format (positive exponents always carry an explicit `+`, e.g. `1e+30`) --
+# msgspec omits that sign natively (`1e30`), so `core.json` normalizes its
+# output to close the seam (`_normalize_msgspec_float_exponents`), keeping
+# every archive this facade has ever written byte-identical regardless of
+# which accelerator produced it. stdlib json is a *larger*, unreconciled
+# departure (different decimal-vs-exponent threshold entirely -- see
+# `test_stdlib_diverges_from_canonical_format_for_small_exponents` below) and
+# is therefore NOT part of this guarantee.
+_CANONICAL_FLOAT_PARITY_BACKENDS: tuple[core_json.JSONBackend, ...] = ("msgspec",)
 
 
-@pytest.mark.parametrize("backend", _CANONICAL_FLOAT_PARITY_BACKENDS)
-def test_dumps_sort_keys_exponent_floats_orjson_msgspec_parity(
+@pytest.mark.parametrize("backend", _backend_params(_CANONICAL_FLOAT_PARITY_BACKENDS))
+def test_dumps_sort_keys_exponent_floats_msgspec_canonical_format(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
     """Exponent-notation floats (the coordinator's PR #3155 repro corpus, plus
-    a realistic tiny cost_usd shape and non-ASCII text) round-trip to
-    byte-identical canonical output on orjson and msgspec -- proving the
-    facade's msgspec exponent-sign normalization actually fires, rather than
-    merely not-crashing."""
+    a realistic tiny cost_usd shape and non-ASCII text) round-trip to the
+    fixed canonical output on msgspec -- proving the facade's exponent-sign
+    normalization actually fires, rather than merely not-crashing."""
     monkeypatch.setattr(core_json, "_BACKEND", backend)
     payload = {
         "exp": 1e30,
@@ -311,22 +335,23 @@ def test_dumps_sort_keys_exponent_floats_orjson_msgspec_parity(
     )
 
 
-def test_stdlib_diverges_from_orjson_for_small_exponents() -> None:
+def test_stdlib_diverges_from_canonical_format_for_small_exponents() -> None:
     """Documents the accepted limit of the byte-stability guarantee: stdlib
-    json picks a different decimal-vs-exponent threshold than orjson/msgspec
-    (`1e-05` vs `0.00001`) and zero-pads short exponents (`2e-06` vs `2e-6`).
-    This is deliberately NOT reconciled (would mean reimplementing orjson's
-    float formatter) -- canonical byte-stability is guaranteed between orjson
-    and msgspec only, per the facade's module docstring. This test exists so
-    a future "fix" attempt doesn't get silently reverted without realizing
-    the gap is documented, known, and accepted."""
+    json picks a different decimal-vs-exponent threshold than the canonical
+    format (`1e-05` vs `0.00001`) and zero-pads short exponents (`2e-06` vs
+    `2e-6`). This is deliberately NOT reconciled (would mean reimplementing
+    the canonical float formatter) -- canonical byte-stability is guaranteed
+    when msgspec is the active backend only, per the facade's module
+    docstring. This test exists so a future "fix" attempt doesn't get
+    silently reverted without realizing the gap is documented, known, and
+    accepted."""
     original = core_json._BACKEND
     core_json._BACKEND = "stdlib"
     try:
         stdlib_output = core_json.dumps_bytes({"v": 2e-06}, sort_keys=True)
     finally:
         core_json._BACKEND = original
-    assert stdlib_output == b'{"v":2e-06}'  # not b'{"v":2e-6}' -- the orjson/msgspec form
+    assert stdlib_output == b'{"v":2e-06}'  # not b'{"v":2e-6}' -- the canonical/msgspec form
 
 
 def test_msgspec_exponent_normalizer_does_not_corrupt_string_content() -> None:
@@ -343,7 +368,7 @@ def test_msgspec_exponent_normalizer_does_not_corrupt_string_content() -> None:
     assert output == b'{"note":"batch e5 vs cafe10, cost 2e-06"}'
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_indent_byte_identical_across_backends(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -353,7 +378,7 @@ def test_dumps_indent_byte_identical_across_backends(
     assert output == b'{\n  "a": 2,\n  "b": 1\n}'
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_bytes_append_newline(monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend) -> None:
     monkeypatch.setattr(core_json, "_BACKEND", backend)
     output = core_json.dumps_bytes({"x": 1}, append_newline=True)
@@ -372,9 +397,10 @@ def test_dumps_bytes_roundtrips_as_utf8_json() -> None:
 
 
 def test_dumps_fallback_uses_stdlib_encoder_for_out_of_range_integers() -> None:
-    """orjson raises TypeError for ints beyond its native 64-bit range; the
-    facade falls back to stdlib json (arbitrary precision) so the value
-    still round-trips instead of raising."""
+    """Whatever fast backend is active, ints beyond its native precision
+    still round-trip: msgspec/stdlib both handle arbitrary-precision ints
+    natively, and the facade falls back to stdlib json for any backend that
+    doesn't, so the value never raises."""
     big = 2**65
     output = core_json.dumps({"v": big})
     data = _loaded_document(output)
@@ -389,26 +415,26 @@ def test_dumps_bytes_fallback_uses_stdlib_encoder_for_out_of_range_integers() ->
     assert core_json.loads(output) == {"v": big}
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_out_of_range_integers_roundtrip_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
     """Anti-vacuity: forces each backend and proves the 64-bit-overflow value
-    still comes back exactly, whether via that backend's native support
-    (msgspec/stdlib) or the orjson-specific TypeError-triggered fallback."""
+    still comes back exactly, via that backend's own native arbitrary-
+    precision support (msgspec/stdlib both handle it directly)."""
     monkeypatch.setattr(core_json, "_BACKEND", backend)
     big = 2**65
     output = core_json.dumps_bytes({"v": big})
     assert core_json.loads(output) == {"v": big}
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_custom_handler_still_applies_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
     """A custom `default` handler for a genuinely unknown type is honored
     regardless of the active backend -- including msgspec, whose `enc_hook`
-    contract differs from orjson/stdlib's `default` (NotImplementedError vs
+    contract differs from stdlib's `default` (NotImplementedError vs
     TypeError) and is adapted internally by the facade."""
     monkeypatch.setattr(core_json, "_BACKEND", backend)
 
@@ -425,14 +451,14 @@ def test_dumps_custom_handler_still_applies_under_every_backend(
     assert core_json.loads(output) == {"payload": {"custom": 7}}
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_decimal_encodes_to_number_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
     """msgspec encodes decimal.Decimal natively as a JSON *string* unless
-    pre-normalized -- this is the specific seam this facade closes so all
-    three backends agree Decimal is a JSON number, matching orjson/stdlib's
-    `default`-hook-driven float conversion."""
+    pre-normalized -- this is the specific seam this facade closes so both
+    backends agree Decimal is a JSON number, matching stdlib's `default`-
+    hook-driven float conversion."""
     monkeypatch.setattr(core_json, "_BACKEND", backend)
     output = core_json.dumps_bytes({"v": Decimal("1.5")})
     data = _loaded_document(output)
@@ -441,11 +467,11 @@ def test_dumps_decimal_encodes_to_number_under_every_backend(
 
 
 def test_backend_reports_a_valid_selection() -> None:
-    """backend() reports whichever of orjson/msgspec/stdlib was selected at import."""
+    """backend() reports whichever of msgspec/stdlib was selected at import."""
     assert core_json.backend() in ALL_BACKENDS
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 @given(_json_value)
 def test_roundtrip_basic_types_under_every_backend(backend: core_json.JSONBackend, value: object) -> None:
     """The dumps/loads roundtrip law holds under every backend, not just

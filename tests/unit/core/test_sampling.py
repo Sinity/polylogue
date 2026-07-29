@@ -24,11 +24,21 @@ from tests.infra.schema_access import schema_node
 
 
 def test_document_profile_tokens_collapse_record_identity_keys() -> None:
+    # should_collapse_observed_keys() (schemas/field_stats/detection.py) now
+    # also collapses a WHOLE map's keys once >=50% of them look dynamic --
+    # deliberate, so a real chatgpt-shaped mapping (near-100% UUID-keyed
+    # message nodes plus one literal root) collapses wholesale rather than
+    # leaking a scattering of literal-looking survivors. A mostly-static map
+    # with only an occasional identifier key must stay under that ratio to
+    # exercise this test's actual subject: per-key collapse of just the
+    # identity-shaped key, not the map-wide majority-collapse rule.
     tokens = _document_profile_tokens(
         {
             "mapping": {
                 "2f5a7f5d-a809-469a-a79a-8f032618fa92": {"message": {}},
                 "client-created-root": {"message": None},
+                "conversation_meta": {"message": None},
+                "message_root": {"message": None},
             }
         }
     )

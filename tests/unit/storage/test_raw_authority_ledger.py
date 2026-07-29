@@ -1409,3 +1409,77 @@ def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_frontier_blocking_count"] == 1
     assert raw_materialization_ready(readiness) is False
+
+
+def _census_row_counts(root: Path) -> tuple[int, int, int]:
+    with sqlite3.connect(root / "source.db") as conn:
+        return (
+            int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0]),
+            int(conn.execute("SELECT COUNT(*) FROM raw_authority_census_plans").fetchone()[0]),
+            int(conn.execute("SELECT COUNT(*) FROM raw_authority_census_post_plans").fetchone()[0]),
+        )
+
+
+def test_census_plan_rows_are_bounded_by_retention(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-wkc6: every census re-records its ENTIRE pending plan set, so an
+    archive whose plans do not drain grows without bound. On the live archive that
+    reached 6,039 MB across two tables and seven indexes -- 89% of a durable tier
+    whose actual evidence was 52 MB -- with 99.98% of rows carrying the
+    ``carried_forward`` outcome, i.e. recording that nothing happened, and no DELETE
+    against these tables existing anywhere in the tree.
+
+    Retention must bound the per-plan rows at the point of growth. Deleting
+    ``prune_raw_authority_census_history``'s call in ``record_raw_authority_census``
+    makes this fail with row counts growing linearly in census count.
+    """
+    monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 3)
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="retain", source_path="retain.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+
+    for index in range(9):
+        record_raw_authority_census(
+            tmp_path,
+            (plan,),
+            selected_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": f"retention-{index}"},
+            residual={},
+        )
+
+    headers, plan_rows, post_plan_rows = _census_row_counts(tmp_path)
+
+    assert headers == 9, "headers keep their own, much larger window"
+    assert plan_rows == 3, f"plan rows must be bounded by retention, got {plan_rows}"
+    assert post_plan_rows == 3
+
+
+def test_census_retention_keeps_the_newest_censuses_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retention must drop the OLDEST censuses, never the newest: the per-census
+    inspection pager (``WHERE census_id = ? ORDER BY ordinal``) is the only reader
+    of these rows, and it is always pointed at recent history."""
+    monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="newest", source_path="newest.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+
+    receipts = [
+        record_raw_authority_census(
+            tmp_path,
+            (plan,),
+            selected_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": f"newest-{index}"},
+            residual={},
+        )
+        for index in range(5)
+    ]
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        surviving = {str(row[0]) for row in conn.execute("SELECT DISTINCT census_id FROM raw_authority_census_plans")}
+
+    assert surviving == {receipts[-1].census_id, receipts[-2].census_id}

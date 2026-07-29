@@ -1019,8 +1019,18 @@ def test_coordination_envelope_cache_invalidates_on_fingerprint_change(
     cache.get_or_build(view="status", cwd=root, limit=5)
     assert len(calls) == 1  # second call reused the cached value
 
+    # A fingerprint change kicks a background refresh and serves the still-
+    # valid stale value immediately (same stale-while-revalidate contract
+    # StatusComponentRegistry.collect() uses for an ordinary TTL expiry --
+    # see test_fingerprint_change_forces_refresh_inside_ttl), so the new
+    # build is not guaranteed to have landed by the time this call returns;
+    # poll for it instead of asserting synchronously.
     (root / ".git" / "HEAD").write_text("ref: refs/heads/other-branch\n")
     cache.get_or_build(view="status", cwd=root, limit=5)
+    for _ in range(200):
+        if len(calls) >= 2:
+            break
+        sleep(0.01)
     assert len(calls) == 2  # fingerprint changed -> forced refresh despite unexpired TTL
 
 

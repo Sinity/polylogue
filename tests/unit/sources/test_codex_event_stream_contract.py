@@ -506,6 +506,32 @@ class TestFunctionsExecLowering:
             "byte_count": 5,
         }
 
+    def test_child_result_metadata_routes_to_session_events(self) -> None:
+        """``ParsedContentBlock.metadata`` on a code-mode child result must also
+        reach ``session_events``, not just the block.
+
+        The ``blocks`` table has no metadata column and the write path only
+        reads a ``language`` key back out of it (bd polylogue-9x22), so the
+        ``codex_functions_exec_child_index``/``registry_type``/``byte_count``
+        evidence asserted on ``tool_results[1].metadata`` above would
+        otherwise be silently dropped at write time. Deleting the
+        ``_code_mode_child_result_evidence_events`` wiring in
+        ``_codex_tool_message``'s caller makes this fail.
+        """
+        session = _parse(_load_catalog("functions_exec_single.jsonl"), "functions-exec-single")
+        events = [
+            event
+            for event in session.session_events
+            if event.event_type == "codex_functions_exec_child_result_evidence"
+        ]
+        assert len(events) == 1
+        event = events[0]
+        assert event.payload == {
+            "codex_functions_exec_child_index": 0,
+            "codex_functions_exec_registry_type": "exec_command",
+            "byte_count": 5,
+        }
+
     def test_multiple_children_preserve_order_registry_paths_and_unknown_states(self) -> None:
         session = _parse(_load_catalog("functions_exec_multiple.jsonl"), "functions-exec-multiple")
         tool_uses = self._blocks(session, BlockType.TOOL_USE)

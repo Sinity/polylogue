@@ -27,6 +27,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
+from polylogue.core.enums import TitleSource
 from polylogue.sources.parsers.claude import looks_like_ai, parse_ai
 from polylogue.sources.parsers.claude.ai_parser import CLAUDE_DESIGN_CHAT_INGEST_FLAG, CLAUDE_TEMPORARY_CHAT_INGEST_FLAG
 from polylogue.storage.sqlite.connection import open_connection
@@ -151,6 +152,9 @@ def test_claude_design_chat_shape_is_parsed_as_session() -> None:
 
     assert session.provider_session_id == "design-1"
     assert session.title == "Design system"
+    assert session.title_source == TitleSource.ORIGIN
+    assert session.title_ref == "claude-ai-design-title:design-1"
+    assert session.title_confidence == 1.0
     assert [message.text for message in session.messages] == ["Create a design system."]
     design_constructs = session.messages[0].blocks[0].web_constructs
     assert len(design_constructs) == 1
@@ -210,6 +214,117 @@ def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
     assert session.attachments[0].inline_bytes == b"report text"
     assert session.attachments[1].provider_attachment_id == "file-1"
     assert session.attachments[1].inline_bytes is None
+
+
+def test_claude_ai_tool_use_segment_captures_web_tool_evidence() -> None:
+    """Per-block timing, MCP integration identity, and approval-gate fields
+    on a ``tool_use``/``tool_result`` segment were read nowhere before --
+    removing ``_claude_ai_web_tool_evidence`` (or its call site in
+    ``_claude_content_blocks``) drops ``metadata`` back to empty."""
+    payload = {
+        "uuid": "claude-2",
+        "name": "Connected app call",
+        "chat_messages": [
+            {
+                "uuid": "m1",
+                "sender": "assistant",
+                "created_at": "2026-01-08T09:05:53.020754Z",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "conversation_search",
+                        "input": {"query": "Sinex exocortex project"},
+                        "start_timestamp": "2026-01-08T09:05:53.020754Z",
+                        "stop_timestamp": "2026-01-08T09:05:53.266102Z",
+                        "integration_name": "Search Past Conversations",
+                        "integration_icon_url": "https://claude.ai/images/icons/conversation_search.png",
+                        "is_mcp_app": True,
+                        "mcp_server_url": "https://mcp.example.test",
+                        "approval_key": "approve-once",
+                        "approval_options": ["allow", "deny"],
+                        "display_content": {"type": "text", "text": "Searching past conversations"},
+                    }
+                ],
+            }
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    block = session.messages[0].blocks[0]
+    assert block.tool_name == "conversation_search"
+    assert block.tool_input == {"query": "Sinex exocortex project"}
+    assert block.metadata is not None
+    assert block.metadata["start_timestamp"] == "2026-01-08T09:05:53.020754+00:00"
+    assert block.metadata["stop_timestamp"] == "2026-01-08T09:05:53.266102+00:00"
+    assert block.metadata["integration_name"] == "Search Past Conversations"
+    assert block.metadata["integration_icon_url"] == "https://claude.ai/images/icons/conversation_search.png"
+    assert block.metadata["is_mcp_app"] is True
+    assert block.metadata["mcp_server_url"] == "https://mcp.example.test"
+    assert block.metadata["approval_key"] == "approve-once"
+    assert block.metadata["approval_options"] == ["allow", "deny"]
+    assert block.metadata["display_content"] == {"type": "text", "text": "Searching past conversations"}
+
+    # polylogue-9x22: block.metadata is never persisted (no metadata column on
+    # the blocks table), so the evidence must also reach session_events -- the
+    # only path that survives to the archive.
+    web_tool_events = [event for event in session.session_events if event.event_type == "claude_ai_web_tool_evidence"]
+    assert len(web_tool_events) == 1
+    event = web_tool_events[0]
+    assert event.source_message_provider_id == "m1"
+    assert event.payload["block_index"] == 0
+    assert event.payload["integration_name"] == "Search Past Conversations"
+    assert event.payload["is_mcp_app"] is True
+    assert event.payload["mcp_server_url"] == "https://mcp.example.test"
+    assert event.payload["approval_key"] == "approve-once"
+    assert event.payload["approval_options"] == ["allow", "deny"]
+    assert event.payload["display_content"] == {"type": "text", "text": "Searching past conversations"}
+    assert event.timestamp == "2026-01-08T09:05:53.020754+00:00"
+
+
+def test_claude_ai_conversation_summary_persists_as_event() -> None:
+    """The provider's own generated conversation summary (top-level
+    ``summary``, distinct from ``name``/``title``) must persist as a typed
+    event -- removing the block in ``parse_ai`` drops it silently."""
+    payload = {
+        "uuid": "claude-3",
+        "name": "Summary Session",
+        "summary": "**Conversation Overview**\n\nDiscussed the parser triage plan.",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hi", "created_at": "2026-01-01T00:00:00Z"},
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    summary_events = [e.payload for e in session.session_events if e.event_type == "claude_ai_conversation_summary"]
+    assert summary_events == [{"summary": "**Conversation Overview**\n\nDiscussed the parser triage plan."}]
+    # Claude AI's own auto-generated conversation title is genuine provider
+    # curation (distinct from Codex's raw first-prompt echoes) -- it must be
+    # marked ORIGIN, not left with title_source unset.
+    assert session.title == "Summary Session"
+    assert session.title_source == TitleSource.ORIGIN
+    assert session.title_ref == "claude-ai-title:claude-3"
+    assert session.title_confidence == 1.0
+
+
+def test_claude_ai_no_provider_title_falls_back_to_id_as_unknown() -> None:
+    """No ``title``/``name`` field at all: fall back to the session id, and
+    mark the provenance UNKNOWN rather than silently ORIGIN or unset --
+    there is no provider curation backing this text."""
+    payload = {
+        "uuid": "claude-4",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hi", "created_at": "2026-01-01T00:00:00Z"},
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    assert session.title == "claude-4"
+    assert session.title_source == TitleSource.UNKNOWN
+    assert session.title_ref is None
+    assert session.title_confidence is None
 
 
 # ---------------------------------------------------------------------------

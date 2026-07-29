@@ -34,7 +34,7 @@ from polylogue.archive.revision_replay import RevisionCandidate, plan_revision_r
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
 from polylogue.core.degraded import is_degraded
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
@@ -114,7 +114,7 @@ from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggre
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.sources.parsers import hermes_state, hermes_verification
+from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_acquisition_components import (
@@ -122,6 +122,7 @@ from polylogue.sources.source_acquisition_components import (
     iter_zip_entry_raw_data,
 )
 from polylogue.sources.sqlite_snapshot import (
+    codex_state_raw_id,
     hermes_profile_raw_id,
     original_sqlite_source_path,
     snapshot_sqlite_to_blob,
@@ -142,9 +143,92 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# polylogue-0jf4: known ~/.codex live SQLite state filenames, matched by name
+# first (cheap, no I/O) before the structural table-shape check in
+# ``codex_state.is_in_scope_codex_sqlite_path`` decides whether to acquire.
+# Kept in sync with ``sources/parsers/codex_state.py``'s ``CODEX_STATE_FIDELITY``.
+_CODEX_STATE_DB_NAMES = frozenset({"state_5.sqlite", "goals_1.sqlite", "memories_1.sqlite"})
+_CODEX_OUT_OF_SCOPE_STATE_DB_NAMES = frozenset({"logs_2.sqlite", "codex-dev.db"})
+
 
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _write_codex_thread_state_evidence(
+    archive: Any,
+    snapshot: codex_state.CodexStateSnapshot,
+    *,
+    source_path: str,
+    acquired_at_ms: int,
+) -> None:
+    """Attach ``threads``/``thread_spawn_edges`` evidence to EXISTING sessions.
+
+    polylogue-0jf4 acceptance criterion 3: threads.title and
+    thread_spawn_edges must reach the archive as typed evidence without ever
+    minting a session or session of their own -- the same hook-event
+    incident precedent as polylogue-31r1 (standalone hook-event ingestion
+    once inflated the archive from 18,391 to 83,286 sessions). Reuses
+    ``ArchiveStore.write_hook_event``/``raw_hook_events`` exactly as
+    ``sources/hooks.py`` does: a durable, session-scoped evidence row keyed
+    by ``session_native_id`` (here the Codex ``thread_id``), joined at read
+    time (``ArchiveStore.hook_event_summary_for_session``) rather than
+    materialized into ``index.db`` via a full session replace. No schema
+    change -- ``raw_hook_events.event_type`` is unconstrained TEXT.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+
+    for thread in snapshot.threads:
+        payload: dict[str, object] = {
+            "thread_id": thread.thread_id,
+            "title": thread.title,
+            "cwd": thread.cwd,
+            "source": thread.source,
+            "model": thread.model,
+            "agent_nickname": thread.agent_nickname,
+            "agent_role": thread.agent_role,
+            "archived": thread.archived,
+        }
+        encoded = json_dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        archive.write_hook_event(
+            provider=Provider.CODEX,
+            payload=encoded,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            hook_event=ArchiveHookEvent(
+                hook_event_id=f"codex-thread-title:{thread.thread_id}",
+                origin=Origin.CODEX_SESSION,
+                source_path=source_path,
+                event_type="codex_thread_title",
+                payload=payload,
+                observed_at_ms=thread.updated_at_ms or acquired_at_ms,
+                native_id=f"{thread.thread_id}:codex_thread_title",
+                session_native_id=thread.thread_id,
+            ),
+        )
+    for edge in snapshot.spawn_edges:
+        edge_payload: dict[str, object] = {
+            "parent_thread_id": edge.parent_thread_id,
+            "child_thread_id": edge.child_thread_id,
+            "status": edge.status,
+        }
+        encoded = json_dumps(edge_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        archive.write_hook_event(
+            provider=Provider.CODEX,
+            payload=encoded,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            hook_event=ArchiveHookEvent(
+                hook_event_id=f"codex-thread-spawn-edge:{edge.parent_thread_id}:{edge.child_thread_id}",
+                origin=Origin.CODEX_SESSION,
+                source_path=source_path,
+                event_type="codex_thread_spawn_edge",
+                payload=edge_payload,
+                observed_at_ms=acquired_at_ms,
+                native_id=f"{edge.parent_thread_id}:{edge.child_thread_id}:codex_thread_spawn_edge",
+                session_native_id=edge.parent_thread_id,
+            ),
+        )
 
 
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
@@ -240,7 +324,17 @@ def _captured_jsonl_ends_at_record_boundary(
     if not required or path.suffix.lower() not in {".jsonl", ".ndjson"}:
         return True
     if blob_size <= 0:
-        return False
+        # A zero-byte capture has zero records -- none complete, none
+        # incomplete -- so it is trivially at a record boundary. This is
+        # NOT the same condition as a mid-write truncation: a session file
+        # the provider has created but not yet written its first line into
+        # (a live-watcher race) is empty by construction, not corrupted.
+        # Treating it as "incomplete" here misclassified genuinely-empty
+        # raws as truncated-boundary parse failures (polylogue raw-failure
+        # accounting, 2026-07-29); the correct downstream outcome for an
+        # empty payload is the ordinary "produced no sessions" path below,
+        # not this one.
+        return True
     if payload is not None:
         tail = payload.rsplit(b"\n", 1)[-1]
     else:
@@ -317,9 +411,11 @@ class LiveBatchProcessor:
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
-        # polylogue-wf8a: off by default (``live_watcher_parse_stage_split``).
-        # When set, ``_ingest_full_paths`` pre-parses eligible small JSONL
-        # candidates in this stage's bounded thread pool BEFORE
+        # polylogue-wf8a: when set (the watcher always sets one; a caller
+        # that wants the unmodified in-hold parse path passes ``None``
+        # explicitly, e.g. an equivalence test's baseline run),
+        # ``_ingest_full_paths`` pre-parses eligible small JSONL candidates
+        # in this stage's bounded thread pool BEFORE
         # ``_ingest_full_paths_sync`` ever requests the writer hold -- see
         # ``polylogue.sources.live.parse_prefetch`` for the full safety
         # argument (identical shape to ``DaemonParseStage``).
@@ -1441,6 +1537,57 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
+            elif path.name in _CODEX_STATE_DB_NAMES and codex_state.is_in_scope_codex_sqlite_path(path):
+                # polylogue-0jf4: acquire live Codex SQLite state the same
+                # way Hermes acquires its state.db -- a consistent
+                # backup/snapshot (never a raw read of a possibly-live-locked
+                # file) into the content-addressed blob store. The filename
+                # gate keeps this cheap for the vast majority of ~/.codex
+                # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
+                # then re-confirms the table shape before trusting the name.
+                provider = Provider.CODEX
+                source_name = provider.value
+                try:
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy",
+                            current_path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        )
+                    snapshot = snapshot_sqlite_to_blob(
+                        path,
+                        blob_store,
+                        heartbeat=_blob_copy_heartbeat(
+                            heartbeat,
+                            path=path,
+                            source_payload_read_bytes=source_payload_read_bytes,
+                        ),
+                    )
+                    blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+                    blob_publication_receipt_id = snapshot.blob_publication_receipt_id
+                    source_path = original_sqlite_source_path(path) or path
+                    raw_id = codex_state_raw_id(source_path, blob_hash)
+                    raw_source_revisions[path] = snapshot.source_revision
+                except OSError:
+                    failed.append(path)
+                    continue
+                source_payload_read_bytes += blob_size
+                if heartbeat is not None:
+                    heartbeat(
+                        "full_blob_copy",
+                        current_path=path,
+                        source_payload_read_bytes=source_payload_read_bytes,
+                    )
+            elif path.name in _CODEX_STATE_DB_NAMES or path.name in _CODEX_OUT_OF_SCOPE_STATE_DB_NAMES:
+                # Matched a known Codex state-db filename but either failed
+                # structural verification (mid-write, corrupt, or a future
+                # Codex schema change) or is a database CODEX_STATE_FIDELITY
+                # (sources/parsers/codex_state.py) declares out-of-scope
+                # (logs_2.sqlite's 627 MB of runtime tracing, codex-dev.db's
+                # automation config) -- exclude cleanly without ever reading
+                # the bytes as a generic session artifact.
+                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                continue
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
                 provider = fallback_provider
                 source_name = provider.value
@@ -1620,14 +1767,20 @@ class LiveBatchProcessor:
             # the durable acquisition boundary; the pre-copy stat is only a
             # planning observation. SQLite snapshots are logical copies, so
             # their cursor remains tied to the source file stat instead.
-            raw_byte_sizes[path] = stat.st_size if provider is Provider.HERMES else blob_size
+            # ``path in raw_source_revisions`` is true exactly for the two
+            # sqlite-snapshot acquisition branches (Hermes state/verification
+            # dbs and, per polylogue-0jf4, Codex state dbs) -- both mint a
+            # deterministic raw_id distinct from the blob's own content hash,
+            # unlike every other branch where raw_id IS the content hash.
+            acquired_via_sqlite_snapshot = path in raw_source_revisions
+            raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
             raw_source_names[path] = source_name
-            if provider is not Provider.HERMES:
+            if not acquired_via_sqlite_snapshot:
                 captured_content_hashes[path] = raw_id
             raw_records.append(
                 RawSessionRecord(
                     raw_id=raw_id,
-                    blob_hash=(blob_hash if provider is Provider.HERMES and blob_hash is not None else None),
+                    blob_hash=(blob_hash if acquired_via_sqlite_snapshot and blob_hash is not None else None),
                     payload_provider=provider,
                     capture_mode=(
                         acquisition_capture_mode if acquisition_capture_mode is not Provider.UNKNOWN else provider
@@ -1797,7 +1950,14 @@ class LiveBatchProcessor:
                             blob_size=record.blob_size,
                             source_path=record.source_path,
                             source_index=record.source_index or 0,
-                            raw_id=(record.raw_id if provider is Provider.HERMES else None),
+                            # A populated ``blob_hash`` field marks a
+                            # sqlite-snapshot acquisition (Hermes or, per
+                            # polylogue-0jf4, Codex state dbs), whose raw_id
+                            # is a deterministic profile/path-scoped id
+                            # distinct from the blob's own content hash --
+                            # every other provider's raw_id already IS the
+                            # content hash, so passing it again is a no-op.
+                            raw_id=(record.raw_id if record.blob_hash is not None else None),
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
                         )
@@ -1862,6 +2022,31 @@ class LiveBatchProcessor:
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
                         )
+                    elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
+                        blob_store.blob_path(blob_hash)
+                    ):
+                        # polylogue-0jf4: Codex state dbs never become
+                        # sessions of their own -- thread_state's evidence
+                        # (titles, spawn edges) attaches to the EXISTING
+                        # codex-session rows it describes via
+                        # _write_codex_thread_state_evidence, never a full
+                        # session replace. goals_1.sqlite/memories_1.sqlite
+                        # are acquire-partial (CODEX_STATE_FIDELITY): the raw
+                        # snapshot admitted above is already durable
+                        # evidence; no derived parse is wired in this change.
+                        state_path = blob_store.blob_path(blob_hash)
+                        state_kind = codex_state.classify_codex_sqlite_path(state_path)
+                        if state_kind == "thread_state":
+                            state_snapshot = codex_state.parse_codex_state_db(state_path)
+                            _write_codex_thread_state_evidence(
+                                archive,
+                                state_snapshot,
+                                source_path=record.source_path,
+                                acquired_at_ms=acquired_at_ms,
+                            )
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None:
                             with blob_store.open(blob_hash) as payload_handle:

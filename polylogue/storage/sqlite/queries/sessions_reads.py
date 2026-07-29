@@ -27,7 +27,9 @@ _SESSION_RECORD_SELECT = """
     (SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = sessions.session_id ORDER BY position) AS working_directories_json,
     git_branch,
     git_repository_url,
-    provider_project_ref
+    provider_project_ref,
+    display_name,
+    run_settings_json
 """
 
 
@@ -56,7 +58,9 @@ def _session_record_select(alias: str | None = None) -> str:
     ({cwd_expr}) AS working_directories_json,
     {prefix}git_branch AS git_branch,
     {prefix}git_repository_url AS git_repository_url,
-    {prefix}provider_project_ref AS provider_project_ref
+    {prefix}provider_project_ref AS provider_project_ref,
+    {prefix}display_name AS display_name,
+    {prefix}run_settings_json AS run_settings_json
     """
 
 

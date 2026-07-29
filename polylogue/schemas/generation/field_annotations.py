@@ -141,6 +141,11 @@ def annotate_schema(
         if 0.0 < freq < 0.95:
             schema_node["x-polylogue-frequency"] = round(freq, 3)
 
+        if field_stats.field_first_seen:
+            schema_node["x-polylogue-field-first-seen"] = field_stats.field_first_seen
+        if field_stats.field_last_seen:
+            schema_node["x-polylogue-field-last-seen"] = field_stats.field_last_seen
+
         fmt = field_stats.dominant_format
         if fmt:
             schema_node["x-polylogue-format"] = fmt

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
@@ -117,6 +118,88 @@ def test_real_nemo_relay_atif_fixture_reaches_the_hermes_parser() -> None:
     fidelity = hermes_spans.import_fidelity_declaration(session)
     assert fidelity.capabilities["llm_request_spans"].status == "exact"
     assert fidelity.capabilities["tool_execution_spans"].status == "exact"
+    assert fidelity.capabilities["step_telemetry"].status == "exact"
+    assert fidelity.capabilities["tool_availability"].status == "exact"
+    assert fidelity.capabilities["tool_availability"].observed == 1
+
+
+def test_real_nemo_relay_atif_fixture_yields_step_extra_telemetry_evidence() -> None:
+    """polylogue-2qx.3 parser-diff triage: the ``extra`` telemetry bag under
+    each ATIF step (ancestry, invocation, per-step token usage, and the
+    tool-definition schema offered to the model) was 100% unread before this
+    change. Mutation: delete any of the ``_step_*_evidence``/
+    ``_tool_availability_events`` helpers or their call sites in
+    ``_events_for_step`` and this test's assertions on ancestry/invocation/
+    usage/tool-availability payload keys fail.
+    """
+
+    payload = json.loads(REAL_ATIF_FIXTURE.read_text())
+    session = parse_payload(Provider.HERMES, payload, "fallback-id")[0]
+    events = session.session_events
+
+    # Every real step carries an ancestry chain (function/parent identity) --
+    # previously invisible regardless of which event type the step produced.
+    ancestry_events = [e for e in events if "ancestry_function_id" in e.payload]
+    assert len(ancestry_events) == 5  # every step except the last (no ancestry in that step)
+    assert all(e.payload["ancestry_function_id"] == "<redacted>" for e in ancestry_events)
+    assert all(e.payload["ancestry_parent_id"] == "<redacted>" for e in ancestry_events)
+
+    # Step 3 (index 2) is the one llm_request_span with a full invocation
+    # record, including numeric (not string) start/end timestamps.
+    llm_events = [e for e in events if e.event_type == "hermes_llm_request_span"]
+    invocation_event = next(e for e in llm_events if "invocation_start_timestamp" in e.payload)
+    assert invocation_event.payload["invocation_framework"] == "<redacted>"
+    assert invocation_event.payload["invocation_start_timestamp"] == 1784049155.53
+    assert invocation_event.payload["invocation_end_timestamp"] == 1784049157.558
+
+    # Step 3 also carries the real per-step token usage, previously dropped.
+    assert invocation_event.payload["llm_response_usage"] == {
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "input_tokens": 8983,
+        "output_tokens": 7,
+        "prompt_tokens": 8983,
+        "reasoning_tokens": 0,
+        "request_count": 1,
+        "total_tokens": 8990,
+    }
+
+    # Step 2 (index 1) is the llm-request step whose extra.llm_request carries
+    # a 3-tool definition schema -- the headline "which tools were available"
+    # signal the archive had no representation for at all before this change.
+    availability_events = [e for e in events if e.event_type == "hermes_tool_availability_span"]
+    assert len(availability_events) == 1
+    availability = availability_events[0].payload
+    assert availability["tool_count"] == 3
+    tools = cast(list[dict[str, Any]], availability["tools"])
+    assert len(tools) == 3
+    assert all({"name", "description", "parameters"} <= tool.keys() for tool in tools)
+    assert availability["parallel_tool_calls"] is True
+    assert availability["reasoning_effort"] == "<redacted>"
+    assert availability["tool_choice"] == "<redacted>"
+    assert availability["has_instructions"] is True
+    assert availability["has_input"] is True
+    # The conversation-duplicating event_payload.conversation_history sibling
+    # field is never read -- proven by its absence from every emitted event.
+    assert "conversation_history" not in repr([e.payload for e in events])
+
+    # Step 6 (index 4)'s parallel tool_calls each carry a provider-side
+    # correlation id, and the matching observation.results entry contributes
+    # its own event name/status -- both previously unread.
+    tool_events = [e for e in events if e.event_type == "hermes_tool_execution_span"]
+    assert all(e.payload["provider_call_id"] == "<redacted>" for e in tool_events)
+    assert {e.payload["observation_event_name"] for e in tool_events} == {"process", "terminal", "search_files"}
+    assert all(e.payload["observation_status"] == "<redacted>" for e in tool_events)
+    assert all(e.payload["observation_source_call_id"] == "<redacted>" for e in tool_events)
+
+    # Document-level ATIF evidence (trajectory id, agent plugin, aggregate
+    # token/step totals) was also 100% unread before this change.
+    correlation_event = next(e for e in events if e.event_type == "hermes_observer_trace_correlation")
+    assert correlation_event.payload["trajectory_id"] == "real-nemo-relay-trajectory-redacted"
+    assert correlation_event.payload["agent_plugin"] == "<redacted>"
+    assert correlation_event.payload["final_metrics_total_completion_tokens"] == 7
+    assert correlation_event.payload["final_metrics_total_prompt_tokens"] == 8983
+    assert correlation_event.payload["final_metrics_total_steps"] == 6
 
 
 def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_content() -> None:

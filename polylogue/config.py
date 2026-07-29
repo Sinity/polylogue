@@ -92,8 +92,14 @@ class Config:
     render_root: Path
     sources: list[Source]
     db_path: Path
-    drive_config: DriveConfig | None
-    index_config: IndexConfig | None
+    # Class-level defaults, not bare annotations. ``__init__`` always assigns
+    # both, so these change no runtime behaviour -- but a bare annotation is
+    # invisible to ``dir()``, which means ``MagicMock(spec=Config)`` silently
+    # omits them and any consumer reading ``config.drive_config`` blows up with
+    # ``Mock object has no attribute`` instead of getting ``None``. Declaring
+    # the defaults makes the spec honest about the optional surface.
+    drive_config: DriveConfig | None = None
+    index_config: IndexConfig | None = None
 
     def __init__(
         self,
@@ -599,10 +605,6 @@ class PolylogueConfig:
         return int(str(self._data.get("ingest_commit_batch_messages", 8000)))
 
     @property
-    def ingest_parse_workers(self) -> int:
-        return max(1, int(str(self._data.get("ingest_parse_workers", 1))))
-
-    @property
     def live_full_ingest_workers(self) -> int:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
@@ -633,39 +635,6 @@ class PolylogueConfig:
         if value is None:
             return None
         return int(str(value))
-
-    @property
-    def revision_parse_dispatch_max_bytes(self) -> int | None:
-        """Payload-size ceiling (bytes) for pool-eligible revision parse dispatch.
-
-        ``None``/absent falls back to the caller's hardcoded default
-        (polylogue-amg1).
-        """
-        value = self._data.get("revision_parse_dispatch_max_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def revision_parse_pool_min_bytes(self) -> int | None:
-        """Aggregate pool-eligible payload floor (bytes) for revision parse dispatch.
-
-        ``None``/absent falls back to the caller's hardcoded default
-        (polylogue-amg1 / polylogue-crd8).
-        """
-        value = self._data.get("revision_parse_pool_min_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def daemon_parse_stage_split(self) -> bool:
-        """Opt-in: pre-parse raw-materialization census candidates off the writer hold.
-
-        polylogue-m6tp phase (a). Off by default. See
-        ``polylogue.daemon.parse_prefetch.DaemonParseStage``.
-        """
-        return bool(self._data.get("daemon_parse_stage_split"))
 
     @property
     def daemon_parse_stage_workers(self) -> int | None:
@@ -714,15 +683,6 @@ class PolylogueConfig:
         if value is None:
             return None
         return float(str(value))
-
-    @property
-    def live_watcher_parse_stage_split(self) -> bool:
-        """Opt-in: pre-parse watcher full-ingest candidates off the writer hold.
-
-        polylogue-wf8a. Off by default. See
-        ``polylogue.sources.live.parse_prefetch.LiveParseStage``.
-        """
-        return bool(self._data.get("live_watcher_parse_stage_split"))
 
     @property
     def live_watcher_parse_stage_workers(self) -> int | None:
@@ -798,16 +758,6 @@ class PolylogueConfig:
         truthiness-coercing a typo into enabled.
         """
         return _require_bool_config_value(self._data, "mcp_maintenance_enabled")
-
-    @property
-    def daemon_bulk_rebuild_routing(self) -> bool:
-        """Opt-in: route a bulk-scale raw backlog into a daemon-owned blue-green rebuild.
-
-        polylogue-m6tp phase (c) / polylogue-gd6v. Off by default until the
-        archive-scale equivalence receipt lands. See
-        ``polylogue.daemon.bulk_rebuild``.
-        """
-        return bool(self._data.get("daemon_bulk_rebuild_routing"))
 
     @property
     def daemon_whale_raw_materialization(self) -> bool:
@@ -1432,7 +1382,12 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         env_var="POLYLOGUE_INGEST_PARSE_WORKERS",
         owner_class="resource-policy",
         reload_behavior="startup-bound",
-        description="Process-worker count for CPU-bound source parsing.",
+        description=(
+            "Worker count for CPU-bound source parsing. Read by "
+            "resolve_parse_worker_count from the environment only; the default "
+            "adapts to the interpreter (min(16, cpus-2) free-threaded, "
+            "min(8, cpus-1) under the GIL). Set it to override that."
+        ),
     ),
     ConfigInventoryEntry(
         "live_full_ingest_workers",
@@ -1464,30 +1419,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "pass (polylogue-t93b); widens the resource-block envelope for "
             "a dedicated single-component stream-safe-gated pass only. "
             "<=0/absent falls back to the adaptive default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "revision_parse_dispatch_max_bytes",
-        toml_path="pipeline.revision_parse.dispatch_max_bytes",
-        env_var="POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Payload-size ceiling (bytes) above which a raw parses "
-            "sequentially in-process instead of dispatching to the parse "
-            "pool (polylogue-amg1)."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "revision_parse_pool_min_bytes",
-        toml_path="pipeline.revision_parse.pool_min_bytes",
-        env_var="POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Aggregate pool-eligible payload floor (bytes) below which pool "
-            "dispatch cannot amortize worker spawn cost, so the batch parses "
-            "sequentially instead (polylogue-amg1 / polylogue-crd8)."
         ),
     ),
     ConfigInventoryEntry(
@@ -1532,20 +1463,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "Explicit opt-in (polylogue-800m) for the MCP server's "
             "maintenance dispatcher. Off by default; independent of "
             "write/judge."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "daemon_parse_stage_split",
-        toml_path="daemon.raw_materialization.parse_stage_split",
-        env_var="POLYLOGUE_DAEMON_PARSE_STAGE_SPLIT",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Opt-in (polylogue-m6tp phase (a)): pre-parse raw-materialization "
-            "census candidates in a bounded daemon-owned thread pool BEFORE "
-            "the writer hold, instead of parsing inside the writer-held pass. "
-            "Off by default; proves the parse/apply seam ahead of the "
-            "free-threaded 3.14t daemon deploy."
         ),
     ),
     ConfigInventoryEntry(
@@ -1594,21 +1511,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "Bound (seconds) on how long a prefetch warm() pass waits for "
             "its dispatched workers before leaving stragglers uncached. "
             "<=0 falls back to the 300s default."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "live_watcher_parse_stage_split",
-        toml_path="watcher.parse_stage_split",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_SPLIT",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Opt-in (polylogue-wf8a): pre-parse the live watcher's "
-            "full-ingest catch-up/live-batch candidates (small JSONL files) "
-            "in a bounded thread pool BEFORE the writer hold, instead of "
-            "parsing inside the writer-held pass. Off by default; mirrors "
-            "daemon_parse_stage_split's polylogue-m6tp phase (a) seam for "
-            "the watcher route ahead of the free-threaded 3.14t deploy."
         ),
     ),
     ConfigInventoryEntry(
@@ -1661,22 +1563,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
             "authority component at a time instead of leaving it "
             "permanently offline-manual. Non-stream-safe oversized "
             "components remain blocked with a distinct typed reason."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "daemon_bulk_rebuild_routing",
-        toml_path="daemon.raw_materialization.bulk_rebuild_routing",
-        env_var="POLYLOGUE_DAEMON_BULK_REBUILD_ROUTING",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Opt-in (polylogue-m6tp phase (c) / polylogue-gd6v): once a raw "
-            "backlog is bulk-scale (the #3145 threshold), route it into a "
-            "daemon-owned resumable blue-green index generation build "
-            "instead of the trickle conveyor, promoting it once exact-ready. "
-            "Off by default until the archive-scale equivalence receipt "
-            "lands; the offline `polylogue ops maintenance rebuild-index` "
-            "command remains available regardless of this flag."
         ),
     ),
     ConfigInventoryEntry(
@@ -1736,14 +1622,11 @@ _INT_CONFIG_KEYS = frozenset(
         "notification_email_max_per_hour",
         "otlp_max_body_bytes",
         "ingest_commit_batch_messages",
-        "ingest_parse_workers",
         "live_full_ingest_workers",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
         "raw_authority_commit_batch_size",
         "raw_authority_whale_payload_bytes",
-        "revision_parse_dispatch_max_bytes",
-        "revision_parse_pool_min_bytes",
         "daemon_parse_stage_workers",
         "daemon_parse_stage_max_inflight_bytes",
         "daemon_parse_stage_max_cached_tree_bytes",
@@ -1772,14 +1655,11 @@ _BOOL_CONFIG_KEYS = frozenset(
         "notification_email_use_tls",
         "notification_email_use_starttls",
         "observability_enabled",
-        "daemon_parse_stage_split",
-        "daemon_bulk_rebuild_routing",
         "daemon_whale_raw_materialization",
         "mcp_write_enabled",
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
         "judgment_automation_enabled",
-        "live_watcher_parse_stage_split",
     }
 )
 
@@ -1906,7 +1786,6 @@ def _user_config_path(bootstrap: _BootstrapPaths | None = None) -> Path | None:
 def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str, object]:
     """Built-in defaults (layer 1) captured from one bootstrap context."""
     captured = bootstrap or _snapshot_bootstrap()
-    default_parse_workers = max(1, min(8, (os.cpu_count() or 2) - 1))
     return {
         "archive_root": str(captured.data_home),
         "daemon_url": "http://127.0.0.1:8766",
@@ -1974,23 +1853,17 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "backup_verify_tmpdir": None,
         "antigravity_language_server": None,
         "ingest_commit_batch_messages": 8000,
-        "ingest_parse_workers": default_parse_workers,
         "live_full_ingest_workers": 1,
         "raw_authority_commit_batch_size": None,
         "raw_authority_whale_payload_bytes": None,
-        "revision_parse_dispatch_max_bytes": None,
-        "revision_parse_pool_min_bytes": None,
         "subscription_plans": (),
-        "daemon_parse_stage_split": False,
         "daemon_parse_stage_workers": None,
         "daemon_parse_stage_max_inflight_bytes": None,
         "daemon_parse_stage_max_cached_tree_bytes": None,
         "daemon_parse_stage_warm_timeout_seconds": None,
-        "live_watcher_parse_stage_split": False,
         "live_watcher_parse_stage_workers": None,
         "live_watcher_parse_stage_max_inflight_bytes": None,
         "live_watcher_parse_stage_warm_timeout_seconds": None,
-        "daemon_bulk_rebuild_routing": False,
         "daemon_whale_raw_materialization": True,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,

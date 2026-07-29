@@ -33,6 +33,12 @@ from .base import (
 
 logger = get_logger(__name__)
 _TimestampPair = tuple[datetime, str]
+#: Tool names whose payload is a patch-format string rather than JSON.
+#: Mirrors the ``apply_patch`` child-type aliases registered below, so the
+#: standalone ``function_call`` path and the batched code-mode child path
+#: recognise exactly the same set.
+_PATCH_TOOL_NAMES = frozenset({"apply_patch", "patch"})
+
 _EXECUTION_TOOL_NAMES = frozenset(
     {
         "bash",
@@ -425,6 +431,14 @@ def _compact_response_payload(
     cwd = _extract_cwd(payload)
     if cwd:
         compact["cwd"] = cwd
+    # `metadata.turn_id` correlates a response_item/event_msg record (most
+    # commonly `reasoning`) back to the turn that produced it. Small, always
+    # present or absent as a single scalar -- safe to carry on every event.
+    metadata = _dict_record(payload.get("metadata"))
+    if metadata:
+        turn_id = metadata.get("turn_id")
+        if isinstance(turn_id, str) and turn_id:
+            compact["turn_id"] = turn_id
     if compact.get("type") == "token_count":
         if current_model_name and not _string_field(compact, "model", "model_name"):
             compact["model"] = current_model_name
@@ -446,6 +460,83 @@ def _compact_response_payload(
         )
         if context_window is not None:
             compact["model_context_window"] = context_window
+        # Rate-limit windows are quota telemetry Codex reports alongside each
+        # token_count tick -- small, bounded, and otherwise invisible.
+        rate_limits = _dict_record(payload.get("rate_limits"))
+        if rate_limits:
+            compact_rate_limits: dict[str, object] = {}
+            for lane in ("primary", "secondary"):
+                window = _dict_record(rate_limits.get(lane))
+                if not window:
+                    continue
+                lane_payload: dict[str, object] = {}
+                used_percent = window.get("used_percent")
+                if isinstance(used_percent, int | float) and not isinstance(used_percent, bool):
+                    lane_payload["used_percent"] = used_percent
+                for int_key in ("window_minutes", "resets_in_seconds"):
+                    int_value = _optional_int_field(window, int_key)
+                    if int_value is not None:
+                        lane_payload[int_key] = int_value
+                if lane_payload:
+                    compact_rate_limits[lane] = lane_payload
+            if compact_rate_limits:
+                compact["rate_limits"] = compact_rate_limits
+    elif compact.get("type") == "ghost_snapshot":
+        # Codex's shadow-git snapshot (undo/diff tracking): the commit id,
+        # its parent, and pre-existing untracked paths at snapshot time.
+        ghost_commit = _dict_record(payload.get("ghost_commit"))
+        if ghost_commit:
+            compact["ghost_commit"] = dict(ghost_commit)
+    elif compact.get("type") in {"exec_command_begin", "exec_command_end"}:
+        # `aggregated_output`/`formatted_output`/`stdout`/`stderr` duplicate
+        # text already captured verbatim as the paired function_call_output's
+        # tool_result text (same call_id, same command output, just wrapped
+        # with different transport metadata) -- deliberately not re-stored
+        # here. `process_id` and `parsed_cmd` (Codex's own command
+        # classification: search/read/etc with extracted query/path) are new.
+        process_id = payload.get("process_id")
+        if isinstance(process_id, str) and process_id:
+            compact["process_id"] = process_id
+        parsed_cmd = payload.get("parsed_cmd")
+        if isinstance(parsed_cmd, list) and parsed_cmd:
+            compact["parsed_cmd"] = parsed_cmd
+    elif compact.get("type") in {"patch_apply_begin", "patch_apply_end"}:
+        # `success`/`changes` were completely unread (polylogue-cgfy triage,
+        # codex lane): the tool_use block on the paired function_call already
+        # stores the *requested* patch text verbatim
+        # (`_codex_tool_input`/`_PATCH_TOOL_NAMES`), and `stdout` duplicates a
+        # human-readable summary already captured as the function_call_output
+        # tool_result text -- same dedup rule as exec_command above. `changes`
+        # is materially different from both: it is codex's own post-apply
+        # per-file classification (add/update/delete + `unified_diff` +
+        # `move_path` for renames), the structural equivalent of Claude
+        # Code's `structuredPatch` (polylogue-cgfy). Nothing upstream
+        # decomposes it, so it is retained verbatim, keyed by path, alongside
+        # the boolean apply outcome.
+        success = payload.get("success")
+        if isinstance(success, bool):
+            compact["success"] = success
+        changes = _dict_record(payload.get("changes"))
+        if changes:
+            compact_changes: dict[str, object] = {}
+            for changed_path, change in changes.items():
+                change_record = _dict_record(change)
+                if change_record is None:
+                    continue
+                entry: dict[str, object] = {}
+                change_type = change_record.get("type")
+                if isinstance(change_type, str) and change_type:
+                    entry["type"] = change_type
+                unified_diff = change_record.get("unified_diff")
+                if isinstance(unified_diff, str) and unified_diff:
+                    entry["unified_diff"] = unified_diff
+                move_path = change_record.get("move_path")
+                if isinstance(move_path, str) and move_path:
+                    entry["move_path"] = move_path
+                if entry:
+                    compact_changes[str(changed_path)] = entry
+            if compact_changes:
+                compact["changes"] = compact_changes
     return compact
 
 
@@ -1068,6 +1159,60 @@ def _structural_byte_count(value: object) -> int | None:
     return None
 
 
+_CODEX_CHUNK_ID_PREFIX_RE = re.compile(r"\AChunk ID: [0-9a-f]+\n")
+_CODEX_EXEC_ENVELOPE_OUTCOME_RE = re.compile(
+    r"\AWall time: [0-9.]+ seconds\n"
+    r"(?:Process exited with code (?P<exit_code>-?\d+)"
+    r"|Process completed with exit code (?P<exit_code2>-?\d+)"
+    r"|Process running with session ID \d+)"
+)
+
+
+def _codex_exec_envelope_outcome(output: object) -> tuple[bool | None, int | None]:
+    """Read the exit outcome Codex's own unified-exec tool ("exec_command"/
+    "write_stdin"/code-mode exec children) always stamps on its result text.
+
+    Unlike a shell transcript, this preamble is generated by the Codex CLI
+    itself, never the model: ``[Chunk ID: <hex>\\n]Wall time: <float>
+    seconds\\n`` followed by exactly ``Process exited with code <N>`` (or the
+    older ``Process completed with exit code <N>``) once the process has
+    exited, or ``Process running with session ID <N>`` while a
+    long-lived/chunked session is still attached. Matching is anchored at the
+    very start of the field, so it can never fire on an unrelated occurrence
+    of similar wording deep inside captured subprocess output (e.g. a CI log
+    that itself prints "Process completed with exit code 1") -- that text
+    would only ever appear after this preamble, never as a substitute for it.
+    A still-running session has no outcome yet and stays honestly unknown.
+    """
+    if not isinstance(output, str):
+        return None, None
+    text = _CODEX_CHUNK_ID_PREFIX_RE.sub("", output, count=1)
+    match = _CODEX_EXEC_ENVELOPE_OUTCOME_RE.match(text)
+    if match is None:
+        return None, None
+    exit_code_str = match.group("exit_code") or match.group("exit_code2")
+    if exit_code_str is None:
+        return None, None
+    exit_code = int(exit_code_str)
+    return exit_code != 0, exit_code
+
+
+def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None]:
+    """Resolve (is_error, exit_code) for a Codex tool-result payload.
+
+    Tries the JSON-structural outcome first (``exit_code``/``is_error``
+    fields nested in a decoded JSON object), then falls back to the
+    unified-exec text envelope (see ``_codex_exec_envelope_outcome``) when the
+    raw payload is a string that JSON-decoding did not resolve to a mapping
+    carrying either field. Anything else remains unknown.
+    """
+    decoded = _decoded_json_value(raw) if isinstance(raw, str) else raw
+    is_error, exit_code = _structural_outcome(decoded)
+    if is_error is None and exit_code is None and isinstance(raw, str):
+        return _codex_exec_envelope_outcome(raw)
+    return is_error, exit_code
+
+
 def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
     wrappers: list[dict[str, object]] = []
     if isinstance(value, dict):
@@ -1092,6 +1237,18 @@ def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
         derived = exit_code != 0
         if is_error is None:
             is_error = derived
+    if is_error is None:
+        # A structural "timed_out": true (e.g. the `wait`/`write_stdin`
+        # child tools' timeout envelope, `{"message": "Wait timed out.",
+        # "timed_out": true}`) is itself the provider's own outcome signal --
+        # the operation did not complete successfully -- even when no
+        # exit_code/is_error field is present.
+        for wrapper in wrappers:
+            raw_timed_out = wrapper.get("timed_out")
+            if isinstance(raw_timed_out, bool):
+                if raw_timed_out:
+                    is_error = True
+                break
     return is_error, exit_code
 
 
@@ -1143,6 +1300,11 @@ def _code_mode_result_items(output: object, *, child_count: int) -> tuple[object
         # envelope has one child. It may carry no promoted outcome fields; in
         # that case the paired result is retained with outcome=unknown.
         return (parsed,) if child_count == 1 else ()
+    if parsed is None and child_count == 1 and isinstance(output, str):
+        # The whole output failed to decode as JSON -- when there is exactly
+        # one child, the raw text itself (possibly Codex's own unified-exec
+        # envelope, see _codex_exec_envelope_outcome) is that child's result.
+        return (output,)
     if isinstance(parsed, list):
         if all(
             isinstance(item, dict) and item.get("type") in {"input_text", "output_text", "input_image", "image"}
@@ -1161,7 +1323,7 @@ def _code_mode_result_items(output: object, *, child_count: int) -> tuple[object
 def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_CodexExecChildResult, ...]:
     results: list[_CodexExecChildResult] = []
     for item in _code_mode_result_items(output, child_count=child_count):
-        is_error, exit_code = _structural_outcome(item)
+        is_error, exit_code = _codex_tool_result_outcome(item)
         results.append(
             _CodexExecChildResult(
                 raw=item,
@@ -1366,6 +1528,43 @@ def _code_mode_child_use_blocks(envelope: _CodexExecEnvelope) -> list[ParsedCont
     return blocks
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the only key the write path
+# reads back out of it is ``language`` (``storage/sqlite/archive_tiers/
+# write.py:_block_language``). ``_code_mode_child_result_blocks`` below still
+# attaches ``codex_functions_exec_*``/``paths``/``byte_count`` to
+# ``metadata`` as an in-process carrier; ``_code_mode_child_result_evidence_
+# events`` projects that same dict into ``session_events`` (same precedent
+# as ``claude/common.py``'s ``claude_ai_web_tool_evidence``), keyed to the
+# tool-result message that owns the child blocks.
+def _code_mode_child_result_evidence_events(
+    envelope: _CodexExecEnvelope,
+    *,
+    source_message_provider_id: str,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for child_index in range(len(envelope.results)):
+        result = envelope.results[child_index]
+        metadata: dict[str, object] = {
+            "codex_functions_exec_child_index": child_index,
+            "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
+        }
+        if result.paths:
+            metadata["paths"] = list(result.paths)
+        if result.byte_count is not None:
+            metadata["byte_count"] = result.byte_count
+        events.append(
+            ParsedSessionEvent(
+                event_type="codex_functions_exec_child_result_evidence",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload=metadata,
+            )
+        )
+    return events
+
+
 def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
     blocks: list[ParsedContentBlock] = []
     for child_index, result in enumerate(envelope.results):
@@ -1414,6 +1613,29 @@ def _tool_input_from_arguments(value: object, *, tool_name: str) -> dict[str, ob
     arguments = tool_input.get("arguments")
     if tool_name.lower() in _EXECUTION_TOOL_NAMES and isinstance(arguments, str) and arguments.strip():
         return {**tool_input, "command": arguments}
+
+    # apply_patch carries its whole payload as a PATCH-FORMAT STRING under
+    # ``arguments`` -- not JSON -- so the operated-on path lives in
+    # ``*** Update File: <path>`` / ``*** Add File:`` / ``*** Delete File:``
+    # header lines, where no ``json_extract`` can reach it. blocks.tool_path
+    # and blocks.search_text are both generated from
+    # ``$.file_path``/``$.path`` (archive_tiers/index.py:307,310), so every
+    # Codex file edit was invisible to structured path queries AND to FTS:
+    # tool_path coverage measured 0.07% for codex-session against 44% for
+    # claude-code-session, and apply_patch is 95% of Codex tool calls
+    # (18,984 of a 20,000 sample). It also left Codex sessions unable to earn
+    # a path-bearing structural label (polylogue-a9hx).
+    #
+    # The batched code-mode child path already extracts these via
+    # ``_patch_touched_paths``; this is the standalone ``function_call``
+    # branch, which did not. Same helper, so both paths agree.
+    if tool_name.lower() in _PATCH_TOOL_NAMES and isinstance(arguments, str) and arguments.strip():
+        patch_paths = _patch_touched_paths(arguments)
+        if patch_paths:
+            # ``path`` is what the generated column reads; ``paths`` keeps the
+            # full set, since 11% of patches touch more than one file
+            # (554 of 5,000 sampled) and a single column cannot hold them.
+            return {**tool_input, "patch": arguments, "path": patch_paths[0], "paths": list(patch_paths)}
     return tool_input
 
 
@@ -1477,10 +1699,11 @@ def _codex_tool_message(
         output_text = _codex_tool_output_text(output)
         if not tool_id and not output_text:
             return None
-        # Only exact structured fields affect the outcome. Text containing
-        # exit-code-like prose remains evidence text with an unknown outcome.
-        parsed_output = _decoded_json_value(output)
-        is_error, exit_code = _structural_outcome(parsed_output)
+        # Only exact structured fields (or Codex's own generated exec-tool
+        # envelope, see _codex_exec_envelope_outcome) affect the outcome.
+        # Arbitrary prose containing exit-code-like wording remains evidence
+        # text with an unknown outcome.
+        is_error, exit_code = _codex_tool_result_outcome(output)
         blocks = [
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -1503,6 +1726,103 @@ def _codex_tool_message(
             blocks=blocks,
         )
     return None
+
+
+def _mcp_invocation_tool_name(invocation: dict[str, object]) -> str:
+    server = _string_value(invocation.get("server"))
+    tool = _string_value(invocation.get("tool"))
+    if server and tool:
+        return f"mcp__{server}__{tool}"
+    return tool or server or "mcp_tool_call"
+
+
+def _mcp_result_outcome(result: object) -> tuple[bool | None, str | None]:
+    """Extract (is_error, text) from an ``mcp_tool_call_end`` ``result``.
+
+    Codex wraps MCP results as a Rust-style ``{"Ok": ...}`` / ``{"Err": "..."}``
+    tagged union rather than the ``is_error``/``exit_code`` shape other Codex
+    tool records use.
+    """
+    if not isinstance(result, dict):
+        return None, _codex_tool_output_text(result)
+    if "Err" in result:
+        return True, _codex_tool_output_text(result.get("Err"))
+    if "Ok" in result:
+        return False, _codex_tool_output_text(result.get("Ok"))
+    return None, _codex_tool_output_text(result)
+
+
+def _codex_mcp_tool_call_messages(
+    record: dict[str, object],
+    *,
+    index: int,
+    position: int,
+    timestamp_fallback: str | int | float | None = None,
+) -> tuple[ParsedMessage, ParsedMessage] | None:
+    """Parse a Codex ``mcp_tool_call_end`` record into a tool_use/tool_result pair.
+
+    Unlike ``function_call``/``function_call_output``, Codex emits MCP tool
+    invocations as a single self-contained record carrying both the request
+    (``invocation.server``/``invocation.tool``/``invocation.arguments``) and
+    the response (``result``) -- there is no paired ``mcp_tool_call_begin``.
+    Previously this whole record fell through to the generic event-summary
+    path, which drops the invocation and result entirely; this was the
+    largest single unread surface in the corpus (arbitrary downstream MCP
+    server responses, e.g. github/serena/sinex tool calls made from Codex).
+    """
+    payload = _record_payload(record)
+    if payload.get("type") != "mcp_tool_call_end":
+        return None
+    invocation = _dict_record(payload.get("invocation"))
+    if invocation is None:
+        return None
+    tool_name = _mcp_invocation_tool_name(invocation)
+    call_id = payload.get("call_id")
+    tool_id = str(call_id) if isinstance(call_id, str) and call_id else f"mcp-call-{index}"
+    arguments = invocation.get("arguments")
+    if isinstance(arguments, dict):
+        tool_input: dict[str, object] = dict(arguments)
+    elif arguments is not None:
+        tool_input = {"arguments": arguments}
+    else:
+        tool_input = {}
+    timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
+    use_message = ParsedMessage(
+        provider_message_id=f"{tool_id}::mcp-call",
+        role=Role.ASSISTANT,
+        text=tool_name,
+        timestamp=timestamp,
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_name=tool_name,
+                tool_id=tool_id,
+                tool_input=tool_input,
+            )
+        ],
+    )
+    is_error, result_text = _mcp_result_outcome(payload.get("result"))
+    result_message = ParsedMessage(
+        provider_message_id=f"{tool_id}::mcp-output",
+        role=Role.TOOL,
+        text=result_text,
+        timestamp=timestamp,
+        position=position + 1,
+        variant_index=0,
+        is_active_path=True,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=tool_id,
+                text=result_text,
+                is_error=is_error,
+            )
+        ],
+    )
+    return use_message, result_message
 
 
 def _codex_tool_output_text(output: object) -> str | None:
@@ -1685,6 +2005,15 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     current_model_name: str | None = None
     current_model_effort: str | None = None
     message_position = 0
+    # Subagent/session identity facts that recur on every session_meta or
+    # turn_context record for a given session (same value repeated per turn).
+    # Captured once at first occurrence -- like session_instructions/session_git
+    # above -- and emitted as a single one-time session_event after the loop,
+    # rather than duplicated onto every turn_context event.
+    session_agent_role: str | None = None
+    session_agent_nickname: str | None = None
+    session_model_provider: str | None = None
+    session_developer_instructions: str | None = None
 
     for idx, item in enumerate(record_list, start=1):
         record = _dict_record(item)
@@ -1696,11 +2025,44 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             timestamp = _iso_or_none(_record_timestamp(record))
             payload = _payload_record(record) or {}
             history = payload.get("replacement_history")
+            history_list = history if isinstance(history, list) else []
             event_payload: dict[str, object] = {
                 "source_index": idx,
                 "summary": str(payload.get("message", "") or ""),
-                "replacement_history_count": len(history) if isinstance(history, list) else 0,
+                "replacement_history_count": len(history_list),
             }
+            # replacement_history re-embeds the exact pre-compaction records
+            # (message/reasoning/ghost_snapshot) already parsed once from the
+            # live stream earlier in this file -- storing them again here
+            # would duplicate full message content. What it adds beyond the
+            # count is per-item annotation Codex doesn't emit on the live
+            # stream: an internal generation `phase` tag on content items, a
+            # `ghost_commit` on some entries, and inline images. Those are
+            # captured as bounded aggregates, not raw duplication.
+            phase_counts: dict[str, int] = {}
+            ghost_commit_count = 0
+            image_count = 0
+            for entry in history_list:
+                if not isinstance(entry, dict):
+                    continue
+                if isinstance(entry.get("ghost_commit"), dict):
+                    ghost_commit_count += 1
+                entry_content = entry.get("content")
+                if isinstance(entry_content, list):
+                    for content_item in entry_content:
+                        if not isinstance(content_item, dict):
+                            continue
+                        phase = content_item.get("phase")
+                        if isinstance(phase, str) and phase:
+                            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+                        if isinstance(content_item.get("image_url"), str | dict):
+                            image_count += 1
+            if phase_counts:
+                event_payload["replacement_history_phase_counts"] = dict(sorted(phase_counts.items()))
+            if ghost_commit_count:
+                event_payload["replacement_history_ghost_commit_count"] = ghost_commit_count
+            if image_count:
+                event_payload["replacement_history_image_count"] = image_count
             session_events.append(
                 ParsedSessionEvent(
                     event_type="compaction",
@@ -1749,6 +2111,23 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 if model_effort := _string_field(normalized_turn_context, "effort", "model_effort"):
                     current_model_effort = model_effort
                     tc_payload["effort"] = model_effort
+                # `personality`/`summary`/`collaboration_mode` were unread
+                # (polylogue-cgfy triage, codex lane): agent-persona,
+                # reasoning-summary-verbosity, and collaboration-mode knobs
+                # reported on every turn_context alongside model/effort, but
+                # never carried through. `collaboration_mode.settings`
+                # duplicates model/effort/developer_instructions already
+                # captured from the top-level turn_context -- only the mode
+                # name itself is new.
+                if personality := _string_field(normalized_turn_context, "personality"):
+                    tc_payload["personality"] = personality
+                if reasoning_summary := _string_field(normalized_turn_context, "summary"):
+                    tc_payload["reasoning_summary"] = reasoning_summary
+                collaboration_mode_raw = _dict_record(normalized_turn_context.get("collaboration_mode"))
+                if collaboration_mode_raw is not None:
+                    collaboration_mode_name = _string_field(collaboration_mode_raw, "mode")
+                    if collaboration_mode_name:
+                        tc_payload["collaboration_mode"] = collaboration_mode_name
                 # Emit agent_policy event when policy fields are present.
                 # Payload keys match what _write_session_events expects via
                 # _payload_string(event.payload, "approval_policy") etc.
@@ -1759,12 +2138,20 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     if approval_policy:
                         policy_payload["approval_policy"] = approval_policy
                     if isinstance(sandbox_raw, dict):
-                        mode = _string_field(sandbox_raw, "mode")
+                        # Older Codex CLI builds key the sandbox kind as
+                        # "mode" (workspace-write, read-only); newer builds
+                        # use "type" (e.g. danger-full-access). Both are the
+                        # same fact under different wire spellings.
+                        mode = _string_field(sandbox_raw, "mode", "type")
                         if mode:
                             policy_payload["sandbox_policy"] = mode
                         network_val = sandbox_raw.get("network_access")
                         if network_val is not None:
                             policy_payload["network_policy"] = str(network_val).lower()
+                        for flag_key in ("exclude_slash_tmp", "exclude_tmpdir_env_var"):
+                            flag_val = sandbox_raw.get(flag_key)
+                            if isinstance(flag_val, bool):
+                                policy_payload[flag_key] = flag_val
                     elif isinstance(sandbox_raw, str) and sandbox_raw:
                         policy_payload["sandbox_policy"] = sandbox_raw
                     if policy_payload:
@@ -1775,6 +2162,31 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                                 payload=policy_payload,
                             )
                         )
+                # Truncation policy and structured-output schema are small,
+                # bounded turn-scoped config -- safe to carry on every
+                # turn_context event (unlike the large instruction texts
+                # below, they legitimately vary turn to turn).
+                truncation_policy = _dict_record(normalized_turn_context.get("truncation_policy"))
+                if truncation_policy:
+                    tc_payload["truncation_policy"] = dict(truncation_policy)
+                final_output_schema = _dict_record(normalized_turn_context.get("final_output_json_schema"))
+                if final_output_schema:
+                    tc_payload["final_output_json_schema"] = dict(final_output_schema)
+                # `user_instructions` is the session-level system prompt
+                # (CLAUDE.md/AGENTS.md-style content), re-declared on every
+                # turn in this record generation. Fold it into the same
+                # dedup slot the legacy per-session `instructions` field
+                # uses instead of duplicating the full text per turn.
+                if not session_instructions:
+                    session_instructions = _string_value(normalized_turn_context.get("user_instructions"))
+                # `developer_instructions` is a distinct, usually
+                # subagent-role-specific prompt (e.g. "You are an awaiter.").
+                # Captured once per session via the same one-time identity
+                # event as agent_role/agent_nickname below.
+                if not session_developer_instructions:
+                    session_developer_instructions = _string_value(
+                        normalized_turn_context.get("developer_instructions")
+                    )
             session_events.append(
                 ParsedSessionEvent(
                     event_type="turn_context",
@@ -1812,6 +2224,26 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     messages.append(tool_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, tool_message.timestamp)
+                    # code_mode_envelopes maps BOTH the call record's index
+                    # and the matching output record's index to the same
+                    # (results-enriched) envelope object -- only emit the
+                    # child-result evidence once, on the output/tool_result
+                    # message, not again on the call/tool_use message.
+                    if _record_type(inner) in {
+                        "function_call_output",
+                        "custom_tool_call_output",
+                        "tool_search_output",
+                        "web_search_output",
+                    }:
+                        exec_envelope_for_message = code_mode_envelopes.get(idx)
+                        if exec_envelope_for_message is not None and exec_envelope_for_message.results:
+                            session_events.extend(
+                                _code_mode_child_result_evidence_events(
+                                    exec_envelope_for_message,
+                                    source_message_provider_id=tool_message.provider_message_id,
+                                    timestamp=tool_message.timestamp,
+                                )
+                            )
                 event_message = _codex_event_message(
                     inner,
                     index=idx,
@@ -1823,10 +2255,43 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     messages.append(event_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, event_message.timestamp)
+                mcp_messages = _codex_mcp_tool_call_messages(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    timestamp_fallback=timestamp_fallback,
+                )
+                if mcp_messages is not None:
+                    messages.extend(mcp_messages)
+                    message_position += len(mcp_messages)
+                    for mcp_message in mcp_messages:
+                        latest_message_timestamp = _newer_timestamp(latest_message_timestamp, mcp_message.timestamp)
                 cwd = _extract_cwd(event_payload)
                 if cwd:
                     working_directories.add(cwd)
                 continue
+
+        # World-state snapshots (full or delta) report ambient runtime
+        # context -- most notably the live subagent roster
+        # (`state.environments.subagents`) -- outside the
+        # session_meta/turn_context/response_item shapes handled above, so
+        # they previously fell through the whole dispatch chain unrecorded.
+        # Only `environments` is carried: the other `state` keys on a full
+        # snapshot (agents_md/apps_instructions/skills) are large repeated
+        # context-file text with no ranked evidence of parser blindness yet.
+        if _record_type(record) == "world_state":
+            world_payload = _payload_record(record) or {}
+            state = _dict_record(world_payload.get("state"))
+            environments = _dict_record(state.get("environments")) if state else None
+            if environments:
+                session_events.append(
+                    ParsedSessionEvent(
+                        event_type="world_state",
+                        timestamp=_iso_or_none(_record_timestamp(record)),
+                        payload={"source_index": idx, "environments": dict(environments)},
+                    )
+                )
+            continue
 
         session_meta = _session_meta_record(record)
         if session_meta is not None:
@@ -1848,8 +2313,20 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             if git_context and not session_git:
                 session_git = git_context
             instructions = _record_instructions(session_meta)
+            if not instructions:
+                # Newer session_meta records carry `base_instructions` as a
+                # {"text": ...} wrapper instead of the legacy flat string.
+                base_instructions = _dict_record(session_meta.get("base_instructions"))
+                if base_instructions:
+                    instructions = _string_value(base_instructions.get("text"))
             if instructions and not session_instructions:
                 session_instructions = instructions
+            if not session_agent_role:
+                session_agent_role = _string_field(session_meta, "agent_role")
+            if not session_agent_nickname:
+                session_agent_nickname = _string_field(session_meta, "agent_nickname")
+            if not session_model_provider:
+                session_model_provider = _string_field(session_meta, "model_provider")
             continue
 
         message_record = _message_record(record)
@@ -1902,6 +2379,28 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             )
             message_position += 1
             latest_message_timestamp = _newer_timestamp_pair(latest_message_timestamp, timestamp_pair)
+
+    # Emit the deduped subagent/session identity facts (agent_role,
+    # agent_nickname, model_provider from session_meta; developer_instructions
+    # from turn_context) once, if any were observed, instead of once per
+    # session_meta/turn_context occurrence.
+    identity_payload: dict[str, object] = {}
+    if session_agent_role:
+        identity_payload["agent_role"] = session_agent_role
+    if session_agent_nickname:
+        identity_payload["agent_nickname"] = session_agent_nickname
+    if session_model_provider:
+        identity_payload["model_provider"] = session_model_provider
+    if session_developer_instructions:
+        identity_payload["developer_instructions"] = session_developer_instructions
+    if identity_payload:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="codex_agent_identity",
+                timestamp=session_timestamp,
+                payload=identity_payload,
+            )
+        )
 
     # Lineage: prefer the explicit markers on the child's own session_meta.
     #   - `source.subagent.thread_spawn` → spawned subagent (positive evidence

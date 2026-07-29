@@ -152,6 +152,52 @@ def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     assert result.messages[1].duration_ms == 1500
 
 
+def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:
+    """runSettings (polylogue-2qx.4 / polylogue-cgfy) must reach ``ParsedSession.run_settings``.
+
+    Deleting the ``run_settings=dict(run_settings) if run_settings else None``
+    kwarg on the ``ParsedSession`` return in ``parse_chunked_prompt`` makes
+    this assert None even though the value already feeds the ``model_config``
+    session_event.
+    """
+    payload: JSONDocument = {
+        "id": "gemini-run-settings",
+        "runSettings": {
+            "temperature": 0.7,
+            "topP": 0.9,
+            "topK": 40,
+            "maxOutputTokens": 8192,
+            "thinkingLevel": "high",
+        },
+        "chunkedPrompt": {
+            "chunks": [{"id": "msg-user", "role": "user", "text": "hi"}],
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert result.run_settings == {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192,
+        "thinkingLevel": "high",
+    }
+    model_config_events = [e for e in result.session_events if e.event_type == "model_config"]
+    assert len(model_config_events) == 1
+
+
+def test_parse_chunked_prompt_without_run_settings_leaves_it_none() -> None:
+    payload: JSONDocument = {
+        "id": "gemini-no-run-settings",
+        "chunkedPrompt": {"chunks": [{"id": "msg-user", "role": "user", "text": "hi"}]},
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert result.run_settings is None
+
+
 def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     payload: JSONDocument = {
         "id": "gemini-fallback-title",
@@ -228,6 +274,45 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
     assert result.attachments[0].provider_attachment_id == "doc-1"
     assert result.attachments[0].mime_type == "application/pdf"
     assert result.attachments[0].size_bytes == 12
+
+
+def test_thinking_block_reasoning_continuity_evidence_routes_to_session_events() -> None:
+    """Gemini's thoughtSignatures/thinkingBudget are dropped by ``blocks.metadata``
+    (bd polylogue-9x22: the ``blocks`` table has no metadata column, and the
+    write path only reads a ``language`` key back out of it), so
+    ``session_events_from_meta_blocks`` must carry them through
+    ``session_events`` instead. Deleting that wiring in
+    ``parse_chunked_prompt`` makes this fail.
+    """
+    payload: JSONDocument = {
+        "id": "gemini-thinking",
+        "displayName": "Gemini Thinking",
+        "chunkedPrompt": {
+            "chunks": [
+                {"id": "msg-user", "role": "user", "text": "question"},
+                {
+                    "id": "msg-thought",
+                    "role": "model",
+                    "text": "reasoning",
+                    "isThought": True,
+                    "thinkingBudget": 32,
+                    "thoughtSignatures": ["sig-1"],
+                },
+            ]
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    thinking_events = [event for event in result.session_events if event.event_type == "gemini_thinking_evidence"]
+    assert len(thinking_events) == 1
+    event = thinking_events[0]
+    assert event.source_message_provider_id == "msg-thought"
+    assert event.payload == {
+        "block_index": 0,
+        "thinkingBudget": 32,
+        "thoughtSignatures": ["sig-1"],
+    }
 
 
 def test_live_fetched_drive_attachment_bytes_reach_inline_bytes_not_block_metadata() -> None:

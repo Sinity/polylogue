@@ -374,6 +374,30 @@ class TestCollectFieldStats:
         assert status_stats.value_session_ids["active"] == {"conv1"}
         assert status_stats.value_session_ids["pending"] == {"conv2"}
 
+    def test_field_first_last_seen_tracked_from_record_timestamps(self) -> None:
+        """polylogue-2qx.3: per-field first/last-seen rolls up the record
+        timestamp the generation pass already reads (one per sample,
+        parallel to session_ids) -- no second timestamp scan."""
+        samples: list[JSONDocument] = [{"a": 1, "b": "x"}, {"a": 2}, {"b": "y"}]
+        observed_ats = ["2026-03-01T00:00:00Z", "2026-07-01T00:00:00Z", "2026-01-01T00:00:00Z"]
+        stats = _collect_field_stats(samples, observed_ats=observed_ats)
+        # "a" appears in samples 0 and 1 (March, July) -- not sample 2.
+        assert stats["$.a"].field_first_seen == "2026-03-01T00:00:00+00:00"
+        assert stats["$.a"].field_last_seen == "2026-07-01T00:00:00+00:00"
+        # "b" appears in samples 0 and 2 (March, January).
+        assert stats["$.b"].field_first_seen == "2026-01-01T00:00:00+00:00"
+        assert stats["$.b"].field_last_seen == "2026-03-01T00:00:00+00:00"
+
+    def test_field_first_last_seen_absent_without_observed_ats(self) -> None:
+        stats = _collect_field_stats([{"a": 1}])
+        assert stats["$.a"].field_first_seen is None
+        assert stats["$.a"].field_last_seen is None
+
+    def test_field_first_last_seen_ignores_unparseable_timestamps(self) -> None:
+        stats = _collect_field_stats([{"a": 1}, {"a": 2}], observed_ats=["not-a-timestamp", None])
+        assert stats["$.a"].field_first_seen is None
+        assert stats["$.a"].field_last_seen is None
+
     @given(
         st.lists(
             st.fixed_dictionaries({"key": st.text(min_size=1, max_size=20)}),

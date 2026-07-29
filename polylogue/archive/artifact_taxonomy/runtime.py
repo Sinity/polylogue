@@ -222,7 +222,7 @@ def _classify_list(
 
     if dict_items and looks_like_record_stream(dict_items):
         subagent = is_subagent_path(source_path)
-        kind = ArtifactKind.SUBAGENT_SESSION_STREAM if subagent else ArtifactKind.SESSION_RECORD_STREAM
+        kind = ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM
         return ArtifactClassification(
             provider=provider,
             kind=kind,
@@ -380,7 +380,7 @@ def _classify_dict(
     if is_subagent_path(source_path) and looks_like_record_entry(payload):
         return ArtifactClassification(
             provider=provider,
-            kind=ArtifactKind.SUBAGENT_SESSION_STREAM,
+            kind=ArtifactKind.AGENT_TRANSCRIPT,
             parse_as_session=True,
             schema_eligible=True,
             default_priority=90,

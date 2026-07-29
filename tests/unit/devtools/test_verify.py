@@ -92,6 +92,9 @@ def test_quick_verify_omits_pytest() -> None:
         "verify test-clock-hygiene",
         "verify pytest-timeout-overrides",
         "verify degrade-loudly",
+        "verify hash-boundary-census",
+        "lab policy schema-versioning",
+        "schema promotion audit",
     ]
 
 

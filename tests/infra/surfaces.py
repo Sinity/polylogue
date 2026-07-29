@@ -440,10 +440,10 @@ class CLISurface:
 class MCPSurface:
     """MCP server-tool adapter projection.
 
-    Invokes ``list_sessions`` directly on the registered FastMCP tool
-    function, bound to a ``RuntimeServices`` instance pointed at the parity
-    database.  This is the same code path MCP clients hit over the JSON-RPC
-    transport.
+    Invokes ``query(projection="sessions", ...)`` directly on the registered
+    FastMCP tool function, bound to a ``RuntimeServices`` instance pointed at
+    the parity database.  This is the same code path MCP clients hit over the
+    JSON-RPC transport.
     """
 
     name = "mcp"
@@ -471,22 +471,34 @@ class MCPSurface:
         # MCP enforces clamped limits (min 1); use a generous ceiling so the
         # parity matrix is dominated by the case-level expected count rather
         # than transport-level bounds.
+        #
+        # `list_sessions` was retired in the MCP-consolidation cutover
+        # (server_cutover.py) in favor of `query(projection="sessions", ...)`
+        # -- same `_query_sessions` machinery, different tool name and kwarg
+        # names (`expression` instead of `contains`). The consolidated
+        # `query` tool's session projection also dropped `has_tool_use`/
+        # `has_thinking`/`offset` as direct parameters (no ArchiveQueryCase
+        # in this suite exercises them against this surface).
         request_limit = query_case.limit if query_case.limit is not None else 1000
-        payload_json = await self._tool("list_sessions")(
+        payload_json = await self._tool("query")(
+            projection="sessions",
             limit=request_limit,
             origin=_origin_for_provider_token(query_case.provider) if query_case.provider is not None else None,
-            contains=query_case.search_text,
+            expression=query_case.search_text,
             since=query_case.since,
             until=query_case.until,
-            has_tool_use=query_case.has_tool_use,
-            has_thinking=query_case.has_thinking,
             min_messages=query_case.min_messages,
             max_messages=query_case.max_messages,
             min_words=query_case.min_words,
-            offset=query_case.offset,
         )
         parsed = json.loads(payload_json)
-        items = parsed.get("items", [])
+        # `query(expression=...)` routes to `_query_sessions`'s ranked-search
+        # branch (`archive_search_payload`, a "search-envelope" projection
+        # keyed by "hits" -- each hit nests its session under "session") --
+        # a different envelope shape than the plain listing branch
+        # (`archive_session_list_payload`, keyed by "items", one row per
+        # session) used when no expression is given (server_cutover.py).
+        items = parsed.get("items", []) or parsed.get("hits", [])
         ids: list[str] = []
         for item in items:
             if not isinstance(item, dict):

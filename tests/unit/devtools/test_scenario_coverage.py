@@ -71,11 +71,28 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert "benchmark.query.search-filters" in coverage.declared_operations
     assert coverage.uncovered_artifacts == ("thread_results", "tool_usage_results")
     assert coverage.uncovered_operations == (
+        "mutate-add-mark",
         "mutate-add-tag",
+        "mutate-blackboard-post",
         "mutate-bulk-tag-sessions",
+        "mutate-clear-corrections",
+        "mutate-delete-annotation",
+        "mutate-delete-correction",
         "mutate-delete-metadata",
+        "mutate-delete-recall-pack",
+        "mutate-delete-saved-view",
         "mutate-delete-session",
+        "mutate-delete-workspace",
+        "mutate-identity-reset",
+        "mutate-record-correction",
+        "mutate-remove-mark",
         "mutate-remove-tag",
+        "mutate-resolve-raw-authority-blocker",
+        "mutate-save-annotation",
+        "mutate-save-recall-pack",
+        "mutate-save-saved-view",
+        "mutate-save-workspace",
+        "mutate-session-excision",
         "mutate-set-metadata",
         "query-threads",
         "query-tool-usage",
@@ -85,6 +102,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
+        "session_timestamp_backfill",
         "superseded_raw_snapshots",
     )
     assert coverage.uncovered_declared_operations == coverage.uncovered_operations

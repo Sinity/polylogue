@@ -317,6 +317,16 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   it requires either preserving the JSON column or promoting the eight
   provenance keys (`hermes_state.py`) to typed columns, a follow-up decision
   left to polylogue-c3ip.
+- Index schema version 45 (folded into the same version as the
+  `delegation_facts` identity-join rewrite below) resolves the polylogue-c3ip
+  follow-up: `session_provider_usage_events.payload_json` is dropped and its
+  eight billing-provenance keys (`estimated_cost_usd`, `actual_cost_usd`,
+  `cost_status`, `cost_source`, `pricing_version`, `billing_provider`,
+  `billing_base_url`, `billing_mode`) become nullable typed columns on the
+  same table. `_reextract_provider_usage_tail_db`
+  (`storage/sqlite/archive_tiers/write.py`) reads the typed columns directly
+  instead of `json_extract(payload_json, ...)`. Only 104 of 4,030,168 live
+  rows carried any of these keys, all Hermes-sourced.
 - Index schema version 41 stops materializing `tool_input`/`output_text` text
   copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
   join/rank/outcome columns for a paired `tool_use`/`tool_result` block
@@ -433,7 +443,11 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   semantic/media/language, is_error, exit_code — excluding
   session_id/message_id/position/tool_id) so a stored block citation anchor
   survives fork-position shift, re-ingest renumbering, and provider tool-id
-  regeneration. See `polylogue/storage/block_anchor.py`.
+  regeneration. The column itself is live and written on every block. The
+  helper module that formatted and resolved citation anchors over it was
+  deleted 2026-07-30 as a two-sided gap -- nothing ever emitted an anchor, so
+  nothing could resolve one -- and that wiring is deferred to the webui
+  citation-verifier work (polylogue-bby.11).
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already

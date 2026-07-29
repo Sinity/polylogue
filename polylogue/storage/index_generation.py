@@ -25,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 
+#: Superseded generations kept after a promotion.  One is enough to roll back
+#: to the previous index; each costs roughly the size of the index itself
+#: (~35 GB on the reference archive), so keeping more is expensive storage,
+#: not cheap insurance.
+SUPERSEDED_GENERATION_RETENTION = 1
+
 
 @dataclass(frozen=True, slots=True)
 class IndexGeneration:
@@ -54,7 +60,7 @@ class IndexRebuildTransaction:
     status: str
     created_at_ms: int
     updated_at_ms: int
-    last_acquired_at_ms: int | None = None
+    last_blob_hash_hex: str | None = None
     last_raw_id: str | None = None
     processed_raw_count: int = 0
     processed_blob_bytes: int = 0
@@ -74,21 +80,29 @@ class IndexRebuildTransaction:
 
     @property
     def cursor(self) -> str | None:
-        if self.last_acquired_at_ms is None or self.last_raw_id is None:
+        if self.last_blob_hash_hex is None or self.last_raw_id is None:
             return None
-        return f"source:{self.last_acquired_at_ms}:{self.last_raw_id}"
+        return f"source:{self.last_blob_hash_hex}:{self.last_raw_id}"
 
 
 @dataclass(frozen=True, slots=True)
 class RebuildRawPage:
-    """One bounded source-order scheduling decision.
+    """One bounded content-order scheduling decision.
+
+    Rows are ``(raw_id, blob_hash_hex, blob_size)``, ordered by
+    ``(blob_hash, raw_id)`` (polylogue-hord) rather than acquisition time --
+    see ``IndexGenerationStore.next_raw_page`` for why: content order makes
+    byte-identical duplicates adjacent so the existing per-page dedup group
+    in ``_parse_retained_raws`` (and the cross-page content cache layered on
+    top of it) actually captures them, instead of only catching whatever
+    duplicates happen to land close together in acquisition-time order.
 
     ``deferred_reason`` is scheduling evidence, not an admission decision: an
     oversized first row is still scheduled alone, and every later row remains
     reachable from the persisted keyset cursor on a later invocation.
     """
 
-    rows: tuple[tuple[str, int, int], ...]
+    rows: tuple[tuple[str, str, int], ...]
     has_more: bool
     deferred_reason: str | None = None
 
@@ -259,6 +273,12 @@ class IndexGenerationStore:
             else:
                 self.active_pointer = configured_index
             temporary = anchor.with_suffix(".tmp")
+            # Constructing the store must not require the archive root to have
+            # been materialized first. Daemon bulk-rebuild routing is now
+            # unconditional, so this runs on every convergence tick -- including
+            # against a configured-but-not-yet-created root, where the eager
+            # pointer write previously raised FileNotFoundError.
+            anchor.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(str(self.active_pointer.absolute()), encoding="utf-8")
             os.replace(temporary, anchor)
             _fsync_directory(anchor.parent)
@@ -342,7 +362,7 @@ class IndexGenerationStore:
         transaction: IndexRebuildTransaction,
         *,
         status: str,
-        last_acquired_at_ms: int | None = None,
+        last_blob_hash_hex: str | None = None,
         last_raw_id: str | None = None,
         processed_raw_count: int | None = None,
         processed_blob_bytes: int | None = None,
@@ -355,9 +375,9 @@ class IndexGenerationStore:
                 **{
                     **asdict(transaction),
                     "status": status,
-                    "last_acquired_at_ms": last_acquired_at_ms
-                    if last_acquired_at_ms is not None
-                    else transaction.last_acquired_at_ms,
+                    "last_blob_hash_hex": last_blob_hash_hex
+                    if last_blob_hash_hex is not None
+                    else transaction.last_blob_hash_hex,
                     "last_raw_id": last_raw_id if last_raw_id is not None else transaction.last_raw_id,
                     "processed_raw_count": processed_raw_count
                     if processed_raw_count is not None
@@ -396,37 +416,63 @@ class IndexGenerationStore:
         *,
         limit: int,
     ) -> RebuildRawPage:
-        """Schedule one source-order page without materializing archive-wide IDs."""
+        """Schedule one content-order page without materializing archive-wide IDs.
+
+        Ordered by ``(blob_hash, raw_id)``, not acquisition time
+        (polylogue-hord). ``blob_hash`` is a fixed-length ``NOT NULL`` 32-byte
+        digest (``009_expand_origin_vocabulary.sql``), so byte-identical raws
+        -- including re-acquisitions/re-exports of the same content under an
+        entirely different ``acquired_at_ms`` -- sort adjacently and land in
+        the same or a neighboring page, where ``_parse_retained_raws``'s
+        existing per-page dedup grouping (and the cross-page content cache
+        layered on it, ``RawParsePrefetchCache``) actually collapses them
+        into a single parse. Acquisition-time order scattered duplicates
+        across the entire multi-hour rebuild instead, so only whatever
+        happened to land in the same bounded page or the cache's bounded
+        budget was ever caught.
+
+        ``(blob_hash, raw_id)`` is still a stable total order over
+        ``raw_sessions``, so the keyset cursor below resumes correctly; which
+        raws land on which page changes, but nothing about correctness does
+        -- revision/membership authority selection
+        (``session_revision_membership.classify_membership_revisions``) is a
+        pure function of each logical cohort's persisted rows (content
+        hashes, ``provider_updated_at``), and cohort expansion
+        (``ArchiveStore.expand_raw_membership_selection``) already walks the
+        full ``raw_sessions``/``raw_session_memberships`` graph regardless of
+        which page triggered it -- neither depends on processing order.
+        """
         if limit <= 0:
             raise ValueError("rebuild raw page limit must be positive")
         source_db = self.archive_root / "source.db"
-        if transaction.last_acquired_at_ms is None or transaction.last_raw_id is None:
+        if transaction.last_blob_hash_hex is None or transaction.last_raw_id is None:
             query = """
-                SELECT raw_id, acquired_at_ms, blob_size FROM raw_sessions
-                ORDER BY acquired_at_ms, raw_id LIMIT ?
+                SELECT raw_id, blob_hash, blob_size FROM raw_sessions
+                ORDER BY blob_hash, raw_id LIMIT ?
             """
             params: tuple[object, ...] = (limit + 1,)
         else:
+            last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex)
             query = """
-                SELECT raw_id, acquired_at_ms, blob_size FROM raw_sessions
-                WHERE acquired_at_ms > ?
-                   OR (acquired_at_ms = ? AND raw_id > ?)
-                ORDER BY acquired_at_ms, raw_id LIMIT ?
+                SELECT raw_id, blob_hash, blob_size FROM raw_sessions
+                WHERE blob_hash > ?
+                   OR (blob_hash = ? AND raw_id > ?)
+                ORDER BY blob_hash, raw_id LIMIT ?
             """
             params = (
-                transaction.last_acquired_at_ms,
-                transaction.last_acquired_at_ms,
+                last_blob_hash,
+                last_blob_hash,
                 transaction.last_raw_id,
                 limit + 1,
             )
         with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
             rows = conn.execute(query, params).fetchall()
-        selected: list[tuple[str, int, int]] = []
+        selected: list[tuple[str, str, int]] = []
         selected_bytes = 0
         deferred_reason: str | None = None
         budget = transaction.pass_byte_budget
-        for raw_id, acquired_at_ms, blob_size in rows:
-            raw = (str(raw_id), int(acquired_at_ms), int(blob_size or 0))
+        for raw_id, blob_hash, blob_size in rows:
+            raw = (str(raw_id), bytes(blob_hash).hex(), int(blob_size or 0))
             if budget is not None and selected and selected_bytes + raw[2] > budget:
                 deferred_reason = "byte-budget"
                 break
@@ -495,7 +541,96 @@ class IndexGenerationStore:
         _fsync_directory(pointer.parent)
         promoted = IndexGeneration(**{**asdict(current), "state": "active"})
         self._write(promoted)
+        # Housekeeping only: a failure here must not undo a promotion that has
+        # already swapped the pointer and written active metadata.
+        try:
+            self.prune_superseded_generations()
+        except OSError:
+            logger.warning("index generation pruning failed after promotion", exc_info=True)
         return promoted
+
+    def prune_superseded_generations(self, *, keep: int = SUPERSEDED_GENERATION_RETENTION) -> list[str]:
+        """Delete superseded generations beyond the retention window.
+
+        A promoted generation is ~35 GB.  Before this existed nothing ever
+        removed one: ``promote`` retires the *pointer* into a ``retired-*``
+        marker (a hardlink of the symlink, a few KB) but left the superseded
+        ``gen-*`` directory in place forever, and ``discard_if_inactive`` only
+        disposes of candidates that were never promoted.  A live archive had
+        accumulated nine dead generations, ~290 GB (polylogue-wmft).
+
+        Retention is expressed in generations rather than bytes or age because
+        the reason to keep one is rollback: ``keep=1`` leaves exactly the
+        previous index reachable if a promotion turns out to be bad.
+
+        Fails closed in every ambiguous case -- anything that is or might be
+        the active target, anything mid-promotion, and anything whose metadata
+        cannot be read is retained, never deleted.
+        """
+        if keep < 0:
+            raise ValueError("keep must be non-negative")
+        try:
+            active_target = self.active_pointer.resolve(strict=True)
+        except OSError:
+            # No resolvable active index: refuse to delete anything, since the
+            # thing that would tell us what is live is exactly what is missing.
+            return []
+
+        candidates: list[tuple[int, str, Path]] = []
+        for metadata_path in sorted(self.generations_root.glob("gen-*/generation.json")):
+            try:
+                generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError):
+                continue  # unreadable metadata: retain
+            # ONLY previously-promoted generations are superseded history.
+            # `state == "inactive"` means never promoted -- which is exactly
+            # what an in-flight or paused resumable rebuild candidate looks
+            # like (see `create_transaction`). Treating those as prunable let
+            # an unrelated promotion delete a rebuild in progress, and let a
+            # newer inactive candidate consume the single retained slot so the
+            # real rollback target went instead. Never-promoted candidates
+            # belong to `discard_if_inactive`, which their owner drives.
+            if generation.state != "active":
+                continue
+            try:
+                if Path(generation.index_path).resolve(strict=True) == active_target:
+                    continue
+            except OSError:
+                # index.db already gone; the directory is still reclaimable.
+                pass
+            candidates.append((generation.created_at_ms, generation.generation_id, metadata_path.parent))
+
+        # generation_id breaks ties: two generations can share a millisecond,
+        # and a stable sort would otherwise fall back to glob order, making
+        # "newest" non-deterministic and the retained slot arbitrary.
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+        removed: list[str] = []
+        for _created_at_ms, generation_id, directory in candidates[keep:]:
+            shutil.rmtree(directory)
+            removed.append(generation_id)
+
+        # The retired-* markers only point at superseded generations, so they
+        # follow the same retention -- otherwise they accumulate as dangling
+        # links to directories this method just removed.
+        markers = sorted(
+            (path for path in self.generations_root.glob("retired-*") if path.is_dir()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+        pruned_markers = 0
+        for marker in markers[keep:]:
+            shutil.rmtree(marker)
+            pruned_markers += 1
+
+        if removed or pruned_markers:
+            # Markers count toward the fsync gate too: an archive's first
+            # marker is pruned a promotion before any gen-* becomes prunable,
+            # so gating on `removed` alone skipped the durability barrier
+            # exactly when only markers had gone.
+            _fsync_directory(self.generations_root)
+        if removed:
+            logger.info("pruned %d superseded index generation(s): %s", len(removed), ", ".join(removed))
+        return removed
 
     def recover_promotion(self, generation_id: str) -> IndexGeneration:
         """Reconcile a crash after the pointer swap but before active metadata."""

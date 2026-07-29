@@ -74,18 +74,31 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-# Rows per bounded writer-held pass. Small enough to keep the write
-# coordinator responsive to live appends, large enough to amortise the
-# per-pass census/recovery overhead over more than one row.
+# Rows per bounded writer-held pass. This is now a PURE writer-hold-duration
+# bound: small enough to keep the write coordinator responsive to live
+# appends. It used to also double as a parse-throughput knob for
+# census-only passes (see the removed ``_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT``
+# / ``census_mode`` escalation, docs/design/convergence-simplification-inventory.md
+# item 4) -- that job now belongs entirely to
+# ``_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT`` below, which runs off the
+# writer hold and therefore never has to trade against this bound.
 _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 16
 # Between backlog burst passes the loop yields the writer briefly so live
 # ingest and interactive writes never queue behind a long drain.
 _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
-# Census-mode passes (replay planning paused behind the persisted parser
-# census) run no replay transaction, so the batch bounds parse work, not a
-# writer-transaction length — amortize the per-pass census fixed costs
-# (candidate discovery, component ordering, receipt) over more components.
-_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT = 64
+# Ceiling on how many candidates ``_maybe_warm_raw_materialization_parse_stage``
+# pre-parses OFF the writer hold per pass (polylogue-m6tp item 4). Distinct
+# from ``_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`` on purpose: this is a
+# parse-throughput knob bounded by ``DaemonParseStage``'s own worker-count and
+# in-flight/cached-tree-bytes budgets (``polylogue.daemon.parse_prefetch``),
+# not by writer-hold duration, so it can stay generous regardless of how the
+# writer-held pass sizes itself. When the warmer actually fills the cache,
+# the writer-held pass widens its own limit to match (see the ``limit =
+# max(...)`` derivation in ``_periodic_raw_materialization_convergence``) so
+# already-parsed candidates get consumed without waiting several extra ticks
+# -- consuming a prefetch hit costs a receipt write, not a reparse, so this
+# does not meaningfully extend the writer hold.
+_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
 # polylogue-t93b: escalation-tier envelope for the whale pass. A component
 # permanently resource-blocked at the ordinary fast-path limit above
@@ -118,8 +131,7 @@ _BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS = 3600.0  # at most once/hour
 _last_bulk_rebuild_recommendation_monotonic: float | None = None
 
 # polylogue-m6tp phase (a): one parse-stage warmer lives for the daemon
-# process's lifetime, lazily created the first time the
-# ``daemon_parse_stage_split`` config flag is observed on. It is deliberately
+# process's lifetime, lazily created on first use. It is deliberately
 # module-level (not per-pass) so its bounded ``ThreadPoolExecutor`` and
 # ``RawParsePrefetchCache`` persist across ticks -- a raw warmed but not
 # consumed this pass (component-grouping selects a different subset than the
@@ -154,22 +166,25 @@ def _daemon_bulk_rebuild_parse_stage() -> DaemonParseStage:
     return _daemon_bulk_rebuild_parse_stage_singleton
 
 
-async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> RawParsePrefetchCache | None:
+async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> tuple[RawParsePrefetchCache | None, int]:
     """Pre-parse this pass's census candidates outside the writer hold.
 
-    polylogue-m6tp phase (a). Off by default (``daemon_parse_stage_split``
-    config flag); returns ``None`` unless enabled, which makes
-    ``_drain_raw_materialization_once`` parse every candidate inside the
-    writer hold exactly as before -- the unmodified, always-correct
-    behavior. Runs entirely BEFORE the write coordinator is ever asked for
-    the writer hold, so it never competes with an active writer thread for
-    the GIL (see ``polylogue.daemon.parse_prefetch`` for why that sequencing
-    is what makes threads safe here even on a standard GIL build).
-    """
-    from polylogue.config import load_polylogue_config
+    polylogue-m6tp phase (a). Always runs -- there is no correctness reason
+    to skip it: a warm failure (or a genuinely GIL-bound interpreter, where
+    the parse threads give little or no speedup but never regress) degrades
+    to ``_drain_raw_materialization_once`` parsing every candidate inside the
+    writer hold, the unmodified always-correct behavior. Runs entirely BEFORE
+    the write coordinator is ever asked for the writer hold, so it never
+    competes with an active writer thread for the GIL (see
+    ``polylogue.daemon.parse_prefetch`` for why that sequencing is what makes
+    threads safe here even on a standard GIL build).
 
-    if not load_polylogue_config().daemon_parse_stage_split:
-        return None
+    The second element of the returned tuple is how many raws were newly
+    admitted to the cache THIS call (0 on a caught warm failure) -- the
+    caller uses it to size the writer-held pass's own limit to match what is
+    already parsed and waiting (see
+    ``docs/design/convergence-simplification-inventory.md`` item 4).
+    """
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
 
@@ -184,10 +199,10 @@ async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> RawParse
         )
     except Exception:
         logger.warning("raw materialization: parse-stage prefetch failed; falling back to in-hold parse", exc_info=True)
-        return stage.cache
+        return stage.cache, 0
     if warmed:
         logger.info("raw materialization: parse-stage prefetch warmed %d raw(s) off the writer hold", warmed)
-    return stage.cache
+    return stage.cache, warmed
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -729,16 +744,8 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
     is no work left for the trickle pass to do on the SAME raws in the
     meantime).
 
-    Mirrors ``_maybe_route_daemon_bulk_rebuild``'s own flag gate exactly:
-    the flag off means never even check. Checking survives a daemon restart
-    via a durable transaction record, so a stale "in flight" read while
-    routing is disabled would wrongly suppress the trickle conveyor -- the
-    ONLY mechanism left materializing raws -- with nothing to replace it.
+    Checking survives a daemon restart via a durable transaction record.
     """
-    from polylogue.config import load_polylogue_config
-
-    if not load_polylogue_config().daemon_bulk_rebuild_routing:
-        return False
     from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
     from polylogue.paths import archive_root
 
@@ -748,8 +755,16 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
 async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
     """polylogue-gd6v: route a bulk-scale backlog into a daemon-owned blue-green rebuild.
 
-    Off by default (``daemon_bulk_rebuild_routing`` config flag). Once a
-    bulk-rebuild transaction is in flight (this tick or a prior one,
+    Unconditional. This was gated behind a ``daemon_bulk_rebuild_routing``
+    config flag that defaulted off, which meant the ONLY path that ever ran
+    was the operator hand-driving ``ops maintenance rebuild-index`` -- the
+    exact inversion polylogue-gd6v's own acceptance criteria forbid ("no
+    break-glass residue -- redundant manual surfaces are purged, not
+    demoted"). The measured cost of leaving it off: the two rebuilds that
+    actually happened were hand-resumed across days, 88% and 69% of their
+    wall-clock idle, because nothing drove them between operator sessions.
+    A flag whose off-state is strictly worse is not a choice; it is a defect
+    with a toggle. Once a bulk-rebuild transaction is in flight (this tick or a prior one,
     surviving a daemon restart -- see ``polylogue.daemon.bulk_rebuild``),
     keeps driving it every tick regardless of the instantaneous trickle
     backlog reading: abandoning a partially-built generation mid-flight
@@ -767,10 +782,6 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     storm, matching how a trickle pass failure already falls back to the
     outer interval via the caller's exception handling.
     """
-    from polylogue.config import load_polylogue_config
-
-    if not load_polylogue_config().daemon_bulk_rebuild_routing:
-        return False
     from polylogue.config import Config
     from polylogue.daemon.bulk_rebuild import (
         DAEMON_BULK_REBUILD_OPERATION_ID,
@@ -835,7 +846,6 @@ async def _periodic_raw_materialization_convergence(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
 
-    census_mode = False
     while True:
         if _browser_capture_spool_has_pending_files():
             logger.info("raw materialization: yielding to pending browser-capture spool files")
@@ -887,19 +897,23 @@ async def _periodic_raw_materialization_convergence(
                         break
                     await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
                     continue
-                # While replay planning is paused behind the persisted parser
-                # census, a pass does census-only work: no replay transaction
-                # runs, so the small replay-sized batch limit (which bounds
-                # writer-transaction length) only throttles parse-bound census
-                # throughput and stretches a large census into days. Use a
-                # larger batch for census-mode passes; the first pass that
-                # repairs or plans anything drops back to the replay limit.
-                limit = (
-                    _RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT
-                    if census_mode
-                    else _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT
+                # polylogue-m6tp item 4: census throughput is no longer bounded
+                # by escalating the writer-held pass's OWN limit (the old
+                # ``census_mode`` switch) -- it is bounded by how much the
+                # parse-stage warmer, running off the writer hold, admits to
+                # its cache. The writer-held pass widens its own limit only
+                # far enough to consume what is already warmed and waiting;
+                # doing so costs a receipt write per already-parsed candidate,
+                # not a reparse, so it does not meaningfully extend the hold.
+                # With the flag off (``warmed_count`` always 0) this reduces
+                # to the plain replay-sized floor, unchanged from before.
+                prefetch_cache, warmed_count = await _maybe_warm_raw_materialization_parse_stage(
+                    limit=_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT
                 )
-                prefetch_cache = await _maybe_warm_raw_materialization_parse_stage(limit=limit)
+                limit = max(
+                    _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
+                    min(warmed_count, _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT),
+                )
                 materialized = await daemon_write_coordinator().run_sync(
                     "maintenance.raw_materialization",
                     functools.partial(
@@ -910,11 +924,6 @@ async def _periodic_raw_materialization_convergence(
                     ),
                 )
                 recover = False
-                census_mode = (
-                    materialized.censused_components > 0
-                    and materialized.repaired_sessions == 0
-                    and materialized.executed_plans == 0
-                )
                 _maybe_recommend_bulk_rebuild(materialized)
                 await _maybe_route_daemon_bulk_rebuild(materialized)
                 if materialized.made_progress:
@@ -2258,12 +2267,11 @@ async def run_daemon_services(
                 watcher.stop()
             if _daemon_parse_stage_singleton is not None:
                 # polylogue-m6tp phase (a), CodeRabbit PR #3168: the parse-stage
-                # warmer's ThreadPoolExecutor is created lazily only when
-                # daemon_parse_stage_split is enabled, and otherwise never
-                # touched here. shutdown() is non-blocking (wait=False,
-                # cancel_futures=True) so no timeout wrapper is needed: it
-                # cannot itself hang the shutdown sequence; it just stops the
-                # pool from keeping the process alive at exit.
+                # warmer's ThreadPoolExecutor is created lazily on first use,
+                # and otherwise never touched here. shutdown() is non-blocking
+                # (wait=False, cancel_futures=True) so no timeout wrapper is
+                # needed: it cannot itself hang the shutdown sequence; it just
+                # stops the pool from keeping the process alive at exit.
                 _daemon_parse_stage_singleton.shutdown()
             if _daemon_bulk_rebuild_parse_stage_singleton is not None:
                 # polylogue-gd6v: same non-blocking shutdown contract as the

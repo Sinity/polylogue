@@ -12,6 +12,9 @@ from polylogue.core.enums import (
     PasteBoundary,
     Role,
     SessionKind,
+    SessionRefKind,
+    StopReason,
+    ToolResultUnknownReason,
     WebConstructType,
 )
 from polylogue.storage.fts.sql import (
@@ -23,12 +26,39 @@ from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
+    json_array_check,
     json_object_check,
     nullable_check,
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-# polylogue-ih67: v44 adds sessions.title_ref/title_confidence.
+# polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
+# 9x22 field-landing decisions):
+#   - messages.stop_reason (StopReason) -- 608,608 Claude assistant messages
+#     carry this on the wire; three derived outcome columns guess at the same
+#     fact today and are 85-99% 'unknown'.
+#   - blocks.tool_result_outcome_unknown_reason (ToolResultUnknownReason) --
+#     distinguishes "provider emitted nothing" / "parser distrusts it" /
+#     "parser doesn't read this origin's field" instead of one flat NULL.
+#   - sessions.display_name, sessions.run_settings_json -- subagent slug
+#     display name and per-session provider run-config (aistudio-drive
+#     temperature/topP/topK/... ), landed as a JSON column since decomposing
+#     it into columns would couple the schema to one provider.
+#   - session_links.parent_tool_use_block_id -- the real join-key column
+#     replacing delegation_facts' cardinality-gated ordinal dispatch<->child
+#     pairing (parentToolUseID, 842,819 records on the wire).
+#   - file_edits (new table) -- structuredPatch/originalFile/oldString/
+#     newString/filePath/userModified/replaceAll, keyed by the tool_use
+#     block that made the edit (105,123 structured diffs, 92,313 pre-edit
+#     captures, currently 100% discarded).
+#   - session_refs (new table) -- pr-link and future issue-tracker
+#     references (20,702 occurrences), tracker-agnostic by design.
+#
+# Every one of these values depends on parser semantics to populate
+# correctly (a shape-only copy-forward would leave every row NULL, exactly
+# the v42/v44/v45 precedent) -- SEMANTIC_REPARSE is the honest
+# classification, matching those versions, and routes through
+# `polylogue ops reset --index && polylogued run` rather than a fast-forward.
 #
 # index.db is rebuildable derived state, but "rebuildable" is not the same as
 # "always rebuilt": every bump above INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR
@@ -41,7 +71,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # A bump without a declaration is a policy violation, not a free rebuild:
 # `devtools lab policy schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
-INDEX_SCHEMA_VERSION = 44
+INDEX_SCHEMA_VERSION = 46
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -149,6 +179,20 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- confidence slice). Both derived/rebuildable, never hand-edited.
     title_ref               TEXT,
     title_confidence        REAL CHECK(title_confidence IS NULL OR (title_confidence >= 0 AND title_confidence <= 1)),
+    -- polylogue-2qx.4 (v46): the human-readable name behind an opaque
+    -- native/slug id -- e.g. Claude Code Task-tool subagent slugs
+    -- ("greedy-squishing-hamming") so subagent rows read a name instead of
+    -- "5ecdb160-...:agent-af4e". Distinct from `title` (the session's own
+    -- resolved title): this is a display label for the session's identity,
+    -- not its content.
+    display_name            TEXT,
+    -- polylogue-2qx.4 (v46): per-session provider run configuration
+    -- (aistudio-drive runSettings: temperature/topP/topK/maxOutputTokens/
+    -- thinkingLevel/safetySettings/enable* flags). A JSON column by
+    -- deliberate decision -- decomposing a provider-specific settings bag
+    -- into typed columns would couple this schema to one provider for no
+    -- query benefit; nothing here is queried across origins today.
+    run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)}),
     git_branch              TEXT,
     git_repository_url      TEXT,
     provider_project_ref    TEXT,
@@ -223,6 +267,13 @@ CREATE TABLE IF NOT EXISTS messages (
     duration_ms         INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
     content_hash        BLOB NOT NULL {CONTENT_HASH_CHECK},
     occurred_at_ms      INTEGER,
+    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): the provider's own terminal-
+    -- state signal for this assistant turn (608,608 occurrences on the
+    -- Claude wire). Feeds terminal_state/result_status readers directly
+    -- instead of the 85-99%-unknown derived guesses those columns hold
+    -- today. NULL means the provider did not report one (or this is not an
+    -- assistant turn), never a guess.
+    stop_reason         TEXT CHECK ({nullable_check("stop_reason", StopReason)}),
     PRIMARY KEY(session_id, position, variant_index)
 ) STRICT;
 
@@ -295,6 +346,16 @@ CREATE TABLE IF NOT EXISTS blocks (
     language        TEXT,
     tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
     tool_result_exit_code INTEGER,
+    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): why tool_result_is_error is
+    -- NULL for this block, when it is a tool_result. Collapsing "provider
+    -- emitted nothing", "parser deliberately distrusts the reported value",
+    -- and "this origin's parser does not read the field" into one flat NULL
+    -- was the defect (72% of blocks.tool_result_is_error is NULL
+    -- archive-wide) -- all three are knowable at parse time. NULL here means
+    -- the outcome IS known (tool_result_is_error is set), never "unknown of
+    -- an unknown reason".
+    tool_result_outcome_unknown_reason TEXT
+        CHECK ({nullable_check("tool_result_outcome_unknown_reason", ToolResultUnknownReason)}),
     -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
     -- (type, text, tool_name, canonical tool_input, semantic/media/language,
     -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/
@@ -418,6 +479,62 @@ WHERE url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_web_constructs_query
 ON web_content_constructs(query)
 WHERE query IS NOT NULL;
+
+-- polylogue-2qx.4 (v46): file-edit tool-call evidence (Claude Code Edit/
+-- Write toolUseResult): 105,123 structured unified diffs (structuredPatch),
+-- 92,313 pre-edit file captures (originalFile), and the oldString/newString/
+-- replaceAll/filePath/userModified fields around them -- entirely discarded
+-- today (polylogue-cgfy). This is a RELATION (one edit per tool call), keyed
+-- by the tool_use block that performed the edit, not a blocks.metadata bag
+-- (polylogue-9x22's rejected shape) and not folded into the block row
+-- itself. originalFile captures the pre-edit state polylogue-cijx's
+-- file-trajectory grading declares unavailable ("observed" only) --
+-- this is what raises it to "checkpointed".
+CREATE TABLE IF NOT EXISTS file_edits (
+    tool_use_block_id   TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE,
+    session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    message_id          TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
+    file_path           TEXT,
+    structured_patch_json TEXT CHECK ({json_array_check("structured_patch_json", nullable=True)}),
+    original_file       TEXT,
+    old_string          TEXT,
+    new_string          TEXT,
+    replace_all         INTEGER CHECK(replace_all IN (0, 1) OR replace_all IS NULL),
+    user_modified       INTEGER CHECK(user_modified IN (0, 1) OR user_modified IS NULL),
+    observed_at_ms      INTEGER
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_file_edits_session
+ON file_edits(session_id);
+
+-- polylogue-rgbj precedent (see web_content_constructs above): every
+-- messages(message_id) FK child table needs a leading index on the FK
+-- column, or SQLite's ON DELETE CASCADE enforcement falls back to a full
+-- table scan of file_edits for every deleted message row.
+CREATE INDEX IF NOT EXISTS idx_file_edits_message
+ON file_edits(message_id);
+
+CREATE INDEX IF NOT EXISTS idx_file_edits_file_path
+ON file_edits(file_path)
+WHERE file_path IS NOT NULL;
+
+-- polylogue-2qx.4 (v46): tracker-agnostic external references observed in a
+-- session (Claude Code pr-link, 20,702 occurrences on the wire today;
+-- generalizes to issue refs so a second tracker never needs its own table).
+CREATE TABLE IF NOT EXISTS session_refs (
+    ref_id          TEXT GENERATED ALWAYS AS (session_id || ':' || position) STORED UNIQUE,
+    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    position        INTEGER NOT NULL CHECK(position >= 0),
+    kind            TEXT NOT NULL CHECK ({check("kind", SessionRefKind)}),
+    repo            TEXT,
+    ref_number      INTEGER,
+    url             TEXT NOT NULL,
+    observed_at_ms  INTEGER,
+    PRIMARY KEY(session_id, position)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_session_refs_kind
+ON session_refs(kind, repo, ref_number);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     block_id UNINDEXED,
@@ -644,6 +761,16 @@ CREATE TABLE IF NOT EXISTS session_links (
     branch_point_message_id TEXT,
     inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
     status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
+    -- polylogue-2qx.4 (v46): the parent-session tool_use block that
+    -- dispatched this child (Claude Code parentToolUseID, 842,819 records /
+    -- 185,982 distinct dispatch ids on the wire). This IS the delegation
+    -- edge's join key; `method` records how the edge was derived (e.g.
+    -- 'parent-tool-use-id') once a resolver populates this column. Replaces
+    -- delegation_facts' cardinality-gated ordinal dispatch<->child pairing,
+    -- which only resolved 12.8% of cases. Not a FK to sessions -- it is a
+    -- block within the PARENT session, resolvable independently of whether
+    -- src/dst session identity has resolved yet.
+    parent_tool_use_block_id TEXT REFERENCES blocks(block_id) ON DELETE SET NULL,
     method                  TEXT,
     confidence              REAL NOT NULL DEFAULT 1.0 CHECK(confidence BETWEEN 0 AND 1),
     evidence_json           TEXT NOT NULL DEFAULT '[]',
@@ -726,23 +853,60 @@ CREATE TABLE IF NOT EXISTS session_working_dirs (
     PRIMARY KEY(session_id, path)
 ) STRICT;
 
+-- polylogue-cijx.4 decision 1: a repository is keyed on its normalized
+-- remote -- every worktree checkout of the same remote is one repo, not
+-- one row per checkout. `repo_id` used to be `origin_url || root_path`
+-- (`GENERATED ALWAYS`), which made two worktrees of the identical remote
+-- two distinct rows purely because their checkout paths differed. `repo_id`
+-- is now a plain stored column populated by the writer
+-- (`archive_tiers/write.py:_repo_identity_key`) from a canonicalized form
+-- of `origin_url` when one is known (`remote:<host>/<path>`, unifying
+-- `git@host:owner/repo`, `https://host/owner/repo.git`, `ssh://host/...`),
+-- falling back to the resolved checkout root only when no remote exists
+-- (`dir:<root_path>` -- decision 1's "outermost git root" fallback for a
+-- repository with no remote). It is a plain column rather than a SQLite
+-- `GENERATED` expression because remote-URL canonicalization needs real
+-- string logic (scheme/userinfo stripping, SCP-vs-URL unification, case
+-- folding) that SQL cannot express without duplicating that logic.
+-- `origin_url`/`root_path` on this row are now *representative* display
+-- values (first-seen wins), not part of the identity key -- every checkout
+-- root actually observed for a repo_id is recorded in `repo_checkouts`.
 CREATE TABLE IF NOT EXISTS repos (
+    repo_id           TEXT PRIMARY KEY,
     origin_url        TEXT NOT NULL DEFAULT '',
-    root_path         TEXT NOT NULL,
-    repo_id           TEXT GENERATED ALWAYS AS (origin_url || char(31) || root_path) STORED UNIQUE,
+    root_path         TEXT NOT NULL DEFAULT '',
     repo_name         TEXT NOT NULL DEFAULT '',
     first_seen_at_ms  INTEGER NOT NULL,
-    last_seen_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY(origin_url, root_path)
+    last_seen_at_ms   INTEGER NOT NULL
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_repos_root_path
 ON repos(root_path)
 WHERE root_path != '';
 
+-- Every distinct checkout root ever observed for a repo identity (decision
+-- 1: "a worktree is a checkout of a repository ... every
+-- /realm/worktrees/polylogue-* and .claude/worktrees/agent-* is one
+-- checkout of polylogue"). Purely additive evidence; `repos.root_path`
+-- keeps a single representative value for existing readers, this table is
+-- the complete enumeration for readers that need it.
+CREATE TABLE IF NOT EXISTS repo_checkouts (
+    repo_id           TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
+    root_path         TEXT NOT NULL,
+    first_seen_at_ms  INTEGER NOT NULL,
+    last_seen_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY(repo_id, root_path)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS session_repos (
     session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     repo_id         TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
+    -- This session's own observed checkout root (may differ from
+    -- repos.root_path's representative value when other sessions checked
+    -- out the same repo identity elsewhere) -- needed so repo-relative path
+    -- projection (decision 2) strips the *correct* prefix for this session
+    -- regardless of which checkout wrote the shared repos row first.
+    root_path       TEXT NOT NULL DEFAULT '',
     branch_name     TEXT NOT NULL DEFAULT '',
     observed_at_ms  INTEGER NOT NULL,
     PRIMARY KEY(session_id, repo_id)
@@ -894,7 +1058,14 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
     total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
     total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
     model_context_window           INTEGER CHECK(model_context_window IS NULL OR model_context_window >= 0),
-    payload_json                   TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")}),
+    estimated_cost_usd              REAL,
+    actual_cost_usd                 REAL,
+    cost_status                     TEXT,
+    cost_source                     TEXT,
+    pricing_version                 TEXT,
+    billing_provider                TEXT,
+    billing_base_url                TEXT,
+    billing_mode                    TEXT,
     occurred_at_ms                 INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;
@@ -1210,14 +1381,49 @@ END;
 -- pending). A resolved session_links(subagent) edge with no discoverable
 -- parent-side dispatch action (e.g. a Codex async subagent) surfaces as
 -- mapping_state='edge_only', counted but never given a fabricated
--- instruction. Dispatch actions are corroborated against resolved children
--- by rank-pairing IN TRANSCRIPT ORDER within one parent session (the same
--- "Nth query gets Nth result" idiom `actions` itself uses for tool_use/
--- tool_result) -- but ONLY when a parent's dispatch count and resolved-child
--- count agree; a mismatched count would mean guessing a winner, so those
--- rows surface as mapping_state='ambiguous' with a real instruction but no
--- fabricated child. Quarantined edges (cycle-break, #866/#1260) surface
+-- instruction. Quarantined edges (cycle-break, #866/#1260) surface
 -- explicitly as mapping_state='quarantined' rather than silently vanishing.
+--
+-- polylogue-1vpm.7: a dispatch and a resolved child were previously
+-- corroborated by RANK-PAIRING IN TRANSCRIPT ORDER (the Nth dispatch <-> the
+-- Nth resolved child by timestamp) whenever a parent's dispatch count and
+-- resolved-child count happened to agree; a mismatch made every dispatch in
+-- that parent surface as mapping_state='ambiguous'. Corpus verification
+-- (2026-07-29, full scan) found that heuristic silently WRONG far more often
+-- than right: of 1,493 rows it called 'resolved', only 146 (9.8%) actually
+-- named the correct child once checked against provider-asserted content --
+-- the rest paired siblings dispatched in the same turn to each other's
+-- children. Ordinal position across two independently-ordered lists is not
+-- identity, and a cardinality mismatch is not a per-SESSION verdict that
+-- should poison every dispatch in the cohort.
+--
+-- The fix joins on identity instead of position. Two cases:
+--   1. TRIVIAL cohort (exactly one dispatch action and exactly one resolved
+--      child for a parent): there is only one possible pairing -- not a
+--      guess among candidates, the only interpretation the observed facts
+--      admit -- so it resolves without needing corroborating content.
+--   2. NON-TRIVIAL cohort (more than one dispatch and/or more than one
+--      child): Claude Code's subagent transcript's first user turn IS --
+--      byte for byte -- the dispatching Task tool_use's own `prompt` field
+--      (Codex: `message`); this is provider-asserted content, not a
+--      heuristic, and it is already fully persisted (`actions.tool_input`,
+--      `messages`/`blocks` for the child's first turn) -- no parser change
+--      needed. A dispatch and a child pair only when this content matches
+--      UNIQUELY in both directions (one dispatch <-> one child); a
+--      duplicate-prompt collision on either side is excluded rather than
+--      guessed. Corpus-wide collision check (required before relying on any
+--      secondary key, polylogue-1vpm.7 AC5): of 3,534 dispatches with at
+--      least one same-parent resolved-child candidate, 1,933 (54.7%) match
+--      exactly one child's text and vice versa; only 14 dispatches (0.4%)
+--      match more than one child's text and 22 children (0.6%) match more
+--    than one dispatch's text -- both stay unresolved/edge_only rather than
+--      fabricating a winner.
+--
+-- 'ambiguous' is retired from the mapping_state vocabulary entirely (AC2):
+-- with the key, it is not a reachable state. A parent with N dispatches and
+-- M<N captured children now yields exactly M resolved and N-M unresolved,
+-- never N ambiguous (tests/unit/storage/test_delegations_view.py::
+-- test_delegation_dispatch_without_matching_content_stays_unresolved).
 --
 -- Model identity is deliberately NOT collapsed into one "orchestrator model"
 -- column (polylogue-4c27): `dispatch_turn_model` is the model that authored
@@ -1359,10 +1565,21 @@ WITH dispatch_actions AS (
         a.exit_code                            AS result_exit_code,
         m.model_name                           AS dispatch_turn_model,
         json_extract(a.tool_input, '$.model')  AS requested_model,
-        ROW_NUMBER() OVER (
-            PARTITION BY a.session_id
-            ORDER BY a.message_id, a.tool_use_block_id
-        )                                       AS dispatch_rank
+        -- Provider-asserted dispatch text: the exact field the child's own
+        -- first turn reproduces verbatim (Claude Code: 'prompt'; Codex:
+        -- 'message'; 'instruction'/'task' as generic fallbacks for other
+        -- providers). NULLIF/json_type guards a non-text or absent field
+        -- rather than coercing it into a spurious match.
+        COALESCE(
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.prompt') = 'text'
+                        THEN json_extract(a.tool_input, '$.prompt') END, ''),
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.message') = 'text'
+                        THEN json_extract(a.tool_input, '$.message') END, ''),
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.instruction') = 'text'
+                        THEN json_extract(a.tool_input, '$.instruction') END, ''),
+            NULLIF(CASE WHEN json_type(a.tool_input, '$.task') = 'text'
+                        THEN json_extract(a.tool_input, '$.task') END, '')
+        )                                       AS dispatch_identity_text
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'
@@ -1378,11 +1595,7 @@ resolved_children AS (
         l.branch_point_message_id              AS branch_point_message_id,
         l.confidence                           AS link_confidence,
         l.method                               AS link_method,
-        l.inheritance                          AS inheritance,
-        ROW_NUMBER() OVER (
-            PARTITION BY l.resolved_dst_session_id
-            ORDER BY l.observed_at_ms, l.src_session_id
-        )                                       AS child_rank
+        l.inheritance                          AS inheritance
     FROM session_links l
     WHERE l.link_type = 'subagent'
       AND l.resolved_dst_session_id IS NOT NULL
@@ -1392,25 +1605,103 @@ resolved_children AS (
           WHERE scope.parent_session_id = l.resolved_dst_session_id
       )
 ),
+-- The child's own first user turn: for a subagent this literally IS the
+-- text Claude Code/Codex injected as the dispatch's prompt, not a human
+-- turn (material_origin is 'generated_context_pack', never
+-- 'human_authored' -- see polylogue-1vpm.7 corpus audit), so this
+-- deliberately does not filter on material_origin.
+child_identity_text AS (
+    SELECT
+        m.session_id AS child_session_id,
+        (
+            SELECT b.text FROM blocks b
+            WHERE b.message_id = m.message_id AND b.block_type = 'text'
+            ORDER BY b.position LIMIT 1
+        ) AS first_text
+    FROM messages m
+    WHERE m.role = 'user'
+      AND m.message_type = 'message'
+      AND m.position = (
+          SELECT MIN(m2.position) FROM messages m2
+          WHERE m2.session_id = m.session_id
+            AND m2.role = 'user'
+            AND m2.message_type = 'message'
+      )
+),
 dispatch_counts AS (
     SELECT parent_session_id, COUNT(*) AS n FROM dispatch_actions GROUP BY parent_session_id
 ),
 child_counts AS (
     SELECT parent_session_id, COUNT(*) AS n FROM resolved_children GROUP BY parent_session_id
 ),
-pairable AS (
-    SELECT dc.parent_session_id
-    FROM dispatch_counts dc
-    JOIN child_counts cc ON cc.parent_session_id = dc.parent_session_id
-    WHERE dc.n = cc.n
+-- Case 1: trivial cohort. Exactly one dispatch and exactly one resolved
+-- child for this parent -- there is no second candidate on either side, so
+-- pairing them is not a guess, it is the only interpretation the observed
+-- facts admit. No corroborating content required.
+trivial_pairs AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        c.child_session_id                     AS child_session_id
+    FROM dispatch_actions d
+    JOIN resolved_children c ON c.parent_session_id = d.parent_session_id
+    JOIN dispatch_counts dc ON dc.parent_session_id = d.parent_session_id AND dc.n = 1
+    JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id AND cc.n = 1
+),
+-- Case 2: non-trivial cohort, disambiguated by provider-asserted content
+-- identity (see the delegation_facts table comment above for the corpus
+-- verification numbers).
+content_pairs AS (
+    SELECT
+        d.parent_session_id                    AS parent_session_id,
+        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        c.child_session_id                     AS child_session_id
+    FROM dispatch_actions d
+    JOIN resolved_children c ON c.parent_session_id = d.parent_session_id
+    JOIN child_identity_text t ON t.child_session_id = c.child_session_id
+    WHERE d.dispatch_identity_text IS NOT NULL
+      AND d.dispatch_identity_text = t.first_text
+),
+candidate_pairs AS (
+    SELECT * FROM trivial_pairs
+    UNION
+    SELECT * FROM content_pairs
+),
+dispatch_match_counts AS (
+    SELECT parent_session_id, instruction_tool_use_block_id, COUNT(DISTINCT child_session_id) AS n
+    FROM candidate_pairs GROUP BY 1, 2
+),
+child_match_counts AS (
+    SELECT parent_session_id, child_session_id, COUNT(DISTINCT instruction_tool_use_block_id) AS n
+    FROM candidate_pairs GROUP BY 1, 2
+),
+-- A candidate pair survives only when it is the UNIQUE candidate in both
+-- directions: this dispatch matches exactly one child AND this child
+-- matches exactly one dispatch. A collision on either side (duplicate
+-- prompts, or genuinely ambiguous evidence) is excluded here and falls
+-- through to unresolved/edge_only rather than fabricating a winner.
+identity_pairs AS (
+    SELECT DISTINCT
+        cp.parent_session_id                   AS parent_session_id,
+        cp.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
+        cp.child_session_id                    AS child_session_id
+    FROM candidate_pairs cp
+    JOIN dispatch_match_counts dmc
+      ON dmc.parent_session_id = cp.parent_session_id
+     AND dmc.instruction_tool_use_block_id = cp.instruction_tool_use_block_id
+     AND dmc.n = 1
+    JOIN child_match_counts cmc
+      ON cmc.parent_session_id = cp.parent_session_id
+     AND cmc.child_session_id = cp.child_session_id
+     AND cmc.n = 1
 ),
 resolved_rows AS (
     SELECT
         d.parent_session_id                    AS parent_session_id,
-        c.child_session_id                     AS child_session_id,
+        ip.child_session_id                    AS child_session_id,
         'resolved'                              AS mapping_state,
         c.link_confidence                      AS link_confidence,
-        c.link_method                          AS link_method,
+        'content-identity-match'                AS link_method,
         c.inheritance                          AS inheritance,
         c.branch_point_message_id              AS branch_point_message_id,
         d.instruction_message_id               AS instruction_message_id,
@@ -1423,10 +1714,12 @@ resolved_rows AS (
         d.result_is_error                      AS result_is_error,
         d.result_exit_code                     AS result_exit_code
     FROM dispatch_actions d
-    JOIN pairable p ON p.parent_session_id = d.parent_session_id
+    JOIN identity_pairs ip
+      ON ip.parent_session_id = d.parent_session_id
+     AND ip.instruction_tool_use_block_id = d.instruction_tool_use_block_id
     JOIN resolved_children c
-      ON c.parent_session_id = d.parent_session_id
-     AND c.child_rank = d.dispatch_rank
+      ON c.parent_session_id = ip.parent_session_id
+     AND c.child_session_id = ip.child_session_id
 ),
 unresolved_rows AS (
     SELECT
@@ -1444,28 +1737,11 @@ unresolved_rows AS (
         d.result_is_error                      AS result_is_error,
         d.result_exit_code                     AS result_exit_code
     FROM dispatch_actions d
-    LEFT JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
-    WHERE cc.n IS NULL
-),
-ambiguous_rows AS (
-    SELECT
-        d.parent_session_id                    AS parent_session_id,
-        NULL                                    AS child_session_id,
-        'ambiguous'                              AS mapping_state,
-        NULL AS link_confidence, NULL AS link_method, NULL AS inheritance, NULL AS branch_point_message_id,
-        d.instruction_message_id               AS instruction_message_id,
-        d.instruction_tool_use_block_id        AS instruction_tool_use_block_id,
-        d.instruction_payload                  AS instruction_payload,
-        d.dispatch_turn_model                  AS dispatch_turn_model,
-        d.requested_model                      AS requested_model,
-        d.artifact_block_id                    AS artifact_block_id,
-        d.artifact_text                        AS artifact_text,
-        d.result_is_error                      AS result_is_error,
-        d.result_exit_code                     AS result_exit_code
-    FROM dispatch_actions d
-    JOIN dispatch_counts dc ON dc.parent_session_id = d.parent_session_id
-    JOIN child_counts cc ON cc.parent_session_id = d.parent_session_id
-    WHERE dc.n != cc.n
+    WHERE NOT EXISTS (
+        SELECT 1 FROM identity_pairs ip
+        WHERE ip.parent_session_id = d.parent_session_id
+          AND ip.instruction_tool_use_block_id = d.instruction_tool_use_block_id
+    )
 ),
 edge_only_rows AS (
     SELECT
@@ -1480,8 +1756,11 @@ edge_only_rows AS (
         NULL AS dispatch_turn_model, NULL AS requested_model,
         NULL AS artifact_block_id, NULL AS artifact_text, NULL AS result_is_error, NULL AS result_exit_code
     FROM resolved_children c
-    LEFT JOIN dispatch_counts dc ON dc.parent_session_id = c.parent_session_id
-    WHERE dc.n IS NULL
+    WHERE NOT EXISTS (
+        SELECT 1 FROM identity_pairs ip
+        WHERE ip.parent_session_id = c.parent_session_id
+          AND ip.child_session_id = c.child_session_id
+    )
 ),
 quarantined_rows AS (
     SELECT
@@ -1507,7 +1786,6 @@ quarantined_rows AS (
 attempts AS (
     SELECT * FROM resolved_rows
     UNION ALL SELECT * FROM unresolved_rows
-    UNION ALL SELECT * FROM ambiguous_rows
     UNION ALL SELECT * FROM edge_only_rows
     UNION ALL SELECT * FROM quarantined_rows
 )

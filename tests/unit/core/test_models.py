@@ -363,11 +363,53 @@ class TestMessageFromRecord:
                 "tool_input": {"file_path": "/workspace/polylogue/README.md"},
                 "tool_result_is_error": None,
                 "tool_result_exit_code": None,
+                "tool_result_outcome_unknown_reason": None,
                 "media_type": None,
                 "metadata": {"path": "/workspace/polylogue/README.md"},
                 "semantic_type": "file_read",
             }
         ]
+
+    def test_from_record_threads_tool_result_outcome_unknown_reason(self) -> None:
+        """polylogue-2qx.4: the reason a tool outcome is unknown must survive
+        record->domain hydration alongside tool_result_is_error/exit_code --
+        without this, ``tool_result_is_error is None`` gives no explanation."""
+        record = make_message(
+            message_id="m1",
+            session_id="c1",
+            role="assistant",
+            text="Ran a command",
+            blocks=[
+                make_content_block(
+                    message_id="m1",
+                    session_id="c1",
+                    block_index=0,
+                    block_type="tool_result",
+                    tool_id="tool-1",
+                    tool_result_outcome_unknown_reason="sidecar_missing",
+                )
+            ],
+        )
+
+        message = message_from_record(record, [])
+
+        assert message.blocks[0]["tool_result_outcome_unknown_reason"] == "sidecar_missing"
+
+    def test_from_record_threads_stop_reason(self) -> None:
+        """polylogue-2qx.4: messages.stop_reason (why the assistant turn ended)
+        must survive record->domain hydration; before this it was read from
+        SQL and mapped onto MessageRecord but dropped when building Message."""
+        record = make_message(
+            message_id="m1",
+            session_id="c1",
+            role="assistant",
+            text="Done",
+            stop_reason="max_tokens",
+        )
+
+        message = message_from_record(record, [])
+
+        assert message.stop_reason == "max_tokens"
 
 
 class TestSessionSummaryFromRecord:
@@ -577,7 +619,12 @@ def test_build_raw_payload_envelope_returns_provider_enum_for_known_providers() 
 
 
 def test_build_raw_payload_envelope_detects_payload_shape_without_path_hints() -> None:
-    raw = b'[{"id":"conv-1","mapping":{}}]'
+    # PR #3364 tightened whole-document ChatGPT detection
+    # (``chatgpt.looks_like``) to require a non-empty ``mapping`` plus
+    # ``current_node``/``create_time``/``conversation_id``-or-``id`` and
+    # Pydantic-valid mapping nodes, so a shape-only (no path hints) fixture
+    # must carry that minimum evidence to be recognized as ChatGPT.
+    raw = b'[{"id":"conv-1","current_node":"node-1","create_time":1700000000,"mapping":{"node-1":{"id":"node-1"}}}]'
     envelope = build_raw_payload_envelope(
         raw,
         source_path="/tmp/export.zip:takeout/opaque/sessions.json",
@@ -627,7 +674,7 @@ def test_build_raw_payload_envelope_prefers_claude_subagent_path_over_codex_like
         fallback_provider="claude-code",
     )
     assert envelope.provider is Provider.CLAUDE_CODE
-    assert envelope.artifact.kind.value == "subagent_session_stream"
+    assert envelope.artifact.kind.value == "agent_transcript"
 
 
 def test_build_raw_payload_envelope_classifies_chatgpt_user_sidecars_as_metadata() -> None:

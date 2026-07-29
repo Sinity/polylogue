@@ -728,6 +728,20 @@ def _record_role(provider: str, record: dict[str, JSONValue]) -> str | None:
                 return role
         role = record.get("type")
         return role if isinstance(role, str) else None
+    if provider == "codex":
+        # Codex has two legitimate record shapes the real parser accepts
+        # (``sources/parsers/codex.py``): a ``payload``-wrapped
+        # ``response_item`` (role under ``payload.role``) and a flat
+        # ``{"type": "message", "role": ...}`` record (role at the top
+        # level). Check both so tool-heavy-block placement finds the
+        # assistant turn regardless of which shape generation produced.
+        payload = record.get("payload")
+        if isinstance(payload, dict):
+            role = payload.get("role")
+            if isinstance(role, str):
+                return role
+        role = record.get("role")
+        return role if isinstance(role, str) else None
     role = record.get("role")
     return role if isinstance(role, str) else None
 

@@ -18,6 +18,7 @@ _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
 _STAGING_METADATA_SUFFIX = ".polylogue-import"
 _STAGING_METADATA_VERSION = 1
 _HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v1\0"
+_CODEX_STATE_RAW_ID_DOMAIN = b"polylogue:codex-state-raw:v1\0"
 _SQLITE_MAGIC_HEADER = b"SQLite format 3\x00"
 
 
@@ -44,6 +45,23 @@ def hermes_profile_raw_id(source_path: Path | str, source_index: int, blob_hash:
     digest.update(normalized_profile.encode("utf-8", errors="surrogatepass"))
     digest.update(b"\0")
     digest.update(str(source_index).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(bytes.fromhex(blob_hash))
+    return digest.hexdigest()
+
+
+def codex_state_raw_id(source_path: Path | str, blob_hash: str) -> str:
+    """Identify one acquired Codex state-db snapshot without conflating it with its blob.
+
+    Unlike Hermes (multiple profiles, session IDs unique only within a
+    profile), Codex keeps exactly one instance of each state database per
+    ``~/.codex`` install, so raw identity only needs the stable absolute
+    source path plus the exact retained bytes -- no profile index.
+    """
+    normalized_path = str(Path(source_path).expanduser().resolve(strict=False))
+    digest = hashlib.sha256()
+    digest.update(_CODEX_STATE_RAW_ID_DOMAIN)
+    digest.update(normalized_path.encode("utf-8", errors="surrogatepass"))
     digest.update(b"\0")
     digest.update(bytes.fromhex(blob_hash))
     return digest.hexdigest()
@@ -192,6 +210,7 @@ def snapshot_sqlite_to_blob(
 
 __all__ = [
     "SQLiteBlobSnapshot",
+    "codex_state_raw_id",
     "hermes_profile_raw_id",
     "is_sqlite_path",
     "original_sqlite_source_path",

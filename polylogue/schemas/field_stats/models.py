@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
 
@@ -13,6 +14,24 @@ ENUM_VALUE_CAP = 200
 REF_MATCH_THRESHOLD = 0.7
 LEGACY_SAMPLE_CAP = 2_000
 SESSION_EVIDENCE_CAP = 16
+
+
+def _parse_record_timestamp(value: str | None) -> datetime | None:
+    """Parse a record's ``observed_at`` timestamp for first/last-seen tracking.
+
+    Mirrors the ``_parse_observed_at`` helper duplicated across
+    ``schemas/generation/packages.py`` and ``schemas/generation/cluster_support.py``
+    -- field_stats collection cannot import from ``generation`` without creating
+    a cycle (generation already depends on field_stats), so this stays a small
+    local copy rather than a shared utility.
+    """
+    if not value:
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 @dataclass
@@ -58,6 +77,8 @@ class FieldStats:
     ordered_increasing_pair_count: int = 0
     overflow_value_count: int = 0
     truncated_evidence: Counter[str] = field(default_factory=Counter)
+    field_first_seen: str | None = None
+    field_last_seen: str | None = None
     _last_encountered_document: int | None = field(default=None, repr=False)
     _last_non_null_document: int | None = field(default=None, repr=False)
 
@@ -96,6 +117,25 @@ class FieldStats:
                 self.documents_present.add(sample_idx)
             else:
                 self.truncated_evidence["document_ids"] += 1
+
+    def observe_field_timestamp(self, observed_at: str | None) -> None:
+        """Track the min/max record timestamp across samples where this field is present.
+
+        ``observed_at`` is the record's own ``observed_at`` (already read once
+        per unit at generation time -- see ``schemas/observation_models.py``
+        ``SchemaUnit.observed_at``); this is a free per-field roll-up over that
+        existing value, not a second timestamp scan.
+        """
+        parsed = _parse_record_timestamp(observed_at)
+        if parsed is None:
+            return
+        iso = parsed.astimezone(timezone.utc).isoformat()
+        first_seen = _parse_record_timestamp(self.field_first_seen)
+        if self.field_first_seen is None or first_seen is None or parsed < first_seen:
+            self.field_first_seen = iso
+        last_seen = _parse_record_timestamp(self.field_last_seen)
+        if self.field_last_seen is None or last_seen is None or parsed > last_seen:
+            self.field_last_seen = iso
 
     def observe_ordered_sequence(self, sequence: list[float]) -> None:
         for index in range(len(sequence) - 1):

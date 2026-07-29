@@ -183,7 +183,8 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                     await (
                         await conn.execute(
                             """
-                            SELECT payload_json
+                            SELECT estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                                   pricing_version, billing_provider, billing_base_url, billing_mode
                             FROM session_provider_usage_events
                             WHERE provider_event_type = 'token_count'
                             ORDER BY session_id, position
@@ -191,7 +192,24 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                         )
                     ).fetchall()
                 )
-            return [json.loads(str(row["payload_json"])) for row in event_rows]
+            return [{key: value for key, value in dict(row).items() if value is not None} for row in event_rows]
+
+        async def durable_cost_typed_totals() -> list[dict[str, object]]:
+            async with backend.connection() as conn:
+                event_rows = list(
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT total_input_tokens, total_output_tokens, total_cached_input_tokens,
+                                   total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
+                            FROM session_provider_usage_events
+                            WHERE provider_event_type = 'token_count'
+                            ORDER BY session_id, position
+                            """
+                        )
+                    ).fetchall()
+                )
+            return [dict(row) for row in event_rows]
 
         async def durable_hermes_events() -> dict[str, list[tuple[str, dict[str, object]]]]:
             async with backend.connection() as conn:
@@ -276,17 +294,23 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
             {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
             for payload in cost_payloads
         )
+        # The billing-provenance keys are their own nullable typed columns
+        # (polylogue-ei0d / polylogue-c3ip, index v45): every other field of
+        # the raw provider event (total_token_usage, model, type, ...) is
+        # redundant with a typed column on the same row, so only these eight
+        # columns carry Hermes cost-provenance evidence -- no JSON blob.
+        assert all(set(payload) == set(expected_cost_provenance) for payload in cost_payloads)
         assert all(
-            payload.get("total_token_usage")
+            totals
             == {
-                "cached_input_tokens": 0,
-                "cache_write_tokens": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "reasoning_output_tokens": 0,
+                "total_cached_input_tokens": 0,
+                "total_cache_write_tokens": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_reasoning_output_tokens": 0,
                 "total_tokens": 0,
             }
-            for payload in cost_payloads
+            for totals in await durable_cost_typed_totals()
         )
 
         hermes_events = await durable_hermes_events()

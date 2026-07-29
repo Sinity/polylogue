@@ -20,9 +20,11 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlparse
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
 from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
@@ -514,6 +516,7 @@ def write_parsed_session_to_archive(
                 INSERT INTO sessions (
                     native_id, origin, raw_id, branch_type, active_leaf_message_id,
                     title, session_kind, title_source, title_ref, title_confidence,
+                    display_name, run_settings_json,
                     git_branch, git_repository_url, commit_hash,
                     instructions_text, reported_duration_ms, provider_project_ref,
                     message_count, word_count, tool_use_count, thinking_count,
@@ -521,7 +524,7 @@ def write_parsed_session_to_archive(
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     branch_type = excluded.branch_type,
@@ -531,6 +534,8 @@ def write_parsed_session_to_archive(
                     title_source = COALESCE(excluded.title_source, sessions.title_source),
                     title_ref = COALESCE(excluded.title_ref, sessions.title_ref),
                     title_confidence = COALESCE(excluded.title_confidence, sessions.title_confidence),
+                    display_name = COALESCE(excluded.display_name, sessions.display_name),
+                    run_settings_json = COALESCE(excluded.run_settings_json, sessions.run_settings_json),
                     git_branch = excluded.git_branch,
                     git_repository_url = excluded.git_repository_url,
                     commit_hash = excluded.commit_hash,
@@ -555,6 +560,8 @@ def write_parsed_session_to_archive(
                     _enum_value(session.title_source),
                     _sqlite_text(session.title_ref),
                     session.title_confidence,
+                    _sqlite_text(session.display_name),
+                    _json_dumps(session.run_settings) if session.run_settings else None,
                     _sqlite_text(session.git_branch),
                     _sqlite_text(session.git_repository_url),
                     _sqlite_text(session.git_commit_hash),
@@ -647,6 +654,15 @@ def write_parsed_session_to_archive(
                 )
                 add_timing("index.blocks", t0)
                 t0 = time.perf_counter()
+                _write_file_edits(
+                    conn,
+                    session_id,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                )
+                add_timing("index.file_edits", t0)
+                t0 = time.perf_counter()
                 if not bulk_build:
                     refresh_action_pairs(conn, session_id)
                 add_timing("index.action_pairs", t0)
@@ -724,6 +740,9 @@ def write_parsed_session_to_archive(
             t0 = time.perf_counter()
             _write_working_dirs(conn, session_id, session.working_directories)
             add_timing("index.working_dirs", t0)
+            t0 = time.perf_counter()
+            _write_session_refs(conn, session_id, session)
+            add_timing("index.session_refs", t0)
             t0 = time.perf_counter()
             _write_repo_edges(conn, session_id, session)
             add_timing("index.repo_edges", t0)
@@ -872,6 +891,7 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "session_repos",
         "session_commits",
         "session_model_usage",
+        "session_refs",
     ):
         conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session_id,))
     # capture_gap rows are archive-generated ingest evidence, not projections
@@ -1668,6 +1688,7 @@ def _build_message_rows(
                 message.duration_ms,
                 _message_content_hash(session_id, message, position=position, variant_index=variant_index),
                 message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
+                _enum_value(message.stop_reason),
             )
         )
     return rows
@@ -1765,6 +1786,7 @@ def _message_content_hash(
         _enum_value(message.material_origin) or "",
         _sqlite_text(message.text) or "",
         _sqlite_text(message.user_context_text) or "",
+        _enum_value(message.stop_reason) or "",
         *block_parts,
     )
 
@@ -1780,6 +1802,7 @@ def _block_content_hash(
     language: str | None,
     is_error: bool | None,
     exit_code: int | None,
+    outcome_unknown_reason: str | None = None,
 ) -> bytes:
     """Digest a block's canonical EVIDENCE, deliberately excluding identity (svfj).
 
@@ -1802,6 +1825,7 @@ def _block_content_hash(
         _sqlite_text(language) or "",
         "" if is_error is None else str(int(is_error)),
         "" if exit_code is None else str(exit_code),
+        outcome_unknown_reason or "",
     )
 
 
@@ -1834,6 +1858,7 @@ def _build_block_rows(
             language = _block_language(block)
             is_error = getattr(block, "is_error", None)
             exit_code = getattr(block, "exit_code", None)
+            outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
             # Tuple built in order defined by spec.writable_columns
             rows.append(
                 (
@@ -1850,6 +1875,7 @@ def _build_block_rows(
                     _sqlite_text(language),
                     _sqlite_bool(is_error),
                     exit_code,
+                    outcome_unknown_reason,
                     _block_content_hash(
                         block_type=block_type.value,
                         text=block.text,
@@ -1860,6 +1886,7 @@ def _build_block_rows(
                         language=language,
                         is_error=is_error,
                         exit_code=exit_code,
+                        outcome_unknown_reason=outcome_unknown_reason,
                     ),
                 )
             )
@@ -1904,6 +1931,126 @@ def _write_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
     conn.executemany(_blocks_insert_sql(), rows)
+
+
+def _build_file_edit_rows(
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+) -> list[tuple[object, ...]]:
+    """Pure row-tuple builder for ``file_edits`` (polylogue-2qx.4).
+
+    ``ParsedFileEdit`` arrives attached to the TOOL_RESULT block that reports
+    the edit outcome (matching where the provider's own structuredPatch/
+    originalFile fields live on the wire), but ``file_edits`` is keyed by the
+    TOOL_USE block that made the call -- resolved here via the shared
+    ``tool_id``, exactly as the ``actions`` view pairs tool_use<->tool_result.
+    A TOOL_RESULT carrying ``file_edit`` with no matching TOOL_USE in this
+    same write (should not happen for a well-formed transcript) is dropped
+    rather than guessing a key.
+    """
+    tool_use_block_id_by_tool_id: dict[str, str] = {}
+    for fallback_position, message in enumerate(messages):
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        for position, block in enumerate(_message_blocks(message)):
+            if _block_type(block) is BlockType.TOOL_USE and block.tool_id:
+                tool_use_block_id_by_tool_id[block.tool_id] = f"{message_id}:{position}"
+
+    rows: list[tuple[object, ...]] = []
+    for fallback_position, message in enumerate(messages):
+        message_id = _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        for block in _message_blocks(message):
+            file_edit = getattr(block, "file_edit", None)
+            if file_edit is None or not block.tool_id:
+                continue
+            tool_use_block_id = tool_use_block_id_by_tool_id.get(block.tool_id)
+            if tool_use_block_id is None:
+                continue
+            rows.append(
+                (
+                    tool_use_block_id,
+                    session_id,
+                    message_id,
+                    _sqlite_text(file_edit.file_path),
+                    _json_dumps(file_edit.structured_patch) if file_edit.structured_patch is not None else None,
+                    _sqlite_text(file_edit.original_file),
+                    _sqlite_text(file_edit.old_string),
+                    _sqlite_text(file_edit.new_string),
+                    _sqlite_bool(file_edit.replace_all),
+                    _sqlite_bool(file_edit.user_modified),
+                    message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
+                )
+            )
+    return rows
+
+
+def _write_file_edits(
+    conn: sqlite3.Connection,
+    session_id: str,
+    messages: list[ParsedMessage],
+    *,
+    position_offset: int = 0,
+    duplicate_native_ids: frozenset[str] = frozenset(),
+) -> None:
+    rows = _build_file_edit_rows(
+        session_id,
+        messages,
+        position_offset=position_offset,
+        duplicate_native_ids=duplicate_native_ids,
+    )
+    if rows:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO file_edits (
+                tool_use_block_id, session_id, message_id, file_path,
+                structured_patch_json, original_file, old_string, new_string,
+                replace_all, user_modified, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+
+def _write_session_refs(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
+    """Write tracker-agnostic session references (polylogue-2qx.4).
+
+    Full-replace-only (mirrors ``_write_working_dirs``/``_write_repo_edges``):
+    ``session_refs`` rows are re-derived from ``session.session_refs`` on
+    every write, not appended incrementally, since the parser always emits
+    the complete current set for a session.
+    """
+    observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
+    for position, ref in enumerate(session.session_refs):
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_refs (
+                session_id, position, kind, repo, ref_number, url, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                position,
+                _enum_value(ref.kind),
+                _sqlite_text(ref.repo),
+                ref.number,
+                ref.url,
+                observed_at_ms,
+            ),
+        )
 
 
 def _write_web_constructs(
@@ -2086,6 +2233,14 @@ def _replace_full_session_messages_and_blocks(
             rows=list(prepared.block_rows) if prepared is not None else None,
         )
         add_timing("blocks", t0)
+        t0 = time.perf_counter()
+        _write_file_edits(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        add_timing("file_edits", t0)
         t0 = time.perf_counter()
         if not bulk_build:
             refresh_action_pairs(conn, session_id)
@@ -2455,13 +2610,15 @@ def _write_session_link(
     if not session.parent_session_provider_id:
         return
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
+    parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
+    method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
     conn.execute(
         """
         INSERT OR REPLACE INTO session_links (
             src_session_id, dst_origin, dst_native_id, link_type,
             branch_point_message_id, inheritance,
-            status, method, confidence, evidence_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+            status, parent_tool_use_block_id, method, confidence, evidence_json, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
         """,
         (
             session_id,
@@ -2470,12 +2627,32 @@ def _write_session_link(
             link_type,
             branch_point_message_id,
             inheritance,
-            "parser-parent",
+            parent_tool_use_block_id,
+            method,
             1.0,
             _json_dumps({"parent_session_provider_id": session.parent_session_provider_id}),
             _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0,
         ),
     )
+
+
+def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
+    """Resolve ``parentToolUseID`` (a provider tool_id) to its block_id.
+
+    polylogue-2qx.4: ``tool_id`` values are provider-generated and globally
+    unique across a session tree, so this is a plain lookup against whatever
+    session already wrote that TOOL_USE block -- no cross-session identity
+    resolution needed. ``None`` (not found / not supplied) leaves the column
+    NULL, never a guess.
+    """
+    tool_use_provider_id = getattr(session, "parent_tool_use_provider_id", None)
+    if not tool_use_provider_id:
+        return None
+    row = conn.execute(
+        "SELECT block_id FROM blocks WHERE tool_id = ? AND block_type = 'tool_use' LIMIT 1",
+        (tool_use_provider_id,),
+    ).fetchone()
+    return str(row[0]) if row is not None else None
 
 
 def _branch_type_from_link_type(link_type: object) -> str | None:
@@ -3044,8 +3221,9 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
         total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
-        payload_json, occurred_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        estimated_cost_usd, actual_cost_usd, cost_status, cost_source, pricing_version,
+        billing_provider, billing_base_url, billing_mode, occurred_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -3091,7 +3269,14 @@ def _provider_usage_event_row(
         total_reasoning,
         total_tokens,
         _payload_optional_int(event.payload, "model_context_window"),
-        _json_dumps(event.payload),
+        _payload_optional_float(event.payload, "estimated_cost_usd"),
+        _payload_optional_float(event.payload, "actual_cost_usd"),
+        _sqlite_text(_payload_string(event.payload, "cost_status")),
+        _sqlite_text(_payload_string(event.payload, "cost_source")),
+        _sqlite_text(_payload_string(event.payload, "pricing_version")),
+        _sqlite_text(_payload_string(event.payload, "billing_provider")),
+        _sqlite_text(_payload_string(event.payload, "billing_base_url")),
+        _sqlite_text(_payload_string(event.payload, "billing_mode")),
         _timestamp_ms(event.timestamp),
     )
 
@@ -3781,29 +3966,45 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
 def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
-    root_paths = tuple(dict.fromkeys(path.strip() for path in session.working_directories if path.strip()))
+    raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
+    # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
+    # deduplicating, so multiple cwds inside the same checkout (or a cwd
+    # that is an agent-worktree subdirectory) collapse to one row instead of
+    # one row per distinct raw path.
+    root_paths = tuple(dict.fromkeys(_normalized_repo_root_path(path) for path in raw_root_paths))
     if not root_paths and not session.git_repository_url:
         return
 
     origin_url = (session.git_repository_url or "").strip()
     for root_path in root_paths or ("",):
         repo_name = _repo_name(origin_url, root_path)
-        repo_id = _repo_id(origin_url, root_path)
+        # polylogue-cijx.4 decision 1: identity is the canonicalized remote
+        # (when known), NOT origin_url+root_path -- two worktree checkouts of
+        # the same remote must upsert the SAME repos row. See
+        # `repo_identity_key` for the full rationale.
+        repo_id = repo_identity_key(origin_url, root_path)
         conn.execute(
             """
-            INSERT INTO repos (origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(origin_url, root_path) DO UPDATE SET
-                repo_name = COALESCE(NULLIF(excluded.repo_name, ''), repos.repo_name),
+            INSERT INTO repos (repo_id, origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                origin_url = COALESCE(NULLIF(repos.origin_url, ''), excluded.origin_url),
+                root_path = COALESCE(NULLIF(repos.root_path, ''), excluded.root_path),
+                repo_name = COALESCE(NULLIF(repos.repo_name, ''), excluded.repo_name),
                 first_seen_at_ms = MIN(repos.first_seen_at_ms, excluded.first_seen_at_ms),
                 last_seen_at_ms = MAX(repos.last_seen_at_ms, excluded.last_seen_at_ms)
             """,
-            # repos.repo_name is NOT NULL DEFAULT ''. _repo_name() returns None
-            # when no name can be derived (e.g. a session whose cwd is "/" or
-            # "."): insert the schema's empty-string sentinel instead of NULL so
-            # the session is not dropped, while the NULLIF above keeps a later
-            # re-ingest from clobbering a previously-derived name with ''.
+            # repos.origin_url/root_path are now representative display
+            # values, not identity (repo_id is) -- first-seen wins on
+            # conflict rather than being overwritten by a later checkout, so
+            # they stay stable once set. repos.repo_name is NOT NULL DEFAULT
+            # ''. _repo_name() returns None when no name can be derived
+            # (e.g. a session whose cwd is "/" or "."): insert the schema's
+            # empty-string sentinel instead of NULL so the session is not
+            # dropped, while the NULLIF above keeps a later re-ingest from
+            # clobbering a previously-derived name with ''.
             (
+                repo_id,
                 _sqlite_text(origin_url),
                 _sqlite_text(root_path),
                 _sqlite_text(repo_name or ""),
@@ -3813,11 +4014,27 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
         )
         conn.execute(
             """
-            INSERT OR REPLACE INTO session_repos (
-                session_id, repo_id, branch_name, observed_at_ms
-            ) VALUES (?, ?, ?, ?)
+            INSERT INTO repo_checkouts (repo_id, root_path, first_seen_at_ms, last_seen_at_ms)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(repo_id, root_path) DO UPDATE SET
+                first_seen_at_ms = MIN(repo_checkouts.first_seen_at_ms, excluded.first_seen_at_ms),
+                last_seen_at_ms = MAX(repo_checkouts.last_seen_at_ms, excluded.last_seen_at_ms)
             """,
-            (session_id, repo_id, _sqlite_text(session.git_branch or ""), observed_at_ms or 0),
+            (repo_id, _sqlite_text(root_path), observed_at_ms or 0, observed_at_ms or 0),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_repos (
+                session_id, repo_id, root_path, branch_name, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                repo_id,
+                _sqlite_text(root_path),
+                _sqlite_text(session.git_branch or ""),
+                observed_at_ms or 0,
+            ),
         )
         if session.git_commit_hash:
             conn.execute(
@@ -4822,14 +5039,14 @@ def _reextract_provider_usage_tail_db(
           AND total_cache_write_tokens = 0
           AND total_reasoning_output_tokens = 0
           AND total_tokens = 0
-          AND json_extract(payload_json, '$.estimated_cost_usd') IS NULL
-          AND json_extract(payload_json, '$.actual_cost_usd') IS NULL
-          AND json_extract(payload_json, '$.cost_status') IS NULL
-          AND json_extract(payload_json, '$.cost_source') IS NULL
-          AND json_extract(payload_json, '$.pricing_version') IS NULL
-          AND json_extract(payload_json, '$.billing_provider') IS NULL
-          AND json_extract(payload_json, '$.billing_base_url') IS NULL
-          AND json_extract(payload_json, '$.billing_mode') IS NULL
+          AND estimated_cost_usd IS NULL
+          AND actual_cost_usd IS NULL
+          AND cost_status IS NULL
+          AND cost_source IS NULL
+          AND pricing_version IS NULL
+          AND billing_provider IS NULL
+          AND billing_base_url IS NULL
+          AND billing_mode IS NULL
         """,
         (child_session_id,),
     )
@@ -5140,15 +5357,132 @@ def _payload_optional_int(payload: Mapping[str, object], key: str) -> int | None
     return None
 
 
+def _payload_optional_float(payload: Mapping[str, object], key: str) -> float | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _repo_name(repository_url: str, root_path: str) -> str | None:
+    """Derive a stable repo display name (polylogue-cijx.4 decision 1).
+
+    Prefers ``normalize_repo_name`` -- the same remote-URL/git-root
+    normalization the attribution pipeline
+    (``storage/insights/session/repo_observations.py``) already uses -- so a
+    session whose cwd is a deep subdirectory or an agent worktree resolves to
+    the real repository name, not a raw path-basename echo (the
+    "agent-<hash>" bug: a session's cwd under
+    ``.claude/worktrees/agent-<hash>/`` used to yield that hash as the repo
+    name because the old fallback was ``Path(root_path).name`` verbatim).
+    Falls back to the previous naive derivation only when normalization
+    cannot resolve anything (e.g. a git root that no longer exists on this
+    filesystem).
+    """
+    normalized = normalize_repo_name(repository_url) if repository_url else normalize_repo_name(root_path)
+    if normalized:
+        return normalized
     candidate = repository_url.rstrip("/").rsplit("/", maxsplit=1)[-1] if repository_url else Path(root_path).name
     if candidate.endswith(".git"):
         candidate = candidate[:-4]
     return candidate or None
 
 
-def _repo_id(origin_url: str, root_path: str) -> str:
-    return f"{origin_url}\x1f{root_path}"
+def _normalized_repo_root_path(root_path: str) -> str:
+    """Resolve ``root_path`` to its git root when one is discoverable.
+
+    Without this, two sessions whose cwd differs only by subdirectory (or by
+    worktree path under one checkout) would write two distinct checkout
+    roots for what is really one working tree. Normalizing the *value*
+    written into ``root_path`` to the resolved git root collapses
+    same-checkout subdirectory variance and keeps this writer's rows
+    consistent with the attribution-based writer
+    (``storage/insights/session/repo_observations.py``), which already
+    normalizes this way. As of the ``repo_identity_key`` schema fix below,
+    ``root_path`` is no longer part of ``repos.repo_id`` identity when a
+    remote is known -- it still matters as the value recorded in
+    ``repo_checkouts``/``session_repos.root_path`` (decision 2's
+    repo-relative path stripping), and as the sole identity fallback for a
+    repository with no remote.
+    """
+    return normalize_repo_path(root_path) or root_path
+
+
+_SCP_LIKE_REMOTE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
+
+
+def _canonicalize_repo_remote(origin_url: str) -> str:
+    """Canonicalize a git remote URL to a stable identity token.
+
+    polylogue-cijx.4 decision 1: "a repository is keyed on its normalized
+    remote -- all spellings of one remote are one repo". ``git@host:owner/repo``
+    (SCP-like), ``https://host/owner/repo.git``, and ``ssh://host/owner/repo``
+    must collapse to the same identity. This strips scheme/userinfo,
+    lowercases the host, and strips a trailing ``.git`` suffix and slash.
+
+    Deliberately a small heuristic, not a full git-remote parser: it only
+    needs to be *consistent* for the common hosting-provider URL shapes this
+    archive actually observes (GitHub/GitLab/etc SSH and HTTPS remotes),
+    because it feeds a stored identity key, not a validated remote. Returns
+    ``""`` when ``origin_url`` is blank or unrecognizable, signaling the
+    caller to fall back to the directory identity.
+    """
+    raw = origin_url.strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path
+    else:
+        match = _SCP_LIKE_REMOTE_RE.match(raw)
+        if match:
+            host, path = match.group(1).lower(), match.group(2)
+        else:
+            host, path = "", raw
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    if not path:
+        return ""
+    canonical = f"{host}/{path}" if host else path
+    return canonical.lower()
+
+
+def repo_identity_key(origin_url: str, root_path: str) -> str:
+    """Compute the canonical ``repos.repo_id`` (polylogue-cijx.4 decision 1).
+
+    A repository is keyed on its normalized remote when one is known --
+    every worktree checkout of the same remote collapses to a single
+    ``repos`` row (``remote:<host>/<path>``). Only when no remote is known
+    does identity fall back to the resolved checkout root
+    (``dir:<root_path>``, decision 1's "where no remote exists, the
+    outermost git root"); ``root_path`` is expected to already be resolved
+    to that outermost root by ``_normalized_repo_root_path`` before this is
+    called.
+
+    This used to be a SQLite ``GENERATED ALWAYS`` column computed as
+    ``origin_url || root_path`` -- so two worktree checkouts of the exact
+    same remote were two different ``repos`` rows purely because their
+    checkout paths differed (measured: 3.5% session-label collision from
+    this, and repo counts like "polylogue holds 106 distinct repo_ids"
+    that were really ~1 repo checked out 106 places). ``repo_id`` is now a
+    plain Python-computed column instead of a SQL generated expression,
+    because the remote-URL canonicalization above needs real string logic
+    (scheme/userinfo stripping, SCP-vs-URL unification, case folding) a SQL
+    expression cannot express without duplicating this function in SQL.
+    """
+    canonical_remote = _canonicalize_repo_remote(origin_url)
+    if canonical_remote:
+        return f"remote:{canonical_remote}"
+    return f"dir:{root_path}"
 
 
 def _attachment_id(_session_id: str, attachment: ParsedAttachment) -> str:
@@ -5323,6 +5657,7 @@ __all__ = [
     "read_session_work_events",
     "rebuild_archive_messages_fts",
     "replace_parser_ingest_flag_tags",
+    "repo_identity_key",
     "upsert_session_profile_costs",
     "apply_insight_materialization",
     "upsert_insight_materialization",

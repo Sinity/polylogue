@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import Origin
-from polylogue.pipeline.semantic_capture import detect_context_compaction
+from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
@@ -65,18 +65,22 @@ class TestLegacyCompactionDetection:
 
 class TestModernCompactionDetection:
     def test_system_compact_boundary_detected(self) -> None:
+        # Real Claude Code wire shape is camelCase throughout (verified against
+        # the live corpus 2026-07-29) -- this was previously read via
+        # snake_case keys that never matched a real record, silently nulling
+        # trigger/pre_tokens/preserved_segment_id on every ingested compaction.
         item = {
             "type": "system",
             "subtype": "compact_boundary",
             "message": {"content": "Compacted summary"},
             "timestamp": "2024-06-01T12:00:00Z",
-            "compact_metadata": {
+            "compactMetadata": {
                 "trigger": "token_limit",
                 "preTokens": 128000,
-                "preserved_segment": {
-                    "head_uuid": "h1",
-                    "anchor_uuid": "a1",
-                    "tail_uuid": "t1",
+                "preservedSegment": {
+                    "headUuid": "h1",
+                    "anchorUuid": "a1",
+                    "tailUuid": "t1",
                 },
             },
         }
@@ -89,23 +93,28 @@ class TestModernCompactionDetection:
         assert result["pre_tokens"] == 128000
         assert result["preserved_segment_id"] == "a1"
 
-    def test_modern_snake_case_pre_tokens(self) -> None:
+    def test_modern_snake_case_fallback(self) -> None:
+        """Snake_case keys are a defensive fallback, not the observed live shape."""
         item = {
             "type": "system",
             "subtype": "compact_boundary",
             "message": {"content": "summary"},
-            "compact_metadata": {"pre_tokens": 50000},
+            "compact_metadata": {
+                "pre_tokens": 50000,
+                "preserved_segment": {"anchor_uuid": "a2"},
+            },
         }
         result = detect_context_compaction(item)
         assert result is not None
         assert result["pre_tokens"] == 50000
+        assert result["preserved_segment_id"] == "a2"
 
     def test_modern_with_content_blocks(self) -> None:
         item = {
             "type": "system",
             "subtype": "compact_boundary",
             "message": {"content": [{"type": "text", "text": "Modern block"}]},
-            "compact_metadata": {},
+            "compactMetadata": {},
         }
         result = detect_context_compaction(item)
         assert result is not None
@@ -122,11 +131,50 @@ class TestModernCompactionDetection:
             "type": "system",
             "subtype": "compact_boundary",
             "message": {"content": "No segment"},
-            "compact_metadata": {"trigger": "manual"},
+            "compactMetadata": {"trigger": "manual"},
         }
         result = detect_context_compaction(item)
         assert result is not None
         assert result["preserved_segment_id"] is None
+
+
+class TestMicroCompactionDetection:
+    """``microcompact_boundary`` -- trims individual tool results, not a full recompact."""
+
+    def test_micro_compaction_detected(self) -> None:
+        item = {
+            "type": "system",
+            "subtype": "microcompact_boundary",
+            "timestamp": "2026-02-16T18:31:15.409Z",
+            "microcompactMetadata": {
+                "trigger": "auto",
+                "preTokens": 73297,
+                "tokensSaved": 33385,
+                "compactedToolIds": ["toolu_01A", "toolu_01B"],
+                "clearedAttachmentUUIDs": ["att-1"],
+            },
+        }
+        result = detect_micro_compaction(item)
+        assert result is not None
+        assert result["timestamp"] == "2026-02-16T18:31:15.409Z"
+        assert result["trigger"] == "auto"
+        assert result["pre_tokens"] == 73297
+        assert result["tokens_saved"] == 33385
+        assert result["compacted_tool_use_ids"] == ["toolu_01A", "toolu_01B"]
+        assert result["cleared_attachment_count"] == 1
+
+    def test_micro_compaction_missing_metadata(self) -> None:
+        item = {"type": "system", "subtype": "microcompact_boundary"}
+        result = detect_micro_compaction(item)
+        assert result is not None
+        assert result["trigger"] is None
+        assert result["compacted_tool_use_ids"] == []
+        assert result["cleared_attachment_count"] == 0
+
+    def test_non_microcompact_not_detected(self) -> None:
+        assert detect_micro_compaction({"type": "system", "subtype": "compact_boundary"}) is None
+        assert detect_micro_compaction({"type": "user"}) is None
+        assert detect_micro_compaction({}) is None
 
 
 # =============================================================================
@@ -248,7 +296,7 @@ class TestClaudeCodeParserSessionEvents:
                 "uuid": "c1",
                 "timestamp": "2024-01-01T10:05:00Z",
                 "message": {"content": "Modern compacted summary"},
-                "compact_metadata": {"trigger": "auto", "preTokens": 100000},
+                "compactMetadata": {"trigger": "auto", "preTokens": 100000},
             },
         ]
         result = parse_code(payload, "test-session")

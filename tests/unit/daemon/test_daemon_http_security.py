@@ -870,14 +870,15 @@ class TestIngestEndpointInboxBoundary:
 class TestJsonSerializationRobustness:
     """``_json_bytes`` is the final serialization barrier before the wire.
 
-    ``orjson`` rejects non-serializable types (e.g., ``set``, custom objects
-    with no ``__json__``).  The ``daemon_safe_handler`` decorator catches
-    unhandled exceptions and returns 500, so the client always gets a
+    The active JSON backend (``core.json``, msgspec-backed) rejects
+    non-serializable types (e.g., ``set``, custom objects with no
+    ``__json__``) as a ``TypeError``.  The ``daemon_safe_handler`` decorator
+    catches unhandled exceptions and returns 500, so the client always gets a
     well-formed error response instead of a hung or partial stream.
 
     These tests confirm that:
     1. Normal dicts with string/int/list/None values round-trip cleanly.
-    2. ``orjson.JSONEncodeError`` from ``_json_bytes`` is not silently swallowed
+    2. A ``TypeError`` from ``_json_bytes`` is not silently swallowed
        — the caller (``_send_json``) will propagate it to the decorator.
     3. The full handler chain (decorator → handler → ``_send_json``) returns
        a 500 JSON error when a handler builds an unserializable payload.
@@ -899,8 +900,8 @@ class TestJsonSerializationRobustness:
         assert _json.loads(raw) == payload
 
     def test_set_raises_type_error(self) -> None:
-        """Sets are not JSON-serializable. ``orjson`` raises TypeError,
-        not silently truncates or returns partial output."""
+        """Sets are not JSON-serializable. The active JSON backend raises
+        TypeError, not silently truncates or returns partial output."""
         from polylogue.daemon.http import _json_bytes
 
         with pytest.raises(TypeError):
@@ -923,12 +924,13 @@ class TestJsonSerializationRobustness:
         with a well-formed 500 JSON response rather than crashing silently.
 
         This is the end-to-end path: route handler builds bad payload →
-        ``_send_json`` calls ``_json_bytes`` → orjson raises →
+        ``_send_json`` calls ``_json_bytes`` → the JSON backend raises →
         ``daemon_safe_handler`` catches → returns 500 error JSON.
 
         The test injects a ``_send_json`` mock that raises on the first call
-        (simulating orjson failure) and records on the second (simulating the
-        decorator's error-response call), confirming the contract holds.
+        (simulating a JSON-encode failure) and records on the second
+        (simulating the decorator's error-response call), confirming the
+        contract holds.
         """
         from typing import Any
 
@@ -942,8 +944,9 @@ class TestJsonSerializationRobustness:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # First call: simulate orjson raising on unserializable data
-                # (orjson raises TypeError for non-serializable Python types).
+                # First call: simulate the JSON backend raising on
+                # unserializable data (TypeError for non-serializable
+                # Python types).
                 raise TypeError("Type is not JSON serializable: set")
             # Subsequent calls: record (these come from the decorator's fallback).
             recorded.append((status, payload))
@@ -958,7 +961,7 @@ class TestJsonSerializationRobustness:
         _bad_handler(handler)
 
         # The decorator must have caught the error and fired a 500 response.
-        assert recorded, "no fallback response was sent after orjson error"
+        assert recorded, "no fallback response was sent after the JSON-encode error"
         final_status, final_payload = recorded[-1]
         assert final_status == HTTPStatus.INTERNAL_SERVER_ERROR
         assert isinstance(final_payload, dict)
@@ -1074,6 +1077,20 @@ class TestNoTokenLogging:
         }
         intentional_secret_outputs = {
             (Path("polylogue/daemon/browser_capture.py"), "token_show", "echo"),
+            # `_handle_query_units` reads a client-supplied pagination
+            # `continuation` param and decodes it into `continuation_token`/
+            # `continuation_request` (an opaque query-unit cursor, not a
+            # credential) before echoing the *query results* (not the
+            # continuation value itself) back via `_send_json`. The scanner's
+            # name-based taint tracking can't distinguish this from an actual
+            # secret token by variable name alone.
+            (Path("polylogue/daemon/http.py"), "_handle_query_units", "_send_json"),
+            # `_pairing_redeem` is the deliberate mechanism by which a
+            # browser-extension client receives its freshly-issued
+            # `auth_token` after redeeming a one-time pairing code
+            # (#3260) -- returning the token to its rightful, just-paired
+            # owner is the entire point of this endpoint, not a leak.
+            (Path("polylogue/browser_capture/server.py"), "_pairing_redeem", "_send_json"),
         }
         safe_token_container_results = {
             (Path("polylogue/daemon/browser_capture.py"), "serve_command", "make_server"),

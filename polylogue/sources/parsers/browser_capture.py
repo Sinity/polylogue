@@ -17,13 +17,16 @@ from polylogue.archive.ingest_flags import (
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
+    BrowserCaptureBlock,
     BrowserCaptureEnvelope,
+    BrowserCaptureTurn,
     looks_like_browser_capture,
 )
-from polylogue.core.enums import Provider, SessionKind
+from polylogue.core.enums import BlockType, Provider, SessionKind
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
+    ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
@@ -32,6 +35,121 @@ from polylogue.sources.parsers.base_models import (
 
 def _legacy_native_id(provider: Provider, provider_session_id: str | None) -> str | None:
     return legacy_browser_capture_native_id(provider, provider_session_id)
+
+
+def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
+    """Convert a turn's typed capture blocks into the parser contract's blocks.
+
+    ``BrowserCaptureBlock`` mirrors ``ParsedContentBlock`` field-for-field
+    (polylogue-ah21) so this is a direct projection, not a reconstruction --
+    the capture adapter is the thing that decided ``type``/``tool_id``/
+    ``tool_input``/``is_error``, not this parser. ``text``/``tool_name``/
+    ``tool_id``/``tool_input``/``media_type``/``is_error``/``exit_code`` all
+    land on real typed columns. ``metadata`` does not -- the ``blocks`` table
+    has no metadata column and the write path only reads a ``language`` key
+    back out of it (``storage/sqlite/archive_tiers/write.py:
+    _block_language``), so anything the capture extension attaches here would
+    be silently dropped at write time (bd polylogue-9x22). See
+    ``_block_metadata_evidence_events`` below, which routes it through
+    ``session_events`` instead -- the capture extension's own wire protocol
+    has no fixed vocabulary for this field, so (unlike other polylogue-9x22
+    sites) the whole dict is carried verbatim rather than picking known keys.
+    """
+
+    return [
+        ParsedContentBlock(
+            type=block.type,
+            text=block.text,
+            tool_name=block.tool_name,
+            tool_id=block.tool_id,
+            tool_input=block.tool_input,
+            media_type=block.media_type,
+            metadata=block.metadata,
+            is_error=block.is_error,
+            exit_code=block.exit_code,
+        )
+        for block in turn.blocks
+    ]
+
+
+def _block_metadata_evidence_events(
+    blocks: list[BrowserCaptureBlock],
+    *,
+    source_message_provider_id: str,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    """Carry ``BrowserCaptureBlock.metadata`` into session_events, verbatim.
+
+    One event per block with non-empty metadata; ``block_index`` lets a
+    reader re-associate the event with its block in ``turn.blocks`` order
+    (same shape as ``claude/common.py``'s ``claude_ai_web_tool_evidence``).
+    """
+
+    events: list[ParsedSessionEvent] = []
+    for block_index, block in enumerate(blocks):
+        if not block.metadata:
+            continue
+        events.append(
+            ParsedSessionEvent(
+                event_type="browser_capture_block_metadata",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload={"block_index": block_index, **dict(block.metadata)},
+            )
+        )
+    return events
+
+
+def _claude_raw_content_segments(turn: BrowserCaptureTurn) -> list[dict[str, object]] | None:
+    """Project a turn's typed blocks into Anthropic-API-shaped raw segments.
+
+    ``_parse_claude_fallback_envelope`` builds a synthetic raw record per turn
+    and feeds it through ``normalize_chat_messages`` / ``_claude_content_blocks``
+    -- the same machinery a genuine Claude web export uses to build typed
+    tool_use/tool_result/thinking blocks from a message's ``content`` list.
+    Without this projection a captured tool turn's blocks would be silently
+    dropped by the fallback path even though the turn carries real structure.
+    Returns ``None`` when the turn has no typed blocks, so the caller falls
+    back to the legacy text-only raw shape untouched.
+    """
+
+    if not turn.blocks:
+        return None
+    segments: list[dict[str, object]] = []
+    for block in turn.blocks:
+        if block.type is BlockType.TOOL_USE:
+            segments.append(
+                {
+                    "type": "tool_use",
+                    "id": block.tool_id,
+                    "name": block.tool_name,
+                    "input": block.tool_input or {},
+                }
+            )
+        elif block.type is BlockType.TOOL_RESULT:
+            segments.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.tool_id,
+                    "content": block.text,
+                    "is_error": block.is_error,
+                }
+            )
+        elif block.type is BlockType.THINKING:
+            segments.append({"type": "thinking", "thinking": block.text or ""})
+        elif block.type is BlockType.CODE:
+            segments.append({"type": "code", "text": block.text or "", **(block.metadata or {})})
+        elif block.type in (BlockType.IMAGE, BlockType.DOCUMENT):
+            segments.append(
+                {
+                    "type": block.type.value,
+                    "media_type": block.media_type,
+                    **(block.metadata or {}),
+                }
+            )
+        else:
+            segments.append({"type": "text", "text": block.text or ""})
+    return segments
 
 
 def looks_like(payload: object) -> bool:
@@ -257,8 +375,6 @@ def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCapt
 
 
 def _claude_fallback_turn_payload(turn: object) -> dict[str, object]:
-    from polylogue.browser_capture.models import BrowserCaptureTurn
-
     assert isinstance(turn, BrowserCaptureTurn)
     raw: dict[str, object] = dict(turn.provider_meta)
     # Typed envelope identity wins over any provider_meta echo.
@@ -272,6 +388,14 @@ def _claude_fallback_turn_payload(turn: object) -> dict[str, object]:
             "ordinal": turn.ordinal,
         }
     )
+    # A captured turn's typed blocks (tool_use/tool_result/thinking/...)
+    # project into the same "content" segment list a genuine Claude web
+    # export's chat_messages carry, so normalize_chat_messages builds real
+    # ParsedContentBlock rows instead of leaving the turn text-only
+    # (polylogue-ah21). `text` above stays as the rendering.
+    content_segments = _claude_raw_content_segments(turn)
+    if content_segments is not None:
+        raw["content"] = content_segments
     if turn.attachments:
         raw["attachments"] = [
             {
@@ -548,6 +672,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
+    block_metadata_events: list[ParsedSessionEvent] = []
     message_position = 0
 
     for turn in envelope.session.turns:
@@ -565,6 +690,14 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                 variant_index=0,
                 is_active_path=True,
                 model_name=envelope.session.model,
+                blocks=_parsed_blocks_for_turn(turn),
+            )
+        )
+        block_metadata_events.extend(
+            _block_metadata_evidence_events(
+                turn.blocks,
+                source_message_provider_id=turn.provider_turn_id,
+                timestamp=turn.timestamp,
             )
         )
         message_position += 1
@@ -602,7 +735,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        session_events=_capture_session_events(envelope),
+        session_events=[*_capture_session_events(envelope), *block_metadata_events],
         ingest_flags=[
             *dict.fromkeys(
                 [

@@ -238,6 +238,177 @@ def _walk_artifact(
             _walk_artifact(child, artifact=artifact, json_path=f"{json_path}[{index}]", findings=findings)
 
 
+def _element_kinds(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(str(item.get("element_kind")) for item in value if isinstance(item, dict))
+
+
+def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
+    """Run the enum-value privacy guard over every committed element schema.
+
+    ``polylogue.schemas.audit.checks.check_privacy_guards`` catches UUIDs,
+    hex ids, high-entropy tokens and otherwise-unsafe values recorded in
+    ``x-polylogue-values`` annotations.  It is the sharper check for that
+    class -- and it ran nowhere.  ``devtools schema-audit`` is the only
+    caller, and that command is not part of any ``devtools verify`` gate,
+    so nothing enforced it on the path that actually publishes schemas.
+
+    That gap was not theoretical.  ``promote_cluster``'s samples path calls
+    ``generate_schema_from_samples()``, which -- unlike the full ``generate``
+    pipeline -- has no ``privacy_config`` plumbed through it, so a
+    low-cardinality "safe enum" heuristic recorded seven literal
+    conversation UUIDs verbatim into claude-ai v2.  The committed
+    promotion audit reported zero blockers throughout, because it does not
+    duplicate this check.
+
+    Wiring it here means the gate that guards publication runs the guard
+    that understands publication, rather than relying on a separate command
+    nobody invokes.
+
+    ``check_privacy_guards`` also has a broad catch-all branch (any value
+    that fails its readable-enum allowlist, e.g. an email address or a
+    private-TLD hostname) that this function deliberately does not surface:
+    ``_walk_artifact`` already classifies every ``x-polylogue-values`` entry
+    through ``_review_category``/``_secret_findings`` with a finer-grained
+    severity split (secrets are specific blocker categories such as
+    ``github_token``; emails/URLs/etc. are ``review`` items, not blockers).
+    Escalating the catch-all branch here would re-flag those same values
+    under a coarser ``unsafe_enum_value`` blocker and collapse that
+    distinction. This function only escalates the three violation shapes
+    ``_walk_artifact`` has no equivalent for: verbatim UUIDs, hex ids, and
+    high-entropy tokens -- and even then skips a value already caught by
+    ``_secret_findings``'s specific secret patterns, since that is already a
+    (differently named) blocker.
+    """
+    import ast
+
+    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.schemas.audit.checks import check_privacy_guards
+
+    detail_re = re.compile(r"^(.*?): (UUID leak|hex-id leak|high-entropy token) (.+)$")
+    findings: list[PromotionAuditFinding] = []
+    for path in sorted(root.rglob("*.schema.json.gz")):
+        artifact = str(path.relative_to(root))
+        try:
+            schema = _load_artifact(path)
+        except Exception:
+            continue
+        document = json_document(schema)
+        if not document:
+            continue
+        result = check_privacy_guards(document)
+        if result.status is not OutcomeStatus.ERROR:
+            continue
+        for detail in result.details:
+            match = detail_re.match(detail)
+            if match is None:
+                # The generic "unsafe value" catch-all; already classified
+                # (as a review item, not a blocker) by _walk_artifact.
+                continue
+            json_path, _kind, rendered_value = match.groups()
+            try:
+                raw_value = ast.literal_eval(rendered_value)
+            except (ValueError, SyntaxError):
+                raw_value = rendered_value
+            if isinstance(raw_value, str) and any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
+                # Already reported under its specific secret category.
+                continue
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="unsafe_enum_value",
+                    artifact=artifact,
+                    json_path=json_path,
+                    value=detail,
+                )
+            )
+    return findings
+
+
+def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
+    """Require each provider's catalog.json to agree with its packages.
+
+    ``catalog.json`` is the resolution authority: ``runtime_registry`` reads it
+    to pick a package and then reads that package's element list.  A promotion
+    that rewrites ``versions/<v>/package.json`` without regenerating the
+    catalog is therefore *inert* -- the new elements and profile families are
+    never resolved, while the tree looks promoted.  That happened once
+    already, so it is a blocker rather than a review item.  Writing through
+    ``SchemaRegistry.replace_provider_packages`` keeps the two in step.
+    """
+    findings: list[PromotionAuditFinding] = []
+    for catalog_path in sorted(root.rglob("catalog.json")):
+        provider_dir = catalog_path.parent
+        relative = str(catalog_path.relative_to(root))
+        try:
+            catalog = _load_artifact(catalog_path)
+        except Exception:
+            continue  # already reported as malformed_artifact
+        if not isinstance(catalog, dict):
+            continue
+        packages = catalog.get("packages")
+        if not isinstance(packages, list):
+            continue
+        catalogued = {
+            str(entry.get("version")): entry for entry in packages if isinstance(entry, dict) and entry.get("version")
+        }
+        on_disk = {path.parent.name for path in provider_dir.glob("versions/*/package.json") if path.is_file()}
+        for missing in sorted(on_disk - set(catalogued)):
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="catalog_incoherent",
+                    artifact=relative,
+                    json_path="$.packages",
+                    value=f"version={missing};reason=package_on_disk_absent_from_catalog",
+                )
+            )
+        for stale in sorted(set(catalogued) - on_disk):
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="catalog_incoherent",
+                    artifact=relative,
+                    json_path="$.packages",
+                    value=f"version={stale};reason=catalogued_version_has_no_package",
+                )
+            )
+        for version in sorted(on_disk & set(catalogued)):
+            manifest_path = provider_dir / "versions" / version / "package.json"
+            try:
+                manifest = _load_artifact(manifest_path)
+            except Exception:
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            entry = catalogued[version]
+            catalog_kinds = _element_kinds(entry.get("elements"))
+            manifest_kinds = _element_kinds(manifest.get("elements"))
+            if catalog_kinds != manifest_kinds:
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="catalog_incoherent",
+                        artifact=relative,
+                        json_path=f"$.packages[version={version}].elements",
+                        value=f"catalog={catalog_kinds};package={manifest_kinds}",
+                    )
+                )
+            for field in ("sample_count", "first_seen", "last_seen"):
+                if entry.get(field) != manifest.get(field):
+                    findings.append(
+                        PromotionAuditFinding(
+                            severity="blocker",
+                            category="catalog_incoherent",
+                            artifact=relative,
+                            json_path=f"$.packages[version={version}].{field}",
+                            value=f"catalog={entry.get(field)!r};package={manifest.get(field)!r}",
+                        )
+                    )
+    return findings
+
+
 def audit_schema_artifacts(root: Path) -> PromotionAuditReport:
     """Audit every JSON/gzip-JSON artifact below ``root`` without mutating it."""
     resolved = root.expanduser().resolve()
@@ -276,6 +447,8 @@ def audit_schema_artifacts(root: Path) -> PromotionAuditReport:
                     )
                 )
         _walk_artifact(payload, artifact=relative, json_path="$", findings=findings)
+    findings.extend(_catalog_coherence_findings(resolved))
+    findings.extend(_privacy_guard_findings(resolved))
     return PromotionAuditReport(
         root=str(resolved),
         artifact_count=len(artifacts),

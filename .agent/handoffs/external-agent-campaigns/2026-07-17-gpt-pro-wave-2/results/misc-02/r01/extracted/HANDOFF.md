@@ -376,8 +376,7 @@ try:
     recipe_hash_sql = f"X'{recipe.recipe_hash.hex()}'"
     output_hash_sql = f"X'{recipe.output_contract_hash.hex()}'"
     desired_key_sql = (
-        "polylogue_embedding_derivation_key("
-        f"s.session_id, ds.source_hash, {recipe_hash_sql}, {output_hash_sql})"
+        f"polylogue_embedding_derivation_key(s.session_id, ds.source_hash, {recipe_hash_sql}, {output_hash_sql})"
     )
     key_current = f"""(
         d.session_id IS NOT NULL
@@ -452,9 +451,7 @@ try:
     assert row is not None
     result = {name: int(value or 0) for name, value in zip(columns, row, strict=True)}
     result["partition_check"] = (
-        result["exact_fresh_sessions"]
-        + result["exact_pending_sessions"]
-        + result["exact_blocked_sessions"]
+        result["exact_fresh_sessions"] + result["exact_pending_sessions"] + result["exact_blocked_sessions"]
         == result["eligible_sessions"]
     )
     print(json.dumps(result, indent=2, sort_keys=True))

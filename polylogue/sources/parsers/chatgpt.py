@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from pydantic import ValidationError
@@ -642,6 +642,12 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
                     tool_name=recipient,
+                    # tool_id = this node's own id, so the mapping-tree child
+                    # node that carries the result (parent == this id) can
+                    # link back via the same id below (polylogue-ah21: these
+                    # were previously always NULL, leaving every ChatGPT
+                    # tool_use/tool_result block pair unjoined).
+                    tool_id=str(msg_id),
                     tool_input=tool_call_input,
                     metadata={"content_type": content_type},
                 )
@@ -657,20 +663,61 @@ def extract_messages_from_mapping(
             )
         elif content_type == "code":
             # Code-interpreter input — top-level text, no parts (#1744).
+            # bd polylogue-4fm3: this used to emit BlockType.CODE with no
+            # tool_id, so every code-interpreter call contributed zero rows
+            # to `action_pairs` (which only joins block_type='tool_use') --
+            # its paired execution_output below (a real TOOL_RESULT) was
+            # left permanently unpaired, producing a measured ~4.6:1
+            # tool_result:tool_use skew on browser-captured chatgpt sessions.
+            # Classified as TOOL_USE instead, mirroring the recipient-
+            # addressed JSON tool-call branch above: tool_name = recipient
+            # (e.g. "python", "container.exec") when the provider addressed a
+            # tool for this call (polylogue-grub), falling back to
+            # "code_interpreter" when it didn't; tool_id = this node's own
+            # id, so the execution_output node (whose mapping-tree parent is
+            # this call) can join back via the same id below -- the same
+            # convention polylogue-ah21 established for the browser-capture
+            # typed-blocks path. `text` is kept (not just tool_input) so the
+            # raw source keeps rendering as before.
             content_blocks.append(
                 ParsedContentBlock(
-                    type=BlockType.CODE,
+                    type=BlockType.TOOL_USE,
                     text=text,
-                    metadata={"content_type": content_type},
+                    tool_name=recipient or "code_interpreter",
+                    tool_id=str(msg_id),
+                    tool_input={"code": text},
                 )
             )
         elif content_type == "execution_output":
             # Code-interpreter output — top-level text, no parts (#1744).
+            # tool_id = the calling node's id (mapping-tree `parent`), the
+            # same identifier the code-interpreter TOOL_USE node above now
+            # stamps onto itself (bd polylogue-4fm3) -- both sides of the
+            # pair carry a shared tool_id and the `actions` view can join
+            # them.
+            #
+            # is_error reads the node's own `status` (polylogue-grub): the
+            # export's official terminal states for a completed tool run are
+            # "finished_successfully" and "finished_partial_completion" --
+            # exactly the states that determine whether the run failed.
+            # "in_progress" (and anything else) has no concluded outcome yet
+            # and stays honestly unknown; there is no numeric exit code in
+            # this export, so exit_code is never set here.
+            node_status = msg.get("status")
+            execution_is_error = (
+                True
+                if node_status == "finished_partial_completion"
+                else False
+                if node_status == "finished_successfully"
+                else None
+            )
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=text,
+                    tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
+                    is_error=execution_is_error,
                 )
             )
         elif content_type in ("user_editable_context", "model_editable_context"):
@@ -944,6 +991,37 @@ def looks_like(payload: object) -> bool:
     return _mapping_nodes_are_valid(mapping)
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the write path only reads a
+# ``language`` key back out of it (``storage/sqlite/archive_tiers/write.py:
+# _block_language``). ``extract_messages_from_mapping`` above still tags
+# TOOL_USE/THINKING/CODE/TOOL_RESULT/context blocks with
+# ``metadata={"content_type": ...}`` and IMAGE blocks with
+# ``metadata={"asset_pointer": ...}`` as an in-process carrier -- without
+# this projection step that disambiguating detail (e.g. "thoughts" vs.
+# "reasoning_recap" on a THINKING block) is silently dropped at write time.
+# Route it through session_events, same precedent as
+# ``claude/common.py``'s ``claude_ai_web_tool_evidence`` and
+# ``browser_capture.py``'s ``browser_capture_block_metadata``: one event per
+# block carrying non-empty metadata, whole dict verbatim (no fixed key
+# vocabulary to prune against here, unlike the Claude AI web-tool case).
+def _block_metadata_evidence_events(messages: Sequence[ParsedMessage]) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for message in messages:
+        for block_index, block in enumerate(message.blocks):
+            if not block.metadata:
+                continue
+            events.append(
+                ParsedSessionEvent(
+                    event_type="chatgpt_block_metadata",
+                    timestamp=message.timestamp,
+                    source_message_provider_id=message.provider_message_id,
+                    payload={"block_index": block_index, **dict(block.metadata)},
+                )
+            )
+    return events
+
+
 def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
@@ -1003,6 +1081,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         )
         for timing in generation_timings
     ]
+    session_events.extend(_block_metadata_evidence_events(messages))
     duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")

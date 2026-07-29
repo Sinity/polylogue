@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
@@ -233,6 +233,139 @@ def test_parse_stream_payload_splits_claude_code_aggregate_by_session_id() -> No
     assert [len(session.messages) for session in sessions] == [2, 1]
 
 
+_SIDECAR_NEEDLE = "zz_only_in_acquired_sidecar_body"
+
+
+def _sidecar_tool_result_record(tool_use_id: str, inline_content: str) -> dict[str, object]:
+    return {
+        "type": "user",
+        "sessionId": "sess-sidecar",
+        "uuid": f"uuid-{tool_use_id}",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "content": inline_content}],
+        },
+    }
+
+
+def _truncated_inline_pointer(sidecar_path: Path) -> str:
+    return (
+        "<persisted-output>\n"
+        f"Output too large (5.0KB). Full output saved to: {sidecar_path}\n\n"
+        "Preview (first 2KB):\nshort preview, not the real payload"
+    )
+
+
+def test_parse_payload_wires_claude_code_tool_result_sidecars(tmp_path: Path) -> None:
+    """polylogue-wjgf: dispatch.py's eager CLAUDE_CODE branch must join sidecars.
+
+    Production path: dispatch._parse_lowered_spec's ``Provider.CLAUDE_CODE``
+    branch (via ``_join_claude_code_sidecars`` +
+    ``sources.live.tool_result_sidecars.{resolve_tool_results_dir,
+    join_tool_result_sidecars}``). Mutation that breaks this: dropping the
+    ``tool_result_sidecars=`` kwarg from the ``claude.parse_code(...)`` call
+    (reverting to the pre-wiring call site) makes this assertion fail because
+    the block would keep its truncated preview text instead of the acquired
+    sidecar body.
+    """
+    session_path = tmp_path / "sess-sidecar.jsonl"
+    session_path.write_text("", encoding="utf-8")
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_payload(Provider.CLAUDE_CODE, payload, "fallback", source_path=str(session_path))
+
+    assert len(sessions) == 1
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE in (block.text or "")
+
+
+def test_parse_payload_without_source_path_skips_sidecar_join(tmp_path: Path) -> None:
+    """No ``source_path`` means no directory to derive -- must stay a no-op, not error."""
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_payload(Provider.CLAUDE_CODE, payload, "fallback")
+
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE not in (block.text or "")
+
+
+def test_parse_stream_payload_wires_claude_code_tool_result_sidecars(tmp_path: Path) -> None:
+    """polylogue-wjgf: the streaming path must reach the same coverage as the batch path.
+
+    Production path: dispatch._claude_code_stream_sessions's ``parse_group``
+    closure, which tees each group's records through
+    ``ToolResultIndexAccumulator``/``observe_tool_result_stream`` (since the
+    streaming path never materializes the raw payload) and applies
+    ``apply_tool_result_sidecars`` after the group iterator is exhausted.
+    Mutation that breaks this: making ``parse_group`` always take the
+    ``tool_results_dir is None`` branch (i.e. skip sidecars for the stream
+    path) makes coverage depend on file size -- this test would then fail
+    because the block keeps its truncated preview text.
+    """
+    session_path = tmp_path / "sess-sidecar.jsonl"
+    session_path.write_text("", encoding="utf-8")
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "fallback", source_path=str(session_path))
+
+    assert len(sessions) == 1
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE in (block.text or "")
+
+
+def test_parse_stream_payload_subagent_source_path_resolves_session_level_tool_results_dir(
+    tmp_path: Path,
+) -> None:
+    """A subagent JSONL's sidecars live at the SESSION level, not per-subagent (polylogue-rujy).
+
+    Production path: ``resolve_tool_results_dir`` in
+    ``sources/live/tool_result_sidecars.py``, called from
+    ``dispatch._claude_code_stream_sessions``. Mutation that breaks this:
+    deriving the tool-results dir as a sibling of the subagent file itself
+    (``.../subagents/tool-results/``, which Claude Code never creates) instead
+    of walking up to the session directory -- this test would then find no
+    directory and the needle would never appear.
+    """
+    subagent_path = tmp_path / "sess-sidecar" / "subagents" / "agent-a1b2c3.jsonl"
+    subagent_path.parent.mkdir(parents=True)
+    subagent_path.write_text("", encoding="utf-8")
+    tool_results_dir = tmp_path / "sess-sidecar" / "tool-results"
+    tool_results_dir.mkdir(parents=True)
+    sidecar_path = tool_results_dir / "toolu_AAA.txt"
+    sidecar_path.write_text(f"acquired full body {_SIDECAR_NEEDLE}", encoding="utf-8")
+
+    payload = [_sidecar_tool_result_record("toolu_AAA", _truncated_inline_pointer(sidecar_path))]
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "fallback", source_path=str(subagent_path))
+
+    assert len(sessions) == 1
+    block = next(
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert _SIDECAR_NEEDLE in (block.text or "")
+
+
 def test_claude_acompact_classifier_matches_eager_and_memory_bounded_routes() -> None:
     """Production dependencies: first-group fallback identity and shared parser.
 
@@ -389,3 +522,124 @@ def test_chatgpt_bundle_small_metadata_only_array_does_not_warn(caplog: pytest.L
 
     assert sessions == []
     assert not any("ChatGPT bundle payload" in record.message for record in caplog.records)
+
+
+def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yields_messages() -> None:
+    """A long Codex rollout that repeats ``session_meta`` (fork/resume/compaction
+    markers physically re-emit the header) and interleaves reasoning,
+    function_call, custom_tool_call, and message records must still produce
+    messages for every real turn -- none of those record kinds may cause the
+    whole stream to fall through to zero messages.
+
+    This pins the exact wire shape found in a live 3.3 MB Codex rollout that
+    a historical parser version turned into a *zero-message* archived session
+    (874-session live-archive audit, polylogue empty-session investigation):
+    4 ``session_meta`` records, ~500 ``reasoning``, ~440 ``function_call``/
+    ``function_call_output`` pairs, ~44 ``custom_tool_call``/
+    ``custom_tool_call_output`` pairs, and 55 ``message`` records, all routed
+    through ``parse_stream_payload`` -- the exact function
+    ``pipeline/services/ingest_worker.py`` calls for streamed Codex ingest.
+    Current code already parses the real bytes correctly (verified directly
+    against the live blob); this fixture keeps that guarantee under CI.
+
+    Mutation that fails this: making any of the interleaved non-``message``
+    response_item kinds (``reasoning``, ``function_call``,
+    ``custom_tool_call``) abort turn accumulation instead of being recorded
+    as session events / tool blocks -- e.g. an early ``return`` or exception
+    on an unrecognized nested field within one of those payloads.
+    """
+    records: list[object] = [
+        {"type": "session_meta", "payload": {"id": "root-session", "timestamp": "2025-10-19T05:04:30.397Z"}},
+    ]
+    for turn in range(20):
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"turn {turn} prompt"}],
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [],
+                    "encrypted_content": "gAAAA...",
+                    "metadata": {"turn_id": f"turn-{turn}"},
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "call_id": f"call-{turn}",
+                    "name": "shell",
+                    "arguments": {"cmd": "date"},
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": f"call-{turn}",
+                    "output": "ok",
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": f"ctc-{turn}",
+                    "call_id": f"custom-call-{turn}",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": f"custom-call-{turn}",
+                    "output": "patch applied",
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"turn {turn} reply"}],
+                },
+            }
+        )
+        # Compaction/resume mid-stream re-emits the session header verbatim.
+        records.append(
+            {"type": "session_meta", "payload": {"id": "root-session", "timestamp": "2025-10-19T05:04:30.397Z"}}
+        )
+
+    sessions = parse_stream_payload(
+        Provider.CODEX,
+        iter(records),
+        "fallback",
+        source_path="/home/user/.codex/sessions/2025/10/19/rollout-2025-10-19T07-04-30-fixture.jsonl",
+    )
+
+    assert len(sessions) == 1
+    total_messages = len(sessions[0].messages)
+    assert total_messages > 0, "long multi-session_meta Codex rollout must not parse to zero messages"
+    # 20 turns * (user + assistant + function_call use/output + custom_tool_call use/output)
+    assert total_messages == 20 * 6

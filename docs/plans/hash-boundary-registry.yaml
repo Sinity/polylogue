@@ -765,6 +765,12 @@ entries:
   classification: identifier
   note: 'profile identity key derivation.'
 - path: polylogue/sources/sqlite_snapshot.py
+  function: '<module>.codex_state_raw_id'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: identifier
+  note: 'raw-id key derivation for an acquired Codex state SQLite snapshot (polylogue-0jf4); producer polylogue/sources/parsers/codex_state.py, consumer TBD (raw acquisition wiring not yet landed).'
+- path: polylogue/sources/sqlite_snapshot.py
   function: '<module>.hermes_profile_raw_id'
   call: hashlib.sha256
   occurrence: 0
@@ -1190,3 +1196,9 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'search-cursor pagination identity key.'
+- path: polylogue/sources/live/tool_result_sidecars.py
+  function: '<module>._join_from_index'
+  call: hash_text
+  occurrence: 0
+  classification: content-hash
+  note: 'sha256 of a Claude Code tool-result sidecar file body; producer is the sidecar join (now factored through _join_from_index, shared by the eager and streaming callers), consumer is the bounded claude_tool_result_sidecar session_event (dedup/identity across re-ingest).'

@@ -19,6 +19,7 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document, json_doc
 from polylogue.schemas.field_stats.detection import is_dynamic_key, should_collapse_observed_keys
 
 _STRUCTURAL_DEDUP_WINDOW = 1_024
+_COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
 
 
 def merge_schemas(schemas: Iterable[JSONDocument]) -> JSONDocument:
@@ -47,7 +48,37 @@ def _required_names(schema: Mapping[str, object]) -> set[str]:
     return {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
 
 
+def _flatten_composite_branches(schema: JSONDocument) -> JSONDocument:
+    """Fold ``anyOf``/``oneOf``/``allOf`` branches into the schema body.
+
+    The observed-structure merge is a structural union that reads ``type``,
+    ``properties``, ``items`` and ``additionalProperties``.  Composite
+    keywords were invisible to it, so merging a nullable object -- which the
+    generator emits as ``anyOf: [null, object]`` -- against a plain object
+    silently discarded every property inside the branches.  Folding the
+    branches in first makes the union monotonic: merging can no longer remove
+    a name the accumulator already carried.
+    """
+    branches: list[JSONDocument] = []
+    for keyword in _COMPOSITE_KEYWORDS:
+        raw = schema.get(keyword)
+        if isinstance(raw, list):
+            branches.extend(json_document(branch) for branch in raw)
+    if not branches:
+        return schema
+    merged = json_document({key: value for key, value in schema.items() if key not in _COMPOSITE_KEYWORDS})
+    for branch in branches:
+        merged = _merge_observed_structure_pair(merged, branch)
+    return merged
+
+
 def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> JSONDocument:
+    if not left:
+        return right
+    if not right:
+        return left
+    left = _flatten_composite_branches(left)
+    right = _flatten_composite_branches(right)
     if not left:
         return right
     if not right:
@@ -210,9 +241,25 @@ def collapse_dynamic_keys(schema: JSONDocument) -> JSONDocument:
                 static_props[key] = collapsed_value
 
         if should_collapse_observed_keys(key_names):
-            dynamic_schemas.extend(json_document(value) for value in static_props.values() if json_document(value))
-            static_props = {}
             schema["x-polylogue-high-cardinality-keys"] = True
+            if not dynamic_schemas:
+                # Only fold the individually-static properties away when the
+                # per-key `is_dynamic_key` pass didn't already produce an
+                # `additionalProperties` model on its own -- e.g. a wide,
+                # uniformly-shaped map (256 "ordinary-key-N" names) where no
+                # single key looks dynamic but the aggregate shape still
+                # calls for one. When at least one key already collapsed
+                # (a content-bearing key, or enough identifier-ish keys to
+                # cross the dynamic-ratio threshold), that already produced
+                # a correct additionalProperties block; sweeping the
+                # remaining, individually-static keys into it too would
+                # discard real structure `should_collapse_observed_keys`'s
+                # own docstring says to preserve ("collapsing a mostly-
+                # static map because one id appeared would lose real
+                # structure") -- and disclosure-risk keys are never lost
+                # either way, since `is_dynamic_key` already routed them.
+                dynamic_schemas.extend(json_document(value) for value in static_props.values() if json_document(value))
+                static_props = {}
 
         if dynamic_schemas:
             schema["properties"] = static_props

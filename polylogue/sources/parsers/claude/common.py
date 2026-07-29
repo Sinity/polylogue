@@ -335,6 +335,174 @@ def _artifact_construct(segment: Mapping[str, object]) -> ParsedWebConstruct | N
     )
 
 
+def _claude_ai_web_tool_evidence(segment: Mapping[str, object]) -> dict[str, object] | None:
+    """Project Claude AI web tool_use/tool_result fields that ``content_blocks_from_segments``
+    does not read (that helper is shared with Claude Code, which never emits them).
+
+    ``start_timestamp``/``stop_timestamp`` give real per-block wall-clock
+    timing (distinct from message-level timestamps); ``integration_name``/
+    ``integration_icon_url``/``is_mcp_app``/``mcp_server_url`` identify which
+    connected MCP app served the call; ``approval_key``/``approval_options``
+    are the human-in-the-loop permission gate Claude AI shows before running a
+    connected-app action; ``display_content`` is the provider's own rendered
+    summary of the call (distinct from ``message``, a shorter one-line label).
+    All are only ever observed non-null on ``tool_use``/``tool_result``
+    segments in the live corpus (2026-07-29 triage).
+    """
+    evidence: dict[str, object] = {}
+    raw_start_timestamp = segment.get("start_timestamp")
+    start_timestamp = normalize_timestamp(
+        raw_start_timestamp if isinstance(raw_start_timestamp, (int, float, str)) else None
+    )
+    if start_timestamp is not None:
+        evidence["start_timestamp"] = start_timestamp
+    raw_stop_timestamp = segment.get("stop_timestamp")
+    stop_timestamp = normalize_timestamp(
+        raw_stop_timestamp if isinstance(raw_stop_timestamp, (int, float, str)) else None
+    )
+    if stop_timestamp is not None:
+        evidence["stop_timestamp"] = stop_timestamp
+    integration_name = segment.get("integration_name")
+    if isinstance(integration_name, str) and integration_name:
+        evidence["integration_name"] = integration_name
+    integration_icon_url = segment.get("integration_icon_url")
+    if isinstance(integration_icon_url, str) and integration_icon_url:
+        evidence["integration_icon_url"] = integration_icon_url
+    is_mcp_app = segment.get("is_mcp_app")
+    if isinstance(is_mcp_app, bool):
+        evidence["is_mcp_app"] = is_mcp_app
+    mcp_server_url = segment.get("mcp_server_url")
+    if isinstance(mcp_server_url, str) and mcp_server_url:
+        evidence["mcp_server_url"] = mcp_server_url
+    approval_key = segment.get("approval_key")
+    if isinstance(approval_key, str) and approval_key:
+        evidence["approval_key"] = approval_key
+    approval_options = segment.get("approval_options")
+    if isinstance(approval_options, list) and approval_options:
+        evidence["approval_options"] = [option for option in approval_options if isinstance(option, str)]
+    display_content = segment.get("display_content")
+    if isinstance(display_content, Mapping):
+        display_type = display_content.get("type")
+        display_text = display_content.get("text")
+        if isinstance(display_type, str) or isinstance(display_text, str):
+            evidence["display_content"] = {
+                "type": display_type if isinstance(display_type, str) else None,
+                "text": display_text if isinstance(display_text, str) else None,
+            }
+    return evidence or None
+
+
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the only key the write path
+# reads back out of it is ``language`` (``storage/sqlite/archive_tiers/
+# write.py:_block_language``). ``_claude_ai_web_tool_evidence`` above merges
+# its fields into ``first_block.metadata`` as an in-process carrier from
+# ``_claude_content_blocks`` up to ``normalize_chat_messages`` (below), but
+# without this projection step the evidence was silently dropped at write
+# time despite parsing correctly. Route it through ``session_events``
+# instead, keyed to the message via ``source_message_provider_id`` -- the
+# same precedent ``hermes_spans.py`` uses for tool-availability evidence
+# (polylogue-5o05). One event per tool_use/tool_result block, not one event
+# per field.
+_CLAUDE_AI_WEB_TOOL_EVIDENCE_KEYS = frozenset(
+    {
+        "start_timestamp",
+        "stop_timestamp",
+        "integration_name",
+        "integration_icon_url",
+        "is_mcp_app",
+        "mcp_server_url",
+        "approval_key",
+        "approval_options",
+        "display_content",
+    }
+)
+
+
+def _web_tool_evidence_from_block_metadata(metadata: Mapping[str, object] | None) -> dict[str, object] | None:
+    if not metadata:
+        return None
+    evidence = {key: value for key, value in metadata.items() if key in _CLAUDE_AI_WEB_TOOL_EVIDENCE_KEYS}
+    return evidence or None
+
+
+def _web_tool_evidence_events(evidence: _ClaudeMessageEvidence) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for block_index, block in enumerate(evidence.blocks):
+        block_evidence = _web_tool_evidence_from_block_metadata(block.metadata)
+        if block_evidence is None:
+            continue
+        start_timestamp = block_evidence.get("start_timestamp")
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_ai_web_tool_evidence",
+                timestamp=start_timestamp if isinstance(start_timestamp, str) else evidence.timestamp,
+                source_message_provider_id=evidence.provider_message_id,
+                payload={"block_index": block_index, **block_evidence},
+            )
+        )
+    return events
+
+
+# Claude AI (`claude-ai`) parser-diff triage disposition notes, 2026-07-29
+# (bd polylogue-2qx.3/polylogue-cgfy). Fields not otherwise mentioned in this
+# module's docstrings:
+#
+#   chat_messages[].attachments[].extracted_content/file_name/file_size/
+#   file_type, chat_messages[].files[].file_name/file_uuid
+#       FALSE POSITIVE in the parser-diff scan -- already read by the shared
+#       ``attachment_from_meta`` (base_support.py, not in the tool's per-
+#       provider module list, hence invisible to its AST scan).
+#   chat_messages[].content[].is_error, .tool_use_id
+#       Same false-positive class: read by ``content_blocks_from_segments``
+#       (base_support.py) for every ``tool_result`` segment.
+#   chat_messages[].content[].input.*  (dozens of per-tool-call parameter
+#   names: query, command, path, calendar_id, ...)
+#       FALSE POSITIVE: the whole ``input`` dict is captured verbatim as
+#       ``ParsedContentBlock.tool_input`` regardless of which keys it has --
+#       parser-diff's name-based scan cannot see a wholesale dict copy.
+#   chat_messages[].content[].start_timestamp/stop_timestamp,
+#   integration_name/integration_icon_url, approval_key/approval_options,
+#   display_content, is_mcp_app, mcp_server_url
+#       READ as of this pass -- see ``_claude_ai_web_tool_evidence`` above.
+#   summary (session-level)
+#       READ as of this pass -- see ``parse_ai``'s ``claude_ai_conversation_summary``
+#       event.
+#   chat_messages[].content[].content[].* (doc_uuid, uri, extras.*,
+#   prompt_context_metadata.*, metadata.site_domain/site_name/favicon_url,
+#   is_citable, is_missing, ingestion_date, file_path)
+#       DEFERRED, not dropped: this is a Google Workspace/Drive connected-app
+#       tool_result's own nested document-citation records (distinct from the
+#       message-level ``citations`` list ``_citation_construct`` already
+#       projects). It needs its own construct-projection design (a citation
+#       has a stable url/title/text; a Drive doc reference has drive-specific
+#       identity/provenance fields with no equivalent slot on
+#       ``ParsedWebConstruct`` today) rather than a same-pass bolt-on. Filed as
+#       a to-acquire item, not silently dropped.
+#   chat_messages[].content[].context.tools[].server_uuid/tool_name,
+#   .cut_off, .icon_name, .message, .meta, .remaining, .signature,
+#   .structured_content, .summaries[].summary, .truncated
+#       DELIBERATELY DROPPED for this pass: each is a single low-frequency
+#       field on the same tool_use/tool_result segment already covered above,
+#       with no corpus evidence yet of carrying information beyond what
+#       ``tool_input``/``display_content``/``integration_name`` already
+#       capture (``message`` in particular duplicates ``display_content.text``
+#       in every sampled instance). Re-audit if a future corpus pass finds
+#       divergent values.
+#   account (session-level)
+#       DELIBERATELY DROPPED: provider account identity is out of scope for
+#       per-message/session content evidence and risks conflating multiple
+#       real accounts' PII into one field; the archive already scopes by
+#       origin/session, not by account.
+#   chat_messages[].content[].flags
+#       DELIBERATELY DROPPED: the 99% "encountered" figure parser-diff reports
+#       is presence-of-key, not presence-of-signal -- the observed-distribution
+#       schema shows it null in 19,491 of 19,509 observations (non_null in
+#       only 4 of 525 documents, 0.8%), and even those 4 documents' values are
+#       a single-element array whose one string is always the same length (14
+#       chars) with estimated-distinct 1 across all 18 occurrences -- i.e. one
+#       constant opaque flag, not a signal-bearing field. Re-audit if a larger
+#       corpus sample ever shows more than one distinct value.
 def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
     if not isinstance(content, list):
         return content_blocks_from_segments(content)
@@ -373,6 +541,13 @@ def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
             ]
         else:
             segment_blocks = content_blocks_from_segments([raw_segment])
+            if provider_type in ("tool_use", "tool_result") and segment_blocks:
+                web_tool_evidence = _claude_ai_web_tool_evidence(segment)
+                if web_tool_evidence is not None:
+                    first_block = segment_blocks[0]
+                    segment_blocks[0] = first_block.model_copy(
+                        update={"metadata": {**(first_block.metadata or {}), **web_tool_evidence}}
+                    )
 
         constructs: list[ParsedWebConstruct] = []
         citations = segment.get("citations")
@@ -924,6 +1099,7 @@ def normalize_chat_messages(
         )
 
     for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.provider_message_id]):
+        session_events.extend(_web_tool_evidence_events(evidence))
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
             if evidence.model_name:

@@ -34,6 +34,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab schema explain",
     "lab schema generate",
     "lab schema list",
+    "lab schema parser-diff",
     "lab schema promote",
     "lab schema roundtrip",
     "lab seed-receipt-compare",
@@ -1475,6 +1476,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.schema_audit",
         use_when="Check committed schema package quality gates without presenting them as normal archive usage.",
         examples=("devtools lab schema audit --provider chatgpt --json",),
+    ),
+    CommandSpec(
+        "lab schema parser-diff",
+        "verification lab",
+        "List observed provider wire keys that no parser references.",
+        "devtools.schema_parser_diff",
+        use_when=(
+            "Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how "
+            "many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching "
+            "is name-based, so read the parser before acting on a row."
+        ),
+        examples=(
+            "devtools lab schema parser-diff",
+            "devtools lab schema parser-diff --provider codex --min-encountered 1000",
+            "devtools lab schema parser-diff --json",
+        ),
     ),
     CommandSpec(
         "lab schema roundtrip",

@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-import orjson
 import pytest
 
+from polylogue.core import json as core_json
 from polylogue.schemas.packages import SchemaElementManifest, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.validation.artifacts import (
     inspect_raw_artifact_coverage,
@@ -200,7 +200,7 @@ class TestProviderArtifactCoverage:
             recognized_non_parseable_records=1,
             unknown_records=1,
             decode_errors=1,
-            artifact_counts={"agent_sidecar_meta": 1, "subagent_session_stream": 1},
+            artifact_counts={"agent_sidecar_meta": 1, "agent_transcript": 1},
             package_versions={"v1": 1},
             element_kinds={"session_record_stream": 1},
             resolution_reasons={"bundle_scope": 1},
@@ -733,7 +733,7 @@ class TestInspectRawArtifactCoverage:
         assert {row.artifact_kind for row in rows} == {
             "session_document",
             "agent_sidecar_meta",
-            "subagent_session_stream",
+            "agent_transcript",
         }
 
         supported_rows = list_artifact_observation_rows(
@@ -774,7 +774,7 @@ class TestInspectRawArtifactCoverage:
             "name": "Large Claude export",
             "chat_messages": [message_template for _ in range(600)],
         }
-        raw_content = orjson.dumps(payload, option=orjson.OPT_INDENT_2)
+        raw_content = core_json.dumps_bytes(payload, indent=2)
 
         _insert_raw_record(
             db_path=db_path,

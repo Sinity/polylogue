@@ -216,11 +216,10 @@ whose test-suite touch points are import-only. Query:
 
 ```python
 import json, sqlite3
+
 cov = json.load(open(".cache/coverage/coverage.json"))["files"]
-tm = {r[0] for r in sqlite3.connect(".cache/testmon/testmondata")
-      .execute("SELECT DISTINCT filename FROM file_fp")}
-gaps = [(f, d["summary"]["covered_lines"]) for f, d in cov.items()
-        if d["summary"]["covered_lines"] > 0 and f not in tm]
+tm = {r[0] for r in sqlite3.connect(".cache/testmon/testmondata").execute("SELECT DISTINCT filename FROM file_fp")}
+gaps = [(f, d["summary"]["covered_lines"]) for f, d in cov.items() if d["summary"]["covered_lines"] > 0 and f not in tm]
 ```
 
 **Blast radius:** the default `devtools verify` gate (`--testmon
@@ -325,7 +324,7 @@ from tests.infra.frozen_clock import FrozenClock
 def test_lag_alert(frozen_clock: FrozenClock, tmp_path):
     now = frozen_clock.now()
     seed_cursor(tmp_path, updated_at=(now - timedelta(seconds=120)).isoformat())
-    alerts = _check_cursor_lag_medium()   # production reads frozen now
+    alerts = _check_cursor_lag_medium()  # production reads frozen now
     assert alerts[0].severity == HealthSeverity.WARNING
 ```
 

@@ -468,7 +468,9 @@ class TestAllJsonCommandsProduceValidJson:
         ("args", "contract_id", "allow_no_results"),
         [
             (["ops", "doctor", "--format", "json"], "cli.doctor_json_matrix", False),
-            (["mark", "candidates", "list", "--format", "json"], "cli.candidate_assertions_json_matrix", False),
+            # `mark candidates list` was consolidated into the root `judge`
+            # command (#3138, db9447cf4); `judge --list` is its replacement.
+            (["judge", "--list", "--format", "json"], "cli.candidate_assertions_json_matrix", False),
             (["config", "--format", "json"], "cli.config_json_matrix", False),
             # read --all browse on empty archive → exit 0 + empty archive envelope (valid JSON)
             (["read", "--all", "--format", "json"], "cli.read_all_json_matrix", False),

@@ -21,8 +21,11 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "session-digest" for entry in registry.benchmark_campaigns)
     assert any(entry.name == "session-insight-materialization" for entry in registry.synthetic_benchmark_campaigns)
     assert any(entry.name == "startup-readiness" for entry in registry.synthetic_benchmark_campaigns)
+    # chatgpt's committed provider schema catalog promoted its default
+    # package to v2 (schema-package regen); inferred corpus scenarios track
+    # the catalog's default_version, not a fixed "v1".
     assert any(
-        scenario.provider == "chatgpt" and scenario.package_version == "v1"
+        scenario.provider == "chatgpt" and scenario.package_version == "v2"
         for scenario in registry.inferred_corpus_scenarios
     )
     assert any(entry.name == "machine-contract" for entry in registry.scenario_projections)
@@ -34,13 +37,17 @@ def test_build_quality_registry_exposes_live_catalogs() -> None:
     assert any(entry.name == "session-insight-materialization" for entry in registry.scenario_projections)
     assert any(entry.source_kind.value == "inferred-corpus-scenario" for entry in registry.scenario_projections)
     assert registry.scenario_projections == registry.catalog.compile_projection_entries()
+    # chatgpt's committed provider schema catalog promoted its default
+    # package to v2 (schema-package regen); the inferred-corpus-scenario
+    # name/package_version track the catalog's default_version, not a
+    # fixed "v1" (see the sibling assertion above).
     inferred_chatgpt = next(
         entry
         for entry in registry.scenario_projections
-        if entry.source_kind.value == "inferred-corpus-scenario" and entry.name == "chatgpt:v1"
+        if entry.source_kind.value == "inferred-corpus-scenario" and entry.name == "chatgpt:v2"
     )
     assert inferred_chatgpt.source_payload["provider"] == "chatgpt"
-    assert inferred_chatgpt.source_payload["package_version"] == "v1"
+    assert inferred_chatgpt.source_payload["package_version"] == "v2"
     assert inferred_chatgpt.source_payload["variant_count"] == 1
     assert inferred_chatgpt.path_targets == ("inferred-corpus-compilation-loop",)
     assert inferred_chatgpt.operation_targets == (

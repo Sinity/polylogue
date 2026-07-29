@@ -26,6 +26,7 @@ def _stub_profile_no_events() -> object:
     class _P:
         provider: str = "codex"
         title: str | None = None
+        updated_at: object | None = None
         work_events: tuple[object, ...] = ()
         phases: tuple[object, ...] = ()
         repo_paths: tuple[str, ...] = ()
@@ -38,6 +39,8 @@ def _stub_profile_no_events() -> object:
         workflow_shape_confidence: float = 0.0
         terminal_state: str = "unknown"
         terminal_state_confidence: float = 0.0
+        terminal_state_evidence: dict[str, int | float | str | None] = {}
+        terminal_state_method: str = "unknown"
         inferred_topic: str | None = None
         inferred_topic_source: str = "absent"
         auto_tags: tuple[str, ...] = ()

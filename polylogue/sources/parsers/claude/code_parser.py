@@ -3,24 +3,43 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
-from typing import TypeAlias
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider
+from polylogue.core.enums import (
+    BlockType,
+    MaterialOrigin,
+    PasteBoundary,
+    Provider,
+    SessionRefKind,
+    TitleSource,
+    ToolResultUnknownReason,
+)
 from polylogue.logging import get_logger
-from polylogue.pipeline.semantic_capture import detect_context_compaction
+from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
+
+if TYPE_CHECKING:
+    # ``polylogue.sources.live`` is a heavy package (pipeline/ingest_batch,
+    # which imports back into ``sources.dispatch`` -> ``sources.parsers.claude``)
+    # -- a module-level runtime import here is a circular import. This type is
+    # only used for an optional parameter annotation; the value is never
+    # constructed or introspected by name at runtime in this module.
+    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
 
 from ..base import (
     ParsedContentBlock,
+    ParsedFileEdit,
     ParsedMessage,
     ParsedPasteEvidence,
     ParsedSession,
     ParsedSessionEvent,
+    ParsedSessionRef,
     content_blocks_from_segments,
 )
 from .common import (
@@ -84,14 +103,94 @@ def _clean_title_text(text: str) -> str:
 
 
 logger = get_logger(__name__)
+# ``_SKIPPED_SIDECAR_RECORD_TYPES`` marks record types that never become a
+# ``ParsedMessage`` row (they are not chat content). That is still correct for
+# all twelve types below. What changed (polylogue-pbuh, audited against the
+# live corpus 2026-07-29, ~1.17M records total) is that most of them ARE
+# evidence-bearing and are no longer silently discarded: they persist through
+# ``_sidecar_evidence_payload``/the ``progress`` delegation accumulator below
+# as typed ``session_events`` (index.db). ``session_events.event_type`` has no
+# CHECK-constrained vocabulary (see ``storage/sqlite/archive_tiers/index.py``),
+# so adding new event types here is additive data, not a schema change.
+#
+# Per-type disposition (counts = live corpus, rg single pass, 2026-07-29):
+#   ai-title (18,561)              EVIDENCE, wins session title (TitleSource.ORIGIN)
+#   agent-name (5,001)             EVIDENCE -> claude_agent_name event, ALSO wins
+#                                    session title (TitleSource.ORIGIN, below
+#                                    ai-title/custom-title in precedence) --
+#                                    corpus-sampled values are readable task
+#                                    names ("polylogue-history-rebuild"), not
+#                                    the raw UUID this loop otherwise leaves
+#   pr-link (20,889)               EVIDENCE -> claude_pr_link event
+#   bridge-session (13,594)        EVIDENCE -> claude_bridge_session event
+#   file-history-snapshot (34,182) EVIDENCE -> claude_file_history_snapshot event
+#   permission-mode (25,882)       EVIDENCE -> claude_permission_mode event (values
+#                                    vary: auto/default/acceptEdits/plan/
+#                                    bypassPermissions -- real operational signal)
+#   last-prompt (37,799)           EVIDENCE -> claude_last_prompt event
+#   queue-operation (60,709)       EVIDENCE -> claude_queue_operation event
+#   attachment (86,237)            EVIDENCE -> claude_attachment event (20 distinct
+#                                    attachment.type payloads incl. real files,
+#                                    edited-file records, diagnostics; per-subtype
+#                                    fidelity split is a follow-up, not this pass)
+#   progress (850,678)             MIXED, not uniformly evidence-bearing -- an
+#                                    earlier draft of this bead's tracking issue
+#                                    guessed the whole type was noise, then
+#                                    corrected to "it's all a delegation graph".
+#                                    Neither guess survived reading the payload:
+#                                    only ``data.type == "agent_progress"``
+#                                    (118,135 of 850,678) carries a genuine
+#                                    dispatcher->subagent edge (parentToolUseID
+#                                    != toolUseID naming the *dispatching* Task
+#                                    tool_use, not a synthetic per-tick id); it
+#                                    is persisted as one deduplicated
+#                                    claude_delegation_progress event per
+#                                    (session, parentToolUseID). The other six
+#                                    subtypes (bash_progress 449,363,
+#                                    hook_progress 279,894, waiting_for_task
+#                                    1,350, query_update 834,
+#                                    search_results_received 834, mcp_progress
+#                                    268) all stamp a synthetic per-tick
+#                                    toolUseID (e.g. "bash-progress-3",
+#                                    "search-progress-1") against the SAME
+#                                    already-captured originating tool_use --
+#                                    they are streaming ticks superseded by that
+#                                    tool's own tool_result block, not new
+#                                    facts. Persisting them would 4-8x the
+#                                    session_events row count for zero
+#                                    incremental evidence. Kept transient.
+#   init (0 live occurrences)      TRANSIENT: every corpus occurrence on record
+#                                    is a bare {"type": "init"} marker with no
+#                                    field beyond ``type``/``sessionId`` --
+#                                    nothing to lose.
+#   mode (20,779)                  TRANSIENT: ``mode`` was the literal string
+#                                    "normal" in 100% of live records -- zero
+#                                    information content in the corpus as
+#                                    observed. Re-audit if a non-"normal" value
+#                                    is ever seen.
+#
+# Two more sidecar record types (parser-diff triage, 2026-07-29, ~600-file
+# sample of the live corpus) were not in the original twelve and fell through
+# to ordinary message parsing, where they carry no ``message``/text and are
+# silently skipped:
+#   custom-title (1,056)           EVIDENCE, an EXPLICIT user rename -> wins
+#                                    over both the heuristic title and the
+#                                    provider-suggested ai-title (higher
+#                                    intent signal than a provider guess).
+#   file-history-delta (304)       EVIDENCE -> claude_file_history_delta event
+#                                    (per-file incremental backup, the
+#                                    fine-grained sibling of the
+#                                    whole-snapshot file-history-snapshot type)
 _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
         "file-history-snapshot",
+        "file-history-delta",
         "queue-operation",
         "progress",
         "agent-name",
         "ai-title",
+        "custom-title",
         "attachment",
         "bridge-session",
         "last-prompt",
@@ -100,6 +199,147 @@ _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
         "pr-link",
     }
 )
+
+# record_type -> session_events.event_type for the sidecar types persisted
+# generically via ``_sidecar_evidence_payload``. ``progress``, ``ai-title``,
+# and ``custom-title`` are handled separately in ``_parse_code_records``
+# (progress needs whole-session deduplication; ai-title/custom-title feed
+# title resolution as well as an audit-trail event). ``init``/``mode`` map to
+# nothing (transient, see above).
+_SIDECAR_EVENT_TYPES: dict[str, str] = {
+    "agent-name": "claude_agent_name",
+    "pr-link": "claude_pr_link",
+    "bridge-session": "claude_bridge_session",
+    "file-history-snapshot": "claude_file_history_snapshot",
+    "file-history-delta": "claude_file_history_delta",
+    "permission-mode": "claude_permission_mode",
+    "last-prompt": "claude_last_prompt",
+    "queue-operation": "claude_queue_operation",
+    "attachment": "claude_attachment",
+    "ai-title": "claude_ai_title",
+    "custom-title": "claude_custom_title",
+}
+
+
+def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict[str, object] | None:
+    """Return a typed evidence payload for a skipped-as-message sidecar record.
+
+    Returns ``None`` when the specific record instance carries no usable
+    signal (e.g. an ``attachment`` record whose ``attachment`` field is
+    missing) so the caller can skip emitting an empty event.
+    """
+    if record_type == "agent-name":
+        name = _string_field(item, "agentName")
+        return {"agent_name": name, "summary": name} if name else None
+    if record_type == "pr-link":
+        pr_number = item.get("prNumber")
+        pr_url = _string_field(item, "prUrl")
+        return {
+            "pr_number": pr_number,
+            "pr_url": pr_url,
+            "pr_repository": _string_field(item, "prRepository"),
+            "summary": f"PR #{pr_number}: {pr_url}" if pr_number is not None and pr_url else pr_url,
+        }
+    if record_type == "bridge-session":
+        bridge_session_id = _string_field(item, "bridgeSessionId")
+        if not bridge_session_id:
+            return None
+        return {
+            "bridge_session_id": bridge_session_id,
+            "last_sequence_num": item.get("lastSequenceNum"),
+            "summary": bridge_session_id,
+        }
+    if record_type == "file-history-snapshot":
+        snapshot = item.get("snapshot")
+        backups = snapshot.get("trackedFileBackups") if isinstance(snapshot, dict) else None
+        files = sorted(backups) if isinstance(backups, dict) else []
+        return {
+            "message_id": _string_field(item, "messageId"),
+            "is_snapshot_update": bool(item.get("isSnapshotUpdate")),
+            "file_count": len(files),
+            "files": files,
+            "summary": f"{len(files)} tracked file backup(s)",
+        }
+    if record_type == "permission-mode":
+        mode = _string_field(item, "permissionMode")
+        return {"permission_mode": mode, "summary": mode} if mode else None
+    if record_type == "last-prompt":
+        prompt = _string_field(item, "lastPrompt")
+        return {"last_prompt": prompt, "summary": prompt} if prompt else None
+    if record_type == "queue-operation":
+        operation = _string_field(item, "operation")
+        if not operation:
+            return None
+        payload: dict[str, object] = {"operation": operation}
+        content = _string_field(item, "content")
+        if content:
+            payload["content"] = content
+            payload["summary"] = f"{operation}: {content}"
+        else:
+            payload["summary"] = operation
+        return payload
+    if record_type == "attachment":
+        attachment = item.get("attachment")
+        if not isinstance(attachment, dict):
+            return None
+        payload = dict(attachment)
+        attachment_kind = attachment.get("type")
+        payload["summary"] = str(attachment_kind) if attachment_kind is not None else "attachment"
+        return payload
+    if record_type == "ai-title":
+        ai_title = _string_field(item, "aiTitle")
+        return {"ai_title": ai_title, "summary": ai_title} if ai_title else None
+    if record_type == "custom-title":
+        custom_title = _string_field(item, "customTitle")
+        return {"custom_title": custom_title, "summary": custom_title} if custom_title else None
+    if record_type == "file-history-delta":
+        backup = item.get("backup")
+        backup_mapping = backup if isinstance(backup, dict) else {}
+        tracking_path = _string_field(item, "trackingPath")
+        return {
+            "message_id": _string_field(item, "messageId"),
+            "snapshot_message_id": _string_field(item, "snapshotMessageId"),
+            "tracking_path": tracking_path,
+            "backup_file_name": _string_field(backup_mapping, "backupFileName"),
+            "backup_version": backup_mapping.get("version"),
+            "summary": tracking_path,
+        }
+    return None
+
+
+@dataclass
+class _DelegationProgressStats:
+    count: int = 0
+    first_seen: str | None = None
+    last_seen: str | None = None
+
+
+def _accumulate_delegation_progress(
+    item: dict[str, object],
+    timestamp: str | None,
+    accumulator: dict[str, _DelegationProgressStats],
+) -> None:
+    """Fold one ``progress``/``agent_progress`` record into its dispatch edge.
+
+    Only ``data.type == "agent_progress"`` carries a genuine dispatcher edge
+    (see the classification comment above ``_SKIPPED_SIDECAR_RECORD_TYPES``);
+    every occurrence under the same ``parentToolUseID`` is one streaming tick
+    of the same subagent dispatch, so ticks are counted and time-bounded
+    rather than persisted as one row apiece.
+    """
+    data = item.get("data")
+    if not isinstance(data, dict) or data.get("type") != "agent_progress":
+        return
+    parent_tool_use_id = _string_field(item, "parentToolUseID")
+    if not parent_tool_use_id:
+        return
+    entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
+    entry.count += 1
+    if timestamp:
+        if entry.first_seen is None or timestamp < entry.first_seen:
+            entry.first_seen = timestamp
+        if entry.last_seen is None or timestamp > entry.last_seen:
+            entry.last_seen = timestamp
 
 
 def _safe_float(value: object) -> float:
@@ -141,6 +381,7 @@ def _message_usage_event_payload(
     *,
     model_name: str | None,
     model_effort: str | None,
+    message: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     last_usage: dict[str, int] = {
         "input_tokens": _safe_int(usage.get("input_tokens")),
@@ -172,10 +413,55 @@ def _message_usage_event_payload(
                 "web_search_requests": web_search_requests,
                 "web_fetch_requests": web_fetch_requests,
             }
+    # 1h/5m cache-creation split, service tier, and inference geo are billing
+    # and infra evidence Anthropic began reporting on ``usage`` alongside the
+    # existing aggregate cache_creation_input_tokens -- parser-diff triage
+    # (2026-07-29) found these read nowhere despite carrying real values on
+    # the live corpus (e.g. ephemeral_1h_input_tokens, service_tier=standard,
+    # inference_geo). Recorded only when present so a provider that never
+    # emits them (older CLI versions) does not bloat every event.
+    cache_creation = usage.get("cache_creation")
+    if isinstance(cache_creation, dict):
+        ephemeral_5m = cache_creation.get("ephemeral_5m_input_tokens")
+        ephemeral_1h = cache_creation.get("ephemeral_1h_input_tokens")
+        if ephemeral_5m is not None or ephemeral_1h is not None:
+            payload["cache_creation_by_ttl"] = {
+                "ephemeral_5m_input_tokens": _safe_int(ephemeral_5m),
+                "ephemeral_1h_input_tokens": _safe_int(ephemeral_1h),
+            }
+    service_tier = usage.get("service_tier")
+    if isinstance(service_tier, str) and service_tier:
+        payload["service_tier"] = service_tier
+    inference_geo = usage.get("inference_geo")
+    if isinstance(inference_geo, str) and inference_geo:
+        payload["inference_geo"] = inference_geo
+    iterations = usage.get("iterations")
+    if isinstance(iterations, int) and not isinstance(iterations, bool):
+        payload["iterations"] = iterations
+    speed = usage.get("speed")
+    if isinstance(speed, (int, float)) and not isinstance(speed, bool):
+        payload["speed"] = speed
     if model_name:
         payload["model"] = model_name
     if model_effort:
         payload["model_effort"] = model_effort
+    if message is not None:
+        ttft_ms = message.get("ttftMs")
+        if isinstance(ttft_ms, int) and not isinstance(ttft_ms, bool):
+            payload["ttft_ms"] = ttft_ms
+        stop_reason = message.get("stop_reason")
+        if isinstance(stop_reason, str) and stop_reason:
+            payload["stop_reason"] = stop_reason
+        stop_sequence = message.get("stop_sequence")
+        if isinstance(stop_sequence, str) and stop_sequence:
+            payload["stop_sequence"] = stop_sequence
+        diagnostics = message.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            cache_miss_reason = diagnostics.get("cache_miss_reason")
+            if isinstance(cache_miss_reason, dict):
+                reason_type = cache_miss_reason.get("type")
+                if isinstance(reason_type, str) and reason_type:
+                    payload["cache_miss_reason"] = reason_type
     return payload
 
 
@@ -345,6 +631,172 @@ def _task_output_outcome(item: dict[str, object]) -> tuple[int | None, bool] | N
     return None
 
 
+_TOOL_RESULT_STRUCTURAL_KEYS: tuple[str, ...] = (
+    "sandbox",
+    "interrupted",
+    "isImage",
+    "userModified",
+    "numFiles",
+    "numLines",
+    "totalLines",
+    "durationSeconds",
+    "backgroundedByUser",
+    "assistantAutoBackgrounded",
+    "isAsync",
+)
+
+
+def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object] | None:
+    """Project Claude Code's own structured tool-result sidecar (``toolUseResult``).
+
+    This is Claude-Code-specific enrichment parallel to (not a duplicate of)
+    the Anthropic-protocol ``tool_result`` content block: the block carries
+    what the model *saw*; ``toolUseResult`` carries facts Claude Code itself
+    recorded about the call (e.g. whether Bash ran sandboxed, a Read's
+    file/line extents, a structured diff). Parser-diff triage (2026-07-29)
+    found only two of its ~60 observed subfields read anywhere
+    (``backgroundTaskId``, ``retrieval_status``/``task`` -- see
+    ``_background_task_id``/``_task_output_outcome`` above); this covers the
+    remaining structurally bounded facts. Deliberately excluded: free-text
+    output fields (``stdout``/``stderr``/``output``/``fullOutput``) that
+    duplicate content already visible in the message's own ``tool_result``
+    block and could be unbounded in size; ``filenames``/``file.filePath`` are
+    kept because they are bounded path lists, not command output.
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    payload: dict[str, object] = {}
+    for key in _TOOL_RESULT_STRUCTURAL_KEYS:
+        value = tool_result.get(key)
+        if isinstance(value, (bool, int, float)):
+            payload[key] = value
+    file_info = tool_result.get("file")
+    if isinstance(file_info, dict):
+        file_path = file_info.get("filePath")
+        if isinstance(file_path, str) and file_path:
+            payload["file_path"] = file_path
+        for key in ("numLines", "totalLines", "startLine"):
+            value = file_info.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                payload[f"file_{key}"] = value
+    elif isinstance(tool_result.get("filePath"), str):
+        payload["file_path"] = tool_result["filePath"]
+    filenames = tool_result.get("filenames")
+    if isinstance(filenames, list):
+        bounded_filenames = [name for name in filenames if isinstance(name, str)]
+        if bounded_filenames:
+            payload["filenames"] = bounded_filenames[:50]
+    structured_patch = tool_result.get("structuredPatch")
+    if isinstance(structured_patch, list) and structured_patch:
+        hunks = [hunk for hunk in structured_patch if isinstance(hunk, dict)]
+        if hunks:
+            payload["structured_patch_hunk_count"] = len(hunks)
+            payload["structured_patch_lines_changed"] = sum(
+                len(hunk.get("lines", [])) if isinstance(hunk.get("lines"), list) else 0 for hunk in hunks
+            )
+    return payload or None
+
+
+def _file_edit_from_tool_result(item: dict[str, object]) -> ParsedFileEdit | None:
+    """Build the real file-edit evidence from ``toolUseResult`` (polylogue-2qx.4 / polylogue-cgfy).
+
+    ``_tool_execution_result_payload`` above only projects a bounded summary
+    (hunk count, lines-changed) into ``claude_tool_execution_result`` events;
+    the full ``structuredPatch``/``originalFile``/``oldString``/``newString``
+    evidence -- what raises a file trajectory from "observed" to
+    "checkpointed" -- was captured nowhere. Returns ``None`` when the record's
+    ``toolUseResult`` carries no edit-shaped fields at all (e.g. a Bash or Read
+    result), so a non-edit tool call never gets a spurious empty row.
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    structured_patch = tool_result.get("structuredPatch")
+    original_file = tool_result.get("originalFile")
+    old_string = tool_result.get("oldString")
+    new_string = tool_result.get("newString")
+    if structured_patch is None and original_file is None and old_string is None and new_string is None:
+        return None
+    file_path: str | None = None
+    file_info = tool_result.get("file")
+    if isinstance(file_info, dict) and isinstance(file_info.get("filePath"), str):
+        file_path = file_info["filePath"]
+    elif isinstance(tool_result.get("filePath"), str):
+        file_path = tool_result["filePath"]
+    hunks: list[Mapping[str, object]] | None = None
+    if isinstance(structured_patch, list):
+        hunks = [hunk for hunk in structured_patch if isinstance(hunk, dict)] or None
+    replace_all = tool_result.get("replaceAll")
+    user_modified = tool_result.get("userModified")
+    return ParsedFileEdit(
+        file_path=file_path,
+        structured_patch=hunks,
+        original_file=original_file if isinstance(original_file, str) else None,
+        old_string=old_string if isinstance(old_string, str) else None,
+        new_string=new_string if isinstance(new_string, str) else None,
+        replace_all=replace_all if isinstance(replace_all, bool) else None,
+        user_modified=user_modified if isinstance(user_modified, bool) else None,
+    )
+
+
+def _attach_file_edit(
+    content_blocks: list[ParsedContentBlock], file_edit: ParsedFileEdit | None
+) -> list[ParsedContentBlock]:
+    """Attach file-edit evidence to the record's own TOOL_RESULT block.
+
+    ``toolUseResult`` is a property of the ``user`` record that reports a
+    tool's outcome, which is exactly the record whose content carries the
+    Anthropic-protocol ``tool_result`` block -- the writer resolves the
+    paired TOOL_USE via that block's ``tool_id`` (see
+    ``ParsedFileEdit`` docstring / ``_write_file_edits``).
+    """
+    if file_edit is None:
+        return content_blocks
+    return [
+        block.model_copy(update={"file_edit": file_edit}) if block.type is BlockType.TOOL_RESULT else block
+        for block in content_blocks
+    ]
+
+
+def _todo_state_payload(item: dict[str, object]) -> dict[str, object] | None:
+    """Project TodoWrite's before/after task-list state from ``toolUseResult``.
+
+    ``newTodos``/``oldTodos`` are TodoWrite's own structured result (each todo
+    carries ``content``/``status``/``activeForm``/``priority``); the tool
+    *call* input (``content[].input.todos``) is already captured wholesale via
+    the generic ``tool_input`` dict copy, but the *result* -- the actual
+    accepted state transition, including ``priority`` -- was read nowhere.
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    new_todos = tool_result.get("newTodos")
+    if not isinstance(new_todos, list):
+        return None
+
+    def _clean_todos(raw: object) -> list[dict[str, object]]:
+        if not isinstance(raw, list):
+            return []
+        cleaned: list[dict[str, object]] = []
+        for todo in raw:
+            if not isinstance(todo, dict):
+                continue
+            cleaned.append(
+                {
+                    key: todo[key]
+                    for key in ("content", "status", "activeForm", "priority")
+                    if isinstance(todo.get(key), str)
+                }
+            )
+        return cleaned
+
+    return {
+        "new_todos": _clean_todos(new_todos),
+        "old_todos": _clean_todos(tool_result.get("oldTodos")),
+    }
+
+
 def _mark_task_output_outcome(
     content_blocks: list[ParsedContentBlock], outcome: tuple[int | None, bool] | None
 ) -> list[ParsedContentBlock]:
@@ -353,7 +805,7 @@ def _mark_task_output_outcome(
         return content_blocks
     exit_code, is_error = outcome
     return [
-        block.model_copy(update={"is_error": is_error, "exit_code": exit_code})
+        block.model_copy(update={"is_error": is_error, "exit_code": exit_code, "outcome_unknown_reason": None})
         if block.type is BlockType.TOOL_RESULT
         else block
         for block in content_blocks
@@ -367,6 +819,26 @@ def _mark_background_task_start(
 
     Claude's initial Bash result acknowledges only that a task started. Its
     ``is_error=false`` must not be projected as a completed-command success.
+
+    DISPOSITION (bd polylogue-9x22, "dropped, and correctly so"): the
+    ``_BACKGROUND_TASK_ID_METADATA_KEY``/``_BACKGROUND_COMPLETION_STATUS_
+    METADATA_KEY``/``_BACKGROUND_OUTPUT_FILE_METADATA_KEY`` entries this
+    function and ``_project_background_task_completions`` below write into
+    ``block.metadata`` never reach storage (the ``blocks`` table has no
+    metadata column; the write path only reads ``language`` back out of it).
+    Unlike the other polylogue-9x22 sites, that is not a data-loss gap here:
+    ``task_id`` is a same-pass join key with no meaning after
+    ``_project_background_task_completions`` resolves it, and
+    ``status``/``output_file`` are already durably captured -- with more
+    fields (``summary``, ``exit_code``, ``tool_use_id``) and a real
+    ``source_message_provider_id`` join key -- by the independently emitted
+    ``background_task_completion`` session_event (see the
+    ``final_background_notifications`` loop in ``parse_code``, and
+    ``test_parse_code_projects_background_completion_outcomes_through_actions``
+    which pins both the block-metadata carrier and the session_event
+    verbatim). Left as an in-process carrier rather than removed, matching
+    the ``claude_ai_web_tool_evidence`` precedent's use of block.metadata as
+    scratch space.
     """
     if task_id is None:
         return content_blocks
@@ -377,7 +849,20 @@ def _mark_background_task_start(
             continue
         metadata = dict(block.metadata or {})
         metadata[_BACKGROUND_TASK_ID_METADATA_KEY] = task_id
-        marked.append(block.model_copy(update={"metadata": metadata, "is_error": None, "exit_code": None}))
+        marked.append(
+            block.model_copy(
+                update={
+                    "metadata": metadata,
+                    "is_error": None,
+                    "exit_code": None,
+                    # polylogue-2qx.4 / polylogue-cuxz.8: the wire's own
+                    # is_error=false is positively distrusted here (it only
+                    # confirms the background task *started*), not merely
+                    # absent -- record the distrust, not a bare unknown.
+                    "outcome_unknown_reason": ToolResultUnknownReason.DISTRUSTED.value,
+                }
+            )
+        )
     return marked
 
 
@@ -523,10 +1008,48 @@ def _parse_code_records(
     background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = []
     is_agent = fallback_id.startswith("agent-")
     is_acompact = fallback_id.startswith("agent-acompact-")
+    # polylogue-pbuh: provider-supplied session title (``ai-title`` sidecar
+    # record) and the deduplicated agent-dispatch delegation edges extracted
+    # from ``progress``/``agent_progress`` records -- both need whole-session
+    # state, so they are accumulated here and applied/flushed after the loop.
+    latest_ai_title: str | None = None
+    latest_custom_title: str | None = None
+    latest_agent_name: str | None = None
+    session_kind_value: str | None = None
+    git_branch_value: str | None = None
+    delegation_progress: dict[str, _DelegationProgressStats] = {}
+    # polylogue-2qx.4 / polylogue-cgfy: ``slug`` (the human-readable session
+    # name Claude Code assigns, e.g. "greedy-squishing-hamming") is stamped on
+    # every record of a session file -- main or subagent alike -- once the
+    # CLI version emits it at all. Read like ``git_branch_value`` above: first
+    # non-empty value wins, since it is constant within one file.
+    session_slug_value: str | None = None
+    session_refs: list[ParsedSessionRef] = []
 
     for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
             continue
+
+        if session_kind_value is None:
+            raw_session_kind = item.get("sessionKind")
+            if isinstance(raw_session_kind, str) and raw_session_kind:
+                session_kind_value = raw_session_kind
+        if git_branch_value is None:
+            # ``item.gitBranch`` (stamped on every record) was previously read
+            # only via the separate legacy sessions-index.json enrichment path
+            # (index.py, ``enrich_session_from_index``), which is absent for
+            # many sessions -- read it directly from the record itself so
+            # every session with a real branch gets one, not just those with
+            # a surviving sidecar index file. A blank string (no branch
+            # checked out / detached-ish states some CLI versions emit) is
+            # deliberately not treated as a value.
+            raw_git_branch = item.get("gitBranch")
+            if isinstance(raw_git_branch, str) and raw_git_branch:
+                git_branch_value = raw_git_branch
+        if session_slug_value is None:
+            raw_slug = item.get("slug")
+            if isinstance(raw_slug, str) and raw_slug:
+                session_slug_value = raw_slug
 
         compaction = detect_context_compaction(item)
         if compaction:
@@ -559,6 +1082,27 @@ def _parse_code_records(
             message_position += 1
             continue
 
+        micro_compaction = detect_micro_compaction(item)
+        if micro_compaction is not None:
+            raw_micro_timestamp = micro_compaction["timestamp"]
+            micro_compaction_timestamp = normalize_timestamp(
+                raw_micro_timestamp if isinstance(raw_micro_timestamp, (int, float, str)) else None
+            )
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="micro_compaction",
+                    timestamp=micro_compaction_timestamp,
+                    payload={
+                        "trigger": micro_compaction["trigger"],
+                        "pre_tokens": micro_compaction["pre_tokens"],
+                        "tokens_saved": micro_compaction["tokens_saved"],
+                        "compacted_tool_use_ids": micro_compaction["compacted_tool_use_ids"],
+                        "cleared_attachment_count": micro_compaction["cleared_attachment_count"],
+                    },
+                )
+            )
+            continue
+
         record_type = item.get("type")
         if not isinstance(record_type, str):
             logger.debug("Skipping invalid record at index %d: missing type", index)
@@ -580,18 +1124,73 @@ def _parse_code_records(
         message = item.get("message")
         notification = _task_notification_from_record(item, message)
 
-        # ``progress`` records are claude-code hook lifecycle events
-        # (`hookEvent`, `hookName`, `command`) carried alongside the
-        # tool they fired on — they are NOT message content. Persisting
-        # them as messages produces empty rows under the ``tool_result``
-        # message_type that dominate the ``role=unknown, text='', blocks=[]``
-        # consumer surface and inflate every messages-table count by
-        # ~23%. See #1617 for the full forensic. We drop them here at the
-        # parser; the hook payload, if useful for analytics, belongs in
-        # a future ``session_event`` capture, not in the messages table.
+        # These twelve record types are never chat content -- see the
+        # classification comment above ``_SKIPPED_SIDECAR_RECORD_TYPES`` for
+        # why each one either persists as typed ``session_events`` evidence
+        # (polylogue-pbuh) or stays genuinely transient. ``progress`` (hook
+        # lifecycle pings, streaming tool-progress ticks, and the one
+        # evidence-bearing subtype ``agent_progress``) previously also
+        # produced empty ``tool_result``-shaped message rows before the
+        # record-type check below existed; see #1617 for that forensic.
         if record_type in _SKIPPED_SIDECAR_RECORD_TYPES:
             if notification is not None:
                 background_notifications.append((notification, record_uuid, timestamp))
+            if record_type == "progress":
+                _accumulate_delegation_progress(item, timestamp, delegation_progress)
+            else:
+                if record_type == "ai-title":
+                    ai_title_text = _string_field(item, "aiTitle")
+                    if ai_title_text:
+                        latest_ai_title = ai_title_text
+                elif record_type == "custom-title":
+                    custom_title_text = _string_field(item, "customTitle")
+                    if custom_title_text:
+                        latest_custom_title = custom_title_text
+                elif record_type == "agent-name":
+                    agent_name_text = _string_field(item, "agentName")
+                    if agent_name_text:
+                        latest_agent_name = agent_name_text
+                elif record_type == "pr-link":
+                    # polylogue-2qx.4 / polylogue-cgfy: generalized,
+                    # tracker-agnostic evidence alongside the existing
+                    # claude_pr_link session_event (kept for the raw-payload
+                    # audit trail) -- session_refs is the structured relation
+                    # cijx.1 and its consumers read instead of regex/time-
+                    # window PR reconstruction.
+                    pr_url = _string_field(item, "prUrl")
+                    if pr_url:
+                        raw_pr_number = item.get("prNumber")
+                        session_refs.append(
+                            ParsedSessionRef(
+                                kind=SessionRefKind.PULL_REQUEST.value,
+                                url=pr_url,
+                                repo=_string_field(item, "prRepository"),
+                                number=raw_pr_number
+                                if isinstance(raw_pr_number, int) and not isinstance(raw_pr_number, bool)
+                                else None,
+                            )
+                        )
+                event_type = _SIDECAR_EVENT_TYPES.get(record_type)
+                if event_type is not None:
+                    evidence_payload = _sidecar_evidence_payload(record_type, item)
+                    if evidence_payload is not None:
+                        # Message linkage belongs in the typed field, not buried
+                        # in the payload dict: source_message_provider_id is what
+                        # the archive joins on, and every other claude_* emitter
+                        # here already uses it. Two sidecar payloads carried a
+                        # bare "message_id" key instead, leaving the typed field
+                        # NULL and the linkage unqueryable.
+                        source_message_id = evidence_payload.pop("message_id", None)
+                        session_events.append(
+                            ParsedSessionEvent(
+                                event_type=event_type,
+                                timestamp=timestamp,
+                                payload=evidence_payload,
+                                source_message_provider_id=(
+                                    str(source_message_id) if source_message_id is not None else None
+                                ),
+                            )
+                        )
             continue
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
@@ -603,6 +1202,7 @@ def _parse_code_records(
         content_blocks = _content_blocks_from_record(message, text)
         content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
         content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
+        content_blocks = _attach_file_edit(content_blocks, _file_edit_from_tool_result(item))
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT
@@ -619,6 +1219,13 @@ def _parse_code_records(
         msg_model = _message_model_name(message_payload) or _message_model_name(item)
         msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
         msg_duration_ms = _message_duration_ms(item)
+        # polylogue-2qx.4 / polylogue-cuxz.8: the provider's own terminal-state
+        # signal (608,608 occurrences on the wire) -- already read into the
+        # ``message_usage`` event payload below; also land it on the message
+        # row itself so it feeds ``terminal_state`` directly instead of only
+        # riding along in an event's JSON payload.
+        raw_stop_reason = message_payload.get("stop_reason")
+        msg_stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) and raw_stop_reason else None
         resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
         material_origin = classify_material_origin(
             role=resolved_role,
@@ -669,6 +1276,7 @@ def _parse_code_records(
                 model_effort=msg_effort,
                 duration_ms=msg_duration_ms,
                 paste_spans=paste_spans,
+                stop_reason=msg_stop_reason,
             )
         )
         session_events.extend(
@@ -678,6 +1286,26 @@ def _parse_code_records(
                 timestamp=timestamp,
             )
         )
+        tool_execution_payload = _tool_execution_result_payload(item)
+        if tool_execution_payload is not None:
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="claude_tool_execution_result",
+                    timestamp=timestamp,
+                    source_message_provider_id=provider_message_id,
+                    payload=tool_execution_payload,
+                )
+            )
+        todo_state_payload = _todo_state_payload(item)
+        if todo_state_payload is not None:
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="claude_todo_state",
+                    timestamp=timestamp,
+                    source_message_provider_id=provider_message_id,
+                    payload=todo_state_payload,
+                )
+            )
         if notification is not None:
             background_notifications.append((notification, provider_message_id, timestamp))
         if isinstance(message, dict) and isinstance(message.get("usage"), dict):
@@ -690,6 +1318,7 @@ def _parse_code_records(
                         msg_usage,
                         model_name=msg_model,
                         model_effort=msg_effort,
+                        message=message_payload,
                     ),
                 )
             )
@@ -775,7 +1404,43 @@ def _parse_code_records(
             for message in messages
         ]
 
+    # polylogue-pbuh: flush deduplicated agent-dispatch delegation edges
+    # gathered from ``progress``/``agent_progress`` records (see
+    # ``_accumulate_delegation_progress``) -- one event per distinct
+    # dispatching tool_use, not one per streaming tick.
+    for parent_tool_use_id in sorted(delegation_progress):
+        stats = delegation_progress[parent_tool_use_id]
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_delegation_progress",
+                timestamp=stats.last_seen,
+                source_message_provider_id=parent_tool_use_id,
+                payload={
+                    "parent_tool_use_id": parent_tool_use_id,
+                    "progress_tick_count": stats.count,
+                    "first_seen": stats.first_seen,
+                    "last_seen": stats.last_seen,
+                    "summary": f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)",
+                },
+            )
+        )
+
+    # ``sessionKind`` classifies the whole file (e.g. "bg" for a
+    # run_in_background Bash task's own transcript) -- a session-wide fact,
+    # not a per-message one, so it is recorded once rather than per record.
+    if session_kind_value is not None:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_session_kind",
+                timestamp=created_at,
+                payload={"session_kind": session_kind_value},
+            )
+        )
+
     title = str(composed_session_id)
+    title_source: TitleSource | None = None
+    title_ref: str | None = None
+    title_confidence: float | None = None
     for message in messages:
         # Title heuristic: the first plain human-authored user turn. Claude Code
         # has enough structural provenance (`isMeta`, `toolUseResult`, `origin`)
@@ -793,12 +1458,62 @@ def _parse_code_records(
                 title = cleaned[:80]
                 if len(cleaned) > 80:
                     title += "..."
+                title_source = TitleSource.HEURISTIC
+                title_ref = f"message:{message.provider_message_id}"
+                title_confidence = 0.5
                 break
+
+    # polylogue-pbuh: the ``agent-name`` sidecar record is a provider-assigned
+    # label for a background/agent-mode session (e.g. "polylogue-history-
+    # rebuild") -- corpus-sampled values are readable task names, a strictly
+    # better fallback than the raw UUID/"UUID:agent-suffix" composed id this
+    # loop otherwise leaves in place. It wins over the raw-id/heuristic title
+    # but yields to the stronger explicit signals below (``ai-title`` is the
+    # provider's own title computation; ``custom-title`` is an explicit user
+    # rename) when either of those is also present for the same session.
+    if latest_agent_name:
+        cleaned_agent_name = latest_agent_name.strip()
+        if cleaned_agent_name:
+            title = cleaned_agent_name[:80] + ("..." if len(cleaned_agent_name) > 80 else "")
+            title_source = TitleSource.ORIGIN
+            title_ref = f"claude-agent-name:{composed_session_id}"
+            title_confidence = 0.9
+
+    # polylogue-pbuh: Claude Code's own ``ai-title`` sidecar record is a
+    # provider-computed session title (Codex's equivalent-tier evidence is its
+    # "thread name" -- both get TitleSource.ORIGIN + confidence 1.0). It wins
+    # over the first-human-message heuristic above and the raw UUID fallback:
+    # it is the reason 84.6% of Claude Code sessions were titled with a raw
+    # UUID (bd polylogue-pbuh) even though the provider supplies a real title.
+    if latest_ai_title:
+        cleaned_ai_title = latest_ai_title.strip()
+        if cleaned_ai_title:
+            title = cleaned_ai_title[:80] + ("..." if len(cleaned_ai_title) > 80 else "")
+            title_source = TitleSource.ORIGIN
+            title_ref = f"claude-ai-title:{composed_session_id}"
+            title_confidence = 1.0
+
+    # An explicit user rename (``custom-title``) is a stronger intent signal
+    # than the provider-suggested ``ai-title`` and wins over it when both are
+    # present -- the user deliberately renamed the session, not the provider
+    # guessing at one.
+    if latest_custom_title:
+        cleaned_custom_title = latest_custom_title.strip()
+        if cleaned_custom_title:
+            title = cleaned_custom_title[:80] + ("..." if len(cleaned_custom_title) > 80 else "")
+            title_source = TitleSource.ORIGIN
+            title_ref = f"claude-custom-title:{composed_session_id}"
+            title_confidence = 1.0
+    if title_source is None:
+        title_source = TitleSource.UNKNOWN
 
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id=str(composed_session_id),
         title=title,
+        title_source=title_source,
+        title_ref=title_ref,
+        title_confidence=title_confidence,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,
@@ -810,11 +1525,84 @@ def _parse_code_records(
         reported_duration_ms=total_duration if saw_duration_field else None,
         models_used=sorted(models),
         working_directories=sorted(cwds),
+        git_branch=git_branch_value,
+        display_name=session_slug_value,
+        session_refs=session_refs,
     )
 
 
-def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedSession:
-    return _parse_code_records(payload, fallback_id)
+def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinResult) -> ParsedSession:
+    """Attach acquired ``tool-results/`` sidecar content to its owning blocks.
+
+    Never adds a message, never touches session identity/count (polylogue-rujy
+    AC1): a genuinely-truncated sidecar's full text replaces its
+    ``tool_result`` block's preview text in place; every sidecar (matched or
+    debt) is recorded as a bounded ``claude_tool_result_sidecar`` session
+    event -- never the raw bytes, which live in the (already unbounded) block
+    text field once replaced, not in this structured fact.
+    """
+    if not join_result.matched and not join_result.debt:
+        return session
+
+    replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
+    messages = session.messages
+    if replacements:
+        updated_messages: list[ParsedMessage] = []
+        for message in session.messages:
+            if not any(
+                block.type is BlockType.TOOL_RESULT and block.tool_id in replacements for block in message.blocks
+            ):
+                updated_messages.append(message)
+                continue
+            new_blocks = [
+                block.model_copy(update={"text": replacements[block.tool_id].full_text})
+                if block.type is BlockType.TOOL_RESULT and block.tool_id in replacements
+                else block
+                for block in message.blocks
+            ]
+            updated_messages.append(message.model_copy(update={"blocks": new_blocks}))
+        messages = updated_messages
+
+    events = list(session.session_events)
+    for match in join_result.matched:
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_tool_result_sidecar",
+                payload={
+                    "acquisition_status": "matched",
+                    "tool_use_id": match.tool_use_id,
+                    "filename": match.filename,
+                    "byte_size": match.byte_size,
+                    "content_hash": match.content_hash,
+                    "content_replaced": match.was_truncated,
+                },
+            )
+        )
+    for debt in join_result.debt:
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_tool_result_sidecar",
+                payload={
+                    "acquisition_status": "debt",
+                    "filename": debt.filename,
+                    "byte_size": debt.byte_size,
+                    "reason": debt.reason,
+                },
+            )
+        )
+    return session.model_copy(update={"messages": messages, "session_events": events})
+
+
+def parse_code(
+    payload: Sequence[object],
+    fallback_id: str,
+    *,
+    tool_result_sidecars: SidecarJoinResult | None = None,
+) -> ParsedSession:
+    session = _parse_code_records(payload, fallback_id)
+    if tool_result_sidecars is not None:
+        session = apply_tool_result_sidecars(session, tool_result_sidecars)
+    return session
 
 
 def _background_notification_from_event(
@@ -885,13 +1673,22 @@ def parse_code_stream(
     *,
     record_index_start: int = 0,
     seen_record_uuids: set[str] | None = None,
+    tool_result_sidecars: SidecarJoinResult | None = None,
 ) -> ParsedSession:
-    return _parse_code_records(
+    session = _parse_code_records(
         records,
         fallback_id,
         record_index_start=record_index_start,
         seen_record_uuids=seen_record_uuids,
     )
+    if tool_result_sidecars is not None:
+        session = apply_tool_result_sidecars(session, tool_result_sidecars)
+    return session
 
 
-__all__ = ["parse_code", "parse_code_stream", "reconcile_code_session_chunks"]
+__all__ = [
+    "apply_tool_result_sidecars",
+    "parse_code",
+    "parse_code_stream",
+    "reconcile_code_session_chunks",
+]

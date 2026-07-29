@@ -336,7 +336,11 @@ class TestFailedEnvelopeSurfaces:
         server = build_server(capabilities=MCPCapabilities(maintenance=True))
         fn = server._tool_manager._tools["maintenance"].fn
 
-        result = asyncio.run(fn(operation="execute", targets=["session_insights"]))
+        # confirm=True is required for a non-dry-run execute (the MCP
+        # maintenance tool's confirm safety guard); without it the call never
+        # reaches the repair dispatch this test means to exercise and instead
+        # returns an unrelated "Safety guard: set confirm=true..." error.
+        result = asyncio.run(fn(operation="execute", targets=["session_insights"], confirm=True))
         payload = json.loads(result)
         assert payload["ok"] is False
         assert payload["code"] == "maintenance_execute_failed"

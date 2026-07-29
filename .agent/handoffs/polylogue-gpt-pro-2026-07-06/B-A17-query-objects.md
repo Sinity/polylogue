@@ -372,8 +372,7 @@ def assertion_id_for_finding(
     value: object,
     evidence_refs: Sequence[str],
     detector_ref: str,
-) -> str:
-    ...
+) -> str: ...
 ```
 
 [proposal] Add:
@@ -384,8 +383,7 @@ def upsert_findings_as_assertions(
     findings: Sequence[FindingCandidate],
     *,
     now_ms: int | None = None,
-) -> list[ArchiveAssertionEnvelope]:
-    ...
+) -> list[ArchiveAssertionEnvelope]: ...
 ```
 
 Use the pathology pattern exactly:

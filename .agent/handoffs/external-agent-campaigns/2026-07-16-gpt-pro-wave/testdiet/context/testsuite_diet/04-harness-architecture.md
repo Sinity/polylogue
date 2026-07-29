@@ -142,9 +142,7 @@ expressions (or a typed AST produced by the production parser) and keep only
 the independent planted-fact oracle. A test should look conceptually like:
 
 ```python
-expected = corpus.facts.session_ids_matching(
-    origin="codex-session", text_token="needle", min_messages=7
-)
+expected = corpus.facts.session_ids_matching(origin="codex-session", text_token="needle", min_messages=7)
 assert await run_repository_query(expression) == expected
 assert run_cli_query(expression).session_ids == expected
 assert await run_http_query(expression) == expected

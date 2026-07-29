@@ -6,13 +6,15 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from polylogue.sources.parsers.codex import parse_stream
 
 
 def looks_like(payload: object) -> bool:
@@ -305,6 +307,121 @@ class TestMessageParsing:
         assert block.tool_id == "call-1"
         assert block.is_error is True
         assert block.exit_code == 2
+
+    def test_function_call_output_timed_out_is_error(self) -> None:
+        """A structural ``"timed_out": true`` is itself an outcome signal
+        (e.g. codex's ``wait``/``write_stdin`` timeout envelope) even when no
+        exit_code/is_error field is present."""
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": '{"message": "Wait timed out.", "timed_out": true}',
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is True
+        assert block.exit_code is None
+
+    def test_function_call_output_exec_envelope_success(self) -> None:
+        """Codex's own unified-exec tool (``exec_command``/``write_stdin``)
+        emits a fixed, CLI-generated text envelope rather than a JSON outcome
+        object. This is the single largest unknown-outcome bucket in the live
+        archive (polylogue-cuxz.8) -- read it as structure, not prose.
+        """
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "Chunk ID: 04636b\nWall time: 0.6470 seconds\nProcess exited with code 0\nOutput:\nok\n",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is False
+        assert block.exit_code == 0
+
+    def test_function_call_output_exec_envelope_nonzero_exit(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "Wall time: 4.0933 seconds\nProcess exited with code 1\nOutput:\nboom\n",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is True
+        assert block.exit_code == 1
+
+    def test_function_call_output_exec_envelope_still_running_stays_unknown(self) -> None:
+        """A long-lived chunked session that hasn't exited yet has no
+        concluded outcome -- must stay NULL, never guessed as success."""
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "Chunk ID: 0f81ae\nWall time: 30.0011 seconds\nProcess running with session ID 3600\nOutput:\n...",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is None
+        assert block.exit_code is None
+
+    def test_function_call_output_exec_envelope_does_not_match_embedded_prose(self) -> None:
+        """An unrelated occurrence of similar wording deep inside captured
+        subprocess output (e.g. a CI log the command itself printed) must
+        never be mistaken for the tool's own exit status -- only the exact
+        preamble anchored at the very start of the field counts. The real
+        (anchored) exit code here is 0; the embedded text says otherwise and
+        must not override it.
+        """
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": (
+                        "Chunk ID: abc123\nWall time: 5.0 seconds\nProcess exited with code 0\n"
+                        "Output:\n##[error]Process completed with exit code 1.\nsome CI log tail\n"
+                    ),
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is False
+        assert block.exit_code == 0
 
     def test_state_records_skipped(self) -> None:
         payload = [
@@ -1221,3 +1338,432 @@ class TestEdgeCases:
             },
             "model_context_window": 200000,
         }
+
+
+# =============================================================================
+# Newly-read wire fields (parser-diff triage, polylogue-t46-style unread-field pass)
+# =============================================================================
+
+
+class TestUnreadFieldTriage:
+    """Fields identified by `devtools lab schema parser-diff --provider codex`
+    that were previously parsed by name but silently dropped in value."""
+
+    def test_turn_context_captures_truncation_policy_and_output_schema(self) -> None:
+        payload = [
+            {
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/repo/polylogue",
+                    "truncation_policy": {"mode": "tokens", "limit": 10000},
+                    "final_output_json_schema": {
+                        "type": "object",
+                        "properties": {"shard_id": {"type": "string"}},
+                        "required": ["shard_id"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        turn_event = result.session_events[0]
+        assert turn_event.event_type == "turn_context"
+        assert turn_event.payload["truncation_policy"] == {"mode": "tokens", "limit": 10000}
+        output_schema = cast(dict[str, Any], turn_event.payload["final_output_json_schema"])
+        assert cast(dict[str, Any], output_schema["properties"])["shard_id"] == {"type": "string"}
+
+    def test_turn_context_user_instructions_feed_session_instructions_text(self) -> None:
+        payload = [
+            {
+                "type": "turn_context",
+                "payload": {"cwd": "/repo/polylogue", "user_instructions": "# Sinnix Configuration\n..."},
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.instructions_text == "# Sinnix Configuration\n..."
+
+    def test_turn_context_user_instructions_do_not_override_legacy_instructions(self) -> None:
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {"id": "s1", "timestamp": "2024-01-01", "instructions": "Legacy prompt."},
+            },
+            {"type": "turn_context", "payload": {"user_instructions": "New-format prompt."}},
+        ]
+        result = parse(payload, "fallback")
+        assert result.instructions_text == "Legacy prompt."
+
+    def test_session_meta_base_instructions_text_feeds_instructions_when_no_legacy_field(self) -> None:
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "s1",
+                    "timestamp": "2024-01-01",
+                    "base_instructions": {"text": "You are Codex, a coding agent."},
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.instructions_text == "You are Codex, a coding agent."
+
+    def test_sandbox_policy_type_variant_and_exclude_flags_captured(self) -> None:
+        payload = [
+            {
+                "type": "turn_context",
+                "payload": {
+                    "sandbox_policy": {
+                        "type": "workspace-write",
+                        "network_access": False,
+                        "exclude_slash_tmp": True,
+                        "exclude_tmpdir_env_var": False,
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        policy_events = [event for event in result.session_events if event.event_type == "agent_policy"]
+        assert len(policy_events) == 1
+        assert policy_events[0].payload == {
+            "sandbox_policy": "workspace-write",
+            "network_policy": "false",
+            "exclude_slash_tmp": True,
+            "exclude_tmpdir_env_var": False,
+        }
+
+    def test_session_meta_agent_role_and_developer_instructions_emit_one_identity_event(self) -> None:
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "s1",
+                    "timestamp": "2024-01-01",
+                    "agent_role": "awaiter",
+                    "agent_nickname": "Ironwood",
+                    "model_provider": "openai",
+                },
+            },
+            {
+                "type": "turn_context",
+                "payload": {"developer_instructions": "You are an awaiter."},
+            },
+            {
+                "type": "turn_context",
+                "payload": {"developer_instructions": "You are an awaiter. (repeat turn)"},
+            },
+        ]
+        result = parse(payload, "fallback")
+        identity_events = [event for event in result.session_events if event.event_type == "codex_agent_identity"]
+        assert len(identity_events) == 1
+        assert identity_events[0].payload == {
+            "agent_role": "awaiter",
+            "agent_nickname": "Ironwood",
+            "model_provider": "openai",
+            "developer_instructions": "You are an awaiter.",
+        }
+
+    def test_token_count_captures_rate_limits(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "rate_limits": {
+                        "primary": {"used_percent": 1.0, "window_minutes": 299, "resets_in_seconds": 15211},
+                        "secondary": {"used_percent": 34.0, "window_minutes": 10079, "resets_in_seconds": 210020},
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.session_events[0].payload["rate_limits"] == {
+            "primary": {"used_percent": 1.0, "window_minutes": 299, "resets_in_seconds": 15211},
+            "secondary": {"used_percent": 34.0, "window_minutes": 10079, "resets_in_seconds": 210020},
+        }
+
+    def test_reasoning_event_captures_metadata_turn_id(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [],
+                    "encrypted_content": "gAAAA...",
+                    "metadata": {"turn_id": "019edbf0-a9e1-7842-939b-35838823eb5d"},
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.session_events[0].event_type == "reasoning"
+        assert result.session_events[0].payload["turn_id"] == "019edbf0-a9e1-7842-939b-35838823eb5d"
+        assert "encrypted_content" not in result.session_events[0].payload
+
+    def test_ghost_snapshot_captures_ghost_commit(self) -> None:
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "ghost_snapshot",
+                    "ghost_commit": {
+                        "id": "ae5788b8c19de5c4e52491004db8eab9b91910e1",
+                        "parent": "51743ed0c6d39dc5191a69e7ba17e0e265e1b10c",
+                        "preexisting_untracked_files": [],
+                        "preexisting_untracked_dirs": [],
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        ghost_commit = cast(dict[str, Any], result.session_events[0].payload["ghost_commit"])
+        assert ghost_commit["id"] == "ae5788b8c19de5c4e52491004db8eab9b91910e1"
+
+    def test_exec_command_end_captures_process_id_and_parsed_cmd_not_duplicate_output(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "exec_command_end",
+                    "call_id": "call-1",
+                    "process_id": "57152",
+                    "parsed_cmd": [{"type": "search", "cmd": "rg foo", "query": "foo", "path": "."}],
+                    "aggregated_output": "duplicate of function_call_output text" * 10,
+                    "formatted_output": "also duplicate",
+                    "exit_code": 0,
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        event = result.session_events[0]
+        assert event.payload["process_id"] == "57152"
+        assert event.payload["parsed_cmd"] == [{"type": "search", "cmd": "rg foo", "query": "foo", "path": "."}]
+        assert "aggregated_output" not in event.payload
+        assert "formatted_output" not in event.payload
+
+    def test_patch_apply_end_captures_success_and_structured_changes(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "patch_apply_end",
+                    "call_id": "exec-1",
+                    "turn_id": "turn-1",
+                    "stdout": "Success. Updated the following files:\nM /repo/foo.py\n",
+                    "stderr": "",
+                    "success": True,
+                    "changes": {
+                        "/repo/foo.py": {
+                            "type": "update",
+                            "unified_diff": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+                            "move_path": None,
+                        },
+                        "/repo/renamed.py": {
+                            "type": "update",
+                            "unified_diff": "",
+                            "move_path": "/repo/old_name.py",
+                        },
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        event = result.session_events[0]
+        assert event.event_type == "patch_apply_end"
+        assert event.payload["success"] is True
+        changes = cast(dict[str, Any], event.payload["changes"])
+        assert changes["/repo/foo.py"] == {
+            "type": "update",
+            "unified_diff": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+        }
+        assert changes["/repo/renamed.py"]["move_path"] == "/repo/old_name.py"
+        # stdout/stderr duplicate the paired function_call_output tool_result
+        # text, same dedup rule as exec_command -- deliberately not re-stored.
+        assert "stdout" not in event.payload
+        assert "stderr" not in event.payload
+
+    def test_patch_apply_end_omits_changes_when_no_files_touched(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "patch_apply_end", "call_id": "exec-2", "success": False, "changes": {}},
+            },
+        ]
+        result = parse(payload, "fallback")
+        event = result.session_events[0]
+        assert event.payload["success"] is False
+        assert "changes" not in event.payload
+
+    def test_turn_context_captures_personality_reasoning_summary_collaboration_mode(self) -> None:
+        payload = [
+            {
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/repo/polylogue",
+                    "personality": "pragmatic",
+                    "summary": "auto",
+                    "collaboration_mode": {
+                        "mode": "plan",
+                        "settings": {"model": "gpt-5.4", "reasoning_effort": "medium"},
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        turn_event = result.session_events[0]
+        assert turn_event.payload["personality"] == "pragmatic"
+        assert turn_event.payload["reasoning_summary"] == "auto"
+        assert turn_event.payload["collaboration_mode"] == "plan"
+
+    def test_compacted_replacement_history_aggregates_phase_and_ghost_commit(self) -> None:
+        payload = [
+            {
+                "type": "compacted",
+                "payload": {
+                    "message": "summary",
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [
+                                {"type": "output_text", "text": "final answer", "phase": "final_answer"},
+                                {"type": "output_text", "text": "draft", "phase": "draft"},
+                            ],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "again", "phase": "final_answer"}],
+                        },
+                        {
+                            "type": "ghost_snapshot",
+                            "ghost_commit": {"id": "abc", "parent": "def"},
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}],
+                        },
+                    ],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        event = result.session_events[0]
+        assert event.payload["replacement_history_count"] == 4
+        assert event.payload["replacement_history_phase_counts"] == {"draft": 1, "final_answer": 2}
+        assert event.payload["replacement_history_ghost_commit_count"] == 1
+        assert event.payload["replacement_history_image_count"] == 1
+
+    def test_world_state_captures_environments_subagents(self) -> None:
+        payload = [
+            {
+                "type": "world_state",
+                "payload": {
+                    "full": False,
+                    "state": {"environments": {"subagents": "- backlog: Hubble\n- flagship: Dewey"}},
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        world_events = [event for event in result.session_events if event.event_type == "world_state"]
+        assert len(world_events) == 1
+        assert world_events[0].payload["environments"] == {"subagents": "- backlog: Hubble\n- flagship: Dewey"}
+
+    def test_world_state_without_environments_emits_nothing(self) -> None:
+        payload = [{"type": "world_state", "payload": {"full": True, "state": {"agents_md": "large text"}}}]
+        result = parse(payload, "fallback")
+        assert result.session_events == []
+
+    def test_mcp_tool_call_end_produces_tool_use_and_tool_result_messages(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "mcp_tool_call_end",
+                    "call_id": "call_Ep1dVZ1GUsjzkyKeRUEwlcdE",
+                    "invocation": {
+                        "server": "github",
+                        "tool": "search_pull_requests",
+                        "arguments": {"owner": "Sinity", "repo": "polylogue", "query": "is:merged"},
+                    },
+                    "duration": {"secs": 1, "nanos": 172352127},
+                    "result": {"Ok": {"content": [{"type": "text", "text": '{"total_count": 2}'}]}},
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 2
+        use_message, result_message = result.messages
+        assert use_message.role is Role.ASSISTANT
+        assert use_message.blocks[0].type == "tool_use"
+        assert use_message.blocks[0].tool_name == "mcp__github__search_pull_requests"
+        assert use_message.blocks[0].tool_input == {
+            "owner": "Sinity",
+            "repo": "polylogue",
+            "query": "is:merged",
+        }
+        assert result_message.role is Role.TOOL
+        assert result_message.blocks[0].type == "tool_result"
+        assert result_message.blocks[0].tool_id == use_message.blocks[0].tool_id
+        assert result_message.blocks[0].is_error is False
+        assert result_message.text is not None
+        assert "total_count" in result_message.text
+
+    def test_mcp_tool_call_end_err_result_marks_tool_result_as_error(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "mcp_tool_call_end",
+                    "call_id": "call-err",
+                    "invocation": {"server": "codex_apps", "tool": "github_fetch_issue", "arguments": {}},
+                    "result": {"Err": "tool call error: token_expired"},
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+
+        assert len(result.messages) == 2
+        result_message = result.messages[1]
+        assert result_message.blocks[0].is_error is True
+        assert result_message.text == "tool call error: token_expired"
+
+
+def test_standalone_apply_patch_exposes_the_operated_path_for_indexing() -> None:
+    """polylogue-a9hx: apply_patch carries its payload as a PATCH-FORMAT STRING
+    under ``arguments``, not JSON, so the operated-on path lives in a
+    ``*** Update File:`` header where no ``json_extract`` can reach it.
+
+    ``blocks.tool_path`` and ``blocks.search_text`` are both generated from
+    ``$.file_path``/``$.path``, so every Codex file edit was invisible to
+    structured path queries and to FTS -- measured 0.07% tool_path coverage
+    for codex-session against 44% for claude-code-session, with apply_patch
+    accounting for 95% of Codex tool calls.
+
+    Mutation that fails this: remove the ``_PATCH_TOOL_NAMES`` branch from
+    ``_tool_input_from_arguments`` -- ``path`` disappears and the generated
+    column goes back to NULL.
+    """
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: polylogue/sources/parsers/codex.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** Add File: docs/notes.md\n"
+        "+hello\n"
+    )
+    tool_input = _tool_input_from_arguments(patch, tool_name="apply_patch")
+
+    assert tool_input["path"] == "polylogue/sources/parsers/codex.py"
+    assert tool_input["paths"] == ["polylogue/sources/parsers/codex.py", "docs/notes.md"]
+    assert tool_input["patch"] == patch
+
+
+def test_non_patch_tool_arguments_are_left_alone() -> None:
+    """A non-patch tool whose arguments happen to be a string must not be
+    scanned for patch headers -- that would invent a path from prose."""
+    tool_input = _tool_input_from_arguments("*** Update File: not-a-patch.txt", tool_name="add_issue_comment")
+
+    assert "path" not in tool_input
+    assert tool_input["arguments"] == "*** Update File: not-a-patch.txt"

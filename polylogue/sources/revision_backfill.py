@@ -9,9 +9,10 @@ import sqlite3
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
@@ -70,6 +71,51 @@ class RevisionBackfillResult:
     replayed_logical_sources: int
     quarantined: int
     adoption_deferred: int = 0
+    #: Wall-clock seconds per named stage of this backfill call, keyed by the
+    #: SAME names logged as ``"backfill stage timings: ..."`` below --
+    #: ``census``/``census_receipt``/``spill_load`` (decode-side, computed
+    #: here) plus ``revision_replay.*``/``membership_replay.*`` (writer-side,
+    #: recorded by ``ArchiveStore.apply_raw_revision_replay`` /
+    #: ``apply_raw_membership_classification`` through the SAME dict passed
+    #: in as ``stage_timings_s``) and ``total``. This is the parse-vs-apply
+    #: split callers need: it was already being computed and logged, just
+    #: discarded at this function's return boundary -- see
+    #: ``split_parse_and_apply_seconds`` for the two-bucket rollup.
+    #: ``compare=False`` -- wall-clock timings are never equal across two
+    #: independent runs by construction, and existing callers (e.g.
+    #: ``test_thread_parse_matches_sequential_archive_state``) compare two
+    #: ``RevisionBackfillResult``s for LOGICAL equality (same counts across
+    #: execution modes), not identical timing. Diagnostic metadata must not
+    #: change that contract.
+    stage_timings_s: dict[str, float] = field(default_factory=dict, compare=False)
+
+
+#: Stage-timing keys that are decode work (read-only blob->ParsedSession
+#: parse), as opposed to everything else recorded in the same dict, which is
+#: SQLite writer work (index/FTS/projection writes under
+#: ``revision_replay.*`` / ``membership_replay.*`` prefixes, plus the small
+#: ``census_receipt`` parser-fingerprint commit). Used by
+#: ``split_parse_and_apply_seconds`` to answer "is decode or the single
+#: writer the bottleneck?" without guessing at every current and future
+#: writer-stage key name.
+_PARSE_STAGE_TIMING_KEYS: Final[frozenset[str]] = frozenset({"census", "spill_load"})
+
+
+def split_parse_and_apply_seconds(stage_timings_s: dict[str, float]) -> tuple[float, float]:
+    """Roll up a backfill's per-stage timings into (parse_s, apply_s).
+
+    ``parse_s`` is decode work (``census`` + ``spill_load``): read-only,
+    embarrassingly parallel, scales with ``parse_workers``. ``apply_s`` is
+    everything else charged against ``total`` (writer-side index/FTS/
+    projection writes plus the small census receipt commit): serialized
+    through the single SQLite writer and does not scale with worker count.
+    Returns ``(0.0, 0.0)`` if ``total`` was never recorded (e.g. an empty
+    backfill that returned before any stage ran).
+    """
+    total_s = stage_timings_s.get("total", 0.0)
+    parse_s = sum(stage_timings_s.get(key, 0.0) for key in _PARSE_STAGE_TIMING_KEYS)
+    apply_s = max(0.0, total_s - parse_s)
+    return parse_s, apply_s
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +144,27 @@ class _PrefetchedParse:
     revision_kind: RawRevisionKind
 
 
+#: Content-cache dedup key: ``(provider, blob_hash, dedup_path)``, identical
+#: in shape to the per-batch grouping key ``_parse_retained_raws`` already
+#: uses (``dedup_path`` is ``""`` for :data:`_PATH_INDEPENDENT_PARSE_PROVIDERS`,
+#: else the raw's own ``source_path``) -- see :func:`_parse_retained_raws`'s
+#: docstring for why that key shape is safe to reuse across rows.
+ContentCacheKey = tuple[Provider, str, str]
+
+#: Default budget for :class:`RawParsePrefetchCache`'s cross-page content
+#: cache (polylogue-oab7). Deliberately a small, fixed, conservative default
+#: independent of ``max_inflight_bytes`` (the daemon's adaptive 64MiB-2GiB
+#: single-tick budget for its OWN raw_id-keyed warm-ahead entries) rather than
+#: reusing that number: the two caches are separate dicts inside the same
+#: object and can both be resident at once, so summing an adaptive multi-GiB
+#: budget with itself risks doubling the daemon's already-tuned whale-memory
+#: ceiling. 256 MiB mirrors this file's own ``_DECODED_CACHE_MIN_TREE_BYTES``
+#: and ``daemon/parse_prefetch.py``'s ``_MIN_MAX_CACHED_TREE_BYTES`` floor --
+#: small enough to be noise against either budget, still large enough to hold
+#: several typical (non-whale) parsed sessions resident across page boundaries.
+_DEFAULT_CONTENT_CACHE_BYTES: Final[int] = 256 * 1024 * 1024
+
+
 class RawParsePrefetchCache:
     """Bounded, thread-safe store of parse results computed off the writer hold.
 
@@ -117,15 +184,38 @@ class RawParsePrefetchCache:
     Admission is capped by ``max_inflight_bytes`` (an explicit whale-memory
     budget): a payload that would exceed the remaining budget is silently NOT
     cached and is parsed normally, in the writer hold, when its turn comes.
+
+    polylogue-oab7: this class ALSO carries a second, independent store --
+    the "content cache" (``get_content``/``put_content``) -- keyed by
+    :data:`ContentCacheKey` rather than ``raw_id``. Unlike the raw_id-keyed
+    entries above (single-pop, meant to be consumed exactly once by the
+    specific raw the daemon's warmer pre-parsed), content-cache entries are
+    LRU-retained until evicted, so a raw whose bytes were already parsed on
+    an EARLIER page of the SAME long-lived cache instance (the daemon's
+    ``DaemonParseStage.cache`` is a process-lifetime singleton -- see
+    ``daemon/cli.py``'s ``_daemon_bulk_rebuild_parse_stage()``) is served
+    from cache on a LATER page instead of reparsed, closing the one real gap
+    left by polylogue-869u's existing dedup (which only reuses a parse
+    WITHIN one bounded ``_parse_retained_raws`` batch/page, never across the
+    many pages one archive-wide rebuild is split into). A miss here degrades
+    identically to a miss on the raw_id-keyed store: parsed normally, nothing
+    lost, only possibly reparsed.
     """
 
-    def __init__(self, *, max_inflight_bytes: int) -> None:
+    def __init__(self, *, max_inflight_bytes: int, max_content_cache_bytes: int | None = None) -> None:
         if max_inflight_bytes < 1:
             raise ValueError("max_inflight_bytes must be positive")
         self._max_inflight_bytes = max_inflight_bytes
         self._lock = threading.Lock()
         self._entries: dict[str, _PrefetchedParse] = {}
         self._inflight_bytes = 0
+        self._max_content_cache_bytes = (
+            max_content_cache_bytes if max_content_cache_bytes is not None else _DEFAULT_CONTENT_CACHE_BYTES
+        )
+        if self._max_content_cache_bytes < 1:
+            raise ValueError("max_content_cache_bytes must be positive")
+        self._content_entries: OrderedDict[ContentCacheKey, _PrefetchedParse] = OrderedDict()
+        self._content_bytes = 0
 
     def __len__(self) -> int:
         with self._lock:
@@ -164,6 +254,55 @@ class RawParsePrefetchCache:
                 return None
             self._inflight_bytes -= entry.payload_bytes
             return entry.sessions, entry.payload_bytes, entry.revision_kind
+
+    def content_len(self) -> int:
+        """Number of distinct content-cache entries currently resident."""
+        with self._lock:
+            return len(self._content_entries)
+
+    def get_content(self, key: ContentCacheKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | None:
+        """Peek a content-cache entry without consuming it (unlike ``pop``).
+
+        Multiple later raw_ids sharing ``key`` may each hit the same entry;
+        touching it here marks it most-recently-used for the LRU eviction
+        order in :meth:`put_content`.
+        """
+        with self._lock:
+            entry = self._content_entries.get(key)
+            if entry is None:
+                return None
+            self._content_entries.move_to_end(key)
+            return entry.sessions, entry.payload_bytes, entry.revision_kind
+
+    def put_content(
+        self,
+        key: ContentCacheKey,
+        sessions: list[ParsedSession],
+        *,
+        payload_bytes: int,
+        revision_kind: RawRevisionKind,
+    ) -> bool:
+        """Admit one freshly-parsed representative's output into the content cache.
+
+        Returns ``False`` (a pure no-op) when ``key`` is already resident or
+        ``payload_bytes`` alone exceeds the whole budget -- a single whale
+        entry must never be admitted only to immediately evict every other
+        entry and then still not fit itself. Otherwise admits and evicts
+        least-recently-used entries (oldest ``get_content``/``put_content``
+        touch first) until back under budget.
+        """
+        with self._lock:
+            if key in self._content_entries:
+                return False
+            if payload_bytes > self._max_content_cache_bytes:
+                return False
+            self._content_entries[key] = _PrefetchedParse(sessions, payload_bytes, revision_kind)
+            self._content_entries.move_to_end(key)
+            self._content_bytes += payload_bytes
+            while self._content_bytes > self._max_content_cache_bytes and self._content_entries:
+                _evicted_key, evicted_entry = self._content_entries.popitem(last=False)
+                self._content_bytes -= evicted_entry.payload_bytes
+            return True
 
 
 class RawRevisionReplayResourceBlockedError(RuntimeError):
@@ -924,6 +1063,7 @@ def backfill_historical_revision_evidence(
         replayed,
         census.quarantined + quarantined,
         adoption_deferred,
+        stage_timings_s=stage_timings,
     )
 
 
@@ -987,76 +1127,6 @@ def census_parse_worker(
         return raw_id, None, str(exc)
 
 
-_DEFAULT_PARSE_DISPATCH_MAX_BYTES = 262_144  # 256 KiB
-
-
-def _parse_dispatch_max_bytes() -> int:
-    """Payload-size ceiling for pool dispatch to still be a net win (polylogue-amg1).
-
-    polylogue-amg1's own measurement: 200 raws at ~50KB average with 8
-    workers measured 1.22x (net win); 80 raws at ~1.7MB average measured
-    0.63x (net LOSS, slower than sequential) on the same machine. The
-    process-pool round trip pickles the returned ``ParsedSession`` list back
-    across the process boundary -- for large payloads that pickle cost
-    exceeds the parse time saved by running concurrently. Raws at or above
-    this size parse sequentially in-process (no IPC); raws below it dispatch
-    to the pool, where aggregate parse time genuinely dominates transfer
-    cost. Override with POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES.
-    """
-    from polylogue.config import load_polylogue_config
-
-    configured = load_polylogue_config().revision_parse_dispatch_max_bytes
-    return configured if configured is not None else _DEFAULT_PARSE_DISPATCH_MAX_BYTES
-
-
-def _partition_raws_by_dispatch_size(
-    raw_ids: list[str],
-    payload_sizes: dict[str, int],
-    *,
-    dispatch_max_bytes: int,
-) -> tuple[list[str], list[str]]:
-    """Split raw ids into (pool-eligible, sequential) by payload size.
-
-    Preserves ``raw_ids`` input order within each bucket so callers stay
-    deterministic. See ``_parse_dispatch_max_bytes`` for why size, not count,
-    decides pool eligibility (polylogue-amg1).
-    """
-    pool_raw_ids = [raw_id for raw_id in raw_ids if payload_sizes[raw_id] < dispatch_max_bytes]
-    sequential_raw_ids = [raw_id for raw_id in raw_ids if payload_sizes[raw_id] >= dispatch_max_bytes]
-    return pool_raw_ids, sequential_raw_ids
-
-
-_DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES = 48 * 1024 * 1024  # 48 MiB
-
-
-def _parse_pool_min_aggregate_bytes() -> int:
-    """Aggregate-payload floor below which pool dispatch cannot amortize.
-
-    Each spawned worker pays the full interpreter + polylogue import before
-    its first task (~1.5-2.0s measured live 2026-07-19: a 25s py-spy capture
-    of the bulk rebuild census showed 20 short-lived workers spending ~95%
-    of their lifetime inside importlib, because per-cohort census batches
-    dispatch 1-2 sub-256KiB raws at a time and the executor is created per
-    call). Sequential small-payload parse runs at roughly 20MB/s, so with 8
-    workers the pool only beats sequential once the pool-eligible aggregate
-    exceeds ~45MB; below that, worker spawn dominates and "parallel" is
-    strictly slower. Override with
-    ``POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`` (polylogue-crd8 follow-up).
-    """
-    from polylogue.config import load_polylogue_config
-
-    configured = load_polylogue_config().revision_parse_pool_min_bytes
-    return configured if configured is not None else _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
-
-
-def _pool_dispatch_amortizes(pool_raw_ids: list[str], payload_sizes: dict[str, int]) -> bool:
-    """Decide whether a pool-eligible batch is worth spawning workers for."""
-    if len(pool_raw_ids) <= 1:
-        return False
-    total = sum(payload_sizes[raw_id] for raw_id in pool_raw_ids)
-    return total >= _parse_pool_min_aggregate_bytes()
-
-
 #: Providers whose parsed session identity is derived purely from payload
 #: bytes, never from ``source_path`` -- safe to dedup census parse ACROSS
 #: source paths sharing a ``blob_hash`` (polylogue-869u). Excluded
@@ -1118,6 +1188,19 @@ def _parse_retained_raws(
     process/thread-pool round trip here. Every raw_id NOT found in the cache
     (including all of them, when ``prefetch_cache`` is ``None`` -- the
     default for every existing caller) is parsed exactly as before.
+
+    polylogue-oab7: after the per-page dedup grouping above, each group's
+    ``(provider, blob_hash, dedup_path)`` key is also checked against
+    ``prefetch_cache``'s CONTENT cache (``get_content``/``put_content``,
+    distinct from the raw_id-keyed ``pop`` used above). A hit there means
+    this exact content was already parsed on an EARLIER call to this
+    function against the SAME ``prefetch_cache`` instance -- e.g. an earlier
+    *page* of the same archive-wide rebuild, not just an earlier row of this
+    same page -- and is reused without a second parse. A miss falls through
+    to the unchanged dispatch path and, once parsed, is admitted into the
+    content cache so a LATER page can reuse it. ``prefetch_cache=None``
+    (every caller that does not opt in) skips this lookup/store entirely and
+    is byte-identical to today's behavior.
     """
     descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
@@ -1135,12 +1218,35 @@ def _parse_retained_raws(
         provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
         dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
         grouped.setdefault((provider, blob_hash, dedup_path), []).append(raw_id)
-    representatives = [members[0] for members in grouped.values()]
+
+    content_hits: dict[tuple[Provider, str, str], tuple[list[ParsedSession], int, RawRevisionKind]] = {}
+    representatives: list[str] = []
+    for key, members in grouped.items():
+        content_hit = prefetch_cache.get_content(key) if prefetch_cache is not None else None
+        if content_hit is not None:
+            content_hits[key] = content_hit
+        else:
+            representatives.append(members[0])
+
     unique = _parse_unique_retained_raws(
         archive, representatives, descriptors=descriptors, ingest_workers=ingest_workers
     )
-    for members in grouped.values():
-        outcome = unique[members[0]]
+
+    if prefetch_cache is not None:
+        for key, members in grouped.items():
+            if key in content_hits:
+                continue
+            fresh_outcome = unique[members[0]]
+            if isinstance(fresh_outcome, Exception):
+                continue
+            sessions, rep_size, rep_kind = fresh_outcome
+            prefetch_cache.put_content(key, sessions, payload_bytes=rep_size, revision_kind=rep_kind)
+
+    for key, members in grouped.items():
+        content_outcome = content_hits.get(key)
+        outcome: tuple[list[ParsedSession], int, RawRevisionKind] | Exception = (
+            content_outcome if content_outcome is not None else unique[members[0]]
+        )
         for raw_id in members:
             if isinstance(outcome, Exception):
                 results[raw_id] = outcome
@@ -1158,23 +1264,20 @@ def _parse_unique_retained_raws_via_threads(
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Thread-parallel parse, reachable only when ``parallel_threads_effective()``.
+    """Thread-parallel parse over every raw, regardless of size.
 
-    Under a real free-threaded (no-GIL) interpreter, a plain
-    ``ThreadPoolExecutor`` shares parsed ``ParsedSession`` object graphs by
-    reference between threads, so neither of the process pool's two
-    amortization costs applies: no pickle-back of the return value (#3136
+    A plain ``ThreadPoolExecutor`` shares parsed ``ParsedSession`` object
+    graphs by reference between threads, so neither cost that a process pool
+    has to amortize applies here: no pickle-back of the return value (#3136
     measured 0.63x/net-loss above 256KiB) and no per-worker spawn+import tax
     (#3149's ~1.5-2s floor -- threads share the one already-imported
-    interpreter, they never re-pay ``import polylogue``). Both
-    ``_partition_raws_by_dispatch_size`` and ``_pool_dispatch_amortizes``
-    exist solely to protect against those two process-pool-specific costs
-    (#3136/#3149), so this path applies NEITHER: every raw in ``raw_ids``
-    dispatches to the thread pool regardless of payload size or aggregate
-    bytes.
+    interpreter, they never re-pay ``import polylogue``). Every raw in
+    ``raw_ids`` therefore dispatches, with no payload-size ceiling and no
+    aggregate floor; the heuristics that enforced those under the GIL are
+    retired along with the process-pool path itself.
 
-    Dispatches the same ``census_parse_worker`` function the process-pool
-    path uses, deliberately -- NOT ``_parse_retained_raw(archive, raw_id)``
+    Dispatches ``census_parse_worker`` deliberately -- NOT
+    ``_parse_retained_raw(archive, raw_id)``
     directly. ``ArchiveStore`` lazily opens ``_source_conn`` as a plain
     ``sqlite3.Connection`` with the default ``check_same_thread=True``
     (``storage/sqlite/archive_tiers/archive.py:_ensure_source_conn``); the
@@ -1244,19 +1347,37 @@ def _parse_unique_retained_raws(
     regardless of which raws take a parallel path versus the sequential
     path.
 
-    Two parallel strategies, mutually exclusive per call:
-    ``parallel_threads_effective()`` (real free-threading, e.g. 3.14t) routes
-    to ``_parse_unique_retained_raws_via_threads`` with no size partition or
-    amortization floor. Otherwise (the standard GIL build -- today's default
-    and the only build the daemon deploys) falls through to the
-    ``ProcessPoolExecutor`` path below, unchanged: the polylogue-7mtf
-    control-run measurement proved GIL-build threads give zero parse
-    speedup (0.93x-0.96x) and inflate a concurrent writer thread's commit
-    latency ~5000x, so threads must never engage without a genuinely
-    disabled GIL.
+    Parallelism is a plain ``ThreadPoolExecutor`` over every raw, with no
+    size partition and no amortization floor: parsed ``ParsedSession`` graphs
+    are shared between threads by reference, so neither of the costs that
+    used to require tuning applies.
+
+    Parallelism requires a genuinely free-threaded interpreter. ``>=3.14`` in
+    ``requires-python`` does NOT guarantee that -- a standard GIL 3.14 build
+    satisfies it -- so this still probes, and parses sequentially when the GIL
+    is enabled. That is a safety guard, not a tuning knob: polylogue-7mtf
+    measured GIL-build parse threads giving no speedup (0.93x-0.96x) while
+    inflating a concurrent SQLite writer thread's commit latency ~5000x
+    (208ms against an ~0.04ms/5ms cadence), so threads must never engage under
+    a GIL.
+
+    The retired process-pool alternative existed solely to get parallelism
+    under the GIL, and carried two measured heuristics to stay a net win
+    there: a 256 KiB payload ceiling (pickling ``ParsedSession`` graphs back
+    across the process boundary measured 0.63x, a net loss) and a 48 MiB
+    aggregate floor (per-worker spawn+import ~1.5-2.0s). On the reference
+    archive that ceiling routed 98.5% of all bytes to a single core, which is
+    what made a full index rebuild a ~9-hour job on a 24-thread machine.
     """
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
-    if ingest_workers <= 1 or len(raw_ids) <= 1:
+    if ingest_workers <= 1 or len(raw_ids) <= 1 or not parallel_threads_effective():
+        if ingest_workers > 1 and len(raw_ids) > 1:
+            _LOGGER.warning(
+                "parsing %d raws sequentially: this interpreter has the GIL enabled, and "
+                "parse threads under a GIL starve the archive writer rather than speeding "
+                "parse up. Run polylogue on a free-threaded build (3.14t) for parallel parse.",
+                len(raw_ids),
+            )
         for raw_id in raw_ids:
             try:
                 results[raw_id] = _parse_retained_raw(archive, raw_id)
@@ -1264,64 +1385,9 @@ def _parse_unique_retained_raws(
                 results[raw_id] = exc
         return results
 
-    if parallel_threads_effective():
-        return _parse_unique_retained_raws_via_threads(
-            archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers
-        )
-
-    payload_sizes = {raw_id: descriptors[raw_id][4] for raw_id in raw_ids}
-    pool_raw_ids, sequential_raw_ids = _partition_raws_by_dispatch_size(
-        raw_ids, payload_sizes, dispatch_max_bytes=_parse_dispatch_max_bytes()
+    return _parse_unique_retained_raws_via_threads(
+        archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers
     )
-
-    for raw_id in sequential_raw_ids:
-        try:
-            results[raw_id] = _parse_retained_raw(archive, raw_id)
-        except Exception as exc:
-            results[raw_id] = exc
-
-    if not _pool_dispatch_amortizes(pool_raw_ids, payload_sizes):
-        for raw_id in pool_raw_ids:
-            try:
-                results[raw_id] = _parse_retained_raw(archive, raw_id)
-            except Exception as exc:
-                results[raw_id] = exc
-        return results
-
-    from concurrent.futures import as_completed
-
-    from polylogue.pipeline.services.process_pool import process_pool_executor
-
-    blob_root_str = str(archive.archive_root / "blob")
-    source_db_path_str = str(archive.source_db_path)
-    with process_pool_executor(max_workers=min(ingest_workers, len(pool_raw_ids))) as pool:
-        future_to_raw_id = {}
-        for raw_id in pool_raw_ids:
-            provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
-            future = pool.submit(
-                census_parse_worker,
-                raw_id,
-                provider.value,
-                blob_hash,
-                source_path,
-                is_stream_record_provider(source_path, str(provider)),
-                blob_root_str,
-                source_db_path_str,
-            )
-            future_to_raw_id[future] = raw_id
-        for future in as_completed(future_to_raw_id):
-            raw_id = future_to_raw_id[future]
-            try:
-                _raw_id, sessions, error = future.result()
-            except Exception as exc:
-                results[raw_id] = exc
-                continue
-            if error is not None:
-                results[raw_id] = RuntimeError(error)
-                continue
-            _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
-            results[raw_id] = (sessions or [], payload_size, kind)
-    return results
 
 
 def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:

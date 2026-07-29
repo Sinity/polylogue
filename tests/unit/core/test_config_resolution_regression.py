@@ -331,38 +331,6 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
         # Explicit caller override still wins over the configured value.
         assert _resolve_raw_authority_commit_batch_size(7) == 7
 
-    def test_revision_parse_dispatch_thresholds_toml_only_reach_dispatch_partitioning(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """Reverted-mutation witness: restore either
-        ``os.environ.get("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES")`` or
-        ``os.environ.get("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES")`` in
-        ``polylogue/sources/revision_backfill.py`` -- the test then fails
-        because no environment variable is set (TOML-only configuration) and
-        both helpers fall back to their hardcoded module defaults
-        (262144 bytes / 48 MiB) instead of the configured values.
-        """
-        from polylogue.sources.revision_backfill import (
-            _parse_dispatch_max_bytes,
-            _parse_pool_min_aggregate_bytes,
-        )
-
-        _disable_site(monkeypatch)
-        monkeypatch.delenv("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES", raising=False)
-        monkeypatch.delenv("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES", raising=False)
-        user = tmp_path / "user.toml"
-        user.write_text(
-            "[pipeline.revision_parse]\ndispatch_max_bytes = 1024\npool_min_bytes = 2048\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
-
-        assert _parse_dispatch_max_bytes() == 1024
-        assert _parse_pool_min_aggregate_bytes() == 2048
-
     def test_daemon_parse_stage_knobs_toml_only_reach_prefetch_resolution(
         self,
         monkeypatch: pytest.MonkeyPatch,

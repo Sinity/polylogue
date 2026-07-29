@@ -5,6 +5,7 @@ from __future__ import annotations
 from polylogue.schemas.drift_sentinel import (
     BENIGN_CLASSIFICATIONS,
     FIELD_CHANGED,
+    KNOWN_FIELD_UNREAD,
     NEW_FIELD,
     RISKY_CLASSIFICATIONS,
     UNSEEN_SHAPE,
@@ -88,3 +89,66 @@ def test_unseen_key_signature_is_order_independent_and_deduplicated() -> None:
 
 def test_unseen_key_signature_falls_back_to_raw_text_for_unrecognized_prefix() -> None:
     assert unseen_key_signature(["some other warning text"]) == "some other warning text"
+
+
+def test_clean_payload_with_unread_known_field_classifies_as_risky_known_field_unread() -> None:
+    """The fourth classification (polylogue-2qx.3): a payload that clears
+    every other axis -- real resolution, valid, no unknown fields -- but
+    carries a field the schema declares and no parser reads is a defect,
+    not "no drift". Without this, such payloads silently classified as
+    ``None`` (benign)."""
+    classification = classify_schema_drift(
+        resolution_reason="exact_structure",
+        is_valid=True,
+        drift_warnings=[],
+        unread_known_fields=["structuredPatch"],
+    )
+    assert classification == KNOWN_FIELD_UNREAD
+    assert classification in RISKY_CLASSIFICATIONS
+    assert classification not in BENIGN_CLASSIFICATIONS
+    assert is_risky(classification)
+
+
+def test_unread_known_fields_is_a_fallback_behind_the_other_three_axes() -> None:
+    """unread_known_fields only matters once validation failure, unseen
+    shape, and new-field warnings are all ruled out -- those three are
+    each a stronger, more specific signal than the coverage join."""
+    assert (
+        classify_schema_drift(
+            resolution_reason="exact_structure",
+            is_valid=False,
+            drift_warnings=[],
+            unread_known_fields=["structuredPatch"],
+        )
+        == FIELD_CHANGED
+    )
+    assert (
+        classify_schema_drift(
+            resolution_reason="package_default",
+            is_valid=True,
+            drift_warnings=[],
+            unread_known_fields=["structuredPatch"],
+        )
+        == UNSEEN_SHAPE
+    )
+    assert (
+        classify_schema_drift(
+            resolution_reason="exact_structure",
+            is_valid=True,
+            drift_warnings=["Unexpected field: metadata.newThing"],
+            unread_known_fields=["structuredPatch"],
+        )
+        == NEW_FIELD
+    )
+
+
+def test_no_unread_known_fields_still_classifies_as_no_drift() -> None:
+    assert (
+        classify_schema_drift(
+            resolution_reason="exact_structure",
+            is_valid=True,
+            drift_warnings=[],
+            unread_known_fields=[],
+        )
+        is None
+    )

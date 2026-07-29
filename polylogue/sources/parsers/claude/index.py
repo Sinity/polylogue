@@ -119,6 +119,13 @@ _GIT_BRANCH_PREFIXES = frozenset(
         "docs/",
         "ci/",
         "perf/",
+        # Claude Code's own auto-generated branch namespace (e.g.
+        # ``claude/phase_3``) -- observed live on the ``gitBranch`` typed
+        # field (polylogue-cijx.3 triage, 2026-07-29) but previously absent
+        # from this shape-based fallback, so a session whose index summary
+        # happened to equal such a branch name (and had no typed git_branch
+        # to cross-check against) would slip through as a fake title.
+        "claude/",
     }
 )
 
@@ -144,16 +151,34 @@ def _looks_like_git_branch(value: str) -> bool:
     return any(stripped.startswith(prefix) for prefix in _GIT_BRANCH_PREFIXES)
 
 
+def _summary_is_known_git_branch(summary: str, known_branch: str | None) -> bool:
+    """Return True if ``summary`` is provably the session's own git branch.
+
+    Prefers the typed ``gitBranch`` evidence (record-level or sessions-index)
+    over the shape-based ``_looks_like_git_branch`` guess whenever a typed
+    value exists: an exact match against known evidence can never be a false
+    positive on a real title, whereas the prefix/exact-name heuristic can
+    both over- and under-match (polylogue-cijx.3 triage, 2026-07-29 --
+    ``claude/phase_3`` was missing from the prefix list entirely). The
+    heuristic is retained only as a fallback for sessions with no typed
+    branch evidence to compare against.
+    """
+    if known_branch is not None:
+        return summary.strip() == known_branch.strip()
+    return _looks_like_git_branch(summary)
+
+
 def enrich_session_from_index(
     conv: ParsedSession,
     index_entry: SessionIndexEntry,
 ) -> ParsedSession:
+    known_git_branch = conv.git_branch or index_entry.git_branch
     title = conv.title
     title_source: TitleSource = TitleSource.ORIGIN
     if (
         index_entry.summary
         and index_entry.summary != "User Exits CLI Session"
-        and not _looks_like_git_branch(index_entry.summary)
+        and not _summary_is_known_git_branch(index_entry.summary, known_git_branch)
     ):
         title = index_entry.summary
         # summary comes from the provider's session index: it IS the origin title

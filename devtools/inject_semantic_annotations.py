@@ -70,12 +70,42 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
     "claude-code": [
         (["properties.type"], "message_role"),
         (
+            # ``message.role`` mirrors the top-level ``type`` discriminator
+            # in real Claude Code records but was never itself annotated, so
+            # generation filled it with an opaque placeholder even before
+            # the c53ad94e0 promotion -- this is a distinct gap from the
+            # promotion's own annotation loss, not a duplicate of it
+            # (polylogue-c66i: without this entry,
+            # ``tests/infra/strategies/providers.py:repair_role_discriminators``'s
+            # ``message.role`` branch stays load-bearing after the
+            # promotion-loss annotations are restored).
+            ["properties.message", "properties.role"],
+            "message_role",
+        ),
+        (
+            # The role discriminator lives on the top-level record
+            # (``type``), not inside ``message`` -- but ``message`` is still
+            # the object that wraps the message's own identity/content, the
+            # same structural role ``payload`` plays for codex. Without this
+            # entry ``test_schema_has_expected_semantic_roles[claude-code]``
+            # is missing ``message_container`` from its expected 5-role set
+            # (polylogue-c66i: the injector's ANNOTATION_MAP simply never
+            # had this entry, not a path-resolution gap against the promoted
+            # schema).
+            ["properties.message"],
+            "message_container",
+        ),
+        (
+            # The 2026-07-29 structural-merge promotion (c53ad94e0) flattened
+            # this field's shape from an anyOf union of type variants to a
+            # plain `"type": ["array", "string"]` with `items` present
+            # directly -- there is no `anyOf` to select a variant from
+            # anymore (polylogue-c66i).
             [
                 "properties.message",
                 "properties.content",
-                "anyOf:array",
                 "items",
-                "properties.content",
+                "properties.text",
             ],
             "message_body",
         ),
@@ -87,10 +117,25 @@ ANNOTATION_MAP: dict[str, list[tuple[list[str], str]]] = {
         (["properties.payload"], "message_container"),
         (["properties.payload", "properties.role"], "message_role"),
         (
+            # The 2026-07-29 structural-merge promotion (c53ad94e0) unioned
+            # in a second, legitimate codex record shape: a flat
+            # ``{"type": "message", "role": ..., ...}`` record with no
+            # ``payload`` wrapper (the real parser accepts this too --
+            # ``sources/parsers/codex.py`` treats ``record_type == "message"
+            # or isinstance(role, str)`` as a message record). Without this
+            # entry, generation that happens to produce the flat shape (no
+            # ``payload`` filled) leaves this record's role as an
+            # unannotated placeholder (polylogue-c66i).
+            ["properties.role"],
+            "message_role",
+        ),
+        (
+            # Same post-promotion shape flattening as claude-code above:
+            # `summary` is now `"type": ["array", "string"]` with `items`
+            # present directly, no `anyOf` variant to select (polylogue-c66i).
             [
                 "properties.payload",
                 "properties.summary",
-                "anyOf:array",
                 "items",
                 "properties.text",
             ],

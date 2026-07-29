@@ -70,6 +70,8 @@ EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(
         "stale_ingest_attempts",
         "insight_freshness",
         "repeated_stage_failures",
+        # #3362: provider format-drift sentinel over live ingest.
+        "schema_drift",
     }
 )
 EXPECTED_EXPENSIVE_CHECKS: frozenset[str] = frozenset(
@@ -639,17 +641,22 @@ class TestReadinessProbeContract:
 
 
 @pytest.mark.contract
-def test_probe_payloads_are_orjson_serializable(
+def test_probe_payloads_are_json_facade_serializable(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Both probes return payloads orjson can serialize without coercion.
+    """Both probes return payloads `polylogue.core.json` can serialize without coercion.
 
-    The daemon serializes via orjson; non-trivial nested types (Path,
-    Enum, datetime) would raise at write time and leak as 500.
+    The daemon serializes via `core.json.dumps_bytes` (`_json_bytes` in
+    `daemon/http.py`), which itself routes to whichever fast backend is
+    active (msgspec, the only accelerator this facade carries) with a
+    stdlib fallback -- not directly to a hardcoded backend. Any non-trivial
+    nested type (Path, Enum, datetime) that the facade can't serialize
+    would raise at write time and leak as a 500 regardless of which backend
+    is active, so this exercises the actual facade rather than a single
+    hardcoded backend.
     """
-    import orjson
-
+    from polylogue.core import json as core_json
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     # Healthy ready
@@ -659,7 +666,7 @@ def test_probe_payloads_are_orjson_serializable(
     _, send_json = _capture_responses(handler)
     handler.do_GET()
     _, payload = send_json.call_args.args
-    orjson.dumps(payload)
+    core_json.dumps_bytes(payload)
 
     # Degraded ready
     set_degraded(DegradedReason(code="x", message="y", detail={"a": 1}))
@@ -668,7 +675,7 @@ def test_probe_payloads_are_orjson_serializable(
         _, send_json2 = _capture_responses(handler2)
         handler2.do_GET()
         _, payload2 = send_json2.call_args.args
-        orjson.dumps(payload2)
+        core_json.dumps_bytes(payload2)
     finally:
         clear_degraded()
 
@@ -677,7 +684,7 @@ def test_probe_payloads_are_orjson_serializable(
     _, send_json3 = _capture_responses(handler3)
     handler3.do_GET()
     _, payload3 = send_json3.call_args.args
-    orjson.dumps(payload3)
+    core_json.dumps_bytes(payload3)
 
 
 # Compile-time guard: keep `json` import referenced so future changes can

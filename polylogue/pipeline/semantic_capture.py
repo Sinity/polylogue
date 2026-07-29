@@ -26,6 +26,25 @@ class ContextCompactionSummary(TypedDict):
     is_modern: bool
 
 
+class MicroCompactionSummary(TypedDict):
+    """Claude Code's incremental ``microcompact_boundary`` event.
+
+    Distinct from full ``compact_boundary`` compaction: it trims individual
+    already-resolved tool results/attachments out of context rather than
+    replacing the whole transcript prefix with a summary. No message text is
+    materialized for it upstream (unlike full compaction, which replaces a
+    prefix with a human-readable summary) -- the metadata below is the only
+    evidence this event ever happened.
+    """
+
+    timestamp: JSONValue | None
+    trigger: JSONValue | None
+    pre_tokens: JSONValue | None
+    tokens_saved: JSONValue | None
+    compacted_tool_use_ids: list[str]
+    cleared_attachment_count: int
+
+
 class ThinkingTraceSummary(TypedDict):
     text: str
     token_count: int
@@ -94,18 +113,48 @@ def detect_context_compaction(item: Mapping[str, object]) -> ContextCompactionSu
         }
 
     if msg_type == "system" and item.get("subtype") == "compact_boundary":
-        meta = mapping_or_empty(item.get("compact_metadata"))
-        preserved = mapping_or_empty(meta.get("preserved_segment"))
+        # Live wire records use camelCase (``compactMetadata``/``preservedSegment``/
+        # ``anchorUuid``); the snake_case keys are kept as a fallback only, not
+        # the primary shape -- confirmed against the real corpus 2026-07-29.
+        meta = mapping_or_empty(item.get("compactMetadata") or item.get("compact_metadata"))
+        preserved = mapping_or_empty(meta.get("preservedSegment") or meta.get("preserved_segment"))
         return {
             "summary": _summary_text(item),
             "timestamp": _json_value(item.get("timestamp")),
             "trigger": _json_value(meta.get("trigger")),
             "pre_tokens": _json_value(meta.get("preTokens") or meta.get("pre_tokens")),
-            "preserved_segment_id": optional_string(preserved.get("anchor_uuid")),
+            "preserved_segment_id": optional_string(preserved.get("anchorUuid") or preserved.get("anchor_uuid")),
             "is_modern": True,
         }
 
     return None
+
+
+def detect_micro_compaction(item: Mapping[str, object]) -> MicroCompactionSummary | None:
+    """Detect Claude Code's incremental ``microcompact_boundary`` event.
+
+    Unlike ``compact_boundary``, this never carries chat-visible summary text
+    upstream -- ``microcompactMetadata`` is the only evidence. Without this
+    detector the record falls through to ordinary message parsing, keeps only
+    its placeholder ``content`` string ("Context microcompacted"), and silently
+    drops trigger/token-savings/affected-tool evidence.
+    """
+    if item.get("type") != "system" or item.get("subtype") != "microcompact_boundary":
+        return None
+    meta = mapping_or_empty(item.get("microcompactMetadata"))
+    raw_compacted_ids = meta.get("compactedToolIds")
+    compacted_ids = (
+        [value for value in raw_compacted_ids if isinstance(value, str)] if isinstance(raw_compacted_ids, list) else []
+    )
+    cleared = meta.get("clearedAttachmentUUIDs")
+    return {
+        "timestamp": _json_value(item.get("timestamp")),
+        "trigger": _json_value(meta.get("trigger")),
+        "pre_tokens": _json_value(meta.get("preTokens")),
+        "tokens_saved": _json_value(meta.get("tokensSaved")),
+        "compacted_tool_use_ids": compacted_ids,
+        "cleared_attachment_count": len(cleared) if isinstance(cleared, list) else 0,
+    }
 
 
 def extract_thinking_traces(content_blocks: Sequence[Mapping[str, object]]) -> list[ThinkingTraceSummary]:

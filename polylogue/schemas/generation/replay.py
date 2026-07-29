@@ -72,6 +72,31 @@ class MembershipSessionIds(Collection[str | None]):
         return any(session_id == value for session_id in self)
 
 
+@dataclass(frozen=True)
+class MembershipObservedAts(Collection[str | None]):
+    """Replay each unit's record ``observed_at`` once per flattened schema sample.
+
+    Parallel to ``MembershipSessionIds``: one value per sample, already read
+    from the acquiring record (``SchemaUnit.observed_at``), so field-stats
+    collection can roll up per-field first/last-seen without a second scan.
+    """
+
+    memberships: Sequence[_UnitMembership]
+
+    def __iter__(self) -> Iterator[str | None]:
+        if isinstance(self.memberships, JournalMemberships):
+            yield from self.memberships.iter_observed_ats()
+            return
+        for membership in self.memberships:
+            yield from (membership.unit.observed_at for _sample in membership.unit.schema_samples)
+
+    def __len__(self) -> int:
+        return membership_sample_count(self.memberships)
+
+    def __contains__(self, value: object) -> bool:
+        return any(observed_at == value for observed_at in self)
+
+
 def select_artifact_memberships(
     memberships: Sequence[_UnitMembership],
     artifact_kind: str,
@@ -95,6 +120,7 @@ def membership_sample_count(memberships: Sequence[_UnitMembership]) -> int:
 
 __all__ = [
     "ArtifactMemberships",
+    "MembershipObservedAts",
     "MembershipSamples",
     "MembershipSessionIds",
     "membership_sample_count",

@@ -174,7 +174,9 @@ Recent index-tier versions:
   asset pointers, and task/search records;
 - version 7 enforces object JSON for `blocks.tool_input` and
   `session_provider_usage_events.payload_json`, two hot read-path columns with
-  current typed writers.
+  current typed writers at the time (`payload_json` itself was retired at
+  version 45 in favor of eight nullable typed billing-provenance columns; see
+  `docs/internals.md`).
 
 Broader payload columns such as insight evidence, inference, enrichment,
 work-event arrays, source hook payloads, and user assertion JSON should be

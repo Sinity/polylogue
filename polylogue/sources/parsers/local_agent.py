@@ -12,6 +12,34 @@ from polylogue.core.json import JSONDocument, json_document
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the write path only reads a
+# ``language`` key back out of it (``storage/sqlite/archive_tiers/write.py:
+# _block_language``). ``_tool_metadata`` (shared by both gemini-cli and
+# hermes tool_use/tool_result blocks) and ``_parse_gemini_message``'s
+# "thought" blocks (subject/timestamp/index) still attach data to
+# ``metadata`` as an in-process carrier; project it into ``session_events``
+# instead -- same precedent as ``claude/common.py``'s
+# ``claude_ai_web_tool_evidence`` and ``chatgpt.py``'s
+# ``chatgpt_block_metadata``. One event per block carrying non-empty
+# metadata, whole dict verbatim (no fixed cross-provider vocabulary here).
+def _block_metadata_evidence_events(messages: list[ParsedMessage]) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for message in messages:
+        for block_index, block in enumerate(message.blocks):
+            if not block.metadata:
+                continue
+            events.append(
+                ParsedSessionEvent(
+                    event_type="local_agent_block_metadata",
+                    timestamp=message.timestamp,
+                    source_message_provider_id=message.provider_message_id,
+                    payload={"block_index": block_index, **dict(block.metadata)},
+                )
+            )
+    return events
+
+
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
     return (
         isinstance(payload.get("sessionId"), str)
@@ -42,6 +70,11 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
             if usage_event := _gemini_message_usage_event(item, parsed):
                 session_events.append(usage_event)
     messages = _mark_active_leaf(messages)
+    if metadata_event := _gemini_cli_session_metadata_event(payload, message_count=len(messages)):
+        session_events.append(metadata_event)
+    if scratchpad_event := _gemini_cli_memory_scratchpad_event(payload):
+        session_events.append(scratchpad_event)
+    session_events.extend(_block_metadata_evidence_events(messages))
     return ParsedSession(
         source_name=Provider.GEMINI_CLI,
         provider_session_id=session_id,
@@ -63,6 +96,7 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
 def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     session_id = _string(payload.get("session_id")) or fallback_id
     messages: list[ParsedMessage] = []
+    session_events: list[ParsedSessionEvent] = []
     system_prompt = _string(payload.get("system_prompt"))
     if system_prompt:
         messages.append(
@@ -86,7 +120,14 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         )
         if parsed is not None:
             messages.append(parsed)
+            if extras_event := _hermes_message_wire_extras_event(item, parsed):
+                session_events.append(extras_event)
     messages = _mark_active_leaf(messages)
+    if metadata_event := _hermes_session_metadata_event(payload, message_count=len(messages)):
+        session_events.append(metadata_event)
+    if tool_event := _hermes_tool_availability_event(payload):
+        session_events.append(tool_event)
+    session_events.extend(_block_metadata_evidence_events(messages))
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
@@ -94,6 +135,7 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         created_at=_string(payload.get("session_start")),
         updated_at=_string(payload.get("last_updated")),
         messages=messages,
+        session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
     )
 
@@ -308,6 +350,144 @@ def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedS
         timestamp=message.timestamp,
         source_message_provider_id=message.provider_message_id,
         payload=payload,
+    )
+
+
+def _gemini_cli_session_metadata_event(payload: JSONDocument, *, message_count: int) -> ParsedSessionEvent | None:
+    """Producer-reported session counters (polylogue-5o05): ``userMessageCount``
+    and ``hasUserOrAssistantMessage`` were previously dropped entirely. Cheap
+    completeness cross-check against the messages actually parsed.
+    """
+    has_user_or_assistant = payload.get("hasUserOrAssistantMessage")
+    reported_count = _non_negative_int(payload.get("userMessageCount"))
+    if not isinstance(has_user_or_assistant, bool) and reported_count is None:
+        return None
+    event_payload: dict[str, object] = {"parsed_message_count": message_count}
+    if isinstance(has_user_or_assistant, bool):
+        event_payload["has_user_or_assistant_message"] = has_user_or_assistant
+    if reported_count is not None:
+        event_payload["reported_user_message_count"] = reported_count
+    return ParsedSessionEvent(
+        event_type="gemini_cli_session_metadata",
+        timestamp=_string(payload.get("lastUpdated")),
+        payload=event_payload,
+    )
+
+
+def _gemini_cli_memory_scratchpad_event(payload: JSONDocument) -> ParsedSessionEvent | None:
+    """Subagent memory-scratchpad summary (``version``/``workflowSummary``/
+    ``toolSequence``/``touchedPaths``/``validationStatus``), captured verbatim
+    (polylogue-5o05). Distinct from conversation content -- a producer-side
+    working-memory snapshot, not something a user or assistant said.
+    """
+    scratchpad = json_document(payload.get("memoryScratchpad"))
+    if not scratchpad:
+        return None
+    return ParsedSessionEvent(
+        event_type="gemini_cli_memory_scratchpad",
+        payload={"memory_scratchpad": dict(scratchpad)},
+    )
+
+
+def _hermes_session_metadata_event(payload: JSONDocument, *, message_count: int) -> ParsedSessionEvent | None:
+    """Session-level routing/deployment metadata (polylogue-5o05): ``base_url``,
+    ``platform``, ``message_count`` were present in 100% of 167 sampled
+    JSON-snapshot documents and read by nothing. ``message_count`` is the
+    producer's own count -- kept alongside the count we actually parsed as a
+    parse-completeness cross-check, not a duplicate of the same fact.
+    """
+    base_url = _string(payload.get("base_url"))
+    platform = _string(payload.get("platform"))
+    reported_count = _non_negative_int(payload.get("message_count"))
+    if base_url is None and platform is None and reported_count is None:
+        return None
+    event_payload: dict[str, object] = {"parsed_message_count": message_count}
+    if base_url is not None:
+        event_payload["base_url"] = base_url
+    if platform is not None:
+        event_payload["platform"] = platform
+    if reported_count is not None:
+        event_payload["reported_message_count"] = reported_count
+    return ParsedSessionEvent(
+        event_type="hermes_session_metadata",
+        timestamp=_string(payload.get("last_updated")),
+        payload=event_payload,
+    )
+
+
+def _hermes_tool_availability_event(payload: JSONDocument) -> ParsedSessionEvent | None:
+    """The full tool-definition schema offered to the model (``tools``,
+    ``tools[].function.{name,description,parameters}`` including the nested
+    JSON-Schema ``$schema``/``additionalProperties``/``properties``/
+    ``required`` keys) -- 100% of 167 sampled documents, read by nothing
+    (polylogue-5o05). Materially different signal from tool CALLS (already
+    captured on TOOL_USE blocks): which tools were AVAILABLE, not which were
+    invoked. Captured verbatim -- this is the wire tool-definition schema, not
+    conversation content.
+    """
+    tools = _list(payload.get("tools"))
+    if not tools:
+        return None
+    return ParsedSessionEvent(
+        event_type="hermes_tool_availability",
+        payload={"tools": tools, "tool_count": len(tools)},
+    )
+
+
+def _hermes_message_wire_extras_event(item: object, message: ParsedMessage) -> ParsedSessionEvent | None:
+    """Message-scoped Hermes wire fields with no home on ``ParsedContentBlock``
+    (polylogue-5o05): ``ParsedContentBlock.metadata`` is parse-time-only and is
+    never persisted (no ``metadata`` column on ``blocks``; every block read
+    path selects a literal ``NULL AS metadata``) -- storing these there would
+    silently reproduce the exact defect this triage is fixing. ``session_events``
+    is real, durable, and already supports per-message attribution via
+    ``source_message_provider_id``, so that is where these land instead.
+
+    - ``codex_reasoning_items``/``codex_message_items`` (~59% of documents):
+      reasoning/message-item blobs from a Codex-compatible backend. Stored
+      verbatim, same shape ``hermes_state.py``'s SQLite path already captures
+      for the equivalent state-db fields.
+    - ``_empty_recovery_synthetic``/``_db_persisted`` (low-volume, informational
+      producer markers) captured as booleans.
+    - ``tool_calls[].extra_content`` (e.g. Google ``thought_signature`` on a
+      Gemini-compatible backend's tool call) captured per tool call verbatim.
+    """
+    record = json_document(item)
+    if not record:
+        return None
+    event_payload: dict[str, object] = {}
+    reasoning_items = record.get("codex_reasoning_items")
+    if reasoning_items is not None:
+        event_payload["codex_reasoning_items"] = reasoning_items
+    message_items = record.get("codex_message_items")
+    if message_items is not None:
+        event_payload["codex_message_items"] = message_items
+    for marker in ("_empty_recovery_synthetic", "_db_persisted"):
+        value = record.get(marker)
+        if isinstance(value, bool):
+            event_payload[marker] = value
+    tool_extras: list[dict[str, object]] = []
+    for tool_index, tool_call in enumerate(_list(record.get("tool_calls")), start=1):
+        tool_record = json_document(tool_call)
+        extra_content = tool_record.get("extra_content") if tool_record else None
+        if isinstance(extra_content, Mapping):
+            tool_extras.append(
+                {
+                    "tool_id": (
+                        _string(tool_record.get("id")) or _string(tool_record.get("call_id")) or f"tool-{tool_index}"
+                    ),
+                    "extra_content": dict(extra_content),
+                }
+            )
+    if tool_extras:
+        event_payload["tool_calls_extra_content"] = tool_extras
+    if not event_payload:
+        return None
+    return ParsedSessionEvent(
+        event_type="hermes_message_wire_extras",
+        timestamp=message.timestamp,
+        source_message_provider_id=message.provider_message_id,
+        payload=event_payload,
     )
 
 

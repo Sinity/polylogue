@@ -241,21 +241,21 @@ def test_daemon_bulk_rebuild_pass_next_page_excludes_already_scheduled_raws(tmp_
     transaction = resolve_or_start_daemon_bulk_rebuild_transaction(tmp_path)
 
     first_page = store.next_raw_page(transaction, limit=2)
-    first_raw_ids = {raw_id for raw_id, _acquired, _size in first_page.rows}
+    first_raw_ids = {raw_id for raw_id, _blob_hash_hex, _size in first_page.rows}
     assert len(first_raw_ids) == 2
 
     # Simulate the checkpoint a real pass performs after replaying this page.
-    last_raw_id, last_acquired_at_ms, _blob_size = first_page.rows[-1]
+    last_raw_id, last_blob_hash_hex, _blob_size = first_page.rows[-1]
     advanced = store.checkpoint_transaction(
         transaction,
         status="paused",
         last_raw_id=last_raw_id,
-        last_acquired_at_ms=last_acquired_at_ms,
+        last_blob_hash_hex=last_blob_hash_hex,
         processed_raw_count=2,
     )
 
     second_page = store.next_raw_page(advanced, limit=2)
-    second_raw_ids = {raw_id for raw_id, _acquired, _size in second_page.rows}
+    second_raw_ids = {raw_id for raw_id, _blob_hash_hex, _size in second_page.rows}
     assert len(second_raw_ids) == 2
     assert first_raw_ids.isdisjoint(second_raw_ids)
 

@@ -292,21 +292,38 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
     assert second_store.active_pointer == canonical / "index.db"
     assert configured.joinpath("index.db").stat().st_ino == canonical.joinpath("index.db").stat().st_ino
     assert canonical.joinpath("index.db").resolve() == Path(second.index_path).resolve()
-    assert len(tuple(store.generations_root.glob("retired-*/index.db"))) == 2
+    # Both promotions retired the previous pointer; superseded-generation
+    # retention (polylogue-wmft, keep=1) then prunes all but the newest marker.
+    assert len(tuple(store.generations_root.glob("retired-*/index.db"))) == 1
+    assert tuple(store.generations_root.glob("gen-*/generation.json")) != ()
 
 
 def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archive(tmp_path: Path) -> None:
+    """polylogue-hord: paging orders by ``(blob_hash, raw_id)``, not acquisition
+    time, so byte-identical duplicates land adjacently. ``raw-a``/``raw-b``
+    deliberately share a ``blob_hash`` (proving the tie is broken by
+    ``raw_id``, exactly as the old acquired_at-tie test proved) while
+    ``raw-c`` gets a distinct, lexicographically-later hash -- acquired_at is
+    set in the OPPOSITE order from hash order to prove paging no longer
+    follows it.
+    """
     _archive(tmp_path)
+    hash_group_1 = b"\x01" * 32
+    hash_group_2 = b"\x02" * 32
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        for raw_id, acquired_at_ms in (("raw-c", 30), ("raw-a", 10), ("raw-b", 10)):
+        for raw_id, acquired_at_ms, blob_hash in (
+            ("raw-c", 10, hash_group_2),
+            ("raw-a", 30, hash_group_1),
+            ("raw-b", 30, hash_group_1),
+        ):
             conn.execute(
                 """
                 INSERT INTO raw_sessions (
                     raw_id, origin, native_id, source_path, source_index, blob_hash,
                     blob_size, acquired_at_ms, validation_status
-                ) VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), 1, ?, 'passed')
+                ) VALUES (?, 'codex-session', ?, ?, 0, ?, 1, ?, 'passed')
                 """,
-                (raw_id, raw_id, f"/{raw_id}.jsonl", acquired_at_ms),
+                (raw_id, raw_id, f"/{raw_id}.jsonl", blob_hash, acquired_at_ms),
             )
 
     store = IndexGenerationStore.for_archive_root(tmp_path)
@@ -314,46 +331,48 @@ def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archiv
         source_snapshot="source-v1", operation_id="resume-me", pass_byte_budget=2, pass_deadline_ms=5_000
     )
     first_page = store.next_raw_page(transaction, limit=2)
-    assert first_page.rows == (("raw-a", 10, 1), ("raw-b", 10, 1))
+    assert first_page.rows == (("raw-a", hash_group_1.hex(), 1), ("raw-b", hash_group_1.hex(), 1))
     assert first_page.deferred_reason == "raw-batch"
 
     transaction = store.checkpoint_transaction(
         transaction,
         status="paused",
-        last_acquired_at_ms=10,
+        last_blob_hash_hex=hash_group_1.hex(),
         last_raw_id="raw-b",
         processed_raw_count=2,
     )
-    assert transaction.cursor == "source:10:raw-b"
+    assert transaction.cursor == f"source:{hash_group_1.hex()}:raw-b"
     assert store.load_transaction("resume-me") == transaction
-    assert store.next_raw_page(transaction, limit=2).rows == (("raw-c", 30, 1),)
+    assert store.next_raw_page(transaction, limit=2).rows == (("raw-c", hash_group_2.hex(), 1),)
     assert transaction.pass_byte_budget == 2
 
 
 def test_rebuild_byte_budget_defers_without_excluding_an_oversized_first_raw(tmp_path: Path) -> None:
     _archive(tmp_path)
+    hash_large = b"\x01" * 32
+    hash_later = b"\x02" * 32
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        for raw_id, acquired_at_ms, blob_size in (("large", 1, 100), ("later", 2, 1)):
+        for raw_id, blob_hash, blob_size in (("large", hash_large, 100), ("later", hash_later, 1)):
             conn.execute(
                 """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
                    blob_size, acquired_at_ms, validation_status)
-                   VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), ?, ?, 'passed')""",
-                (raw_id, raw_id, f"/{raw_id}", blob_size, acquired_at_ms),
+                   VALUES (?, 'codex-session', ?, ?, 0, ?, ?, 0, 'passed')""",
+                (raw_id, raw_id, f"/{raw_id}", blob_hash, blob_size),
             )
     store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = store.create_transaction(source_snapshot="source-v1", pass_byte_budget=10)
     first = store.next_raw_page(transaction, limit=10)
-    assert first.rows == (("large", 1, 100),)
+    assert first.rows == (("large", hash_large.hex(), 100),)
     assert first.deferred_reason == "byte-budget"
     transaction = store.checkpoint_transaction(
         transaction,
         status="deferred",
-        last_acquired_at_ms=1,
+        last_blob_hash_hex=hash_large.hex(),
         last_raw_id="large",
         processed_raw_count=1,
         processed_blob_bytes=100,
     )
-    assert store.next_raw_page(transaction, limit=10).rows == (("later", 2, 1),)
+    assert store.next_raw_page(transaction, limit=10).rows == (("later", hash_later.hex(), 1),)
 
 
 def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: Path) -> None:
@@ -406,3 +425,83 @@ def test_derived_stores_cleared_missing_from_persisted_json_defaults_false(tmp_p
     reloaded = store.load_transaction("pre-existing-op")
     assert reloaded.derived_stores_cleared is False
     assert reloaded.operation_id == transaction.operation_id
+
+
+def test_promotion_prunes_superseded_generations(tmp_path: Path) -> None:
+    """polylogue-wmft: a promoted generation is ~35 GB and nothing ever removed
+    one. ``promote`` retired the *pointer* into a marker directory but left the
+    superseded ``gen-*`` directory forever, and ``discard_if_inactive`` only
+    disposes of candidates that were never promoted -- a live archive had
+    accumulated nine dead generations, ~290 GB."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    promoted_ids = []
+    for index in range(4):
+        generation = store.create(owner_id="operator", source_snapshot=f"snapshot-{index}")
+        store.promote(generation)
+        promoted_ids.append(generation.generation_id)
+
+    surviving = {path.parent.name for path in store.generations_root.glob("gen-*/generation.json")}
+    active = Path(store.active_pointer).resolve(strict=True)
+
+    # The active generation plus exactly one rollback target.
+    assert surviving == {promoted_ids[-1], promoted_ids[-2]}
+    assert active == Path(store.load(promoted_ids[-1]).index_path).resolve()
+    # Markers follow the same retention rather than dangling at the removed ones.
+    assert len(list(store.generations_root.glob("retired-*"))) == 1
+
+
+def test_pruning_never_removes_the_active_generation(tmp_path: Path) -> None:
+    """Retention of zero still must not delete what the pointer resolves to."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    generation = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(generation)
+
+    removed = store.prune_superseded_generations(keep=0)
+
+    assert generation.generation_id not in removed
+    assert Path(generation.index_path).exists()
+    assert Path(store.active_pointer).resolve(strict=True) == Path(generation.index_path).resolve()
+
+
+def test_pruning_retains_everything_when_the_active_pointer_is_unresolvable(tmp_path: Path) -> None:
+    """Fail closed: if the thing that says what is live is missing, delete nothing."""
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+    first = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(first)
+    second = store.create(owner_id="operator", source_snapshot="snapshot-b")
+    store.promote(second)
+    store.active_pointer.unlink()
+
+    assert store.prune_superseded_generations(keep=0) == []
+    assert Path(first.index_path).exists()
+    assert Path(second.index_path).exists()
+
+
+def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path) -> None:
+    """An in-flight or paused rebuild candidate is `inactive` -- never promoted --
+    and must survive an unrelated promotion's housekeeping.
+
+    Treating every non-active generation as superseded let a promotion delete a
+    rebuild in progress, and let a newer inactive candidate consume the single
+    retained slot so the real rollback target was pruned instead. Never-promoted
+    candidates belong to ``discard_if_inactive``, driven by their owner.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    first = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(first)
+    # A resumable rebuild candidate, created but never promoted.
+    candidate = store.create(owner_id="rebuild", source_snapshot="snapshot-candidate")
+    second = store.create(owner_id="operator", source_snapshot="snapshot-b")
+    store.promote(second)
+
+    assert store.load(candidate.generation_id).state == "inactive"
+    assert Path(candidate.index_path).exists(), "an unrelated promotion deleted a live rebuild candidate"
+    # The genuine rollback target -- the previously-active generation -- is what
+    # the retained slot is for, not the inactive candidate.
+    assert Path(first.index_path).exists()
