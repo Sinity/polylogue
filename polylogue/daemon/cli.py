@@ -317,11 +317,21 @@ def _watch_sources_from_roots(
 
 
 def _active_index_db_path() -> Path:
-    """Return the currently active archive database for daemon maintenance."""
-    from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
+    """Return the archive-rooted ``index.db`` path for daemon maintenance.
 
-    return resolve_active_index_path(archive_root())
+    Deliberately the plain ``archive_root() / "index.db"`` construction, not
+    a pointer-resolved active-generation path: this value is threaded as the
+    ``db_path`` anchor into :func:`~polylogue.daemon.convergence_stages.make_default_convergence_stages`
+    and friends, whose entire stage family relies on ``db_path.parent`` being
+    the durable-tier archive root (never a ``.index-generations/<gen>``
+    subdirectory) to derive ``ops.db``/``embeddings.db``/``source.db``/
+    ``user.db`` siblings correctly. SQLite transparently follows the
+    ``index.db`` symlink when connecting, so this is equally correct for
+    opening the active generation's content.
+    """
+    from polylogue.paths import archive_root
+
+    return archive_root() / "index.db"
 
 
 def _heartbeat_counts(db: Path) -> tuple[int, int, str]:
@@ -1465,7 +1475,7 @@ def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BA
         ids = _schema_archive_session_ids_missing_profiles(conn, limit=limit)
         if not ids:
             return 0
-        result = _archive_insights_execute_ids(conn, ids)
+        result = _archive_insights_execute_ids(conn, ids, archive_root=archive_root())
         return len(ids) if bool(getattr(result, "success", result)) else 0
     finally:
         conn.close()
