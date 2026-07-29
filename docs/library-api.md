@@ -75,9 +75,7 @@ async with Polylogue() as archive:
             limit=25,
         )
     )
-    phases = await archive.list_session_phase_insights(
-        SessionPhaseInsightQuery(provider="claude-code", limit=25)
-    )
+    phases = await archive.list_session_phase_insights(SessionPhaseInsightQuery(provider="claude-code", limit=25))
     latency = await archive.list_session_latency_profile_insights(
         SessionLatencyProfileInsightQuery(provider="claude-code", only_stuck=False, limit=25)
     )
@@ -87,9 +85,7 @@ async with Polylogue() as archive:
     coverage = await archive.list_archive_coverage_insights(
         ArchiveCoverageInsightQuery(provider="claude-code", group_by="day", since="2026-01-01")
     )
-    debt = await archive.list_archive_debt_insights(
-        ArchiveDebtInsightQuery(only_actionable=True)
-    )
+    debt = await archive.list_archive_debt_insights(ArchiveDebtInsightQuery(only_actionable=True))
 ```
 
 `SessionProfileInsight` exposes stable session semantics directly:
@@ -156,47 +152,44 @@ fresh `SessionFilter` bound to the active archive:
 ```python
 async with Polylogue.open() as archive:
     # Chainable, lazy evaluation (terminals are async)
-    results = await (archive.filter()
+    results = await (
+        archive.filter()
         .contains("error")
-        .contains("python")                          # AND
+        .contains("python")  # AND
         .origin("claude-ai-export", "chatgpt-export")  # OR
         .since("2025-01-01")
         .has("thinking")
         .limit(10)
-        .list())                        # Terminal: await list(), first(), count(), delete()
+        .list()
+    )  # Terminal: await list(), first(), count(), delete()
 
     # Exclusion filters
-    results = await (archive.filter()
+    results = await (
+        archive.filter()
         .contains("error")
         .exclude_text("warning")
         .exclude_origin("gemini-cli-session")
         .exclude_tag("archived")
-        .list())
+        .list()
+    )
 
     # Lightweight summaries (no message loading)
-    summaries = await (archive.filter()
-        .origin("claude-ai-export")
-        .since("2025-01-01")
-        .list_summaries())              # Returns SessionSummary (no messages)
+    summaries = await (
+        archive.filter().origin("claude-ai-export").since("2025-01-01").list_summaries()
+    )  # Returns SessionSummary (no messages)
 
     # Check if summaries are sufficient
     f = archive.filter().origin("claude-ai-export")
     if f.can_use_summaries():
         results = await f.list_summaries()  # Fast path
     else:
-        results = await f.list()            # Loads full sessions
+        results = await f.list()  # Loads full sessions
 
     # Custom predicates
-    results = await (archive.filter()
-        .where(lambda c: len(c.messages) > 50)
-        .list())
+    results = await archive.filter().where(lambda c: len(c.messages) > 50).list()
 
     # Sorting and sampling
-    results = await (archive.filter()
-        .sort("tokens")
-        .reverse()
-        .sample(10)
-        .list())
+    results = await archive.filter().sort("tokens").reverse().sample(10).list()
 
     # Session structure filters
     roots = await archive.filter().is_root().list()
@@ -254,10 +247,12 @@ async with Polylogue.open() as archive:
 import asyncio
 from polylogue import Polylogue
 
+
 async def main():
     async with Polylogue() as archive:
         result = await archive.parse_sources()
         return result.counts
+
 
 counts = asyncio.run(main())
 ```
@@ -269,6 +264,7 @@ Polylogue provides a full async/await facade with concurrent operations:
 ```python
 import asyncio
 from polylogue import Polylogue
+
 
 async def main():
     async with Polylogue() as archive:
@@ -302,6 +298,7 @@ async def main():
 
         # Rebuild search index
         await archive.rebuild_index()
+
 
 asyncio.run(main())
 ```
