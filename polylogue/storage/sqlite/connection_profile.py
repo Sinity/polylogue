@@ -122,6 +122,46 @@ DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
 )
 
+# polylogue-623q: an owned INACTIVE index generation (bulk offline
+# rebuild/backfill) is never read by anything until
+# ``IndexGenerationStore.promote()`` swaps the ``index.db`` symlink, and is
+# unconditionally discarded (``discard_if_inactive``) if the pass raises --
+# see ``maintenance/rebuild_index.py``'s ``_rebuild_index_from_source_owned``.
+# That licenses a much more aggressive durability/speed tradeoff than the
+# live writer profile above, which must survive a crash mid-write against the
+# ONE active index a concurrent reader may be using right now:
+#   - ``journal_mode=MEMORY`` (not WAL, not OFF): keeps the rollback journal
+#     resident in RAM instead of round-tripping through the filesystem/WAL
+#     checkpoint machinery, but still gives ``sqlite3.Connection.rollback()``
+#     something to roll back to. ``revision_backfill.py``'s batched
+#     census/replay loops call ``archive.rollback()`` on a recoverable batch
+#     failure and re-processes that batch -- ``journal_mode=OFF`` disables
+#     the rollback journal entirely, so that call would silently no-op and
+#     the retry could double-apply against already-partially-written rows.
+#     MEMORY is the fastest mode that keeps this real, already-exercised
+#     recovery path correct.
+#   - ``synchronous=OFF``: no fsync at all. A host crash mid-build can leave
+#     ``index.db`` corrupt, but a corrupt INACTIVE generation is simply
+#     discarded and rebuilt -- never promoted, never read.
+#   - A much larger ``cache_size``/``mmap_size`` than even the live writer
+#     profile: a bulk rebuild's working set (the whole generation being
+#     built) is far larger than one incremental daemon write, and there is no
+#     competing live-writer cgroup budget to share (this is a throwaway,
+#     single-purpose process).
+BULK_BUILD_CACHE_SIZE_KIB = 524288  # 512 MiB
+BULK_BUILD_MMAP_SIZE_BYTES = 4294967296  # 4 GiB
+
+BULK_BUILD_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="write",
+    timeout_seconds=DB_TIMEOUT,
+    busy_timeout_ms=DB_TIMEOUT * 1000,
+    cache_size_kib=BULK_BUILD_CACHE_SIZE_KIB,
+    mmap_size_bytes=BULK_BUILD_MMAP_SIZE_BYTES,
+    foreign_keys=True,
+    journal_mode="MEMORY",
+    synchronous="OFF",
+)
+
 READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     role="read",
     timeout_seconds=READ_DB_TIMEOUT,
@@ -139,6 +179,7 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
 DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS = DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
 WRITE_CONNECTION_PRAGMA_STATEMENTS = WRITE_CONNECTION_PROFILE.pragma_statements
 READ_CONNECTION_PRAGMA_STATEMENTS = READ_CONNECTION_PROFILE.pragma_statements
+BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS = BULK_BUILD_WRITE_CONNECTION_PROFILE.pragma_statements
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +325,10 @@ def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iter
 
 __all__ = [
     "DB_TIMEOUT",
+    "BULK_BUILD_CACHE_SIZE_KIB",
+    "BULK_BUILD_MMAP_SIZE_BYTES",
+    "BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS",
+    "BULK_BUILD_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_CACHE_SIZE_KIB",
     "DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "DAEMON_WRITE_CONNECTION_PROFILE",
