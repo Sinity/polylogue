@@ -12,9 +12,9 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
 
 
 def looks_like(payload: object) -> bool:
