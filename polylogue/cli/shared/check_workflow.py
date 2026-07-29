@@ -120,9 +120,11 @@ def _artifact_query(options: CheckCommandOptions) -> ArtifactObservationQuery:
 
 def _run_blob_store_check(config: Config, *, full: bool = False) -> JSONDocument:
     """Verify blob store integrity through the daemon-health scanner."""
+    from polylogue.storage.archive_identity import archive_file_set_root
     from polylogue.storage.blob_integrity import scan_blob_integrity
 
-    report = scan_blob_integrity(config.db_path, full=full)
+    configured_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+    report = scan_blob_integrity(config.db_path, full=full, configured_root=configured_root)
     return json_document(report.to_dict())
 
 

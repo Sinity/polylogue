@@ -505,12 +505,14 @@ def _raw_session_hashes(conn: sqlite3.Connection) -> list[str]:
     return [str(row[0]) for row in rows if row[0]]
 
 
-def _referenced_blob_hashes(db_path: Path, conn: sqlite3.Connection) -> list[str]:
+def _referenced_blob_hashes(
+    db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
+) -> list[str]:
     direct_archive_hashes = _archive_source_blob_hashes(conn)
     if direct_archive_hashes:
         return direct_archive_hashes
 
-    source_db = db_path.with_name("source.db")
+    source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
         try:
             source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
@@ -532,12 +534,14 @@ def _referenced_blob_hashes(db_path: Path, conn: sqlite3.Connection) -> list[str
     return _raw_session_hashes(conn)
 
 
-def _reference_source_counts(db_path: Path, conn: sqlite3.Connection) -> dict[str, int]:
+def _reference_source_counts(
+    db_path: Path, conn: sqlite3.Connection, *, configured_root: Path | None = None
+) -> dict[str, int]:
     direct = _archive_source_blob_hashes_by_table(conn)
     if direct:
         return {table: len(hashes) for table, hashes in direct.items()}
 
-    source_db = db_path.with_name("source.db")
+    source_db = (configured_root / "source.db") if configured_root is not None else db_path.with_name("source.db")
     if source_db != db_path and source_db.exists():
         try:
             source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
@@ -1879,15 +1883,24 @@ def scan_blob_reference_debt(
     store: BlobStore | None = None,
     sample_size: int = _MAX_FINDING_SAMPLE,
     immutable: bool = False,
+    configured_root: Path | None = None,
 ) -> BlobReferenceDebtReport:
-    """Count missing referenced blob files exactly without mutating state."""
+    """Count missing referenced blob files exactly without mutating state.
+
+    ``configured_root`` names the durable-tier archive root explicitly for
+    callers whose ``db_path`` was resolved through a ``.index-active-pointer``
+    generation (``resolve_active_index_path``) and may therefore live outside
+    the root that actually houses ``source.db``; it defaults to
+    ``db_path.with_name("source.db")`` for callers that never diverge from
+    the plain convention.
+    """
 
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
     immutable_query = "&immutable=1" if immutable else ""
     with closing(sqlite3.connect(f"file:{resolved_db_path}?mode=ro{immutable_query}", uri=True)) as conn:
-        referenced = _referenced_blob_hashes(resolved_db_path, conn)
-        reference_sources = _reference_source_counts(resolved_db_path, conn)
+        referenced = _referenced_blob_hashes(resolved_db_path, conn, configured_root=configured_root)
+        reference_sources = _reference_source_counts(resolved_db_path, conn, configured_root=configured_root)
 
     missing_count = 0
     sample: list[str] = []
@@ -1993,18 +2006,23 @@ def scan_blob_integrity(
     store: BlobStore | None = None,
     full: bool = False,
     sample_size: int = _DEFAULT_SAMPLE_SIZE,
+    configured_root: Path | None = None,
 ) -> BlobIntegrityReport:
     """Classify blob-store integrity without mutating disk or database state.
 
     ``full=False`` bounds the filesystem and hash-verification scan to
     ``sample_size`` blobs and references. ``full=True`` scans every blob and
     every raw-session reference.
+
+    ``configured_root`` names the durable-tier archive root explicitly; see
+    :func:`scan_blob_reference_debt` for why this matters when ``db_path``
+    was resolved through a ``.index-active-pointer`` generation.
     """
 
     resolved_db_path = Path(db_path)
     blob_store = store if store is not None else BlobStore(resolved_db_path.parent / "blob")
     with open_read_connection(resolved_db_path) as conn:
-        referenced = _referenced_blob_hashes(resolved_db_path, conn)
+        referenced = _referenced_blob_hashes(resolved_db_path, conn, configured_root=configured_root)
 
     referenced_set = set(referenced)
     disk_sample = _blob_sample(blob_store, full=full, sample_size=sample_size)
