@@ -1215,13 +1215,16 @@ def test_pr_link_record_persisted_as_session_event_not_dropped() -> None:
     result = parse_code(items, "fallback-pr")
 
     assert [message.provider_message_id for message in result.messages] == ["u-1"]
-    pr_events = [event for event in result.session_events if event.event_type == "pr_link"]
+    pr_events = [event for event in result.session_events if event.event_type == "claude_pr_link"]
     assert len(pr_events) == 1
-    assert pr_events[0].payload == {
+    # Containment, not equality: the parser also carries the record's own
+    # `summary` text. Pinning an exact dict would make every future field
+    # addition a test failure rather than a contract change.
+    assert pr_events[0].payload.items() >= {
         "pr_number": 166,
         "pr_url": "https://github.com/Sinity/polylogue/pull/166",
         "pr_repository": "Sinity/polylogue",
-    }
+    }.items()
 
 
 def test_file_history_snapshot_persisted_as_session_event_not_dropped() -> None:
@@ -1262,15 +1265,16 @@ def test_file_history_snapshot_persisted_as_session_event_not_dropped() -> None:
     result = parse_code(items, "fallback-fhs")
 
     assert [message.provider_message_id for message in result.messages] == ["u-1"]
-    fhs_events = [event for event in result.session_events if event.event_type == "file_history_snapshot"]
+    fhs_events = [event for event in result.session_events if event.event_type == "claude_file_history_snapshot"]
     assert len(fhs_events) == 1
     event = fhs_events[0]
     assert event.source_message_provider_id == "snap-1"
-    assert event.payload == {
+    # Containment, not equality -- see the pr-link assertion above.
+    assert event.payload.items() >= {
         "is_snapshot_update": False,
         "file_count": 2,
-        "paths": [
+        "files": [
             "/realm/project/sinnix/hosts/sinnix-prime/storage.nix",
             "/realm/project/sinnix/modules/foundation.nix",
         ],
-    }
+    }.items()

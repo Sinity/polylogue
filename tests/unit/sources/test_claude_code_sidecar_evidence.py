@@ -161,7 +161,6 @@ def test_file_history_snapshot_persists_tracked_file_count() -> None:
         (
             "claude_file_history_snapshot",
             {
-                "message_id": "msg-1",
                 "is_snapshot_update": False,
                 "file_count": 2,
                 "files": [
@@ -363,7 +362,6 @@ def test_file_history_delta_persists_tracking_path() -> None:
         (
             "claude_file_history_delta",
             {
-                "message_id": "m1",
                 "snapshot_message_id": "snap-1",
                 "tracking_path": "src/lib.rs",
                 "backup_file_name": "lib.rs.bak",

@@ -1049,11 +1049,21 @@ def _parse_code_records(
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
                     if evidence_payload is not None:
+                        # Message linkage belongs in the typed field, not buried
+                        # in the payload dict: source_message_provider_id is what
+                        # the archive joins on, and every other claude_* emitter
+                        # here already uses it. Two sidecar payloads carried a
+                        # bare "message_id" key instead, leaving the typed field
+                        # NULL and the linkage unqueryable.
+                        source_message_id = evidence_payload.pop("message_id", None)
                         session_events.append(
                             ParsedSessionEvent(
                                 event_type=event_type,
                                 timestamp=timestamp,
                                 payload=evidence_payload,
+                                source_message_provider_id=(
+                                    str(source_message_id) if source_message_id is not None else None
+                                ),
                             )
                         )
             continue
