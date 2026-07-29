@@ -11,7 +11,15 @@ from polylogue.archive.message.artifacts import classify_material_origin, classi
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider, TitleSource
+from polylogue.core.enums import (
+    BlockType,
+    MaterialOrigin,
+    PasteBoundary,
+    Provider,
+    SessionRefKind,
+    TitleSource,
+    ToolResultUnknownReason,
+)
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
@@ -26,10 +34,12 @@ if TYPE_CHECKING:
 
 from ..base import (
     ParsedContentBlock,
+    ParsedFileEdit,
     ParsedMessage,
     ParsedPasteEvidence,
     ParsedSession,
     ParsedSessionEvent,
+    ParsedSessionRef,
     content_blocks_from_segments,
 )
 from .common import (
@@ -688,6 +698,67 @@ def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object]
     return payload or None
 
 
+def _file_edit_from_tool_result(item: dict[str, object]) -> ParsedFileEdit | None:
+    """Build the real file-edit evidence from ``toolUseResult`` (polylogue-2qx.4 / polylogue-cgfy).
+
+    ``_tool_execution_result_payload`` above only projects a bounded summary
+    (hunk count, lines-changed) into ``claude_tool_execution_result`` events;
+    the full ``structuredPatch``/``originalFile``/``oldString``/``newString``
+    evidence -- what raises a file trajectory from "observed" to
+    "checkpointed" -- was captured nowhere. Returns ``None`` when the record's
+    ``toolUseResult`` carries no edit-shaped fields at all (e.g. a Bash or Read
+    result), so a non-edit tool call never gets a spurious empty row.
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    structured_patch = tool_result.get("structuredPatch")
+    original_file = tool_result.get("originalFile")
+    old_string = tool_result.get("oldString")
+    new_string = tool_result.get("newString")
+    if structured_patch is None and original_file is None and old_string is None and new_string is None:
+        return None
+    file_path: str | None = None
+    file_info = tool_result.get("file")
+    if isinstance(file_info, dict) and isinstance(file_info.get("filePath"), str):
+        file_path = file_info["filePath"]
+    elif isinstance(tool_result.get("filePath"), str):
+        file_path = tool_result["filePath"]
+    hunks: list[Mapping[str, object]] | None = None
+    if isinstance(structured_patch, list):
+        hunks = [hunk for hunk in structured_patch if isinstance(hunk, dict)] or None
+    replace_all = tool_result.get("replaceAll")
+    user_modified = tool_result.get("userModified")
+    return ParsedFileEdit(
+        file_path=file_path,
+        structured_patch=hunks,
+        original_file=original_file if isinstance(original_file, str) else None,
+        old_string=old_string if isinstance(old_string, str) else None,
+        new_string=new_string if isinstance(new_string, str) else None,
+        replace_all=replace_all if isinstance(replace_all, bool) else None,
+        user_modified=user_modified if isinstance(user_modified, bool) else None,
+    )
+
+
+def _attach_file_edit(
+    content_blocks: list[ParsedContentBlock], file_edit: ParsedFileEdit | None
+) -> list[ParsedContentBlock]:
+    """Attach file-edit evidence to the record's own TOOL_RESULT block.
+
+    ``toolUseResult`` is a property of the ``user`` record that reports a
+    tool's outcome, which is exactly the record whose content carries the
+    Anthropic-protocol ``tool_result`` block -- the writer resolves the
+    paired TOOL_USE via that block's ``tool_id`` (see
+    ``ParsedFileEdit`` docstring / ``_write_file_edits``).
+    """
+    if file_edit is None:
+        return content_blocks
+    return [
+        block.model_copy(update={"file_edit": file_edit}) if block.type is BlockType.TOOL_RESULT else block
+        for block in content_blocks
+    ]
+
+
 def _todo_state_payload(item: dict[str, object]) -> dict[str, object] | None:
     """Project TodoWrite's before/after task-list state from ``toolUseResult``.
 
@@ -734,7 +805,7 @@ def _mark_task_output_outcome(
         return content_blocks
     exit_code, is_error = outcome
     return [
-        block.model_copy(update={"is_error": is_error, "exit_code": exit_code})
+        block.model_copy(update={"is_error": is_error, "exit_code": exit_code, "outcome_unknown_reason": None})
         if block.type is BlockType.TOOL_RESULT
         else block
         for block in content_blocks
@@ -778,7 +849,20 @@ def _mark_background_task_start(
             continue
         metadata = dict(block.metadata or {})
         metadata[_BACKGROUND_TASK_ID_METADATA_KEY] = task_id
-        marked.append(block.model_copy(update={"metadata": metadata, "is_error": None, "exit_code": None}))
+        marked.append(
+            block.model_copy(
+                update={
+                    "metadata": metadata,
+                    "is_error": None,
+                    "exit_code": None,
+                    # polylogue-2qx.4 / polylogue-cuxz.8: the wire's own
+                    # is_error=false is positively distrusted here (it only
+                    # confirms the background task *started*), not merely
+                    # absent -- record the distrust, not a bare unknown.
+                    "outcome_unknown_reason": ToolResultUnknownReason.DISTRUSTED.value,
+                }
+            )
+        )
     return marked
 
 
@@ -934,6 +1018,13 @@ def _parse_code_records(
     session_kind_value: str | None = None
     git_branch_value: str | None = None
     delegation_progress: dict[str, _DelegationProgressStats] = {}
+    # polylogue-2qx.4 / polylogue-cgfy: ``slug`` (the human-readable session
+    # name Claude Code assigns, e.g. "greedy-squishing-hamming") is stamped on
+    # every record of a session file -- main or subagent alike -- once the
+    # CLI version emits it at all. Read like ``git_branch_value`` above: first
+    # non-empty value wins, since it is constant within one file.
+    session_slug_value: str | None = None
+    session_refs: list[ParsedSessionRef] = []
 
     for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
@@ -955,6 +1046,10 @@ def _parse_code_records(
             raw_git_branch = item.get("gitBranch")
             if isinstance(raw_git_branch, str) and raw_git_branch:
                 git_branch_value = raw_git_branch
+        if session_slug_value is None:
+            raw_slug = item.get("slug")
+            if isinstance(raw_slug, str) and raw_slug:
+                session_slug_value = raw_slug
 
         compaction = detect_context_compaction(item)
         if compaction:
@@ -1055,6 +1150,26 @@ def _parse_code_records(
                     agent_name_text = _string_field(item, "agentName")
                     if agent_name_text:
                         latest_agent_name = agent_name_text
+                elif record_type == "pr-link":
+                    # polylogue-2qx.4 / polylogue-cgfy: generalized,
+                    # tracker-agnostic evidence alongside the existing
+                    # claude_pr_link session_event (kept for the raw-payload
+                    # audit trail) -- session_refs is the structured relation
+                    # cijx.1 and its consumers read instead of regex/time-
+                    # window PR reconstruction.
+                    pr_url = _string_field(item, "prUrl")
+                    if pr_url:
+                        raw_pr_number = item.get("prNumber")
+                        session_refs.append(
+                            ParsedSessionRef(
+                                kind=SessionRefKind.PULL_REQUEST.value,
+                                url=pr_url,
+                                repo=_string_field(item, "prRepository"),
+                                number=raw_pr_number
+                                if isinstance(raw_pr_number, int) and not isinstance(raw_pr_number, bool)
+                                else None,
+                            )
+                        )
                 event_type = _SIDECAR_EVENT_TYPES.get(record_type)
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
@@ -1087,6 +1202,7 @@ def _parse_code_records(
         content_blocks = _content_blocks_from_record(message, text)
         content_blocks = _mark_background_task_start(content_blocks, _background_task_id(item))
         content_blocks = _mark_task_output_outcome(content_blocks, _task_output_outcome(item))
+        content_blocks = _attach_file_edit(content_blocks, _file_edit_from_tool_result(item))
         message_type = _message_type_from_code_record(item, text)
         if envelope_role is Role.SYSTEM and message_type is MessageType.MESSAGE:
             message_type = MessageType.CONTEXT
@@ -1103,6 +1219,13 @@ def _parse_code_records(
         msg_model = _message_model_name(message_payload) or _message_model_name(item)
         msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
         msg_duration_ms = _message_duration_ms(item)
+        # polylogue-2qx.4 / polylogue-cuxz.8: the provider's own terminal-state
+        # signal (608,608 occurrences on the wire) -- already read into the
+        # ``message_usage`` event payload below; also land it on the message
+        # row itself so it feeds ``terminal_state`` directly instead of only
+        # riding along in an event's JSON payload.
+        raw_stop_reason = message_payload.get("stop_reason")
+        msg_stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) and raw_stop_reason else None
         resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
         material_origin = classify_material_origin(
             role=resolved_role,
@@ -1153,6 +1276,7 @@ def _parse_code_records(
                 model_effort=msg_effort,
                 duration_ms=msg_duration_ms,
                 paste_spans=paste_spans,
+                stop_reason=msg_stop_reason,
             )
         )
         session_events.extend(
@@ -1402,6 +1526,8 @@ def _parse_code_records(
         models_used=sorted(models),
         working_directories=sorted(cwds),
         git_branch=git_branch_value,
+        display_name=session_slug_value,
+        session_refs=session_refs,
     )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, WebConstructType
+from polylogue.core.enums import BlockType, ToolResultUnknownReason, WebConstructType
 from polylogue.core.hashing import hash_text
 
 from .base_models import (
@@ -61,12 +61,22 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                 ]
                 result_text = "\n".join(part for part in text_parts if part) or None
             raw_is_error = seg.get("is_error")
+            is_error = raw_is_error if isinstance(raw_is_error, bool) else None
+            # polylogue-2qx.4 / polylogue-cuxz.8: this is the shared
+            # Anthropic-protocol tool_result segment shape (Claude Code,
+            # Claude common, Codex). When the segment itself carries no
+            # boolean ``is_error`` the provider structurally emitted nothing
+            # for this record -- NOT_REPORTED, not a bare unknown. Origin-
+            # specific overlays (e.g. Claude Code's own toolUseResult
+            # verdicts) may resolve or override this afterward.
+            outcome_unknown_reason = None if is_error is not None else ToolResultUnknownReason.NOT_REPORTED.value
             blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     tool_id=seg.get("tool_use_id"),
                     text=result_text,
-                    is_error=raw_is_error if isinstance(raw_is_error, bool) else None,
+                    is_error=is_error,
+                    outcome_unknown_reason=outcome_unknown_reason,
                 )
             )
         elif seg_type in ("image", "document"):
