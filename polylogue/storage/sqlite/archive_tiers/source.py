@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 13
+SOURCE_SCHEMA_VERSION = 14
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -64,6 +64,18 @@ WHERE parsed_at_ms IS NULL
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_logical_revision
 ON raw_sessions(logical_source_key, acquisition_generation, raw_id)
 WHERE logical_source_key IS NOT NULL;
+
+-- v14 (polylogue blob-store audit): blob GC's per-candidate reference check
+-- (storage/blob_gc.py:_archive_reference_surfaces) queries
+-- "raw_sessions WHERE blob_hash = ?" for every candidate blob on disk, every
+-- periodic pass. Without this index, that lookup is a full table scan and
+-- the (mostly-empty, since dedup + attachments-tier retention keep almost
+-- everything referenced) candidate scan takes minutes per pass -- the whole
+-- daemon write pipeline stalls that long since blob-gc holds the process-wide
+-- write-coordinator gate for the entire call, not only its bounded final
+-- delete phase.
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_blob_hash
+ON raw_sessions(blob_hash);
 
 CREATE TABLE IF NOT EXISTS raw_session_memberships (
     raw_id                  TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
