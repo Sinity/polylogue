@@ -134,7 +134,8 @@ def test_reset_and_repair_fts_rows_recovers_excess_message_rows(tmp_path: Path) 
         conn.executescript(
             """
             CREATE TABLE blocks (
-                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT
+                block_id TEXT, message_id TEXT, session_id TEXT, block_type TEXT, text TEXT, search_text TEXT,
+                content_hash BLOB
             );
             CREATE VIRTUAL TABLE messages_fts USING fts5(
                 block_id UNINDEXED, message_id UNINDEXED, session_id UNINDEXED, block_type UNINDEXED, text,
@@ -146,14 +147,21 @@ def test_reset_and_repair_fts_rows_recovers_excess_message_rows(tmp_path: Path) 
                 work_event_type UNINDEXED, text);
             CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
             CREATE VIRTUAL TABLE threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
+            CREATE TABLE derived_refresh_guard (guard_name TEXT PRIMARY KEY) STRICT;
+            CREATE TABLE messages_fts_identity (
+                rowid       INTEGER PRIMARY KEY,
+                block_id    TEXT NOT NULL UNIQUE,
+                source_hash BLOB,
+                recipe_id   TEXT NOT NULL
+            ) STRICT;
             """
         )
         restore_fts_triggers_sync(conn)
         conn.execute(
-            "INSERT INTO blocks VALUES ('block-1', 'msg-1', 'conv-1', 'text', 'orphan needle', 'orphan needle')"
+            "INSERT INTO blocks VALUES ('block-1', 'msg-1', 'conv-1', 'text', 'orphan needle', 'orphan needle', NULL)"
         )
         conn.execute(
-            "INSERT INTO blocks VALUES ('block-2', 'msg-2', 'conv-1', 'text', 'survivor needle', 'survivor needle')"
+            "INSERT INTO blocks VALUES ('block-2', 'msg-2', 'conv-1', 'text', 'survivor needle', 'survivor needle', NULL)"
         )
         conn.execute("INSERT INTO session_work_events VALUES ('event-1', 'conv-1', 'decision', 'ship it')")
         conn.execute("INSERT INTO threads VALUES ('thread-1', 'startup fts repair')")

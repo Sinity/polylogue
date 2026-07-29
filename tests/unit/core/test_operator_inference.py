@@ -88,6 +88,18 @@ def test_infer_schema_builds_schema_from_source_tier_raw(workspace_env: dict[str
 
 
 def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: dict[str, Path]) -> None:
+    # This test's isolated storage root has no chatgpt catalog of its own, so
+    # SchemaRegistry falls back to whatever is really committed under
+    # polylogue/schemas/providers/chatgpt -- register_schema/promote_cluster
+    # then append new versions on top of that real, growing version list.
+    # Don't hardcode which version numbers that produces; derive them from
+    # the actual pre-promotion state so this test survives future provider
+    # promotions instead of re-baking today's committed version count in.
+    baseline_registry = SchemaRegistry()
+    baseline_versions = baseline_registry.list_versions("chatgpt")
+    next_version = f"v{int(baseline_versions[-1][1:]) + 1}" if baseline_versions else "v1"
+    version_after_next = f"v{int(next_version[1:]) + 1}"
+
     index_db = _seed_chatgpt_raw(workspace_env)
     inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
 
@@ -104,23 +116,25 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
         )
     )
 
-    assert promoted.package_version == "v2"
+    assert promoted.package_version == next_version
     assert promoted.schema is not None
     specs = list_inferred_corpus_specs(provider="chatgpt")
     registry = SchemaRegistry()
     registry.register_schema("chatgpt", {"type": "object", "properties": {"mapping": {"type": "object"}}})
     registry.register_schema("codex", {"type": "object", "properties": {"session_id": {"type": "string"}}})
     scenarios = list_inferred_corpus_scenarios()
-    comparison = compare_schema_versions(SchemaCompareRequest(provider="chatgpt", from_version="v2", to_version="v3"))
+    comparison = compare_schema_versions(
+        SchemaCompareRequest(provider="chatgpt", from_version=next_version, to_version=version_after_next)
+    )
     selected = list_schemas(SchemaListRequest(provider="chatgpt"))
     listing = list_schemas(SchemaListRequest())
 
-    assert comparison.diff.version_a == "v2"
-    assert comparison.diff.version_b == "v3"
+    assert comparison.diff.version_a == next_version
+    assert comparison.diff.version_b == version_after_next
     assert selected.selected is not None
-    assert selected.selected.versions == ["v1", "v2", "v3"]
+    assert selected.selected.versions == [*baseline_versions, next_version, version_after_next]
     assert {spec.provider for spec in specs} == {"chatgpt"}
-    assert specs[0].package_version == "v2"
+    assert specs[0].package_version == next_version
     assert specs[0].profile.family_ids == (cluster_id,)
     assert {scenario.provider for scenario in scenarios} >= {"chatgpt", "codex"}
     assert {snapshot.provider for snapshot in listing.providers} >= {"chatgpt", "codex"}
