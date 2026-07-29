@@ -663,10 +663,16 @@ def extract_messages_from_mapping(
             )
         elif content_type == "code":
             # Code-interpreter input — top-level text, no parts (#1744).
+            # tool_name = recipient (e.g. "python", "container.exec") when the
+            # provider addressed a tool for this call -- the same identity a
+            # recipient-addressed TOOL_USE block stamps onto itself above
+            # (polylogue-grub: recipient is the tool actually invoked and was
+            # otherwise only inferable from prose for code-shaped calls).
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.CODE,
                     text=text,
+                    tool_name=recipient,
                     metadata={"content_type": content_type},
                 )
             )
@@ -680,12 +686,29 @@ def extract_messages_from_mapping(
             # rows, so CODE-typed calls stay outside the `actions` view --
             # that reclassification question is out of this bead's scope --
             # but the block-level tool_id is no longer silently dropped).
+            #
+            # is_error reads the node's own `status` (polylogue-grub): the
+            # export's official terminal states for a completed tool run are
+            # "finished_successfully" and "finished_partial_completion" --
+            # exactly the states that determine whether the run failed.
+            # "in_progress" (and anything else) has no concluded outcome yet
+            # and stays honestly unknown; there is no numeric exit code in
+            # this export, so exit_code is never set here.
+            node_status = msg.get("status")
+            execution_is_error = (
+                True
+                if node_status == "finished_partial_completion"
+                else False
+                if node_status == "finished_successfully"
+                else None
+            )
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=text,
                     tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
+                    is_error=execution_is_error,
                 )
             )
         elif content_type in ("user_editable_context", "model_editable_context"):
