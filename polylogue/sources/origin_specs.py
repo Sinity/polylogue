@@ -18,9 +18,12 @@ compatibility-only.
 
 from __future__ import annotations
 
+import gzip
+import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal
 
 from polylogue.core.enums import Origin, Provider
@@ -59,6 +62,146 @@ class OriginArtifactRule:
 
     def matches(self, source_path: str) -> bool:
         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
+
+
+#: Root the committed schema packages live under, resolved once here so
+#: ``schema_observed_leaf_values`` and its callers do not each hand-roll the
+#: ``polylogue/schemas/providers`` path (mirrors ``devtools/schema_parser_diff.py``
+#: and ``polylogue.schemas.schema_parser_coverage``'s own ``_SCHEMA_ROOT``).
+_SCHEMA_PROVIDERS_ROOT = Path(__file__).resolve().parents[1] / "schemas" / "providers"
+
+
+@dataclass(frozen=True, slots=True)
+class DroppedValueVocabulary:
+    """A hand-guessed "known value" set a parser tests membership against.
+
+    ``_SUCCESS_OUTCOMES``-shaped constants (a hardcoded set of strings a
+    parser treats as equivalent, e.g. every spelling of "this tool call
+    succeeded") are a real, legitimate disposition -- narrowing an open wire
+    vocabulary to the values that matter for one boolean fact -- but a bare
+    frozenset with no cross-check silently drifts the day a provider starts
+    emitting a value nobody guessed (polylogue-2qx: "the declaration should
+    be checkable against the schema's observed values rather than being
+    another hand-maintained list that drifts"). This declares the field next
+    to the committed schema leaf that actually observes it, so
+    ``undeclared_schema_values``/``check_dropped_value_vocabularies`` can
+    prove -- from the real, versioned schema, not from memory -- whether the
+    guessed set still covers everything the corpus has emitted.
+
+    Deliberately NOT a promise that every hardcoded parser vocabulary can be
+    expressed this way: a vocabulary sourced from a SQLite column (no JSON
+    schema inference runs over SQLite state) or from a schema branch the
+    inference engine does not label with a fixed enumerable property name
+    (Gemini's chunk-indexed ``functionResponse`` structure) has no schema
+    leaf to check against. Those stay bare parser-local constants with a
+    comment explaining why; forcing them into this shape would be exactly
+    the "relocates the frozenset without making drift detectable" failure
+    mode this declaration exists to avoid.
+    """
+
+    field: str
+    schema_provider: str
+    schema_field_path: str
+    declared_values: frozenset[str]
+    parser_path: str
+    reason: str
+
+
+def _resolve_schema_path(schema: object, segments: Sequence[str]) -> list[dict[str, object]]:
+    """Walk a dotted/bracket leaf path (``"messages[].toolCalls[].status"``
+    -> ``("messages[]", "toolCalls[]", "status")``) through nested JSON
+    Schema ``properties``/``items``, returning every schema node reached.
+    """
+    nodes: list[dict[str, object]] = [schema] if isinstance(schema, dict) else []
+    for segment in segments:
+        is_array = segment.endswith("[]")
+        name = segment[:-2] if is_array else segment
+        next_nodes: list[dict[str, object]] = []
+        for node in nodes:
+            properties = node.get("properties")
+            if not isinstance(properties, dict) or name not in properties:
+                continue
+            child = properties[name]
+            if not isinstance(child, dict):
+                continue
+            if is_array:
+                items = child.get("items")
+                if isinstance(items, dict):
+                    next_nodes.append(items)
+            else:
+                next_nodes.append(child)
+        nodes = next_nodes
+    return nodes
+
+
+def schema_observed_leaf_values(provider: str, field_path: str, *, schema_root: Path | None = None) -> frozenset[str]:
+    """Every ``x-polylogue-values`` entry the committed schema recorded at ``field_path``.
+
+    Reads the same committed, gzip-compressed schema packages
+    ``devtools/schema_parser_diff.py`` and
+    ``polylogue.schemas.schema_parser_coverage`` read -- real, versioned
+    evidence of what the provider has actually emitted, not a guess.
+    """
+    provider_dir = (schema_root or _SCHEMA_PROVIDERS_ROOT) / provider
+    if not provider_dir.exists():
+        return frozenset()
+    segments = field_path.split(".")
+    values: set[str] = set()
+    for path in sorted(provider_dir.glob("versions/*/elements/*.schema.json.gz")):
+        try:
+            document = json.loads(gzip.decompress(path.read_bytes()).decode("utf-8"))
+        except (OSError, gzip.BadGzipFile, json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        for node in _resolve_schema_path(document, segments):
+            observed = node.get("x-polylogue-values")
+            if isinstance(observed, list):
+                values.update(str(item) for item in observed)
+    return frozenset(values)
+
+
+def undeclared_schema_values(vocab: DroppedValueVocabulary, *, schema_root: Path | None = None) -> frozenset[str]:
+    """Schema-observed values at ``vocab``'s leaf that its declared set doesn't cover."""
+    observed = schema_observed_leaf_values(vocab.schema_provider, vocab.schema_field_path, schema_root=schema_root)
+    return observed - vocab.declared_values
+
+
+#: Concrete registered vocabularies. Each entry documents one hardcoded
+#: parser constant that narrows an open wire vocabulary to a guessed set of
+#: equivalent values, paired with the schema leaf that actually observes the
+#: field so drift is a runnable check
+#: (``tests/unit/sources/test_origin_specs.py::test_dropped_value_vocabularies_match_schema_and_parser``),
+#: not a hope. See ``DroppedValueVocabulary``'s docstring for which
+#: hardcoded vocabularies deliberately do NOT have an entry here yet, and why.
+DROPPED_VALUE_VOCABULARIES: tuple[DroppedValueVocabulary, ...] = (
+    DroppedValueVocabulary(
+        field="gemini-cli tool-result status",
+        schema_provider="gemini-cli",
+        schema_field_path="messages[].toolCalls[].status",
+        declared_values=frozenset({"success", "succeeded", "ok", "completed"}),
+        parser_path="polylogue/sources/parsers/local_agent.py:_status_is_error",
+        reason=(
+            "_status_is_error treats these as non-error outcomes (the error "
+            "case is a separate substring-marker heuristic). gemini-cli's own "
+            "committed schema has only ever observed 'success' at this leaf, "
+            "already covered by the declared set."
+        ),
+    ),
+)
+
+
+def check_dropped_value_vocabularies(*, schema_root: Path | None = None) -> dict[str, frozenset[str]]:
+    """Per-vocabulary schema-observed values none of ``DROPPED_VALUE_VOCABULARIES`` declares.
+
+    Returns only vocabularies with real drift (non-empty); an empty result
+    means every registered guessed vocabulary still covers everything the
+    committed schema has observed at its leaf.
+    """
+    drift: dict[str, frozenset[str]] = {}
+    for vocab in DROPPED_VALUE_VOCABULARIES:
+        missing = undeclared_schema_values(vocab, schema_root=schema_root)
+        if missing:
+            drift[vocab.field] = missing
+    return drift
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +434,27 @@ def _claude_code_spec() -> OriginSpec:
             "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
             "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
             "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
+            "code_parser.py's _SKIPPED_SIDECAR_RECORD_TYPES (14 sidecar record "
+            "types) already carries a per-type disposition with corpus counts "
+            "in a comment block (polylogue-pbuh/parser-diff triage, "
+            "2026-07-29) -- not converted to a DroppedValueVocabulary "
+            "(polylogue-2qx) because it is a record-TYPE inventory, not a "
+            "value-equivalence guess, and the committed schema's top-level "
+            "``.type`` x-polylogue-values only surfaces the three dominant "
+            "message-shape branches (assistant/progress/user); the schema "
+            "inference does not label each sidecar record type as a separate "
+            "enumerable leaf the way it does a scalar status/outcome field. "
+            "Making this checkable needs the schema generator to track "
+            "per-branch discriminant values, not a change on this side.",
+            "claude/index.py's _GIT_BRANCH_PREFIXES (title-fallback heuristic: "
+            "does a bare index-summary string look like a branch name rather "
+            "than a title) is also not a DroppedValueVocabulary candidate: it "
+            "matches an open-ended organizational naming CONVENTION "
+            "(feature/, fix/, chore/, ...), not equivalence classes of one "
+            "provider-reported field's observed values -- there is no schema "
+            "leaf enumerating branch-prefix conventions to check against, the "
+            "same reason filesystem-shaped constants like _SUPPORTED_EXTENSIONS "
+            "stay plain hardcoded sets.",
         ),
         semantic_reparse=(
             "reparse Claude Code sessions and re-inventory workflow artifacts when the Claude parser, "
@@ -556,6 +720,13 @@ def _gemini_cli_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/local_agent.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
         display_description="Gemini CLI local sessions (lab: Google)",
+        fidelity_notes=(
+            "local_agent.py's _status_is_error guessed success-outcome set is "
+            "registered as a DroppedValueVocabulary (polylogue-2qx) against "
+            "the committed schema's messages[].toolCalls[].status leaf -- "
+            "see DROPPED_VALUE_VOCABULARIES/check_dropped_value_vocabularies "
+            "in this module.",
+        ),
     )
 
 
@@ -582,6 +753,18 @@ def _hermes_spec() -> OriginSpec:
         ),
         stream_parser_path="polylogue/sources/parsers/hermes_spans.py:parse_atof_stream",
         display_description="Hermes agent sessions",
+        fidelity_notes=(
+            "hermes_state.py's _COMPACTION_END_REASONS ({'compression', "
+            "'compaction'}) and _REQUIRED_SESSION_COLUMNS are not "
+            "DroppedValueVocabulary candidates (polylogue-2qx): both are read "
+            "from the live Hermes SQLite state database's own columns, not "
+            "from a JSON wire payload the schema-inference pipeline observes "
+            "-- no committed schema package exists to check them against. A "
+            "schema-backed check here would need SQLite-column value "
+            "sampling, a different mechanism than the JSON x-polylogue-values "
+            "this bead's declaration reads, not merely a different provider "
+            "argument to the same function.",
+        ),
     )
 
 
@@ -648,6 +831,18 @@ def _aistudio_drive_spec() -> OriginSpec:
             "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
             "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
             "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+            "drive_support_blocks.py's _SUCCESS_OUTCOMES ({'ok', 'success', "
+            "'succeeded', 'completed', 'outcome_ok'}) is not (yet) a "
+            "DroppedValueVocabulary (polylogue-2qx): Gemini's own committed "
+            "schema never labels a fixed 'outcome'/'status' property at a "
+            "stable leaf path the way gemini-cli's toolCalls[].status does -- "
+            "Gemini's functionResponse content lives inside chunk-indexed, "
+            "dynamically-keyed structures the schema inference does not "
+            "collapse into one enumerable property. Contrast gemini-cli's "
+            "local_agent.py:_status_is_error, which shares the exact same "
+            "guessed value set and IS registered "
+            "(DROPPED_VALUE_VOCABULARIES in origin_specs.py) because its "
+            "schema leaf is stable.",
         ),
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
@@ -1076,17 +1271,22 @@ def validate_assembly_spec_parity(
 
 
 __all__ = [
+    "DROPPED_VALUE_VOCABULARIES",
     "ORIGIN_SPECS",
     "ORIGIN_SPEC_REGISTRY",
-    "OriginLifecycle",
-    "OriginArtifactRule",
     "ArtifactParsePolicy",
+    "DroppedValueVocabulary",
+    "OriginArtifactRule",
+    "OriginLifecycle",
     "OriginSpec",
     "OriginSpecDiagnostic",
     "OriginSpecRegistry",
+    "check_dropped_value_vocabularies",
     "origin_specs",
     "artifact_rule_for_path",
     "artifact_suffixes_for_provider",
+    "schema_observed_leaf_values",
+    "undeclared_schema_values",
     "validate_assembly_spec_parity",
     "validate_dispatch_precedence",
     "validate_stream_parser_parity",
