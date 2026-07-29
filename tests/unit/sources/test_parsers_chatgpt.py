@@ -1264,6 +1264,70 @@ def test_code_interpreter_content_is_preserved() -> None:
     assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.blocks)
 
 
+# ---------------------------------------------------------------------------
+# polylogue-ah21 -- tool_use/tool_result tool_id pairing
+# ---------------------------------------------------------------------------
+
+
+def test_recipient_tool_use_and_result_share_a_tool_id() -> None:
+    """A recipient-addressed tool call and its result node must be joinable.
+
+    Exercises ``polylogue.sources.parsers.chatgpt.extract_messages_from_mapping``
+    (via ``parse``): the TOOL_USE block emitted for a recipient-addressed
+    assistant node and the TOOL_RESULT block emitted for its
+    ``execution_output`` child must carry a matching, non-null ``tool_id`` --
+    before this fix both were unconditionally ``None`` (verified live: 100% of
+    ChatGPT capture tool_use/tool_result blocks had ``tool_id IS NULL``,
+    dropping every pair from the ``action_pairs``/``actions`` join). Deleting
+    either ``tool_id=str(msg_id)`` on the TOOL_USE branch or
+    ``tool_id=parent_message_provider_id`` on the ``execution_output`` branch
+    in ``polylogue/sources/parsers/chatgpt.py`` makes this fail.
+    """
+    from polylogue.core.enums import BlockType
+
+    nodes = [
+        _branch_node("u1", "user", "search for x", parent=None, children=["call"]),
+        {
+            "id": "call",
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant"},
+                "recipient": "web",
+                "content": {"content_type": "text", "parts": ['{"search_query": ["x"]}']},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["result"],
+        },
+        {
+            "id": "result",
+            "message": {
+                "id": "result",
+                "author": {"role": "tool"},
+                "content": {"content_type": "execution_output", "text": "found x"},
+                "create_time": None,
+            },
+            "parent": "call",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Tool call pairing",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "result",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    by_id = {m.provider_message_id: m for m in conv.messages}
+
+    tool_use_blocks = [b for b in by_id["call"].blocks if b.type == BlockType.TOOL_USE]
+    tool_result_blocks = [b for b in by_id["result"].blocks if b.type == BlockType.TOOL_RESULT]
+    assert len(tool_use_blocks) == 1
+    assert len(tool_result_blocks) == 1
+    assert tool_use_blocks[0].tool_id is not None
+    assert tool_use_blocks[0].tool_id == tool_result_blocks[0].tool_id == "call"
+
+
 # SANDBOX FILE LINKS (assistant-generated downloadable deliverables)
 
 

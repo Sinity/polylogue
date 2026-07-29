@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import is_json_document, json_document
 
 BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"
@@ -42,6 +42,43 @@ class BrowserCaptureAttachment(BaseModel):
         return dict(json_document(value))
 
 
+class BrowserCaptureBlock(BaseModel):
+    """A single structured content block observed within a browser-capture turn.
+
+    This is the typed content channel ``BrowserCaptureTurn`` was missing
+    (polylogue-ah21): before this field existed, a turn's ``role`` could be
+    ``tool`` while the call's input, output, and outcome had nowhere to go
+    except free text, forcing every provider adapter through one rendered-
+    prose channel. Field names and semantics mirror
+    ``polylogue.sources.parsers.base_models.ParsedContentBlock`` deliberately
+    -- the browser-capture parser (`sources/parsers/browser_capture.py`)
+    projects these 1:1 into that type, so ``text`` remains a rendering
+    fallback rather than the only channel a capture can carry.
+    """
+
+    type: BlockType
+    text: str | None = None
+    tool_name: str | None = None
+    tool_id: str | None = None
+    tool_input: dict[str, object] | None = None
+    media_type: str | None = None
+    is_error: bool | None = None
+    exit_code: int | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def coerce_type(cls, value: object) -> BlockType:
+        return BlockType.from_string(str(value))
+
+    @field_validator("tool_input", "metadata", mode="before")
+    @classmethod
+    def coerce_object_field(cls, value: object) -> dict[str, object] | None:
+        if value is None:
+            return None
+        return dict(json_document(value))
+
+
 class BrowserCaptureTurn(BaseModel):
     """Provider-neutral turn observed from the page."""
 
@@ -51,6 +88,7 @@ class BrowserCaptureTurn(BaseModel):
     timestamp: str | None = None
     ordinal: int = 0
     parent_turn_id: str | None = None
+    blocks: list[BrowserCaptureBlock] = Field(default_factory=list)
     attachments: list[BrowserCaptureAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] = Field(default_factory=dict)
 
@@ -68,8 +106,9 @@ class BrowserCaptureTurn(BaseModel):
 
     @model_validator(mode="after")
     def require_content(self) -> BrowserCaptureTurn:
-        if (self.text is None or not self.text.strip()) and not self.attachments:
-            raise ValueError("browser capture turn must include text or attachments")
+        has_text = self.text is not None and self.text.strip()
+        if not has_text and not self.attachments and not self.blocks:
+            raise ValueError("browser capture turn must include text, blocks, or attachments")
         return self
 
 
@@ -682,6 +721,7 @@ __all__ = [
     "BrowserCaptureArchiveLifecycle",
     "BrowserCaptureArchiveStatePayload",
     "BrowserCaptureAttachment",
+    "BrowserCaptureBlock",
     "BrowserCaptureEnvelope",
     "BrowserCaptureErrorPayload",
     "BrowserCaptureInterruption",
