@@ -1,0 +1,36 @@
+{
+  "provider": "gemini",
+  "version": "v2",
+  "anchor_kind": "session_document",
+  "default_element_kind": "session_document",
+  "first_seen": "2026-03-16T12:26:09.197335+00:00",
+  "last_seen": "2026-03-16T12:26:09.197335+00:00",
+  "bundle_scope_count": 0,
+  "sample_count": 226,
+  "anchor_profile_family_id": "2863946d431176d3",
+  "bundle_scope_identities": [],
+  "profile_family_ids": [
+    "2863946d431176d3"
+  ],
+  "elements": [
+    {
+      "element_kind": "session_document",
+      "schema_file": "session_document.schema.json.gz",
+      "sample_count": 226,
+      "artifact_count": 13,
+      "supported": true,
+      "first_seen": "2026-03-16T12:26:09.197335+00:00",
+      "last_seen": "2026-03-16T12:26:09.197335+00:00",
+      "bundle_scope_count": 0,
+      "bundle_scope_identities": [],
+      "exact_structure_ids": [],
+      "profile_family_ids": [
+        "2863946d431176d3"
+      ],
+      "profile_tokens": [],
+      "observed_artifact_count": 13
+    }
+  ],
+  "orphan_adjunct_counts": {},
+  "workload_profile_file": null
+}
