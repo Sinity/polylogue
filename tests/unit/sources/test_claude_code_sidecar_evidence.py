@@ -324,6 +324,203 @@ def test_progress_bash_progress_and_hook_progress_stay_transient() -> None:
     assert parsed.messages == []
 
 
+def test_custom_title_wins_over_ai_title() -> None:
+    """An explicit user rename (``custom-title``) outranks the provider's own
+    ``ai-title`` suggestion -- deleting the ``latest_custom_title`` precedence
+    block makes this session keep the (weaker-intent) ai-title instead."""
+    parsed = parse_code(
+        [
+            {"type": "ai-title", "sessionId": "sess-title", "aiTitle": "Provider suggested title"},
+            {"type": "custom-title", "sessionId": "sess-title", "customTitle": "My deliberate rename"},
+        ],
+        "sess-title",
+    )
+    assert parsed.title == "My deliberate rename"
+    assert parsed.title_ref == "claude-custom-title:sess-title"
+    event_types = [event.event_type for event in parsed.session_events]
+    assert "claude_custom_title" in event_types
+    assert "claude_ai_title" in event_types
+
+
+def test_file_history_delta_persists_tracking_path() -> None:
+    """Removing the ``file-history-delta`` branch of ``_sidecar_evidence_payload``
+    (or its ``_SIDECAR_EVENT_TYPES`` entry) makes this list empty."""
+    parsed = parse_code(
+        [
+            {
+                "type": "file-history-delta",
+                "sessionId": "sess-delta",
+                "messageId": "m1",
+                "snapshotMessageId": "snap-1",
+                "trackingPath": "src/lib.rs",
+                "backup": {"backupFileName": "lib.rs.bak", "version": 2, "backupTime": "2026-01-01T00:00:00Z"},
+            }
+        ],
+        "sess-delta",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_file_history_delta",
+            {
+                "message_id": "m1",
+                "snapshot_message_id": "snap-1",
+                "tracking_path": "src/lib.rs",
+                "backup_file_name": "lib.rs.bak",
+                "backup_version": 2,
+                "summary": "src/lib.rs",
+            },
+        )
+    ]
+
+
+def test_tool_use_result_structural_facts_persist() -> None:
+    """``toolUseResult`` sandbox/interrupted/file facts must survive as an event.
+
+    Removing ``_tool_execution_result_payload`` (or its call site) drops this
+    to an empty event list even though the record carries real structured
+    outcome data beyond the plain tool_result text block.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-toolresult",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+                "toolUseResult": {
+                    "sandbox": True,
+                    "interrupted": False,
+                    "numFiles": 3,
+                    "filenames": ["a.py", "b.py"],
+                    "file": {"filePath": "a.py", "numLines": 10, "totalLines": 100},
+                    "structuredPatch": [{"oldStart": 1, "oldLines": 2, "newStart": 1, "newLines": 3, "lines": ["+x"]}],
+                    "stdout": "should not be persisted -- duplicate of tool_result text",
+                },
+            }
+        ],
+        "sess-toolresult",
+    )
+    events = [
+        (e.event_type, e.payload) for e in parsed.session_events if e.event_type == "claude_tool_execution_result"
+    ]
+    assert len(events) == 1
+    _, payload = events[0]
+    assert payload["sandbox"] is True
+    assert payload["interrupted"] is False
+    assert payload["numFiles"] == 3
+    assert payload["filenames"] == ["a.py", "b.py"]
+    assert payload["file_path"] == "a.py"
+    assert payload["file_numLines"] == 10
+    assert payload["structured_patch_hunk_count"] == 1
+    assert payload["structured_patch_lines_changed"] == 1
+    assert "stdout" not in payload
+
+
+def test_todo_write_result_persists_priority() -> None:
+    """TodoWrite's accepted before/after state (with ``priority``) must persist.
+
+    The tool *call* input (``content[].input.todos``) is already captured
+    wholesale via ``tool_input``; this covers the *result* state transition,
+    which is otherwise read nowhere.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-todo",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+                "toolUseResult": {
+                    "oldTodos": [{"content": "write tests", "status": "pending", "priority": "high"}],
+                    "newTodos": [{"content": "write tests", "status": "completed", "priority": "high"}],
+                },
+            }
+        ],
+        "sess-todo",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type == "claude_todo_state"]
+    assert events == [
+        (
+            "claude_todo_state",
+            {
+                "new_todos": [{"content": "write tests", "status": "completed", "priority": "high"}],
+                "old_todos": [{"content": "write tests", "status": "pending", "priority": "high"}],
+            },
+        )
+    ]
+
+
+def test_message_usage_event_carries_ttft_stop_reason_and_extended_usage_fields() -> None:
+    """``message.ttftMs``, ``stop_reason``, and the extended ``usage`` fields
+    (cache_creation TTL split, service_tier, inference_geo, cache_miss_reason)
+    must reach the ``message_usage`` event -- these were read nowhere before."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-usage",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "done",
+                    "model": "claude-opus-5",
+                    "ttftMs": 3817,
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "diagnostics": {"cache_miss_reason": {"type": "previous_message_not_found"}},
+                    "usage": {
+                        "input_tokens": 4,
+                        "output_tokens": 167,
+                        "cache_read_input_tokens": 0,
+                        "cache_creation_input_tokens": 50007,
+                        "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 50007},
+                        "service_tier": "standard",
+                        "inference_geo": "not_available",
+                    },
+                },
+            }
+        ],
+        "sess-usage",
+    )
+    usage_events = [e.payload for e in parsed.session_events if e.event_type == "message_usage"]
+    assert len(usage_events) == 1
+    payload = usage_events[0]
+    assert payload["ttft_ms"] == 3817
+    assert payload["stop_reason"] == "end_turn"
+    assert "stop_sequence" not in payload
+    assert payload["cache_miss_reason"] == "previous_message_not_found"
+    assert payload["cache_creation_by_ttl"] == {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 50007}
+    assert payload["service_tier"] == "standard"
+    assert payload["inference_geo"] == "not_available"
+
+
+def test_session_kind_and_git_branch_persist() -> None:
+    """``sessionKind``/``gitBranch`` were stamped on every record and read
+    nowhere in the primary JSONL parse path (only via a separate, often-absent
+    legacy sessions-index.json sidecar for gitBranch)."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-bg",
+                "sessionKind": "bg",
+                "gitBranch": "feature/parser-diff",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": "run in background"},
+            }
+        ],
+        "sess-bg",
+    )
+    assert parsed.git_branch == "feature/parser-diff"
+    kind_events = [e.payload for e in parsed.session_events if e.event_type == "claude_session_kind"]
+    assert kind_events == [{"session_kind": "bg"}]
+
+
 def test_init_and_mode_records_produce_no_events_or_messages() -> None:
     """init/mode stay genuinely transient: no session_events, no messages.
 
