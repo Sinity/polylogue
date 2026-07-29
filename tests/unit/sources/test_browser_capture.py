@@ -1092,3 +1092,141 @@ def test_native_payload_delegation_without_envelope_attachments_is_unchanged() -
 
     assert len(parsed) == 1
     assert parsed[0].attachments == []
+
+
+# ---------------------------------------------------------------------------
+# polylogue-ah21 -- BrowserCaptureTurn typed blocks channel
+# ---------------------------------------------------------------------------
+
+
+def test_browser_capture_turn_blocks_survive_into_parsed_message_blocks() -> None:
+    """The generic (no-native-payload) turn loop must carry typed blocks, not just text.
+
+    Exercises ``polylogue.sources.parsers.browser_capture.parse`` (the
+    per-turn fallback loop, reached here because the payload carries no
+    ``raw_provider_payload``). Before ``BrowserCaptureTurn.blocks`` existed,
+    a captured tool call/result had nowhere to go but ``turn.text``; this
+    pins that a typed ``tool_use``/``tool_result`` pair set on a turn
+    produces real ``ParsedContentBlock`` rows with ``tool_id`` intact.
+    Deleting the ``blocks=[_browser_capture_parsed_block(...) ...]`` line in
+    ``parse()`` (reverting to the old ``ParsedMessage(...)`` call with no
+    ``blocks`` kwarg) makes this fail.
+    """
+    from polylogue.core.enums import BlockType
+
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["turns"] = [
+        {"provider_turn_id": "u1", "role": "user", "text": "run a search", "ordinal": 0},
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "text": "calling search",
+            "ordinal": 1,
+            "blocks": [
+                {
+                    "type": "tool_use",
+                    "tool_name": "web_search",
+                    "tool_id": "call-1",
+                    "tool_input": {"query": "polylogue"},
+                }
+            ],
+        },
+        {
+            "provider_turn_id": "t1",
+            "role": "tool",
+            "text": "3 results",
+            "ordinal": 2,
+            "parent_turn_id": "a1",
+            "blocks": [
+                {"type": "tool_result", "tool_id": "call-1", "text": "3 results", "is_error": False},
+            ],
+        },
+    ]
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    by_id = {m.provider_message_id: m for m in parsed[0].messages}
+    tool_use_block = by_id["a1"].blocks[0]
+    tool_result_block = by_id["t1"].blocks[0]
+    assert tool_use_block.type is BlockType.TOOL_USE
+    assert tool_use_block.tool_name == "web_search"
+    assert tool_use_block.tool_input == {"query": "polylogue"}
+    assert tool_result_block.type is BlockType.TOOL_RESULT
+    assert tool_result_block.is_error is False
+    assert tool_use_block.tool_id == tool_result_block.tool_id == "call-1"
+    # parent_turn_id must survive as the DAG edge, not be flattened away.
+    assert by_id["t1"].parent_message_provider_id == "a1"
+
+
+def test_browser_capture_turn_accepts_blocks_only_with_no_text() -> None:
+    """A turn with only structured blocks (no rendered text) must validate.
+
+    Exercises ``BrowserCaptureTurn.require_content``: before this bead the
+    validator only recognized ``text``/``attachments`` as content, so a
+    blocks-only turn (image analysis result, pure tool call with no prose
+    summary) would be rejected. Reverting the validator to its old
+    ``if (text empty) and not attachments`` form makes this fail.
+    """
+    from polylogue.browser_capture.models import BrowserCaptureTurn
+
+    turn = BrowserCaptureTurn.model_validate(
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "blocks": [{"type": "tool_use", "tool_name": "python", "tool_id": "c1", "tool_input": {}}],
+        }
+    )
+    assert turn.text is None
+    assert turn.blocks[0].tool_name == "python"
+
+
+def test_browser_capture_claude_fallback_turn_blocks_produce_tool_id_linked_content() -> None:
+    """Claude fallback path: turn.blocks must thread through as real tool_use/tool_result blocks.
+
+    Exercises ``_parse_claude_fallback_envelope`` /
+    ``_claude_native_segment_from_block`` (no ``raw_provider_payload``, so
+    ``parse()`` routes through the Claude-AI text-turn fallback, not the
+    native mapping-tree parser). Before this bead's
+    ``_claude_native_segment_from_block`` + ``raw["content"] = segments``
+    wiring, a Claude-AI capture turn's ``blocks`` were dropped entirely and
+    only ``turn.text`` reached the archive. Deleting the
+    ``if turn.blocks: ... raw["content"] = segments`` branch in
+    ``_claude_fallback_turn_payload`` makes this fail.
+    """
+    from polylogue.core.enums import BlockType
+
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider"] = "claude-ai"
+    session["provider_session_id"] = "claude-session"
+    session["turns"] = [
+        {"provider_turn_id": "u1", "role": "user", "text": "run the tool", "ordinal": 0},
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "text": "using bash",
+            "ordinal": 1,
+            "blocks": [
+                {"type": "tool_use", "tool_name": "bash", "tool_id": "toolu_1", "tool_input": {"cmd": "ls"}},
+                {"type": "tool_result", "tool_id": "toolu_1", "text": "file.txt", "is_error": False},
+            ],
+        },
+    ]
+
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
+
+    assert len(parsed) == 1
+    by_id = {m.provider_message_id: m for m in parsed[0].messages}
+    a1_blocks = by_id["a1"].blocks
+    tool_use = next(b for b in a1_blocks if b.type is BlockType.TOOL_USE)
+    tool_result = next(b for b in a1_blocks if b.type is BlockType.TOOL_RESULT)
+    assert tool_use.tool_name == "bash"
+    assert tool_use.tool_input == {"cmd": "ls"}
+    assert tool_use.tool_id == tool_result.tool_id == "toolu_1"
+    assert tool_result.is_error is False
+    # Rendered text remains available as a separate, non-authoritative channel.
+    assert by_id["a1"].text == "using bash"

@@ -17,13 +17,16 @@ from polylogue.archive.ingest_flags import (
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
+    BrowserCaptureBlock,
     BrowserCaptureEnvelope,
+    BrowserCaptureTurn,
     looks_like_browser_capture,
 )
-from polylogue.core.enums import Provider, SessionKind
+from polylogue.core.enums import BlockType, Provider, SessionKind
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base_models import (
     ParsedAttachment,
+    ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
@@ -164,6 +167,67 @@ def _browser_capture_parsed_attachment(
     )
 
 
+def _browser_capture_parsed_block(block: BrowserCaptureBlock) -> ParsedContentBlock:
+    """Project a typed capture block 1:1 into the canonical parser contract.
+
+    Field names deliberately mirror ``ParsedContentBlock`` (see
+    ``BrowserCaptureBlock`` docstring), so this is a lossless carry, not a
+    reconstruction -- the archive's blocks channel receives exactly what the
+    capture observed instead of only ``turn.text``.
+    """
+
+    return ParsedContentBlock(
+        type=block.type,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_id=block.tool_id,
+        tool_input=block.tool_input,
+        media_type=block.media_type,
+        metadata=dict(block.metadata) if block.metadata else None,
+        is_error=block.is_error,
+        exit_code=block.exit_code,
+    )
+
+
+def _claude_native_segment_from_block(block: BrowserCaptureBlock) -> dict[str, object] | None:
+    """Render a capture block as a Claude-native content segment dict.
+
+    The Claude fallback path (``_parse_claude_fallback_envelope``) feeds
+    per-turn payloads through
+    ``polylogue.sources.parsers.claude.common.normalize_chat_messages``,
+    which already knows how to turn Claude's own ``content: [...]`` segment
+    shape into typed, ``tool_id``-linked ``ParsedContentBlock`` rows (see
+    ``_claude_content_blocks`` / ``content_blocks_from_segments``). Emitting
+    that same segment shape here reuses that real parsing logic instead of
+    duplicating it, and keeps tool_use/tool_result ``tool_id`` pairing intact
+    for captured Claude turns that carry typed blocks but no native payload.
+    """
+
+    if block.type is BlockType.TEXT:
+        return {"type": "text", "text": block.text} if block.text else None
+    if block.type is BlockType.THINKING:
+        return {"type": "thinking", "thinking": block.text} if block.text else None
+    if block.type is BlockType.TOOL_USE:
+        return {
+            "type": "tool_use",
+            "id": block.tool_id,
+            "name": block.tool_name,
+            "input": dict(block.tool_input) if block.tool_input else {},
+        }
+    if block.type is BlockType.TOOL_RESULT:
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.tool_id,
+            "content": block.text,
+            "is_error": block.is_error,
+        }
+    if block.type is BlockType.CODE:
+        return {"type": "code", "text": block.text} if block.text else None
+    if block.type in (BlockType.IMAGE, BlockType.DOCUMENT):
+        return {"type": block.type.value, "media_type": block.media_type, **dict(block.metadata)}
+    return None
+
+
 def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureEnvelope) -> ParsedSession:
     """Fold envelope attachments into a native-payload-delegated session.
 
@@ -257,8 +321,6 @@ def _merge_envelope_native_metadata(parsed: ParsedSession, envelope: BrowserCapt
 
 
 def _claude_fallback_turn_payload(turn: object) -> dict[str, object]:
-    from polylogue.browser_capture.models import BrowserCaptureTurn
-
     assert isinstance(turn, BrowserCaptureTurn)
     raw: dict[str, object] = dict(turn.provider_meta)
     # Typed envelope identity wins over any provider_meta echo.
@@ -272,6 +334,16 @@ def _claude_fallback_turn_payload(turn: object) -> dict[str, object]:
             "ordinal": turn.ordinal,
         }
     )
+    if turn.blocks:
+        # Render typed capture blocks as Claude-native content segments so
+        # normalize_chat_messages' own segment parser (not a bespoke
+        # reconstruction here) produces tool_id-linked ParsedContentBlock
+        # rows -- see _claude_native_segment_from_block docstring.
+        segments = [
+            segment for block in turn.blocks if (segment := _claude_native_segment_from_block(block)) is not None
+        ]
+        if segments:
+            raw["content"] = segments
     if turn.attachments:
         raw["attachments"] = [
             {
@@ -560,6 +632,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                 role=turn.role,
                 text=turn.text,
                 timestamp=turn.timestamp,
+                blocks=[_browser_capture_parsed_block(block) for block in turn.blocks],
                 parent_message_provider_id=turn.parent_turn_id,
                 position=message_position,
                 variant_index=0,

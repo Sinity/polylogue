@@ -642,6 +642,12 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
                     tool_name=recipient,
+                    # tool_id = this node's own id, so the mapping-tree child
+                    # node that carries the result (parent == this id) can
+                    # link back via the same id below (polylogue-ah21: these
+                    # were previously always NULL, leaving every ChatGPT
+                    # tool_use/tool_result block pair unjoined).
+                    tool_id=str(msg_id),
                     tool_input=tool_call_input,
                     metadata={"content_type": content_type},
                 )
@@ -666,10 +672,19 @@ def extract_messages_from_mapping(
             )
         elif content_type == "execution_output":
             # Code-interpreter output — top-level text, no parts (#1744).
+            # tool_id = the calling node's id (mapping-tree `parent`), the
+            # same identifier a recipient-addressed TOOL_USE node stamps onto
+            # itself above. Structurally correct even when the caller was
+            # classified BlockType.CODE rather than TOOL_USE (the
+            # `action_pairs` materialization only joins block_type='tool_use'
+            # rows, so CODE-typed calls stay outside the `actions` view --
+            # that reclassification question is out of this bead's scope --
+            # but the block-level tool_id is no longer silently dropped).
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=text,
+                    tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
                 )
             )
