@@ -132,7 +132,14 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
     assert comparison.diff.version_a == next_version
     assert comparison.diff.version_b == version_after_next
     assert selected.selected is not None
-    assert selected.selected.versions == [*baseline_versions, next_version, version_after_next]
+    # Only the two versions promoted into THIS workspace's isolated registry
+    # are listed. baseline_versions is read from the bundled catalog purely to
+    # derive non-colliding version NAMES; it is deliberately not expected in
+    # the listing. Until 2026-07-30 write_schema_version() silently inherited
+    # bundled-catalog versions into an isolated registry, so this assertion
+    # used to see them -- that leak is fixed, and an isolated registry now
+    # contains exactly what was written to it.
+    assert selected.selected.versions == [next_version, version_after_next]
     assert {spec.provider for spec in specs} == {"chatgpt"}
     assert specs[0].package_version == next_version
     assert specs[0].profile.family_ids == (cluster_id,)

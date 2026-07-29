@@ -443,7 +443,11 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   semantic/media/language, is_error, exit_code — excluding
   session_id/message_id/position/tool_id) so a stored block citation anchor
   survives fork-position shift, re-ingest renumbering, and provider tool-id
-  regeneration. See `polylogue/storage/block_anchor.py`.
+  regeneration. The column itself is live and written on every block. The
+  helper module that formatted and resolved citation anchors over it was
+  deleted 2026-07-30 as a two-sided gap -- nothing ever emitted an anchor, so
+  nothing could resolve one -- and that wiring is deferred to the webui
+  citation-verifier work (polylogue-bby.11).
 - Index schema version 24 admits `capture_gap` rows in `session_events`. These
   are narrow lifecycle evidence events emitted when ingest rejects a lower-
   precedence DOM browser-capture fallback because a richer source row already
