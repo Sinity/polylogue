@@ -146,7 +146,32 @@ sites in `polylogue/daemon/cli.py` are replaced by
 
 ### 4. Census burst-escalation constants
 
-**What it is:** the daemon conveyor's bounded-pass sizing and back-to-back
+**Status (2026-07-29): landed.** `_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT` and
+the `census_mode` escalation switch are deleted from
+`polylogue/daemon/cli.py`. The writer-held pass's limit
+(`_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`, unchanged at 16) is now a
+pure writer-hold-duration bound with no second job. Census/parse throughput
+moved entirely to a new, independent knob,
+`_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64`, that only bounds
+`_maybe_warm_raw_materialization_parse_stage`'s off-writer-hold prefetch —
+this runs before the writer hold is ever requested (`DaemonParseStage`,
+`polylogue/daemon/parse_prefetch.py`), so it never trades against hold
+duration. The writer-held pass's own limit now widens (bounded floor
+`_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`, bounded ceiling
+`_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT`) to match however many raws the
+prefetch warmer *actually* admitted this tick (`warmed_count`), rather than
+guessing via a `census_mode` boolean derived from the PRIOR pass's outcome —
+consuming an already-parsed cache hit costs one receipt write, not a
+reparse, so widening to match real warmed state does not meaningfully extend
+the hold. With `daemon_parse_stage_split` off (today's default,
+`polylogue/config.py`), the warmer is a no-op and the pass limit is simply
+the floor, unchanged from before this change in that configuration. See
+`test_periodic_raw_materialization_burst_continues_through_census_passes`
+(flag-off floor behavior) and
+`test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count`
+(flag-on widening) in `tests/unit/daemon/test_daemon_cli.py`.
+
+**What it was:** the daemon conveyor's bounded-pass sizing and back-to-back
 burst logic in `polylogue/daemon/cli.py`:
 
 - `_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 16` (`:80`) — replay-sized
@@ -188,16 +213,69 @@ logic) entirely.
 
 ### 5. Per-pass candidate requery / resume recompute
 
-**What it is:** `repair_raw_materialization`
-(`polylogue/storage/repair.py:5695`) recomputes its FULL candidate set from
-scratch via `_raw_materialization_candidate_ids()` up to twice per call:
-once at entry (`polylogue/storage/repair.py:5783`) and again after the
-census loop, to re-check what's still uncensused
-(`polylogue/storage/repair.py:5844`). Each call re-scans `raw_sessions`
-joined against `index_tier.sessions`/`raw_revision_applications`/
-`raw_membership_census` (`polylogue/storage/repair.py:3618` onward) — an
-O(backlog size) query repeated every daemon tick regardless of how much of
-the backlog actually changed since the previous tick.
+**Status (2026-07-29): investigated, NOT deletable this session — reverted a
+naive fix, documenting the dead end to save the next attempt the same
+detour.** Re-verifying against the current tree found the requery is far
+more entrenched than this row originally described: `repair_raw_materialization`
+(now `polylogue/storage/repair.py:5959`, not `:5695` — the file has grown
+substantially since this doc's snapshot) calls
+`_raw_materialization_candidate_ids()` **five** times in one function body
+(`:6047`, `:6109`, plus three more further down at roughly `:6481`, `:6626`,
+`:6674` in the current tree), not two, and the same helper has a dozen call
+sites across `polylogue/storage/repair.py` total.
+
+The first fix attempted was a per-process memoization cache keyed on
+`(archive_root, filter scope, source.db data_version, index.db data_version)`,
+using `PRAGMA data_version` to detect "has either durable tier changed since I
+last computed this." It was reverted after breaking ~29 tests in
+`tests/unit/storage/test_repair.py` and
+`tests/unit/devtools/test_raw_authority_scale_proof.py` with genuine
+staleness (wrong candidate counts, spurious "postflight changed a
+retryable/carried-forward plan" errors) — root-caused with a standalone
+repro (`sqlite3` CLI and Python bindings both), not a guess:
+
+- `PRAGMA data_version`, read from a freshly-opened `mode=ro` connection
+  immediately before/after commits on a separate long-lived writer
+  connection to the same file, did not change at all across three
+  consecutive commits, with or without WAL mode, with or without an
+  intervening `wal_checkpoint`. This contradicts the naive reading of the
+  pragma's purpose and made it useless as implemented here.
+- The SQLite file-header change counter (bytes 24-27, read directly, no
+  pragma) DOES increment reliably per commit under rollback-journal mode,
+  but under WAL mode (source.db/index.db's actual journal mode) it only
+  updates at checkpoint — writes land in the `-wal` file, which the header
+  counter does not see until the WAL is checkpointed back into the main
+  file.
+- Combining the header counter with the WAL file's own size as a
+  WAL-mode-aware fallback signal fails too: `wal_checkpoint(TRUNCATE)`
+  resets the WAL file to empty, so the combined signature after
+  checkpoint-N + one write can numerically collide with the signature after
+  checkpoint-(N-1) + one write, producing a false cache hit across a
+  checkpoint boundary.
+
+No cheap, purely-read-only, single-query-per-tick invalidation signal was
+found that is provably sound against every predicate the five-call-site
+query depends on (parse_error, membership-census completeness,
+byte-authority state, application-terminal state — see
+`_raw_materialization_candidate_ids`, `polylogue/storage/repair.py:3758`).
+Building one correctly requires either explicit invalidation hooks wired
+into every write path that mutates `raw_sessions`, `raw_revision_applications`,
+`raw_membership_census`, or `raw_session_memberships` (those write paths live
+in `polylogue/storage/raw_authority.py` and
+`polylogue/storage/sqlite/archive_tiers/revision_application.py`, both
+outside this session's write scope) — or the real persistent iterator this
+row already calls for below, sized as its own tracked follow-up rather than
+a same-session bolt-on. The **candidate cache code was reverted in full**;
+`polylogue/storage/repair.py` is unchanged from before this investigation.
+
+**What it is (unchanged from the original finding):** `repair_raw_materialization`
+recomputes its FULL candidate set from scratch via
+`_raw_materialization_candidate_ids()` repeatedly per call. Each call
+re-scans `raw_sessions` joined against `index_tier.sessions`/
+`raw_revision_applications`/`raw_membership_census`
+(`polylogue/storage/repair.py:3758` onward) — an O(backlog size) query
+repeated every daemon tick regardless of how much of the backlog actually
+changed since the previous tick.
 
 **Why it exists today:** the conveyor has no persistent memory of "where it
 left off" beyond what's durably recorded in `source.db`/`index.db`
