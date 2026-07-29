@@ -3091,7 +3091,7 @@ def _provider_usage_event_row(
         total_reasoning,
         total_tokens,
         _payload_optional_int(event.payload, "model_context_window"),
-        _json_dumps(event.payload),
+        _provider_usage_payload_json(event.payload),
         _timestamp_ms(event.timestamp),
     )
 
@@ -3106,6 +3106,26 @@ _PROVIDER_USAGE_PROVENANCE_KEYS = (
     "billing_base_url",
     "billing_mode",
 )
+
+
+def _provider_usage_payload_json(payload: Mapping[str, object]) -> str:
+    """Project a provider-usage event payload down to its non-redundant remainder.
+
+    Every field of a ``token_count``/``message_usage`` payload except the
+    billing-provenance keys is already unpacked into a typed column on
+    ``session_provider_usage_events`` by ``_provider_usage_event_row`` above
+    (``last_token_usage``/``total_token_usage`` -> the ``last_*``/``total_*``
+    columns, ``model`` -> ``model_name``, event type -> ``provider_event_type``,
+    ``model_context_window`` -> its own column). The billing-provenance keys
+    (``_PROVIDER_USAGE_PROVENANCE_KEYS``) are the one part of the payload with
+    no typed column: they are read back via ``json_extract`` in
+    ``_reextract_provider_usage_tail_db`` to decide whether a zeroed-out
+    lineage-tail row still carries billing evidence worth keeping. Storing the
+    full raw payload duplicated ~1.28 GiB of already-typed data across 4M+
+    rows (polylogue-ei0d); persist only the provenance subset instead.
+    """
+    provenance = {key: payload.get(key) for key in _PROVIDER_USAGE_PROVENANCE_KEYS if payload.get(key) is not None}
+    return _json_dumps(provenance)
 
 
 def _provider_usage_event_row_has_evidence(

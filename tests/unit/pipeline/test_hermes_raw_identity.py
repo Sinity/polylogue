@@ -193,6 +193,23 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                 )
             return [json.loads(str(row["payload_json"])) for row in event_rows]
 
+        async def durable_cost_typed_totals() -> list[dict[str, object]]:
+            async with backend.connection() as conn:
+                event_rows = list(
+                    await (
+                        await conn.execute(
+                            """
+                            SELECT total_input_tokens, total_output_tokens, total_cached_input_tokens,
+                                   total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
+                            FROM session_provider_usage_events
+                            WHERE provider_event_type = 'token_count'
+                            ORDER BY session_id, position
+                            """
+                        )
+                    ).fetchall()
+                )
+            return [dict(row) for row in event_rows]
+
         async def durable_hermes_events() -> dict[str, list[tuple[str, dict[str, object]]]]:
             async with backend.connection() as conn:
                 event_rows = list(
@@ -276,17 +293,22 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
             {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
             for payload in cost_payloads
         )
+        # payload_json is projected down to only the billing-provenance keys
+        # (polylogue-ei0d): every other field of the raw provider event
+        # (total_token_usage, model, type, ...) is redundant with a typed
+        # column on the same row, so it is no longer duplicated into JSON.
+        assert all(set(payload) == set(expected_cost_provenance) for payload in cost_payloads)
         assert all(
-            payload.get("total_token_usage")
+            totals
             == {
-                "cached_input_tokens": 0,
-                "cache_write_tokens": 0,
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "reasoning_output_tokens": 0,
+                "total_cached_input_tokens": 0,
+                "total_cache_write_tokens": 0,
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
+                "total_reasoning_output_tokens": 0,
                 "total_tokens": 0,
             }
-            for payload in cost_payloads
+            for totals in await durable_cost_typed_totals()
         )
 
         hermes_events = await durable_hermes_events()
