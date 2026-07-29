@@ -603,19 +603,33 @@ class SchemaRegistry:
         )
         return package, {element_kind: json_document(copy.deepcopy(dict(schema)))}
 
-    def register_schema(self, provider: str, schema: SchemaInputDocument) -> str:
+    def register_schema(
+        self,
+        provider: str,
+        schema: SchemaInputDocument,
+        *,
+        element_kind: str = "session_document",
+    ) -> str:
         provider_token = _provider_token(provider)
         versions = self.list_versions(provider_token)
         new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
-        self.write_schema_version(provider_token, new_version, schema)
+        self.write_schema_version(provider_token, new_version, schema, element_kind=element_kind)
         return new_version
 
-    def write_schema_version(self, provider: str, version: str, schema: SchemaInputDocument) -> Path:
+    def write_schema_version(
+        self,
+        provider: str,
+        version: str,
+        schema: SchemaInputDocument,
+        *,
+        element_kind: str = "session_document",
+    ) -> Path:
         provider_token = _provider_token(provider)
         package, schemas = self._single_element_package(
             provider_token,
             version=version,
             schema=copy.deepcopy(dict(schema)),
+            element_kind=element_kind,
         )
         catalog = self.load_package_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
         existing_packages = [item for item in catalog.packages if item.version != version]

@@ -85,7 +85,15 @@ class SchemaRegistryToolingMixin:
             element_kind: str | None = None,
         ) -> PublicSchemaDocument | None: ...
 
-        def register_schema(self, provider: str, schema: SchemaInputDocument) -> str: ...
+        def register_schema(
+            self,
+            provider: str,
+            schema: SchemaInputDocument,
+            *,
+            element_kind: str = "session_document",
+        ) -> str: ...
+
+        def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None: ...
 
     def replace_provider_schemas(
         self,
@@ -205,7 +213,36 @@ class SchemaRegistryToolingMixin:
             return None
         return ClusterManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
-    def _merge_with_promoted_schema(self, provider_token: str, candidate: PublicSchemaDocument) -> PublicSchemaDocument:
+    def _resolve_promotion_element_kind(self, provider_token: str, cluster_artifact_kind: str) -> str:
+        """Pick the element_kind a promotion should target.
+
+        Cluster evidence isn't always tagged with a real artifact kind (the
+        plain `infer_schema(cluster=True)` path clusters without per-sample
+        artifact classification and records "unspecified"). Promoting under
+        that literal token -- or under the `_single_element_package` default
+        of "session_document" -- would silently create a same-version
+        package under the wrong element_kind and orphan whatever element_kind
+        the provider's existing default package actually uses (codex and
+        claude-code use `session_record_stream`, not `session_document`).
+        Fall back to the provider's already-registered default element_kind
+        whenever the cluster's own tag is missing or unspecified, so
+        `_merge_with_promoted_schema` can find and widen it instead of
+        merging against nothing.
+        """
+        if cluster_artifact_kind and cluster_artifact_kind != "unspecified":
+            return cluster_artifact_kind
+        catalog = self.load_package_catalog(provider_token)
+        if catalog is not None:
+            default_version = catalog.default_version or catalog.latest_version or catalog.recommended_version
+            if default_version is not None:
+                default_package = catalog.package(default_version)
+                if default_package is not None and default_package.default_element_kind:
+                    return default_package.default_element_kind
+        return cluster_artifact_kind or "session_document"
+
+    def _merge_with_promoted_schema(
+        self, provider_token: str, candidate: PublicSchemaDocument, *, element_kind: str
+    ) -> PublicSchemaDocument:
         """Union ``candidate`` with the already-promoted package for this provider.
 
         Promotion must be MONOTONIC: a package records what a provider has been
@@ -229,7 +266,7 @@ class SchemaRegistryToolingMixin:
         """
         from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
 
-        existing = self.get_element_schema(str(provider_token))
+        existing = self.get_element_schema(str(provider_token), version="default", element_kind=element_kind)
         if not existing:
             return candidate
         merged = json_document(merge_observed_structure_schemas([json_document(existing), candidate]))
@@ -261,6 +298,8 @@ class SchemaRegistryToolingMixin:
         if target_cluster.promoted_package_version is not None:
             raise ValueError(f"Cluster {cluster_id} already promoted as {target_cluster.promoted_package_version}")
 
+        element_kind = self._resolve_promotion_element_kind(provider_token, target_cluster.artifact_kind)
+
         if samples:
             from polylogue.schemas.generation.workflow import generate_schema_from_samples
 
@@ -273,17 +312,26 @@ class SchemaRegistryToolingMixin:
                 "properties": {key: {} for key in target_cluster.dominant_keys},
             }
 
-        schema = self._merge_with_promoted_schema(provider_token, schema)
+        schema = self._merge_with_promoted_schema(provider_token, schema, element_kind=element_kind)
         schema["title"] = schema.get("title") or f"{provider_token} export format ({target_cluster.artifact_kind})"
         schema["x-polylogue-anchor-profile-family-id"] = cluster_id
         schema["x-polylogue-profile-family-ids"] = [cluster_id]
         schema["x-polylogue-package-profile-family-ids"] = [cluster_id]
-        schema["x-polylogue-observed-artifact-count"] = target_cluster.sample_count
+        # This key was already carried forward from the existing package by
+        # _merge_with_promoted_schema's overlay step when the candidate
+        # lacked it; overwriting it unconditionally with just this cluster's
+        # (often small) sample_count would narrow the provenance the merge
+        # just protected, so take whichever is larger.
+        previous_observed_count = schema.get("x-polylogue-observed-artifact-count", 0)
+        schema["x-polylogue-observed-artifact-count"] = max(
+            previous_observed_count if isinstance(previous_observed_count, int) else 0,
+            target_cluster.sample_count,
+        )
         schema["x-polylogue-evidence-confidence"] = target_cluster.confidence
         schema["x-polylogue-artifact-kind"] = target_cluster.artifact_kind
         schema["x-polylogue-promoted-at"] = datetime.now(tz=timezone.utc).isoformat()
 
-        new_version = self.register_schema(provider_token, schema)
+        new_version = self.register_schema(provider_token, schema, element_kind=element_kind)
         target_cluster.promoted_package_version = new_version
         if manifest.default_version is None:
             manifest.default_version = new_version
