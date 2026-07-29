@@ -102,3 +102,69 @@ def test_promotion_audit_groups_repeated_review_values_without_dropping_inventor
     findings = payload["findings"]
     assert isinstance(findings, list)
     assert len(findings) == 4
+
+
+def _package(*, version: str, sample_count: int, kinds: list[str]) -> dict[str, object]:
+    return {
+        "provider": "provider",
+        "version": version,
+        "sample_count": sample_count,
+        "first_seen": "2026-01-01T00:00:00+00:00",
+        "last_seen": "2026-02-01T00:00:00+00:00",
+        "elements": [{"element_kind": kind, "schema_file": f"{kind}.schema.json.gz"} for kind in kinds],
+    }
+
+
+def _stage_provider(root: Path, *, catalog_package: dict[str, object], disk_package: dict[str, object]) -> None:
+    version = str(disk_package["version"])
+    (root / "provider" / "versions" / version).mkdir(parents=True, exist_ok=True)
+    (root / "provider" / "versions" / version / "package.json").write_text(json.dumps(disk_package), encoding="utf-8")
+    (root / "provider" / "catalog.json").write_text(
+        json.dumps({"provider": "provider", "default_version": version, "packages": [catalog_package]}),
+        encoding="utf-8",
+    )
+
+
+def test_promotion_audit_accepts_a_catalog_that_matches_its_packages(tmp_path: Path) -> None:
+    package = _package(version="v1", sample_count=10, kinds=["session_document"])
+    _stage_provider(tmp_path, catalog_package=package, disk_package=package)
+
+    report = audit_schema_artifacts(tmp_path)
+
+    assert [finding for finding in report.findings if finding.category == "catalog_incoherent"] == []
+
+
+def test_promotion_audit_blocks_a_catalog_that_lags_its_packages(tmp_path: Path) -> None:
+    """A promotion that rewrites package.json but not catalog.json is inert:
+    catalog.json is what runtime_registry resolves against, so the new element
+    kinds are never reachable.  This is the real 2026-07-29 regression.
+    """
+    _stage_provider(
+        tmp_path,
+        catalog_package=_package(version="v1", sample_count=10, kinds=["session_document"]),
+        disk_package=_package(version="v1", sample_count=999, kinds=["session_document", "subagent_session_stream"]),
+    )
+
+    report = audit_schema_artifacts(tmp_path)
+
+    incoherent = {finding.json_path for finding in report.blockers if finding.category == "catalog_incoherent"}
+    assert "$.packages[version=v1].elements" in incoherent
+    assert "$.packages[version=v1].sample_count" in incoherent
+
+
+def test_promotion_audit_blocks_a_package_missing_from_the_catalog(tmp_path: Path) -> None:
+    _stage_provider(
+        tmp_path,
+        catalog_package=_package(version="v1", sample_count=10, kinds=["session_document"]),
+        disk_package=_package(version="v1", sample_count=10, kinds=["session_document"]),
+    )
+    orphan = tmp_path / "provider" / "versions" / "v2"
+    orphan.mkdir(parents=True)
+    (orphan / "package.json").write_text(
+        json.dumps(_package(version="v2", sample_count=3, kinds=["session_document"])), encoding="utf-8"
+    )
+
+    report = audit_schema_artifacts(tmp_path)
+
+    values = {finding.value for finding in report.blockers if finding.category == "catalog_incoherent"}
+    assert "version=v2;reason=package_on_disk_absent_from_catalog" in values

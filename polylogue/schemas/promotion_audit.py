@@ -238,6 +238,95 @@ def _walk_artifact(
             _walk_artifact(child, artifact=artifact, json_path=f"{json_path}[{index}]", findings=findings)
 
 
+def _element_kinds(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted(str(item.get("element_kind")) for item in value if isinstance(item, dict))
+
+
+def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
+    """Require each provider's catalog.json to agree with its packages.
+
+    ``catalog.json`` is the resolution authority: ``runtime_registry`` reads it
+    to pick a package and then reads that package's element list.  A promotion
+    that rewrites ``versions/<v>/package.json`` without regenerating the
+    catalog is therefore *inert* -- the new elements and profile families are
+    never resolved, while the tree looks promoted.  That happened once
+    already, so it is a blocker rather than a review item.  Writing through
+    ``SchemaRegistry.replace_provider_packages`` keeps the two in step.
+    """
+    findings: list[PromotionAuditFinding] = []
+    for catalog_path in sorted(root.rglob("catalog.json")):
+        provider_dir = catalog_path.parent
+        relative = str(catalog_path.relative_to(root))
+        try:
+            catalog = _load_artifact(catalog_path)
+        except Exception:
+            continue  # already reported as malformed_artifact
+        if not isinstance(catalog, dict):
+            continue
+        packages = catalog.get("packages")
+        if not isinstance(packages, list):
+            continue
+        catalogued = {
+            str(entry.get("version")): entry for entry in packages if isinstance(entry, dict) and entry.get("version")
+        }
+        on_disk = {path.parent.name for path in provider_dir.glob("versions/*/package.json") if path.is_file()}
+        for missing in sorted(on_disk - set(catalogued)):
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="catalog_incoherent",
+                    artifact=relative,
+                    json_path="$.packages",
+                    value=f"version={missing};reason=package_on_disk_absent_from_catalog",
+                )
+            )
+        for stale in sorted(set(catalogued) - on_disk):
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="catalog_incoherent",
+                    artifact=relative,
+                    json_path="$.packages",
+                    value=f"version={stale};reason=catalogued_version_has_no_package",
+                )
+            )
+        for version in sorted(on_disk & set(catalogued)):
+            manifest_path = provider_dir / "versions" / version / "package.json"
+            try:
+                manifest = _load_artifact(manifest_path)
+            except Exception:
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            entry = catalogued[version]
+            catalog_kinds = _element_kinds(entry.get("elements"))
+            manifest_kinds = _element_kinds(manifest.get("elements"))
+            if catalog_kinds != manifest_kinds:
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="catalog_incoherent",
+                        artifact=relative,
+                        json_path=f"$.packages[version={version}].elements",
+                        value=f"catalog={catalog_kinds};package={manifest_kinds}",
+                    )
+                )
+            for field in ("sample_count", "first_seen", "last_seen"):
+                if entry.get(field) != manifest.get(field):
+                    findings.append(
+                        PromotionAuditFinding(
+                            severity="blocker",
+                            category="catalog_incoherent",
+                            artifact=relative,
+                            json_path=f"$.packages[version={version}].{field}",
+                            value=f"catalog={entry.get(field)!r};package={manifest.get(field)!r}",
+                        )
+                    )
+    return findings
+
+
 def audit_schema_artifacts(root: Path) -> PromotionAuditReport:
     """Audit every JSON/gzip-JSON artifact below ``root`` without mutating it."""
     resolved = root.expanduser().resolve()
@@ -276,6 +365,7 @@ def audit_schema_artifacts(root: Path) -> PromotionAuditReport:
                     )
                 )
         _walk_artifact(payload, artifact=relative, json_path="$", findings=findings)
+    findings.extend(_catalog_coherence_findings(resolved))
     return PromotionAuditReport(
         root=str(resolved),
         artifact_count=len(artifacts),

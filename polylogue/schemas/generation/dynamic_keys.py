@@ -19,6 +19,7 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document, json_doc
 from polylogue.schemas.field_stats.detection import is_dynamic_key, should_collapse_observed_keys
 
 _STRUCTURAL_DEDUP_WINDOW = 1_024
+_COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
 
 
 def merge_schemas(schemas: Iterable[JSONDocument]) -> JSONDocument:
@@ -47,7 +48,37 @@ def _required_names(schema: Mapping[str, object]) -> set[str]:
     return {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
 
 
+def _flatten_composite_branches(schema: JSONDocument) -> JSONDocument:
+    """Fold ``anyOf``/``oneOf``/``allOf`` branches into the schema body.
+
+    The observed-structure merge is a structural union that reads ``type``,
+    ``properties``, ``items`` and ``additionalProperties``.  Composite
+    keywords were invisible to it, so merging a nullable object -- which the
+    generator emits as ``anyOf: [null, object]`` -- against a plain object
+    silently discarded every property inside the branches.  Folding the
+    branches in first makes the union monotonic: merging can no longer remove
+    a name the accumulator already carried.
+    """
+    branches: list[JSONDocument] = []
+    for keyword in _COMPOSITE_KEYWORDS:
+        raw = schema.get(keyword)
+        if isinstance(raw, list):
+            branches.extend(json_document(branch) for branch in raw)
+    if not branches:
+        return schema
+    merged = json_document({key: value for key, value in schema.items() if key not in _COMPOSITE_KEYWORDS})
+    for branch in branches:
+        merged = _merge_observed_structure_pair(merged, branch)
+    return merged
+
+
 def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> JSONDocument:
+    if not left:
+        return right
+    if not right:
+        return left
+    left = _flatten_composite_branches(left)
+    right = _flatten_composite_branches(right)
     if not left:
         return right
     if not right:

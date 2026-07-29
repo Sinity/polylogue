@@ -206,6 +206,59 @@ def test_observed_structure_collapses_cross_sample_key_cardinality() -> None:
     assert "ordinary-key-" not in str(forward)
 
 
+def _named_property_paths(schema: object, *, path: str = "$") -> set[str]:
+    """Every property name reachable in a schema, including composite branches."""
+    node = schema_node(schema)
+    paths: set[str] = set()
+    for name, child in schema_properties(schema).items():
+        child_path = f"{path}.{name}"
+        paths.add(child_path)
+        paths.update(_named_property_paths(child, path=child_path))
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        branches = node.get(keyword)
+        if isinstance(branches, list):
+            for branch in branches:
+                paths.update(_named_property_paths(branch, path=path))
+    items = node.get("items")
+    if isinstance(items, dict):
+        paths.update(_named_property_paths(items, path=f"{path}[]"))
+    additional = node.get("additionalProperties")
+    if isinstance(additional, dict):
+        paths.update(_named_property_paths(additional, path=f"{path}.*"))
+    return paths
+
+
+def test_observed_structure_merge_never_drops_a_named_property() -> None:
+    """Merging is a union: it may add names or collapse them into a dynamic
+    map, but it must never make an already-merged name unreachable.
+
+    Regression guard for the composite-branch bug: the merge read ``type``,
+    ``properties``, ``items`` and ``additionalProperties`` but not ``anyOf``,
+    so folding a nullable object -- which the generator emits as
+    ``anyOf: [null, object]`` -- into a plain object silently discarded every
+    property inside the branches.  Promoting the 2026-07-16 inference run hit
+    this for real: claude-code lost 433 property paths and codex lost 29.
+    """
+    nullable_then_populated = {"limits": None}
+    populated = {"limits": {"credits": {"balance": 5}, "primary": {"used": 1}}}
+    other_shape = {"limits": {"limit_id": "abc"}}
+
+    samples = [nullable_then_populated, populated, other_shape]
+    schemas = [observed_structure_schema(sample) for sample in samples]
+
+    accumulated: set[str] = set()
+    merged: object = {}
+    for schema in schemas:
+        merged = merge_observed_structure_schemas([json_document(merged), copy.deepcopy(schema)])
+        names = _named_property_paths(merged)
+        assert accumulated <= names, f"merge dropped {sorted(accumulated - names)}"
+        accumulated = names
+
+    assert "$.limits.credits.balance" in accumulated
+    assert "$.limits.primary.used" in accumulated
+    assert "$.limits.limit_id" in accumulated
+
+
 @settings(max_examples=30)
 @given(st.lists(static_key_strategy(), min_size=1, max_size=4, unique=True))
 def test_collapse_dynamic_keys_leaves_static_only_objects_explicit(static_keys: list[str]) -> None:
