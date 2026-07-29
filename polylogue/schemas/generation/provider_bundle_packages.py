@@ -28,6 +28,7 @@ from polylogue.schemas.generation.packages import (
     _package_bundle_scope_count,
 )
 from polylogue.schemas.generation.replay import (
+    MembershipObservedAts,
     MembershipSamples,
     MembershipSessionIds,
     metadata_memberships,
@@ -181,6 +182,7 @@ def build_provider_catalog_artifacts(
             kind_metadata = select_artifact_memberships(package_metadata, element_kind)
             schema_samples = MembershipSamples(kind_memberships)
             conv_ids = MembershipSessionIds(kind_memberships)
+            observed_ats = MembershipObservedAts(kind_memberships)
             representative_paths: list[str] = []
             exact_structure_ids = _membership_exact_structure_ids(kind_metadata)
             profile_family_ids = _membership_profile_family_ids(kind_metadata)
@@ -198,6 +200,7 @@ def build_provider_catalog_artifacts(
                 conv_ids,
                 privacy_config=privacy_config,
                 artifact_kind=element_kind,
+                observed_ats=observed_ats,
             )
             _apply_schema_metadata(
                 schema,

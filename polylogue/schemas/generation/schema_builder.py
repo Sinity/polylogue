@@ -55,6 +55,7 @@ def _generate_cluster_schema(
     privacy_config: SchemaPrivacyConfig | None,
     full_corpus: bool = False,
     artifact_kind: str | None = None,
+    observed_ats: Collection[str | None] | None = None,
 ) -> tuple[MutableSchemaPayload, SchemaReport | None]:
     if not samples:
         return {"type": "object", "description": "No samples available"}, None
@@ -69,9 +70,13 @@ def _generate_cluster_schema(
     conv_ids_for_stats: Collection[str | None] | None = (
         conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
     )
+    observed_ats_for_stats: Collection[str | None] | None = (
+        observed_ats if observed_ats is not None and any(value is not None for value in observed_ats) else None
+    )
     field_stats = _collect_field_stats(
         samples,
         session_ids=conv_ids_for_stats,
+        observed_ats=observed_ats_for_stats,
         dynamic_paths=dynamic_object_paths(schema),
     )
     pins = _load_rejected_pins(provider)

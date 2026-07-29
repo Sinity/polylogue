@@ -69,10 +69,18 @@ def _collect_field_stats(
     samples: Collection[SampleMapping],
     *,
     session_ids: Collection[str | None] | None = None,
+    observed_ats: Collection[str | None] | None = None,
     dynamic_paths: Collection[str] = (),
     max_depth: int = 15,
 ) -> FieldStatsByPath:
-    """Walk all samples and collect per-JSON-path statistics."""
+    """Walk all samples and collect per-JSON-path statistics.
+
+    ``observed_ats`` is one record timestamp per sample (parallel to
+    ``session_ids``), already read from the acquiring record -- see
+    ``SchemaUnit.observed_at``. It is rolled up per-field into
+    ``FieldStats.field_first_seen``/``field_last_seen`` without a second
+    timestamp scan.
+    """
     all_stats: FieldStatsByPath = {}
     dict_key_sets: DictKeySetsByPath = {}
 
@@ -85,6 +93,7 @@ def _collect_field_stats(
     string_length_cap = 2000
 
     current_session_id: str | None = None
+    current_observed_at: str | None = None
 
     def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
         if depth > max_depth:
@@ -95,6 +104,8 @@ def _collect_field_stats(
         stats.max_depth_seen = max(stats.max_depth_seen, depth)
         stats.type_counts[_type_name(value)] += 1
         stats.observe_document(sample_idx, non_null=value is not None)
+        if current_observed_at is not None:
+            stats.observe_field_timestamp(current_observed_at)
 
         if value is None:
             stats.null_count += 1
@@ -227,8 +238,10 @@ def _collect_field_stats(
                     stats.detected_formats[fmt] += 1
 
     session_id_iterator = iter(session_ids) if session_ids is not None else None
+    observed_at_iterator = iter(observed_ats) if observed_ats is not None else None
     for idx, sample in enumerate(samples):
         current_session_id = next(session_id_iterator, None) if session_id_iterator is not None else None
+        current_observed_at = next(observed_at_iterator, None) if observed_at_iterator is not None else None
         _walk(sample, "$", 0, idx)
 
     total_samples = len(samples)
