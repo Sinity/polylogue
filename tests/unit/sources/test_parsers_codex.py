@@ -14,7 +14,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from polylogue.sources.parsers.codex import parse_stream
+from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
 
 
 def looks_like(payload: object) -> bool:
@@ -1653,3 +1653,43 @@ class TestUnreadFieldTriage:
         result_message = result.messages[1]
         assert result_message.blocks[0].is_error is True
         assert result_message.text == "tool call error: token_expired"
+
+
+def test_standalone_apply_patch_exposes_the_operated_path_for_indexing() -> None:
+    """polylogue-a9hx: apply_patch carries its payload as a PATCH-FORMAT STRING
+    under ``arguments``, not JSON, so the operated-on path lives in a
+    ``*** Update File:`` header where no ``json_extract`` can reach it.
+
+    ``blocks.tool_path`` and ``blocks.search_text`` are both generated from
+    ``$.file_path``/``$.path``, so every Codex file edit was invisible to
+    structured path queries and to FTS -- measured 0.07% tool_path coverage
+    for codex-session against 44% for claude-code-session, with apply_patch
+    accounting for 95% of Codex tool calls.
+
+    Mutation that fails this: remove the ``_PATCH_TOOL_NAMES`` branch from
+    ``_tool_input_from_arguments`` -- ``path`` disappears and the generated
+    column goes back to NULL.
+    """
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: polylogue/sources/parsers/codex.py\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** Add File: docs/notes.md\n"
+        "+hello\n"
+    )
+    tool_input = _tool_input_from_arguments(patch, tool_name="apply_patch")
+
+    assert tool_input["path"] == "polylogue/sources/parsers/codex.py"
+    assert tool_input["paths"] == ["polylogue/sources/parsers/codex.py", "docs/notes.md"]
+    assert tool_input["patch"] == patch
+
+
+def test_non_patch_tool_arguments_are_left_alone() -> None:
+    """A non-patch tool whose arguments happen to be a string must not be
+    scanned for patch headers -- that would invent a path from prose."""
+    tool_input = _tool_input_from_arguments("*** Update File: not-a-patch.txt", tool_name="add_issue_comment")
+
+    assert "path" not in tool_input
+    assert tool_input["arguments"] == "*** Update File: not-a-patch.txt"
