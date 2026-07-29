@@ -159,12 +159,14 @@ class _MCPSurface:
         self._server = build_server(capabilities=ALL_CAPABILITIES)
 
     async def provider_ids(self, origin: str) -> tuple[str, ...]:
-        payload = await self._server._tool_manager._tools["list_sessions"].fn(limit=100, origin=origin)
+        payload = await self._server._tool_manager._tools["query"].fn(projection="sessions", limit=100, origin=origin)
         items = json.loads(payload).get("items", [])
         return tuple(sorted({str(i["id"]) for i in items}))
 
     async def search_ids(self, query: str) -> tuple[str, ...]:
-        payload = await self._server._tool_manager._tools["search"].fn(query=query, limit=100)
+        payload = await self._server._tool_manager._tools["query"].fn(
+            projection="sessions", expression=query, limit=100
+        )
         parsed = json.loads(payload)
         hits = parsed.get("hits", parsed.get("items", []))
         ids: list[str] = []
@@ -176,7 +178,7 @@ class _MCPSurface:
         return tuple(sorted(set(ids)))
 
     async def archive_facts(self) -> tuple[int, int, dict[str, int], tuple[str, ...]]:
-        payload = await self._server._tool_manager._tools["list_sessions"].fn(limit=1000)
+        payload = await self._server._tool_manager._tools["query"].fn(projection="sessions", limit=1000)
         items = json.loads(payload).get("items", [])
         ids = tuple(sorted(str(i["id"]) for i in items))
         origin_counts: dict[str, int] = {}
