@@ -17,6 +17,7 @@ from polylogue.archive.ingest_flags import (
 from polylogue.browser_capture.identity import legacy_browser_capture_native_id
 from polylogue.browser_capture.models import (
     BrowserCaptureAttachment,
+    BrowserCaptureBlock,
     BrowserCaptureEnvelope,
     BrowserCaptureTurn,
     looks_like_browser_capture,
@@ -42,7 +43,17 @@ def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock
     ``BrowserCaptureBlock`` mirrors ``ParsedContentBlock`` field-for-field
     (polylogue-ah21) so this is a direct projection, not a reconstruction --
     the capture adapter is the thing that decided ``type``/``tool_id``/
-    ``tool_input``/``is_error``, not this parser.
+    ``tool_input``/``is_error``, not this parser. ``text``/``tool_name``/
+    ``tool_id``/``tool_input``/``media_type``/``is_error``/``exit_code`` all
+    land on real typed columns. ``metadata`` does not -- the ``blocks`` table
+    has no metadata column and the write path only reads a ``language`` key
+    back out of it (``storage/sqlite/archive_tiers/write.py:
+    _block_language``), so anything the capture extension attaches here would
+    be silently dropped at write time (bd polylogue-9x22). See
+    ``_block_metadata_evidence_events`` below, which routes it through
+    ``session_events`` instead -- the capture extension's own wire protocol
+    has no fixed vocabulary for this field, so (unlike other polylogue-9x22
+    sites) the whole dict is carried verbatim rather than picking known keys.
     """
 
     return [
@@ -59,6 +70,34 @@ def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock
         )
         for block in turn.blocks
     ]
+
+
+def _block_metadata_evidence_events(
+    blocks: list[BrowserCaptureBlock],
+    *,
+    source_message_provider_id: str,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    """Carry ``BrowserCaptureBlock.metadata`` into session_events, verbatim.
+
+    One event per block with non-empty metadata; ``block_index`` lets a
+    reader re-associate the event with its block in ``turn.blocks`` order
+    (same shape as ``claude/common.py``'s ``claude_ai_web_tool_evidence``).
+    """
+
+    events: list[ParsedSessionEvent] = []
+    for block_index, block in enumerate(blocks):
+        if not block.metadata:
+            continue
+        events.append(
+            ParsedSessionEvent(
+                event_type="browser_capture_block_metadata",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload={"block_index": block_index, **dict(block.metadata)},
+            )
+        )
+    return events
 
 
 def _claude_raw_content_segments(turn: BrowserCaptureTurn) -> list[dict[str, object]] | None:
@@ -633,6 +672,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
+    block_metadata_events: list[ParsedSessionEvent] = []
     message_position = 0
 
     for turn in envelope.session.turns:
@@ -651,6 +691,13 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                 is_active_path=True,
                 model_name=envelope.session.model,
                 blocks=_parsed_blocks_for_turn(turn),
+            )
+        )
+        block_metadata_events.extend(
+            _block_metadata_evidence_events(
+                turn.blocks,
+                source_message_provider_id=turn.provider_turn_id,
+                timestamp=turn.timestamp,
             )
         )
         message_position += 1
@@ -688,7 +735,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        session_events=_capture_session_events(envelope),
+        session_events=[*_capture_session_events(envelope), *block_metadata_events],
         ingest_flags=[
             *dict.fromkeys(
                 [
