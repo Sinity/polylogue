@@ -117,11 +117,13 @@ def test_validate_check_options_rejects_target_mode_mismatches() -> None:
             check_workflow.validate_check_options(_options(cleanup=True, maintenance_targets=("repair_only",)))
 
 
-def test_formatting_helpers_cover_plan_counts_details_and_run_sections(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
+def test_formatting_helpers_cover_plan_counts_details_and_run_sections() -> None:
+    # ``plain_forced_by_env`` is a pure passthrough of an already-resolved
+    # bool -- POLYLOGUE_FORCE_PLAIN env-var resolution happens once, in the
+    # 5-layer config resolution (#3079), pinned by
+    # tests/unit/core/test_config_inventory.py::TestForcePlainBooleanEnvParsing.
     assert formatting.plain_forced_by_env() is False
-    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "yes")
-    assert formatting.plain_forced_by_env() is True
+    assert formatting.plain_forced_by_env(force_plain=True) is True
 
     counts = {
         "sessions": 4,

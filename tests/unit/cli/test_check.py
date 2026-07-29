@@ -11,7 +11,6 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow
-from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
@@ -28,7 +27,6 @@ from polylogue.schemas.validation.models import (
 )
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.ui import create_ui
 from tests.infra.archive_scenarios import open_index_db
 from tests.infra.json_contracts import (
     extract_json_result,
@@ -205,7 +203,10 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
         json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
     assert maintenance_item.get("name") == "session_insights"
-    assert maintenance_item.get("repaired_count") == 2
+    # `_targeted_session_insight_rebuild_ids` (polylogue/storage/repair.py)
+    # returns DISTINCT session_ids needing repair; this fixture seeds exactly
+    # one session, so at most one session can ever be pending here.
+    assert maintenance_item.get("repaired_count") == 1
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
@@ -453,8 +454,15 @@ class TestCheckCommand:
         assert "error" in summary
 
     def test_check_runtime_only_skips_archive_readiness(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from tests.infra.app_env import make_app_env
+
         runtime_report = ReadinessReport(checks=[ReadinessCheck("runtime_only", VerifyStatus.OK, summary="runtime ok")])
-        env = AppEnv(ui=create_ui(True))
+        # `run_check_workflow` resolves `env.config` unconditionally (needed
+        # by `run_runtime_readiness` even on the runtime-only path) before
+        # branching on `_runtime_only_requested` -- a bare `AppEnv(ui=...)`
+        # raises ConfigError there since #3079 removed the ambient config
+        # fallback (polylogue-c66i).
+        env = make_app_env()
         options = CheckCommandOptions(
             json_output=True,
             verbose=False,

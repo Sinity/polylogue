@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import json
 import os
 import sqlite3
@@ -1969,7 +1970,14 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
         catch_exceptions=False,
     )
     assert terminal.exit_code == 0
-    terminal_payload = json.loads(terminal.output)
+    # Promotion logs `rebuild_terminal_stage_complete` structlog events to
+    # stderr per invocation (one per terminal stage) -- correct per the
+    # stdout=results/stderr=diagnostics channel-separation contract
+    # (test_stdout_stderr_split.py), but `.output` is Click 8.4's always-
+    # mixed stream (mix_stderr was removed; `.output` "mixes stdout and
+    # stderr, in the order they were written"). `.stdout` is the actual
+    # `--output-format json` contract surface.
+    terminal_payload = json.loads(terminal.stdout)
     assert terminal_payload["status"] == "replayed"
     assert terminal_payload["transaction"]["status"] == "promoted"
     assert root.joinpath("index.db").resolve() == generation_path.resolve()
@@ -2038,7 +2046,10 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
         catch_exceptions=False,
     )
     assert terminal.exit_code == 0
-    terminal_payload = json.loads(terminal.output)
+    # Promotion logs to stderr (see the sibling terminal-promotion test for
+    # the full rationale); `.stdout` is the actual `--output-format json`
+    # contract surface, `.output` is Click 8.4's always-mixed stream.
+    terminal_payload = json.loads(terminal.stdout)
     assert terminal_payload["status"] == "replayed"
 
     receipt_files = sorted(receipts_dir.glob("pass-*.json"))
@@ -2101,7 +2112,11 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
         catch_exceptions=False,
     )
     assert terminal.exit_code == 0
-    payload = json.loads(terminal.output)
+    # Terminal-stage-complete events (session_insights/bulk_build.*/fts_parity/
+    # readiness) log to stderr even with --no-promote; `.stdout` is the
+    # actual `--output-format json` contract surface, `.output` is Click
+    # 8.4's always-mixed stream.
+    payload = json.loads(terminal.stdout)
     assert payload["transaction"]["status"] == "ready"
     assert payload["generation"]["state"] == "inactive"
     with sqlite3.connect(Path(payload["generation"]["index_path"])) as conn:
@@ -2158,10 +2173,24 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
             source_path="deadline.jsonl",
             acquired_at_ms=1,
         )
-    clock = [100.0, 102.0]
+    # `monkeypatch.setattr("polylogue.maintenance.rebuild_index.time.time", ...)`
+    # patches the *stdlib* `time` module's `time` attribute (modules are
+    # process-wide singletons), not a private copy scoped to rebuild_index.py
+    # -- every `time.time()` call anywhere in the process during this
+    # invocation draws from the same mock. #3362 (84b8504cf) added an earlier
+    # `time.time()` call to the CLI callback itself
+    # (`click_app.py:_emit_schema_drift_marker`), which consumed the first of
+    # a hand-tuned 2-value `[100.0, 102.0]` list before rebuild_index.py's own
+    # `pass_started_at_ms` read it, collapsing the intended 2-second gap to
+    # zero and silently defeating the deadline check this test exists to
+    # prove. A monotonically-advancing fake clock with a large per-call step
+    # is robust to however many intervening `time.time()` calls production
+    # code makes before/between the two reads this test actually cares
+    # about, rather than pinning an exact call count.
+    fake_clock = itertools.count(100.0, 50.0)
     monkeypatch.setattr(
         "polylogue.maintenance.rebuild_index.time.time",
-        lambda: clock.pop(0) if clock else 102.0,
+        lambda: next(fake_clock),
     )
     first = cli_runner.invoke(
         cli,
@@ -2178,7 +2207,11 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
         catch_exceptions=False,
     )
     assert first.exit_code == 0
-    payload = json.loads(first.output)
+    # This pass replays a raw page through the shared revision-backfill
+    # machinery, which logs "backfill stage timings" to stderr on every
+    # call; `.stdout` is the actual `--output-format json` contract
+    # surface, `.output` is Click 8.4's always-mixed stream.
+    payload = json.loads(first.stdout)
     assert payload["status"] == "deferred"
     assert payload["transaction"]["status"] == "deferred"
     assert not root.joinpath("index.db").is_symlink()
@@ -2197,7 +2230,10 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
         catch_exceptions=False,
     )
     assert resumed.exit_code == 0
-    assert json.loads(resumed.output)["transaction"]["status"] == "promoted"
+    # This resume promotes, logging terminal-stage-complete events to stderr;
+    # `.stdout` is the actual `--output-format json` contract surface,
+    # `.output` is Click 8.4's always-mixed stream.
+    assert json.loads(resumed.stdout)["transaction"]["status"] == "promoted"
 
 
 def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path) -> None:

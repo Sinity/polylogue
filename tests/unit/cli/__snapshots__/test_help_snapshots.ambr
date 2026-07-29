@@ -129,6 +129,12 @@
                                     and LLM tool-use harnesses.
     --explain                       Explain query DSL parsing and lowering instead
                                     of executing the query.
+    --why                           On zero results, show the full miss breakdown:
+                                    which predicate(s) zeroed the result, nearest
+                                    since/until relaxation, and FTS-vs-structured
+                                    disagreement (the default already names the
+                                    zeroing predicate(s), just without those
+                                    extras).
     --stream                        Stream output (low memory). Requires --latest
                                     or -i ID.
     --set TEXT...                   Set metadata key value

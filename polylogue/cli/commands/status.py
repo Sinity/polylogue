@@ -473,6 +473,16 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "correlates Hermes lifecycle events with delivery receipts from user.db",
     ),
     "get_context_delivery": ("archive_routed", "user", "reads a durable context-delivery receipt from user.db"),
+    "get_hook_event_summary_for_session": (
+        "archive_routed",
+        "source",
+        "reads per-event-type hook-event counts from source.db raw_hook_events",
+    ),
+    "hermes_integration_health": (
+        "archive_routed",
+        "index",
+        "composes bounded Hermes integration health evidence from multi-tier archive reads (fs1.15)",
+    ),
     "import_annotation_batch": (
         "archive_routed",
         "user",

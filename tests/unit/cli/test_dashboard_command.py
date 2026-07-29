@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -11,12 +13,22 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.shared.types import AppEnv
+from polylogue.config import Config
+from polylogue.services import RuntimeServices
 
 
 def _make_env() -> AppEnv:
     ui: Any = MagicMock()
     ui.plain = True
-    return AppEnv(ui=ui)
+    # #3079 removed the ambient config fallback ``AppEnv``/``RuntimeServices``
+    # used to have -- a bare ``AppEnv(ui=ui)`` now raises ConfigError the
+    # first time ``env.polylogue``/``env.config`` is touched (the default
+    # launch path constructs ``PolylogueApp(polylogue=env.polylogue)``).
+    # Supply an explicit, disposable Config via the documented "explicit
+    # library caller" compatibility path (polylogue-c66i).
+    root = Path(tempfile.mkdtemp(prefix="polylogue-dashboard-test-"))
+    config = Config(archive_root=root, render_root=root, sources=[])
+    return AppEnv(ui=ui, services=RuntimeServices(config=config))
 
 
 def test_dashboard_status_json_reports_terminal_surface_and_no_web_launch(monkeypatch: pytest.MonkeyPatch) -> None:

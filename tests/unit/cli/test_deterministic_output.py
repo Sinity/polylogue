@@ -356,44 +356,35 @@ class TestJsonDeterminism:
 
 
 @pytest.mark.parametrize(
-    ("plain", "env_value", "tty", "expected"),
+    ("plain", "force_plain", "tty", "expected"),
     [
-        (True, None, True, True),
-        (False, "1", True, True),
-        (False, None, False, True),
-        (False, None, True, False),
+        (True, False, True, True),
+        (False, True, True, True),
+        (False, False, False, True),
+        (False, False, True, False),
     ],
 )
 def test_should_use_plain_contract(
     plain: bool,
-    env_value: str | None,
+    force_plain: bool,
     tty: bool,
     expected: bool,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from polylogue.cli.shared.formatting import should_use_plain
+    """``should_use_plain`` is a pure function of already-resolved bools.
 
-    if env_value is None:
-        monkeypatch.delenv("POLYLOGUE_FORCE_PLAIN", raising=False)
-    else:
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", env_value)
-    monkeypatch.delenv("NO_COLOR", raising=False)
+    ``POLYLOGUE_FORCE_PLAIN`` environment-variable resolution happens once,
+    in the 5-layer config resolution (``resolve_runtime_config`` /
+    ``ConfigInventoryEntry(env_var="POLYLOGUE_FORCE_PLAIN")``), pinned by
+    ``tests/unit/core/test_config_inventory.py::TestForcePlainBooleanEnvParsing``.
+    By the time CLI code reaches ``should_use_plain`` the value has already
+    been resolved into a plain bool (#3079 closed the ambient-fallback gap
+    this test used to exercise directly), so this exercises the passthrough
+    contract, mirroring ``test_color_and_layout.py::TestNoColorEnv``.
+    """
+    from polylogue.cli.shared.formatting import should_use_plain
 
     with patch("sys.stdout.isatty", return_value=tty), patch("sys.stderr.isatty", return_value=tty):
-        assert should_use_plain(plain=plain) is expected
-
-
-@pytest.mark.parametrize("falsey", ["0", "false", "no"])
-def test_should_use_plain_falsey_env_values_do_not_force_plain(
-    falsey: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.cli.shared.formatting import should_use_plain
-
-    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", falsey)
-    monkeypatch.delenv("NO_COLOR", raising=False)
-    with patch("sys.stdout.isatty", return_value=True), patch("sys.stderr.isatty", return_value=True):
-        assert should_use_plain(plain=False) is False
+        assert should_use_plain(plain=plain, force_plain=force_plain) is expected
 
 
 def test_announce_plain_mode_writes_to_stderr() -> None:

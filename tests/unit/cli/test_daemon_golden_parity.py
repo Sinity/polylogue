@@ -186,9 +186,17 @@ def test_facets_json_parity_between_direct_and_daemon(
         thread.join(timeout=2)
 
     # `generated_at` is a genuine wall-clock timestamp stamped independently
-    # by each call, not a parity signal.
-    direct_payload.pop("generated_at", None)
-    daemon_payload.pop("generated_at", None)
+    # by each call, not a parity signal. `elapsed_s` (both top-level and
+    # nested under `availability` -- FacetsResponse duplicates it,
+    # polylogue/api/archive.py) is likewise a real per-call wall-clock
+    # measurement of how long the facets projection took, not a parity
+    # signal -- it necessarily differs between two independent invocations.
+    for payload in (direct_payload, daemon_payload):
+        payload.pop("generated_at", None)
+        payload.pop("elapsed_s", None)
+        availability = payload.get("availability")
+        if isinstance(availability, dict):
+            availability.pop("elapsed_s", None)
     assert daemon_payload == direct_payload
 
 
