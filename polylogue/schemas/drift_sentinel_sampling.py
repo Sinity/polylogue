@@ -33,18 +33,25 @@ logger = get_logger(__name__)
 def record_schema_drift_observations_to_ops_sync(
     index_db_path: Path,
     observations: list[SchemaDriftObservation],
+    *,
+    archive_root: Path | None = None,
 ) -> int:
     """Append one ops.db sample per observation. Returns the count written.
 
     ``index_db_path`` is the just-committed index.db connection's file
-    path; ``ops.db`` is resolved as its sibling. Returns 0 on any failure
-    (missing sibling file, unreachable connection, disposable-tier not yet
-    initialized) without raising.
+    path; ``ops.db`` is resolved as its sibling by default. ``index_db_path``
+    can be ``Config.db_path``, which per polylogue-yla8.1 names the resolved
+    active generation rather than the plain archive root once an
+    ``.index-active-pointer`` is active -- callers that already have the
+    plain archive root in scope (e.g. the ingest writer, which threads both
+    ``db_path`` and ``archive_root_str`` through the same commit path)
+    should pass it explicitly via ``archive_root`` instead of relying on
+    the sibling derivation.
     """
     if not observations:
         return 0
 
-    ops_db_path = index_db_path.with_name("ops.db")
+    ops_db_path = (archive_root / "ops.db") if archive_root is not None else index_db_path.with_name("ops.db")
     if not ops_db_path.exists():
         return 0
 

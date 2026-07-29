@@ -91,6 +91,7 @@ def record_cursor_lag_sample(
     summary: CursorLagSummary,
     *,
     now: datetime | None = None,
+    ops_db: Path | None = None,
 ) -> int:
     """Persist one cursor-lag sample row per family with stuck files.
 
@@ -111,7 +112,8 @@ def record_cursor_lag_sample(
     per_family_lags = _bucket_stuck_lags_by_family(summary.stuck)
     if not any(family_summary.stuck_file_count > 0 for family_summary in summary.family_summaries):
         return 0
-    return _record_archive_cursor_lag_samples(dbf.with_name("ops.db"), summary, per_family_lags, observed_at_ms)
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
+    return _record_archive_cursor_lag_samples(resolved_ops_db, summary, per_family_lags, observed_at_ms)
 
 
 def gc_cursor_lag_samples(
@@ -119,6 +121,7 @@ def gc_cursor_lag_samples(
     *,
     retention_days: int,
     now: datetime | None = None,
+    ops_db: Path | None = None,
 ) -> int:
     """Delete samples older than ``retention_days``. Returns rows removed.
 
@@ -128,7 +131,8 @@ def gc_cursor_lag_samples(
     """
     if retention_days <= 0:
         return 0
-    return _gc_archive_cursor_lag_samples(dbf.with_name("ops.db"), retention_days=retention_days, now=now)
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
+    return _gc_archive_cursor_lag_samples(resolved_ops_db, retention_days=retention_days, now=now)
 
 
 def load_family_baseline(
@@ -138,6 +142,7 @@ def load_family_baseline(
     window_days: int,
     min_samples: int,
     now: datetime | None = None,
+    ops_db: Path | None = None,
 ) -> FamilyBaseline:
     """Compute the rolling-window baseline for one family.
 
@@ -149,8 +154,9 @@ def load_family_baseline(
     """
     moment = now or datetime.now(UTC)
     window_start = moment - timedelta(days=max(1, window_days))
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
     baseline = _load_archive_family_baseline(
-        dbf.with_name("ops.db"),
+        resolved_ops_db,
         family,
         window_start=window_start,
         min_samples=min_samples,
@@ -174,10 +180,13 @@ def load_family_baselines(
     window_days: int,
     min_samples: int,
     now: datetime | None = None,
+    ops_db: Path | None = None,
 ) -> dict[str, FamilyBaseline]:
     """Batched read of :func:`load_family_baseline` for many families."""
     return {
-        family: load_family_baseline(dbf, family, window_days=window_days, min_samples=min_samples, now=now)
+        family: load_family_baseline(
+            dbf, family, window_days=window_days, min_samples=min_samples, now=now, ops_db=ops_db
+        )
         for family in families
     }
 

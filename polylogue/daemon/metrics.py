@@ -776,7 +776,10 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
     failed_sessions = 0
     status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
     meta_table = "message_embeddings_meta" if _table_exists(conn, "message_embeddings_meta") else ""
-    embeddings_db = Path(conn.execute("PRAGMA database_list").fetchone()[2]).with_name("embeddings.db")
+    if ops_db is not None:
+        embeddings_db = ops_db.parent / "embeddings.db"
+    else:
+        embeddings_db = Path(conn.execute("PRAGMA database_list").fetchone()[2]).with_name("embeddings.db")
     if not status_table and embeddings_db.exists():
         conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
         status_table = _attached_table_name(conn, "embeddings", "embedding_status")

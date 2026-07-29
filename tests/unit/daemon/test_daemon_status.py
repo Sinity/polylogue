@@ -368,6 +368,7 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     cursor.mark_failed(failed)
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -542,6 +543,7 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     cursor.mark_failed(failed)
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -849,6 +851,7 @@ def test_daemon_status_prefers_archive_ops_live_cursor(tmp_path: Path) -> None:
     cursor.mark_failed(failed)
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -892,6 +895,7 @@ def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
         cursor.mark_failed(failed)
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -958,6 +962,7 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     )
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -1060,6 +1065,7 @@ def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None
         )
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -1138,6 +1144,7 @@ def test_daemon_status_reads_ops_tier_when_archive_db_exists(tmp_path: Path) -> 
         )
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -1172,6 +1179,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     )
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -2184,6 +2192,7 @@ def test_daemon_status_flags_stale_live_ingest_attempts(tmp_path: Path, frozen_c
         conn.commit()
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -2261,6 +2270,7 @@ def test_daemon_status_flags_slow_but_progressing_live_ingest_attempt(
         conn.commit()
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),
@@ -2308,6 +2318,7 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
         conn.commit()
 
     with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
         patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
         patch("polylogue.daemon.status._blob_size_info", return_value=0),

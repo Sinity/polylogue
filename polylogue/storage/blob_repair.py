@@ -50,10 +50,14 @@ def _referenced_blob_hashes(
     conn: sqlite3.Connection,
     *,
     db_path: Path | None = None,
+    configured_root: Path | None = None,
 ) -> tuple[set[str], list[str]]:
     hashes, surfaces = _archive_blob_hashes(conn, surface_prefix="current")
 
-    source_db_path = db_path.with_name("source.db") if db_path is not None else None
+    if configured_root is not None:
+        source_db_path: Path | None = configured_root / "source.db"
+    else:
+        source_db_path = db_path.with_name("source.db") if db_path is not None else None
     if source_db_path is not None and source_db_path != db_path and source_db_path.exists():
         try:
             source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
@@ -83,12 +87,19 @@ def _surface_detail(surfaces: list[str]) -> str:
     return "references: " + ", ".join(sorted(dict.fromkeys(surfaces)))
 
 
-def count_orphaned_blobs_sync(conn: sqlite3.Connection, *, db_path: Path | str | None = None) -> int:
+def count_orphaned_blobs_sync(
+    conn: sqlite3.Connection, *, db_path: Path | str | None = None, configured_root: Path | None = None
+) -> int:
     from polylogue.storage.blob_store import BlobStore, get_blob_store
 
     resolved_db_path = Path(db_path) if db_path else None
-    referenced_hashes, _surfaces = _referenced_blob_hashes(conn, db_path=resolved_db_path)
-    store = BlobStore(resolved_db_path.parent / "blob") if resolved_db_path is not None else get_blob_store()
+    referenced_hashes, _surfaces = _referenced_blob_hashes(
+        conn, db_path=resolved_db_path, configured_root=configured_root
+    )
+    if configured_root is not None:
+        store = BlobStore(configured_root / "blob")
+    else:
+        store = BlobStore(resolved_db_path.parent / "blob") if resolved_db_path is not None else get_blob_store()
     return store.detect_orphans(referenced_hashes).orphan_count
 
 

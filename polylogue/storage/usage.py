@@ -1120,7 +1120,7 @@ def _source_raw_stats(
     origin: str | None,
     limit: int | None,
 ) -> tuple[dict[str, dict[str, int]], dict[str, tuple[str, ...]], str | None]:
-    alias = _source_schema_alias(conn)
+    alias = _source_schema_alias(conn, archive_root=archive_root)
     if alias is None:
         return {}, {}, "source.db raw_sessions unavailable; acquired-not-materialized coverage cannot be checked"
     alias_sql = _quote_identifier(alias)
@@ -1418,11 +1418,11 @@ def _stale_provider_rollup_stats(
     return counts, samples
 
 
-def _source_schema_alias(conn: sqlite3.Connection) -> str | None:
+def _source_schema_alias(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> str | None:
     for alias in ("source_tier", "source_debt", "source", "usage_source_tier"):
         if _table_exists_in_schema(conn, alias, "raw_sessions"):
             return alias
-    source_db = _sibling_source_db(conn)
+    source_db = (archive_root / "source.db") if archive_root is not None else _sibling_source_db(conn)
     if source_db is None or not source_db.exists():
         return None
     try:

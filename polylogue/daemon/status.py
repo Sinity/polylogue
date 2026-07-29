@@ -107,12 +107,13 @@ def _daemon_status_fingerprint(active_db: Path) -> str:
     Stat-only (no query execution), so checking it stays cheap even when the
     cached value itself is reused.
     """
+    ops_db = archive_root() / "ops.db"
     parts: list[str] = []
     for candidate in (
         active_db,
         active_db.with_suffix(".db-wal"),
-        active_db.with_name("ops.db"),
-        active_db.with_name("ops.db-wal"),
+        ops_db,
+        ops_db.with_suffix(".db-wal"),
     ):
         try:
             parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
@@ -1093,7 +1094,7 @@ def _failing_files_info() -> list[str]:
 def _live_cursor_summary_info() -> LiveCursorSummary:
     """Return live cursor backlog/failure state without source-tree scans."""
     dbf = _active_status_db_path()
-    ops_summary = _archive_live_cursor_summary_info(dbf.with_name("ops.db"))
+    ops_summary = _archive_live_cursor_summary_info(archive_root() / "ops.db")
     if ops_summary is not None:
         return ops_summary
     if not dbf.exists():
@@ -1249,7 +1250,7 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     # sibling_index_db(dbf, require_exists=False) call was provably an
     # identity operation on dbf itself.
     dbf = _active_status_db_path()
-    ops_summary = _archive_live_ingest_attempt_summary_info(dbf.with_name("ops.db"))
+    ops_summary = _archive_live_ingest_attempt_summary_info(archive_root() / "ops.db")
     index_db: Path | None = dbf
     if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
         return ops_summary
@@ -2237,14 +2238,14 @@ def _daemon_status_component_specs(
         StatusComponentSpec(
             name="convergence",
             scope="daemon",
-            collector=lambda: convergence_debt_summary_info(_active_status_db_path()),
+            collector=lambda: convergence_debt_summary_info(_active_status_db_path(), ops_db=archive_root() / "ops.db"),
             deadline_s=0.5,
             fingerprint=fingerprint,
         ),
         StatusComponentSpec(
             name="cursor_lag",
             scope="daemon",
-            collector=lambda: cursor_lag_summary_info(_active_status_db_path()),
+            collector=lambda: cursor_lag_summary_info(_active_status_db_path(), ops_db=archive_root() / "ops.db"),
             deadline_s=0.5,
             fingerprint=fingerprint,
         ),
@@ -2476,6 +2477,7 @@ def build_daemon_status(
         active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
         convergence=convergence,
+        ops_db=archive_root() / "ops.db",
     )
     raw_failures: dict[str, object] = _v("raw_failures", {})
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())

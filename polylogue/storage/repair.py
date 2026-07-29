@@ -5369,6 +5369,7 @@ def collect_archive_debt_statuses_sync(
     include_expensive: bool = True,
     probe_only: bool = False,
     target_names: tuple[str, ...] = (),
+    configured_root: Path | None = None,
 ) -> dict[str, ArchiveDebtStatus]:
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
@@ -5452,7 +5453,7 @@ def collect_archive_debt_statuses_sync(
             skipped=skip_large_message_scans,
         )
     if include_expensive and "orphaned_blobs" in selected:
-        orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
+        orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path, configured_root=configured_root)
         debt_statuses["orphaned_blobs"] = _archive_debt_status(
             "orphaned_blobs",
             issue_count=orphaned_blobs,

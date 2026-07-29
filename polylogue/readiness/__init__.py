@@ -36,7 +36,7 @@ from polylogue.readiness.capability import (
     component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
-from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
 from polylogue.storage.archive_readiness import raw_materialization_ready
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.repair import ArchiveDebtStatus
@@ -546,6 +546,7 @@ def _collect_table_status_best_effort(
     db_path: Path,
     deep: bool,
     probe_only: bool,
+    configured_root: Path | None = None,
 ) -> tuple[dict[str, DerivedModelStatus], dict[str, ArchiveDebtStatus]]:
     """Collect derived-model and archive-debt statuses without aborting.
 
@@ -571,6 +572,7 @@ def _collect_table_status_best_effort(
             derived_statuses=derived_statuses,
             include_expensive=deep,
             probe_only=probe_only,
+            configured_root=configured_root,
         )
     except sqlite3.OperationalError:
         archive_debt = {}
@@ -689,7 +691,11 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
         # Run table-dependent collectors best-effort so archive integrity
         # probes above always register.
         derived_statuses, archive_debt = _collect_table_status_best_effort(
-            conn, db_path=db_path, deep=deep, probe_only=probe_only or not deep
+            conn,
+            db_path=db_path,
+            deep=deep,
+            probe_only=probe_only or not deep,
+            configured_root=archive_file_set_root(archive_root=archive_root, db_path=db_path),
         )
         checks.extend(_archive_debt_checks(archive_debt, deep=deep))
         checks.extend(_derived_model_checks(derived_statuses))

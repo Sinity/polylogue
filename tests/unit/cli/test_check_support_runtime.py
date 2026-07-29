@@ -175,7 +175,7 @@ def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> 
         }
         payload = check_workflow._run_blob_store_check(config, full=True)
 
-    scan.assert_called_once_with(config.db_path, full=True)
+    scan.assert_called_once_with(config.db_path, full=True, configured_root=config.archive_root)
     assert payload["ok"] is False
     findings = cast(list[JSONDocument], payload["findings"])
     assert findings[0]["kind"] == "orphan_blobs"

@@ -1440,6 +1440,7 @@ def _process_ingest_batch_sync(
                 record_schema_drift_observations_to_ops_sync(
                     db_path,
                     summary.schema_drift_observations,
+                    archive_root=archive_root,
                 )
     except Exception:
         # Roll back the row writes.  If a caller explicitly opted into

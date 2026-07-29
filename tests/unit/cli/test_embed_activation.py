@@ -526,7 +526,9 @@ class TestBackfillCommand:
         assert result.exit_code == 0, result.output
         assert "Embedded 1" in result.output
         assert fake_select.call_args.kwargs["max_messages"] == 2
-        fake_embed.assert_called_once_with(index_db, fake_provider, "codex-session:v1")
+        fake_embed.assert_called_once_with(
+            index_db, fake_provider, "codex-session:v1", embeddings_db_path=index_db.parent / "embeddings.db"
+        )
         old_iter.assert_not_called()
 
     def test_backfill_json_outputs_structured_result(

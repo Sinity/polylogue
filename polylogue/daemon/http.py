@@ -1785,9 +1785,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if path == ["metrics"]:
             from polylogue.daemon.metrics import handle_metrics
             from polylogue.paths import archive_root
-            from polylogue.storage.archive_identity import resolve_active_index_path
 
-            handle_metrics(self, resolve_active_index_path(archive_root()))
+            handle_metrics(self, archive_root() / "index.db")
             return
 
         required_scope: WebCredentialScope = "events" if path == ["api", "events"] else "read"
@@ -5048,12 +5047,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
 
         from polylogue.paths import archive_root
-        from polylogue.storage.archive_identity import resolve_active_index_path
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
         from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
-        ops_db = resolve_active_index_path(archive_root()).with_name("ops.db")
+        ops_db = archive_root() / "ops.db"
         with open_daemon_connection(ops_db) as conn:
             table_count = int(
                 conn.execute(
@@ -5103,9 +5101,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         body = self.rfile.read(content_length) if content_length > 0 else b""
         from polylogue.paths import archive_root
-        from polylogue.storage.archive_identity import resolve_active_index_path
 
-        ops_db = resolve_active_index_path(archive_root()).with_name("ops.db")
+        ops_db = archive_root() / "ops.db"
 
         if signal == "traces":
             result = handle_traces(body, content_type, db_path=str(ops_db))

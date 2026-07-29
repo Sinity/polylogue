@@ -629,7 +629,9 @@ def backfill_subcommand(
     if rebuild:
         from polylogue.storage.embeddings.materialization import mark_all_archive_sessions_needs_reindex
 
-        mark_all_archive_sessions_needs_reindex(index_db)
+        mark_all_archive_sessions_needs_reindex(
+            index_db, embeddings_db_path=location.active_tier("embeddings").configured_path
+        )
 
     embeddings_db = location.active_tier("embeddings").configured_path
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -658,6 +660,7 @@ def backfill_subcommand(
         max_errors=max_errors,
         min_messages=min_messages,
         output_format=output_format,
+        configured_root=location.configured_root,
     )
     if output_format == "json":
         _render_backfill_json(payload)
@@ -676,6 +679,7 @@ def _run_archive_backfill(
     max_errors: int | None,
     min_messages: int | None = None,
     output_format: str = "text",
+    configured_root: Path | None = None,
 ) -> BackfillResultPayload:
     """Run the embedding backfill loop.
 
@@ -761,7 +765,9 @@ def _run_archive_backfill(
                     f"(~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f}). Stopping.[/yellow]"
                 )
             break
-        outcome = embed_archive_session_sync(index_db, typed_provider, item.session_id)
+        outcome = embed_archive_session_sync(
+            index_db, typed_provider, item.session_id, embeddings_db_path=embeddings_db
+        )
         processed += 1
         batch_cost = 0.0
         if outcome.status == "embedded":
@@ -832,6 +838,7 @@ def _run_archive_backfill(
         embedded_messages=sum(item["embedded_message_count"] for item in session_payloads),
         estimated_cost_usd=cumulative_cost,
         stop_reason=stopped_reason,
+        configured_root=configured_root,
     )
     if output_format == "text":
         click.echo(f"\nBackfill complete. Embedded {embedded}, errors {errors}, est. cost ~${cumulative_cost:.4f}.")
@@ -852,13 +859,21 @@ def _record_archive_backfill_run(
     embedded_messages: int,
     estimated_cost_usd: float,
     stop_reason: str | None,
+    configured_root: Path | None = None,
 ) -> None:
-    """Persist archive backfill outcome in the ops-tier run ledger."""
+    """Persist archive backfill outcome in the ops-tier run ledger.
+
+    ``configured_root`` names the durable-tier archive root explicitly (an
+    index-only external generation's ``index_db`` can live outside it, same
+    rationale as ``embeddings_db`` in :func:`_run_archive_backfill`); it
+    defaults to ``index_db.with_name("ops.db")`` for callers that never
+    diverge from the plain convention.
+    """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    ops_db = index_db.with_name("ops.db")
+    ops_db = (configured_root / "ops.db") if configured_root is not None else index_db.with_name("ops.db")
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     terminal_status = "cancelled" if status == "stopped" else "completed"
     with closing(sqlite3.connect(ops_db, timeout=30.0)) as conn:
