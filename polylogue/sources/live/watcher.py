@@ -193,17 +193,17 @@ class LiveWatcher:
         self._max_workers = max_workers
         self._converger = converger
         self._write_coordinator = write_coordinator
-        # polylogue-wf8a: off by default (``live_watcher_parse_stage_split``).
-        # An explicit ``parse_stage`` always wins (tests / callers that want
-        # to own the stage's lifecycle themselves); otherwise one is created
+        # polylogue-wf8a: always on -- pre-parsing runs entirely BEFORE the
+        # write coordinator is ever asked for the writer hold
+        # (``LiveBatchProcessor._ingest_full_paths``), so it never contends
+        # with an active writer thread for the GIL regardless of interpreter
+        # build (see ``polylogue.sources.live.parse_prefetch`` for the full
+        # safety argument, identical in shape to ``DaemonParseStage``). An
+        # explicit ``parse_stage`` always wins (tests / callers that want to
+        # own the stage's lifecycle themselves); otherwise one is created
         # here, owned by this watcher, and shut down in ``stop()``.
         self._owns_parse_stage = parse_stage is None
-        if parse_stage is not None:
-            self._parse_stage: LiveParseStage | None = parse_stage
-        elif _load_live_watcher_parse_stage_split_config():
-            self._parse_stage = LiveParseStage()
-        else:
-            self._parse_stage = None
+        self._parse_stage: LiveParseStage | None = parse_stage if parse_stage is not None else LiveParseStage()
         self._pending_paths: set[Path] = set()
         self._pending_scheduled = False
         self._drain_task: asyncio.Task[None] | None = None
@@ -1380,13 +1380,6 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
         WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),
     )
-
-
-def _load_live_watcher_parse_stage_split_config() -> bool:
-    """Lazy config read so ``config.py`` is never imported at module load time."""
-    from polylogue.config import load_polylogue_config
-
-    return load_polylogue_config().live_watcher_parse_stage_split
 
 
 def _cursor_db_path(polylogue: Polylogue) -> Path:

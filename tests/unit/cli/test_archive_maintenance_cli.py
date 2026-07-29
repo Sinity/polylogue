@@ -2424,7 +2424,7 @@ def test_rebuild_index_plan_reports_weighted_top_rows(
     assert payload["status"] == "ok"
     assert payload["raw_session_count"] == 3
     assert payload["selected_raw_count"] == 3
-    assert payload["replay_order"] == "acquired_at_ms_asc_raw_id_asc"
+    assert payload["replay_order"] == "blob_hash_asc_raw_id_asc"
     assert payload["risk_order"] == "blob_size_desc"
     assert payload["cost_basis"]["primary"] == "source.db raw_sessions.blob_size"
     assert payload["totals"]["blob_bytes"] == 9_000

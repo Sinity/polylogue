@@ -519,7 +519,7 @@ async def _rebuild_index_from_source_owned(
                     derived_stores_cleared=True,
                 )
             page = generation_store.next_raw_page(transaction, limit=request.raw_batch_size)
-            selected_raw_ids = [raw_id for raw_id, _acquired_at_ms, _blob_size in page.rows]
+            selected_raw_ids = [raw_id for raw_id, _blob_hash_hex, _blob_size in page.rows]
             selected_raw_count = len(selected_raw_ids)
             skipped_by_blob_limit_count = 0
         else:
@@ -581,7 +581,7 @@ async def _rebuild_index_from_source_owned(
                         f"rebuild operation {transaction.operation_id} is stale because source evidence changed"
                     )
                 assert page is not None
-                last_raw_id, last_acquired_at_ms, _blob_size = page.rows[-1]
+                last_raw_id, last_blob_hash_hex, _blob_size = page.rows[-1]
                 elapsed_ms = int(time.time() * 1000) - pass_started_at_ms
                 deadline_expired = (
                     transaction.pass_deadline_ms is not None and elapsed_ms >= transaction.pass_deadline_ms
@@ -590,7 +590,7 @@ async def _rebuild_index_from_source_owned(
                 transaction = generation_store.checkpoint_transaction(
                     transaction,
                     status=status,
-                    last_acquired_at_ms=last_acquired_at_ms,
+                    last_blob_hash_hex=last_blob_hash_hex,
                     last_raw_id=last_raw_id,
                     processed_raw_count=transaction.processed_raw_count + len(selected_raw_ids),
                     processed_blob_bytes=transaction.processed_blob_bytes + sum(row[2] for row in page.rows),

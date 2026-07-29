@@ -60,7 +60,7 @@ class IndexRebuildTransaction:
     status: str
     created_at_ms: int
     updated_at_ms: int
-    last_acquired_at_ms: int | None = None
+    last_blob_hash_hex: str | None = None
     last_raw_id: str | None = None
     processed_raw_count: int = 0
     processed_blob_bytes: int = 0
@@ -80,21 +80,29 @@ class IndexRebuildTransaction:
 
     @property
     def cursor(self) -> str | None:
-        if self.last_acquired_at_ms is None or self.last_raw_id is None:
+        if self.last_blob_hash_hex is None or self.last_raw_id is None:
             return None
-        return f"source:{self.last_acquired_at_ms}:{self.last_raw_id}"
+        return f"source:{self.last_blob_hash_hex}:{self.last_raw_id}"
 
 
 @dataclass(frozen=True, slots=True)
 class RebuildRawPage:
-    """One bounded source-order scheduling decision.
+    """One bounded content-order scheduling decision.
+
+    Rows are ``(raw_id, blob_hash_hex, blob_size)``, ordered by
+    ``(blob_hash, raw_id)`` (polylogue-hord) rather than acquisition time --
+    see ``IndexGenerationStore.next_raw_page`` for why: content order makes
+    byte-identical duplicates adjacent so the existing per-page dedup group
+    in ``_parse_retained_raws`` (and the cross-page content cache layered on
+    top of it) actually captures them, instead of only catching whatever
+    duplicates happen to land close together in acquisition-time order.
 
     ``deferred_reason`` is scheduling evidence, not an admission decision: an
     oversized first row is still scheduled alone, and every later row remains
     reachable from the persisted keyset cursor on a later invocation.
     """
 
-    rows: tuple[tuple[str, int, int], ...]
+    rows: tuple[tuple[str, str, int], ...]
     has_more: bool
     deferred_reason: str | None = None
 
@@ -348,7 +356,7 @@ class IndexGenerationStore:
         transaction: IndexRebuildTransaction,
         *,
         status: str,
-        last_acquired_at_ms: int | None = None,
+        last_blob_hash_hex: str | None = None,
         last_raw_id: str | None = None,
         processed_raw_count: int | None = None,
         processed_blob_bytes: int | None = None,
@@ -361,9 +369,9 @@ class IndexGenerationStore:
                 **{
                     **asdict(transaction),
                     "status": status,
-                    "last_acquired_at_ms": last_acquired_at_ms
-                    if last_acquired_at_ms is not None
-                    else transaction.last_acquired_at_ms,
+                    "last_blob_hash_hex": last_blob_hash_hex
+                    if last_blob_hash_hex is not None
+                    else transaction.last_blob_hash_hex,
                     "last_raw_id": last_raw_id if last_raw_id is not None else transaction.last_raw_id,
                     "processed_raw_count": processed_raw_count
                     if processed_raw_count is not None
@@ -402,37 +410,63 @@ class IndexGenerationStore:
         *,
         limit: int,
     ) -> RebuildRawPage:
-        """Schedule one source-order page without materializing archive-wide IDs."""
+        """Schedule one content-order page without materializing archive-wide IDs.
+
+        Ordered by ``(blob_hash, raw_id)``, not acquisition time
+        (polylogue-hord). ``blob_hash`` is a fixed-length ``NOT NULL`` 32-byte
+        digest (``009_expand_origin_vocabulary.sql``), so byte-identical raws
+        -- including re-acquisitions/re-exports of the same content under an
+        entirely different ``acquired_at_ms`` -- sort adjacently and land in
+        the same or a neighboring page, where ``_parse_retained_raws``'s
+        existing per-page dedup grouping (and the cross-page content cache
+        layered on it, ``RawParsePrefetchCache``) actually collapses them
+        into a single parse. Acquisition-time order scattered duplicates
+        across the entire multi-hour rebuild instead, so only whatever
+        happened to land in the same bounded page or the cache's bounded
+        budget was ever caught.
+
+        ``(blob_hash, raw_id)`` is still a stable total order over
+        ``raw_sessions``, so the keyset cursor below resumes correctly; which
+        raws land on which page changes, but nothing about correctness does
+        -- revision/membership authority selection
+        (``session_revision_membership.classify_membership_revisions``) is a
+        pure function of each logical cohort's persisted rows (content
+        hashes, ``provider_updated_at``), and cohort expansion
+        (``ArchiveStore.expand_raw_membership_selection``) already walks the
+        full ``raw_sessions``/``raw_session_memberships`` graph regardless of
+        which page triggered it -- neither depends on processing order.
+        """
         if limit <= 0:
             raise ValueError("rebuild raw page limit must be positive")
         source_db = self.archive_root / "source.db"
-        if transaction.last_acquired_at_ms is None or transaction.last_raw_id is None:
+        if transaction.last_blob_hash_hex is None or transaction.last_raw_id is None:
             query = """
-                SELECT raw_id, acquired_at_ms, blob_size FROM raw_sessions
-                ORDER BY acquired_at_ms, raw_id LIMIT ?
+                SELECT raw_id, blob_hash, blob_size FROM raw_sessions
+                ORDER BY blob_hash, raw_id LIMIT ?
             """
             params: tuple[object, ...] = (limit + 1,)
         else:
+            last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex)
             query = """
-                SELECT raw_id, acquired_at_ms, blob_size FROM raw_sessions
-                WHERE acquired_at_ms > ?
-                   OR (acquired_at_ms = ? AND raw_id > ?)
-                ORDER BY acquired_at_ms, raw_id LIMIT ?
+                SELECT raw_id, blob_hash, blob_size FROM raw_sessions
+                WHERE blob_hash > ?
+                   OR (blob_hash = ? AND raw_id > ?)
+                ORDER BY blob_hash, raw_id LIMIT ?
             """
             params = (
-                transaction.last_acquired_at_ms,
-                transaction.last_acquired_at_ms,
+                last_blob_hash,
+                last_blob_hash,
                 transaction.last_raw_id,
                 limit + 1,
             )
         with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
             rows = conn.execute(query, params).fetchall()
-        selected: list[tuple[str, int, int]] = []
+        selected: list[tuple[str, str, int]] = []
         selected_bytes = 0
         deferred_reason: str | None = None
         budget = transaction.pass_byte_budget
-        for raw_id, acquired_at_ms, blob_size in rows:
-            raw = (str(raw_id), int(acquired_at_ms), int(blob_size or 0))
+        for raw_id, blob_hash, blob_size in rows:
+            raw = (str(raw_id), bytes(blob_hash).hex(), int(blob_size or 0))
             if budget is not None and selected and selected_bytes + raw[2] > budget:
                 deferred_reason = "byte-budget"
                 break

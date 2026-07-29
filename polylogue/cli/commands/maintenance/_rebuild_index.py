@@ -149,7 +149,7 @@ def _rebuild_index_selection_plan(
                 "only_missing": only_missing,
                 "raw_id_count": explicit_raw_id_count,
                 "max_blob_mb": max_blob_mb,
-                "replay_order": "acquired_at_ms_asc_raw_id_asc",
+                "replay_order": "blob_hash_asc_raw_id_asc",
                 "risk_order": "blob_size_desc",
                 "cost_basis": {
                     "primary": "source.db raw_sessions.blob_size",
@@ -267,7 +267,7 @@ def _rebuild_index_selection_plan(
         "only_missing": only_missing,
         "raw_id_count": explicit_raw_id_count,
         "max_blob_mb": max_blob_mb,
-        "replay_order": "acquired_at_ms_asc_raw_id_asc",
+        "replay_order": "blob_hash_asc_raw_id_asc",
         "risk_order": "blob_size_desc",
         "cost_basis": {
             "primary": "source.db raw_sessions.blob_size",

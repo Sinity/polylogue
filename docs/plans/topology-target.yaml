@@ -285,7 +285,7 @@ files:
     owner: archive-phase
     reason: archive-domain semantics
   - path: polylogue/archive/phase/extraction.py
-    loc: 138
+    loc: 166
     target: polylogue/archive/phase/extraction.py
     owner: archive-phase
     reason: archive-domain semantics
@@ -649,7 +649,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/extraction.py
-    loc: 445
+    loc: 503
     target: polylogue/archive/session/extraction.py
     owner: archive-session
     reason: archive-domain semantics
@@ -1297,7 +1297,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2902
+    loc: 2874
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1531,7 +1531,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2860
+    loc: 2856
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -2178,7 +2178,7 @@ files:
     target: polylogue/maintenance/raw_authority_reset.py
     owner: stable
   - path: polylogue/maintenance/rebuild_index.py
-    loc: 642
+    loc: 773
     target: polylogue/maintenance/rebuild_index.py
     owner: stable
   - path: polylogue/maintenance/registry.py
@@ -3723,7 +3723,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/index_generation.py
-    loc: 679
+    loc: 713
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/insights/__init__.py
@@ -4164,7 +4164,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 449
+    loc: 456
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py

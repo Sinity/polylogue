@@ -194,7 +194,7 @@ async def run_daemon_bulk_rebuild_pass(
 
     store = IndexGenerationStore.for_archive_root(root)
     page = await asyncio.to_thread(store.next_raw_page, transaction, limit=batch_size)
-    raw_ids = [raw_id for raw_id, _acquired_at_ms, _blob_size in page.rows]
+    raw_ids = [raw_id for raw_id, _blob_hash_hex, _blob_size in page.rows]
     if raw_ids:
         warmed = await asyncio.to_thread(
             parse_stage.warm_raw_ids,

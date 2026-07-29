@@ -1,0 +1,21 @@
+-- migration-safety: additive-no-backup
+-- Composite index backing content-order rebuild paging (polylogue-hord).
+-- IndexGenerationStore.next_raw_page (storage/index_generation.py) now pages
+-- raw_sessions ORDER BY (blob_hash, raw_id) instead of (acquired_at_ms,
+-- raw_id) so byte-identical duplicate raws -- previously scattered across an
+-- entire multi-hour rebuild by acquisition time -- land adjacently, where the
+-- existing per-page parse dedup (and the cross-page content cache layered on
+-- it) actually collapses them. The single-column idx_raw_sessions_blob_hash
+-- index (v14) only covers the blob-GC point lookup ("blob_hash = ?"); it
+-- does not let SQLite satisfy this ORDER BY / keyset WHERE without a TEMP
+-- B-TREE sort. At today's archive scale (~41K raw_sessions rows) that sort
+-- costs tens of milliseconds per page and is not the bottleneck (the ~26 GiB
+-- of avoided reparse work dwarfs it), but a leading (blob_hash, raw_id)
+-- index removes the sort entirely and keeps the paging query O(log n) per
+-- page as the corpus grows, rather than O(n log n) resorting the remaining
+-- table on every bounded pass.
+--
+-- Pure index add: cannot lose or corrupt data, trivially reversible
+-- (DROP INDEX), so no backup manifest is required.
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_blob_hash_raw_id
+ON raw_sessions(blob_hash, raw_id);

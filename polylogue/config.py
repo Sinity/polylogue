@@ -683,15 +683,6 @@ class PolylogueConfig:
         return float(str(value))
 
     @property
-    def live_watcher_parse_stage_split(self) -> bool:
-        """Opt-in: pre-parse watcher full-ingest candidates off the writer hold.
-
-        polylogue-wf8a. Off by default. See
-        ``polylogue.sources.live.parse_prefetch.LiveParseStage``.
-        """
-        return bool(self._data.get("live_watcher_parse_stage_split"))
-
-    @property
     def live_watcher_parse_stage_workers(self) -> int | None:
         """Worker cap for the watcher-owned pre-parse thread pool.
 
@@ -1516,21 +1507,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "live_watcher_parse_stage_split",
-        toml_path="watcher.parse_stage_split",
-        env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_SPLIT",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Opt-in (polylogue-wf8a): pre-parse the live watcher's "
-            "full-ingest catch-up/live-batch candidates (small JSONL files) "
-            "in a bounded thread pool BEFORE the writer hold, instead of "
-            "parsing inside the writer-held pass. Off by default; mirrors "
-            "the daemon raw-materialization parse-stage seam for "
-            "the watcher route ahead of the free-threaded 3.14t deploy."
-        ),
-    ),
-    ConfigInventoryEntry(
         "live_watcher_parse_stage_workers",
         toml_path="watcher.parse_stage_workers",
         env_var="POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS",
@@ -1678,7 +1654,6 @@ _BOOL_CONFIG_KEYS = frozenset(
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
         "judgment_automation_enabled",
-        "live_watcher_parse_stage_split",
     }
 )
 
@@ -1882,7 +1857,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "daemon_parse_stage_max_inflight_bytes": None,
         "daemon_parse_stage_max_cached_tree_bytes": None,
         "daemon_parse_stage_warm_timeout_seconds": None,
-        "live_watcher_parse_stage_split": False,
         "live_watcher_parse_stage_workers": None,
         "live_watcher_parse_stage_max_inflight_bytes": None,
         "live_watcher_parse_stage_warm_timeout_seconds": None,

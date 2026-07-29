@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 14
+SOURCE_SCHEMA_VERSION = 15
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -76,6 +76,13 @@ WHERE logical_source_key IS NOT NULL;
 -- delete phase.
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_blob_hash
 ON raw_sessions(blob_hash);
+
+-- v15 (polylogue-hord): backs IndexGenerationStore.next_raw_page's content-order
+-- rebuild paging (ORDER BY blob_hash, raw_id / keyset WHERE on the same pair)
+-- so a full rebuild's per-page scheduling query stays an index scan instead of
+-- re-sorting the remaining table on every bounded pass as the archive grows.
+CREATE INDEX IF NOT EXISTS idx_raw_sessions_blob_hash_raw_id
+ON raw_sessions(blob_hash, raw_id);
 
 CREATE TABLE IF NOT EXISTS raw_session_memberships (
     raw_id                  TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
