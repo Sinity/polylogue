@@ -12,6 +12,34 @@ from polylogue.core.json import JSONDocument, json_document
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the write path only reads a
+# ``language`` key back out of it (``storage/sqlite/archive_tiers/write.py:
+# _block_language``). ``_tool_metadata`` (shared by both gemini-cli and
+# hermes tool_use/tool_result blocks) and ``_parse_gemini_message``'s
+# "thought" blocks (subject/timestamp/index) still attach data to
+# ``metadata`` as an in-process carrier; project it into ``session_events``
+# instead -- same precedent as ``claude/common.py``'s
+# ``claude_ai_web_tool_evidence`` and ``chatgpt.py``'s
+# ``chatgpt_block_metadata``. One event per block carrying non-empty
+# metadata, whole dict verbatim (no fixed cross-provider vocabulary here).
+def _block_metadata_evidence_events(messages: list[ParsedMessage]) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for message in messages:
+        for block_index, block in enumerate(message.blocks):
+            if not block.metadata:
+                continue
+            events.append(
+                ParsedSessionEvent(
+                    event_type="local_agent_block_metadata",
+                    timestamp=message.timestamp,
+                    source_message_provider_id=message.provider_message_id,
+                    payload={"block_index": block_index, **dict(block.metadata)},
+                )
+            )
+    return events
+
+
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
     return (
         isinstance(payload.get("sessionId"), str)
@@ -46,6 +74,7 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         session_events.append(metadata_event)
     if scratchpad_event := _gemini_cli_memory_scratchpad_event(payload):
         session_events.append(scratchpad_event)
+    session_events.extend(_block_metadata_evidence_events(messages))
     return ParsedSession(
         source_name=Provider.GEMINI_CLI,
         provider_session_id=session_id,
@@ -98,6 +127,7 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
         session_events.append(metadata_event)
     if tool_event := _hermes_tool_availability_event(payload):
         session_events.append(tool_event)
+    session_events.extend(_block_metadata_evidence_events(messages))
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
