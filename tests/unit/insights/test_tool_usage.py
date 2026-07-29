@@ -748,6 +748,17 @@ class TestListToolUsageInsightsEndToEnd:
         ]
 
     async def test_empty_archive_returns_envelope_with_no_gaps(self, tmp_path: Path) -> None:
+        # An *initialized-but-empty* archive, not a directory that has never
+        # been touched at all: ArchiveStore.open_existing()'s read-only path
+        # deliberately never bootstraps missing tier files ("read/status
+        # surfaces must not create an empty archive and then report it as
+        # usable"), so a read against a tmp_path with no archive tiers on
+        # disk raises OperationalError rather than exercising this test's
+        # actual subject -- an empty archive's insight envelope shape.
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+        initialize_active_archive_root(tmp_path)
+
         result = await _archive(tmp_path).list_tool_usage_insights(ToolUsageInsightQuery())
         assert len(result) == 1
         insight = result[0]
