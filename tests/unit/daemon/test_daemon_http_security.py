@@ -1074,6 +1074,20 @@ class TestNoTokenLogging:
         }
         intentional_secret_outputs = {
             (Path("polylogue/daemon/browser_capture.py"), "token_show", "echo"),
+            # `_handle_query_units` reads a client-supplied pagination
+            # `continuation` param and decodes it into `continuation_token`/
+            # `continuation_request` (an opaque query-unit cursor, not a
+            # credential) before echoing the *query results* (not the
+            # continuation value itself) back via `_send_json`. The scanner's
+            # name-based taint tracking can't distinguish this from an actual
+            # secret token by variable name alone.
+            (Path("polylogue/daemon/http.py"), "_handle_query_units", "_send_json"),
+            # `_pairing_redeem` is the deliberate mechanism by which a
+            # browser-extension client receives its freshly-issued
+            # `auth_token` after redeeming a one-time pairing code
+            # (#3260) -- returning the token to its rightful, just-paired
+            # owner is the entire point of this endpoint, not a leak.
+            (Path("polylogue/browser_capture/server.py"), "_pairing_redeem", "_send_json"),
         }
         safe_token_container_results = {
             (Path("polylogue/daemon/browser_capture.py"), "serve_command", "make_server"),

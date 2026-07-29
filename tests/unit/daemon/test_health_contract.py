@@ -70,6 +70,8 @@ EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(
         "stale_ingest_attempts",
         "insight_freshness",
         "repeated_stage_failures",
+        # #3362: provider format-drift sentinel over live ingest.
+        "schema_drift",
     }
 )
 EXPECTED_EXPENSIVE_CHECKS: frozenset[str] = frozenset(
