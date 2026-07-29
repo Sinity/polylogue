@@ -468,13 +468,47 @@ def _codex_spec() -> OriginSpec:
         Origin.CODEX_SESSION,
         provider=Provider.CODEX,
         tightness=50,
-        discovery="Codex session JSONL admission.",
-        acquisition_modes=("session-jsonl",),
-        parser_paths=("polylogue/sources/parsers/codex.py",),
-        fixture_paths=("tests/unit/sources/test_parsers_codex.py", "tests/data/codex_event_stream"),
+        discovery="Codex session JSONL admission plus live Codex SQLite state.",
+        acquisition_modes=("session-jsonl", "thread-state-db", "goals-db", "memories-db"),
+        parser_paths=(
+            "polylogue/sources/parsers/codex.py",
+            "polylogue/sources/parsers/codex_state.py",
+        ),
+        fixture_paths=(
+            "tests/unit/sources/test_parsers_codex.py",
+            "tests/data/codex_event_stream",
+            "tests/unit/sources/parsers/test_codex_state.py",
+        ),
         stream_parser_path="polylogue/sources/parsers/codex.py:parse_codex_stream",
         assembly_spec_path="polylogue/sources/assembly_codex.py:CodexAssemblySpec",
         display_description="Codex CLI local sessions (lab: OpenAI)",
+        # polylogue-0jf4 acceptance criterion 1: classify each of the five
+        # live ~/.codex SQLite databases. This declaration mirrors
+        # ``sources/parsers/codex_state.py``'s ``CODEX_STATE_FIDELITY`` tuple
+        # verbatim (that module's docstring names this the canonical home for
+        # the reasons; it is not imported here so this file stays free of
+        # parser-internal imports, matching every other origin declaration).
+        fidelity_notes=(
+            "state_5.sqlite (thread_state, acquire): threads.title and "
+            "thread_spawn_edges have no other evidence source -- no Codex "
+            "rollout JSONL session_meta record carries a curated title or a "
+            "parent/child spawn relationship at the orchestration level.",
+            "goals_1.sqlite (goals, acquire-partial): thread_goals.objective "
+            "is stated task intent unavailable anywhere else, but the table "
+            "is small and low-churn; the raw snapshot is acquired for "
+            "durability with no session_events wiring.",
+            "memories_1.sqlite (memories, acquire-partial): stage1_outputs "
+            "is Codex-side memory derived from content already ingested from "
+            "the JSONL rollout; the raw snapshot is acquired for durability "
+            "with no parsed/typed consumption.",
+            "logs_2.sqlite (logs, out-of-scope): 627 MB of runtime tracing "
+            "(level/target/module_path/file/line), not session evidence -- "
+            "acquiring it by default would roughly double this archive's "
+            "Codex footprint for no session-reconstruction value.",
+            "codex-dev.db (automation, out-of-scope): local CLI automation "
+            "scheduling config, not AI session content; empty on every "
+            "install observed.",
+        ),
     )
 
 

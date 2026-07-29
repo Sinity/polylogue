@@ -1361,6 +1361,20 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
             suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
         ),
         WatchSource(name="codex", root=codex_path()),
+        # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,
+        # spawn topology, goals, memories) as siblings of the sessions/
+        # directory, not under it -- a second, narrower WatchSource rooted at
+        # ~/.codex (codex_path().parent) rather than widening the "codex"
+        # source's own root, so a broadened suffix set never has to reason
+        # about history.jsonl/config.toml/log/ under the shared root. Suffix
+        # filtering alone (".sqlite"/".db") keeps this cheap; the acquisition
+        # path (sources/live/batch.py) re-verifies table shape by name and
+        # structure before treating anything as in-scope evidence.
+        WatchSource(
+            name="codex-state",
+            root=codex_path().parent,
+            suffixes=(".sqlite", ".db"),
+        ),
         WatchSource(name="gemini-cli", root=gemini_cli_path(), suffixes=(".json", ".jsonl")),
         # Hermes emits four independently durable source classes under its
         # runtime root: state.db, optional session snapshots, NeMo Relay ATIF
