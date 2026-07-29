@@ -1779,6 +1779,22 @@ def build_verify_steps(
                 # failure surfaces as an unqueryable live archive rather than
                 # as a test failure.
                 ("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")),
+                # Publication gate. Committed provider schema packages are
+                # public artifacts; this blocks local provenance
+                # (bundle_scopes/representative_paths) and scans for secrets.
+                # It exits non-zero on blockers and had never been wired to
+                # anything, while 76 blockers sat in the committed tree.
+                (
+                    "schema promotion audit",
+                    [
+                        sys.executable,
+                        "-m",
+                        "polylogue.schemas.promotion_audit",
+                        "polylogue/schemas",
+                        "--output",
+                        str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
+                    ],
+                ),
             ]
         )
 
