@@ -51,6 +51,8 @@ def _build_phase(
     end_idx: int,
     start_time: datetime | None,
     end_time: datetime | None,
+    *,
+    reordered: bool = False,
 ) -> SessionPhase:
     tool_counts: Counter[str] = Counter()
     word_count = 0
@@ -73,6 +75,7 @@ def _build_phase(
         tool_counts=dict(tool_counts),
         word_count=word_count,
         phase_idle_threshold_ms=PHASE_IDLE_THRESHOLD_MS,
+        evidence=("chronological_reorder",) if reordered else (),
     )
 
 
@@ -88,7 +91,22 @@ def extract_phases(
 
     phases: list[SessionPhase] = []
     phase_start_idx = 0
+    # phase_min_time / phase_max_time are the true temporal envelope of the
+    # in-progress phase, tracked independently of traversal order.
+    # phase_start_time / prev_time are the *naive* first/last timestamps
+    # seen while walking messages in (position, variant_index) order -- the
+    # order ChatGPT's parent/children tree flattening assigns, which is
+    # unrelated to wall-clock time once a message was edited or regenerated
+    # (a sibling variant can carry a timestamp days apart from the position
+    # it was flattened next to). Comparing the two below lets us flag when
+    # the stored envelope required reordering relative to that walk, rather
+    # than silently reporting a `timestamped_range` that implies a clean
+    # monotonic walk. See polylogue mission: 13,743 inverted session_phases/
+    # session_work_events rows, 99%+ chatgpt-export, root-caused to trusting
+    # raw traversal order as chronological order.
     phase_start_time = None
+    phase_min_time: datetime | None = None
+    phase_max_time: datetime | None = None
     prev_time = None
 
     for index, message in enumerate(messages):
@@ -97,14 +115,24 @@ def extract_phases(
             continue
         if phase_start_time is None:
             phase_start_time = timestamp
-        if prev_time is not None and (timestamp - prev_time) > _PHASE_GAP:
-            phases.append(_build_phase(messages, phase_start_idx, index, phase_start_time, prev_time))
+        if prev_time is not None and abs(timestamp - prev_time) > _PHASE_GAP:
+            reordered = phase_start_time != phase_min_time or prev_time != phase_max_time
+            phases.append(
+                _build_phase(messages, phase_start_idx, index, phase_min_time, phase_max_time, reordered=reordered)
+            )
             phase_start_idx = index
             phase_start_time = timestamp
+            phase_min_time = None
+            phase_max_time = None
+        phase_min_time = timestamp if phase_min_time is None else min(phase_min_time, timestamp)
+        phase_max_time = timestamp if phase_max_time is None else max(phase_max_time, timestamp)
         prev_time = timestamp
 
     if phase_start_time is not None:
-        phases.append(_build_phase(messages, phase_start_idx, len(messages), phase_start_time, prev_time))
+        reordered = phase_start_time != phase_min_time or prev_time != phase_max_time
+        phases.append(
+            _build_phase(messages, phase_start_idx, len(messages), phase_min_time, phase_max_time, reordered=reordered)
+        )
         return phases
 
     # Fallback for sources where messages carry no timestamps but
