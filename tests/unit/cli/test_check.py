@@ -203,7 +203,10 @@ def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths,
         json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
     )
     assert maintenance_item.get("name") == "session_insights"
-    assert maintenance_item.get("repaired_count") == 2
+    # `_targeted_session_insight_rebuild_ids` (polylogue/storage/repair.py)
+    # returns DISTINCT session_ids needing repair; this fixture seeds exactly
+    # one session, so at most one session can ever be pending here.
+    assert maintenance_item.get("repaired_count") == 1
 
 
 def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
