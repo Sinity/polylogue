@@ -1197,8 +1197,8 @@ entries:
   classification: identifier
   note: 'search-cursor pagination identity key.'
 - path: polylogue/sources/live/tool_result_sidecars.py
-  function: '<module>.join_tool_result_sidecars'
+  function: '<module>._join_from_index'
   call: hash_text
   occurrence: 0
   classification: content-hash
-  note: 'sha256 of a Claude Code tool-result sidecar file body; producer is the sidecar join, consumer is the bounded claude_tool_result_sidecar session_event (dedup/identity across re-ingest).'
+  note: 'sha256 of a Claude Code tool-result sidecar file body; producer is the sidecar join (now factored through _join_from_index, shared by the eager and streaming callers), consumer is the bounded claude_tool_result_sidecar session_event (dedup/identity across re-ingest).'
