@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 from hypothesis import given
@@ -24,12 +24,38 @@ from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
 
 # Every backend-parametrized test forces `core_json._BACKEND` via monkeypatch
-# rather than requiring any backend to be actually absent -- the dev/CI
-# environment installs both orjson and msgspec (pyproject.toml `dev` extra)
-# specifically so all three code paths in polylogue/core/json.py get real
-# coverage, not just whichever backend happened to win import-time selection
-# (polylogue-xikl: orjson is optional, msgspec is the free-threaded fallback).
+# rather than requiring any backend to be actually absent -- the GIL devshell
+# installs both orjson and msgspec (pyproject.toml `dev` extra) specifically
+# so all three code paths in polylogue/core/json.py get real coverage, not
+# just whichever backend happened to win import-time selection (polylogue-
+# xikl: orjson is optional, msgspec is the free-threaded fallback). But
+# orjson ships no cp314t wheel at all and refuses to compile free-threaded
+# (polylogue-xikl phase 1 gate finding), so under the free-threaded devshell
+# `core_json._orjson` is genuinely `None` -- forcing `_BACKEND = "orjson"`
+# there doesn't exercise an orjson code path, it hits the facade's own
+# "selected backend's module is unavailable" `RuntimeError` guard. That is
+# a real, deliberate contract (see polylogue/core/json.py's module
+# docstring), not something to test the same way as a working backend.
+#
+# So: parametrize over all three nominal backend names for stable test IDs
+# across interpreters, but skip (with a stated reason) whichever backend's
+# module this interpreter doesn't actually have, via `_backend_params()`.
 ALL_BACKENDS: tuple[core_json.JSONBackend, ...] = ("orjson", "msgspec", "stdlib")
+_AVAILABLE_BACKENDS = core_json.available_backends()
+
+
+def _backend_params(backends: tuple[core_json.JSONBackend, ...] = ALL_BACKENDS) -> list[Any]:
+    return [
+        pytest.param(
+            b,
+            marks=pytest.mark.skipif(
+                b not in _AVAILABLE_BACKENDS,
+                reason=f"'{b}' backend module is not installed in this interpreter",
+            ),
+        )
+        for b in backends
+    ]
+
 
 SURROGATE_CATEGORY: tuple[Literal["Cs"], ...] = ("Cs",)
 
@@ -125,7 +151,7 @@ def test_loads_known_invalid_json_raises(fragment: str) -> None:
         core_json.loads(fragment)
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 @pytest.mark.parametrize("fragment", _INVALID_JSON_FRAGMENTS)
 def test_loads_known_invalid_json_raises_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend, fragment: str
@@ -253,7 +279,7 @@ def test_dumps_sort_keys_produces_deterministic_key_order() -> None:
     assert output == '{"a":2,"b":1}'
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_sort_keys_byte_identical_across_backends(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -286,7 +312,7 @@ def test_dumps_sort_keys_byte_identical_across_backends(
 _CANONICAL_FLOAT_PARITY_BACKENDS: tuple[core_json.JSONBackend, ...] = ("orjson", "msgspec")
 
 
-@pytest.mark.parametrize("backend", _CANONICAL_FLOAT_PARITY_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params(_CANONICAL_FLOAT_PARITY_BACKENDS))
 def test_dumps_sort_keys_exponent_floats_orjson_msgspec_parity(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -343,7 +369,7 @@ def test_msgspec_exponent_normalizer_does_not_corrupt_string_content() -> None:
     assert output == b'{"note":"batch e5 vs cafe10, cost 2e-06"}'
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_indent_byte_identical_across_backends(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -353,7 +379,7 @@ def test_dumps_indent_byte_identical_across_backends(
     assert output == b'{\n  "a": 2,\n  "b": 1\n}'
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_bytes_append_newline(monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend) -> None:
     monkeypatch.setattr(core_json, "_BACKEND", backend)
     output = core_json.dumps_bytes({"x": 1}, append_newline=True)
@@ -389,7 +415,7 @@ def test_dumps_bytes_fallback_uses_stdlib_encoder_for_out_of_range_integers() ->
     assert core_json.loads(output) == {"v": big}
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_out_of_range_integers_roundtrip_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -402,7 +428,7 @@ def test_dumps_out_of_range_integers_roundtrip_under_every_backend(
     assert core_json.loads(output) == {"v": big}
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_custom_handler_still_applies_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -425,7 +451,7 @@ def test_dumps_custom_handler_still_applies_under_every_backend(
     assert core_json.loads(output) == {"payload": {"custom": 7}}
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 def test_dumps_decimal_encodes_to_number_under_every_backend(
     monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend
 ) -> None:
@@ -445,7 +471,7 @@ def test_backend_reports_a_valid_selection() -> None:
     assert core_json.backend() in ALL_BACKENDS
 
 
-@pytest.mark.parametrize("backend", ALL_BACKENDS)
+@pytest.mark.parametrize("backend", _backend_params())
 @given(_json_value)
 def test_roundtrip_basic_types_under_every_backend(backend: core_json.JSONBackend, value: object) -> None:
     """The dumps/loads roundtrip law holds under every backend, not just
