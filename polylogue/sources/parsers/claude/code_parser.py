@@ -105,7 +105,12 @@ logger = get_logger(__name__)
 #
 # Per-type disposition (counts = live corpus, rg single pass, 2026-07-29):
 #   ai-title (18,561)              EVIDENCE, wins session title (TitleSource.ORIGIN)
-#   agent-name (5,001)             EVIDENCE -> claude_agent_name event
+#   agent-name (5,001)             EVIDENCE -> claude_agent_name event, ALSO wins
+#                                    session title (TitleSource.ORIGIN, below
+#                                    ai-title/custom-title in precedence) --
+#                                    corpus-sampled values are readable task
+#                                    names ("polylogue-history-rebuild"), not
+#                                    the raw UUID this loop otherwise leaves
 #   pr-link (20,889)               EVIDENCE -> claude_pr_link event
 #   bridge-session (13,594)        EVIDENCE -> claude_bridge_session event
 #   file-history-snapshot (34,182) EVIDENCE -> claude_file_history_snapshot event
@@ -925,6 +930,7 @@ def _parse_code_records(
     # state, so they are accumulated here and applied/flushed after the loop.
     latest_ai_title: str | None = None
     latest_custom_title: str | None = None
+    latest_agent_name: str | None = None
     session_kind_value: str | None = None
     git_branch_value: str | None = None
     delegation_progress: dict[str, _DelegationProgressStats] = {}
@@ -1045,6 +1051,10 @@ def _parse_code_records(
                     custom_title_text = _string_field(item, "customTitle")
                     if custom_title_text:
                         latest_custom_title = custom_title_text
+                elif record_type == "agent-name":
+                    agent_name_text = _string_field(item, "agentName")
+                    if agent_name_text:
+                        latest_agent_name = agent_name_text
                 event_type = _SIDECAR_EVENT_TYPES.get(record_type)
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
@@ -1318,6 +1328,22 @@ def _parse_code_records(
                 title_ref = f"message:{message.provider_message_id}"
                 title_confidence = 0.5
                 break
+
+    # polylogue-pbuh: the ``agent-name`` sidecar record is a provider-assigned
+    # label for a background/agent-mode session (e.g. "polylogue-history-
+    # rebuild") -- corpus-sampled values are readable task names, a strictly
+    # better fallback than the raw UUID/"UUID:agent-suffix" composed id this
+    # loop otherwise leaves in place. It wins over the raw-id/heuristic title
+    # but yields to the stronger explicit signals below (``ai-title`` is the
+    # provider's own title computation; ``custom-title`` is an explicit user
+    # rename) when either of those is also present for the same session.
+    if latest_agent_name:
+        cleaned_agent_name = latest_agent_name.strip()
+        if cleaned_agent_name:
+            title = cleaned_agent_name[:80] + ("..." if len(cleaned_agent_name) > 80 else "")
+            title_source = TitleSource.ORIGIN
+            title_ref = f"claude-agent-name:{composed_session_id}"
+            title_confidence = 0.9
 
     # polylogue-pbuh: Claude Code's own ``ai-title`` sidecar record is a
     # provider-computed session title (Codex's equivalent-tier evidence is its

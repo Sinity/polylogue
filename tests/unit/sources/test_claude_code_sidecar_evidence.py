@@ -81,6 +81,42 @@ def test_agent_name_persists_as_typed_event() -> None:
     ]
 
 
+def test_agent_name_wins_session_title_over_uuid_fallback() -> None:
+    """``agent-name`` must resolve the session title, not only exist as a
+    sidecar event -- polylogue-pbuh AC3: a background/agent-mode session's
+    provider-assigned label (a readable task name, e.g.
+    "orchestration-docs-6np") is a strictly better title than the raw
+    ``sessionId``/``sessionId:agent-suffix`` fallback this loop otherwise
+    leaves in place. Deleting the ``latest_agent_name`` precedence block
+    reverts this session's title to the raw session id.
+    """
+    parsed = parse_code(
+        [{"type": "agent-name", "sessionId": "sess-agent", "agentName": "orchestration-docs-6np"}],
+        "sess-agent",
+    )
+    assert parsed.title == "orchestration-docs-6np"
+    assert parsed.title_source is TitleSource.ORIGIN
+    assert parsed.title_ref == "claude-agent-name:sess-agent"
+    assert parsed.title_confidence == 0.9
+
+
+def test_agent_name_yields_to_ai_title_and_custom_title() -> None:
+    """``agent-name`` is a fallback, not the strongest signal: an explicit
+    provider ``ai-title`` or user ``custom-title`` on the same session still
+    wins -- this pins the precedence order rather than only the presence of
+    each individual override.
+    """
+    parsed = parse_code(
+        [
+            {"type": "agent-name", "sessionId": "sess-agent", "agentName": "orchestration-docs-6np"},
+            {"type": "ai-title", "sessionId": "sess-agent", "aiTitle": "Provider suggested title"},
+        ],
+        "sess-agent",
+    )
+    assert parsed.title == "Provider suggested title"
+    assert parsed.title_ref == "claude-ai-title:sess-agent"
+
+
 def test_pr_link_persists_typed_pr_fields() -> None:
     """Deleting the pr-link branch collapses this to an empty session_events
     list -- exactly the producer gap polylogue-pbuh AC4 names."""
