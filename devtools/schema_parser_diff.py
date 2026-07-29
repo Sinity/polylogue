@@ -14,8 +14,24 @@ than by guess.
 DELIBERATELY APPROXIMATE ON THE PARSER SIDE. A key counts as "referenced" if
 its name appears as a string constant anywhere in the provider's parser
 modules -- a subscript, a ``.get()``, a comparison, a set membership. That
-over-counts (a name may appear without being read into archive content) and
-can under-count (a key read through a variable or a shared helper is missed).
+over-counts and can under-count in two specific, hand-confirmed ways (hermes
+triage lane, 2026-07-29):
+
+1. **Over-counting by name collision.** A key can "resolve" merely because
+   an unrelated string literal elsewhere in the same parser modules happens
+   to share its name -- ``call_id``/``response_item_id`` appear elsewhere in
+   the codex parser and thereby mask
+   ``llm_response.assistant_message.tool_calls[].provider_data.*``, which is
+   genuinely never read. Common, short, or generic-looking leaf names (ids,
+   status, type) are the likeliest false negatives in the "unread" list.
+2. **Under-counting when a parser stores an object verbatim.** ~130 rows
+   under ``steps[].extra.llm_request.tools[].parameters.properties.<argname>.*``
+   report unread, but the parser captures the whole ``parameters`` object
+   rather than exploding it into named literals -- the data IS retained,
+   just not visible to a leaf-name string search. When an *ancestor* path
+   segment (e.g. ``parameters``) is itself referenced, treat descendant rows
+   under it as lower-confidence unread candidates, not confirmed misses.
+
 So the output is a TRIAGE QUEUE, not a verdict: every row needs a human
 disposition of read / deliberately-dropped-with-reason / to-acquire. Treating
 a row as proof of a defect without reading the parser is exactly the mistake
@@ -38,6 +54,13 @@ PARSER_ROOT = REPO_ROOT / "polylogue" / "sources" / "parsers"
 #: Provider schema directory -> the parser modules that own its wire format.
 #: A provider whose parsing is spread over several modules lists all of them;
 #: a key referenced in any of them counts as referenced.
+#:
+#: ``local_agent.py`` is shared: it defines both ``parse_gemini_cli`` and
+#: ``parse_hermes`` (hermes's mainstream 167-document JSON-snapshot shape is
+#: parsed there too, alongside the dedicated ``hermes_*.py`` modules), so it
+#: is listed for both providers -- mapping it to gemini-cli alone produced
+#: 21 false-positive "unread" rows for hermes, including ``last_updated``
+#: (hermes triage lane, 2026-07-29).
 PROVIDER_PARSERS: dict[str, tuple[str, ...]] = {
     "claude-code": ("claude/code_parser.py", "claude/common.py", "claude/history.py", "claude/orchestration.py"),
     "claude-ai": ("claude/ai_parser.py", "claude/common.py"),
@@ -45,7 +68,7 @@ PROVIDER_PARSERS: dict[str, tuple[str, ...]] = {
     "chatgpt": ("chatgpt.py",),
     "gemini-cli": ("local_agent.py",),
     "gemini": ("drive.py", "drive_support.py", "drive_support_blocks.py", "drive_support_text.py"),
-    "hermes": ("hermes_state.py", "hermes_spans.py", "hermes_lifecycle.py", "hermes_verification.py"),
+    "hermes": ("hermes_state.py", "hermes_spans.py", "hermes_lifecycle.py", "hermes_verification.py", "local_agent.py"),
     "antigravity": ("antigravity.py",),
     "browser-capture": ("browser_capture.py",),
 }

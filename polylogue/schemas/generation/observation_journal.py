@@ -1006,6 +1006,26 @@ class ObservationJournal:
         for row in self._connection.execute(query, parameters):
             yield row[0]
 
+    def iter_membership_observed_ats(
+        self,
+        *,
+        profile_family_id: str | None = None,
+        package_family_id: str | None = None,
+        artifact_kind: str | None = None,
+    ) -> Iterator[str | None]:
+        """Replay one record ``observed_at`` per sample without decoding sample JSON."""
+        where, parameters = self._membership_where(
+            profile_family_id=profile_family_id,
+            package_family_id=package_family_id,
+            artifact_kind=artifact_kind,
+        )
+        query = (
+            "SELECT units.observed_at FROM samples JOIN units USING(unit_id) "
+            f"WHERE {where} ORDER BY units.unit_id, samples.position"
+        )
+        for row in self._connection.execute(query, parameters):
+            yield row[0]
+
     def iter_terminals(self) -> Iterator[ObservationTerminal]:
         """Replay terminal artifact outcomes in stable raw identity order."""
         for row in self._connection.execute("SELECT * FROM artifact_terminals ORDER BY raw_id"):
@@ -1122,6 +1142,13 @@ class JournalMemberships(Sequence[_UnitMembership]):
 
     def iter_session_ids(self) -> Iterator[str | None]:
         return self._journal.iter_membership_session_ids(
+            profile_family_id=self._profile_family_id,
+            package_family_id=self._package_family_id,
+            artifact_kind=self._artifact_kind,
+        )
+
+    def iter_observed_ats(self) -> Iterator[str | None]:
+        return self._journal.iter_membership_observed_ats(
             profile_family_id=self._profile_family_id,
             package_family_id=self._package_family_id,
             artifact_kind=self._artifact_kind,

@@ -470,21 +470,42 @@ def _classify_plan_drift(
     """Classify one validated sample's drift signal for ``plan``, if any."""
     if plan.schema_resolution is None:
         return None
+    from polylogue.core.provider_identity import normalize_provider_token
     from polylogue.core.sources import origin_from_provider
     from polylogue.schemas.drift_sentinel import classify_schema_drift, unseen_key_signature
+    from polylogue.schemas.schema_parser_coverage import payload_unread_field_names
+
+    unread_known_fields: list[str] = []
+    if not drift_warnings and is_valid and isinstance(plan.schema_payload, dict):
+        # Only worth the (cached-per-provider) lookup when the payload
+        # would otherwise classify as clean/no-drift -- this is precisely
+        # the "schema knows it, parser ignores it" case classify_schema_drift
+        # falls back to when neither of the other signals fired.
+        unread_known_fields = payload_unread_field_names(
+            normalize_provider_token(str(plan.provider)),
+            plan.schema_payload.keys(),
+        )
 
     classification = classify_schema_drift(
         resolution_reason=plan.schema_resolution.reason,
         is_valid=is_valid,
         drift_warnings=drift_warnings,
+        unread_known_fields=unread_known_fields,
     )
     if classification is None:
         return None
+    from polylogue.schemas.drift_sentinel import KNOWN_FIELD_UNREAD
+
+    key_signature = (
+        ",".join(sorted(unread_known_fields))
+        if classification == KNOWN_FIELD_UNREAD
+        else unseen_key_signature(drift_warnings)
+    )
     return SchemaDriftObservation(
         origin=str(origin_from_provider(plan.provider)),
         element_kind=plan.schema_resolution.element_kind,
         classification=classification,
-        unseen_key_signature=unseen_key_signature(drift_warnings),
+        unseen_key_signature=key_signature,
         native_id_example=context.raw_record.source_path or context.raw_record.raw_id,
         raw_id=context.raw_record.raw_id,
     )
