@@ -130,6 +130,7 @@ from polylogue.insights.readiness import (
 )
 from polylogue.insights.rigor import list_rigor_contracts
 from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
+from polylogue.insights.session_label import session_structural_label_for_session
 from polylogue.insights.temporal_source import time_confidence_for_source
 from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
@@ -5432,7 +5433,7 @@ class ArchiveStore:
         ).fetchone()
         if row is None:
             raise KeyError(session_id)
-        return _summary_from_row(row)
+        return _summary_from_row(row, self._conn)
 
     def resolve_session_id(self, token: str) -> str:
         """Resolve an exact or prefix session id token."""
@@ -7777,7 +7778,7 @@ class ArchiveStore:
             """,
             params,
         ).fetchall()
-        return [_summary_from_row(row) for row in rows]
+        return [_summary_from_row(row, self._conn) for row in rows]
 
     def search_summaries(
         self,
@@ -10148,7 +10149,7 @@ class ArchiveStore:
         self.close()
 
 
-def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
+def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSessionSummary:
     import json
 
     def row_int(key: str) -> int:
@@ -10163,18 +10164,38 @@ def _summary_from_row(row: sqlite3.Row) -> ArchiveSessionSummary:
     raw_working_dirs = json.loads(str(row["working_directories_json"] or "[]"))
     working_directories = tuple(str(path) for path in raw_working_dirs if path)
     origin = str(row["origin"])
+    session_id = str(row["session_id"])
+    message_count = int(row["message_count"] or 0)
+    raw_title = str(row["title"]) if row["title"] is not None else None
+    provider_title = raw_title if raw_title and raw_title.strip() else None
+    raw_title_source = str(row["title_source"]) if row["title_source"] is not None else None
+    if provider_title is not None:
+        title = provider_title
+        title_source = raw_title_source
+    else:
+        # No provider-supplied title (or a blank one): fall back to the
+        # structural label (polylogue-cijx.4 decision 3) rather than
+        # exposing a bare/blank title to CLI/MCP/API surfaces. This is a
+        # read-time projection only -- never written back to sessions.title.
+        title = session_structural_label_for_session(
+            conn,
+            session_id,
+            message_count=message_count,
+            provider_title=None,
+        )
+        title_source = "path"
     return ArchiveSessionSummary(
-        session_id=str(row["session_id"]),
+        session_id=session_id,
         native_id=str(row["native_id"]),
         origin=origin,
-        title=str(row["title"]) if row["title"] is not None else None,
-        title_source=str(row["title_source"]) if row["title_source"] is not None else None,
+        title=title,
+        title_source=title_source,
         title_ref=str(row["title_ref"]) if row["title_ref"] is not None else None,
         title_confidence=(float(row["title_confidence"]) if row["title_confidence"] is not None else None),
         session_kind=str(row["session_kind"] or "standard"),
         created_at=_iso_from_ms(row["created_at_ms"]),
         updated_at=_iso_from_ms(row["updated_at_ms"]),
-        message_count=int(row["message_count"] or 0),
+        message_count=message_count,
         word_count=int(row["word_count"] or 0),
         tags=tags,
         reported_duration_ms=(int(row["reported_duration_ms"]) if row["reported_duration_ms"] is not None else None),
