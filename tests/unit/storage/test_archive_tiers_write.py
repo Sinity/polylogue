@@ -3166,6 +3166,58 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
     }
 
 
+def test_archive_tiers_writer_collapses_worktree_cwds_to_one_repo_row(tmp_path: Path) -> None:
+    """polylogue-cijx.4 decision 1: a worktree/subdirectory cwd is a checkout of
+    a repository, not a repository of its own.
+
+    Before this fix, ``_repo_name``/``_repo_id`` used the raw session cwd
+    verbatim, so a session whose cwd was an agent-worktree subdirectory (e.g.
+    ``<repo>/.claude/worktrees/agent-<hash>``) surfaced ``agent-<hash>`` as
+    the repo name -- worse than the id it replaced. Two sessions recorded
+    from different subdirectories of the SAME checkout, with no reported git
+    remote, must now resolve to the SAME real repo root/name and the SAME
+    ``repos`` row, because both cwds share one discoverable ``.git``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    repo_root = tmp_path / "myrepo"
+    (repo_root / ".git").mkdir(parents=True)
+    worktree_cwd = repo_root / ".claude" / "worktrees" / "agent-ad682bc849a1cd0f0"
+    worktree_cwd.mkdir(parents=True)
+    subdir_cwd = repo_root / "polylogue" / "pipeline"
+    subdir_cwd.mkdir(parents=True)
+
+    first = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="worktree-session",
+        working_directories=[str(worktree_cwd)],
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="from a worktree cwd")],
+            )
+        ],
+    )
+    second = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="subdir-session",
+        working_directories=[str(subdir_cwd)],
+        messages=[
+            ParsedMessage(
+                provider_message_id="u1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="from a plain subdirectory cwd")],
+            )
+        ],
+    )
+
+    write_parsed_session_to_archive(conn, first)
+    write_parsed_session_to_archive(conn, second)
+
+    repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
+    assert repos == [{"root_path": str(repo_root), "repo_name": "myrepo"}]
+
+
 def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     first = ParsedSession(

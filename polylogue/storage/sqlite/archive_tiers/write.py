@@ -23,6 +23,7 @@ from typing import cast
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
 from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
@@ -3789,7 +3790,12 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
 def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
-    root_paths = tuple(dict.fromkeys(path.strip() for path in session.working_directories if path.strip()))
+    raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
+    # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
+    # deduplicating, so multiple cwds inside the same checkout (or a cwd
+    # that is an agent-worktree subdirectory) collapse to one row instead of
+    # one row per distinct raw path.
+    root_paths = tuple(dict.fromkeys(_normalized_repo_root_path(path) for path in raw_root_paths))
     if not root_paths and not session.git_repository_url:
         return
 
@@ -5163,10 +5169,45 @@ def _payload_optional_float(payload: Mapping[str, object], key: str) -> float | 
 
 
 def _repo_name(repository_url: str, root_path: str) -> str | None:
+    """Derive a stable repo display name (polylogue-cijx.4 decision 1).
+
+    Prefers ``normalize_repo_name`` -- the same remote-URL/git-root
+    normalization the attribution pipeline
+    (``storage/insights/session/repo_observations.py``) already uses -- so a
+    session whose cwd is a deep subdirectory or an agent worktree resolves to
+    the real repository name, not a raw path-basename echo (the
+    "agent-<hash>" bug: a session's cwd under
+    ``.claude/worktrees/agent-<hash>/`` used to yield that hash as the repo
+    name because the old fallback was ``Path(root_path).name`` verbatim).
+    Falls back to the previous naive derivation only when normalization
+    cannot resolve anything (e.g. a git root that no longer exists on this
+    filesystem).
+    """
+    normalized = normalize_repo_name(repository_url) if repository_url else normalize_repo_name(root_path)
+    if normalized:
+        return normalized
     candidate = repository_url.rstrip("/").rsplit("/", maxsplit=1)[-1] if repository_url else Path(root_path).name
     if candidate.endswith(".git"):
         candidate = candidate[:-4]
     return candidate or None
+
+
+def _normalized_repo_root_path(root_path: str) -> str:
+    """Resolve ``root_path`` to its git root when one is discoverable.
+
+    Without this, two sessions whose cwd differs only by subdirectory (or by
+    worktree path under one checkout) write two distinct ``repos`` rows keyed
+    by the raw cwd, because ``repos.repo_id`` is generated from
+    ``origin_url || root_path`` (schema-level; changing that formula to drop
+    ``root_path`` entirely is an index-tier schema bump, tracked separately --
+    see polylogue-cijx.4). Normalizing the *value* written into ``root_path``
+    to the resolved git root at least collapses same-checkout subdirectory
+    variance and keeps this writer's rows consistent with the
+    attribution-based writer (``repo_observations.py``), which already
+    normalizes this way -- so both writers upsert into the SAME row instead
+    of leaving orphaned divergent rows behind.
+    """
+    return normalize_repo_path(root_path) or root_path
 
 
 def _repo_id(origin_url: str, root_path: str) -> str:
