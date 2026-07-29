@@ -92,8 +92,14 @@ class Config:
     render_root: Path
     sources: list[Source]
     db_path: Path
-    drive_config: DriveConfig | None
-    index_config: IndexConfig | None
+    # Class-level defaults, not bare annotations. ``__init__`` always assigns
+    # both, so these change no runtime behaviour -- but a bare annotation is
+    # invisible to ``dir()``, which means ``MagicMock(spec=Config)`` silently
+    # omits them and any consumer reading ``config.drive_config`` blows up with
+    # ``Mock object has no attribute`` instead of getting ``None``. Declaring
+    # the defaults makes the spec honest about the optional surface.
+    drive_config: DriveConfig | None = None
+    index_config: IndexConfig | None = None
 
     def __init__(
         self,
