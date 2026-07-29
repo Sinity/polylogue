@@ -254,9 +254,30 @@ def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
         "session_tags",
         "session_list",
         "archive_deleted_session",
+        "blob_refs",
+        "raw_authority_blockers",
+        "raw_authority_plans",
+        "raw_sessions",
+        "excision_receipt",
+        "raw_authority_blocker_resolution",
+        "suppression_rows",
     }
     # Mutation operations declare path targets that aren't full graph paths.
-    path_names |= {"tag-mutation-loop", "metadata-mutation-loop", "session-delete-loop"}
+    path_names |= {
+        "tag-mutation-loop",
+        "metadata-mutation-loop",
+        "session-delete-loop",
+        "mark-mutation-loop",
+        "annotation-mutation-loop",
+        "correction-mutation-loop",
+        "recall-pack-mutation-loop",
+        "saved-view-mutation-loop",
+        "workspace-mutation-loop",
+        "blackboard-post-loop",
+        "identity-reset-loop",
+        "raw-authority-blocker-resolution-loop",
+        "session-excision-loop",
+    }
 
     for operation in graph.operations:
         assert set(operation.consumes).issubset(node_names), (
