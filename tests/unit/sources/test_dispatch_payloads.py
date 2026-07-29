@@ -522,3 +522,124 @@ def test_chatgpt_bundle_small_metadata_only_array_does_not_warn(caplog: pytest.L
 
     assert sessions == []
     assert not any("ChatGPT bundle payload" in record.message for record in caplog.records)
+
+
+def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yields_messages() -> None:
+    """A long Codex rollout that repeats ``session_meta`` (fork/resume/compaction
+    markers physically re-emit the header) and interleaves reasoning,
+    function_call, custom_tool_call, and message records must still produce
+    messages for every real turn -- none of those record kinds may cause the
+    whole stream to fall through to zero messages.
+
+    This pins the exact wire shape found in a live 3.3 MB Codex rollout that
+    a historical parser version turned into a *zero-message* archived session
+    (874-session live-archive audit, polylogue empty-session investigation):
+    4 ``session_meta`` records, ~500 ``reasoning``, ~440 ``function_call``/
+    ``function_call_output`` pairs, ~44 ``custom_tool_call``/
+    ``custom_tool_call_output`` pairs, and 55 ``message`` records, all routed
+    through ``parse_stream_payload`` -- the exact function
+    ``pipeline/services/ingest_worker.py`` calls for streamed Codex ingest.
+    Current code already parses the real bytes correctly (verified directly
+    against the live blob); this fixture keeps that guarantee under CI.
+
+    Mutation that fails this: making any of the interleaved non-``message``
+    response_item kinds (``reasoning``, ``function_call``,
+    ``custom_tool_call``) abort turn accumulation instead of being recorded
+    as session events / tool blocks -- e.g. an early ``return`` or exception
+    on an unrecognized nested field within one of those payloads.
+    """
+    records: list[object] = [
+        {"type": "session_meta", "payload": {"id": "root-session", "timestamp": "2025-10-19T05:04:30.397Z"}},
+    ]
+    for turn in range(20):
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": f"turn {turn} prompt"}],
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [],
+                    "encrypted_content": "gAAAA...",
+                    "metadata": {"turn_id": f"turn-{turn}"},
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "call_id": f"call-{turn}",
+                    "name": "shell",
+                    "arguments": {"cmd": "date"},
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": f"call-{turn}",
+                    "output": "ok",
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": f"ctc-{turn}",
+                    "call_id": f"custom-call-{turn}",
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch",
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": f"custom-call-{turn}",
+                    "output": "patch applied",
+                },
+            }
+        )
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": f"turn {turn} reply"}],
+                },
+            }
+        )
+        # Compaction/resume mid-stream re-emits the session header verbatim.
+        records.append(
+            {"type": "session_meta", "payload": {"id": "root-session", "timestamp": "2025-10-19T05:04:30.397Z"}}
+        )
+
+    sessions = parse_stream_payload(
+        Provider.CODEX,
+        iter(records),
+        "fallback",
+        source_path="/home/user/.codex/sessions/2025/10/19/rollout-2025-10-19T07-04-30-fixture.jsonl",
+    )
+
+    assert len(sessions) == 1
+    total_messages = len(sessions[0].messages)
+    assert total_messages > 0, "long multi-session_meta Codex rollout must not parse to zero messages"
+    # 20 turns * (user + assistant + function_call use/output + custom_tool_call use/output)
+    assert total_messages == 20 * 6

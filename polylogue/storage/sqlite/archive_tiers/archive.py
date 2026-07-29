@@ -251,6 +251,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection_profile import (
+    BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS,
     READ_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
     open_connection,
@@ -1297,7 +1298,19 @@ class ArchiveStore:
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
         try:
-            self._initialize_store(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+            self._initialize_store(
+                archive_root,
+                initialize=initialize,
+                read_only=read_only,
+                read_timeout=read_timeout,
+                # polylogue-623q: only ever True for a write connection against
+                # an OWNED INACTIVE generation -- never read until promoted,
+                # discarded wholesale on any failure -- so it is safe to open
+                # with a far more aggressive durability/speed tradeoff than
+                # the live single-writer profile. See
+                # BULK_BUILD_WRITE_CONNECTION_PROFILE's docstring.
+                bulk_build_profile=owned_inactive_generation is not None,
+            )
         except Exception:
             conn = getattr(self, "_conn", None)
             if conn is not None:
@@ -1307,7 +1320,15 @@ class ArchiveStore:
                 self._active_writer_lease = None
             raise
 
-    def _initialize_store(self, archive_root: Path, *, initialize: bool, read_only: bool, read_timeout: float) -> None:
+    def _initialize_store(
+        self,
+        archive_root: Path,
+        *,
+        initialize: bool,
+        read_only: bool,
+        read_timeout: float,
+        bulk_build_profile: bool = False,
+    ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
         self.index_db_path = archive_root / "index.db"
@@ -1323,7 +1344,11 @@ class ArchiveStore:
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
             self._conn = sqlite3.connect(self.index_db_path)
-            pragma_statements = WRITE_CONNECTION_PRAGMA_STATEMENTS
+            pragma_statements = (
+                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
+                if bulk_build_profile
+                else WRITE_CONNECTION_PRAGMA_STATEMENTS
+            )
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
             self._conn.execute(statement)
