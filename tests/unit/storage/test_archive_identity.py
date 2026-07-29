@@ -9,10 +9,12 @@ from polylogue.storage.archive_identity import (
     ArchiveIdentity,
     ArchiveIdentityConflictError,
     ArchiveLocation,
+    ArchiveLocationError,
     ArchiveOwnershipError,
     OwnedArchiveLocation,
     assert_owns_archive_location,
     assert_writable_archive_identity,
+    resolve_active_index_path,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -54,6 +56,28 @@ def test_location_keeps_durable_tiers_at_configured_root_and_follows_active_poin
     assert location.active_tier("ops").resolved_path == (canonical / "ops.db").resolve()
     assert location.shadow_index is not None
     assert location.shadow_index.resolved_path == configured / "index.db"
+
+
+@pytest.mark.parametrize("pointer_value", ("relative/index.db", "/tmp/not-index.db"))
+def test_resolve_active_index_path_rejects_malformed_pointer(tmp_path: Path, pointer_value: str) -> None:
+    """A pointer that is relative or does not name ``index.db`` must fail loudly.
+
+    Anti-vacuity for the retired ``paths._roots.resolve_active_index_db_path``/
+    ``active_index_db_path`` duplicate resolvers (polylogue-l2cd): both used to
+    re-derive and validate this pointer themselves. ``ArchiveLocation.resolve``
+    (and the ``resolve_active_index_path`` convenience wrapper every migrated
+    call site now uses) must independently perform the same validation, or a
+    malformed pointer would silently resolve to a wrong generation instead of
+    raising.
+    """
+    root = tmp_path / "archive"
+    root.mkdir()
+    (root / ".index-active-pointer").write_text(pointer_value, encoding="utf-8")
+
+    with pytest.raises(ArchiveLocationError, match="invalid active index pointer"):
+        ArchiveLocation.resolve(root)
+    with pytest.raises(ArchiveLocationError, match="invalid active index pointer"):
+        resolve_active_index_path(root)
 
 
 def test_split_roots_sharing_durable_tiers_reject_distinct_indexes_before_mutation(tmp_path: Path) -> None:

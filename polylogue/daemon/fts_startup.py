@@ -116,9 +116,16 @@ def _missing_named_triggers_sync(conn: sqlite3.Connection, trigger_names: tuple[
 
 
 def _active_fts_startup_db_path() -> Path:
+    """Return the archive-rooted ``index.db`` path (see ``daemon.cli._active_index_db_path``).
+
+    Deliberately the plain ``archive_root() / "index.db"`` construction, not
+    a pointer-resolved active-generation path: this value flows into
+    ``CursorStore(db_path)`` below, whose ``ops.db``/sibling-tier derivation
+    assumes ``db_path`` never diverges from the durable-tier archive root.
+    """
     from polylogue import paths
 
-    return paths.active_index_db_path()
+    return paths.archive_root() / "index.db"
 
 
 _MESSAGE_FTS_STARTUP_DEBT_DETAIL = (

@@ -73,69 +73,11 @@ def embeddings_db_path() -> Path:
     return archive_root() / "embeddings.db"
 
 
-def resolve_active_index_db_path(*, db_anchor: Path, index_db: Path) -> Path:
-    """Resolve the active query/index database path."""
-    pointer = archive_root() / ".index-active-pointer"
-    if pointer.exists():
-        target = Path(pointer.read_text(encoding="utf-8").strip())
-        if not target.is_absolute() or target.name != "index.db":
-            raise RuntimeError(f"invalid active index pointer: {target}")
-        return target
-    if db_anchor.name == "index.db":
-        return db_anchor
-    return index_db
-
-
-def sibling_index_db(anchor: Path, *, require_exists: bool = True) -> Path | None:
-    """Derive the sibling index.db path from an anchor database path.
-
-    Given a path (which may or may not be index.db), resolve the
-    corresponding index.db in the same directory. If require_exists=True,
-    check that the resolved path exists; if False, return the path even
-    if it doesn't exist on disk.
-
-    Args:
-        anchor: A database path (e.g., source.db, or index.db itself).
-        require_exists: If True, return None when the resolved path doesn't exist.
-
-    Returns:
-        The sibling index.db path if it exists (or if require_exists=False),
-        None otherwise.
-    """
-    # If anchor is already index.db, use it directly
-    index_db = anchor if anchor.name == "index.db" else anchor.with_name("index.db")
-
-    # Check existence requirement
-    if require_exists and not index_db.exists():
-        return None
-
-    return index_db
-
-
 def archive_file_set_index_available_for_paths(*, archive_root_path: Path, db_anchor: Path) -> bool:
     """Return whether routing is active."""
     del archive_root_path
     del db_anchor
     return True
-
-
-def archive_file_set_root_for_paths(*, archive_root_path: Path, db_anchor: Path) -> Path:
-    """Return the configured archive root."""
-    if db_anchor.name == "index.db":
-        return db_anchor.parent
-    return archive_root_path
-
-
-def active_index_db_path() -> Path:
-    """Currently active query/index database path."""
-    root = archive_root()
-    pointer = root / ".index-active-pointer"
-    if pointer.exists():
-        target = Path(pointer.read_text(encoding="utf-8").strip())
-        if not target.is_absolute() or target.name != "index.db":
-            raise RuntimeError(f"invalid active index pointer: {target}")
-        return target
-    return root / "index.db"
 
 
 def browser_capture_spool_root() -> Path:

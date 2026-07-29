@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.config import Config
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
 from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -3003,7 +3004,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if diff.get("ok") else 1
 
     payload = probe(
-        args.db or active_index_db_path(),
+        args.db or resolve_active_index_path(archive_root()),
         limit=max(1, args.limit),
         integrity_check=args.integrity_check,
         exact_derived_counts=args.exact_derived_counts,

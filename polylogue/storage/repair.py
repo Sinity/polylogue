@@ -36,9 +36,9 @@ from polylogue.maintenance.targets import (
     MaintenanceTargetSpec,
     build_maintenance_target_catalog,
 )
-from polylogue.paths import archive_file_set_root_for_paths
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
@@ -3741,7 +3741,18 @@ def _raw_materialization_source_available(source_path: str) -> bool:
 
 
 def _raw_materialization_archive_root(config: Config) -> Path:
-    return archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
+    """Return the archive file-set root housing the currently active database.
+
+    This deliberately follows ``config.db_path`` (not ``config.archive_root``):
+    raw materialization repair inspects the database and blob store that are
+    actually live right now, which the ``polylogue-yla8.1`` split-root
+    contract lets a caller route to an explicit ``Config(db_path=...)``
+    override, and which the ordinary case resolves via
+    ``resolve_active_index_path`` (``.index-active-pointer``-aware) inside
+    ``Config.__init__`` -- so ``config.db_path`` is already the correct
+    resolved index location either way.
+    """
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _raw_materialization_candidate_ids(
@@ -4833,9 +4844,10 @@ def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
 
 
 def _open_archive_index_connection() -> sqlite3.Connection:
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    conn = sqlite3.connect(active_index_db_path())
+    conn = sqlite3.connect(resolve_active_index_path(archive_root()))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -5357,6 +5369,7 @@ def collect_archive_debt_statuses_sync(
     include_expensive: bool = True,
     probe_only: bool = False,
     target_names: tuple[str, ...] = (),
+    configured_root: Path | None = None,
 ) -> dict[str, ArchiveDebtStatus]:
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
 
@@ -5440,7 +5453,7 @@ def collect_archive_debt_statuses_sync(
             skipped=skip_large_message_scans,
         )
     if include_expensive and "orphaned_blobs" in selected:
-        orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path)
+        orphaned_blobs = count_orphaned_blobs_sync(conn, db_path=db_path, configured_root=configured_root)
         debt_statuses["orphaned_blobs"] = _archive_debt_status(
             "orphaned_blobs",
             issue_count=orphaned_blobs,
@@ -5802,12 +5815,13 @@ def repair_session_insights(
     planner to honor :class:`MaintenanceScopeFilter.session_ids`.
     """
     from polylogue.api.archive import _rebuild_archive_session_insights
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root as _resolve_archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.insights.session.rebuild import refresh_session_insight_aggregates_sync
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
-        archive_root = archive_root_override or active_index_db_path().parent
+        archive_root = archive_root_override or resolve_active_index_path(_resolve_archive_root()).parent
         archive_context = (
             ArchiveStore.open_owned_inactive_generation(
                 archive_root,

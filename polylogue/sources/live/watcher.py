@@ -188,6 +188,7 @@ class LiveWatcher:
         self._cursor = cursor or CursorStore(
             _cursor_db_path(polylogue),
             initialize=write_coordinator is None,
+            ops_db_path=Path(polylogue.archive_root) / "ops.db",
         )
         self._max_workers = max_workers
         self._converger = converger

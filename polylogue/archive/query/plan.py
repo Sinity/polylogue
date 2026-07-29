@@ -33,6 +33,7 @@ from polylogue.archive.query.runtime import (
 )
 from polylogue.archive.query.sorting import finalize_results, sort_sessions, sort_summaries
 from polylogue.archive.query.support import session_has_branches
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.query_models import SessionRecordQuery
 
 if TYPE_CHECKING:
@@ -62,12 +63,14 @@ def plan_sql_pushdown_params(plan: SessionQueryPlan) -> SqlPushdownParams:
 
 
 def _archive_root_for_config(config: Config) -> Path:
-    from polylogue.paths import archive_file_set_root_for_paths
+    """Return the archive file-set root housing the currently active database.
 
-    return archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    Follows ``config.db_path`` (not ``config.archive_root``), per the
+    ``polylogue-yla8.1`` split-root contract: ``Config.db_path`` always names
+    a concrete ``index.db`` (either an explicit override or the resolved
+    active generation), so its parent is always the correct file-set root.
+    """
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 # ---------------------------------------------------------------------------

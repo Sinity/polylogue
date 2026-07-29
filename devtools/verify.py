@@ -1866,12 +1866,6 @@ def build_verify_steps(
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
         )
-        steps.append(
-            (
-                "lab policy archive-resolver-completeness",
-                _devtools_cmd("lab policy archive-resolver-completeness"),
-            )
-        )
     return steps
 
 

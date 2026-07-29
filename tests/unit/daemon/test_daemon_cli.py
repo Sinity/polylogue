@@ -164,8 +164,7 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
@@ -224,8 +223,7 @@ def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) 
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
         patch("polylogue.storage.archive_readiness.time.time", return_value=now_ms / 1000),
     ):
@@ -264,8 +262,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
@@ -300,8 +297,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status"])
@@ -324,8 +320,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status.db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.index_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
         result = CliRunner().invoke(main, ["status"])
@@ -2199,7 +2194,8 @@ def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
 
     repairs: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", rebuild)
@@ -2286,7 +2282,8 @@ def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
     monkeypatch.setattr(
@@ -2696,7 +2693,8 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
             self.closed = True
 
     conn = FakeConnection()
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr(
         "polylogue.storage.fts.dangling_repair.repair_stale_fts_rows",
@@ -2791,7 +2789,8 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
     conn = FakeConnection()
     rebuilds: list[FakeConnection] = []
     optional_repairs: list[FakeConnection] = []
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.rebuild_fts_index_sync", lambda c: rebuilds.append(c))
@@ -2919,7 +2918,8 @@ def test_ensure_fts_startup_readiness_skips_non_current_archive_shape(
     restored: list[FakeConnection] = []
     rebuilds: list[FakeConnection] = []
 
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db)
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
     freshness_calls: list[FakeConnection] = []
@@ -3331,7 +3331,9 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
             return True
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(
+        "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
+    )
     monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
 
     with pytest.raises(RuntimeError, match="ops unavailable"):

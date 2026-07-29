@@ -588,7 +588,9 @@ def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profile
     archive_db.touch()
     source_path = tmp_path / "codex.jsonl"
 
-    monkeypatch.setattr(stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths: {source_path: []})
+    monkeypatch.setattr(
+        stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths, **_kw: {source_path: []}
+    )
 
     def fail_global_missing_profiles(_conn: sqlite3.Connection) -> list[str]:
         raise AssertionError("path-scoped insight convergence must not scan global missing profiles")
@@ -918,15 +920,15 @@ def test_embed_stage_defers_to_pending_debt_while_predicate_holds(
 
     embed_calls: list[str] = []
 
-    def fake_execute(_db: Path, _path: Path) -> bool:
+    def fake_execute(_db: Path, _path: Path, **_kwargs: object) -> bool:
         embed_calls.append("execute")
         return True
 
-    def fake_execute_many(_db: Path, _paths: object) -> bool:
+    def fake_execute_many(_db: Path, _paths: object, **_kwargs: object) -> bool:
         embed_calls.append("execute_many")
         return True
 
-    def fake_execute_sessions(_db: Path, _ids: object) -> bool:
+    def fake_execute_sessions(_db: Path, _ids: object, **_kwargs: object) -> bool:
         embed_calls.append("execute_sessions")
         return True
 
@@ -1378,7 +1380,7 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
-    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids: set())
+    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: set())
     monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:
@@ -1424,7 +1426,9 @@ def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_a
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
-    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids: {"codex-session:conv-hot"})
+    monkeypatch.setattr(
+        stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: {"codex-session:conv-hot"}
+    )
     monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:
@@ -1453,7 +1457,7 @@ def test_archive_insights_execute_sessions_uses_write_connection_profile(
 
     seen_busy_timeout: list[int] = []
 
-    def fake_execute_ids(conn: sqlite3.Connection, session_ids: list[str]) -> bool:
+    def fake_execute_ids(conn: sqlite3.Connection, session_ids: list[str], **_kwargs: object) -> bool:
         assert session_ids == [session_id]
         seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
         return True

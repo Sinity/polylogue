@@ -42,7 +42,8 @@ from pathlib import Path
 from typing import Final
 
 from polylogue.config import load_polylogue_config
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # Hard server-side cap on requested result count. A pathological client
@@ -344,12 +345,11 @@ def _clamp_limit(requested: int | None) -> int:
     return requested
 
 
-def _archive_index_path_for() -> str | None:
-    from polylogue.paths import sibling_index_db
-
-    path = active_index_db_path()
-    index_db = sibling_index_db(path, require_exists=True)
-    return str(index_db) if index_db is not None else None
+def _archive_index_path_for(dbf: Path) -> str | None:
+    # dbf always names "index.db" (resolve_active_index_path raises
+    # otherwise), so the old sibling_index_db(path, require_exists=True) call
+    # was provably an identity-plus-existence-check on path itself.
+    return str(dbf) if dbf.exists() else None
 
 
 def _build_archive_similar_payload(
@@ -358,6 +358,7 @@ def _build_archive_similar_payload(
     *,
     bounded_limit: int,
     disabled_reason: str | None,
+    archive_root_path: Path,
 ) -> dict[str, object] | None:
     conn: sqlite3.Connection | None = None
     index_conn = sqlite3.connect(index_db)
@@ -372,7 +373,7 @@ def _build_archive_similar_payload(
             envelope["limit"] = bounded_limit
             return envelope
 
-        embeddings_db = Path(index_db).with_name("embeddings.db")
+        embeddings_db = archive_root_path / "embeddings.db"
         if not embeddings_db.exists():
             envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
             envelope["session_id"] = session_id
@@ -478,14 +479,15 @@ def build_similar_payload(
         voyage_api_key=cfg.voyage_api_key,
     )
 
-    dbf = active_index_db_path()
-    index_db = _archive_index_path_for()
+    dbf = resolve_active_index_path(archive_root())
+    index_db = _archive_index_path_for(dbf)
     if index_db is not None:
         return _build_archive_similar_payload(
             index_db,
             session_id,
             bounded_limit=bounded_limit,
             disabled_reason=disabled_reason,
+            archive_root_path=archive_root(),
         )
     if not dbf.exists():
         # Treat a missing database the same as a missing session —

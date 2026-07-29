@@ -61,11 +61,12 @@ from polylogue.daemon.live_ingest_attempt_workload import (
 )
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
-from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
+from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
     active_rebuild_index_attempts,
     raw_materialization_readiness_snapshot,
@@ -93,7 +94,7 @@ _EMBEDDING_READINESS_DEADLINE_S = 2.0
 
 
 def _active_status_db_path() -> Path:
-    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+    return resolve_active_index_path(archive_root())
 
 
 def _daemon_status_fingerprint(active_db: Path) -> str:
@@ -106,12 +107,13 @@ def _daemon_status_fingerprint(active_db: Path) -> str:
     Stat-only (no query execution), so checking it stays cheap even when the
     cached value itself is reused.
     """
+    ops_db = archive_root() / "ops.db"
     parts: list[str] = []
     for candidate in (
         active_db,
         active_db.with_suffix(".db-wal"),
-        active_db.with_name("ops.db"),
-        active_db.with_name("ops.db-wal"),
+        ops_db,
+        ops_db.with_suffix(".db-wal"),
     ):
         try:
             parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
@@ -684,17 +686,18 @@ def _fts_readiness_info() -> dict[str, object]:
 
 def _insight_freshness_info() -> dict[str, object]:
     """Check insight materialization status through bounded SQL counts."""
-    from polylogue.paths import sibling_index_db
-
+    # _active_status_db_path() always names "index.db" (resolve_active_index_path
+    # raises otherwise), so the old sibling_index_db(dbf, require_exists=False)
+    # call was provably an identity operation on dbf itself.
     dbf = _active_status_db_path()
     if not dbf.exists():
-        index_db = sibling_index_db(dbf, require_exists=False)
+        index_db: Path | None = dbf
         if index_db is not None:
             archive_info = _archive_insight_freshness_info(index_db)
             if archive_info is not None:
                 return archive_info
         return {"sessions_with_profiles": 0, "total_sessions": 0}
-    index_db = sibling_index_db(dbf, require_exists=False)
+    index_db = dbf
     if index_db is not None:
         archive_info = _archive_insight_freshness_info(index_db)
         if archive_info is not None:
@@ -1091,7 +1094,7 @@ def _failing_files_info() -> list[str]:
 def _live_cursor_summary_info() -> LiveCursorSummary:
     """Return live cursor backlog/failure state without source-tree scans."""
     dbf = _active_status_db_path()
-    ops_summary = _archive_live_cursor_summary_info(dbf.with_name("ops.db"))
+    ops_summary = _archive_live_cursor_summary_info(archive_root() / "ops.db")
     if ops_summary is not None:
         return ops_summary
     if not dbf.exists():
@@ -1243,11 +1246,12 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
 
 def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
     """Return recent durable live-ingest attempt snapshots."""
-    from polylogue.paths import sibling_index_db
-
+    # _active_status_db_path() always names "index.db", so the old
+    # sibling_index_db(dbf, require_exists=False) call was provably an
+    # identity operation on dbf itself.
     dbf = _active_status_db_path()
-    ops_summary = _archive_live_ingest_attempt_summary_info(dbf.with_name("ops.db"))
-    index_db = sibling_index_db(dbf, require_exists=False)
+    ops_summary = _archive_live_ingest_attempt_summary_info(archive_root() / "ops.db")
+    index_db: Path | None = dbf
     if ((index_db is not None and index_db.exists()) or not dbf.exists()) and ops_summary is not None:
         return ops_summary
     if not dbf.exists():
@@ -2234,14 +2238,14 @@ def _daemon_status_component_specs(
         StatusComponentSpec(
             name="convergence",
             scope="daemon",
-            collector=lambda: convergence_debt_summary_info(_active_status_db_path()),
+            collector=lambda: convergence_debt_summary_info(_active_status_db_path(), ops_db=archive_root() / "ops.db"),
             deadline_s=0.5,
             fingerprint=fingerprint,
         ),
         StatusComponentSpec(
             name="cursor_lag",
             scope="daemon",
-            collector=lambda: cursor_lag_summary_info(_active_status_db_path()),
+            collector=lambda: cursor_lag_summary_info(_active_status_db_path(), ops_db=archive_root() / "ops.db"),
             deadline_s=0.5,
             fingerprint=fingerprint,
         ),
@@ -2473,6 +2477,7 @@ def build_daemon_status(
         active_db,
         latest_attempt=live_ingest_attempts.recent[0] if live_ingest_attempts.recent else None,
         convergence=convergence,
+        ops_db=archive_root() / "ops.db",
     )
     raw_failures: dict[str, object] = _v("raw_failures", {})
     blob_publication_reservations = _v("blob_publication_reservations", BlobPublicationReservationStatus())

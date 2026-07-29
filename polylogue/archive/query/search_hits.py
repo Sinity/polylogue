@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 from polylogue.archive.query.retrieval import search_limit
 from polylogue.archive.query.retrieval_search import search_query_text as plan_search_query_text
 from polylogue.archive.query.support import session_to_summary
+from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
@@ -274,12 +275,10 @@ async def search_hits_for_plan(
 
     from polylogue.archive.query.archive_execution import archive_search_hits
     from polylogue.archive.query.transaction import run_archive_read
-    from polylogue.paths import archive_file_set_root_for_paths
 
-    archive_root = archive_file_set_root_for_paths(
-        archive_root_path=config.archive_root,
-        db_anchor=config.db_path,
-    )
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     paired, resolved_lane = await run_archive_read(
         archive_root,
         operation="archive.query.search-hits-for-plan",

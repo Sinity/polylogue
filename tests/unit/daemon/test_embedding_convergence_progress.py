@@ -27,7 +27,9 @@ def test_periodic_embedding_backlog_waits_for_catch_up_complete(
 
     async def exercise() -> None:
         catch_up_complete = asyncio.Event()
-        monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: tmp_path / "index.db")
+        monkeypatch.setattr(
+            "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
+        )
         monkeypatch.setattr(
             "polylogue.daemon.write_coordinator.daemon_write_coordinator",
             lambda: SimpleNamespace(run_sync=fake_run_sync),
@@ -116,7 +118,7 @@ def test_daemon_embedding_backlog_drain_processes_archive(
 
     embedded_calls: list[tuple[Path, str]] = []
 
-    def fake_embed(db_path: Path, _provider: object, session_id: str) -> EmbedSessionOutcome:
+    def fake_embed(db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         embedded_calls.append((db_path, session_id))
         return EmbedSessionOutcome(
             status="embedded",
@@ -171,7 +173,7 @@ def test_daemon_embedding_backlog_uses_bounded_pending_window(
         observed_kwargs.update(kwargs)
         return [PendingSession(session_id="codex-session:v1-a", title="Archive A", message_count=2)]
 
-    def fake_embed(_db_path: Path, _provider: object, session_id: str) -> EmbedSessionOutcome:
+    def fake_embed(_db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         return EmbedSessionOutcome(status="embedded", session_id=session_id, embedded_message_count=2)
 
     monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: _EmbeddingConfig())
@@ -210,7 +212,7 @@ def test_daemon_embedding_backlog_records_skipped_sessions(
             """
         )
 
-    def fake_embed(_db_path: Path, _provider: object, session_id: str) -> EmbedSessionOutcome:
+    def fake_embed(_db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         return EmbedSessionOutcome(status="no_embeddable_messages", session_id=session_id)
 
     monkeypatch.setattr(convergence_stages, "load_polylogue_config", lambda: _EmbeddingConfig())
@@ -259,7 +261,7 @@ def test_archive_convergence_embedding_uses_embeddings_tier(
         observed_vector_db_paths.append(Path(str(kwargs["db_path"])))
         return fake_provider
 
-    def fake_embed(db_path: Path, provider: object, session_id: str) -> EmbedSessionOutcome:
+    def fake_embed(db_path: Path, provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         assert provider is fake_provider
         embedded_calls.append((db_path, session_id))
         return EmbedSessionOutcome(

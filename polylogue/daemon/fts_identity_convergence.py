@@ -127,13 +127,13 @@ async def periodic_fts_identity_drift_recompute(
     writer lock.
     """
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
 
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
         await asyncio.sleep(FTS_IDENTITY_DRIFT_RECOMPUTE_INTERVAL_SECONDS)
-        db_path = active_index_db_path()
+        db_path = archive_root() / "index.db"
         try:
             result = await daemon_write_coordinator().run_sync(
                 "maintenance.fts_identity_drift_recompute",

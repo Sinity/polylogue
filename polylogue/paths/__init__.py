@@ -9,10 +9,8 @@ from __future__ import annotations
 
 from polylogue.paths._roots import (
     GEMINI_DRIVE_FOLDER,
-    active_index_db_path,
     antigravity_path,
     archive_file_set_index_available_for_paths,
-    archive_file_set_root_for_paths,
     archive_root,
     blob_store_root,
     browser_capture_pairing_state_path,
@@ -37,8 +35,6 @@ from polylogue.paths._roots import (
     hooks_sidecar_dir,
     index_db_path,
     render_root,
-    resolve_active_index_db_path,
-    sibling_index_db,
     source_db_path,
     state_home,
     state_root,
@@ -46,7 +42,6 @@ from polylogue.paths._roots import (
 
 __all__ = [
     "GEMINI_DRIVE_FOLDER",
-    "active_index_db_path",
     "antigravity_path",
     "archive_root",
     "blob_store_root",
@@ -72,9 +67,6 @@ __all__ = [
     "hooks_sidecar_dir",
     "index_db_path",
     "render_root",
-    "resolve_active_index_db_path",
-    "sibling_index_db",
-    "archive_file_set_root_for_paths",
     "archive_file_set_index_available_for_paths",
     "source_db_path",
     "state_home",

@@ -1231,10 +1231,12 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in rows}
 
 
-def mark_all_archive_sessions_needs_reindex(index_db_path: Path) -> None:
+def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_db_path: Path | None = None) -> None:
     """Flag every archive session for embedding rebuild."""
 
-    embeddings_db_path = index_db_path.with_name("embeddings.db")
+    embeddings_db_path = (
+        embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
+    )
     conn = sqlite3.connect(embeddings_db_path, timeout=30.0)
     try:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db_path),))
@@ -1378,8 +1380,18 @@ def embed_archive_session_sync(
     index_db_path: Path,
     vec_provider: VectorProvider,
     session_id: str,
+    *,
+    embeddings_db_path: Path | None = None,
 ) -> EmbedSessionOutcome:
-    """Embed one archive session with exact-key, generation-guarded publication."""
+    """Embed one archive session with exact-key, generation-guarded publication.
+
+    ``embeddings_db_path`` names the sibling ``embeddings.db`` explicitly for
+    callers that resolved it independently (e.g. an ``ArchiveLocation``'s
+    ``configured_root``, which may differ from ``index_db_path`` for an
+    index-only external generation or a ``.index-active-pointer`` resolved
+    active index); it defaults to ``index_db_path.with_name("embeddings.db")``
+    for callers that never diverge from the plain convention.
+    """
 
     text_provider = cast(_EmbeddingTextProvider, vec_provider)
     if not hasattr(text_provider, "_get_embeddings"):
@@ -1389,7 +1401,9 @@ def embed_archive_session_sync(
             error="vector provider does not expose text embedding generation",
         )
 
-    embeddings_db_path = index_db_path.with_name("embeddings.db")
+    embeddings_db_path = (
+        embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
+    )
     index_conn = sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True, timeout=30.0)
     index_conn.row_factory = sqlite3.Row
     embeddings_conn = sqlite3.connect(embeddings_db_path, timeout=30.0)

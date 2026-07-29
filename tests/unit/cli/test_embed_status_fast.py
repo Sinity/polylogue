@@ -43,6 +43,7 @@ class _Cfg:
 def _env(db_path: Path) -> Any:
     env = MagicMock()
     env.config.db_path = db_path
+    env.config.archive_root = db_path.parent
     return env
 
 

@@ -240,11 +240,9 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import select_session_rows
     from polylogue.cli.shared.helpers import load_effective_config
-    from polylogue.paths import archive_file_set_root_for_paths
 
     config = load_effective_config(env)
-    archive_root = archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
-    if not (archive_root / "index.db").exists():
+    if not config.db_path.exists():
         click.echo(render_guided_path())
         return True
 
@@ -530,9 +528,10 @@ def _emit_schema_drift_marker() -> None:
         from time import time as _now
 
         from polylogue.cli.commands.status import _schema_drift_status
-        from polylogue.paths import db_path, index_db_path, resolve_active_index_db_path
+        from polylogue.paths import archive_root
+        from polylogue.storage.archive_identity import resolve_active_index_path
 
-        active_db = resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+        active_db = resolve_active_index_path(archive_root())
         drift = _schema_drift_status(active_db.parent, now_ms=int(_now() * 1000))
         if not drift.get("available"):
             return

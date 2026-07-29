@@ -401,15 +401,16 @@ def _collect_archive_debt_statuses(
     """
     from contextlib import closing
 
-    from polylogue.paths import archive_file_set_root_for_paths
+    from polylogue.storage.archive_identity import archive_file_set_root
     from polylogue.storage.repair import collect_archive_debt_statuses_sync
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    index_db = (
-        archive_file_set_root_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path) / "index.db"
-    )
+    # polylogue-yla8.1 split-root contract: config.db_path always names a
+    # concrete index.db (explicit override or resolved active generation).
+    index_db = config.db_path
     if not index_db.exists():
         return {}
+    configured_root = archive_file_set_root(archive_root=config.archive_root, db_path=index_db)
     with closing(open_readonly_connection(index_db)) as conn:
         return collect_archive_debt_statuses_sync(
             conn,
@@ -417,6 +418,7 @@ def _collect_archive_debt_statuses(
             include_expensive=include_expensive,
             probe_only=False,
             target_names=target_names,
+            configured_root=configured_root,
         )
 
 

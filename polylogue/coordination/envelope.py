@@ -46,7 +46,8 @@ from polylogue.coordination.payloads import (
 )
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
-from polylogue.paths import active_index_db_path, archive_root
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
     observed_event_relation_sql,
@@ -381,7 +382,7 @@ def _coordination_fingerprint(root_cwd: Path) -> str:
         except OSError:
             parts.append(f"{candidate.name}:?")
     try:
-        db = active_index_db_path()
+        db = resolve_active_index_path(archive_root())
         wal = db.with_suffix(".db-wal")
         target = wal if wal.exists() else db
         parts.append(f"archive:{target.stat().st_mtime_ns}")
@@ -1765,7 +1766,7 @@ def _handoff_payloads(
     if remaining and archive is not None:
         payloads.extend(
             _assertion_handoff_payloads(
-                Path(archive.index_db).with_name("user.db"),
+                Path(archive.archive_root) / "user.db",
                 repo_root=repo_root,
                 limit=remaining,
             )
@@ -1845,14 +1846,14 @@ def _handoff_matches_repo(*, body: str, scope_ref: str, target_ref: str, repo_to
 def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) -> CoordinationArchivePayload | None:
     try:
         archive = archive_root().resolve()
-        index = active_index_db_path().resolve()
+        index = resolve_active_index_path(archive).resolve()
     except Exception as exc:
-        # archive_root()/active_index_db_path() raise both for the ordinary
-        # "no archive configured" case and for genuine config-resolution
-        # bugs; a bare None return makes the two indistinguishable to the
-        # caller (no archive field, no advisory). Log loudly so the failure
-        # is visible even though the payload shape can't carry a reason here
-        # (polylogue-cpf.4).
+        # archive_root()/resolve_active_index_path() raise both for the
+        # ordinary "no archive configured" case and for genuine
+        # config-resolution bugs; a bare None return makes the two
+        # indistinguishable to the caller (no archive field, no advisory).
+        # Log loudly so the failure is visible even though the payload shape
+        # can't carry a reason here (polylogue-cpf.4).
         logger.warning("coordination archive-root resolution failed: %s", exc, exc_info=True)
         return None
     hook_flow_states: dict[str, str] = {}
@@ -1880,8 +1881,8 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
         index_db=str(index),
         index_exists=index.exists(),
         index_user_version=_sqlite_user_version(index),
-        source_user_version=_sqlite_user_version(index.with_name("source.db")),
-        user_user_version=_sqlite_user_version(index.with_name("user.db")),
+        source_user_version=_sqlite_user_version(archive / "source.db"),
+        user_user_version=_sqlite_user_version(archive / "user.db"),
         hook_flow_states=hook_flow_states,
         hook_flow_healthy=hook_flow_healthy,
         hook_flow_gaps=hook_flow_gaps,

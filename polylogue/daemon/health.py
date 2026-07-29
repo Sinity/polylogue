@@ -24,7 +24,8 @@ from pydantic import BaseModel, Field
 from polylogue.config import PolylogueConfig
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import get_logger
-from polylogue.paths import archive_root, db_path, index_db_path, resolve_active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 logger = get_logger(__name__)
 
@@ -92,7 +93,7 @@ _RAW_FAILURE_ERROR_COUNT = 50
 
 
 def _active_health_db_path() -> Path:
-    return resolve_active_index_db_path(db_anchor=db_path(), index_db=index_db_path())
+    return resolve_active_index_path(archive_root())
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +743,7 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
     """
     now = datetime.now(UTC).isoformat()
     dbf = _active_health_db_path()
-    ops_info = _archive_repeated_stage_failure_info(dbf.with_name("ops.db"))
+    ops_info = _archive_repeated_stage_failure_info(archive_root() / "ops.db")
     if ops_info is not None and (ops_info[0] > 0 or not dbf.exists()):
         total_recent, failed_recent, error_row = ops_info
         return _repeated_stage_failure_alert(now, total_recent, failed_recent, error_row)
@@ -904,7 +905,7 @@ def _check_convergence_debt_medium() -> list[HealthAlert]:
 
         cfg = load_polylogue_config()
         thresholds = load_thresholds_from_config(cfg)
-        summary = convergence_debt_summary_info(_active_health_db_path())
+        summary = convergence_debt_summary_info(_active_health_db_path(), ops_db=archive_root() / "ops.db")
         alerts = evaluate_convergence_debt(
             summary,
             thresholds=thresholds,
@@ -972,7 +973,7 @@ def _check_cursor_lag_medium() -> list[HealthAlert]:
 
         cfg = load_polylogue_config()
         thresholds = load_thresholds_from_config(cfg)
-        summary = cursor_lag_summary_info(_active_health_db_path())
+        summary = cursor_lag_summary_info(_active_health_db_path(), ops_db=archive_root() / "ops.db")
         static_alerts = evaluate_cursor_lag(
             summary,
             thresholds=thresholds,
@@ -1028,6 +1029,7 @@ def _check_cursor_lag_anomaly_layer(
 
         anomaly_thresholds = load_anomaly_thresholds_from_config(cfg)
         dbf = _active_health_db_path()
+        ops_db = archive_root() / "ops.db"
 
         # Load the baseline BEFORE recording the current moment's sample.
         # This is load-bearing: if we wrote first, the current spike would
@@ -1041,13 +1043,14 @@ def _check_cursor_lag_anomaly_layer(
             families_to_check,
             window_days=anomaly_thresholds.baseline_window_days,
             min_samples=anomaly_thresholds.baseline_min_samples,
+            ops_db=ops_db,
         )
 
         # Record the current moment's sample after baseline read (no-op if
         # no stuck files). Failure here is non-fatal: anomaly evaluation
         # has already produced its baseline view.
         try:
-            record_cursor_lag_sample(dbf, summary)
+            record_cursor_lag_sample(dbf, summary, ops_db=ops_db)
         except Exception:
             logger.warning("cursor_lag_anomaly: sample record failed", exc_info=True)
 
@@ -1058,7 +1061,7 @@ def _check_cursor_lag_anomaly_layer(
                 anomaly_thresholds.retention_days,
                 anomaly_thresholds.baseline_window_days * 2,
             )
-            gc_cursor_lag_samples(dbf, retention_days=retention)
+            gc_cursor_lag_samples(dbf, retention_days=retention, ops_db=ops_db)
         except Exception:
             logger.warning("cursor_lag_anomaly: sample GC failed", exc_info=True)
 
@@ -1164,6 +1167,7 @@ def _check_blob_integrity_expensive() -> list[HealthAlert]:
             _active_health_db_path(),
             full=False,
             sample_size=max(1, cfg.health_blob_integrity_sample_size),
+            configured_root=archive_root(),
         )
         return blob_integrity_alerts_from_report(report, now, _record_failure)
     except Exception as exc:

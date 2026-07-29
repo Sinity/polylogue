@@ -14,7 +14,8 @@ from click.testing import CliRunner
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli import cli
 from polylogue.insights.work_evidence import WorkEvidenceGraph
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository
 
 
@@ -22,7 +23,7 @@ def _seed_incident_session(workspace_env: dict[str, Path]) -> str:
     from tests.infra.storage_records import SessionBuilder
 
     builder = (
-        SessionBuilder(active_index_db_path(), "cli-incident-demo")
+        SessionBuilder(resolve_active_index_path(archive_root()), "cli-incident-demo")
         .provider("codex")
         .git_branch("feature/cli-incident-demo")
         .title("Ship the incident-graph CLI slice")
@@ -76,7 +77,7 @@ def test_dry_run_reports_json_summary_without_persisting(workspace_env: dict[str
     assert payload["mentioned_effect_count"] == 1
 
     async def _read() -> WorkEvidenceGraph | None:
-        async with SessionRepository(db_path=active_index_db_path()) as repository:
+        async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
             return await repository.get_work_evidence_graph("incident:cli-demo")
 
     assert run_coroutine_sync(_read()) is None
@@ -105,7 +106,7 @@ def test_yes_flag_persists_materialized_graph(workspace_env: dict[str, Path]) ->
     assert json.loads(result.output)["applied"] is True
 
     async def _read() -> WorkEvidenceGraph | None:
-        async with SessionRepository(db_path=active_index_db_path()) as repository:
+        async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
             return await repository.get_work_evidence_graph("incident:cli-apply-demo")
 
     stored = run_coroutine_sync(_read())

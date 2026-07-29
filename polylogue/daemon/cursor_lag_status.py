@@ -112,12 +112,13 @@ _DEGRADED_SAMPLE_LIMIT = 10
 """Bound degraded evidence independently from the SLO sample."""
 
 
-def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> CursorLagSummary:
+def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: Path | None = None) -> CursorLagSummary:
     """Return per-family cursor-lag rollups read from ``live_cursor``."""
     resolved_now = now or datetime.now(UTC)
-    ops_summary = _archive_cursor_lag_summary_info(dbf.with_name("ops.db"), now=resolved_now)
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
+    ops_summary = _archive_cursor_lag_summary_info(resolved_ops_db, now=resolved_now)
     if ops_summary is not None:
-        return _decorate_with_baselines(ops_summary, dbf, now=resolved_now)
+        return _decorate_with_baselines(ops_summary, dbf, now=resolved_now, ops_db=resolved_ops_db)
     if not dbf.exists():
         return CursorLagSummary()
     try:
@@ -146,7 +147,7 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None) -> Cursor
         return CursorLagSummary()
 
     summary = _project_rows(rows, now=resolved_now)
-    return _decorate_with_baselines(summary, dbf, now=resolved_now)
+    return _decorate_with_baselines(summary, dbf, now=resolved_now, ops_db=resolved_ops_db)
 
 
 def _archive_cursor_lag_summary_info(ops_db: Path, *, now: datetime) -> CursorLagSummary | None:
@@ -199,6 +200,7 @@ def _decorate_with_baselines(
     dbf: Path,
     *,
     now: datetime,
+    ops_db: Path | None = None,
 ) -> CursorLagSummary:
     """Attach baseline + anomaly state to each family summary (#1349).
 
@@ -225,6 +227,7 @@ def _decorate_with_baselines(
             window_days=thresholds.baseline_window_days,
             min_samples=thresholds.baseline_min_samples,
             now=now,
+            ops_db=ops_db,
         )
     except Exception as exc:
         logger.warning("cursor-lag baseline decoration failed: %s", exc, exc_info=True)

@@ -296,7 +296,7 @@ def test_coordination_envelope_uses_beads_when_present(tmp_path: Path, monkeypat
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     payload = build_coordination_envelope(
         cwd=root,
@@ -345,7 +345,7 @@ def test_coordination_envelope_falls_back_to_git_without_beads(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None))
 
@@ -365,7 +365,7 @@ def test_coordination_envelope_reports_beads_gates(tmp_path: Path, monkeypatch: 
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     payload = build_coordination_envelope(
         cwd=root,
@@ -405,7 +405,7 @@ def test_coordination_envelope_composes_archive_evidence(
     index = archive / "index.db"
     _seed_coordination_archive(index)
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-1")
 
     payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=4, detail=True)
@@ -462,7 +462,7 @@ def test_coordination_envelope_degrades_without_archive_tables(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     payload = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), limit=1)
 
@@ -490,7 +490,7 @@ def test_coordination_envelope_signals_archive_evidence_query_failure(
     index = archive / "index.db"
     _seed_coordination_archive(index)
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     def _boom(*args: object, **kwargs: object) -> bool:
         raise sqlite3.OperationalError("database is locked")
@@ -521,7 +521,7 @@ def test_coordination_view_projection_is_bounded(tmp_path: Path, monkeypatch: py
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     payload = build_coordination_envelope(
         view="work-item",
@@ -548,7 +548,7 @@ def test_process_projection_collapses_components_and_uses_real_work_scopes(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr(
         "polylogue.coordination.envelope._proc_cwd",
         lambda pid: str(root) if pid in {101, 102, 103, 300} else None,
@@ -607,7 +607,7 @@ def test_caller_identity_prefers_session_environment_and_resolves_owner_process(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 303)
     monkeypatch.setenv("CODEX_THREAD_ID", "thread-stable")
     rows = "\n".join(
@@ -646,7 +646,7 @@ def test_nested_same_provider_caller_uses_inner_owner_and_keeps_outer_peer(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 400)
     monkeypatch.setenv("CODEX_THREAD_ID", "inner-thread")
     rows = "\n".join(
@@ -681,7 +681,7 @@ def test_canonical_session_ref_joins_peer_logical_identity(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 400)
     monkeypatch.setenv("POLYLOGUE_SESSION_REF", "codex-session:abc")
     rows = "\n".join(
@@ -728,7 +728,7 @@ def test_caller_identity_falls_back_to_agent_ancestor_without_guessing_invocatio
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 303)
     for name in (
         "POLYLOGUE_SESSION_REF",
@@ -772,7 +772,7 @@ def test_caller_identity_is_typed_unknown_without_session_or_agent_ancestor(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr("polylogue.coordination.envelope.os.getpid", lambda: 303)
     for name in (
         "POLYLOGUE_SESSION_REF",
@@ -816,7 +816,7 @@ def test_compact_projection_is_byte_bounded_and_detail_recovers_omitted_peers(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     rows = "\n".join(
         f"{100 + index} 1 codex 0::/user.slice/user@1000.service/app.slice/codex-{index}.scope "
         f"codex --session-id session-{index} --config {'x' * 180}"
@@ -849,7 +849,7 @@ def test_compact_projection_keeps_active_archive_writers_before_other_resources(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     peer_rows = tuple(
         f"{100 + index} 1 codex 0::/user.slice/codex-{index}.scope "
         f"codex --session-id session-{index} --config {'x' * 180}"
@@ -886,7 +886,7 @@ def test_compact_projection_bounds_adversarial_beads_fields_without_erasing_cont
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     enormous_gate_title = "gate-" + "x" * 20_000
     enormous_holder = "holder-" + "y" * 20_000
     runner = FakeRunner(
@@ -926,7 +926,7 @@ def test_handoff_projection_uses_supported_live_sources_or_empty_list(
     index = archive / "index.db"
     index.touch()
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
 
     empty = build_coordination_envelope(cwd=root, runner=FakeRunner(root, beads_rows=None), detail=True)
     assert empty.handoff == ()
@@ -1048,7 +1048,7 @@ def test_coordination_envelope_cache_resumes_slow_archive_evidence_across_ticks(
     index = archive / "index.db"
     _seed_coordination_archive(index)
     monkeypatch.setattr("polylogue.coordination.envelope.archive_root", lambda: archive)
-    monkeypatch.setattr("polylogue.coordination.envelope.active_index_db_path", lambda: index)
+    monkeypatch.setattr("polylogue.coordination.envelope.resolve_active_index_path", lambda *_a, **_k: index)
     monkeypatch.setattr("polylogue.coordination.envelope._ARCHIVE_EVIDENCE_DEADLINE_S", 0.05)
 
     calls = {"n": 0}

@@ -8,7 +8,8 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.write import repair_stale_prefix_branch_points
 from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, open_daemon_connection
 
@@ -21,7 +22,7 @@ def _open_lineage_startup_write_connection(db_path: Path) -> sqlite3.Connection:
 
 def ensure_lineage_startup_readiness_sync(*, limit: int | None = None) -> int:
     """Repair bounded lineage rows that can be corrected from existing evidence."""
-    db = active_index_db_path()
+    db = resolve_active_index_path(archive_root())
     if not db.exists():
         return 0
     conn: sqlite3.Connection | None = None

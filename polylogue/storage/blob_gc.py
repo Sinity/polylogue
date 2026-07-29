@@ -379,12 +379,9 @@ def run_blob_gc_report(
     if not candidates:
         return report
 
-    from polylogue.paths import sibling_index_db as get_sibling_index_db
+    from polylogue.storage.archive_identity import ArchiveLocation
 
-    sibling_index_db = get_sibling_index_db(db_path_obj, require_exists=False)
-    if sibling_index_db is None:
-        # Fallback: derive manually (shouldn't normally happen with require_exists=False)
-        sibling_index_db = db_path_obj if db_path_obj.name == "index.db" else db_path_obj.with_name("index.db")
+    sibling_index_db = ArchiveLocation.resolve(db_path_obj.parent).active_index_path
     evidence = GCRunEvidence(dry_run=dry_run, max_batch=max_batch)
     shortlist: list[tuple[str, float]] = []
 

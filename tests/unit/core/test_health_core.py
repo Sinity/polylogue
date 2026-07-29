@@ -307,9 +307,7 @@ def test_quick_readiness_summary_returns_live_status(tmp_path: Path) -> None:
 def test_quick_readiness_summary_does_not_bootstrap_missing_archive(tmp_path: Path) -> None:
     from polylogue.readiness import quick_readiness_summary
 
-    index_db = tmp_path / "index.db"
-    with patch("polylogue.readiness.active_index_db_path", return_value=index_db):
-        result = quick_readiness_summary(tmp_path)
+    result = quick_readiness_summary(tmp_path)
 
     assert "unavailable" in result
     assert not any(tmp_path.glob("*.db"))

@@ -159,7 +159,9 @@ def test_daemon_backlog_mutation_restoring_stale_check_bypass_misses_changed_con
     index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
     selected: list[str] = []
 
-    def _observe_embed(_index_db: Path, _provider: object, selected_session_id: str) -> EmbedSessionOutcome:
+    def _observe_embed(
+        _index_db: Path, _provider: object, selected_session_id: str, **_kwargs: object
+    ) -> EmbedSessionOutcome:
         selected.append(selected_session_id)
         return EmbedSessionOutcome(status="embedded", session_id=selected_session_id, embedded_message_count=1)
 
@@ -168,7 +170,7 @@ def test_daemon_backlog_mutation_restoring_stale_check_bypass_misses_changed_con
     monkeypatch.setattr(materialization, "embed_archive_session_sync", _observe_embed)
     monkeypatch.setattr(embedding_backlog, "_upsert_archive_embedding_catchup_run", lambda *_args, **_kwargs: "run")
 
-    assert embedding_backlog._drain_archive_embedding_backlog_once(index_db) == 1
+    assert embedding_backlog._drain_archive_embedding_backlog_once(index_db, archive_root=index_db.parent) == 1
     assert selected == [session_id]
 
 
@@ -179,10 +181,12 @@ def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_co
     from polylogue.cli.commands import embed as embed_command
     from polylogue.storage.embeddings import materialization
 
-    index_db, _embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
+    index_db, embeddings_db, session_id = _fresh_then_change(tmp_path / "archive")
     selected: list[str] = []
 
-    def _observe_embed(_index_db: Path, _provider: object, selected_session_id: str) -> EmbedSessionOutcome:
+    def _observe_embed(
+        _index_db: Path, _provider: object, selected_session_id: str, **_kwargs: object
+    ) -> EmbedSessionOutcome:
         selected.append(selected_session_id)
         return EmbedSessionOutcome(status="embedded", session_id=selected_session_id, embedded_message_count=1)
 
@@ -205,6 +209,7 @@ def test_manual_backfill_mutation_restoring_stale_check_bypass_misses_changed_co
     payload = embed_command._run_archive_backfill(
         env,
         index_db,
+        embeddings_db,
         object(),
         report,
         rebuild=False,

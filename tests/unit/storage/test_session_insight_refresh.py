@@ -740,7 +740,7 @@ def test_stale_provider_usage_self_heals_via_session_insight_rebuild(
     zero manual index rebuild.
     """
     db_path = _current_index_db(tmp_path, "provider-usage-self-heal")
-    monkeypatch.setattr("polylogue.paths.active_index_db_path", lambda: db_path)
+    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db_path)
     with open_connection(db_path) as conn:
         store_records(
             session=make_session(

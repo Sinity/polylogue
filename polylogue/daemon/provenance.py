@@ -35,7 +35,8 @@ from pathlib import Path
 from typing import Final
 
 from polylogue.logging import get_logger
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import get_blob_store
 
 logger = get_logger(__name__)
@@ -103,10 +104,12 @@ def _iso_from_epoch_ms(value: object) -> str | None:
     return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
 
 
-def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> ProvenanceRow | None:
+def _fetch_archive_provenance_row(
+    archive_db: Path, session_id: str, *, archive_root_path: Path
+) -> ProvenanceRow | None:
     if not archive_db.exists():
         return None
-    source_db = archive_db.with_name("source.db")
+    source_db = archive_root_path / "source.db"
     conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)
     try:
         conn.row_factory = sqlite3.Row
@@ -198,14 +201,16 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
     "no raw artifact" state explicitly.
     """
 
-    from polylogue.paths import sibling_index_db
-
-    dbp = active_index_db_path()
-    archive_db = sibling_index_db(dbp, require_exists=False)
+    dbp = resolve_active_index_path(archive_root())
+    # resolve_active_index_path() always names "index.db" (it raises
+    # otherwise), so the old sibling_index_db(dbp, require_exists=False)
+    # call was provably an identity operation on dbp itself -- no derivation
+    # needed.
+    archive_db: Path | None = dbp
     if archive_db is not None and archive_db.exists():
-        return _fetch_archive_provenance_row(archive_db, session_id)
+        return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
     if not dbp.exists() and archive_db is not None:
-        return _fetch_archive_provenance_row(archive_db, session_id)
+        return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
     conn = sqlite3.connect(str(dbp))
     try:
         conn.row_factory = sqlite3.Row

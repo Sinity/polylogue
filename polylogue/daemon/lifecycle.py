@@ -22,7 +22,7 @@ from types import FrameType
 from typing import Any, cast
 
 from polylogue.logging import get_logger
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     latest_daemon_lifecycle,
@@ -52,7 +52,7 @@ def _now_ms() -> int:
 
 
 def _ops_db_path() -> Path:
-    return active_index_db_path().with_name("ops.db")
+    return archive_root() / "ops.db"
 
 
 @dataclass(slots=True)

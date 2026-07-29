@@ -71,9 +71,10 @@ def catchup_status_info(
     *,
     latest_attempt: object | None,
     convergence: object,
+    ops_db: Path | None = None,
 ) -> CatchupStatus:
     """Return bounded catch-up/convergence progress and throughput from durable events."""
-    events = _recent_stage_events(dbf)
+    events = _recent_stage_events(dbf, ops_db=ops_db)
     latest = events[0] if events else None
     now = datetime.now(UTC)
     mode = _catchup_mode(latest, latest_attempt, convergence)
@@ -152,8 +153,9 @@ def format_catchup_status_lines(payload: object) -> list[str]:
     return lines
 
 
-def _recent_stage_events(dbf: Path) -> list[CatchupStageEvent]:
-    ops_events = _archive_recent_stage_events(dbf.with_name("ops.db"))
+def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[CatchupStageEvent]:
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
+    ops_events = _archive_recent_stage_events(resolved_ops_db)
     if ops_events:
         return ops_events
     if not dbf.exists():
