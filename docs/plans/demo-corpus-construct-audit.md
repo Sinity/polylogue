@@ -17,7 +17,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | ---: |
 | Sessions | 19 |
 | Messages | 67 indexed |
-| Blocks | 94 |
+| Blocks | 95 |
 | Session profiles | 19 |
 | Origins | aistudio-drive, antigravity-session, chatgpt-export, claude-ai-export, claude-code-session, codex-session, gemini-cli-session, hermes-session |
 | Run rows | 19 |

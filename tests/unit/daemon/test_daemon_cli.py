@@ -3980,8 +3980,6 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
     assert sleeps == 2
 
 
-
-
 def test_bulk_rebuild_routing_below_threshold_and_not_resumable_is_noop(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -4063,8 +4061,6 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
 
     counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
     asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))  # must not raise
-
-
 
 
 def test_daemon_bulk_rebuild_transaction_in_flight_delegates(
