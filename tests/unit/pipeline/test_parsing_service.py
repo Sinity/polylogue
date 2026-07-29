@@ -355,6 +355,7 @@ class TestParsingServiceIntegration:
             "title": title,
             "create_time": 1700000000,
             "update_time": 1700000100,
+            "current_node": "msg1",
             "mapping": {
                 "root": {"id": "root", "message": None, "children": ["msg1"]},
                 "msg1": {
