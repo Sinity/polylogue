@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from typing import TypeAlias
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider, TitleSource
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
@@ -84,6 +85,66 @@ def _clean_title_text(text: str) -> str:
 
 
 logger = get_logger(__name__)
+# ``_SKIPPED_SIDECAR_RECORD_TYPES`` marks record types that never become a
+# ``ParsedMessage`` row (they are not chat content). That is still correct for
+# all twelve types below. What changed (polylogue-pbuh, audited against the
+# live corpus 2026-07-29, ~1.17M records total) is that most of them ARE
+# evidence-bearing and are no longer silently discarded: they persist through
+# ``_sidecar_evidence_payload``/the ``progress`` delegation accumulator below
+# as typed ``session_events`` (index.db). ``session_events.event_type`` has no
+# CHECK-constrained vocabulary (see ``storage/sqlite/archive_tiers/index.py``),
+# so adding new event types here is additive data, not a schema change.
+#
+# Per-type disposition (counts = live corpus, rg single pass, 2026-07-29):
+#   ai-title (18,561)              EVIDENCE, wins session title (TitleSource.ORIGIN)
+#   agent-name (5,001)             EVIDENCE -> claude_agent_name event
+#   pr-link (20,889)               EVIDENCE -> claude_pr_link event
+#   bridge-session (13,594)        EVIDENCE -> claude_bridge_session event
+#   file-history-snapshot (34,182) EVIDENCE -> claude_file_history_snapshot event
+#   permission-mode (25,882)       EVIDENCE -> claude_permission_mode event (values
+#                                    vary: auto/default/acceptEdits/plan/
+#                                    bypassPermissions -- real operational signal)
+#   last-prompt (37,799)           EVIDENCE -> claude_last_prompt event
+#   queue-operation (60,709)       EVIDENCE -> claude_queue_operation event
+#   attachment (86,237)            EVIDENCE -> claude_attachment event (20 distinct
+#                                    attachment.type payloads incl. real files,
+#                                    edited-file records, diagnostics; per-subtype
+#                                    fidelity split is a follow-up, not this pass)
+#   progress (850,678)             MIXED, not uniformly evidence-bearing -- an
+#                                    earlier draft of this bead's tracking issue
+#                                    guessed the whole type was noise, then
+#                                    corrected to "it's all a delegation graph".
+#                                    Neither guess survived reading the payload:
+#                                    only ``data.type == "agent_progress"``
+#                                    (118,135 of 850,678) carries a genuine
+#                                    dispatcher->subagent edge (parentToolUseID
+#                                    != toolUseID naming the *dispatching* Task
+#                                    tool_use, not a synthetic per-tick id); it
+#                                    is persisted as one deduplicated
+#                                    claude_delegation_progress event per
+#                                    (session, parentToolUseID). The other six
+#                                    subtypes (bash_progress 449,363,
+#                                    hook_progress 279,894, waiting_for_task
+#                                    1,350, query_update 834,
+#                                    search_results_received 834, mcp_progress
+#                                    268) all stamp a synthetic per-tick
+#                                    toolUseID (e.g. "bash-progress-3",
+#                                    "search-progress-1") against the SAME
+#                                    already-captured originating tool_use --
+#                                    they are streaming ticks superseded by that
+#                                    tool's own tool_result block, not new
+#                                    facts. Persisting them would 4-8x the
+#                                    session_events row count for zero
+#                                    incremental evidence. Kept transient.
+#   init (0 live occurrences)      TRANSIENT: every corpus occurrence on record
+#                                    is a bare {"type": "init"} marker with no
+#                                    field beyond ``type``/``sessionId`` --
+#                                    nothing to lose.
+#   mode (20,779)                  TRANSIENT: ``mode`` was the literal string
+#                                    "normal" in 100% of live records -- zero
+#                                    information content in the corpus as
+#                                    observed. Re-audit if a non-"normal" value
+#                                    is ever seen.
 _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
@@ -100,6 +161,129 @@ _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
         "pr-link",
     }
 )
+
+# record_type -> session_events.event_type for the sidecar types persisted
+# generically via ``_sidecar_evidence_payload``. ``progress`` and ``ai-title``
+# are handled separately in ``_parse_code_records`` (progress needs
+# whole-session deduplication; ai-title feeds title resolution as well as an
+# audit-trail event). ``init``/``mode`` map to nothing (transient, see above).
+_SIDECAR_EVENT_TYPES: dict[str, str] = {
+    "agent-name": "claude_agent_name",
+    "pr-link": "claude_pr_link",
+    "bridge-session": "claude_bridge_session",
+    "file-history-snapshot": "claude_file_history_snapshot",
+    "permission-mode": "claude_permission_mode",
+    "last-prompt": "claude_last_prompt",
+    "queue-operation": "claude_queue_operation",
+    "attachment": "claude_attachment",
+    "ai-title": "claude_ai_title",
+}
+
+
+def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict[str, object] | None:
+    """Return a typed evidence payload for a skipped-as-message sidecar record.
+
+    Returns ``None`` when the specific record instance carries no usable
+    signal (e.g. an ``attachment`` record whose ``attachment`` field is
+    missing) so the caller can skip emitting an empty event.
+    """
+    if record_type == "agent-name":
+        name = _string_field(item, "agentName")
+        return {"agent_name": name, "summary": name} if name else None
+    if record_type == "pr-link":
+        pr_number = item.get("prNumber")
+        pr_url = _string_field(item, "prUrl")
+        return {
+            "pr_number": pr_number,
+            "pr_url": pr_url,
+            "pr_repository": _string_field(item, "prRepository"),
+            "summary": f"PR #{pr_number}: {pr_url}" if pr_number is not None and pr_url else pr_url,
+        }
+    if record_type == "bridge-session":
+        bridge_session_id = _string_field(item, "bridgeSessionId")
+        if not bridge_session_id:
+            return None
+        return {
+            "bridge_session_id": bridge_session_id,
+            "last_sequence_num": item.get("lastSequenceNum"),
+            "summary": bridge_session_id,
+        }
+    if record_type == "file-history-snapshot":
+        snapshot = item.get("snapshot")
+        backups = snapshot.get("trackedFileBackups") if isinstance(snapshot, dict) else None
+        files = sorted(backups) if isinstance(backups, dict) else []
+        return {
+            "message_id": _string_field(item, "messageId"),
+            "is_snapshot_update": bool(item.get("isSnapshotUpdate")),
+            "file_count": len(files),
+            "files": files,
+            "summary": f"{len(files)} tracked file backup(s)",
+        }
+    if record_type == "permission-mode":
+        mode = _string_field(item, "permissionMode")
+        return {"permission_mode": mode, "summary": mode} if mode else None
+    if record_type == "last-prompt":
+        prompt = _string_field(item, "lastPrompt")
+        return {"last_prompt": prompt, "summary": prompt} if prompt else None
+    if record_type == "queue-operation":
+        operation = _string_field(item, "operation")
+        if not operation:
+            return None
+        payload: dict[str, object] = {"operation": operation}
+        content = _string_field(item, "content")
+        if content:
+            payload["content"] = content
+            payload["summary"] = f"{operation}: {content}"
+        else:
+            payload["summary"] = operation
+        return payload
+    if record_type == "attachment":
+        attachment = item.get("attachment")
+        if not isinstance(attachment, dict):
+            return None
+        payload = dict(attachment)
+        attachment_kind = attachment.get("type")
+        payload["summary"] = str(attachment_kind) if attachment_kind is not None else "attachment"
+        return payload
+    if record_type == "ai-title":
+        ai_title = _string_field(item, "aiTitle")
+        return {"ai_title": ai_title, "summary": ai_title} if ai_title else None
+    return None
+
+
+@dataclass
+class _DelegationProgressStats:
+    count: int = 0
+    first_seen: str | None = None
+    last_seen: str | None = None
+
+
+def _accumulate_delegation_progress(
+    item: dict[str, object],
+    timestamp: str | None,
+    accumulator: dict[str, _DelegationProgressStats],
+) -> None:
+    """Fold one ``progress``/``agent_progress`` record into its dispatch edge.
+
+    Only ``data.type == "agent_progress"`` carries a genuine dispatcher edge
+    (see the classification comment above ``_SKIPPED_SIDECAR_RECORD_TYPES``);
+    every occurrence under the same ``parentToolUseID`` is one streaming tick
+    of the same subagent dispatch, so ticks are counted and time-bounded
+    rather than persisted as one row apiece.
+    """
+    data = item.get("data")
+    if not isinstance(data, dict) or data.get("type") != "agent_progress":
+        return
+    parent_tool_use_id = _string_field(item, "parentToolUseID")
+    if not parent_tool_use_id:
+        return
+    entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
+    entry.count += 1
+    if timestamp:
+        if entry.first_seen is None or timestamp < entry.first_seen:
+            entry.first_seen = timestamp
+        if entry.last_seen is None or timestamp > entry.last_seen:
+            entry.last_seen = timestamp
 
 
 def _safe_float(value: object) -> float:
@@ -523,6 +707,12 @@ def _parse_code_records(
     background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = []
     is_agent = fallback_id.startswith("agent-")
     is_acompact = fallback_id.startswith("agent-acompact-")
+    # polylogue-pbuh: provider-supplied session title (``ai-title`` sidecar
+    # record) and the deduplicated agent-dispatch delegation edges extracted
+    # from ``progress``/``agent_progress`` records -- both need whole-session
+    # state, so they are accumulated here and applied/flushed after the loop.
+    latest_ai_title: str | None = None
+    delegation_progress: dict[str, _DelegationProgressStats] = {}
 
     for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
@@ -580,18 +770,35 @@ def _parse_code_records(
         message = item.get("message")
         notification = _task_notification_from_record(item, message)
 
-        # ``progress`` records are claude-code hook lifecycle events
-        # (`hookEvent`, `hookName`, `command`) carried alongside the
-        # tool they fired on — they are NOT message content. Persisting
-        # them as messages produces empty rows under the ``tool_result``
-        # message_type that dominate the ``role=unknown, text='', blocks=[]``
-        # consumer surface and inflate every messages-table count by
-        # ~23%. See #1617 for the full forensic. We drop them here at the
-        # parser; the hook payload, if useful for analytics, belongs in
-        # a future ``session_event`` capture, not in the messages table.
+        # These twelve record types are never chat content -- see the
+        # classification comment above ``_SKIPPED_SIDECAR_RECORD_TYPES`` for
+        # why each one either persists as typed ``session_events`` evidence
+        # (polylogue-pbuh) or stays genuinely transient. ``progress`` (hook
+        # lifecycle pings, streaming tool-progress ticks, and the one
+        # evidence-bearing subtype ``agent_progress``) previously also
+        # produced empty ``tool_result``-shaped message rows before the
+        # record-type check below existed; see #1617 for that forensic.
         if record_type in _SKIPPED_SIDECAR_RECORD_TYPES:
             if notification is not None:
                 background_notifications.append((notification, record_uuid, timestamp))
+            if record_type == "progress":
+                _accumulate_delegation_progress(item, timestamp, delegation_progress)
+            else:
+                if record_type == "ai-title":
+                    ai_title_text = _string_field(item, "aiTitle")
+                    if ai_title_text:
+                        latest_ai_title = ai_title_text
+                event_type = _SIDECAR_EVENT_TYPES.get(record_type)
+                if event_type is not None:
+                    evidence_payload = _sidecar_evidence_payload(record_type, item)
+                    if evidence_payload is not None:
+                        session_events.append(
+                            ParsedSessionEvent(
+                                event_type=event_type,
+                                timestamp=timestamp,
+                                payload=evidence_payload,
+                            )
+                        )
             continue
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
@@ -775,7 +982,31 @@ def _parse_code_records(
             for message in messages
         ]
 
+    # polylogue-pbuh: flush deduplicated agent-dispatch delegation edges
+    # gathered from ``progress``/``agent_progress`` records (see
+    # ``_accumulate_delegation_progress``) -- one event per distinct
+    # dispatching tool_use, not one per streaming tick.
+    for parent_tool_use_id in sorted(delegation_progress):
+        stats = delegation_progress[parent_tool_use_id]
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_delegation_progress",
+                timestamp=stats.last_seen,
+                source_message_provider_id=parent_tool_use_id,
+                payload={
+                    "parent_tool_use_id": parent_tool_use_id,
+                    "progress_tick_count": stats.count,
+                    "first_seen": stats.first_seen,
+                    "last_seen": stats.last_seen,
+                    "summary": f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)",
+                },
+            )
+        )
+
     title = str(composed_session_id)
+    title_source: TitleSource | None = None
+    title_ref: str | None = None
+    title_confidence: float | None = None
     for message in messages:
         # Title heuristic: the first plain human-authored user turn. Claude Code
         # has enough structural provenance (`isMeta`, `toolUseResult`, `origin`)
@@ -793,12 +1024,34 @@ def _parse_code_records(
                 title = cleaned[:80]
                 if len(cleaned) > 80:
                     title += "..."
+                title_source = TitleSource.HEURISTIC
+                title_ref = f"message:{message.provider_message_id}"
+                title_confidence = 0.5
                 break
+
+    # polylogue-pbuh: Claude Code's own ``ai-title`` sidecar record is a
+    # provider-computed session title (Codex's equivalent-tier evidence is its
+    # "thread name" -- both get TitleSource.ORIGIN + confidence 1.0). It wins
+    # over the first-human-message heuristic above and the raw UUID fallback:
+    # it is the reason 84.6% of Claude Code sessions were titled with a raw
+    # UUID (bd polylogue-pbuh) even though the provider supplies a real title.
+    if latest_ai_title:
+        cleaned_ai_title = latest_ai_title.strip()
+        if cleaned_ai_title:
+            title = cleaned_ai_title[:80] + ("..." if len(cleaned_ai_title) > 80 else "")
+            title_source = TitleSource.ORIGIN
+            title_ref = f"claude-ai-title:{composed_session_id}"
+            title_confidence = 1.0
+    if title_source is None:
+        title_source = TitleSource.UNKNOWN
 
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id=str(composed_session_id),
         title=title,
+        title_source=title_source,
+        title_ref=title_ref,
+        title_confidence=title_confidence,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,
