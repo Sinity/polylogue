@@ -561,6 +561,7 @@ class TestLooksLikeGitBranch:
             "docs/readme",
             "ci/pipeline",
             "perf/query-optimization",
+            "claude/phase_3",
         ],
     )
     def test_rejects_git_branch_names(self, value: str) -> None:
@@ -633,6 +634,70 @@ class TestLooksLikeGitBranch:
 
         assert enriched.title == "Hello world"
         assert enriched.title_source == "heuristic"
+
+    def test_git_branch_claude_prefix_skipped(self) -> None:
+        """Claude Code's own auto-branch namespace (claude/phase_3) is rejected as a title.
+
+        polylogue-cijx.3 triage (2026-07-29): the corpus observes real
+        ``gitBranch`` values under a ``claude/`` prefix that the original
+        ``_GIT_BRANCH_PREFIXES`` list did not cover.
+        """
+        conv = _parsed_session(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
+        )
+        entry = SessionIndexEntry(
+            session_id="sess-1",
+            full_path="/tmp/sess-1.jsonl",
+            first_prompt="Hello world",
+            summary="claude/phase_3",
+            message_count=1,
+            created=None,
+            modified=None,
+            git_branch=None,
+            project_path="/project",
+            is_sidechain=False,
+        )
+
+        enriched = enrich_session_from_index(conv, entry)
+
+        assert enriched.title == "Hello world"
+        assert enriched.title_source == "heuristic"
+
+    def test_typed_git_branch_preferred_over_shape_heuristic(self) -> None:
+        """A summary that merely resembles a branch name, but isn't the known one, is kept.
+
+        When typed ``gitBranch`` evidence exists, ``enrich_session_from_index``
+        must compare the summary against that exact value rather than guessing
+        from shape alone -- a shape-only guess both over-matches (this case)
+        and under-matches (the previous ``claude/phase_3`` gap) real titles.
+        """
+        conv = _parsed_session(
+            Provider.CLAUDE_CODE,
+            "sess-1",
+            "sess-1",
+            [_parsed_message("m1", "user", "hello")],
+        ).model_copy(update={"git_branch": "main"})
+        entry = SessionIndexEntry(
+            session_id="sess-1",
+            full_path="/tmp/sess-1.jsonl",
+            first_prompt="Hello world",
+            summary="release/v2.0",  # shape-heuristic would reject this, but it isn't the real branch
+            message_count=1,
+            created=None,
+            modified=None,
+            git_branch=None,
+            project_path="/project",
+            is_sidechain=False,
+        )
+
+        enriched = enrich_session_from_index(conv, entry)
+
+        assert enriched.title == "release/v2.0"
+        assert enriched.title_source == "origin"
+        assert enriched.git_branch == "main"
 
 
 # ---------------------------------------------------------------------------
