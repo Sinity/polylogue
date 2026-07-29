@@ -9,19 +9,19 @@ This datasheet is generated from the deterministic demo family registry, the dec
 - Seed command: `devtools render demo-corpus-datasheet` seeds a throwaway archive under `.cache/demo-corpus-datasheet/archive` with overlays enabled.
 - Verifier: `polylogue demo verify --require-overlays` semantics via `verify_demo_archive`.
 - Verifier result: `failed`.
-- Problems: expected pytest query to include claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6, found ['codex-session:demo-00', 'codex-session:demo-receipts', 'codex-session:demo-terminal-error']; declared demo construct 'synthetic_message_embedding_rows' has 0, expected >= 1; declared demo construct 'embedding_status_rows' has 0, expected >= 1
+- Problems: expected pytest query to include claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6, found ['codex-session:demo-receipts', 'codex-session:demo-terminal-error']; declared demo construct 'synthetic_message_embedding_rows' has 0, expected >= 1; declared demo construct 'embedding_status_rows' has 0, expected >= 1
 
 ## Current Demo Archive Coverage
 
 | Fact | Current |
 | --- | ---: |
 | Sessions | 19 |
-| Messages | 69 indexed |
-| Blocks | 101 |
+| Messages | 67 indexed |
+| Blocks | 94 |
 | Session profiles | 19 |
 | Origins | aistudio-drive, antigravity-session, chatgpt-export, claude-ai-export, claude-code-session, codex-session, gemini-cli-session, hermes-session |
 | Run rows | 19 |
-| Observed-event rows | 33 |
+| Observed-event rows | 27 |
 | Context-snapshot rows | 19 |
 
 ## Declared Source Families
@@ -48,9 +48,9 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | ---: | ---: | --- |
 | Multi-origin sessions (`multi_origin_sessions`) | 8 | 3 | `ok` |
 | Session profiles (`session_profiles`) | 19 | 3 | `ok` |
-| Tool-use blocks (`tool_use_blocks`) | 15 | 1 | `ok` |
-| Tool-result blocks (`tool_result_blocks`) | 14 | 1 | `ok` |
-| Failed tool results (`failed_tool_results`) | 5 | 1 | `ok` |
+| Tool-use blocks (`tool_use_blocks`) | 8 | 1 | `ok` |
+| Tool-result blocks (`tool_result_blocks`) | 8 | 1 | `ok` |
+| Failed tool results (`failed_tool_results`) | 3 | 1 | `ok` |
 | Provider usage messages (`provider_usage_messages`) | 12 | 1 | `ok` |
 | Attachment rows (`attachment_rows`) | 1 | 1 | `ok` |
 | Acquired attachment rows (`acquired_attachment_rows`) | 1 | 1 | `ok` |
@@ -73,17 +73,17 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Sidechain sessions (`sidechain_sessions`) | 2 | 1 | `ok` |
 | Compaction events (`compaction_events`) | 1 | 1 | `ok` |
 | Run projection rows (`run_projection_rows`) | 19 | 1 | `ok` |
-| Observed-event rows (`observed_event_rows`) | 33 | 1 | `ok` |
+| Observed-event rows (`observed_event_rows`) | 27 | 1 | `ok` |
 | Context snapshot rows (`context_snapshot_rows`) | 19 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
 | Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
-| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 4 | 1 | `ok` |
+| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 3 | 1 | `ok` |
 | Error terminal-state rows (`error_terminal_state_rows`) | 2 | 1 | `ok` |
 | Receipts failed test action (`receipts_failed_test_action`) | 1 | 1 | `ok` |
 | Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
 | Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
 | Anti-grep negative control (`anti_grep_control`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 36 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 32 | 1 | `ok` |
 | Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 0 | 1 | `missing` |
 | Embedding status rows (`embedding_status_rows`) | 0 | 1 | `missing` |
 
