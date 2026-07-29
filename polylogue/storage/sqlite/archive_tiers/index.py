@@ -726,23 +726,60 @@ CREATE TABLE IF NOT EXISTS session_working_dirs (
     PRIMARY KEY(session_id, path)
 ) STRICT;
 
+-- polylogue-cijx.4 decision 1: a repository is keyed on its normalized
+-- remote -- every worktree checkout of the same remote is one repo, not
+-- one row per checkout. `repo_id` used to be `origin_url || root_path`
+-- (`GENERATED ALWAYS`), which made two worktrees of the identical remote
+-- two distinct rows purely because their checkout paths differed. `repo_id`
+-- is now a plain stored column populated by the writer
+-- (`archive_tiers/write.py:_repo_identity_key`) from a canonicalized form
+-- of `origin_url` when one is known (`remote:<host>/<path>`, unifying
+-- `git@host:owner/repo`, `https://host/owner/repo.git`, `ssh://host/...`),
+-- falling back to the resolved checkout root only when no remote exists
+-- (`dir:<root_path>` -- decision 1's "outermost git root" fallback for a
+-- repository with no remote). It is a plain column rather than a SQLite
+-- `GENERATED` expression because remote-URL canonicalization needs real
+-- string logic (scheme/userinfo stripping, SCP-vs-URL unification, case
+-- folding) that SQL cannot express without duplicating that logic.
+-- `origin_url`/`root_path` on this row are now *representative* display
+-- values (first-seen wins), not part of the identity key -- every checkout
+-- root actually observed for a repo_id is recorded in `repo_checkouts`.
 CREATE TABLE IF NOT EXISTS repos (
+    repo_id           TEXT PRIMARY KEY,
     origin_url        TEXT NOT NULL DEFAULT '',
-    root_path         TEXT NOT NULL,
-    repo_id           TEXT GENERATED ALWAYS AS (origin_url || char(31) || root_path) STORED UNIQUE,
+    root_path         TEXT NOT NULL DEFAULT '',
     repo_name         TEXT NOT NULL DEFAULT '',
     first_seen_at_ms  INTEGER NOT NULL,
-    last_seen_at_ms   INTEGER NOT NULL,
-    PRIMARY KEY(origin_url, root_path)
+    last_seen_at_ms   INTEGER NOT NULL
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_repos_root_path
 ON repos(root_path)
 WHERE root_path != '';
 
+-- Every distinct checkout root ever observed for a repo identity (decision
+-- 1: "a worktree is a checkout of a repository ... every
+-- /realm/worktrees/polylogue-* and .claude/worktrees/agent-* is one
+-- checkout of polylogue"). Purely additive evidence; `repos.root_path`
+-- keeps a single representative value for existing readers, this table is
+-- the complete enumeration for readers that need it.
+CREATE TABLE IF NOT EXISTS repo_checkouts (
+    repo_id           TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
+    root_path         TEXT NOT NULL,
+    first_seen_at_ms  INTEGER NOT NULL,
+    last_seen_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY(repo_id, root_path)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS session_repos (
     session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     repo_id         TEXT NOT NULL REFERENCES repos(repo_id) ON DELETE CASCADE,
+    -- This session's own observed checkout root (may differ from
+    -- repos.root_path's representative value when other sessions checked
+    -- out the same repo identity elsewhere) -- needed so repo-relative path
+    -- projection (decision 2) strips the *correct* prefix for this session
+    -- regardless of which checkout wrote the shared repos row first.
+    root_path       TEXT NOT NULL DEFAULT '',
     branch_name     TEXT NOT NULL DEFAULT '',
     observed_at_ms  INTEGER NOT NULL,
     PRIMARY KEY(session_id, repo_id)
