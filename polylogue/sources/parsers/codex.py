@@ -33,6 +33,12 @@ from .base import (
 
 logger = get_logger(__name__)
 _TimestampPair = tuple[datetime, str]
+#: Tool names whose payload is a patch-format string rather than JSON.
+#: Mirrors the ``apply_patch`` child-type aliases registered below, so the
+#: standalone ``function_call`` path and the batched code-mode child path
+#: recognise exactly the same set.
+_PATCH_TOOL_NAMES = frozenset({"apply_patch", "patch"})
+
 _EXECUTION_TOOL_NAMES = frozenset(
     {
         "bash",
@@ -1533,6 +1539,29 @@ def _tool_input_from_arguments(value: object, *, tool_name: str) -> dict[str, ob
     arguments = tool_input.get("arguments")
     if tool_name.lower() in _EXECUTION_TOOL_NAMES and isinstance(arguments, str) and arguments.strip():
         return {**tool_input, "command": arguments}
+
+    # apply_patch carries its whole payload as a PATCH-FORMAT STRING under
+    # ``arguments`` -- not JSON -- so the operated-on path lives in
+    # ``*** Update File: <path>`` / ``*** Add File:`` / ``*** Delete File:``
+    # header lines, where no ``json_extract`` can reach it. blocks.tool_path
+    # and blocks.search_text are both generated from
+    # ``$.file_path``/``$.path`` (archive_tiers/index.py:307,310), so every
+    # Codex file edit was invisible to structured path queries AND to FTS:
+    # tool_path coverage measured 0.07% for codex-session against 44% for
+    # claude-code-session, and apply_patch is 95% of Codex tool calls
+    # (18,984 of a 20,000 sample). It also left Codex sessions unable to earn
+    # a path-bearing structural label (polylogue-a9hx).
+    #
+    # The batched code-mode child path already extracts these via
+    # ``_patch_touched_paths``; this is the standalone ``function_call``
+    # branch, which did not. Same helper, so both paths agree.
+    if tool_name.lower() in _PATCH_TOOL_NAMES and isinstance(arguments, str) and arguments.strip():
+        patch_paths = _patch_touched_paths(arguments)
+        if patch_paths:
+            # ``path`` is what the generated column reads; ``paths`` keeps the
+            # full set, since 11% of patches touch more than one file
+            # (554 of 5,000 sampled) and a single column cannot hold them.
+            return {**tool_input, "patch": arguments, "path": patch_paths[0], "paths": list(patch_paths)}
     return tool_input
 
 
