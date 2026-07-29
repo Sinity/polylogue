@@ -22,10 +22,10 @@ raw_id the instant ``_ingest_full_paths_sync`` computes it -- see the
 ``LiveParsePrefetchCache.pop`` call site in ``polylogue.sources.live.batch``.
 
 Graceful degradation, same contract as ``DaemonParseStage``: a cache miss
-(flag off, path not selected for prewarm, worker exception, or a warm()
-timeout) always falls back to parsing inline exactly as before. Prefetch
-only ever shortcuts the happy path; it never changes what gets parsed or how
-parse failures are recorded.
+(no ``LiveParseStage`` instance, path not selected for prewarm, worker
+exception, or a warm() timeout) always falls back to parsing inline exactly
+as before. Prefetch only ever shortcuts the happy path; it never changes
+what gets parsed or how parse failures are recorded.
 """
 
 from __future__ import annotations
@@ -133,7 +133,7 @@ def live_parse_worker(
     exception is returned (not raised) so a worker failure never surfaces
     anywhere the writer-held pass would not have -- it simply leaves this
     file uncached, and the writer-held pass reparses (and correctly records)
-    it exactly as it would with the flag off.
+    it exactly as it would with no prewarm at all.
     """
     try:
         provider = Provider.from_string(provider_value)
@@ -228,11 +228,11 @@ class LiveParsePrefetchCache:
 class LiveParseStage:
     """Owns the watcher's bounded off-writer-hold pre-parse ``ThreadPoolExecutor`` + cache.
 
-    One instance lives for the ``LiveWatcher``'s lifetime, created lazily
-    when ``live_watcher_parse_stage_split`` is enabled. ``warm`` is
-    synchronous/blocking -- callers run it off the event loop
-    (``asyncio.to_thread``) and NEVER under the write coordinator's hold, for
-    the same reason ``DaemonParseStage.warm`` never does.
+    One instance lives for the ``LiveWatcher``'s lifetime, created on
+    construction. ``warm`` is synchronous/blocking -- callers run it off the
+    event loop (``asyncio.to_thread``) and NEVER under the write
+    coordinator's hold, for the same reason ``DaemonParseStage.warm`` never
+    does.
     """
 
     def __init__(
@@ -297,7 +297,7 @@ class LiveParseStage:
                 if error is not None or sessions is None:
                     # Parse failures are intentionally NOT cached: the
                     # writer-held pass reparses (and correctly records) this
-                    # file exactly as it would with the flag off.
+                    # file exactly as it would with no prewarm at all.
                     continue
                 if self.cache.try_admit(cache_key, sessions, payload=candidate.payload):
                     warmed += 1

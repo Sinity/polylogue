@@ -317,9 +317,11 @@ class LiveBatchProcessor:
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
-        # polylogue-wf8a: off by default (``live_watcher_parse_stage_split``).
-        # When set, ``_ingest_full_paths`` pre-parses eligible small JSONL
-        # candidates in this stage's bounded thread pool BEFORE
+        # polylogue-wf8a: when set (the watcher always sets one; a caller
+        # that wants the unmodified in-hold parse path passes ``None``
+        # explicitly, e.g. an equivalence test's baseline run),
+        # ``_ingest_full_paths`` pre-parses eligible small JSONL candidates
+        # in this stage's bounded thread pool BEFORE
         # ``_ingest_full_paths_sync`` ever requests the writer hold -- see
         # ``polylogue.sources.live.parse_prefetch`` for the full safety
         # argument (identical shape to ``DaemonParseStage``).
