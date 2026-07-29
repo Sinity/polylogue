@@ -10,12 +10,15 @@ like success.
 from __future__ import annotations
 
 import subprocess
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import click
 import pytest
 
 from polylogue.cli import query_output
+
+if TYPE_CHECKING:
+    from polylogue.cli.shared.types import AppEnv
 
 
 class _RecordingEnv:
@@ -62,7 +65,7 @@ def test_wayland_session_prefers_wl_copy_over_x11_tools(
     monkeypatch.setattr(subprocess, "run", _spy_run({"wl-copy", "xclip"}, calls))
 
     env = _RecordingEnv()
-    query_output.copy_to_clipboard(env, "payload")
+    query_output.copy_to_clipboard(cast("AppEnv", env), "payload")
 
     assert calls == ["wl-copy"], f"expected wl-copy first on Wayland, got {calls}"
     assert env.printed == ["Copied to clipboard (wl-copy)."]
@@ -74,7 +77,7 @@ def test_x11_session_falls_through_to_xclip(monkeypatch: pytest.MonkeyPatch) -> 
     calls: list[str] = []
     monkeypatch.setattr(subprocess, "run", _spy_run({"xclip"}, calls))
 
-    query_output.copy_to_clipboard(_RecordingEnv(), "payload")
+    query_output.copy_to_clipboard(cast("AppEnv", _RecordingEnv()), "payload")
 
     assert calls[0] == "xclip"
 
@@ -88,7 +91,7 @@ def test_no_clipboard_tool_raises_instead_of_exiting_zero(
     monkeypatch.setattr(subprocess, "run", _spy_run(set(), calls))
 
     with pytest.raises(click.ClickException) as excinfo:
-        query_output.copy_to_clipboard(_RecordingEnv(), "payload")
+        query_output.copy_to_clipboard(cast("AppEnv", _RecordingEnv()), "payload")
 
     message = str(excinfo.value)
     assert "wl-clipboard" in message, "must name the Wayland package to install"
@@ -110,7 +113,7 @@ def test_present_but_failing_tool_reports_which_one(
     monkeypatch.setattr(subprocess, "run", _run)
 
     with pytest.raises(click.ClickException) as excinfo:
-        query_output.copy_to_clipboard(_RecordingEnv(), "payload")
+        query_output.copy_to_clipboard(cast("AppEnv", _RecordingEnv()), "payload")
 
     message = str(excinfo.value)
     assert "wl-copy" in message and "returned an error" in message
