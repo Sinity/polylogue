@@ -1,14 +1,25 @@
 {
+  "provider": "hermes",
+  "generated_at": "2026-05-11T04:14:45.729400+00:00",
+  "cluster_count": 1,
   "artifact_counts": {
     "session_document": 37
   },
-  "cluster_count": 1,
+  "default_version": "v1",
   "clusters": [
     {
-      "artifact_kind": "session_document",
-      "bundle_scope_count": 37,
       "cluster_id": "f99c39ed0e5df7ea",
-      "confidence": 1.0,
+      "provider": "hermes",
+      "sample_count": 37,
+      "first_seen": "2026-05-06T01:31:55.304373+00:00",
+      "last_seen": "2026-05-07T06:40:04.881242+00:00",
+      "representative_paths": [
+        "/home/sinity/.hermes/sessions/session_20260507_083943_1c5a03.json",
+        "/home/sinity/.hermes/sessions/session_20260507_083312_e0736a.json",
+        "/home/sinity/.hermes/sessions/session_20260507_030608_ca2709.json",
+        "/home/sinity/.hermes/sessions/session_20260507_082431_855a4c.json",
+        "/home/sinity/.hermes/sessions/session_20260507_080130_6de1e1.json"
+      ],
       "dominant_keys": [
         "base_url",
         "last_updated",
@@ -21,14 +32,8 @@
         "system_prompt",
         "tools"
       ],
-      "exact_structure_ids": [
-        "1f07371f61076dba",
-        "b5b4a1b2fa6e9e49",
-        "d4869334f538c2bc",
-        "ffe2518ccd4fb36c"
-      ],
-      "first_seen": "2026-05-06T01:31:55.304373+00:00",
-      "last_seen": "2026-05-07T06:40:04.881242+00:00",
+      "confidence": 1.0,
+      "artifact_kind": "session_document",
       "profile_tokens": [
         "anchor:messages",
         "field:base_url",
@@ -63,12 +68,14 @@
         "type:system_prompt:string",
         "type:tools:array"
       ],
-      "promoted_package_version": "v1",
-      "provider": "hermes",
-      "sample_count": 37
+      "exact_structure_ids": [
+        "1f07371f61076dba",
+        "b5b4a1b2fa6e9e49",
+        "d4869334f538c2bc",
+        "ffe2518ccd4fb36c"
+      ],
+      "bundle_scope_count": 37,
+      "promoted_package_version": "v1"
     }
-  ],
-  "default_version": "v1",
-  "generated_at": "2026-05-11T04:14:45.729400+00:00",
-  "provider": "hermes"
+  ]
 }

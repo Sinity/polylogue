@@ -1,14 +1,25 @@
 {
+  "provider": "gemini-cli",
+  "generated_at": "2026-05-11T04:14:47.338572+00:00",
+  "cluster_count": 1,
   "artifact_counts": {
     "session_document": 27
   },
-  "cluster_count": 1,
+  "default_version": "v1",
   "clusters": [
     {
-      "artifact_kind": "session_document",
-      "bundle_scope_count": 27,
       "cluster_id": "2ea47ff433ce1026",
-      "confidence": 1.0,
+      "provider": "gemini-cli",
+      "sample_count": 27,
+      "first_seen": "2026-03-14T18:46:59.588045+00:00",
+      "last_seen": "2026-04-27T23:38:16.789546+00:00",
+      "representative_paths": [
+        "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-27T22-43-c2f685b0.json",
+        "/home/sinity/.gemini/tmp/polylogue-1/chats/session-2026-04-08T17-10-74cb3454.json",
+        "/home/sinity/.gemini/tmp/claude-code/chats/session-2026-04-02T10-09-56cb9ec1.json",
+        "/home/sinity/.gemini/tmp/sinex/chats/session-2026-04-02T09-57-d4ecf1de.json",
+        "/home/sinity/.gemini/tmp/sinex/chats/session-2026-04-02T09-33-d4ecf1de.json"
+      ],
       "dominant_keys": [
         "kind",
         "lastUpdated",
@@ -18,6 +29,35 @@
         "startTime",
         "summary",
         "directories"
+      ],
+      "confidence": 1.0,
+      "artifact_kind": "session_document",
+      "profile_tokens": [
+        "anchor:messages",
+        "field:kind",
+        "field:lastUpdated",
+        "field:messages",
+        "field:projectHash",
+        "field:sessionId",
+        "field:startTime",
+        "field:summary",
+        "item:messages:content",
+        "item:messages:displayContent",
+        "item:messages:id",
+        "item:messages:model",
+        "item:messages:thoughts",
+        "item:messages:timestamp",
+        "item:messages:tokens",
+        "item:messages:toolCalls",
+        "item:messages:type",
+        "shape:messages:array",
+        "type:kind:string",
+        "type:lastUpdated:string",
+        "type:messages:array",
+        "type:projectHash:string",
+        "type:sessionId:string",
+        "type:startTime:string",
+        "type:summary:string"
       ],
       "exact_structure_ids": [
         "11de1e7d7ab16df7",
@@ -48,41 +88,8 @@
         "e03a0fabe84c6b28",
         "e5dcb5856d38ede9"
       ],
-      "first_seen": "2026-03-14T18:46:59.588045+00:00",
-      "last_seen": "2026-04-27T23:38:16.789546+00:00",
-      "profile_tokens": [
-        "anchor:messages",
-        "field:kind",
-        "field:lastUpdated",
-        "field:messages",
-        "field:projectHash",
-        "field:sessionId",
-        "field:startTime",
-        "field:summary",
-        "item:messages:content",
-        "item:messages:displayContent",
-        "item:messages:id",
-        "item:messages:model",
-        "item:messages:thoughts",
-        "item:messages:timestamp",
-        "item:messages:tokens",
-        "item:messages:toolCalls",
-        "item:messages:type",
-        "shape:messages:array",
-        "type:kind:string",
-        "type:lastUpdated:string",
-        "type:messages:array",
-        "type:projectHash:string",
-        "type:sessionId:string",
-        "type:startTime:string",
-        "type:summary:string"
-      ],
-      "promoted_package_version": "v1",
-      "provider": "gemini-cli",
-      "sample_count": 27
+      "bundle_scope_count": 27,
+      "promoted_package_version": "v1"
     }
-  ],
-  "default_version": "v1",
-  "generated_at": "2026-05-11T04:14:47.338572+00:00",
-  "provider": "gemini-cli"
+  ]
 }

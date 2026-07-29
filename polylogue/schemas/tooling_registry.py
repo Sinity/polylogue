@@ -205,6 +205,45 @@ class SchemaRegistryToolingMixin:
             return None
         return ClusterManifest.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
+    def _merge_with_promoted_schema(self, provider_token: str, candidate: PublicSchemaDocument) -> PublicSchemaDocument:
+        """Union ``candidate`` with the already-promoted package for this provider.
+
+        Promotion must be MONOTONIC: a package records what a provider has been
+        observed to emit, so a later run may only ever broaden it. Generating
+        afresh from the current sample window and registering that directly --
+        which is what this did -- silently replaces a well-sampled package with
+        whatever the latest window happened to contain.
+
+        That is not hypothetical. A 2026-07-29 promotion regenerated codex and
+        claude-code from a thinner window and, measured against the prior
+        packages, narrowed 33 field types and dropped 173 fields outright:
+        codex ``timestamp`` went from ``["string", "number"]`` to ``"string"``,
+        so records carrying the numeric form -- which is why the 151,159-sample
+        inference emitted the union -- would validate as drift.
+
+        Merging against the live package makes that impossible by construction
+        rather than by reviewer vigilance: ``merge_observed_structure_schemas``
+        unions ``type`` sets and property names, so no field and no type can
+        leave a package once observed. A field genuinely retired by a provider
+        is a deliberate, reviewed act -- not a side effect of a small window.
+        """
+        from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
+
+        existing = self.get_element_schema(str(provider_token))
+        if not existing:
+            return candidate
+        merged = json_document(merge_observed_structure_schemas([json_document(existing), candidate]))
+        # Structural merge owns type/properties/items only; provenance and the
+        # x-polylogue-* annotation overlay come from the candidate, falling back
+        # to the existing package so promotion never drops annotations either.
+        for key, value in existing.items():
+            if key.startswith("x-polylogue-") and key not in candidate:
+                merged[key] = require_json_value(value)
+        for key, value in candidate.items():
+            if key.startswith("x-polylogue-") or key in ("$schema", "title"):
+                merged[key] = value
+        return merged
+
     def promote_cluster(
         self,
         provider: str | Provider,
@@ -234,6 +273,7 @@ class SchemaRegistryToolingMixin:
                 "properties": {key: {} for key in target_cluster.dominant_keys},
             }
 
+        schema = self._merge_with_promoted_schema(provider_token, schema)
         schema["title"] = schema.get("title") or f"{provider_token} export format ({target_cluster.artifact_kind})"
         schema["x-polylogue-anchor-profile-family-id"] = cluster_id
         schema["x-polylogue-profile-family-ids"] = [cluster_id]
