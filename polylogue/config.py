@@ -776,16 +776,6 @@ class PolylogueConfig:
         return _require_bool_config_value(self._data, "mcp_maintenance_enabled")
 
     @property
-    def daemon_bulk_rebuild_routing(self) -> bool:
-        """Opt-in: route a bulk-scale raw backlog into a daemon-owned blue-green rebuild.
-
-        polylogue-m6tp phase (c) / polylogue-gd6v. Off by default until the
-        archive-scale equivalence receipt lands. See
-        ``polylogue.daemon.bulk_rebuild``.
-        """
-        return bool(self._data.get("daemon_bulk_rebuild_routing"))
-
-    @property
     def daemon_whale_raw_materialization(self) -> bool:
         """Escalation tier for whale-scale resource-blocked raw components (polylogue-t93b).
 
@@ -1616,22 +1606,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "daemon_bulk_rebuild_routing",
-        toml_path="daemon.raw_materialization.bulk_rebuild_routing",
-        env_var="POLYLOGUE_DAEMON_BULK_REBUILD_ROUTING",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Opt-in (polylogue-m6tp phase (c) / polylogue-gd6v): once a raw "
-            "backlog is bulk-scale (the #3145 threshold), route it into a "
-            "daemon-owned resumable blue-green index generation build "
-            "instead of the trickle conveyor, promoting it once exact-ready. "
-            "Off by default until the archive-scale equivalence receipt "
-            "lands; the offline `polylogue ops maintenance rebuild-index` "
-            "command remains available regardless of this flag."
-        ),
-    ),
-    ConfigInventoryEntry(
         "judgment_automation_enabled",
         toml_path="judgment_automation.enabled",
         env_var="POLYLOGUE_JUDGMENT_AUTOMATION_ENABLED",
@@ -1723,7 +1697,6 @@ _BOOL_CONFIG_KEYS = frozenset(
         "notification_email_use_starttls",
         "observability_enabled",
         "daemon_parse_stage_split",
-        "daemon_bulk_rebuild_routing",
         "daemon_whale_raw_materialization",
         "mcp_write_enabled",
         "mcp_judge_enabled",
@@ -1938,7 +1911,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "live_watcher_parse_stage_workers": None,
         "live_watcher_parse_stage_max_inflight_bytes": None,
         "live_watcher_parse_stage_warm_timeout_seconds": None,
-        "daemon_bulk_rebuild_routing": False,
         "daemon_whale_raw_materialization": True,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,

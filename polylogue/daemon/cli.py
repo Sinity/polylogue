@@ -748,16 +748,8 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
     is no work left for the trickle pass to do on the SAME raws in the
     meantime).
 
-    Mirrors ``_maybe_route_daemon_bulk_rebuild``'s own flag gate exactly:
-    the flag off means never even check. Checking survives a daemon restart
-    via a durable transaction record, so a stale "in flight" read while
-    routing is disabled would wrongly suppress the trickle conveyor -- the
-    ONLY mechanism left materializing raws -- with nothing to replace it.
+    Checking survives a daemon restart via a durable transaction record.
     """
-    from polylogue.config import load_polylogue_config
-
-    if not load_polylogue_config().daemon_bulk_rebuild_routing:
-        return False
     from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
     from polylogue.paths import archive_root
 
@@ -767,8 +759,16 @@ async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
 async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
     """polylogue-gd6v: route a bulk-scale backlog into a daemon-owned blue-green rebuild.
 
-    Off by default (``daemon_bulk_rebuild_routing`` config flag). Once a
-    bulk-rebuild transaction is in flight (this tick or a prior one,
+    Unconditional. This was gated behind a ``daemon_bulk_rebuild_routing``
+    config flag that defaulted off, which meant the ONLY path that ever ran
+    was the operator hand-driving ``ops maintenance rebuild-index`` -- the
+    exact inversion polylogue-gd6v's own acceptance criteria forbid ("no
+    break-glass residue -- redundant manual surfaces are purged, not
+    demoted"). The measured cost of leaving it off: the two rebuilds that
+    actually happened were hand-resumed across days, 88% and 69% of their
+    wall-clock idle, because nothing drove them between operator sessions.
+    A flag whose off-state is strictly worse is not a choice; it is a defect
+    with a toggle. Once a bulk-rebuild transaction is in flight (this tick or a prior one,
     surviving a daemon restart -- see ``polylogue.daemon.bulk_rebuild``),
     keeps driving it every tick regardless of the instantaneous trickle
     backlog reading: abandoning a partially-built generation mid-flight
@@ -786,10 +786,6 @@ async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> 
     storm, matching how a trickle pass failure already falls back to the
     outer interval via the caller's exception handling.
     """
-    from polylogue.config import load_polylogue_config
-
-    if not load_polylogue_config().daemon_bulk_rebuild_routing:
-        return False
     from polylogue.config import Config
     from polylogue.daemon.bulk_rebuild import (
         DAEMON_BULK_REBUILD_OPERATION_ID,

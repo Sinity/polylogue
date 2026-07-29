@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 import sqlite3
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -180,6 +180,84 @@ class RebuildIndexRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RebuildPassCost:
+    """What one rebuild pass cost, and what that implies for the whole run.
+
+    Three full rebuilds completed with no cost breakdown persisted anywhere.
+    The only forensics available afterwards was receipt file mtimes -- enough
+    to show 88% of a 74-hour run was idle wall-clock, but not enough to say
+    where the remaining 9.2 hours of compute went.
+
+    ``replay_s`` / ``checkpoint_s``  where the pass went. NOTE: ``replay_source``
+        does not expose a parse-vs-apply split, so ``replay_s`` covers both.
+        Splitting it is the next instrumentation step and is what would say
+        whether decode or the single writer is the bottleneck; recording a
+        fabricated split would be worse than recording none.
+    ``mib_per_s`` / ``raws_per_s``  is throughput holding, or degrading as the
+        index grows?
+    ``free_threaded`` / ``parse_workers``  did parallel parse actually engage?
+        A GIL build silently parses ~98.5% of this corpus' bytes on ONE core,
+        which is exactly how a 9-hour rebuild happened. That belongs in the
+        durable artifact, not only a log line read afterwards.
+    ``percent_bytes`` / ``eta_s``  how far in and how long left, from THIS
+        run's observed byte rate. Progress is in BYTES because cost is
+        bytes-bound -- passes end ``deferred`` on a byte budget, so a row-count
+        percentage would call a rebuild half done with most of the payload left.
+    """
+
+    replay_s: float
+    checkpoint_s: float
+    pass_s: float
+    raws: int
+    bytes_in: int
+    processed_raws: int
+    processed_bytes: int
+    total_raws: int
+    total_bytes: int
+    free_threaded: bool
+    parse_workers: int
+
+    @property
+    def mib_per_s(self) -> float:
+        return (self.bytes_in / (1024 * 1024) / self.pass_s) if self.pass_s > 0 else 0.0
+
+    @property
+    def raws_per_s(self) -> float:
+        return (self.raws / self.pass_s) if self.pass_s > 0 else 0.0
+
+    @property
+    def remaining_bytes(self) -> int:
+        return max(0, self.total_bytes - self.processed_bytes)
+
+    @property
+    def eta_s(self) -> float | None:
+        """Seconds remaining at this pass's observed byte rate, or None."""
+        if self.pass_s <= 0 or self.bytes_in <= 0 or self.total_bytes <= 0:
+            return None
+        return self.remaining_bytes / (self.bytes_in / self.pass_s)
+
+    def to_dict(self) -> dict[str, object]:
+        eta = self.eta_s
+        return {
+            "replay_s": round(self.replay_s, 3),
+            "checkpoint_s": round(self.checkpoint_s, 3),
+            "pass_s": round(self.pass_s, 3),
+            "raws": self.raws,
+            "bytes_in": self.bytes_in,
+            "mib_per_s": round(self.mib_per_s, 2),
+            "raws_per_s": round(self.raws_per_s, 2),
+            "processed_raws": self.processed_raws,
+            "processed_bytes": self.processed_bytes,
+            "total_raws": self.total_raws,
+            "total_bytes": self.total_bytes,
+            "percent_bytes": round(100.0 * self.processed_bytes / self.total_bytes, 2) if self.total_bytes else 0.0,
+            "eta_s": round(eta, 1) if eta is not None else None,
+            "free_threaded": self.free_threaded,
+            "parse_workers": self.parse_workers,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RebuildIndexReceipt:
     """Typed evidence emitted after one source-to-index rebuild pass."""
 
@@ -194,6 +272,16 @@ class RebuildIndexReceipt:
     readiness: dict[str, object]
     replay: dict[str, object]
     transaction: dict[str, object] | None = None
+    #: Wall-clock seconds per rebuild stage for THIS pass.
+    #:
+    #: Three full rebuilds ran without this, so the only cost breakdown
+    #: available afterwards was receipt file mtimes -- enough to show 88% of a
+    #: 74h run was idle, but not enough to say where the remaining 9.2h of
+    #: compute went. The terminal stages were already logged as structured
+    #: events; logs are not the durable artifact and per-pass parse/apply was
+    #: not measured at all. Persisting it here makes the next optimisation
+    #: evidence-based rather than a guess.
+    timings_s: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -207,6 +295,7 @@ class RebuildIndexReceipt:
             "generation": self.generation,
             "readiness": self.readiness,
             "transaction": self.transaction,
+            "timings_s": self.timings_s,
             **self.replay,
         }
 
@@ -243,6 +332,22 @@ def count_source_raw_sessions(root: Path) -> int:
         return 0
     with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
         row = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def total_source_blob_bytes(root: Path) -> int:
+    """Total blob payload the rebuild has to replay, for progress and ETA.
+
+    Rebuild cost is bytes-bound -- bounded passes end ``deferred`` on a byte
+    budget, not a row count -- so percent-complete and ETA are only meaningful
+    against total BYTES. Counting rows would have reported a rebuild as
+    "half done" while the remaining half held most of the payload.
+    """
+    source_db = root / "source.db"
+    if not source_db.exists():
+        return 0
+    with contextlib.closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=10.0)) as conn:
+        row = conn.execute("SELECT COALESCE(SUM(blob_size), 0) FROM raw_sessions").fetchone()
     return int(row[0]) if row is not None else 0
 
 
@@ -430,6 +535,7 @@ async def _rebuild_index_from_source_owned(
                 sources=[],
                 db_path=Path(generation.index_path),
             )
+            pass_started_at_s = time.perf_counter()
             replay = await replay_source(
                 config,
                 raw_ids=selected_raw_ids,
@@ -456,6 +562,7 @@ async def _rebuild_index_from_source_owned(
                 bulk_build=True,
                 prefetch_cache=request.prefetch_cache,
             )
+            pass_elapsed_s = time.perf_counter() - pass_started_at_s
             processed_before = transaction.processed_raw_count if transaction is not None else None
             if selected_raw_ids and _should_refresh_generation_planner_statistics(
                 processed_before=processed_before,
@@ -489,6 +596,29 @@ async def _rebuild_index_from_source_owned(
                     processed_blob_bytes=transaction.processed_blob_bytes + sum(row[2] for row in page.rows),
                 )
                 if page.has_more or deadline_expired:
+                    from polylogue.pipeline.services.process_pool import (
+                        parallel_threads_effective,
+                        resolve_parse_worker_count,
+                    )
+
+                    pass_cost = RebuildPassCost(
+                        replay_s=pass_elapsed_s,
+                        checkpoint_s=0.0,
+                        pass_s=time.perf_counter() - pass_started_at_s,
+                        raws=selected_raw_count,
+                        bytes_in=sum(row[2] for row in page.rows),
+                        processed_raws=transaction.processed_raw_count,
+                        processed_bytes=transaction.processed_blob_bytes,
+                        total_raws=raw_count,
+                        total_bytes=total_source_blob_bytes(root),
+                        free_threaded=parallel_threads_effective(),
+                        parse_workers=resolve_parse_worker_count(),
+                    )
+                    logger.info(
+                        "rebuild_pass_cost",
+                        generation_id=generation.generation_id,
+                        **pass_cost.to_dict(),
+                    )
                     pass_receipt = RebuildIndexReceipt(
                         archive_root=str(root),
                         raw_session_count=raw_count,
@@ -501,6 +631,7 @@ async def _rebuild_index_from_source_owned(
                         readiness={},
                         replay=replay,
                         transaction=cast(dict[str, object], asdict(transaction)),
+                        timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
                     return pass_receipt

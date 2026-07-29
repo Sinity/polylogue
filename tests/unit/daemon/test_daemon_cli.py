@@ -1285,7 +1285,6 @@ def test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count
 
     class FakeResolved:
         daemon_parse_stage_split = True
-        daemon_bulk_rebuild_routing = False
 
     class FakeStage:
         cache = object()
@@ -1300,7 +1299,6 @@ def test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count
         seen_limits.append(int(cast(functools.partial[object], func).keywords["limit"]))
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
@@ -1378,7 +1376,6 @@ def test_periodic_raw_materialization_flag_off_never_warms_parse_stage(
 
     class FakeResolved:
         daemon_parse_stage_split = False
-        daemon_bulk_rebuild_routing = False
 
     seen_prefetch_cache: list[object] = []
 
@@ -1390,7 +1387,6 @@ def test_periodic_raw_materialization_flag_off_never_warms_parse_stage(
         seen_prefetch_cache.append(partial.keywords["prefetch_cache"])
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
     monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", fail_daemon_parse_stage)
     monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
@@ -1418,7 +1414,6 @@ def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drai
 
     class FakeResolved:
         daemon_parse_stage_split = True
-        daemon_bulk_rebuild_routing = False
 
     order: list[str] = []
     lease_during_warm: list[bool] = []
@@ -1439,7 +1434,6 @@ def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drai
         assert prefetch_cache is _sentinel_cache
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
@@ -1470,7 +1464,6 @@ def test_periodic_raw_materialization_flag_on_warm_exception_still_hands_back_ca
 
     class FakeResolved:
         daemon_parse_stage_split = True
-        daemon_bulk_rebuild_routing = False
 
     _sentinel_cache = object()
     seen_prefetch_cache: list[object] = []
@@ -1486,7 +1479,6 @@ def test_periodic_raw_materialization_flag_on_warm_exception_still_hands_back_ca
         seen_prefetch_cache.append(partial.keywords["prefetch_cache"])
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
@@ -1517,7 +1509,6 @@ def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_w
 
     class FakeResolved:
         daemon_parse_stage_split = True
-        daemon_bulk_rebuild_routing = False
 
     warm_delay_seconds = 0.2
     released_hold_seconds: list[float] = []
@@ -1536,7 +1527,6 @@ def test_periodic_raw_materialization_flag_on_writer_hold_excludes_parse_stage_w
         if event.phase == "released" and event.hold_seconds is not None:
             released_hold_seconds.append(event.hold_seconds)
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
@@ -4034,33 +4024,6 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
     assert sleeps == 2
 
 
-def test_bulk_rebuild_routing_flag_off_never_checks_or_drives(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """polylogue-gd6v: off by default. The flag-off path must not even
-    consult ``has_resumable_daemon_bulk_rebuild_transaction`` -- checking
-    survives a restart via a durable transaction record, so a false
-    "resumable" read while the flag is off would incorrectly promote one."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.product.raw_authority import RawMaterializationCounts
-
-    class FakeResolved:
-        daemon_bulk_rebuild_routing = False
-
-    def fail_has_resumable(_root: object) -> bool:
-        pytest.fail("must not check for a resumable transaction while the flag is off")
-
-    def fail_run_pass(**_kwargs: object) -> object:
-        pytest.fail("must not drive a bulk-rebuild pass while the flag is off")
-
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fail_has_resumable
-    )
-    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
-
-    counts = RawMaterializationCounts(candidate_count=999_999, pending_blob_bytes=0)
-    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))
 
 
 def test_bulk_rebuild_routing_below_threshold_and_not_resumable_is_noop(
@@ -4072,13 +4035,9 @@ def test_bulk_rebuild_routing_below_threshold_and_not_resumable_is_noop(
     from polylogue.daemon import cli as daemon_cli
     from polylogue.product.raw_authority import RawMaterializationCounts
 
-    class FakeResolved:
-        daemon_bulk_rebuild_routing = True
-
     def fail_run_pass(**_kwargs: object) -> object:
         pytest.fail("must not drive a pass when below threshold and nothing is resumable")
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr(
         "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: False
@@ -4101,7 +4060,6 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
     from polylogue.product.raw_authority import RawMaterializationCounts
 
     class FakeResolved:
-        daemon_bulk_rebuild_routing = True
         daemon_parse_stage_workers = None
         daemon_parse_stage_max_inflight_bytes = None
         daemon_parse_stage_max_cached_tree_bytes = None
@@ -4113,7 +4071,6 @@ def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_thres
         calls.append(kwargs)
         return None
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
@@ -4138,13 +4095,9 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
     from polylogue.daemon import cli as daemon_cli
     from polylogue.product.raw_authority import RawMaterializationCounts
 
-    class FakeResolved:
-        daemon_bulk_rebuild_routing = True
-
     async def fail_run_pass(**_kwargs: object) -> object:
         raise RuntimeError("simulated bulk-rebuild pass failure")
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
@@ -4156,29 +4109,9 @@ def test_bulk_rebuild_routing_pass_failure_never_propagates(
     asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))  # must not raise
 
 
-def test_daemon_bulk_rebuild_transaction_in_flight_flag_off_never_checks(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The flag-off path must not even consult
-    ``has_resumable_daemon_bulk_rebuild_transaction`` -- mirrors
-    ``_maybe_route_daemon_bulk_rebuild``'s own flag gate exactly."""
-    from polylogue.daemon import cli as daemon_cli
-
-    class FakeResolved:
-        daemon_bulk_rebuild_routing = False
-
-    def fail_has_resumable(_root: object) -> bool:
-        pytest.fail("must not check for a resumable transaction while the flag is off")
-
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fail_has_resumable
-    )
-
-    assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is False
 
 
-def test_daemon_bulk_rebuild_transaction_in_flight_flag_on_delegates(
+def test_daemon_bulk_rebuild_transaction_in_flight_delegates(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -4186,16 +4119,12 @@ def test_daemon_bulk_rebuild_transaction_in_flight_flag_on_delegates(
     against the configured archive root."""
     from polylogue.daemon import cli as daemon_cli
 
-    class FakeResolved:
-        daemon_bulk_rebuild_routing = True
-
     seen_roots: list[Path] = []
 
     def fake_has_resumable(root: Path) -> bool:
         seen_roots.append(root)
         return True
 
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
     monkeypatch.setattr(
         "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fake_has_resumable
