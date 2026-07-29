@@ -255,9 +255,15 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
 class CursorStore:
     """SQLite-backed live cursor store keyed by source path."""
 
-    def __init__(self, db_path: Path, *, initialize: bool = True) -> None:
+    def __init__(self, db_path: Path, *, initialize: bool = True, ops_db_path: Path | None = None) -> None:
         self._db_path = db_path
-        self._ops_db_path = db_path.with_name("ops.db")
+        # ``db_path`` can itself be a resolved ``.index-active-pointer``
+        # generation target (e.g. via ``Config.db_path``/``backend.db_path``,
+        # which resolves through ``resolve_active_index_path`` per
+        # polylogue-yla8.1) rather than the plain archive root, so callers
+        # that already know the plain root should pass it explicitly via
+        # ``ops_db_path`` instead of relying on the sibling derivation.
+        self._ops_db_path = ops_db_path if ops_db_path is not None else db_path.with_name("ops.db")
         self._initialize_lock = threading.Lock()
         self._initialized = False
         if initialize:
