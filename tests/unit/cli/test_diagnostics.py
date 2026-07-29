@@ -19,6 +19,7 @@ from polylogue.cli.commands import diagnostics
 from polylogue.cli.shared.types import AppEnv
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.storage_records import SessionBuilder
 
 
 def _env() -> AppEnv:
@@ -775,3 +776,60 @@ def test_latency_command_excludes_observations_outside_lookback_window(tmp_path:
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["buckets"] == []
+
+
+@pytest.mark.asyncio
+async def test_tools_renders_against_real_archive_backed_store(tmp_path: Path) -> None:
+    """Regression for polylogue-d8nu: ``analyze tools`` raised
+    ``KeyError('source_name')`` against a real archive.
+
+    Unlike ``test_tools_renders_tool_usage_insight`` above, this seeds a real
+    index.db through ``SessionBuilder`` and lets ``_tools`` read it through
+    the genuine ``ArchiveStore.list_tool_call_count_rows`` SQL query instead
+    of a monkeypatched fake store. That distinction is exactly why the
+    existing mocked test passed while the command was broken in production:
+    its fixture rows carried both a stale ``"source_name"`` key (matching
+    the old, wrong code) and a ``"origin"`` key (matching the real schema),
+    so the mismatch was invisible. The real query only ever emits
+    ``"origin"`` (see ``ToolUsageRow``/``list_tool_call_count_rows`` in
+    ``polylogue/storage/sqlite/archive_tiers/archive.py``).
+
+    Mutation that makes this test fail: reverting the display loop in
+    ``cli/commands/diagnostics.py`` (``_tools``) to read
+    ``row["source_name"]`` instead of routing through
+    ``row_payload(row).origin`` reproduces the KeyError here.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    db_path = tmp_path / "index.db"
+    (
+        SessionBuilder(db_path, "conv-tools-real")
+        .provider("claude-ai")
+        .add_message(
+            "msg-1",
+            role="assistant",
+            text="running a tool",
+            blocks=[{"type": "tool_use", "name": "bash", "id": "toolu_real_1"}],
+        )
+        .save()
+    )
+
+    env = _env_with_archive_root(tmp_path)
+    await diagnostics._tools(
+        env,
+        origin=None,
+        tool=None,
+        mcp_server=None,
+        action_kind=None,
+        detail_patterns=(),
+        days=None,
+        basis="tool-use-blocks",
+        limit=5,
+    )
+
+    rendered = "\n".join(call.args[0] for call in _console_print(env).call_args_list if call.args)
+    assert "Tool call counts" in rendered
+    assert "bash" in rendered
+    # The normalized public Origin token, not a persistence-layer source_name.
+    assert "claude-ai-export" in rendered
