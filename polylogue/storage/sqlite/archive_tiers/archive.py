@@ -1344,7 +1344,9 @@ class ArchiveStore:
         else:
             self._conn = sqlite3.connect(self.index_db_path)
             pragma_statements = (
-                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS if bulk_build_profile else WRITE_CONNECTION_PRAGMA_STATEMENTS
+                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
+                if bulk_build_profile
+                else WRITE_CONNECTION_PRAGMA_STATEMENTS
             )
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:

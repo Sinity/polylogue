@@ -849,19 +849,23 @@ Register one `QueryUnitDescriptor` + `StructuralQueryUnitInfo` (pattern from `me
 
 ```python
 QueryUnitDescriptor(
-    "delegation", "delegation", "delegations",
+    "delegation",
+    "delegation",
+    "delegations",
     exists_supported=True,
     payload_model="DelegationQueryRowPayload",
     sql_query_method="query_delegations",
     cli_plain_renderer="delegation",
     aggregate_group_fields=(
-        "subagent_model_family", "orchestrator_model_family",
-        "result_status", "parent_terminal_state",
-        "session.origin", "session.repo",
+        "subagent_model_family",
+        "orchestrator_model_family",
+        "result_status",
+        "parent_terminal_state",
+        "session.origin",
+        "session.repo",
     ),
     fields=_unit_info("delegation").fields,
-    terminal_example=
-      "delegations where orchestrator_model:fable | group by subagent_model_family | count",
+    terminal_example="delegations where orchestrator_model:fable | group by subagent_model_family | count",
 )
 ```
 
@@ -1005,10 +1009,10 @@ Placement rule (durability-keyed, per CLAUDE.md schema regimes): **all four new 
 
 ```python
 class TimeKind(StrEnum):
-    OCCURRED  = "occurred"   # provider-reported event wall-clock (created/updated/occurred_at_ms)
-    ACQUIRED  = "acquired"   # when polylogue read the raw bytes (source.db, OUR clock)
-    INGESTED  = "ingested"   # when the writer committed the derived row (parsed/materialized, OUR clock)
-    SORT      = "sort"       # synthetic ordering key; NEVER a wall-clock claim
+    OCCURRED = "occurred"  # provider-reported event wall-clock (created/updated/occurred_at_ms)
+    ACQUIRED = "acquired"  # when polylogue read the raw bytes (source.db, OUR clock)
+    INGESTED = "ingested"  # when the writer committed the derived row (parsed/materialized, OUR clock)
+    SORT = "sort"  # synthetic ordering key; NEVER a wall-clock claim
 ```
 
 `OCCURRED` is the only tz-ambiguous, provider-trusted axis. `ACQUIRED`/`INGESTED` are always OUR injectable clock (§3.1) and are always known-UTC. `SORT` is derived and carries provenance (§1.2).
@@ -1032,23 +1036,25 @@ tz_provenance        TEXT NOT NULL DEFAULT 'unknown'
 
 ```python
 class SortKeyProvenance(StrEnum):
-    EXPLICIT             = "explicit"              # from updated_at_ms (provider-authored)
-    INHERITED            = "inherited"             # fell back to created_at_ms
-    FELL_BACK_TO_INGEST  = "fell_back_to_ingest"   # no event time; used acquired/ingested clock
-    SYNTHESIZED_ZERO     = "synthesized_zero"      # no time anywhere; sentinel, MUST stay queryable
+    EXPLICIT = "explicit"  # from updated_at_ms (provider-authored)
+    INHERITED = "inherited"  # fell back to created_at_ms
+    FELL_BACK_TO_INGEST = "fell_back_to_ingest"  # no event time; used acquired/ingested clock
+    SYNTHESIZED_ZERO = "synthesized_zero"  # no time anywhere; sentinel, MUST stay queryable
+
 
 class TimeConfidence(StrEnum):
-    EXACT     = "exact"      # hook-precise provider measurement
-    REPORTED  = "reported"   # provider wall-clock, trusted as-is
+    EXACT = "exact"  # hook-precise provider measurement
+    REPORTED = "reported"  # provider wall-clock, trusted as-is
     ESTIMATED = "estimated"  # inter-message-gap / sort_key_estimated derivation
     SYNTHETIC = "synthetic"  # no real time; ordering is a tiebreak sentinel only
-    UNKNOWN   = "unknown"
+    UNKNOWN = "unknown"
+
 
 class TzProvenance(StrEnum):
     PROVIDER_EXPLICIT = "provider_explicit"  # offset present in raw payload
-    ASSUMED_UTC       = "assumed_utc"        # naive→UTC coercion (today's silent parse_timestamp behavior — now LABELED)
-    INFERRED          = "inferred"           # derived from sibling signal (e.g. cwd/user profile)
-    UNKNOWN           = "unknown"            # DEFAULT — tz-unknown-by-default
+    ASSUMED_UTC = "assumed_utc"  # naive→UTC coercion (today's silent parse_timestamp behavior — now LABELED)
+    INFERRED = "inferred"  # derived from sibling signal (e.g. cwd/user profile)
+    UNKNOWN = "unknown"  # DEFAULT — tz-unknown-by-default
 ```
 
 Doctrine invariants encoded by these types:
@@ -1112,9 +1118,20 @@ Single injectable production clock — the one place `frozen_clock` patches.
 ```python
 # core/clock.py
 from datetime import datetime, timezone
-def now(tz: timezone = timezone.utc) -> datetime: return datetime.now(tz)
-def now_ms() -> int: return int(now().timestamp() * 1000)
-def monotonic() -> float: import time; return time.monotonic()  # measurement-only, never for sort_key
+
+
+def now(tz: timezone = timezone.utc) -> datetime:
+    return datetime.now(tz)
+
+
+def now_ms() -> int:
+    return int(now().timestamp() * 1000)
+
+
+def monotonic() -> float:
+    import time
+
+    return time.monotonic()  # measurement-only, never for sort_key
 ```
 
 `core/dates.py` fix:
@@ -1130,10 +1147,10 @@ settings = {..., "RELATIVE_BASE": clock.now()}   # was datetime.now(tz=timezone.
 
 ```python
 if since is not None:
-    where_clauses.append("<col>.sort_key_ms >= ?")     # keep: NULL correctly excluded from a lower bound
+    where_clauses.append("<col>.sort_key_ms >= ?")  # keep: NULL correctly excluded from a lower bound
     params.append(_iso_to_epoch(since) * 1000.0)
 if until is not None:
-    where_clauses.append("<col>.sort_key_ms < ?")      # was "<= ?": half-open [since, until)
+    where_clauses.append("<col>.sort_key_ms < ?")  # was "<= ?": half-open [since, until)
     params.append(_iso_to_epoch(until) * 1000.0)
 ```
 
@@ -1819,19 +1836,21 @@ Durability axis dictates placement. Nothing here needs a durable **structural** 
 
 ```python
 class NoticeFamily(str, Enum):
-    OPERATIONAL = "operational"   # existing HealthAlerts, implicit today
-    CONTENT     = "content"       # this layer
+    OPERATIONAL = "operational"  # existing HealthAlerts, implicit today
+    CONTENT = "content"  # this layer
+
 
 # HealthSeverity gains: NOTICE = "notice", rank 0 (== OK for operational gate;
 # never escalates the operational overall_status). Content routing ignores rank.
 
-class Notice(HealthAlert):          # reuse check_name/tier/message/checked_at
+
+class Notice(HealthAlert):  # reuse check_name/tier/message/checked_at
     family: NoticeFamily = NoticeFamily.CONTENT
-    anchor: str                      # ObjectRef: session:<id>[:block:<pos>] — citation
-    confidence: float                # 0..1, mirrors assertions.confidence
-    cite_refs: list[str] = []        # ObjectRefs to evidence (pathology/lesson sessions)
-    trigger: str                     # "standing_query" | "repeat_mistake_nudge"
-    dedup_key: str                   # (trigger, anchor-class, subject) content hash
+    anchor: str  # ObjectRef: session:<id>[:block:<pos>] — citation
+    confidence: float  # 0..1, mirrors assertions.confidence
+    cite_refs: list[str] = []  # ObjectRefs to evidence (pathology/lesson sessions)
+    trigger: str  # "standing_query" | "repeat_mistake_nudge"
+    dedup_key: str  # (trigger, anchor-class, subject) content hash
 ```
 
 `build_envelope` (`notification_backends/__init__.py`) gains `family`/`anchor`/`confidence`/`cite_refs` passthrough. Backends stay untouched (they serialize the envelope).

@@ -112,16 +112,19 @@ once and issue a handful of **set-based** UPDATEs (each covering all rows for on
 model), never row-by-row.
 
 ```python
-def reprice_in_place(conn):                      # one sqlite3 connection
-    seed_price_catalog(conn)                     # idempotent: ensure new catalog_id rows exist
-    catalog_id = _catalog_id()                   # new f"{PROVENANCE}-{EFFECTIVE_DATE}"
+def reprice_in_place(conn):  # one sqlite3 connection
+    seed_price_catalog(conn)  # idempotent: ensure new catalog_id rows exist
+    catalog_id = _catalog_id()  # new f"{PROVENANCE}-{EFFECTIVE_DATE}"
     now_ms = int(time.time() * 1000)
 
-    models = [r[0] for r in conn.execute(
-        "SELECT DISTINCT model_name FROM session_model_usage "
-        "WHERE cost_provenance IN ('priced','estimated')")]
+    models = [
+        r[0]
+        for r in conn.execute(
+            "SELECT DISTINCT model_name FROM session_model_usage WHERE cost_provenance IN ('priced','estimated')"
+        )
+    ]
 
-    with conn:                                   # ATOMIC: single transaction
+    with conn:  # ATOMIC: single transaction
         for raw in models:
             norm = _normalize_model(raw)
             p = PRICING.get(norm)
@@ -130,7 +133,8 @@ def reprice_in_place(conn):                      # one sqlite3 connection
                 conn.execute(
                     "UPDATE session_model_usage SET cost_usd=NULL, priced_with=NULL, "
                     "priced_at_ms=NULL WHERE model_name=? AND cost_provenance IN ('priced','estimated')",
-                    (raw,))
+                    (raw,),
+                )
                 continue
             ir, orr = p.input_usd_per_1m, p.output_usd_per_1m
             crr, cwr = p.cache_read_usd_per_1m, p.cache_write_usd_per_1m
@@ -145,7 +149,8 @@ def reprice_in_place(conn):                      # one sqlite3 connection
                   AND cost_provenance IN ('priced','estimated')
                   AND (input_tokens+output_tokens+cache_read_tokens+cache_write_tokens) > 0
                 """,
-                (ir, orr, crr, cwr, catalog_id, now_ms, raw))
+                (ir, orr, crr, cwr, catalog_id, now_ms, raw),
+            )
 
         # re-aggregate session_profiles from the refreshed per-model rows
         conn.execute(
@@ -161,7 +166,8 @@ def reprice_in_place(conn):                      # one sqlite3 connection
             WHERE sp.session_id = agg.session_id
               AND sp.cost_provenance IN ('priced','estimated','mixed')
             """,
-            (catalog_id, now_ms))
+            (catalog_id, now_ms),
+        )
 ```
 
 Notes:

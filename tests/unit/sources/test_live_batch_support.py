@@ -203,6 +203,63 @@ def test_live_full_replay_streams_retained_jsonl_raw(
     assert result.failed == []
 
 
+def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A zero-byte captured ``.jsonl`` must not be flagged as a mid-write
+    truncation.
+
+    Before the fix, ``_captured_jsonl_ends_at_record_boundary`` returned
+    ``False`` whenever ``blob_size <= 0``, so every genuinely empty session
+    file raised "captured JSONL payload ends before a complete record
+    boundary" once it reached the archive write stage -- 59 raws in the live
+    archive carry exactly this error with ``blob_size = 0``
+    (2026-07-29 raw-failure accounting). The live cases arise from a scan/
+    write race (a byte sample taken at scan time observes real content, but
+    the file reads back as empty bytes moments later when the writer stage
+    re-reads it -- e.g. an atomic rewrite of the session file in between),
+    which is why the ordinary "is this even a session artifact" pre-filter
+    (``_jsonl_provider_and_session_artifact``, exercised by
+    ``test_full_ingest_heartbeats_small_file_groups_with_current_path`` above)
+    does not by itself prevent it: that decision is made before the write
+    stage's own read. Force the same "treat as a session artifact" decision
+    that pre-filter would make on real content, so this test exercises the
+    write stage's boundary check exactly as the race does. An empty payload
+    has zero records, none complete and none incomplete, so it is trivially
+    at a record boundary; the real outcome is "parsed raw payload produced no
+    sessions", not a boundary error.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "empty.jsonl"
+    path.write_bytes(b"")
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parse_error != "captured JSONL payload ends before a complete record boundary"
+    # The Codex stream parser derives session identity from the filename
+    # even with zero records, so an empty capture now cleanly materializes
+    # as a (legitimately empty) parsed session instead of being quarantined
+    # under a misleading truncation error.
+    assert parse_error is None
+    assert parsed_at_ms is not None
+
+
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
