@@ -157,6 +157,7 @@ class TestPathsPublicBoundary:
             "antigravity_path",
             "archive_root",
             "blob_store_root",
+            "browser_capture_pairing_state_path",
             "browser_capture_receiver_identity_path",
             "browser_capture_receiver_token_path",
             "browser_capture_spool_root",

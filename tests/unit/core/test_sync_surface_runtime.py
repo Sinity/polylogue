@@ -12,6 +12,8 @@ from polylogue.api.insights import PolylogueInsightsMixin
 from polylogue.api.sync import SyncPolylogue
 from polylogue.api.sync.insights import SyncInsightQueriesMixin
 from polylogue.api.sync.sessions import SyncSessionQueriesMixin
+from polylogue.insights.archive_models import ArchiveInsightProvenance
+from polylogue.insights.tool_usage import ToolUsageInsight
 
 
 class _FilterStub:
@@ -241,14 +243,21 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.get_thread_insight.return_value = "thread"
     archive.list_thread_insights.return_value = ["threads"]
     archive.list_archive_coverage_insights.return_value = ["coverage"]
-    archive.list_tool_usage_insights.return_value = ["tool-usage"]
+    archive.list_tool_usage_insights.return_value = [
+        ToolUsageInsight(
+            provenance=ArchiveInsightProvenance(materializer_version=1, materialized_at="2026-01-01T00:00:00Z")
+        )
+    ]
     archive.list_session_cost_insights.return_value = []
     archive.list_cost_rollup_insights.return_value = []
     archive.list_archive_debt_insights.return_value = ["debt"]
 
-    open_existing = MagicMock()
-    open_existing.return_value.__enter__.return_value = archive
-    open_existing.return_value.__exit__.return_value = False
+    # `execute_archive_read`'s worker-thread runner (archive/query/
+    # execution_control.py's `InterruptibleSQLiteRead.run`, #3018) calls
+    # `ArchiveStore.open_existing(...)` directly and uses the return value as
+    # the store -- not `with ArchiveStore.open_existing(...) as store:`. The
+    # mock must return `archive` itself, not a context-manager double for it.
+    open_existing = MagicMock(return_value=archive)
 
     config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
 
@@ -262,7 +271,10 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
 
     harness = _Harness(config)
 
-    with patch("polylogue.api.insights.ArchiveStore.open_existing", open_existing):
+    # `polylogue.api.insights` only imports `ArchiveStore` under
+    # `TYPE_CHECKING` (#3018, 9163d0134) -- the runtime call site does a
+    # local import from its real home, so that's what must be patched.
+    with patch("polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing", open_existing):
         # tag-rollup merges synthesized provider rollups + sorts; cost enriches.
         # These post-process (not pure forwarders) — assert delegation + empty post-process.
         assert await harness.list_session_tag_rollup_insights() == []
@@ -288,6 +300,6 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     archive.get_thread_insight.assert_called_once_with("thread-1")
     archive.list_thread_insights.assert_called_once()
     archive.list_archive_coverage_insights.assert_called_once()
-    archive.list_tool_usage_insights.assert_not_called()
+    archive.list_tool_usage_insights.assert_called_once()
     archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation
     archive.list_archive_debt_insights.assert_called_once()
