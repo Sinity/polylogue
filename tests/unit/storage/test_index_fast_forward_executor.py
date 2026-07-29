@@ -28,8 +28,6 @@ from polylogue.storage.sqlite.lifecycle import (
     FastForwardOperation,
     FastForwardOperationKind,
     IndexDeltaDeclaration,
-    INDEX_DELTA_DECLARATIONS,
-    index_fast_forward_plan,
 )
 
 _HASH = b"x" * 32

@@ -26,7 +26,7 @@ from devtools.archive_schema_fast_forward import reflink_clone
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
