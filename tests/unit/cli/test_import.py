@@ -318,22 +318,28 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
     source_root = workspace_env["archive_root"] / "demo-fixture-world-source"
     staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
     assert sorted(path.name for path in source_root.iterdir()) == [
+        "antigravity",
         "browser-capture",
         "chatgpt",
         "claude-ai",
         "claude-code",
         "codex",
         "gemini",
+        "gemini-cli",
+        "hermes",
     ]
     assert sorted(path.name for path in staged.iterdir()) == [
+        "antigravity",
         "browser-capture",
         "chatgpt",
         "claude-ai",
         "claude-code",
         "codex",
         "gemini",
+        "gemini-cli",
+        "hermes",
     ]
-    assert len(tuple(staged.rglob("demo-*.json*"))) == 4
+    assert len(tuple(staged.rglob("demo-*.json*"))) == 7
 
     request = cast("Request", captured["request"])
     assert request.data is not None
@@ -348,18 +354,27 @@ def test_import_demo_materializes_fixture_world_before_daemon_request(
 def test_import_demo_wait_verifies_after_daemon_acceptance(
     workspace_env: dict[str, Path],
 ) -> None:
-    """--demo --wait blocks on the semantic verifier after daemon scheduling."""
+    """--demo --wait blocks on the semantic verifier after daemon scheduling.
+
+    Since #3179 (b473d9256), the CLI runs ``apply_demo_post_ingest_augmentation``
+    and the real ``_verify_demo_now`` unconditionally after the wait — not only
+    on the ``--with-overlays`` path — so this test must mock both rather than
+    let them hit the (unseeded, in this unit test) archive directly.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
+    from polylogue.demo import DemoVerifyResult
 
     captured: dict[str, Any] = {}
+    events: list[str] = []
 
     def fake_urlopen(req: Request, timeout: int) -> _FakeDaemonResponse:
         del timeout
         assert req.data is not None
         request_data = cast("bytes", req.data)
         staged_path = json.loads(request_data.decode("utf-8"))["path"]
+        events.append("daemon")
         return _FakeDaemonResponse(
             {
                 "ok": True,
@@ -374,27 +389,60 @@ def test_import_demo_wait_verifies_after_daemon_acceptance(
     def fake_wait(*, timeout_s: float, require_overlays: bool = False) -> None:
         captured["timeout_s"] = timeout_s
         captured["require_overlays"] = require_overlays
+        events.append("wait-base")
+
+    def fake_augment(archive_root: Path) -> None:
+        assert archive_root.exists()
+        events.append("augment")
+
+    fake_result = DemoVerifyResult(
+        archive_root=workspace_env["archive_root"],
+        ok=True,
+        session_count=19,
+        message_count=31,
+        query_hits=(),
+        overlays_present=False,
+        absolute_path_leaks=(),
+    )
+
+    def fake_verify(*, require_overlays: bool = False) -> DemoVerifyResult:
+        assert require_overlays is False
+        events.append("verify")
+        return fake_result
 
     runner = CliRunner()
     with (
         patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
         patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+        patch("polylogue.demo.apply_demo_post_ingest_augmentation", side_effect=fake_augment),
+        patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--timeout", "12.5"])
 
     assert result.exit_code == 0, result.output
     assert captured == {"timeout_s": 12.5, "require_overlays": False}
+    assert events == ["daemon", "wait-base", "augment", "verify"]
     staged = workspace_env["archive_root"] / "inbox" / "demo-fixture-world-source"
     assert str(staged) in result.output
     assert "Demo archive verified" in result.output
+    assert "sessions=19 messages=31" in result.output
     assert "overlays=no" in result.output
 
 
-def test_import_demo_wait_with_overlays_seeds_after_convergence() -> None:
-    """--with-overlays applies deterministic user overlays after base ingest."""
+def test_import_demo_wait_with_overlays_seeds_after_convergence(
+    workspace_env: dict[str, Path],
+) -> None:
+    """--with-overlays applies deterministic user overlays after base ingest.
+
+    Also covers the unconditional ``apply_demo_post_ingest_augmentation`` call
+    introduced by #3179 (b473d9256) between the base wait and overlay seeding —
+    previously unmocked here, which crashed against the unseeded test archive
+    with ``no such table: sessions``.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
+    from polylogue.demo import DemoVerifyResult
 
     events: list[str] = []
 
@@ -419,26 +467,43 @@ def test_import_demo_wait_with_overlays_seeds_after_convergence() -> None:
         assert require_overlays is False
         events.append("wait-base")
 
+    def fake_augment(archive_root: Path) -> None:
+        assert archive_root.exists()
+        events.append("augment")
+
     def fake_seed(archive_root: Path) -> object:
         assert archive_root.exists()
         events.append("seed-overlays")
         return object()
 
-    def fake_verify(*, require_overlays: bool = False) -> None:
+    fake_result = DemoVerifyResult(
+        archive_root=workspace_env["archive_root"],
+        ok=True,
+        session_count=19,
+        message_count=31,
+        query_hits=(),
+        overlays_present=True,
+        absolute_path_leaks=(),
+    )
+
+    def fake_verify(*, require_overlays: bool = False) -> DemoVerifyResult:
         assert require_overlays is True
         events.append("verify-overlays")
+        return fake_result
 
     runner = CliRunner()
     with (
         patch("polylogue.cli.commands.import_command.urlopen", side_effect=fake_urlopen),
         patch("polylogue.cli.commands.import_command._wait_for_demo_archive_ready", side_effect=fake_wait),
+        patch("polylogue.demo.apply_demo_post_ingest_augmentation", side_effect=fake_augment),
         patch("polylogue.scenarios.seed_demo_user_overlays", side_effect=fake_seed),
         patch("polylogue.cli.commands.import_command._verify_demo_now", side_effect=fake_verify),
     ):
         result = runner.invoke(cli, ["import", "--demo", "--wait", "--with-overlays"])
 
     assert result.exit_code == 0, result.output
-    assert events == ["daemon", "wait-base", "seed-overlays", "verify-overlays"]
+    assert events == ["daemon", "wait-base", "augment", "seed-overlays", "verify-overlays"]
+    assert "sessions=19 messages=31" in result.output
     assert "overlays=yes" in result.output
 
 
