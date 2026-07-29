@@ -148,7 +148,38 @@ def _timestamp_ms(value: str | None) -> int | None:
 def _active_index_raw_authority(
     index_db_path: Path,
 ) -> tuple[frozenset[str], tuple[_IndexRawRevisionHead, ...], tuple[_EligibleRawReceipt, ...]]:
-    """Read current raw references and explicit deletion receipts read-only."""
+    """Read current raw references and explicit deletion receipts read-only.
+
+    ``head.accepted_frontier_kind = 'byte'`` below is a deliberate, permanent
+    restriction, not an unexamined narrowing (polylogue-hgsq). A byte
+    frontier's supersession claim is independently re-derivable from
+    source-tier facts alone -- ``_validate_byte_head`` /
+    ``_validate_active_revision_chain`` recompute append-offset containment
+    straight from ``raw_sessions`` byte accounting, so retention never has to
+    trust the parser/classifier that first produced the receipt. A semantic
+    frontier's claim (``classify_membership_revisions`` /
+    ``_strictly_dominates`` in ``archive/session_revision_membership.py``,
+    invoked from the multi-session membership-replay path in
+    ``storage/sqlite/archive_tiers/archive.py``) is a one-time judgment over
+    *parsed* message/event/attachment hash sequences; only a scalar hash
+    count (``accepted_frontier``), not the hash sequences themselves,
+    survives into ``raw_revision_heads``, so there is no way to re-verify
+    that domination later without re-parsing and re-trusting the classifier.
+    Verified empirically against the live archive (2026-07-29): of 10,607
+    raws superseded under a semantic head, 10,606 carry
+    ``raw_sessions.revision_authority = 'quarantined'`` in the source tier
+    (one is 'byte_proven' for an unrelated reason) -- so even removing this
+    predicate would change nothing, because every one of them would still be
+    rejected downstream by ``_validate_eligible_receipt``'s unconditional
+    ``revision_kind in {'full','append'}`` + ``revision_authority ==
+    'byte_proven'`` requirement on the raw itself. Building a semantic
+    release path is a distinct, schema-bearing undertaking (persisting a
+    durable, source-tier-anchored fingerprint of the domination proof, and a
+    matching independent re-verification step) that touches
+    ``raw_authority.py`` / ``revision_application.py`` /
+    ``sources/revision_backfill.py`` and very likely a derived-tier schema
+    bump -- out of scope here and not a quick relaxation of this line.
+    """
     if not index_db_path.is_file():
         raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
     try:
@@ -640,7 +671,9 @@ def plan_stale_supersession_reissue(
     A stale raw is eligible for a fresh receipt only when *all* hold:
 
     * the current head's ``accepted_frontier_kind`` is ``'byte'`` (fail
-      closed on semantic heads, matching the retention join);
+      closed on semantic heads, matching the retention join -- this is a
+      permanent restriction, not a placeholder to relax later; see the
+      polylogue-hgsq rationale in ``_active_index_raw_authority`` above);
     * the current head's own raw is a byte-proven ``full`` reset -- the one
       case ``_validate_active_revision_chain`` documents as unconditionally
       superseding every other raw sharing the logical source, regardless of
