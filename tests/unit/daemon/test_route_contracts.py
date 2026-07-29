@@ -86,8 +86,12 @@ def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_br
         replay={"scheduled_raw_count": 1},
         transaction={"operation_id": "resume-1", "status": "deferred"},
     )
+    # polylogue-ogn1: the handler waits up to `_REBUILD_INDEX_WRITE_TIMEOUT_S`
+    # via `run_sync_with_timeout` (a longer-lived variant of `run_sync`,
+    # sized for a bounded rebuild pass rather than an ordinary request-scoped
+    # write) instead of the bridge's shorter default-timeout `run_sync`.
     bridge = SimpleNamespace(write_bridge=MagicMock())
-    bridge.write_bridge.run_sync.return_value = receipt
+    bridge.write_bridge.run_sync_with_timeout.return_value = receipt
     handler = _make_handler(
         "POST",
         "/api/maintenance/rebuild-index",
@@ -105,8 +109,9 @@ def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_br
 
     handler._handle_rebuild_index()
 
-    actor, function, request = bridge.write_bridge.run_sync.call_args.args
+    actor, timeout, function, request = bridge.write_bridge.run_sync_with_timeout.call_args.args
     assert actor == "http.maintenance.rebuild-index"
+    assert timeout > 0
     assert function.__name__ == "rebuild_index_from_source_sync"
     assert request.operation_id is None
     assert request.raw_batch_size == 17
