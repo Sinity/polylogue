@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
 from polylogue.core.enums import Provider
@@ -292,3 +294,98 @@ def test_parse_one_source_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path
     rows = list(iter_source_sessions_with_raw(Source(name="claude-code", path=source_path), capture_raw=False))
 
     assert [session.provider_session_id for _raw, session in rows] == ["first-session", "second-session"]
+
+
+def _chatgpt_conversation_record(conversation_id: str) -> dict[str, object]:
+    return {
+        "id": conversation_id,
+        "title": "A real conversation",
+        "create_time": 1704995846.046526,
+        "current_node": "root",
+        "mapping": {
+            "root": {
+                "id": "root",
+                "message": {
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello"]},
+                },
+                "children": [],
+            }
+        },
+    }
+
+
+def test_chatgpt_bundle_skips_metadata_sibling_but_keeps_conversation(caplog: pytest.LogCaptureFixture) -> None:
+    """A ChatGPT export ZIP bundles a real conversations shard alongside
+    metadata-only sibling arrays (``message_feedback.json``,
+    ``shared_conversations.json``, ...) in the same top-level-list shape.
+    ``_chatgpt_bundle_record_specs`` (polylogue/sources/dispatch.py) must
+    admit the real conversation and drop the metadata sibling by shape, via
+    ``chatgpt.looks_like_fragment`` -- not by trusting every bundle item to
+    be a session (a regression here -- reverting to the generic
+    ``_bundle_record_specs`` route for CHATGPT -- would let the metadata
+    record through ``chatgpt.parse`` too, producing a second, spuriously
+    empty session and failing the length assertion below).
+    """
+    feedback_sibling = {
+        "content": "{}",
+        "conversation_id": "68dac6b3-cc64-8326-9aff-fa3d358c03e2",
+        "id": "92b8bc4f-7a47-45e6-8c66-df59bf9e6797",
+        "rating": "thumbs_up",
+    }
+    conversation = _chatgpt_conversation_record("real-conversation-1")
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = parse_payload(Provider.CHATGPT, [feedback_sibling, conversation], "shard-000")
+
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id == "real-conversation-1"
+    assert not any("ChatGPT bundle payload" in record.message for record in caplog.records)
+
+
+def test_chatgpt_bundle_all_mapping_shape_drift_warns_loudly(caplog: pytest.LogCaptureFixture) -> None:
+    """If every record in a ChatGPT bundle carries a ``mapping`` key (so it
+    is clearly attempting to be a conversation shard, not a metadata
+    sibling file) but none of them pass ``chatgpt.looks_like_fragment``'s
+    node-shape check, that is what an upstream ChatGPT export format
+    change to the conversation-tree shape itself would look like -- e.g.
+    OpenAI changing ``message`` from a dict to something else. This must
+    be surfaced as a loud warning (polylogue-iwv7), not silently dropped
+    the same way a routine non-conversation sibling array is dropped.
+    """
+    drifted_records: list[dict[str, object]] = [
+        {
+            "id": f"drifted-{index}",
+            "mapping": {"root": {"id": "root", "message": "not-a-dict-anymore", "children": []}},
+        }
+        for index in range(6)
+    ]
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = parse_payload(Provider.CHATGPT, drifted_records, "shard-drifted")
+
+    assert sessions == []
+    assert any(
+        "ChatGPT bundle payload" in record.message and "6 candidate records" in record.message
+        for record in caplog.records
+    )
+
+
+def test_chatgpt_bundle_small_metadata_only_array_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
+    """A short, legitimate metadata sibling array (no ``mapping`` key at
+    all, e.g. ``shared_conversations.json``) must never trigger the
+    format-drift warning, however many items it has -- only records that
+    got as far as carrying a ``mapping`` dict but then failed shape
+    validation count as "candidates" for the warning. This guards against
+    the warning becoming noise that drowns out a real drift signal.
+    """
+    shared_conversation_siblings = [
+        {"conversation_id": f"conv-{index}", "id": f"share-{index}", "is_anonymous": True, "title": "Shared"}
+        for index in range(25)
+    ]
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = parse_payload(Provider.CHATGPT, shared_conversation_siblings, "shared-conversations")
+
+    assert sessions == []
+    assert not any("ChatGPT bundle payload" in record.message for record in caplog.records)
