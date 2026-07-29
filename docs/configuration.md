@@ -348,7 +348,6 @@ A few keys not shown in the full example above, with their TOML path:
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
 | `antigravity_language_server` | `sources.antigravity_language_server` | Path to an Antigravity language-server binary, when parsing Antigravity sessions needs it. |
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
-| `ingest_parse_workers` | `sources.ingest_parse_workers` | Parallel parse workers during ingest (default 1). |
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
 | `raw_authority_commit_batch_size` | `pipeline.raw_authority.commit_batch_size` | Census-phase commit batch size for raw-materialization repair (polylogue-amg1); unset uses the built-in default, `<=0` disables batching (per-raw commits). |
 | `raw_authority_whale_payload_bytes` | `pipeline.raw_authority.whale_payload_bytes` | Escalation-tier payload envelope (bytes) for the daemon whale pass (polylogue-t93b); unset/`<=0` uses the built-in default (8 GiB). Widens the resource-block envelope for one dedicated, stream-safe-gated single-component pass only -- the ordinary fast-path envelope is unaffected. |

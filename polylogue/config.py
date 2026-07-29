@@ -599,10 +599,6 @@ class PolylogueConfig:
         return int(str(self._data.get("ingest_commit_batch_messages", 8000)))
 
     @property
-    def ingest_parse_workers(self) -> int:
-        return max(1, int(str(self._data.get("ingest_parse_workers", 1))))
-
-    @property
     def live_full_ingest_workers(self) -> int:
         return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
 
@@ -1380,7 +1376,12 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         env_var="POLYLOGUE_INGEST_PARSE_WORKERS",
         owner_class="resource-policy",
         reload_behavior="startup-bound",
-        description="Process-worker count for CPU-bound source parsing.",
+        description=(
+            "Worker count for CPU-bound source parsing. Read by "
+            "resolve_parse_worker_count from the environment only; the default "
+            "adapts to the interpreter (min(16, cpus-2) free-threaded, "
+            "min(8, cpus-1) under the GIL). Set it to override that."
+        ),
     ),
     ConfigInventoryEntry(
         "live_full_ingest_workers",
@@ -1615,7 +1616,6 @@ _INT_CONFIG_KEYS = frozenset(
         "notification_email_max_per_hour",
         "otlp_max_body_bytes",
         "ingest_commit_batch_messages",
-        "ingest_parse_workers",
         "live_full_ingest_workers",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
@@ -1780,7 +1780,6 @@ def _user_config_path(bootstrap: _BootstrapPaths | None = None) -> Path | None:
 def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str, object]:
     """Built-in defaults (layer 1) captured from one bootstrap context."""
     captured = bootstrap or _snapshot_bootstrap()
-    default_parse_workers = max(1, min(8, (os.cpu_count() or 2) - 1))
     return {
         "archive_root": str(captured.data_home),
         "daemon_url": "http://127.0.0.1:8766",
@@ -1848,7 +1847,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "backup_verify_tmpdir": None,
         "antigravity_language_server": None,
         "ingest_commit_batch_messages": 8000,
-        "ingest_parse_workers": default_parse_workers,
         "live_full_ingest_workers": 1,
         "raw_authority_commit_batch_size": None,
         "raw_authority_whale_payload_bytes": None,
