@@ -28,6 +28,30 @@ RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
 RAW_AUTHORITY_CENSUS_QUERY_PREFIX = "polylogue://raw-authority-census/"
 RAW_AUTHORITY_DETAIL_QUERY_PREFIX = "polylogue://raw-authority-detail/"
 RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384
+
+#: How many censuses keep their per-plan membership rows
+#: (``raw_authority_census_plans`` / ``_census_post_plans`` / blockers).
+#:
+#: These rows serve exactly one read: a per-census inspection pager
+#: (``WHERE census_id = ? ORDER BY ordinal``, see ``raw_authority_census_detail``).
+#: Nobody pages a census from days ago, and every census re-records its ENTIRE
+#: pending plan set -- 99.98% of the rows ever written carried the
+#: ``carried_forward`` outcome, meaning "nothing happened". Unbounded, that
+#: reached 6,039 MB across two tables and seven indexes, 89% of a durable tier
+#: whose actual evidence (``raw_sessions`` + ``blob_refs``) was 52 MB, growing
+#: ~990 MB/day (polylogue-wkc6).
+RAW_AUTHORITY_CENSUS_PLAN_RETENTION = 8
+
+#: How many census HEADERS (``raw_authority_censuses``) to keep.
+#:
+#: Deliberately much larger than the plan-row window: headers carry the
+#: convergence history that is actually worth reading back -- sequence,
+#: digests, ``fixed_point``, and the ``predecessor_census_id`` chain -- and a
+#: header is far cheaper than a plan set. They are not free, though:
+#: ``residual_json`` and ``post_residual_json`` embed the full quarantined-raw
+#: id arrays and average ~144 KB each, so headers alone accrue ~28 MB/day at
+#: the observed ~97 censuses/day.
+RAW_AUTHORITY_CENSUS_HEADER_RETENTION = 256
 logger = get_logger(__name__)
 
 _RESET_LEDGER_TABLES_CHILD_FIRST = (
@@ -838,6 +862,67 @@ def unresolved_raw_replay_blockers(archive_root: Path) -> int:
         )
 
 
+def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, int]:
+    """Bound census history to its retention windows. Returns (plan_rows, headers) deleted.
+
+    Runs inside the caller's transaction, immediately after a census is
+    recorded, so growth is bounded at the point of growth rather than by a
+    separate maintenance surface an operator has to remember (the automagic
+    doctrine: if the invariant can be maintained automatically, it is).
+
+    Two windows, because the two row families earn their keep differently --
+    see ``RAW_AUTHORITY_CENSUS_PLAN_RETENTION`` and
+    ``RAW_AUTHORITY_CENSUS_HEADER_RETENTION``. Plan membership is dropped for
+    older censuses while their headers survive, so convergence history stays
+    readable after the per-plan detail behind it is gone.
+
+    Deletes are keyed on ``sequence_no``, which is monotonic per archive, so
+    this cannot race a concurrently-recorded newer census into deletion.
+    """
+    plan_floor_row = conn.execute(
+        """
+        SELECT sequence_no FROM raw_authority_censuses
+        ORDER BY sequence_no DESC LIMIT 1 OFFSET ?
+        """,
+        (RAW_AUTHORITY_CENSUS_PLAN_RETENTION - 1,),
+    ).fetchone()
+    plan_rows = 0
+    if plan_floor_row is not None:
+        floor = int(plan_floor_row[0])
+        stale = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT census_id FROM raw_authority_censuses WHERE sequence_no < ?",
+                (floor,),
+            )
+        ]
+        for start in range(0, len(stale), 512):
+            chunk = stale[start : start + 512]
+            for statement in (
+                "DELETE FROM raw_authority_census_plans WHERE census_id = ?",
+                "DELETE FROM raw_authority_census_post_plans WHERE census_id = ?",
+                "DELETE FROM raw_authority_blockers WHERE census_id = ?",
+            ):
+                cursor = conn.executemany(statement, ((census,) for census in chunk))
+                plan_rows += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+
+    header_floor_row = conn.execute(
+        """
+        SELECT sequence_no FROM raw_authority_censuses
+        ORDER BY sequence_no DESC LIMIT 1 OFFSET ?
+        """,
+        (RAW_AUTHORITY_CENSUS_HEADER_RETENTION - 1,),
+    ).fetchone()
+    headers = 0
+    if header_floor_row is not None:
+        cursor = conn.execute(
+            "DELETE FROM raw_authority_censuses WHERE sequence_no < ?",
+            (int(header_floor_row[0]),),
+        )
+        headers = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+    return plan_rows, headers
+
+
 def record_raw_authority_census(
     archive_root: Path,
     plans: Sequence[RawReplayPlan],
@@ -1029,6 +1114,7 @@ def record_raw_authority_census(
                 """,
                 ((census_id, plan.plan_id, ordinal) for ordinal, plan in enumerate(plans)),
             )
+        prune_raw_authority_census_history(conn)
     return RawAuthorityCensusReceipt(
         census_id=census_id,
         sequence_no=sequence_no,
