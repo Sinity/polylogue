@@ -27,6 +27,7 @@ from typing import Any, TypeAlias
 
 import pytest
 
+from polylogue.core.enums import TitleSource
 from polylogue.sources.parsers.claude import looks_like_ai, parse_ai
 from polylogue.sources.parsers.claude.ai_parser import CLAUDE_DESIGN_CHAT_INGEST_FLAG, CLAUDE_TEMPORARY_CHAT_INGEST_FLAG
 from polylogue.storage.sqlite.connection import open_connection
@@ -151,6 +152,9 @@ def test_claude_design_chat_shape_is_parsed_as_session() -> None:
 
     assert session.provider_session_id == "design-1"
     assert session.title == "Design system"
+    assert session.title_source == TitleSource.ORIGIN
+    assert session.title_ref == "claude-ai-design-title:design-1"
+    assert session.title_confidence == 1.0
     assert [message.text for message in session.messages] == ["Create a design system."]
     design_constructs = session.messages[0].blocks[0].web_constructs
     assert len(design_constructs) == 1
@@ -295,6 +299,32 @@ def test_claude_ai_conversation_summary_persists_as_event() -> None:
 
     summary_events = [e.payload for e in session.session_events if e.event_type == "claude_ai_conversation_summary"]
     assert summary_events == [{"summary": "**Conversation Overview**\n\nDiscussed the parser triage plan."}]
+    # Claude AI's own auto-generated conversation title is genuine provider
+    # curation (distinct from Codex's raw first-prompt echoes) -- it must be
+    # marked ORIGIN, not left with title_source unset.
+    assert session.title == "Summary Session"
+    assert session.title_source == TitleSource.ORIGIN
+    assert session.title_ref == "claude-ai-title:claude-3"
+    assert session.title_confidence == 1.0
+
+
+def test_claude_ai_no_provider_title_falls_back_to_id_as_unknown() -> None:
+    """No ``title``/``name`` field at all: fall back to the session id, and
+    mark the provenance UNKNOWN rather than silently ORIGIN or unset --
+    there is no provider curation backing this text."""
+    payload = {
+        "uuid": "claude-4",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hi", "created_at": "2026-01-01T00:00:00Z"},
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    assert session.title == "claude-4"
+    assert session.title_source == TitleSource.UNKNOWN
+    assert session.title_ref is None
+    assert session.title_confidence is None
 
 
 # ---------------------------------------------------------------------------
