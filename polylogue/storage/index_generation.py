@@ -273,6 +273,12 @@ class IndexGenerationStore:
             else:
                 self.active_pointer = configured_index
             temporary = anchor.with_suffix(".tmp")
+            # Constructing the store must not require the archive root to have
+            # been materialized first. Daemon bulk-rebuild routing is now
+            # unconditional, so this runs on every convergence tick -- including
+            # against a configured-but-not-yet-created root, where the eager
+            # pointer write previously raised FileNotFoundError.
+            anchor.parent.mkdir(parents=True, exist_ok=True)
             temporary.write_text(str(self.active_pointer.absolute()), encoding="utf-8")
             os.replace(temporary, anchor)
             _fsync_directory(anchor.parent)
