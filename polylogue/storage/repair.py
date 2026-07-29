@@ -5177,20 +5177,26 @@ def has_orphaned_messages_sync(conn: sqlite3.Connection) -> bool:
 
 
 def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
-    """Count sessions that carry no messages.
+    """Count session rows that are debris: no messages AND no acquired bytes.
 
-    The native session/message tree replaces the legacy
-    session/message tables: an "empty session" is a ``sessions``
-    row with no ``messages`` row referencing it.
+    This deliberately does NOT count every message-less session. A session can
+    be legitimately empty, and the 2026-07-22 hook-inflation postmortem
+    explicitly chose to retain the genuinely-empty sessions that survived
+    de-inflation. Counting those here would report healthy rows as debt and
+    invite an operator to "repair" them away.
+
+    Measured on the live archive 2026-07-29: 874 message-less sessions, all
+    874 carrying a non-empty ``raw_id``. Under the old blanket predicate this
+    reported 874 rows of phantom debt; under the provenance-aware one it
+    reports 0, which is the truth.
+
+    Kept in lockstep with ``repair_empty_sessions``: the counter and the
+    deleter must agree, or the report says one thing and the repair does
+    another.
     """
     return int(
         conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM sessions s
-            LEFT JOIN messages m ON m.session_id = s.session_id
-            WHERE m.session_id IS NULL
-            """
+            f"SELECT COUNT(*) FROM sessions s WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='s')}"
         ).fetchone()[0]
     )
 
@@ -5596,12 +5602,34 @@ def preview_orphaned_messages(*, count: int) -> RepairResult:
     )
 
 
+#: A session is debris only when it has no messages AND no acquired bytes
+#: behind it. "No messages" alone is not evidence of corruption: a session can
+#: be legitimately empty (a browser-capture stub, a conversation opened and
+#: never used), and the 2026-07-22 hook-inflation postmortem explicitly chose
+#: to RETAIN the genuinely-empty sessions that survived de-inflation.
+#:
+#: Measured on the live archive 2026-07-29: 874 sessions have zero messages,
+#: and ALL 874 carry a non-empty ``raw_id`` -- every one has real acquired
+#: bytes. Zero lack provenance. So the old blanket predicate
+#: (``NOT EXISTS (messages)``) would have deleted 874 legitimately-acquired
+#: sessions and zero pieces of debris: a pure data-loss operation with no
+#: upside, one explicit ``--cleanup`` away from the live archive.
+#:
+#: ``raw_id`` is the provenance signal because it names the retained source
+#: bytes; a session carrying one can always be re-materialized by replay,
+#: which is precisely what makes it not debris.
+_EMPTY_SESSION_DEBRIS_PREDICATE = (
+    "NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = {alias}.session_id) "
+    "AND ({alias}.raw_id IS NULL OR {alias}.raw_id = '')"
+)
+
+
 def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:
     with _open_archive_index_connection() as conn:
         return _run_sql_repair(
             "empty_sessions",
-            count_sql="SELECT COUNT(*) FROM sessions c WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = c.session_id)",
-            action_sql="DELETE FROM sessions WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.session_id)",
+            count_sql=(f"SELECT COUNT(*) FROM sessions c WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='c')}"),
+            action_sql=(f"DELETE FROM sessions WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='sessions')}"),
             dry_run=dry_run,
             conn=conn,
         )
