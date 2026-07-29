@@ -392,6 +392,58 @@ def _claude_ai_web_tool_evidence(segment: Mapping[str, object]) -> dict[str, obj
     return evidence or None
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the only key the write path
+# reads back out of it is ``language`` (``storage/sqlite/archive_tiers/
+# write.py:_block_language``). ``_claude_ai_web_tool_evidence`` above merges
+# its fields into ``first_block.metadata`` as an in-process carrier from
+# ``_claude_content_blocks`` up to ``normalize_chat_messages`` (below), but
+# without this projection step the evidence was silently dropped at write
+# time despite parsing correctly. Route it through ``session_events``
+# instead, keyed to the message via ``source_message_provider_id`` -- the
+# same precedent ``hermes_spans.py`` uses for tool-availability evidence
+# (polylogue-5o05). One event per tool_use/tool_result block, not one event
+# per field.
+_CLAUDE_AI_WEB_TOOL_EVIDENCE_KEYS = frozenset(
+    {
+        "start_timestamp",
+        "stop_timestamp",
+        "integration_name",
+        "integration_icon_url",
+        "is_mcp_app",
+        "mcp_server_url",
+        "approval_key",
+        "approval_options",
+        "display_content",
+    }
+)
+
+
+def _web_tool_evidence_from_block_metadata(metadata: Mapping[str, object] | None) -> dict[str, object] | None:
+    if not metadata:
+        return None
+    evidence = {key: value for key, value in metadata.items() if key in _CLAUDE_AI_WEB_TOOL_EVIDENCE_KEYS}
+    return evidence or None
+
+
+def _web_tool_evidence_events(evidence: _ClaudeMessageEvidence) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for block_index, block in enumerate(evidence.blocks):
+        block_evidence = _web_tool_evidence_from_block_metadata(block.metadata)
+        if block_evidence is None:
+            continue
+        start_timestamp = block_evidence.get("start_timestamp")
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_ai_web_tool_evidence",
+                timestamp=start_timestamp if isinstance(start_timestamp, str) else evidence.timestamp,
+                source_message_provider_id=evidence.provider_message_id,
+                payload={"block_index": block_index, **block_evidence},
+            )
+        )
+    return events
+
+
 # Claude AI (`claude-ai`) parser-diff triage disposition notes, 2026-07-29
 # (bd polylogue-2qx.3/polylogue-cgfy). Fields not otherwise mentioned in this
 # module's docstrings:
@@ -1038,6 +1090,7 @@ def normalize_chat_messages(
         )
 
     for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.provider_message_id]):
+        session_events.extend(_web_tool_evidence_events(evidence))
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
             if evidence.model_name:
