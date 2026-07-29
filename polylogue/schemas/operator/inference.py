@@ -274,9 +274,10 @@ def compare_schema_versions(request: SchemaCompareRequest) -> SchemaCompareResul
 
 
 def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult:
-    from polylogue.schemas.observation import PROVIDERS, fingerprint_hash
+    from polylogue.schemas.observation import PROVIDERS
+    from polylogue.schemas.observation_identity import schema_cluster_id
     from polylogue.schemas.sampling import load_samples_from_db
-    from polylogue.schemas.shape_fingerprint import _structure_fingerprint
+    from polylogue.schemas.tooling_registry import _cluster_payload
 
     registry = _typed_registry()
     samples: list[JSONDocument] | None = None
@@ -285,6 +286,25 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
         config = PROVIDERS.get(provider_token)
         if config is None:
             raise ValueError(f"Unknown provider: {request.provider}")
+        # schema_cluster_id() hashes (artifact_kind, structure_fingerprint) --
+        # NOT structure_fingerprint alone. cluster_samples() stamps every
+        # cluster it produces with whatever artifact_kind the caller passed
+        # (or "unspecified" when it passed none, which is what plain
+        # infer_schema(cluster=True) does today). Re-deriving a sample's
+        # fingerprint without that same artifact_kind can never match a
+        # cluster_id that was computed with it, so the target cluster's own
+        # recorded artifact_kind has to be threaded through here rather than
+        # assumed away. Verified live against the real archive: promoting any
+        # of gemini-cli's real exact-structure clusters with --with-samples
+        # raised "No samples match cluster ..." unconditionally before this.
+        manifest = registry.load_cluster_manifest(request.provider)
+        target_cluster = (
+            next((cluster for cluster in manifest.clusters if cluster.cluster_id == request.cluster_id), None)
+            if manifest is not None
+            else None
+        )
+        if target_cluster is None:
+            raise ValueError(f"Cluster {request.cluster_id} not found for {request.provider}")
         all_samples = (
             load_samples_from_db(
                 config.db_source_name,
@@ -295,7 +315,9 @@ def promote_schema_cluster(request: SchemaPromoteRequest) -> SchemaPromoteResult
             else []
         )
         samples = [
-            sample for sample in all_samples if fingerprint_hash(_structure_fingerprint(sample)) == request.cluster_id
+            sample
+            for sample in all_samples
+            if schema_cluster_id(_cluster_payload(sample), target_cluster.artifact_kind) == request.cluster_id
         ]
         if not samples:
             raise ValueError(f"No samples match cluster {request.cluster_id}")
