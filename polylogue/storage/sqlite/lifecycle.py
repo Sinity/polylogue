@@ -472,55 +472,82 @@ def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclaratio
     }
 
 
-def index_fast_forward_plan(source_version: int, target_version: int) -> IndexFastForwardPlan | None:
-    """Build a contiguous SQL plan, or ``None`` when rebuild/reprocess is required."""
+def index_fast_forward_plan(
+    source_version: int,
+    target_version: int,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> IndexFastForwardPlan | None:
+    """Build a contiguous SQL plan, or ``None`` when rebuild/reprocess is required.
+
+    Args:
+        source_version: Starting version.
+        target_version: Target version.
+        declarations: Custom declaration table for testing. Uses INDEX_DELTA_DECLARATIONS if None.
+    """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
+
     if source_version < INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR or source_version >= target_version:
         return None
-    declarations = tuple(
+    filtered_declarations = tuple(
         sorted(
-            (
-                declaration
-                for declaration in INDEX_DELTA_DECLARATIONS
-                if source_version < declaration.version <= target_version
-            ),
+            (declaration for declaration in declarations if source_version < declaration.version <= target_version),
             key=lambda declaration: declaration.version,
         )
     )
-    if tuple(declaration.version for declaration in declarations) != tuple(
+    if tuple(declaration.version for declaration in filtered_declarations) != tuple(
         range(source_version + 1, target_version + 1)
     ):
         return None
-    plan = IndexFastForwardPlan(source_version, target_version, declarations)
+    plan = IndexFastForwardPlan(source_version, target_version, filtered_declarations)
     return plan if plan.eligible_for_sql_fast_forward else None
 
 
-def get_latest_sql_fast_forwardable_version(target_version: int | None = None) -> int | None:
+def get_latest_sql_fast_forwardable_version(
+    target_version: int | None = None,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> int | None:
     """Return the highest version that CAN fast-forward to the given target.
 
     Useful for tests that need a source version that will actually fast-forward
     without a rebuild. Returns None if no version below the target is fast-forwardable.
+
+    Args:
+        target_version: Target version. Defaults to max of declarations.
+        declarations: Custom declaration table for testing. Uses INDEX_DELTA_DECLARATIONS if None.
     """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
     if target_version is None:
-        target_version = max(d.version for d in INDEX_DELTA_DECLARATIONS)
+        target_version = max(d.version for d in declarations)
 
     for version in range(target_version - 1, INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR - 1, -1):
-        plan = index_fast_forward_plan(version, target_version)
+        plan = index_fast_forward_plan(version, target_version, declarations)
         if plan is not None and plan.eligible_for_sql_fast_forward:
             return version
     return None
 
 
-def get_semantic_reparse_blocking_version_pair(target_version: int | None = None) -> tuple[int, int] | None:
+def get_semantic_reparse_blocking_version_pair(
+    target_version: int | None = None,
+    declarations: tuple[IndexDeltaDeclaration, ...] | None = None,
+) -> tuple[int, int] | None:
     """Return a (source, target) pair where a SEMANTIC_REPARSE delta blocks the fast-forward.
 
     Useful for tests that want to verify that semantic-reparse gaps correctly require
     a rebuild. Returns None if all deltas to the target can be fast-forwarded.
+
+    Args:
+        target_version: Target version. Defaults to max of declarations.
+        declarations: Custom declaration table for testing. Uses INDEX_DELTA_DECLARATIONS if None.
     """
+    if declarations is None:
+        declarations = INDEX_DELTA_DECLARATIONS
     if target_version is None:
-        target_version = max(d.version for d in INDEX_DELTA_DECLARATIONS)
+        target_version = max(d.version for d in declarations)
 
     for source in range(INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR, target_version):
-        plan = index_fast_forward_plan(source, target_version)
+        plan = index_fast_forward_plan(source, target_version, declarations)
         if plan is not None and plan.requires_semantic_reparse:
             return (source, target_version)
     return None

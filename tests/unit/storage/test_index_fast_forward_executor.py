@@ -28,7 +28,8 @@ from polylogue.storage.sqlite.lifecycle import (
     FastForwardOperation,
     FastForwardOperationKind,
     IndexDeltaDeclaration,
-    get_latest_sql_fast_forwardable_version,
+    INDEX_DELTA_DECLARATIONS,
+    index_fast_forward_plan,
 )
 
 _HASH = b"x" * 32
@@ -129,11 +130,8 @@ def _build_v42_shaped_index_db(path: Path) -> None:
     _build_downgradable_index_db(path, downgrade_from_version=43, downgrade_to_version=42)
 
 
-def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path) -> None:
-    """Test that an old index.db that CAN fast-forward opens without a rebuild error.
-
-    Uses the latest version derivable from lifecycle declarations that can reach
-    the current version via SQL fast-forward, rather than a hardcoded version number.
+def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that an index.db can fast-forward using synthetic v42→v43 declarations.
 
     ANTI-VACUITY: removing the bootstrap.py wiring to apply_index_fast_forward
     (or reverting to the pre-t3gk bootstrap.py) makes this call raise
@@ -141,29 +139,43 @@ def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path) -
     pytest.raises would need to wrap -- this bare call is the assertion that
     no such error is raised.
     """
-    ffw_version = get_latest_sql_fast_forwardable_version()
-    if ffw_version is None:
-        pytest.skip("No SQL fast-forwardable version exists for this schema; full rebuild required.")
+    import polylogue.storage.sqlite.lifecycle as lifecycle
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    # Create synthetic declarations for v42→v43 fast-forward (FTS_REINDEX only).
+    # Use v43's real operations from the canonical schema.
+    v43_real = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 43)
+    synthetic_decls = (
+        IndexDeltaDeclaration(
+            version=42,
+            classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        ),
+        IndexDeltaDeclaration(
+            version=43,
+            classes=v43_real.classes,
+            operations=v43_real.operations,
+        ),
+    )
 
     path = tmp_path / "index.db"
-    # Build a current-schema DB, then downgrade it to the fast-forwardable version.
-    # For this test, we use a generic approach that works for any version.
-    conn = sqlite3.connect(path)
-    try:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-        _seed_indexable_block(conn, native_suffix="a", text="needle prose one")
-        _seed_indexable_block(conn, native_suffix="b", text="needle prose two")
-        conn.execute(f"PRAGMA user_version = {ffw_version}")
-        conn.commit()
-    finally:
-        conn.close()
+    _build_v42_shaped_index_db(path)
+
+    # Monkeypatch to use synthetic declarations so v42→v43 is fast-forwardable.
+    # This tests the executor without depending on real v44/v45 SEMANTIC_REPARSE.
+    monkeypatch.setattr(
+        lifecycle,
+        "INDEX_DELTA_DECLARATIONS",
+        synthetic_decls,
+    )
+    # Also patch ARCHIVE_VERSION_BY_TIER so the expected version is 43.
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, 43)
 
     # ANTI-VACUITY: this bare call asserts no rebuild error is raised.
     initialize_archive_database(path, ArchiveTier.INDEX)
 
     conn = sqlite3.connect(path)
     try:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 43
         # Verify data survived the fast-forward
         indexable_rows = conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
         assert indexable_rows == 2
@@ -171,29 +183,42 @@ def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path) -
         conn.close()
 
 
-def test_sql_fast_forwardable_index_db_reopen_is_idempotent(tmp_path: Path) -> None:
+def test_sql_fast_forwardable_index_db_reopen_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A second open of an already fast-forwarded archive must not re-raise or re-mutate."""
-    ffw_version = get_latest_sql_fast_forwardable_version()
-    if ffw_version is None:
-        pytest.skip("No SQL fast-forwardable version exists for this schema; full rebuild required.")
+    import polylogue.storage.sqlite.lifecycle as lifecycle
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    # Create synthetic declarations for v42→v43 fast-forward.
+    v43_real = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 43)
+    synthetic_decls = (
+        IndexDeltaDeclaration(
+            version=42,
+            classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        ),
+        IndexDeltaDeclaration(
+            version=43,
+            classes=v43_real.classes,
+            operations=v43_real.operations,
+        ),
+    )
 
     path = tmp_path / "index.db"
-    conn = sqlite3.connect(path)
-    try:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-        _seed_indexable_block(conn, native_suffix="a", text="needle prose one")
-        _seed_indexable_block(conn, native_suffix="b", text="needle prose two")
-        conn.execute(f"PRAGMA user_version = {ffw_version}")
-        conn.commit()
-    finally:
-        conn.close()
+    _build_v42_shaped_index_db(path)
+
+    # Monkeypatch to use synthetic declarations for consistent fast-forward.
+    monkeypatch.setattr(
+        lifecycle,
+        "INDEX_DELTA_DECLARATIONS",
+        synthetic_decls,
+    )
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, 43)
 
     initialize_archive_database(path, ArchiveTier.INDEX)
     initialize_archive_database(path, ArchiveTier.INDEX)
 
     conn = sqlite3.connect(path)
     try:
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 43
     finally:
         conn.close()
 

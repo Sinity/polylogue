@@ -9,25 +9,22 @@ import pytest
 import devtools.index_v37_fast_forward as forward
 from devtools.index_v37_fast_forward import IndexV37FastForwardError, activate_forward, prepare_forward
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
-from polylogue.storage.sqlite.archive_tiers import index as index_tier
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.lifecycle import get_latest_sql_fast_forwardable_version
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 
 def _archive(tmp_path: Path) -> tuple[Path, int]:
-    """Create a test archive with a fast-forwardable index database.
+    """Create a test archive with a v36 index database for devtools testing.
 
-    Uses the latest version that can SQL-fast-forward to the current version,
-    derived from lifecycle declarations rather than hardcoded version numbers.
-    This ensures tests remain valid as the schema evolves.
+    The devtools index_v37_fast_forward module is specifically for v36→v37 migration.
+    These tests verify the fast-forward executor works correctly on this legacy path.
+    V36 had three cache tables that v37 drops (session_runs, session_observed_events,
+    session_context_snapshots), so we create them here to simulate v36.
 
     Returns: (archive_root, created_index_version)
     """
-    ffw_version = get_latest_sql_fast_forwardable_version()
-    if ffw_version is None:
-        pytest.skip("No SQL fast-forwardable version exists for this schema; full rebuild required.")
+    ffw_version = 36  # devtools index_v37_fast_forward tests v36→v37 migration
 
     root = tmp_path / "archive"
     root.mkdir()
@@ -38,10 +35,17 @@ def _archive(tmp_path: Path) -> tuple[Path, int]:
     active_root.mkdir(parents=True)
     active = active_root / "index.db"
     with sqlite3.connect(active) as conn:
-        # Use current schema but set version to fast-forwardable one.
+        # Use current schema but set version to v36 for devtools testing.
         # This tests the fast-forward executor without relying on historical DDL.
         initialize_archive_tier(conn, ArchiveTier.INDEX)
         ensure_runtime_indexes_sync(conn)
+
+        # Add v36 cache tables that v37 removes (CACHE_REMOVAL delta).
+        # These are simple placeholder tables needed for devtools v36→v37 testing.
+        conn.execute("CREATE TABLE IF NOT EXISTS session_runs(id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS session_observed_events(id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS session_context_snapshots(id TEXT)")
+
         conn.execute(f"PRAGMA user_version = {ffw_version}")
         # Add test data that will be preserved by fast-forward
         conn.execute(
@@ -54,8 +58,34 @@ def _archive(tmp_path: Path) -> tuple[Path, int]:
     return root, ffw_version
 
 
+@pytest.fixture
+def _patch_lifecycle_for_v36_upgrade(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch lifecycle declarations to allow v36→v37 fast-forward only.
+
+    The devtools v36→v37 forward tool is specifically designed to upgrade from v36
+    to v37 using fast-forward (dropping cache tables). We patch the declarations
+    to stop at v37 instead of extending to v45, so the tool can complete its
+    specific migration without hitting SEMANTIC_REPARSE blocks from later versions.
+    """
+    import polylogue.storage.sqlite.lifecycle as lifecycle
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    # Keep only v36→v37 declarations.
+    # The real lifecycle has v37 as CACHE_REMOVAL (fast-forwardable).
+    # We exclude v38+ to avoid SEMANTIC_REPARSE blocks at v39+.
+    synthetic_decls = tuple(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if 36 <= d.version <= 37)
+
+    monkeypatch.setattr(
+        lifecycle,
+        "INDEX_DELTA_DECLARATIONS",
+        synthetic_decls,
+    )
+    # Patch the expected version to v37 (devtools v36→v37 destination).
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, 37)
+
+
 def test_prepare_and_activate_preserve_surviving_rows_without_raw_replay(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
 ) -> None:
     root, ffw_version = _archive(tmp_path)
     receipt = tmp_path / "receipt.json"
@@ -70,7 +100,8 @@ def test_prepare_and_activate_preserve_surviving_rows_without_raw_replay(
     clone = Path(str(generation["index_path"]))
     assert (root / "index.db").resolve().parent.name == f"v{ffw_version}"
     with sqlite3.connect(clone) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == index_tier.INDEX_SCHEMA_VERSION
+        # With synthetic declarations, the target is v37 (devtools v36→v37).
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 37
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         for table in forward.RETIRED_TABLES:
             assert conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (table,)).fetchone() is None
@@ -98,7 +129,9 @@ def test_ddl_normalization_preserves_token_and_literal_boundaries() -> None:
     )
 
 
-def test_activate_keeps_completed_receipt_byte_for_byte(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_activate_keeps_completed_receipt_byte_for_byte(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
+) -> None:
     root, _ = _archive(tmp_path)
     receipt = tmp_path / "receipt.json"
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
@@ -116,7 +149,9 @@ def test_activate_keeps_completed_receipt_byte_for_byte(tmp_path: Path, monkeypa
     assert receipt.read_bytes() == before
 
 
-def test_prepare_refuses_unexpected_schema_surplus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepare_refuses_unexpected_schema_surplus(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
+) -> None:
     root, ffw_version = _archive(tmp_path)
     with sqlite3.connect(root / "index.db") as conn:
         conn.execute("CREATE TABLE unexpected_cache(value TEXT)")
@@ -131,7 +166,7 @@ def test_prepare_refuses_unexpected_schema_surplus(tmp_path: Path, monkeypatch: 
 
 
 def test_prepare_repairs_preexisting_orphan_attachment_native_ids(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
 ) -> None:
     root, _ = _archive(tmp_path)
     with sqlite3.connect(root / "index.db") as conn:
@@ -152,7 +187,9 @@ def test_prepare_repairs_preexisting_orphan_attachment_native_ids(
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_prepare_refuses_running_daemon_before_clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prepare_refuses_running_daemon_before_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
+) -> None:
     root, ffw_version = _archive(tmp_path)
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: 1234)
 
@@ -164,7 +201,7 @@ def test_prepare_refuses_running_daemon_before_clone(tmp_path: Path, monkeypatch
 
 
 def test_prepare_refuses_unwritable_receipt_before_checkpoint_or_clone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
 ) -> None:
     root, ffw_version = _archive(tmp_path)
     blocker = tmp_path / "not-a-directory"
@@ -184,7 +221,7 @@ def test_prepare_refuses_unwritable_receipt_before_checkpoint_or_clone(
 
 
 def test_prepare_checkpoints_stopped_active_index_before_census(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
 ) -> None:
     root, _ = _archive(tmp_path)
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
@@ -206,7 +243,9 @@ def test_prepare_checkpoints_stopped_active_index_before_census(
     assert not Path(f"{active}-shm").exists()
 
 
-def test_activate_refuses_changed_source_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_activate_refuses_changed_source_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
+) -> None:
     root, ffw_version = _archive(tmp_path)
     receipt = tmp_path / "receipt.json"
     monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
@@ -220,7 +259,7 @@ def test_activate_refuses_changed_source_snapshot(tmp_path: Path, monkeypatch: p
 
 
 def test_activate_refuses_in_place_clone_mutation_with_preserved_stat_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
 ) -> None:
     root, ffw_version = _archive(tmp_path)
     receipt = tmp_path / "receipt.json"
@@ -245,7 +284,7 @@ def test_activate_refuses_in_place_clone_mutation_with_preserved_stat_identity(
 
 
 def test_activate_recovers_after_pointer_swap_before_final_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
 ) -> None:
     root, _ = _archive(tmp_path)
     receipt = tmp_path / "receipt.json"
