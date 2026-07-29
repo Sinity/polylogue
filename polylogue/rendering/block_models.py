@@ -88,6 +88,7 @@ def _block_attribute_mapping(value: object) -> dict[str, object] | None:
         "semantic_type",
         "tool_result_is_error",
         "tool_result_exit_code",
+        "tool_result_outcome_unknown_reason",
     )
     for name in attribute_names:
         candidate = getattr(value, name, None)

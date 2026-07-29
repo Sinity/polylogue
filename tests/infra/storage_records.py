@@ -179,6 +179,7 @@ def _content_block_record(
     semantic_type: str | None = None,
     tool_result_is_error: int | None = None,
     tool_result_exit_code: int | None = None,
+    tool_result_outcome_unknown_reason: str | None = None,
 ) -> BlockRecord:
     # #1240: media_type is now stored inside the block-metadata JSON.
     merged_metadata = _merge_media_type_into_metadata(metadata, media_type)
@@ -196,6 +197,7 @@ def _content_block_record(
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
         tool_result_is_error=tool_result_is_error,
         tool_result_exit_code=tool_result_exit_code,
+        tool_result_outcome_unknown_reason=tool_result_outcome_unknown_reason,
     )
 
 
@@ -222,6 +224,7 @@ def _content_block_from_mapping(
         semantic_type=_optional_str(block.get("semantic_type")),
         tool_result_is_error=_optional_int(block.get("tool_result_is_error")),
         tool_result_exit_code=_optional_int(block.get("tool_result_exit_code")),
+        tool_result_outcome_unknown_reason=_optional_str(block.get("tool_result_outcome_unknown_reason")),
     )
 
 
@@ -265,6 +268,9 @@ def make_content_block(
     media_type: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
+    tool_result_is_error: int | None = None,
+    tool_result_exit_code: int | None = None,
+    tool_result_outcome_unknown_reason: str | None = None,
 ) -> BlockRecord:
     return _content_block_record(
         message_id=message_id,
@@ -278,6 +284,9 @@ def make_content_block(
         media_type=media_type,
         metadata=metadata,
         semantic_type=semantic_type,
+        tool_result_is_error=tool_result_is_error,
+        tool_result_exit_code=tool_result_exit_code,
+        tool_result_outcome_unknown_reason=tool_result_outcome_unknown_reason,
     )
 
 

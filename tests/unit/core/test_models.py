@@ -363,11 +363,53 @@ class TestMessageFromRecord:
                 "tool_input": {"file_path": "/workspace/polylogue/README.md"},
                 "tool_result_is_error": None,
                 "tool_result_exit_code": None,
+                "tool_result_outcome_unknown_reason": None,
                 "media_type": None,
                 "metadata": {"path": "/workspace/polylogue/README.md"},
                 "semantic_type": "file_read",
             }
         ]
+
+    def test_from_record_threads_tool_result_outcome_unknown_reason(self) -> None:
+        """polylogue-2qx.4: the reason a tool outcome is unknown must survive
+        record->domain hydration alongside tool_result_is_error/exit_code --
+        without this, ``tool_result_is_error is None`` gives no explanation."""
+        record = make_message(
+            message_id="m1",
+            session_id="c1",
+            role="assistant",
+            text="Ran a command",
+            blocks=[
+                make_content_block(
+                    message_id="m1",
+                    session_id="c1",
+                    block_index=0,
+                    block_type="tool_result",
+                    tool_id="tool-1",
+                    tool_result_outcome_unknown_reason="sidecar_missing",
+                )
+            ],
+        )
+
+        message = message_from_record(record, [])
+
+        assert message.blocks[0]["tool_result_outcome_unknown_reason"] == "sidecar_missing"
+
+    def test_from_record_threads_stop_reason(self) -> None:
+        """polylogue-2qx.4: messages.stop_reason (why the assistant turn ended)
+        must survive record->domain hydration; before this it was read from
+        SQL and mapped onto MessageRecord but dropped when building Message."""
+        record = make_message(
+            message_id="m1",
+            session_id="c1",
+            role="assistant",
+            text="Done",
+            stop_reason="max_tokens",
+        )
+
+        message = message_from_record(record, [])
+
+        assert message.stop_reason == "max_tokens"
 
 
 class TestSessionSummaryFromRecord:
