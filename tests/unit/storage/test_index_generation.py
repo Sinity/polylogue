@@ -299,17 +299,31 @@ def test_symlinked_configured_index_promotes_canonical_target(tmp_path: Path) ->
 
 
 def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archive(tmp_path: Path) -> None:
+    """polylogue-hord: paging orders by ``(blob_hash, raw_id)``, not acquisition
+    time, so byte-identical duplicates land adjacently. ``raw-a``/``raw-b``
+    deliberately share a ``blob_hash`` (proving the tie is broken by
+    ``raw_id``, exactly as the old acquired_at-tie test proved) while
+    ``raw-c`` gets a distinct, lexicographically-later hash -- acquired_at is
+    set in the OPPOSITE order from hash order to prove paging no longer
+    follows it.
+    """
     _archive(tmp_path)
+    hash_group_1 = b"\x01" * 32
+    hash_group_2 = b"\x02" * 32
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        for raw_id, acquired_at_ms in (("raw-c", 30), ("raw-a", 10), ("raw-b", 10)):
+        for raw_id, acquired_at_ms, blob_hash in (
+            ("raw-c", 10, hash_group_2),
+            ("raw-a", 30, hash_group_1),
+            ("raw-b", 30, hash_group_1),
+        ):
             conn.execute(
                 """
                 INSERT INTO raw_sessions (
                     raw_id, origin, native_id, source_path, source_index, blob_hash,
                     blob_size, acquired_at_ms, validation_status
-                ) VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), 1, ?, 'passed')
+                ) VALUES (?, 'codex-session', ?, ?, 0, ?, 1, ?, 'passed')
                 """,
-                (raw_id, raw_id, f"/{raw_id}.jsonl", acquired_at_ms),
+                (raw_id, raw_id, f"/{raw_id}.jsonl", blob_hash, acquired_at_ms),
             )
 
     store = IndexGenerationStore.for_archive_root(tmp_path)
@@ -317,46 +331,48 @@ def test_rebuild_transaction_persists_keyset_cursor_without_materializing_archiv
         source_snapshot="source-v1", operation_id="resume-me", pass_byte_budget=2, pass_deadline_ms=5_000
     )
     first_page = store.next_raw_page(transaction, limit=2)
-    assert first_page.rows == (("raw-a", 10, 1), ("raw-b", 10, 1))
+    assert first_page.rows == (("raw-a", hash_group_1.hex(), 1), ("raw-b", hash_group_1.hex(), 1))
     assert first_page.deferred_reason == "raw-batch"
 
     transaction = store.checkpoint_transaction(
         transaction,
         status="paused",
-        last_acquired_at_ms=10,
+        last_blob_hash_hex=hash_group_1.hex(),
         last_raw_id="raw-b",
         processed_raw_count=2,
     )
-    assert transaction.cursor == "source:10:raw-b"
+    assert transaction.cursor == f"source:{hash_group_1.hex()}:raw-b"
     assert store.load_transaction("resume-me") == transaction
-    assert store.next_raw_page(transaction, limit=2).rows == (("raw-c", 30, 1),)
+    assert store.next_raw_page(transaction, limit=2).rows == (("raw-c", hash_group_2.hex(), 1),)
     assert transaction.pass_byte_budget == 2
 
 
 def test_rebuild_byte_budget_defers_without_excluding_an_oversized_first_raw(tmp_path: Path) -> None:
     _archive(tmp_path)
+    hash_large = b"\x01" * 32
+    hash_later = b"\x02" * 32
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        for raw_id, acquired_at_ms, blob_size in (("large", 1, 100), ("later", 2, 1)):
+        for raw_id, blob_hash, blob_size in (("large", hash_large, 100), ("later", hash_later, 1)):
             conn.execute(
                 """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
                    blob_size, acquired_at_ms, validation_status)
-                   VALUES (?, 'codex-session', ?, ?, 0, randomblob(32), ?, ?, 'passed')""",
-                (raw_id, raw_id, f"/{raw_id}", blob_size, acquired_at_ms),
+                   VALUES (?, 'codex-session', ?, ?, 0, ?, ?, 0, 'passed')""",
+                (raw_id, raw_id, f"/{raw_id}", blob_hash, blob_size),
             )
     store = IndexGenerationStore.for_archive_root(tmp_path)
     transaction = store.create_transaction(source_snapshot="source-v1", pass_byte_budget=10)
     first = store.next_raw_page(transaction, limit=10)
-    assert first.rows == (("large", 1, 100),)
+    assert first.rows == (("large", hash_large.hex(), 100),)
     assert first.deferred_reason == "byte-budget"
     transaction = store.checkpoint_transaction(
         transaction,
         status="deferred",
-        last_acquired_at_ms=1,
+        last_blob_hash_hex=hash_large.hex(),
         last_raw_id="large",
         processed_raw_count=1,
         processed_blob_bytes=100,
     )
-    assert store.next_raw_page(transaction, limit=10).rows == (("later", 2, 1),)
+    assert store.next_raw_page(transaction, limit=10).rows == (("later", hash_later.hex(), 1),)
 
 
 def test_source_snapshot_changes_when_retained_blob_identity_changes(tmp_path: Path) -> None:
