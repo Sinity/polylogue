@@ -494,6 +494,38 @@ def index_fast_forward_plan(source_version: int, target_version: int) -> IndexFa
     return plan if plan.eligible_for_sql_fast_forward else None
 
 
+def get_latest_sql_fast_forwardable_version(target_version: int | None = None) -> int | None:
+    """Return the highest version that CAN fast-forward to the given target.
+
+    Useful for tests that need a source version that will actually fast-forward
+    without a rebuild. Returns None if no version below the target is fast-forwardable.
+    """
+    if target_version is None:
+        target_version = max(d.version for d in INDEX_DELTA_DECLARATIONS)
+
+    for version in range(target_version - 1, INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR - 1, -1):
+        plan = index_fast_forward_plan(version, target_version)
+        if plan is not None and plan.eligible_for_sql_fast_forward:
+            return version
+    return None
+
+
+def get_semantic_reparse_blocking_version_pair(target_version: int | None = None) -> tuple[int, int] | None:
+    """Return a (source, target) pair where a SEMANTIC_REPARSE delta blocks the fast-forward.
+
+    Useful for tests that want to verify that semantic-reparse gaps correctly require
+    a rebuild. Returns None if all deltas to the target can be fast-forwarded.
+    """
+    if target_version is None:
+        target_version = max(d.version for d in INDEX_DELTA_DECLARATIONS)
+
+    for source in range(INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR, target_version):
+        plan = index_fast_forward_plan(source, target_version)
+        if plan is not None and plan.requires_semantic_reparse:
+            return (source, target_version)
+    return None
+
+
 __all__ = [
     "DerivedDeltaClass",
     "FastForwardOperation",
@@ -503,6 +535,8 @@ __all__ = [
     "IndexDeltaDeclaration",
     "IndexDeltaDeclarationReport",
     "IndexFastForwardPlan",
+    "get_latest_sql_fast_forwardable_version",
+    "get_semantic_reparse_blocking_version_pair",
     "index_delta_declaration_report",
     "index_fast_forward_plan",
     "resolve_canonical_index_objects",
