@@ -244,6 +244,57 @@ def _element_kinds(value: object) -> list[str]:
     return sorted(str(item.get("element_kind")) for item in value if isinstance(item, dict))
 
 
+def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
+    """Run the enum-value privacy guard over every committed element schema.
+
+    ``polylogue.schemas.audit.checks.check_privacy_guards`` catches UUIDs,
+    hex ids, high-entropy tokens and otherwise-unsafe values recorded in
+    ``x-polylogue-values`` annotations.  It is the sharper check for that
+    class -- and it ran nowhere.  ``devtools schema-audit`` is the only
+    caller, and that command is not part of any ``devtools verify`` gate,
+    so nothing enforced it on the path that actually publishes schemas.
+
+    That gap was not theoretical.  ``promote_cluster``'s samples path calls
+    ``generate_schema_from_samples()``, which -- unlike the full ``generate``
+    pipeline -- has no ``privacy_config`` plumbed through it, so a
+    low-cardinality "safe enum" heuristic recorded seven literal
+    conversation UUIDs verbatim into claude-ai v2.  The committed
+    promotion audit reported zero blockers throughout, because it does not
+    duplicate this check.
+
+    Wiring it here means the gate that guards publication runs the guard
+    that understands publication, rather than relying on a separate command
+    nobody invokes.
+    """
+    from polylogue.schemas.audit.checks import check_privacy_guards
+    from polylogue.core.outcomes import OutcomeStatus
+
+    findings: list[PromotionAuditFinding] = []
+    for path in sorted(root.rglob("*.schema.json.gz")):
+        artifact = str(path.relative_to(root))
+        try:
+            schema = _load_artifact(path)
+        except Exception:  # noqa: BLE001 - unreadable artifact is its own blocker elsewhere
+            continue
+        document = json_document(schema)
+        if not document:
+            continue
+        result = check_privacy_guards(document)
+        if result.status is not OutcomeStatus.ERROR:
+            continue
+        for detail in result.details:
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="unsafe_enum_value",
+                    artifact=artifact,
+                    json_path=detail.split(":", 1)[0],
+                    value=detail,
+                )
+            )
+    return findings
+
+
 def _catalog_coherence_findings(root: Path) -> list[PromotionAuditFinding]:
     """Require each provider's catalog.json to agree with its packages.
 
@@ -366,6 +417,7 @@ def audit_schema_artifacts(root: Path) -> PromotionAuditReport:
                 )
         _walk_artifact(payload, artifact=relative, json_path="$", findings=findings)
     findings.extend(_catalog_coherence_findings(resolved))
+    findings.extend(_privacy_guard_findings(resolved))
     return PromotionAuditReport(
         root=str(resolved),
         artifact_count=len(artifacts),
