@@ -84,10 +84,16 @@ def _clean_title_text(text: str) -> str:
 
 
 logger = get_logger(__name__)
+# ``pr-link`` and ``file-history-snapshot`` used to sit in this set and be
+# dropped with everything else (polylogue-cijx.3: 20,702 pr-link records and
+# 34,132 file-history-snapshot records discarded live). Both carry typed
+# session-scoped evidence with no message-shaped content of their own, so
+# they are still not turned into ParsedMessage rows, but they are no longer
+# silently skipped -- see their dedicated handling in the main loop below,
+# which persists them as ParsedSessionEvent rows instead of dropping them.
 _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
-        "file-history-snapshot",
         "queue-operation",
         "progress",
         "agent-name",
@@ -97,7 +103,6 @@ _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
         "last-prompt",
         "mode",
         "permission-mode",
-        "pr-link",
     }
 )
 
@@ -518,6 +523,7 @@ def _parse_code_records(
     fresh_task_prompt_head = False
     saw_plain_user_head = False
     cwds: set[str] = set()
+    git_branch: str | None = None
     models: set[str] = set()
     message_position = 0
     background_notifications: list[tuple[ClaudeCodeBackgroundTaskNotification, str | None, str | None]] = []
@@ -579,6 +585,63 @@ def _parse_code_records(
         timestamp = normalize_timestamp(raw_timestamp if isinstance(raw_timestamp, str | int | float) else None)
         message = item.get("message")
         notification = _task_notification_from_record(item, message)
+
+        # ``gitBranch`` is stamped by Claude Code on records of many types
+        # (message, progress, system, attachment, ...), sparsely -- most
+        # individual records omit it, but nearly every session carries it on
+        # at least one record (polylogue-cijx.3: measured 81% of live-corpus
+        # session files have a non-empty gitBranch on some record, vs. the 0%
+        # this parser previously surfaced, since only the legacy, often-absent
+        # sessions-index.json sidecar populated ``ParsedSession.git_branch``).
+        # Read it unconditionally, before any type-based skip/continue below,
+        # and keep the first non-empty value seen (closest to a session-start
+        # snapshot, matching the semantics other providers already use for
+        # git_branch).
+        record_git_branch = item.get("gitBranch")
+        if git_branch is None and isinstance(record_git_branch, str) and record_git_branch.strip():
+            git_branch = record_git_branch.strip()
+
+        # ``pr-link`` (prNumber/prUrl/prRepository) and ``file-history-snapshot``
+        # (trackedFileBackups) are typed, session-scoped evidence with no
+        # message-shaped content of their own -- persist as session_events
+        # rather than dropping them (polylogue-cijx.3: 20,702 pr-link and
+        # 34,132 file-history-snapshot records discarded live). This makes the
+        # PR-link relation and per-file checkpoint evidence a parse problem a
+        # downstream reader can consume, instead of an inference problem.
+        if record_type == "pr-link":
+            pr_number = item.get("prNumber")
+            pr_url = item.get("prUrl")
+            pr_repository = item.get("prRepository")
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="pr_link",
+                    timestamp=timestamp,
+                    payload={
+                        "pr_number": pr_number if isinstance(pr_number, int) else None,
+                        "pr_url": pr_url if isinstance(pr_url, str) else None,
+                        "pr_repository": pr_repository if isinstance(pr_repository, str) else None,
+                    },
+                )
+            )
+            continue
+        if record_type == "file-history-snapshot":
+            snapshot = item.get("snapshot")
+            backups = snapshot.get("trackedFileBackups") if isinstance(snapshot, dict) else None
+            paths = sorted(backups.keys()) if isinstance(backups, dict) else []
+            snapshot_message_id = snapshot.get("messageId") if isinstance(snapshot, dict) else None
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="file_history_snapshot",
+                    timestamp=timestamp,
+                    source_message_provider_id=(snapshot_message_id if isinstance(snapshot_message_id, str) else None),
+                    payload={
+                        "is_snapshot_update": bool(item.get("isSnapshotUpdate")),
+                        "file_count": len(paths),
+                        "paths": paths,
+                    },
+                )
+            )
+            continue
 
         # ``progress`` records are claude-code hook lifecycle events
         # (`hookEvent`, `hookName`, `command`) carried alongside the
@@ -810,6 +873,7 @@ def _parse_code_records(
         reported_duration_ms=total_duration if saw_duration_field else None,
         models_used=sorted(models),
         working_directories=sorted(cwds),
+        git_branch=git_branch,
     )
 
 

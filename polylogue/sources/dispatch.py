@@ -524,6 +524,7 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "reported_duration_ms": reported_duration_ms,
                 "models_used": sorted({*existing.models_used, *session.models_used}),
                 "working_directories": sorted({*existing.working_directories, *session.working_directories}),
+                "git_branch": existing.git_branch or session.git_branch,
                 "ingest_flags": sorted({*existing.ingest_flags, *session.ingest_flags}),
             }
         )

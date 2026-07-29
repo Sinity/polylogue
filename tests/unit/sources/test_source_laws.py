@@ -1619,6 +1619,38 @@ def test_claude_code_stream_payload_splits_contiguous_session_groups(
     ]
 
 
+def test_claude_code_stream_chunk_merge_preserves_git_branch_from_either_chunk() -> None:
+    """polylogue-cijx.3: a session split across non-contiguous JSONL chunks
+    (interleaved by another session's records) must not lose typed
+    ``gitBranch`` evidence that only appears in a later chunk -- the merge in
+    ``merge_parsed_session_chunks`` must fill the field from whichever chunk
+    carries it, not silently keep the first chunk's (possibly empty) value.
+    """
+    records: Iterable[object] = iter(
+        [
+            {
+                "type": "user",
+                "sessionId": "session-1",
+                "uuid": "u-1",
+                "message": {"role": "user", "content": "one"},
+            },
+            {"type": "user", "sessionId": "session-2", "uuid": "u-2", "message": {"role": "user", "content": "x"}},
+            {
+                "type": "assistant",
+                "sessionId": "session-1",
+                "uuid": "a-1",
+                "gitBranch": "feature/perf/pipeline-quality-consolidation",
+                "message": {"role": "assistant", "content": "two"},
+            },
+        ]
+    )
+
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "fallback")
+
+    session_one = next(session for session in sessions if session.provider_session_id == "session-1")
+    assert session_one.git_branch == "feature/perf/pipeline-quality-consolidation"
+
+
 def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
