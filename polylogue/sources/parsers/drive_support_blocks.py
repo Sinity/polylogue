@@ -6,7 +6,7 @@ from polylogue.archive.viewport.viewports import ContentBlock
 from polylogue.core.enums import BlockType
 from polylogue.core.json import JSONDocument, json_document, json_document_list
 
-from .base import ParsedContentBlock
+from .base import ParsedContentBlock, ParsedSessionEvent
 
 _SUCCESS_OUTCOMES = frozenset({"ok", "success", "succeeded", "completed", "outcome_ok"})
 _ERROR_OUTCOME_MARKERS = ("error", "fail", "timeout", "deadline", "cancel", "blocked")
@@ -109,4 +109,67 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
     return parsed
 
 
-__all__ = ["parsed_blocks_from_meta", "viewport_block_payload"]
+# ``metadata_out`` above (a merge of ``viewport_block_payload``'s captured
+# ``block.raw`` plus ``url``) ends up on ``ParsedContentBlock.metadata``, but
+# the ``blocks`` table has no metadata column and the write path only ever
+# reads the ``language`` key back out of it
+# (``storage/sqlite/archive_tiers/write.py:_block_language``) -- everything
+# else is silently dropped at write time (bd polylogue-9x22). For Gemini
+# THINKING blocks specifically, ``raw`` carries ``thinkingBudget`` and
+# ``thoughtSignatures`` (``sources/providers/gemini_message.py:
+# extract_content_blocks`` / ``_thought_raw``) -- Gemini's own reasoning-
+# continuity protocol fields that must be replayed back verbatim for
+# multi-turn function calling with thinking enabled, distinct from anything
+# a typed column already captures. Route that through ``session_events``
+# instead, following the same precedent as ``hermes_state.py``'s
+# ``hermes_reasoning_evidence`` and ``claude/common.py``'s
+# ``claude_ai_web_tool_evidence`` (both polylogue-9x22 fast-follows of
+# polylogue-5o05's ``session_events``-not-a-blob-column pattern). The
+# ``isThought`` marker itself is excluded -- it's already redundant with the
+# typed THINKING block type.
+#
+# The remaining ``raw`` shapes this function sees in practice --
+# ``{"role": ...}`` on plain TEXT blocks (duplicates the already-typed
+# message role), and ``inlineData``/``fileData``/``executableCode`` raw
+# wrappers on FILE/CODE blocks (duplicate the mime_type/url/text already
+# projected onto the typed block, and the ``ParsedAttachment`` these
+# messages separately emit) -- are DELIBERATELY DROPPED here: no field in
+# them is not already available in typed form elsewhere. Re-audit if a
+# future corpus pass finds a divergent value in one of those wrapper dicts.
+_GEMINI_THINKING_EVIDENCE_KEYS = frozenset({"thinkingBudget", "thoughtSignatures"})
+
+
+def session_events_from_meta_blocks(
+    blocks: object,
+    *,
+    source_message_provider_id: str | None,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    """Project Gemini reasoning-continuity evidence dropped by ``parsed_blocks_from_meta``.
+
+    One event per THINKING block whose metadata carries thinking-budget or
+    thought-signature evidence; everything else stays block-scoped-only (see
+    the disposition note above ``parsed_blocks_from_meta``).
+    """
+
+    events: list[ParsedSessionEvent] = []
+    for block_index, block in enumerate(json_document_list(blocks)):
+        block_type = block.get("type")
+        if block_type != "thinking":
+            continue
+        metadata = json_document(block.get("metadata"))
+        evidence = {key: value for key, value in metadata.items() if key in _GEMINI_THINKING_EVIDENCE_KEYS}
+        if not evidence:
+            continue
+        events.append(
+            ParsedSessionEvent(
+                event_type="gemini_thinking_evidence",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload={"block_index": block_index, **evidence},
+            )
+        )
+    return events
+
+
+__all__ = ["parsed_blocks_from_meta", "session_events_from_meta_blocks", "viewport_block_payload"]

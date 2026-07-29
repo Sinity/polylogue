@@ -37,6 +37,9 @@ from .drive_support import (
     select_timestamp as _select_timestamp,
 )
 from .drive_support import (
+    session_events_from_meta_blocks as _session_events_from_meta_blocks,
+)
+from .drive_support import (
     viewport_block_payload as _viewport_block_payload,
 )
 
@@ -325,6 +328,14 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
 
         if not text and not chunk_attachments and not content_block_payloads:
             continue
+
+        session_events.extend(
+            _session_events_from_meta_blocks(
+                content_block_payloads,
+                source_message_provider_id=msg_id,
+                timestamp=message_timestamp,
+            )
+        )
 
         messages.append(
             ParsedMessage(
