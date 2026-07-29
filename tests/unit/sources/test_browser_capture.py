@@ -916,10 +916,18 @@ async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
             """
         ).fetchall()
 
+    # A direct/GDPR export always outranks browser-capture-only content,
+    # order-independently (`browser_capture_precedence` in
+    # `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py`, added by
+    # #3179 / polylogue-z1c6): a browser capture exists to backfill a session
+    # before its paired direct export shows up, never to shadow the export
+    # once it arrives. See the sibling order-independence proof
+    # `test_archive_tiers_archive_facade_export_vs_native_precedence_is_order_independent`
+    # in `tests/unit/storage/test_archive_tiers_archive.py`.
     assert len(rows) == 1
     assert rows[0]["session_id"] == "chatgpt-export:conv-123"
     assert rows[0]["native_id"] == "conv-123"
-    assert rows[0]["title"] == "Browser title"
+    assert rows[0]["title"] == "GDPR title"
     assert rows[0]["message_count"] == 2
 
 
@@ -1002,10 +1010,13 @@ async def test_browser_capture_raw_payload_coalesces_with_claude_ai_export(
             """
         ).fetchall()
 
+    # Same direct-export-always-wins rule as the ChatGPT coalescing test
+    # above: the GDPR/direct export outranks the browser-capture-only title,
+    # order-independently.
     assert len(rows) == 1
     assert rows[0]["session_id"] == "claude-ai-export:claude-conv-123"
     assert rows[0]["native_id"] == "claude-conv-123"
-    assert rows[0]["title"] == "Claude browser title"
+    assert rows[0]["title"] == "Claude GDPR title"
     assert rows[0]["message_count"] == 2
 
 
