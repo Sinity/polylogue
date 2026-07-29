@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import TypeAlias
+from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
@@ -15,6 +15,14 @@ from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provi
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
+
+if TYPE_CHECKING:
+    # ``polylogue.sources.live`` is a heavy package (pipeline/ingest_batch,
+    # which imports back into ``sources.dispatch`` -> ``sources.parsers.claude``)
+    # -- a module-level runtime import here is a circular import. This type is
+    # only used for an optional parameter annotation; the value is never
+    # constructed or introspected by name at runtime in this module.
+    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
 
 from ..base import (
     ParsedContentBlock,
@@ -1066,8 +1074,78 @@ def _parse_code_records(
     )
 
 
-def parse_code(payload: Sequence[object], fallback_id: str) -> ParsedSession:
-    return _parse_code_records(payload, fallback_id)
+def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinResult) -> ParsedSession:
+    """Attach acquired ``tool-results/`` sidecar content to its owning blocks.
+
+    Never adds a message, never touches session identity/count (polylogue-rujy
+    AC1): a genuinely-truncated sidecar's full text replaces its
+    ``tool_result`` block's preview text in place; every sidecar (matched or
+    debt) is recorded as a bounded ``claude_tool_result_sidecar`` session
+    event -- never the raw bytes, which live in the (already unbounded) block
+    text field once replaced, not in this structured fact.
+    """
+    if not join_result.matched and not join_result.debt:
+        return session
+
+    replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
+    messages = session.messages
+    if replacements:
+        updated_messages: list[ParsedMessage] = []
+        for message in session.messages:
+            if not any(
+                block.type is BlockType.TOOL_RESULT and block.tool_id in replacements for block in message.blocks
+            ):
+                updated_messages.append(message)
+                continue
+            new_blocks = [
+                block.model_copy(update={"text": replacements[block.tool_id].full_text})
+                if block.type is BlockType.TOOL_RESULT and block.tool_id in replacements
+                else block
+                for block in message.blocks
+            ]
+            updated_messages.append(message.model_copy(update={"blocks": new_blocks}))
+        messages = updated_messages
+
+    events = list(session.session_events)
+    for match in join_result.matched:
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_tool_result_sidecar",
+                payload={
+                    "acquisition_status": "matched",
+                    "tool_use_id": match.tool_use_id,
+                    "filename": match.filename,
+                    "byte_size": match.byte_size,
+                    "content_hash": match.content_hash,
+                    "content_replaced": match.was_truncated,
+                },
+            )
+        )
+    for debt in join_result.debt:
+        events.append(
+            ParsedSessionEvent(
+                event_type="claude_tool_result_sidecar",
+                payload={
+                    "acquisition_status": "debt",
+                    "filename": debt.filename,
+                    "byte_size": debt.byte_size,
+                    "reason": debt.reason,
+                },
+            )
+        )
+    return session.model_copy(update={"messages": messages, "session_events": events})
+
+
+def parse_code(
+    payload: Sequence[object],
+    fallback_id: str,
+    *,
+    tool_result_sidecars: SidecarJoinResult | None = None,
+) -> ParsedSession:
+    session = _parse_code_records(payload, fallback_id)
+    if tool_result_sidecars is not None:
+        session = apply_tool_result_sidecars(session, tool_result_sidecars)
+    return session
 
 
 def _background_notification_from_event(
@@ -1138,13 +1216,22 @@ def parse_code_stream(
     *,
     record_index_start: int = 0,
     seen_record_uuids: set[str] | None = None,
+    tool_result_sidecars: SidecarJoinResult | None = None,
 ) -> ParsedSession:
-    return _parse_code_records(
+    session = _parse_code_records(
         records,
         fallback_id,
         record_index_start=record_index_start,
         seen_record_uuids=seen_record_uuids,
     )
+    if tool_result_sidecars is not None:
+        session = apply_tool_result_sidecars(session, tool_result_sidecars)
+    return session
 
 
-__all__ = ["parse_code", "parse_code_stream", "reconcile_code_session_chunks"]
+__all__ = [
+    "apply_tool_result_sidecars",
+    "parse_code",
+    "parse_code_stream",
+    "reconcile_code_session_chunks",
+]
