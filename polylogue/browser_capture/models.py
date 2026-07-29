@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import is_json_document, json_document
 
 BROWSER_CAPTURE_KIND: Literal["browser_llm_session"] = "browser_llm_session"
@@ -42,6 +42,52 @@ class BrowserCaptureAttachment(BaseModel):
         return dict(json_document(value))
 
 
+class BrowserCaptureBlock(BaseModel):
+    """A single structured content block observed within a browser-captured turn.
+
+    Deliberately modeled on ``ParsedContentBlock``
+    (``polylogue/sources/parsers/base_models.py``) so a capture adapter that
+    has observed real structure (a ChatGPT ``mapping`` node's ``recipient`` /
+    ``content_type``, a Claude API tool_use/tool_result segment, ...) can
+    carry that structure across the wire verbatim instead of flattening it
+    into ``BrowserCaptureTurn.text`` prose. The parser
+    (``polylogue/sources/parsers/browser_capture.py``) converts these 1:1 into
+    ``ParsedContentBlock`` rows.
+
+    Deliberate divergence from ``ParsedContentBlock``: no ``web_constructs``
+    field. Web-construct extraction (citations, canvases, ...) is a derived
+    enrichment computed by the archive-side parsers from raw segment
+    dictionaries (see ``sources/parsers/claude/common.py::_claude_content_blocks``);
+    it is not itself observable at the wire boundary, so there is nothing for
+    the extension to populate here.
+    """
+
+    type: BlockType
+    text: str | None = None
+    tool_name: str | None = None
+    tool_id: str | None = None
+    tool_input: dict[str, object] | None = None
+    media_type: str | None = None
+    metadata: dict[str, object] | None = None
+    # Structured tool-result outcome, mirrored from ParsedContentBlock: read
+    # from the provider's own outcome fields when the capture adapter observed
+    # them, never regex-guessed from rendered text.
+    is_error: bool | None = None
+    exit_code: int | None = None
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def coerce_type(cls, value: object) -> BlockType:
+        return BlockType.from_string(str(value))
+
+    @field_validator("tool_input", "metadata", mode="before")
+    @classmethod
+    def coerce_object_field(cls, value: object) -> dict[str, object] | None:
+        if value is None:
+            return None
+        return dict(json_document(value))
+
+
 class BrowserCaptureTurn(BaseModel):
     """Provider-neutral turn observed from the page."""
 
@@ -52,6 +98,12 @@ class BrowserCaptureTurn(BaseModel):
     ordinal: int = 0
     parent_turn_id: str | None = None
     attachments: list[BrowserCaptureAttachment] = Field(default_factory=list)
+    # Typed structured content observed for this turn (tool_use/tool_result/
+    # thinking/code/...). ``text`` remains a rendering of the turn -- kept for
+    # search/display and for capture adapters that have not been upgraded to
+    # emit structure yet -- but it is no longer the only content channel a
+    # tool-shaped turn can populate (polylogue-ah21).
+    blocks: list[BrowserCaptureBlock] = Field(default_factory=list)
     provider_meta: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("provider_meta", mode="before")
@@ -68,8 +120,8 @@ class BrowserCaptureTurn(BaseModel):
 
     @model_validator(mode="after")
     def require_content(self) -> BrowserCaptureTurn:
-        if (self.text is None or not self.text.strip()) and not self.attachments:
-            raise ValueError("browser capture turn must include text or attachments")
+        if (self.text is None or not self.text.strip()) and not self.attachments and not self.blocks:
+            raise ValueError("browser capture turn must include text, blocks, or attachments")
         return self
 
 
@@ -657,6 +709,7 @@ __all__ = [
     "BrowserBackfillCheckpointPayload",
     "BrowserBackfillCheckpointRecord",
     "BrowserBackfillCheckpointRequest",
+    "BrowserCaptureBlock",
     "BrowserActionApprovalDecisionRequest",
     "BrowserActionApprovalReason",
     "BrowserActionAttachment",

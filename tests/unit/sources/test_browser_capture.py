@@ -1092,3 +1092,249 @@ def test_native_payload_delegation_without_envelope_attachments_is_unchanged() -
 
     assert len(parsed) == 1
     assert parsed[0].attachments == []
+
+
+# --- polylogue-ah21: BrowserCaptureTurn typed blocks channel -----------------
+#
+# These tests drive the real capture -> archive route
+# (BrowserCaptureEnvelope.model_validate -> parse_payload/parse ->
+# ParsedSession/ParsedMessage -> Polylogue.parse_sources -> index.db) on
+# synthesized wire payloads shaped like what browser-extension/src/backfill/
+# providers.js's ChatGptBackfillAdapter.normalizeCapture now emits for a
+# code-interpreter turn pair: a tool_use turn whose own provider_turn_id is
+# the tool_id, and a tool_result turn whose parent_turn_id (the call node's
+# id in the ChatGPT mapping tree) is echoed back as its tool_id. Before this
+# change BrowserCaptureTurn had no blocks field at all, so this structure had
+# nowhere to go except turn.text prose -- every one of these assertions fails
+# if BrowserCaptureTurn.blocks or the parser's projection of it is removed.
+
+
+def test_browser_capture_turn_accepts_blocks_only_content() -> None:
+    """A tool turn with only structured blocks and no prose text is valid.
+
+    Regression guard for require_content: before adding `blocks`, a turn with
+    no `text` and no `attachments` always raised -- there was no other
+    channel for structure to arrive through.
+    """
+    from polylogue.browser_capture.models import BrowserCaptureTurn
+
+    turn = BrowserCaptureTurn.model_validate(
+        {
+            "provider_turn_id": "call-1",
+            "role": "tool",
+            "blocks": [{"type": "tool_use", "tool_name": "python", "tool_id": "call-1", "tool_input": {"code": "1+1"}}],
+        }
+    )
+    assert turn.text is None
+    assert turn.blocks[0].type.value == "tool_use"
+
+
+def test_browser_capture_turn_rejects_truly_empty_content() -> None:
+    from pydantic import ValidationError
+
+    from polylogue.browser_capture.models import BrowserCaptureTurn
+
+    with pytest.raises(ValidationError):
+        BrowserCaptureTurn.model_validate({"provider_turn_id": "empty-1", "role": "assistant"})
+
+
+def _chatgpt_code_interpreter_pair_payload(*, compact: bool) -> dict[str, object]:
+    """A ChatGPT capture whose two tool turns arrive with typed blocks.
+
+    Mirrors the compact/backfill wire shape: the capture never carries a
+    trusted native `raw_provider_payload` mapping (either because it is the
+    size-bounded compact projection, or because there simply is none), so
+    the parser must build session structure from `session.turns` alone -- the
+    exact path that used to flatten tool call/result turns into text.
+    """
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["provider_meta"] = {"capture_fidelity": "native_compact"} if compact else {}
+    session["turns"] = [
+        {"provider_turn_id": "u1", "role": "user", "text": "Compute 6 * 7", "ordinal": 0},
+        {
+            "provider_turn_id": "call-1",
+            "role": "tool",
+            "ordinal": 1,
+            "parent_turn_id": "u1",
+            "blocks": [
+                {
+                    "type": "tool_use",
+                    "tool_name": "python",
+                    "tool_id": "call-1",
+                    "tool_input": {"code": "6 * 7"},
+                }
+            ],
+        },
+        {
+            "provider_turn_id": "result-1",
+            "role": "tool",
+            "ordinal": 2,
+            "parent_turn_id": "call-1",
+            "blocks": [
+                {
+                    "type": "tool_result",
+                    "tool_id": "call-1",
+                    "text": "42",
+                }
+            ],
+        },
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "text": "6 * 7 = 42",
+            "ordinal": 3,
+            "parent_turn_id": "result-1",
+        },
+    ]
+    if compact:
+        payload["provider_meta"] = {"capture_fidelity": "native_compact"}
+        payload["raw_provider_payload"] = {
+            "polylogue_bridge_projection": "chatgpt-native-compact-v1",
+            "mapping": {"untrusted": {"id": "untrusted", "message": None}},
+        }
+    return payload
+
+
+@pytest.mark.parametrize("compact", [False, True])
+def test_browser_capture_tool_turn_blocks_land_as_typed_tool_use_and_tool_result(compact: bool) -> None:
+    payload = _chatgpt_code_interpreter_pair_payload(compact=compact)
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    session = parsed[0]
+    by_id = {message.provider_message_id: message for message in session.messages}
+    call_message = by_id["call-1"]
+    result_message = by_id["result-1"]
+
+    assert len(call_message.blocks) == 1
+    assert call_message.blocks[0].type.value == "tool_use"
+    assert call_message.blocks[0].tool_name == "python"
+    assert call_message.blocks[0].tool_id == "call-1"
+    assert call_message.blocks[0].tool_input == {"code": "6 * 7"}
+
+    assert len(result_message.blocks) == 1
+    assert result_message.blocks[0].type.value == "tool_result"
+    assert result_message.blocks[0].tool_id == "call-1"
+    assert result_message.blocks[0].text == "42"
+
+    # The regression signal named in polylogue-ah21: tool_use and tool_result
+    # counts (and pairing by tool_id) must be 1:1, not reconstructed prose.
+    tool_use_ids = [b.tool_id for m in session.messages for b in m.blocks if b.type.value == "tool_use"]
+    tool_result_ids = [b.tool_id for m in session.messages for b in m.blocks if b.type.value == "tool_result"]
+    assert tool_use_ids == ["call-1"]
+    assert tool_result_ids == ["call-1"]
+
+    # parent_turn_id survives into the archive's DAG-linking field for every
+    # turn on this path, not just the plain user/assistant ones.
+    assert call_message.parent_message_provider_id == "u1"
+    assert result_message.parent_message_provider_id == "call-1"
+    assert by_id["a1"].parent_message_provider_id == "result-1"
+
+    if compact:
+        assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
+        assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
+    else:
+        assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
+
+
+@pytest.mark.asyncio
+async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_ratio(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Full receiver -> parser -> materialize -> index.db round trip.
+
+    Proves the fix on the real production write path (write_capture_envelope
+    + Polylogue.parse_sources), not just the in-memory parser: the archive's
+    blocks table must show one tool_use row and one tool_result row sharing a
+    tool_id, matching the 1:1 pairing produced above.
+    """
+    payload = _chatgpt_code_interpreter_pair_payload(compact=True)
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    artifact = write_capture_envelope(envelope, spool_path=tmp_path / "browser-capture").path
+    config = get_config()
+    config.sources = [Source(name="inbox", path=artifact)]
+
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        await polylogue.parse_sources(config.sources)
+
+    with open_index_db(config.archive_root / "index.db") as conn:
+        rows = conn.execute(
+            "SELECT block_type, tool_id, tool_name, text FROM blocks "
+            "WHERE block_type IN ('tool_use', 'tool_result') ORDER BY position"
+        ).fetchall()
+
+    assert [dict(row) for row in rows] == [
+        {"block_type": "tool_use", "tool_id": "call-1", "tool_name": "python", "text": None},
+        {"block_type": "tool_result", "tool_id": "call-1", "tool_name": None, "text": "42"},
+    ]
+
+
+def test_browser_capture_claude_fallback_turn_blocks_produce_typed_tool_blocks() -> None:
+    """Same structural gap on the Claude fallback path (no native chat_messages payload)."""
+    payload = {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "provenance": {
+            "source_url": "https://claude.ai/chat/conv-99",
+            "captured_at": "2026-07-29T00:00:00+00:00",
+            "adapter_name": "claude-dom-v1",
+            "capture_mode": "snapshot",
+        },
+        "session": {
+            "provider": "claude-ai",
+            "provider_session_id": "conv-99",
+            "title": "Tool demo",
+            "turns": [
+                {"provider_turn_id": "u1", "role": "user", "text": "Run ls", "ordinal": 0},
+                {
+                    "provider_turn_id": "a1",
+                    "role": "assistant",
+                    "ordinal": 1,
+                    "parent_turn_id": "u1",
+                    "blocks": [
+                        {
+                            "type": "tool_use",
+                            "tool_name": "bash",
+                            "tool_id": "toolu_1",
+                            "tool_input": {"command": "ls"},
+                        }
+                    ],
+                },
+                {
+                    "provider_turn_id": "t1",
+                    "role": "tool",
+                    "ordinal": 2,
+                    "parent_turn_id": "a1",
+                    "blocks": [
+                        {
+                            "type": "tool_result",
+                            "tool_id": "toolu_1",
+                            "text": "file.txt",
+                            "is_error": False,
+                        }
+                    ],
+                },
+            ],
+        },
+    }
+
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
+
+    assert len(parsed) == 1
+    session = parsed[0]
+    by_id = {message.provider_message_id: message for message in session.messages}
+    assistant_message = by_id["a1"]
+    tool_message = by_id["t1"]
+
+    assert [block.type.value for block in assistant_message.blocks] == ["tool_use"]
+    assert assistant_message.blocks[0].tool_id == "toolu_1"
+    assert assistant_message.blocks[0].tool_name == "bash"
+
+    assert [block.type.value for block in tool_message.blocks] == ["tool_result"]
+    assert tool_message.blocks[0].tool_id == "toolu_1"
+    assert tool_message.blocks[0].is_error is False
+    assert tool_message.parent_message_provider_id == "a1"
