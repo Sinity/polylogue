@@ -53,6 +53,12 @@ class Message(MessageRuntimeMixin, BaseModel):
     cache_write_tokens: int = 0
     duration_ms: int = 0
     model_name: str | None = None
+    # Provider-reported terminal signal for this assistant turn (storage:
+    # messages.stop_reason, e.g. Anthropic's ``end_turn``/``tool_use``/
+    # ``max_tokens``/``stop_sequence``/``pause_turn``). ``None`` means
+    # unreported/not-applicable/not-yet-threaded by the read path, not
+    # "ended normally" -- do not default it to a happy-path value.
+    stop_reason: str | None = None
 
     @field_validator("role", mode="before")
     @classmethod

@@ -110,6 +110,7 @@ def message_from_record(
                 "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
                 "tool_result_is_error": b.tool_result_is_error,
                 "tool_result_exit_code": b.tool_result_exit_code,
+                "tool_result_outcome_unknown_reason": b.tool_result_outcome_unknown_reason,
             }
         )
 
@@ -139,6 +140,7 @@ def message_from_record(
         cache_read_tokens=record.cache_read_tokens,
         cache_write_tokens=record.cache_write_tokens,
         model_name=record.model_name,
+        stop_reason=record.stop_reason,
     )
 
 
