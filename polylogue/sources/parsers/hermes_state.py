@@ -653,6 +653,7 @@ def _parse_session_row(
         parsed = _parse_message_row(message_row, position=len(messages), fallback_model=model_name)
         messages.append(parsed)
         state_events.append(_message_state_event(message_row, parsed, message_columns=message_columns))
+        state_events.extend(_reasoning_evidence_events(message_row, parsed))
     messages = _mark_active_leaf(messages)
     parent_raw_id = _optional_text(_row_value(row, "parent_session_id"))
     parent_id = _qualified_session_id(parent_raw_id, profile_key) if parent_raw_id else None
@@ -864,6 +865,34 @@ def _reasoning_metadata(row: sqlite3.Row) -> dict[str, object]:
         if parsed is not None:
             metadata[key] = parsed
     return metadata
+
+
+# `_reasoning_metadata` above merges its fields into the THINKING block's
+# `ParsedContentBlock.metadata` as an in-process carrier (same shape as
+# `claude/common.py`'s `_claude_ai_web_tool_evidence`), but the `blocks`
+# table has no metadata column and the write path
+# (`storage/sqlite/archive_tiers/write.py:_block_language`) reads exactly one
+# key back out of it -- `language`. Without this projection step,
+# reasoning_details/codex_reasoning_items/codex_message_items -- Hermes's
+# captured Codex-native reasoning-trace evidence for reasoning-backed
+# messages -- was silently dropped at write time despite parsing correctly
+# (bd polylogue-9x22). Route it through `session_events` instead, keyed to
+# the message via `source_message_provider_id`, following the same
+# `session_events`-not-a-blob-column precedent as `hermes_spans.py`'s
+# `hermes_tool_availability_span` (polylogue-5o05) and `claude/common.py`'s
+# `claude_ai_web_tool_evidence`.
+def _reasoning_evidence_events(row: sqlite3.Row, message: ParsedMessage) -> list[ParsedSessionEvent]:
+    evidence = _reasoning_metadata(row)
+    if not evidence:
+        return []
+    return [
+        ParsedSessionEvent(
+            event_type="hermes_reasoning_evidence",
+            timestamp=message.timestamp,
+            source_message_provider_id=message.provider_message_id,
+            payload=evidence,
+        )
+    ]
 
 
 def _decode_content(value: object) -> object:
