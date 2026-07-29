@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -322,28 +323,61 @@ def open_in_browser(
     env.ui.console.print(f"Opened in browser: {temp_path}")
 
 
+#: Clipboard writers by session type, tried in order until one succeeds.
+#:
+#: ``wl-copy`` (wl-clipboard) is the Wayland native writer and must be tried
+#: FIRST on a Wayland session. XWayland usually sets ``DISPLAY`` as well, so an
+#: X11 tool can be present and exit 0 while writing to the X selection, which
+#: compositors do not necessarily mirror back to the Wayland clipboard -- a
+#: silent wrong-clipboard write rather than an honest failure. On a genuine X11
+#: session ``wl-copy`` exits non-zero (no ``WAYLAND_DISPLAY``) and the loop
+#: falls through to xclip/xsel, so ordering costs nothing there.
+_WAYLAND_CLIPBOARD_CMDS: tuple[tuple[str, ...], ...] = (("wl-copy",),)
+_PORTABLE_CLIPBOARD_CMDS: tuple[tuple[str, ...], ...] = (
+    ("xclip", "-selection", "clipboard"),
+    ("xsel", "--clipboard", "--input"),
+    ("pbcopy",),  # macOS
+    ("clip",),  # Windows
+)
+
+
+def _clipboard_commands() -> tuple[tuple[str, ...], ...]:
+    """Candidate clipboard writers, most-appropriate-first for this session."""
+
+    if os.environ.get("WAYLAND_DISPLAY"):
+        return _WAYLAND_CLIPBOARD_CMDS + _PORTABLE_CLIPBOARD_CMDS
+    return _PORTABLE_CLIPBOARD_CMDS + _WAYLAND_CLIPBOARD_CMDS
+
+
 def copy_to_clipboard(env: AppEnv, content: str) -> None:
-    clipboard_cmds = [
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "--clipboard", "--input"],
-        ["pbcopy"],
-        ["clip"],
-    ]
+    """Write ``content`` to the system clipboard, or fail loudly.
 
-    for cmd in clipboard_cmds:
+    Raises ``click.ClickException`` when no writer works. Delivery that
+    silently discards its payload is worse than an error: ``--to clipboard``
+    exiting 0 with the content nowhere reads as success.
+    """
+
+    attempted: list[str] = []
+    for cmd in _clipboard_commands():
         try:
-            subprocess.run(
-                cmd,
-                input=content.encode("utf-8"),
-                capture_output=True,
-                check=True,
-            )
-            env.ui.console.print("Copied to clipboard.")
-            return
-        except (subprocess.CalledProcessError, FileNotFoundError):
+            subprocess.run(list(cmd), input=content.encode("utf-8"), capture_output=True, check=True)
+        except FileNotFoundError:
             continue
+        except subprocess.CalledProcessError:
+            attempted.append(cmd[0])
+            continue
+        env.ui.console.print(f"Copied to clipboard ({cmd[0]}).")
+        return
 
-    click.echo("Could not copy to clipboard (no clipboard tool found).", err=True)
+    if attempted:
+        raise click.ClickException(
+            f"Clipboard write failed: {', '.join(attempted)} present but returned an error. "
+            "Use --to file --out <path> to capture the output instead."
+        )
+    raise click.ClickException(
+        "No clipboard tool found. Install wl-clipboard (Wayland) or xclip/xsel (X11), "
+        "or use --to file --out <path>."
+    )
 
 
 def open_result(
