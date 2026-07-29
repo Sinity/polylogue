@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from polylogue.paths._roots import (
     GEMINI_DRIVE_FOLDER,
-    active_index_db_path,
     antigravity_path,
     archive_file_set_index_available_for_paths,
     archive_root,
@@ -43,7 +42,6 @@ from polylogue.paths._roots import (
 
 __all__ = [
     "GEMINI_DRIVE_FOLDER",
-    "active_index_db_path",
     "antigravity_path",
     "archive_root",
     "blob_store_root",

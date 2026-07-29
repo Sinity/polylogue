@@ -42,7 +42,8 @@ from pathlib import Path
 from typing import Final
 
 from polylogue.config import load_polylogue_config
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # Hard server-side cap on requested result count. A pathological client
@@ -344,12 +345,11 @@ def _clamp_limit(requested: int | None) -> int:
     return requested
 
 
-def _archive_index_path_for() -> str | None:
-    # active_index_db_path() always names "index.db" (it raises otherwise),
-    # so the old sibling_index_db(path, require_exists=True) call was
-    # provably an identity-plus-existence-check on path itself.
-    path = active_index_db_path()
-    return str(path) if path.exists() else None
+def _archive_index_path_for(dbf: Path) -> str | None:
+    # dbf always names "index.db" (resolve_active_index_path raises
+    # otherwise), so the old sibling_index_db(path, require_exists=True) call
+    # was provably an identity-plus-existence-check on path itself.
+    return str(dbf) if dbf.exists() else None
 
 
 def _build_archive_similar_payload(
@@ -478,8 +478,8 @@ def build_similar_payload(
         voyage_api_key=cfg.voyage_api_key,
     )
 
-    dbf = active_index_db_path()
-    index_db = _archive_index_path_for()
+    dbf = resolve_active_index_path(archive_root())
+    index_db = _archive_index_path_for(dbf)
     if index_db is not None:
         return _build_archive_similar_payload(
             index_db,

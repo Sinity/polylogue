@@ -28,12 +28,13 @@ from polylogue.core.evidence_value import (
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.refs import ObjectRef
 from polylogue.daemon.fts_status import fts_readiness_info
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
 from polylogue.readiness.capability import (
     STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S,
     normalize_raw_frontier_status_payload,
     unknown_raw_frontier_integrity_projection,
 )
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
@@ -231,7 +232,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         browser_capture_status_public_payload,
     )
 
-    dbf = active_index_db_path()
+    dbf = resolve_active_index_path(archive_root())
     wal = dbf.with_suffix(".db-wal")
     fts_payload: dict[str, object] = {}
     if dbf.exists():

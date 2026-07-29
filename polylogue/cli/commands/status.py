@@ -224,9 +224,10 @@ def _archive_index_path(db: Any) -> Any | None:
 def _active_status_db(db: Any) -> Any | None:
     if isinstance(db, Path):
         try:
-            from polylogue.paths import active_index_db_path
+            from polylogue.paths import archive_root as _resolve_archive_root
+            from polylogue.storage.archive_identity import resolve_active_index_path
 
-            active_db = active_index_db_path()
+            active_db = resolve_active_index_path(_resolve_archive_root())
             if active_db.exists():
                 return active_db
         except Exception as exc:

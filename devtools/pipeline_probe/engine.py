@@ -48,12 +48,13 @@ from polylogue.core.json import JSONDocument, is_json_document, loads, require_j
 from polylogue.core.metrics import PipelineMetrics
 from polylogue.core.sources import provider_from_origin
 from polylogue.demo.workspace import VerificationWorkspace, create_verification_workspace
-from polylogue.paths import active_index_db_path, blob_store_root
+from polylogue.paths import archive_root, blob_store_root
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.scenarios import (
     PipelineProbeInputMode,
     PipelineProbeRequest,
 )
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
@@ -538,7 +539,7 @@ def _resolve_archive_manifest(
             manifest["source_db"] = str(source_db.resolve())
         return manifest
 
-    resolved_source_db = (source_db or active_index_db_path()).resolve()
+    resolved_source_db = (source_db or resolve_active_index_path(archive_root())).resolve()
     resolved_source_blob_root = (source_blob_root or blob_store_root()).resolve()
     return _build_archive_manifest(
         source_db=resolved_source_db,

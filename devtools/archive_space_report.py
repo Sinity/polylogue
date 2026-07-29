@@ -9,7 +9,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.paths import active_index_db_path as default_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 REPORT_VERSION = 1
@@ -166,7 +167,9 @@ def _print_human(report: dict[str, object]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Report SQLite archive space by table/index using dbstat.")
-    parser.add_argument("--db", type=Path, default=default_db_path(), help="Archive database path.")
+    parser.add_argument(
+        "--db", type=Path, default=resolve_active_index_path(archive_root()), help="Archive database path."
+    )
     parser.add_argument("--limit", type=int, default=25, help="Largest object rows to include.")
     parser.add_argument("--objects", action="store_true", help="Run the dbstat table/index object scan.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")

@@ -18,7 +18,8 @@ from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli import cli
 from polylogue.core.refs import ObjectRef
 from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository
 
 _EVIDENCE = ObjectRef(kind="artifact", object_id="raw:test-evidence")
@@ -58,7 +59,7 @@ def _seeded_graph(workspace_env: dict[str, Path]) -> WorkEvidenceGraph:
     graph = _seed_graph()
 
     async def _seed() -> None:
-        async with SessionRepository(db_path=active_index_db_path()) as repository:
+        async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
             await repository.replace_work_evidence_graph(graph)
 
     run_coroutine_sync(_seed())
@@ -125,7 +126,7 @@ def test_yes_flag_persists_reconciled_graph(
     assert json.loads(result.output)["applied"] is True
 
     async def _read() -> WorkEvidenceGraph | None:
-        async with SessionRepository(db_path=active_index_db_path()) as repository:
+        async with SessionRepository(db_path=resolve_active_index_path(archive_root())) as repository:
             return await repository.get_work_evidence_graph(_seeded_graph.graph_id)
 
     stored = run_coroutine_sync(_read())

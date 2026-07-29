@@ -86,10 +86,11 @@ def run_correlation_view(
 def _print_otlp_evidence(env: AppEnv, session_id: str, output_format: str | None) -> None:
     """Print OTLP span evidence for a session, if available."""
     from polylogue.insights.otlp_correlation import get_session_tool_timing
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
     try:
-        timing = get_session_tool_timing(str(active_index_db_path()), session_id)
+        timing = get_session_tool_timing(str(resolve_active_index_path(archive_root())), session_id)
     except Exception as exc:
         # A failed query is not the same as an empty OTLP store — say which.
         # markup=False: raw exception text may contain [brackets] Rich would

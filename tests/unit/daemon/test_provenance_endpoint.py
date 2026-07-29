@@ -32,7 +32,8 @@ from polylogue.daemon.provenance import (
     _display_source_path,
     build_provenance_payload,
 )
-from polylogue.paths import active_index_db_path
+from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import get_blob_store
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]
 
 def _index_db() -> Path:
     """Native index.db path the provenance reader resolves to."""
-    return active_index_db_path()
+    return resolve_active_index_path(archive_root())
 
 
 def _seed_raw_blob(payload: bytes) -> str:

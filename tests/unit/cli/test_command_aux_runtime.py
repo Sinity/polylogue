@@ -28,7 +28,7 @@ def test_shell_completion_helpers_cover_csv_prefix_rows_and_trimming(tmp_path: P
     assert shell_completion_values._trim_help("short help") == "short help"
 
     db = tmp_path / "archive.sqlite"
-    with patch("polylogue.cli.shell_completion_values.active_index_db_path", return_value=db):
+    with patch("polylogue.cli.shell_completion_values.resolve_active_index_path", return_value=db):
         assert shell_completion_values._db_exists() is False
         db.write_text("", encoding="utf-8")
         assert shell_completion_values._db_exists() is True

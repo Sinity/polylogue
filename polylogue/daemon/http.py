@@ -1784,9 +1784,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # is exposed.
         if path == ["metrics"]:
             from polylogue.daemon.metrics import handle_metrics
-            from polylogue.paths import active_index_db_path
+            from polylogue.paths import archive_root
+            from polylogue.storage.archive_identity import resolve_active_index_path
 
-            handle_metrics(self, active_index_db_path())
+            handle_metrics(self, resolve_active_index_path(archive_root()))
             return
 
         required_scope: WebCredentialScope = "events" if path == ["api", "events"] else "read"
@@ -2681,11 +2682,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     def _handle_health(self) -> None:
         from polylogue.config import load_polylogue_config
-        from polylogue.paths import active_index_db_path
+        from polylogue.paths import archive_root
+        from polylogue.storage.archive_identity import resolve_active_index_path
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
         from polylogue.version import POLYLOGUE_VERSION, VERSION_INFO
 
-        dbp = active_index_db_path()
+        dbp = resolve_active_index_path(archive_root())
         db_size = dbp.stat().st_size if dbp.exists() else 0
         wal_size = 0
         wal = dbp.with_suffix(".db-wal")
@@ -5045,12 +5047,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
 
-        from polylogue.paths import active_index_db_path
+        from polylogue.paths import archive_root
+        from polylogue.storage.archive_identity import resolve_active_index_path
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
         from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
-        ops_db = active_index_db_path().with_name("ops.db")
+        ops_db = resolve_active_index_path(archive_root()).with_name("ops.db")
         with open_daemon_connection(ops_db) as conn:
             table_count = int(
                 conn.execute(
@@ -5099,9 +5102,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
             return
         body = self.rfile.read(content_length) if content_length > 0 else b""
-        from polylogue.paths import active_index_db_path
+        from polylogue.paths import archive_root
+        from polylogue.storage.archive_identity import resolve_active_index_path
 
-        ops_db = active_index_db_path().with_name("ops.db")
+        ops_db = resolve_active_index_path(archive_root()).with_name("ops.db")
 
         if signal == "traces":
             result = handle_traces(body, content_type, db_path=str(ops_db))

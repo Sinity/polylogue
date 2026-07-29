@@ -18,8 +18,8 @@ from devtools import repo_root
 from polylogue import Polylogue
 from polylogue.archive.query.spec import SessionQuerySpec, clamp_query_limit
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
-from polylogue.paths import active_index_db_path as default_db_path
 from polylogue.paths import archive_root
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     SessionListRowPayload,
@@ -345,7 +345,9 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     capture = subparsers.add_parser("capture", help="Capture an archive read-surface snapshot.")
-    capture.add_argument("--db", type=Path, default=default_db_path(), help="Archive database path.")
+    capture.add_argument(
+        "--db", type=Path, default=resolve_active_index_path(archive_root()), help="Archive database path."
+    )
     capture.add_argument("--out", type=Path, help="Path to write the captured JSON snapshot.")
     capture.add_argument("--limit", type=int, default=10, help="Session rows per list/search case.")
     capture.add_argument("--message-limit", type=int, default=8, help="Messages per selected session.")

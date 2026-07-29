@@ -4844,9 +4844,10 @@ def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
 
 
 def _open_archive_index_connection() -> sqlite3.Connection:
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    conn = sqlite3.connect(active_index_db_path())
+    conn = sqlite3.connect(resolve_active_index_path(archive_root()))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
@@ -5813,12 +5814,13 @@ def repair_session_insights(
     planner to honor :class:`MaintenanceScopeFilter.session_ids`.
     """
     from polylogue.api.archive import _rebuild_archive_session_insights
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root as _resolve_archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.insights.session.rebuild import refresh_session_insight_aggregates_sync
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
-        archive_root = archive_root_override or active_index_db_path().parent
+        archive_root = archive_root_override or resolve_active_index_path(_resolve_archive_root()).parent
         archive_context = (
             ArchiveStore.open_owned_inactive_generation(
                 archive_root,

@@ -419,7 +419,8 @@ def staleness_inventory(
 
     from contextlib import closing, nullcontext
 
-    from polylogue.paths import active_index_db_path
+    from polylogue.paths import archive_root
+    from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -438,7 +439,7 @@ def staleness_inventory(
     if isinstance(db_path, sqlite3.Connection):
         connection_manager = nullcontext(db_path)
     else:
-        resolved = Path(db_path) if db_path is not None else active_index_db_path()
+        resolved = Path(db_path) if db_path is not None else resolve_active_index_path(archive_root())
         if not resolved.exists():
             # No archive `index.db` yet (fresh archive before first ingest).
             # There is nothing to inventory; report an empty result rather
