@@ -69,6 +69,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
 | `devtools lab schema generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |
 | `devtools lab schema list` | Inspect committed provider schema package catalogs without presenting them as normal archive usage. |
+| `devtools lab schema parser-diff` | Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching is name-based, so read the parser before acting on a row. |
 | `devtools lab schema promote` | Turn reviewed schema evidence clusters into committed provider schema packages. |
 | `devtools lab schema roundtrip` | Close the schema inference-validation loop: package manifests must roundtrip through typed models, and every supported element schema must be reachable from the runtime registry. |
 | `devtools lab seed-receipt-compare` | Judge a seed-testmon or focused pytest run's resource receipt against a named baseline receipt (e.g. a prior incident) — confirms both runs share workload identity and terminated cleanly, then scores wall-time speedup and peak-PSS ceiling targets, naming a blocker and linked follow-up for any unmet target instead of silently dropping it. |
@@ -160,6 +161,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab schema explain` | Explain a committed package element schema with evidence and annotations. |
 | `devtools lab schema generate` | Generate provider schema packages and optional evidence clusters. |
 | `devtools lab schema list` | List committed schema packages, versions, and evidence manifests. |
+| `devtools lab schema parser-diff` | List observed provider wire keys that no parser references. |
 | `devtools lab schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools lab schema roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools lab seed-receipt-compare` | Compare two workload receipts for a clean, like-for-like seed/incident proof (polylogue-b054.1.1.3). |
