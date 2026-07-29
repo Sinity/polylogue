@@ -328,17 +328,39 @@ def _build_range_summary(
 def _range_timing(
     messages: Sequence[MessageSemanticFacts],
     message_range: MessageRange,
-) -> WorkEventTiming:
+) -> tuple[WorkEventTiming, bool]:
+    """Compute a range's temporal envelope, plus whether it required reordering.
+
+    Messages are visited in (position, variant_index) order, which is a tree
+    flattening order, not a wall-clock order: a regenerated/edited sibling
+    variant can carry a timestamp days apart from the position it was
+    flattened next to (see the mission note in
+    ``polylogue.archive.phase.extraction.extract_phases``). Taking the first
+    and last timestamps *in that traversal order* as start/end can therefore
+    invert start > end. Using min/max instead makes inversion impossible by
+    construction; the returned bool flags when min/max actually differed from
+    the naive first/last, so callers can record that an ordering assumption
+    was applied rather than silently reporting a clean monotonic range.
+    """
     timestamps = [
         message.timestamp for message in message_range.iter_messages(messages) if message.timestamp is not None
     ]
-    start_time = timestamps[0] if timestamps else None
-    end_time = timestamps[-1] if timestamps else None
-    return WorkEventTiming(
-        start_time=start_time,
-        end_time=end_time,
-        canonical_session_date=_canonical_event_date(start_time, end_time),
-        duration_ms=_duration_ms_between(start_time, end_time),
+    if not timestamps:
+        return (
+            WorkEventTiming(start_time=None, end_time=None, canonical_session_date=None, duration_ms=0),
+            False,
+        )
+    start_time = min(timestamps)
+    end_time = max(timestamps)
+    reordered = timestamps[0] != start_time or timestamps[-1] != end_time
+    return (
+        WorkEventTiming(
+            start_time=start_time,
+            end_time=end_time,
+            canonical_session_date=_canonical_event_date(start_time, end_time),
+            duration_ms=_duration_ms_between(start_time, end_time),
+        ),
+        reordered,
     )
 
 
@@ -370,25 +392,60 @@ def _merge_adjacent(events: list[WorkEvent]) -> list[WorkEvent]:
         if prev.heuristic_label != event.heuristic_label:
             merged.append(event)
             continue
+        # Merging two adjacent (index-contiguous) ranges is itself subject to
+        # the same traversal-order-vs-wall-clock mismatch as a single range
+        # (see _range_timing): `prev` precedes `event` by message index, not
+        # necessarily by timestamp, when either range contains a
+        # regenerated/edited variant. Take the envelope (min/max) of both
+        # rather than assuming prev.start_time <= event.end_time, so the
+        # merged event can't invert even if its inputs individually can't.
+        merged_start = _min_optional(prev.start_time, event.start_time)
+        merged_end = _max_optional(prev.end_time, event.end_time)
+        reordered = (
+            "chronological_reorder" in prev.evidence
+            or "chronological_reorder" in event.evidence
+            or merged_start != prev.start_time
+            or merged_end != event.end_time
+        )
         merged[-1] = WorkEvent(
             heuristic_label=prev.heuristic_label,
             start_index=prev.start_index,
             end_index=event.end_index,
-            start_time=prev.start_time or event.start_time,
-            end_time=event.end_time or prev.end_time,
+            start_time=merged_start,
+            end_time=merged_end,
             canonical_session_date=prev.canonical_session_date or event.canonical_session_date,
             duration_ms=(
-                _duration_ms_between(prev.start_time or event.start_time, event.end_time or prev.end_time)
-                if (prev.start_time or event.start_time) and (event.end_time or prev.end_time)
+                _duration_ms_between(merged_start, merged_end)
+                if merged_start and merged_end
                 else prev.duration_ms + event.duration_ms
             ),
             confidence=max(prev.confidence, event.confidence),
-            evidence=tuple(dict.fromkeys(prev.evidence + event.evidence)),
+            evidence=tuple(
+                dict.fromkeys(
+                    (*prev.evidence, *event.evidence, *(("chronological_reorder",) if reordered else ())),
+                ),
+            ),
             file_paths=tuple(dict.fromkeys(prev.file_paths + event.file_paths)),
             tools_used=tuple(dict.fromkeys(prev.tools_used + event.tools_used)),
             summary=prev.summary,
         )
     return merged
+
+
+def _min_optional(left: datetime | None, right: datetime | None) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return min(left, right)
+
+
+def _max_optional(left: datetime | None, right: datetime | None) -> datetime | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
 
 
 def extract_work_events(
@@ -409,8 +466,9 @@ def extract_work_events(
         signals = _collect_range_signals(messages, message_range)
         classified = _classify_range(signals)
         artifacts = _collect_range_artifacts(messages, message_range)
-        timing = _range_timing(messages, message_range)
+        timing, reordered = _range_timing(messages, message_range)
         summary = _build_range_summary(messages, message_range, fallback=classified.heuristic_label)
+        evidence = (*classified.evidence, "chronological_reorder") if reordered else classified.evidence
 
         events.append(
             WorkEvent(
@@ -422,7 +480,7 @@ def extract_work_events(
                 canonical_session_date=timing.canonical_session_date,
                 duration_ms=timing.duration_ms,
                 confidence=classified.confidence,
-                evidence=classified.evidence,
+                evidence=evidence,
                 file_paths=artifacts.file_paths,
                 tools_used=artifacts.tools_used,
                 summary=summary,
