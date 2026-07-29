@@ -58,6 +58,10 @@ def _copy_required_tree(source_root: Path, scratch: Path) -> None:
     shutil.copytree(source_root / "polylogue" / "core", scratch / "polylogue" / "core")
     for relative in (
         Path("polylogue/__init__.py"),
+        # polylogue/__init__.py unconditionally imports this before any
+        # sqlite3 import (must run first to swap in a modern bundled
+        # SQLite); omitting it breaks collection of every copied test.
+        Path("polylogue/_sqlite_compat.py"),
         _TEST,
         _UNRELATED_TEST,
         Path("devtools/__init__.py"),
@@ -83,7 +87,26 @@ def _pytest_env(scratch: Path, name: str) -> dict[str, str]:
 
 def _run_pytest(scratch: Path, *, name: str, args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "devtools.pytest_progress_plugin", *args],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "devtools.pytest_progress_plugin",
+            # The scratch tree deliberately omits pyproject.toml (a disposable
+            # copy of only the files this proof needs), so pytest-randomly's
+            # default random ordering is uncontrolled here. That randomness
+            # is real: two trivial same-file tests whose production-module
+            # coverage happens to fingerprint identically can, depending on
+            # which runs first, leave one test's file_fp edge unrecorded --
+            # not a testmon defect, just order nondeterminism this proof
+            # must not have. Force a fixed order so the seed graph (and the
+            # dependency-edge assertions that follow) are reproducible.
+            "-p",
+            "no:randomly",
+            *args,
+        ],
         cwd=scratch,
         env=_pytest_env(scratch, name),
         text=True,
