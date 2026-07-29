@@ -705,7 +705,6 @@ async def _tools(
         )
         kind = "tool_observed_event_counts"
         detail = "tool_finished_observed_events"
-        count_key = "event_count"
     elif basis == "actions":
         rows = await run_archive_read(
             env.config.archive_root,
@@ -722,7 +721,6 @@ async def _tools(
         )
         kind = "tool_action_evidence_counts"
         detail = "canonical_action_evidence_counts"
-        count_key = "call_count"
     else:
         rows = await run_archive_read(
             env.config.archive_root,
@@ -735,7 +733,6 @@ async def _tools(
         )
         kind = "tool_call_counts"
         detail = "tool_use_block_call_counts"
-        count_key = "call_count"
     if output_format == "json":
         payload = payload_for(
             rows=rows,
@@ -774,23 +771,29 @@ async def _tools(
     env.ui.console.print(header)
     env.ui.console.print("-" * len(header))
     for row in rows:
-        source_name = str(row["source_name"])
-        tool_name = str(row["normalized_tool_name"])
-        action_kind_value = str(row["action_kind"])
-        count = int(str(row[count_key]))
+        # Route display through the same typed ToolCountRowPayload used for
+        # `--format json` rather than re-indexing the raw archive dict here:
+        # the payload model has no `source_name` field, so a stale
+        # persistence-layer key would fail mypy at this call rather than
+        # raising KeyError at runtime (polylogue-d8nu).
+        item = row_payload(row)
+        origin_name = item.origin
+        tool_name = item.normalized_tool_name
+        action_kind_value = item.action_kind
+        count = (item.event_count if basis == "observed-events" else item.call_count) or 0
         if basis == "observed-events":
-            status = str(row["status"])
+            status = item.status or "unknown"
             env.ui.console.print(
-                f"{source_name[:18]:18s}  "
+                f"{origin_name[:18]:18s}  "
                 f"{tool_name[:38]:38s}  "
                 f"{action_kind_value[:14]:14s}  "
                 f"{status[:10]:10s}  "
                 f"{count:7d}"
             )
         elif basis == "actions":
-            evidence_kind = str(row.get("evidence_kind") or "unknown")
+            evidence_kind = item.evidence_kind or "unknown"
             env.ui.console.print(
-                f"{source_name[:18]:18s}  "
+                f"{origin_name[:18]:18s}  "
                 f"{tool_name[:38]:38s}  "
                 f"{action_kind_value[:14]:14s}  "
                 f"{evidence_kind[:16]:16s}  "
@@ -798,7 +801,7 @@ async def _tools(
             )
         else:
             env.ui.console.print(
-                f"{source_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {count:7d}"
+                f"{origin_name[:18]:18s}  {tool_name[:38]:38s}  {action_kind_value[:14]:14s}  {count:7d}"
             )
 
 

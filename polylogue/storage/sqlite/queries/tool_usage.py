@@ -57,7 +57,7 @@ async def get_tool_usage_rows(
 ) -> list[ToolUsageRow]:
     """Aggregate tool usage from canonical ``actions`` rows.
 
-    The grouping key is ``(source_name, normalized_tool_name, action_kind)``
+    The grouping key is ``(origin, normalized_tool_name, action_kind)``
     because the same normalized tool name can fire under multiple action
     categories.
     """
