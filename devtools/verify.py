@@ -1772,6 +1772,13 @@ def build_verify_steps(
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
                 ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
                 ("verify hash-boundary-census", _devtools_cmd("verify hash-boundary-census")),
+                # Static, archive-independent, sub-second: an index bump that
+                # lands without its lifecycle.py delta declaration silently
+                # downgrades every existing generation to a full raw replay
+                # (polylogue-9rw0). Gated here, not behind --lab, because the
+                # failure surfaces as an unqueryable live archive rather than
+                # as a test failure.
+                ("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")),
             ]
         )
 
@@ -1850,7 +1857,6 @@ def build_verify_steps(
     if lab:
         steps.append(("lab smoke", _devtools_cmd("lab smoke", "run", "archive-smoke", "--tier", "0")))
         steps.append(("bench slo", _devtools_cmd("bench slo", "--include-lab")))
-        steps.append(("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")))
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
         steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))

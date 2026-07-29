@@ -342,6 +342,24 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=44,
+        # Adds sessions.title_ref/title_confidence (polylogue-ih67 AC#5). The
+        # DDL surface is two nullable columns on an 18,871-row table -- trivial
+        # to copy forward -- but their VALUES come from the v44 Codex title
+        # resolver (thread name -> authored history -> first HUMAN_AUTHORED
+        # message), so a shape-only fast-forward would leave every row NULL
+        # while a cold rebuild populates them. That divergence is exactly what
+        # DerivedDeltaClass cannot currently express: there is no class for
+        # "additive columns, clone-safe shape, values via targeted reprocess".
+        # SEMANTIC_REPARSE is therefore the truthful classification today, and
+        # it keeps the existing full-rebuild behaviour rather than silently
+        # promoting a generation whose new columns disagree with a cold
+        # rebuild. polylogue-9rw0.1 owns extending the vocabulary so this exact
+        # delta class becomes a bounded shape fast-forward plus a Codex-scoped
+        # reprocess instead of a full-corpus replay.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

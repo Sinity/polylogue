@@ -28,10 +28,19 @@ from polylogue.storage.sqlite.archive_tiers.common import (
 )
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
-# polylogue-1xc.12: v43 adds the messages_fts_identity rowid/block_id ledger
-# and its trigger-body writes. index.db is a rebuildable derived tier (no
-# migration chain) -- an archive still on v42 needs `polylogue ops reset
-# --index && polylogued run`, not an in-place upgrade helper.
+# polylogue-ih67: v44 adds sessions.title_ref/title_confidence.
+#
+# index.db is rebuildable derived state, but "rebuildable" is not the same as
+# "always rebuilt": every bump above INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR
+# must declare its delta class in storage/sqlite/lifecycle.py, and a declared
+# non-semantic delta upgrades an existing generation in place through
+# index_fast_forward_plan()/apply_index_fast_forward() on connect. Only a
+# SEMANTIC_REPARSE delta -- one whose result depends on parser semantics --
+# routes to `polylogue ops reset --index && polylogued run`.
+#
+# A bump without a declaration is a policy violation, not a free rebuild:
+# `devtools lab policy schema-versioning` fails, and the archive silently
+# falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
 INDEX_SCHEMA_VERSION = 44
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
