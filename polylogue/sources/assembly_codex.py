@@ -175,6 +175,51 @@ def _title_preview(text: str) -> str | None:
     return None
 
 
+def _normalize_for_echo_compare(text: str) -> str:
+    return " ".join(text.split()).strip().casefold()
+
+
+def _first_human_authored_text(conv: ParsedSession) -> str | None:
+    for msg in conv.messages:
+        if msg.material_origin is not MaterialOrigin.HUMAN_AUTHORED:
+            continue
+        if msg.text and msg.text.strip():
+            return msg.text.strip()
+    return None
+
+
+def _is_prompt_echo(candidate: str, conv: ParsedSession) -> bool:
+    """True when *candidate* just restates the session's own first prompt.
+
+    bd polylogue-6e7m's measurement found Codex's ``threads.title`` (the
+    ``state_5.sqlite`` field read by ``_parse_codex_state_titles``) collides
+    78-way on shared onboarding-style prompts across sessions; a live
+    read-only scan of 2,000 titled threads against this operator's own
+    ``history.jsonl`` found 679 of 780 comparable pairs were exact-or-prefix
+    matches of the session's opening message (36% of the full sample --
+    most of the rest had no comparable ``history.jsonl`` row at all, not a
+    confirmed non-echo). ``history_titles`` is *by construction* the
+    earliest authored prompt (see ``_parse_codex_history``'s docstring), so
+    it is essentially always an echo, not an independent curation signal.
+
+    Marking any of these ``TitleSource.ORIGIN`` overstates their
+    provenance: the provider recorded the prompt, it did not distinguish
+    the session from ones sharing that prompt. Downgrade to HEURISTIC so
+    ``title_source`` stays honest about what evidence actually backs the
+    text, per the CLAUDE-Code precedent (``code_parser.py``'s own
+    first-message fallback is HEURISTIC, never ORIGIN).
+    """
+    first_text = _first_human_authored_text(conv)
+    if first_text is None:
+        return False
+    normalized_candidate = _normalize_for_echo_compare(candidate)
+    normalized_first = _normalize_for_echo_compare(first_text)
+    if not normalized_candidate or not normalized_first:
+        return False
+    shorter, longer = sorted((normalized_candidate, normalized_first), key=len)
+    return longer.startswith(shorter)
+
+
 class CodexAssemblySpec:
     """Codex provider assembly — thread-name and authored-history sidecars."""
 
@@ -222,15 +267,19 @@ class CodexAssemblySpec:
         cid = conv.provider_session_id
 
         # 1. Provider thread name — authoritative, may replace a stale title.
+        # Still subject to the echo check below: a thread name that merely
+        # restates the opening prompt is not a distinguishing curation
+        # signal even though it came from a "name" field.
         name = thread_names.get(cid)
         if name:
             if name != conv.title:
+                is_echo = _is_prompt_echo(name, conv)
                 return conv.model_copy(
                     update={
                         "title": name,
-                        "title_source": TitleSource.ORIGIN,
+                        "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-thread-name:{cid}",
-                        "title_confidence": 1.0,
+                        "title_confidence": 0.5 if is_echo else 1.0,
                     }
                 )
             return conv
@@ -241,16 +290,22 @@ class CodexAssemblySpec:
             return conv
 
         # 2. Authored history entry recorded by Codex for this session.
+        # By construction (see _parse_codex_history) this IS the earliest
+        # authored prompt, so it is essentially always an echo -- the echo
+        # check below almost always fires, but a runtime comparison against
+        # the session's own first message stays honest even in the rare
+        # case history.jsonl's row diverges from what actually got parsed.
         history_text = history_titles.get(cid)
         if history_text:
             preview = _title_preview(history_text)
             if preview:
+                is_echo = _is_prompt_echo(history_text, conv)
                 return conv.model_copy(
                     update={
                         "title": preview,
-                        "title_source": TitleSource.ORIGIN,
+                        "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-history:{cid}",
-                        "title_confidence": 0.9,
+                        "title_confidence": 0.5 if is_echo else 0.9,
                     }
                 )
 
@@ -259,16 +314,23 @@ class CodexAssemblySpec:
         # Codex installs no longer even write). Only fills the gap left by
         # thread name / authored history above; it never overrides an
         # authored-history title already resolved in step 2.
+        #
+        # bd polylogue-6e7m's measurement: a full scan found 166 of 2,771
+        # titled threads shared their title with >1 other thread, worst
+        # case 78x -- confirmed (2026-07-29, this operator's own
+        # state_5.sqlite/history.jsonl) to be the same first-prompt echo
+        # this method reads, not independent curation. See _is_prompt_echo.
         state_text = state_titles.get(cid)
         if state_text:
             preview = _title_preview(state_text)
             if preview:
+                is_echo = _is_prompt_echo(state_text, conv)
                 return conv.model_copy(
                     update={
                         "title": preview,
-                        "title_source": TitleSource.ORIGIN,
+                        "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-state-db:{cid}",
-                        "title_confidence": 0.75,
+                        "title_confidence": 0.5 if is_echo else 0.75,
                     }
                 )
 
