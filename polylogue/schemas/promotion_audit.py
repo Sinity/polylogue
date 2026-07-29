@@ -266,15 +266,15 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     that understands publication, rather than relying on a separate command
     nobody invokes.
     """
-    from polylogue.schemas.audit.checks import check_privacy_guards
     from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.schemas.audit.checks import check_privacy_guards
 
     findings: list[PromotionAuditFinding] = []
     for path in sorted(root.rglob("*.schema.json.gz")):
         artifact = str(path.relative_to(root))
         try:
             schema = _load_artifact(path)
-        except Exception:  # noqa: BLE001 - unreadable artifact is its own blocker elsewhere
+        except Exception:
             continue
         document = json_document(schema)
         if not document:
