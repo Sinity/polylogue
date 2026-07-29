@@ -894,7 +894,14 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
     total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
     total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
     model_context_window           INTEGER CHECK(model_context_window IS NULL OR model_context_window >= 0),
-    payload_json                   TEXT NOT NULL DEFAULT '{{}}' CHECK ({json_object_check("payload_json")}),
+    estimated_cost_usd              REAL,
+    actual_cost_usd                 REAL,
+    cost_status                     TEXT,
+    cost_source                     TEXT,
+    pricing_version                 TEXT,
+    billing_provider                TEXT,
+    billing_base_url                TEXT,
+    billing_mode                    TEXT,
     occurred_at_ms                 INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;

@@ -386,6 +386,31 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # `polylogue ops reset --index && polylogued run` full-rebuild
         # behaviour rather than risk a fast-forwarded clone disagreeing with
         # a cold rebuild.
+        #
+        # v45 also folds in the session_provider_usage_events.payload_json
+        # retirement: the column is dropped and its 8 billing-provenance
+        # keys (estimated_cost_usd, actual_cost_usd, cost_status,
+        # cost_source, pricing_version, billing_provider, billing_base_url,
+        # billing_mode) become nullable typed columns on the same table
+        # (archive_tiers/index.py). Considered in isolation that delta is
+        # clone-safe -- the values already live in the row as JSON, the
+        # backfill is `json_extract(payload_json, '$.key')` against
+        # already-persisted rows, not a raw reparse -- and would deserve its
+        # own CONSTRAINT_ONLY declaration with a REPLACE_TABLE operation.
+        # But IndexDeltaDeclaration is one classification per *version*, not
+        # per DDL object, and v45 already carries the delegation_facts
+        # SEMANTIC_REPARSE above. Declaring this version
+        # `(CONSTRAINT_ONLY, SEMANTIC_REPARSE)` would not change behaviour
+        # (`requires_semantic_reparse` short-circuits `eligible_for_sql_
+        # fast_forward` the moment SEMANTIC_REPARSE is present) but would
+        # misstate the version as partially fast-forwardable when it is
+        # not: every archive touching v45 goes through
+        # `polylogue ops reset --index && polylogued run` regardless of
+        # which of the two DDL changes triggered it. The truthful
+        # declaration for the whole version therefore stays
+        # `(SEMANTIC_REPARSE,)`; the CONSTRAINT_ONLY-shaped sub-delta is
+        # recorded here in prose so a future split (polylogue-9rw0.1) can
+        # recover it once per-object declarations exist.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
 )

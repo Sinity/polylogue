@@ -183,7 +183,8 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                     await (
                         await conn.execute(
                             """
-                            SELECT payload_json
+                            SELECT estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                                   pricing_version, billing_provider, billing_base_url, billing_mode
                             FROM session_provider_usage_events
                             WHERE provider_event_type = 'token_count'
                             ORDER BY session_id, position
@@ -191,7 +192,7 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                         )
                     ).fetchall()
                 )
-            return [json.loads(str(row["payload_json"])) for row in event_rows]
+            return [{key: value for key, value in dict(row).items() if value is not None} for row in event_rows]
 
         async def durable_cost_typed_totals() -> list[dict[str, object]]:
             async with backend.connection() as conn:
@@ -293,10 +294,11 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
             {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
             for payload in cost_payloads
         )
-        # payload_json is projected down to only the billing-provenance keys
-        # (polylogue-ei0d): every other field of the raw provider event
-        # (total_token_usage, model, type, ...) is redundant with a typed
-        # column on the same row, so it is no longer duplicated into JSON.
+        # The billing-provenance keys are their own nullable typed columns
+        # (polylogue-ei0d / polylogue-c3ip, index v45): every other field of
+        # the raw provider event (total_token_usage, model, type, ...) is
+        # redundant with a typed column on the same row, so only these eight
+        # columns carry Hermes cost-provenance evidence -- no JSON blob.
         assert all(set(payload) == set(expected_cost_provenance) for payload in cost_payloads)
         assert all(
             totals
