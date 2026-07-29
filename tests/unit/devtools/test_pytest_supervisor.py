@@ -214,7 +214,11 @@ def _xdist_controller_cmd(path: Path) -> list[str]:
 def test_repository_pytest_timeout_policy_is_bounded_and_installed() -> None:
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    dev_dependencies = config["project"]["optional-dependencies"]["dev"]
+    # "dev" is a thin composition (`polylogue[dev-common,speed]`) since the
+    # free-threaded-only adoption folded the former gil/no-gil variant split
+    # away; the actual dev tooling packages -- including pytest-timeout --
+    # live in "dev-common".
+    dev_dependencies = config["project"]["optional-dependencies"]["dev-common"]
     pytest_config = config["tool"]["pytest"]["ini_options"]
 
     assert any(dependency.startswith("pytest-timeout") for dependency in dev_dependencies)
