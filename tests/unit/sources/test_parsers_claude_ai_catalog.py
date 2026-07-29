@@ -212,6 +212,75 @@ def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
     assert session.attachments[1].inline_bytes is None
 
 
+def test_claude_ai_tool_use_segment_captures_web_tool_evidence() -> None:
+    """Per-block timing, MCP integration identity, and approval-gate fields
+    on a ``tool_use``/``tool_result`` segment were read nowhere before --
+    removing ``_claude_ai_web_tool_evidence`` (or its call site in
+    ``_claude_content_blocks``) drops ``metadata`` back to empty."""
+    payload = {
+        "uuid": "claude-2",
+        "name": "Connected app call",
+        "chat_messages": [
+            {
+                "uuid": "m1",
+                "sender": "assistant",
+                "created_at": "2026-01-08T09:05:53.020754Z",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "conversation_search",
+                        "input": {"query": "Sinex exocortex project"},
+                        "start_timestamp": "2026-01-08T09:05:53.020754Z",
+                        "stop_timestamp": "2026-01-08T09:05:53.266102Z",
+                        "integration_name": "Search Past Conversations",
+                        "integration_icon_url": "https://claude.ai/images/icons/conversation_search.png",
+                        "is_mcp_app": True,
+                        "mcp_server_url": "https://mcp.example.test",
+                        "approval_key": "approve-once",
+                        "approval_options": ["allow", "deny"],
+                        "display_content": {"type": "text", "text": "Searching past conversations"},
+                    }
+                ],
+            }
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    block = session.messages[0].blocks[0]
+    assert block.tool_name == "conversation_search"
+    assert block.tool_input == {"query": "Sinex exocortex project"}
+    assert block.metadata is not None
+    assert block.metadata["start_timestamp"] == "2026-01-08T09:05:53.020754+00:00"
+    assert block.metadata["stop_timestamp"] == "2026-01-08T09:05:53.266102+00:00"
+    assert block.metadata["integration_name"] == "Search Past Conversations"
+    assert block.metadata["integration_icon_url"] == "https://claude.ai/images/icons/conversation_search.png"
+    assert block.metadata["is_mcp_app"] is True
+    assert block.metadata["mcp_server_url"] == "https://mcp.example.test"
+    assert block.metadata["approval_key"] == "approve-once"
+    assert block.metadata["approval_options"] == ["allow", "deny"]
+    assert block.metadata["display_content"] == {"type": "text", "text": "Searching past conversations"}
+
+
+def test_claude_ai_conversation_summary_persists_as_event() -> None:
+    """The provider's own generated conversation summary (top-level
+    ``summary``, distinct from ``name``/``title``) must persist as a typed
+    event -- removing the block in ``parse_ai`` drops it silently."""
+    payload = {
+        "uuid": "claude-3",
+        "name": "Summary Session",
+        "summary": "**Conversation Overview**\n\nDiscussed the parser triage plan.",
+        "chat_messages": [
+            {"uuid": "m1", "sender": "human", "text": "hi", "created_at": "2026-01-01T00:00:00Z"},
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    summary_events = [e.payload for e in session.session_events if e.event_type == "claude_ai_conversation_summary"]
+    assert summary_events == [{"summary": "**Conversation Overview**\n\nDiscussed the parser triage plan."}]
+
+
 # ---------------------------------------------------------------------------
 # Catalog
 # ---------------------------------------------------------------------------
