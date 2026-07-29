@@ -255,6 +255,44 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     }
 
 
+def test_gemini_cli_session_metadata_and_scratchpad_survive_as_session_events() -> None:
+    """polylogue-5o05: userMessageCount/hasUserOrAssistantMessage/memoryScratchpad
+    were parsed by nothing; they must now surface as session_events."""
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-2",
+        "startTime": "2026-04-08T20:45:00.000Z",
+        "lastUpdated": "2026-04-08T20:47:00.000Z",
+        "kind": "subagent",
+        "hasUserOrAssistantMessage": True,
+        "userMessageCount": 10,
+        "memoryScratchpad": {
+            "version": 1,
+            "workflowSummary": "ran the test suite and fixed a regression",
+            "toolSequence": ["read_file", "run_shell_command"],
+            "touchedPaths": ["a.py", "b.py"],
+            "validationStatus": "passed",
+        },
+        "messages": [
+            {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": ["hello"]},
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    metadata_event = next(
+        event for event in session.session_events if event.event_type == "gemini_cli_session_metadata"
+    )
+    assert metadata_event.payload == {
+        "parsed_message_count": 1,
+        "has_user_or_assistant_message": True,
+        "reported_user_message_count": 10,
+    }
+    scratchpad_event = next(
+        event for event in session.session_events if event.event_type == "gemini_cli_memory_scratchpad"
+    )
+    assert scratchpad_event.payload["memory_scratchpad"] == payload["memoryScratchpad"]
+
+
 def test_hermes_session_document_parses_through_dispatch() -> None:
     payload: JSONDocument = {
         "session_id": "hermes-session-1",
@@ -311,6 +349,67 @@ def test_hermes_session_document_parses_through_dispatch() -> None:
     assert session.messages[3].is_active_leaf is True
     assert session.active_leaf_message_provider_id == "call-1"
     assert any(block.type is BlockType.TOOL_RESULT for block in session.messages[3].blocks)
+
+    # polylogue-5o05: base_url/platform/message_count/tools were parsed by
+    # nothing; they must now surface as session_events.
+    metadata_event = next(event for event in session.session_events if event.event_type == "hermes_session_metadata")
+    assert metadata_event.payload == {
+        "parsed_message_count": 4,
+        "base_url": "http://localhost",
+        "platform": "linux",
+        "reported_message_count": 3,
+    }
+    tool_event = next(event for event in session.session_events if event.event_type == "hermes_tool_availability")
+    assert tool_event.payload == {"tools": [{"name": "shell"}], "tool_count": 1}
+
+
+def test_hermes_message_wire_extras_survive_as_session_events() -> None:
+    """polylogue-5o05: codex_reasoning_items/codex_message_items (~59% of
+    documents), the low-volume _empty_recovery_synthetic/_db_persisted
+    markers, and tool_calls[].extra_content were parsed by nothing in the
+    JSON-snapshot shape (unlike hermes_state.py's SQLite path, which already
+    captures the reasoning-item equivalent)."""
+    payload: JSONDocument = {
+        "session_id": "hermes-session-2",
+        "model": "local-model",
+        "session_start": "2026-05-07T08:39:43.000000",
+        "last_updated": "2026-05-07T08:46:00.000000",
+        "messages": [
+            {"role": "user", "content": "run checks"},
+            {
+                "role": "assistant",
+                "content": "running",
+                "timestamp": "2026-05-07T08:40:00.000000",
+                "reasoning_content": "need tests",
+                "codex_reasoning_items": [{"id": "r1", "encrypted_content": "abc123"}],
+                "codex_message_items": [{"phase": "final"}],
+                "_empty_recovery_synthetic": True,
+                "_db_persisted": False,
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {"name": "run_shell_command", "arguments": '{"cmd":"pytest"}'},
+                        "extra_content": {"google": {"thought_signature": "sig-abc"}},
+                    }
+                ],
+            },
+        ],
+    }
+
+    [session] = parse_payload("hermes", payload, "fallback")
+
+    extras_event = next(event for event in session.session_events if event.event_type == "hermes_message_wire_extras")
+    assistant_message = session.messages[1]
+    assert extras_event.source_message_provider_id == assistant_message.provider_message_id
+    assert extras_event.payload == {
+        "codex_reasoning_items": [{"id": "r1", "encrypted_content": "abc123"}],
+        "codex_message_items": [{"phase": "final"}],
+        "_empty_recovery_synthetic": True,
+        "_db_persisted": False,
+        "tool_calls_extra_content": [
+            {"tool_id": "call-1", "extra_content": {"google": {"thought_signature": "sig-abc"}}}
+        ],
+    }
 
 
 def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
