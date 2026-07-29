@@ -109,16 +109,24 @@ def check_mcp_roundtrip(archive_root: Path) -> None:
 
     async def _run() -> None:
         async with StdioMCPContinuityRoute(archive_root) as route:
-            search_text = await route.invoke("search", {"query": "clock", "limit": 3})
+            # The retired standalone "search" / "get_session_summary" tools
+            # were folded into the 10 consolidated operation-dispatcher
+            # tools: session-level free-text search is now
+            # query(projection="sessions", expression=...) (reusing the same
+            # archive_search_payload/"hits" shape the old "search" tool
+            # used), and one-object resolution is now
+            # get(ref="session:<id>"), whose response nests the session
+            # summary under "payload" rather than at the top level.
+            search_text = await route.invoke("query", {"expression": "clock", "projection": "sessions", "limit": 3})
             search_payload = json.loads(search_text)
             hits = search_payload.get("hits", [])
             if not hits:
                 raise DemoCheckError("MCP search returned no hits")
             session_id = hits[0]["session"]["id"]
-            summary_text = await route.invoke("get_session_summary", {"id": session_id})
+            summary_text = await route.invoke("get", {"ref": f"session:{session_id}"})
             summary_payload = json.loads(summary_text)
-            if summary_payload.get("id") != session_id:
-                raise DemoCheckError("MCP get_session_summary did not resolve the session search returned")
+            if summary_payload.get("payload", {}).get("id") != session_id:
+                raise DemoCheckError("MCP get did not resolve the session search returned")
 
     asyncio.run(_run())
 

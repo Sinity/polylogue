@@ -1945,7 +1945,12 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
         catch_exceptions=False,
     )
     assert first.exit_code == 0
-    first_payload = json.loads(first.output)
+    # This pass now also replays a raw page through the shared
+    # revision-backfill machinery, which logs "backfill stage timings" to
+    # stderr on every call (see the sibling terminal-promotion test for the
+    # full rationale); `.stdout` is the actual `--output-format json`
+    # contract surface, `.output` is Click 8.4's always-mixed stream.
+    first_payload = json.loads(first.stdout)
     operation_id = first_payload["transaction"]["operation_id"]
     generation_path = Path(first_payload["generation"]["index_path"])
     assert first_payload["status"] == "paused"
@@ -2018,7 +2023,12 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
         catch_exceptions=False,
     )
     assert first.exit_code == 0
-    first_payload = json.loads(first.output)
+    # This pass now also replays a raw page through the shared
+    # revision-backfill machinery, which logs "backfill stage timings" to
+    # stderr on every call (see the sibling terminal-promotion test for the
+    # full rationale); `.stdout` is the actual `--output-format json`
+    # contract surface, `.output` is Click 8.4's always-mixed stream.
+    first_payload = json.loads(first.stdout)
     operation_id = first_payload["transaction"]["operation_id"]
     assert first_payload["status"] == "paused"
 
@@ -2093,7 +2103,12 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
         catch_exceptions=False,
     )
     assert first.exit_code == 0
-    first_payload = json.loads(first.output)
+    # This pass now also replays a raw page through the shared
+    # revision-backfill machinery, which logs "backfill stage timings" to
+    # stderr on every call (see the sibling terminal-promotion test for the
+    # full rationale); `.stdout` is the actual `--output-format json`
+    # contract surface, `.output` is Click 8.4's always-mixed stream.
+    first_payload = json.loads(first.stdout)
     assert first_payload["status"] == "deferred"
     operation_id = first_payload["transaction"]["operation_id"]
     terminal = cli_runner.invoke(
@@ -2255,7 +2270,17 @@ def test_rebuild_index_helper_returns_typed_empty_replay_receipt(tmp_path: Path)
         )
     )
 
-    assert result == {
+    # rebuild_index_from_source now also reports parse_s/apply_s/stage_timings_s
+    # (the bulk-build pragma-profile timing instrumentation for owned inactive
+    # generations). Those are wall-clock floats, not part of this helper's
+    # typed-empty-receipt contract, so they are checked for shape/presence
+    # separately rather than folded into the exact-count comparison below.
+    timing_keys = {"parse_s", "apply_s", "stage_timings_s"}
+    assert timing_keys.issubset(result)
+    assert isinstance(result["parse_s"], float)
+    assert isinstance(result["apply_s"], float)
+    assert isinstance(result["stage_timings_s"], dict)
+    assert {key: value for key, value in result.items() if key not in timing_keys} == {
         "scanned_raw_count": 0,
         "classified_full_count": 0,
         "replayed_logical_source_count": 0,

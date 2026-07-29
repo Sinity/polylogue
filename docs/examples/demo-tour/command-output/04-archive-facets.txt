@@ -1,4 +1,5 @@
 Facets (global) — matched result set:
+  readiness: ready (cost_class=cheap; budget 0.01s/2.00s)
   sessions: 19  messages: 71
   Family states:
     total_counts: Total counts — complete

@@ -95,7 +95,7 @@ def _make_index_db(root: Path) -> Path:
                 ('s1', 'm1', 'tool_use', 'functions.exec_command', 't5', NULL, 'codebase-memory-mcp cli search_code', '', '', NULL, NULL),
                 ('s1', 'm1', 'tool_use', 'functions.exec_command', 't6', NULL, 'codebase-memory-mcp cli search code', '', '', NULL, NULL),
                 ('s1', 'm1', 'tool_use', 'search_code', 't7', NULL, '', '', 'search_code query', NULL, NULL),
-                ('s1', 'm1', 'tool_use', 'mcp__polylogue__query_units', 't8', NULL, '', '', 'messages where text:timeout', NULL, NULL),
+                ('s1', 'm1', 'tool_use', 'mcp__polylogue__query', 't8', NULL, '', '', 'messages where text:timeout', NULL, NULL),
                 ('s1', 'm1', 'tool_use', 'functions.exec_command', 't9', NULL, 'polylogue read session:s1 --view summary', '', '', NULL, NULL);
             """
         )
@@ -139,12 +139,12 @@ def test_affordance_usage_report_and_files(tmp_path: Path) -> None:
     command_paths = {command.display_name for command in iter_command_paths(cli, include_root=False)}
     assert {name for kind, name in surface_rows if kind == "mcp_tool"} == EXPECTED_TOOL_NAMES
     assert {name for kind, name in surface_rows if kind == "cli_command"} == command_paths
-    assert surface_rows[("mcp_tool", "query_units")]["observed_actions"] == 1
-    assert surface_rows[("mcp_tool", "query_units")]["classification"] == "keep"
+    assert surface_rows[("mcp_tool", "query")]["observed_actions"] == 1
+    assert surface_rows[("mcp_tool", "query")]["classification"] == "keep"
     assert surface_rows[("cli_command", "read")]["observed_actions"] == 1
-    assert surface_rows[("mcp_tool", "maintenance_execute")]["operator_only_caveat"] is True
-    assert surface_rows[("mcp_tool", "maintenance_execute")]["classification"] == "keep"
-    assert surface_rows[("mcp_tool", "search")]["classification"] in {"kill", "keep", "promote"}
+    assert surface_rows[("mcp_tool", "maintenance")]["operator_only_caveat"] is True
+    assert surface_rows[("mcp_tool", "maintenance")]["classification"] == "keep"
+    assert surface_rows[("mcp_tool", "status")]["classification"] == "kill"
     assert report["surface_inventory_summary"]
 
     with (out_dir / "family-counts.csv").open(encoding="utf-8", newline="") as handle:

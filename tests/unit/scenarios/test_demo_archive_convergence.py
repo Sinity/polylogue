@@ -33,7 +33,7 @@ EXPECTED_DEMO_SESSIONS = (
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "Debugging flaky async pipeline tests",
         1746826781690,
-        1746826901690,
+        1714493799513,
         3,
     ),
     (
@@ -50,7 +50,13 @@ EXPECTED_DEMO_SESSIONS = (
         "codex-session",
         "demo-00",
         "Could you review this code for potential issues?",
-        None,
+        # This demo session's first record has no session_meta, so
+        # ParsedSession.created_at is None from the parser; the archive
+        # write path's pre-existing message-evidence fallback
+        # (_derive_session_timestamps_from_messages in
+        # storage/sqlite/archive_tiers/write.py) derives it from the
+        # earliest message's own timestamp instead of leaving it null.
+        1705985222161,
         1705985522161,
         8,
     ),

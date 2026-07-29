@@ -40,8 +40,8 @@ The semantic fixture verifier runs before the narrated commands and checks plant
 
 ## Timings
 
-- First evidence result: 15.481s (budget 30s)
-- Full tour: 21.218s (budget 420s)
+- First evidence result: 8.540s (budget 30s)
+- Full tour: 16.865s (budget 420s)
 
 ## Archive
 
@@ -55,10 +55,10 @@ The semantic fixture verifier runs before the narrated commands and checks plant
 
 | Step | Exit | Duration | Bytes | Output |
 | --- | ---: | ---: | ---: | --- |
-| claim versus receipt | 0 | 1.751s | 1399 | `command-output/01-claim-versus-receipt.txt` |
-| failed actions aggregate | 0 | 1.891s | 62 | `command-output/02-failed-actions-aggregate.txt` |
-| composed lineage | 0 | 1.969s | 936 | `command-output/03-composed-lineage.txt` |
-| archive facets | 0 | 1.877s | 1594 | `command-output/04-archive-facets.txt` |
+| claim versus receipt | 0 | 2.440s | 1399 | `command-output/01-claim-versus-receipt.txt` |
+| failed actions aggregate | 0 | 2.767s | 62 | `command-output/02-failed-actions-aggregate.txt` |
+| composed lineage | 0 | 2.826s | 936 | `command-output/03-composed-lineage.txt` |
+| archive facets | 0 | 2.730s | 1652 | `command-output/04-archive-facets.txt` |
 
 ## Problems
 

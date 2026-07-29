@@ -525,15 +525,20 @@ def _try_grouped_tool_name_report(
     }
 
 
-_OPERATOR_ONLY_MCP_PREFIXES = ("maintenance_",)
+_OPERATOR_ONLY_MCP_PREFIXES: tuple[str, ...] = ()
+# The MCP surface was consolidated into 10 role-gated operation-dispatcher
+# tools (mcp/server_cutover.py); these names are the ones gated behind a
+# role beyond default read access -- write/run behind the write role, judge
+# behind the review role, maintenance behind the admin role. The previous
+# set of granular pre-consolidation tool names ("maintenance_execute",
+# "rebuild_index", etc.) can never match here: _mcp_surface_inventory only
+# iterates the current EXPECTED_TOOL_NAMES, so that stale set silently
+# marked every elevated-privilege tool as NOT operator-only.
 _OPERATOR_ONLY_MCP_TOOLS = {
-    "delete_session",
-    "maintenance_execute",
-    "maintenance_list",
-    "maintenance_preview",
-    "maintenance_status",
-    "rebuild_index",
-    "update_index",
+    "write",
+    "run",
+    "judge",
+    "maintenance",
 }
 _OPERATOR_ONLY_CLI_PREFIXES = (
     "ops",

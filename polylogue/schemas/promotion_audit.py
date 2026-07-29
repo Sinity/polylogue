@@ -265,10 +265,28 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
     Wiring it here means the gate that guards publication runs the guard
     that understands publication, rather than relying on a separate command
     nobody invokes.
+
+    ``check_privacy_guards`` also has a broad catch-all branch (any value
+    that fails its readable-enum allowlist, e.g. an email address or a
+    private-TLD hostname) that this function deliberately does not surface:
+    ``_walk_artifact`` already classifies every ``x-polylogue-values`` entry
+    through ``_review_category``/``_secret_findings`` with a finer-grained
+    severity split (secrets are specific blocker categories such as
+    ``github_token``; emails/URLs/etc. are ``review`` items, not blockers).
+    Escalating the catch-all branch here would re-flag those same values
+    under a coarser ``unsafe_enum_value`` blocker and collapse that
+    distinction. This function only escalates the three violation shapes
+    ``_walk_artifact`` has no equivalent for: verbatim UUIDs, hex ids, and
+    high-entropy tokens -- and even then skips a value already caught by
+    ``_secret_findings``'s specific secret patterns, since that is already a
+    (differently named) blocker.
     """
+    import ast
+
     from polylogue.core.outcomes import OutcomeStatus
     from polylogue.schemas.audit.checks import check_privacy_guards
 
+    detail_re = re.compile(r"^(.*?): (UUID leak|hex-id leak|high-entropy token) (.+)$")
     findings: list[PromotionAuditFinding] = []
     for path in sorted(root.rglob("*.schema.json.gz")):
         artifact = str(path.relative_to(root))
@@ -283,12 +301,25 @@ def _privacy_guard_findings(root: Path) -> list[PromotionAuditFinding]:
         if result.status is not OutcomeStatus.ERROR:
             continue
         for detail in result.details:
+            match = detail_re.match(detail)
+            if match is None:
+                # The generic "unsafe value" catch-all; already classified
+                # (as a review item, not a blocker) by _walk_artifact.
+                continue
+            json_path, _kind, rendered_value = match.groups()
+            try:
+                raw_value = ast.literal_eval(rendered_value)
+            except (ValueError, SyntaxError):
+                raw_value = rendered_value
+            if isinstance(raw_value, str) and any(pattern.search(raw_value) for pattern in _SECRET_PATTERNS.values()):
+                # Already reported under its specific secret category.
+                continue
             findings.append(
                 PromotionAuditFinding(
                     severity="blocker",
                     category="unsafe_enum_value",
                     artifact=artifact,
-                    json_path=detail.split(":", 1)[0],
+                    json_path=json_path,
                     value=detail,
                 )
             )

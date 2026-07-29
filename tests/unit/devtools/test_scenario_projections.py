@@ -50,7 +50,10 @@ def test_render_scenario_projections_text_lists_authored_sources() -> None:
     assert "mutation-campaign:filters" in rendered
     assert "benchmark-campaign:search-filters" in rendered
     assert "synthetic-benchmark:session-insight-materialization" in rendered
-    assert "inferred-corpus-scenario:chatgpt:v1" in rendered
+    # chatgpt's committed provider schema catalog promoted its default
+    # package to v2 (schema-package regen); the inferred-corpus-scenario
+    # name tracks the catalog's default_version, not a fixed "v1".
+    assert "inferred-corpus-scenario:chatgpt:v2" in rendered
 
 
 def test_render_scenario_projections_json_is_machine_readable() -> None:
@@ -63,15 +66,15 @@ def test_render_scenario_projections_json_is_machine_readable() -> None:
         for entry in payload
     )
     assert any(
-        entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1" for entry in payload
+        entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v2" for entry in payload
     )
     inferred = next(
         entry
         for entry in payload
-        if entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v1"
+        if entry["source_kind"] == "inferred-corpus-scenario" and entry["name"] == "chatgpt:v2"
     )
     assert inferred["source_payload"]["provider"] == "chatgpt"
-    assert inferred["source_payload"]["package_version"] == "v1"
+    assert inferred["source_payload"]["package_version"] == "v2"
 
 
 def test_render_scenario_projections_supports_targeted_filters() -> None:
