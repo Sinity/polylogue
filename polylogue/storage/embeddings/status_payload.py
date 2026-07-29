@@ -1134,7 +1134,17 @@ def embedding_status_payload(
 
     cfg = load_polylogue_config()
     db_path = Path(env.config.db_path)
-    configured_root = archive_file_set_root(archive_root=env.config.archive_root, db_path=db_path)
+    # `env.config` is a duck-typed `_HasConfig` seam (see embedding_readiness_info,
+    # which passes a bare SimpleNamespace(db_path=...) with no `archive_root`),
+    # not always a real Config -- fall back to the plain db_path.parent
+    # derivation archive_file_set_root itself uses when archive_root is
+    # unavailable, matching this seam's original (pre-split-root-aware) behavior.
+    archive_root = getattr(env.config, "archive_root", None)
+    configured_root = (
+        archive_file_set_root(archive_root=archive_root, db_path=db_path)
+        if archive_root is not None
+        else db_path.parent
+    )
     archive_payload = _archive_embedding_status_payload(
         db_path, cfg=cfg, include_detail=include_detail, configured_root=configured_root
     )

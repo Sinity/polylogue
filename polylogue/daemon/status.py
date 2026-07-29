@@ -787,7 +787,7 @@ def _raw_failure_info() -> dict[str, object]:
     maintenance_samples, maintenance_count = _maintenance_failure_info()
     if not dbf.exists():
         archive_info = _archive_raw_failure_info(
-            archive_root() / "source.db",
+            dbf.with_name("source.db"),
             maintenance_samples=maintenance_samples,
             maintenance_count=maintenance_count,
         )
@@ -801,11 +801,11 @@ def _raw_failure_info() -> dict[str, object]:
             "samples": maintenance_samples,
         }
     archive_info = _archive_raw_failure_info(
-        archive_root() / "source.db",
+        dbf.with_name("source.db"),
         maintenance_samples=maintenance_samples,
         maintenance_count=maintenance_count,
     )
-    if (archive_root() / "source.db").exists() and archive_info is not None:
+    if dbf.with_name("source.db").exists() and archive_info is not None:
         return archive_info
 
     try:

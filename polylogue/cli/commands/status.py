@@ -1631,7 +1631,7 @@ def _show_direct_json(
 
             conn = open_readonly_connection(active_db)
             try:
-                payload.update(_direct_archive_counts(conn, configured_root=root))
+                payload.update(_direct_archive_counts(conn, configured_root=active_root))
                 payload["db_exists"] = True
             finally:
                 conn.close()
@@ -2117,6 +2117,11 @@ def _show_direct_status(
         diag = diagnose_first_run(daemon_alive=False)
         _render_diagnostic(env, diag)
         return
+    # An index-only external generation's active_db can live outside the
+    # configured root (polylogue-yla8.1 split-root contract); source.db must
+    # then resolve against the active db's own directory, not the configured
+    # root, mirroring _show_direct_json's active_root derivation.
+    active_root = active_db.parent if active_db.name == "index.db" else root
 
     # Pre-flight: detect schema mismatch / locked db / stale pidfile
     # before attempting row counts. Short-circuits with actionable text
@@ -2132,7 +2137,7 @@ def _show_direct_status(
 
         conn = open_readonly_connection(active_db)
         try:
-            counts = _direct_archive_counts(conn, configured_root=root)
+            counts = _direct_archive_counts(conn, configured_root=active_root)
             convs = counts["sessions"]
             msgs = counts["messages"]
             raw = counts["raw_records"]

@@ -920,15 +920,15 @@ def test_embed_stage_defers_to_pending_debt_while_predicate_holds(
 
     embed_calls: list[str] = []
 
-    def fake_execute(_db: Path, _path: Path) -> bool:
+    def fake_execute(_db: Path, _path: Path, **_kwargs: object) -> bool:
         embed_calls.append("execute")
         return True
 
-    def fake_execute_many(_db: Path, _paths: object) -> bool:
+    def fake_execute_many(_db: Path, _paths: object, **_kwargs: object) -> bool:
         embed_calls.append("execute_many")
         return True
 
-    def fake_execute_sessions(_db: Path, _ids: object) -> bool:
+    def fake_execute_sessions(_db: Path, _ids: object, **_kwargs: object) -> bool:
         embed_calls.append("execute_sessions")
         return True
 
@@ -1457,7 +1457,7 @@ def test_archive_insights_execute_sessions_uses_write_connection_profile(
 
     seen_busy_timeout: list[int] = []
 
-    def fake_execute_ids(conn: sqlite3.Connection, session_ids: list[str]) -> bool:
+    def fake_execute_ids(conn: sqlite3.Connection, session_ids: list[str], **_kwargs: object) -> bool:
         assert session_ids == [session_id]
         seen_busy_timeout.append(int(conn.execute("PRAGMA busy_timeout").fetchone()[0]))
         return True
