@@ -280,7 +280,18 @@ def _claude_code_spec() -> OriginSpec:
             "tests/unit/sources/test_assembly_claude_code_history.py",
         ),
         coverage_refs=("provider-package:claude-code-session/export-jsonl@v1",),
-        fidelity_notes=("Streaming JSONL retains source ordering; sidecars require separate authority admission.",),
+        fidelity_notes=(
+            "Streaming JSONL retains source ordering; sidecars require separate authority admission.",
+            "polylogue-2qx.4 / polylogue-cgfy unread-wire batch: message.stop_reason, toolUseResult's "
+            "structuredPatch/originalFile/oldString/newString/replaceAll/userModified (file_edits), the "
+            "top-level slug (sessions.display_name), and pr-link (session_refs, kind=pull_request) are now "
+            "read and persisted. parentToolUseID was NOT wired to session_links.parent_tool_use_block_id: "
+            "measured against 200 recent subagent (agent-*.jsonl) transcripts, the field occurs on the "
+            "DISPATCHING parent's own progress/agent_progress records, never on the child session's own "
+            "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
+            "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
+            "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
+        ),
         semantic_reparse=(
             "reparse Claude Code sessions and re-inventory workflow artifacts when the Claude parser, "
             "orchestration artifact parser, or sidecar assembly fingerprint changes"
@@ -609,7 +620,12 @@ def _aistudio_drive_spec() -> OriginSpec:
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
         fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
         coverage_refs=("origin:aistudio-drive:admitted",),
-        fidelity_notes=("Provider reverse mapping remains intentionally non-injective.",),
+        fidelity_notes=(
+            "Provider reverse mapping remains intentionally non-injective.",
+            "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
+            "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
+            "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+        ),
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
         display_description="Google AI Studio / Drive exports (lab: Google)",

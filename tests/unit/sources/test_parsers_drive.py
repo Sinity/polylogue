@@ -152,6 +152,52 @@ def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     assert result.messages[1].duration_ms == 1500
 
 
+def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:
+    """runSettings (polylogue-2qx.4 / polylogue-cgfy) must reach ``ParsedSession.run_settings``.
+
+    Deleting the ``run_settings=dict(run_settings) if run_settings else None``
+    kwarg on the ``ParsedSession`` return in ``parse_chunked_prompt`` makes
+    this assert None even though the value already feeds the ``model_config``
+    session_event.
+    """
+    payload: JSONDocument = {
+        "id": "gemini-run-settings",
+        "runSettings": {
+            "temperature": 0.7,
+            "topP": 0.9,
+            "topK": 40,
+            "maxOutputTokens": 8192,
+            "thinkingLevel": "high",
+        },
+        "chunkedPrompt": {
+            "chunks": [{"id": "msg-user", "role": "user", "text": "hi"}],
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert result.run_settings == {
+        "temperature": 0.7,
+        "topP": 0.9,
+        "topK": 40,
+        "maxOutputTokens": 8192,
+        "thinkingLevel": "high",
+    }
+    model_config_events = [e for e in result.session_events if e.event_type == "model_config"]
+    assert len(model_config_events) == 1
+
+
+def test_parse_chunked_prompt_without_run_settings_leaves_it_none() -> None:
+    payload: JSONDocument = {
+        "id": "gemini-no-run-settings",
+        "chunkedPrompt": {"chunks": [{"id": "msg-user", "role": "user", "text": "hi"}]},
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert result.run_settings is None
+
+
 def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     payload: JSONDocument = {
         "id": "gemini-fallback-title",

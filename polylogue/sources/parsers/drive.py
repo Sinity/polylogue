@@ -401,6 +401,14 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         attachments=attachments,
         instructions_text=_instruction_text(payload),
         models_used=sorted(models_used),
+        # polylogue-2qx.4 / polylogue-cgfy: aistudio-drive's runSettings
+        # (temperature/topP/topK/maxOutputTokens/thinkingLevel/
+        # safetySettings/enable* flags) is genuinely per-session provider
+        # config -- stored verbatim, not decomposed into columns, so it does
+        # not couple the schema to one provider's knob set. Already read into
+        # the ``model_config`` session_event above; this is the same value
+        # landing on the session row itself.
+        run_settings=dict(run_settings) if run_settings else None,
     )
 
 
