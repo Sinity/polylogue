@@ -7992,14 +7992,16 @@ class ArchiveStore:
             prefix="AND",
         )
         if session_id is not None:
-            where = f"{where} AND s.session_id = ?"
+            # Resolve against blocks, not sessions: b.session_id already carries
+            # the value, so this predicate must not be what forces the join.
+            where = f"{where} AND b.session_id = ?"
             filter_params.append(session_id)
         row = self._conn.execute(
             f"""
             SELECT COUNT(DISTINCT b.session_id)
             FROM messages_fts
             JOIN blocks b ON b.rowid = messages_fts.rowid
-            JOIN sessions s ON s.session_id = b.session_id
+            {_sessions_join_if_filtered(where)}
             WHERE messages_fts MATCH ?
             {where}
             """,
@@ -8099,7 +8101,7 @@ class ArchiveStore:
             SELECT b.session_id, MIN(rank) AS best_rank
             FROM messages_fts
             JOIN blocks b ON b.rowid = messages_fts.rowid
-            JOIN sessions s ON s.session_id = b.session_id
+            {_sessions_join_if_filtered(where)}
             WHERE messages_fts MATCH ?
             {where}
             GROUP BY b.session_id
@@ -10257,6 +10259,32 @@ def _with_session_id_filter(
     if where:
         return f"{where} AND {clause}", merged_params
     return f"WHERE {clause}", merged_params
+
+
+def _sessions_join_if_filtered(where: str) -> str:
+    """Join ``sessions`` only when the WHERE clause actually references it.
+
+    The FTS search queries carry an optional session-level filter built with
+    table alias ``s``. When no such filter is supplied -- the common case, e.g.
+    a bare ``polylogue find "docker"`` -- the join resolved nothing: neither
+    query projects an ``s.*`` column, and ``blocks.session_id`` already carries
+    the value. Every matched block paid a sessions-PK probe for nothing.
+
+    Measured on the live archive (18,871 sessions / 4.9M messages): dropping
+    the join roughly halves random reads per matched block (2.50 -> 1.29
+    pread64 syscalls, controlled A/B on two never-queried terms of comparable
+    match volume) and cuts warm wall time ~18%. Cold, the exact-count query
+    for a common term was ~1.15s. This is not a missing index -- EXPLAIN
+    already showed correct index use on both sides -- it is a join that should
+    not have been there.
+
+    Keyed on the rendered WHERE text so the join can never be elided while
+    something still references the alias: if a filter is present the join is
+    emitted verbatim, and callers that filter by a bare session id resolve it
+    against ``b.session_id`` instead so that predicate alone does not drag the
+    join back in.
+    """
+    return "JOIN sessions s ON s.session_id = b.session_id" if "s." in where else ""
 
 
 def _with_since_session_filter(
