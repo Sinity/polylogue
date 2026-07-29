@@ -442,6 +442,15 @@ def _claude_ai_web_tool_evidence(segment: Mapping[str, object]) -> dict[str, obj
 #       per-message/session content evidence and risks conflating multiple
 #       real accounts' PII into one field; the archive already scopes by
 #       origin/session, not by account.
+#   chat_messages[].content[].flags
+#       DELIBERATELY DROPPED: the 99% "encountered" figure parser-diff reports
+#       is presence-of-key, not presence-of-signal -- the observed-distribution
+#       schema shows it null in 19,491 of 19,509 observations (non_null in
+#       only 4 of 525 documents, 0.8%), and even those 4 documents' values are
+#       a single-element array whose one string is always the same length (14
+#       chars) with estimated-distinct 1 across all 18 occurrences -- i.e. one
+#       constant opaque flag, not a signal-bearing field. Re-audit if a larger
+#       corpus sample ever shows more than one distinct value.
 def _claude_content_blocks(content: object) -> list[ParsedContentBlock]:
     if not isinstance(content, list):
         return content_blocks_from_segments(content)
