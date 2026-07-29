@@ -317,6 +317,16 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   it requires either preserving the JSON column or promoting the eight
   provenance keys (`hermes_state.py`) to typed columns, a follow-up decision
   left to polylogue-c3ip.
+- Index schema version 45 (folded into the same version as the
+  `delegation_facts` identity-join rewrite below) resolves the polylogue-c3ip
+  follow-up: `session_provider_usage_events.payload_json` is dropped and its
+  eight billing-provenance keys (`estimated_cost_usd`, `actual_cost_usd`,
+  `cost_status`, `cost_source`, `pricing_version`, `billing_provider`,
+  `billing_base_url`, `billing_mode`) become nullable typed columns on the
+  same table. `_reextract_provider_usage_tail_db`
+  (`storage/sqlite/archive_tiers/write.py`) reads the typed columns directly
+  instead of `json_extract(payload_json, ...)`. Only 104 of 4,030,168 live
+  rows carried any of these keys, all Hermes-sourced.
 - Index schema version 41 stops materializing `tool_input`/`output_text` text
   copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
   join/rank/outcome columns for a paired `tool_use`/`tool_result` block

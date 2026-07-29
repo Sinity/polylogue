@@ -1226,15 +1226,15 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
     }
     provenance_rows = conn.execute(
         """
-        SELECT payload_json
+        SELECT actual_cost_usd
         FROM session_provider_usage_events
         WHERE session_id = ?
-          AND json_extract(payload_json, '$.actual_cost_usd') IS NOT NULL
+          AND actual_cost_usd IS NOT NULL
         """,
         (child_id,),
     ).fetchall()
     assert len(provenance_rows) == 1
-    assert json.loads(provenance_rows[0]["payload_json"])["actual_cost_usd"] == 0.125
+    assert provenance_rows[0]["actual_cost_usd"] == 0.125
 
 
 def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:

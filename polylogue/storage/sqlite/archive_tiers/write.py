@@ -3044,8 +3044,9 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
         total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
-        payload_json, occurred_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        estimated_cost_usd, actual_cost_usd, cost_status, cost_source, pricing_version,
+        billing_provider, billing_base_url, billing_mode, occurred_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -3091,7 +3092,14 @@ def _provider_usage_event_row(
         total_reasoning,
         total_tokens,
         _payload_optional_int(event.payload, "model_context_window"),
-        _provider_usage_payload_json(event.payload),
+        _payload_optional_float(event.payload, "estimated_cost_usd"),
+        _payload_optional_float(event.payload, "actual_cost_usd"),
+        _sqlite_text(_payload_string(event.payload, "cost_status")),
+        _sqlite_text(_payload_string(event.payload, "cost_source")),
+        _sqlite_text(_payload_string(event.payload, "pricing_version")),
+        _sqlite_text(_payload_string(event.payload, "billing_provider")),
+        _sqlite_text(_payload_string(event.payload, "billing_base_url")),
+        _sqlite_text(_payload_string(event.payload, "billing_mode")),
         _timestamp_ms(event.timestamp),
     )
 
@@ -3106,26 +3114,6 @@ _PROVIDER_USAGE_PROVENANCE_KEYS = (
     "billing_base_url",
     "billing_mode",
 )
-
-
-def _provider_usage_payload_json(payload: Mapping[str, object]) -> str:
-    """Project a provider-usage event payload down to its non-redundant remainder.
-
-    Every field of a ``token_count``/``message_usage`` payload except the
-    billing-provenance keys is already unpacked into a typed column on
-    ``session_provider_usage_events`` by ``_provider_usage_event_row`` above
-    (``last_token_usage``/``total_token_usage`` -> the ``last_*``/``total_*``
-    columns, ``model`` -> ``model_name``, event type -> ``provider_event_type``,
-    ``model_context_window`` -> its own column). The billing-provenance keys
-    (``_PROVIDER_USAGE_PROVENANCE_KEYS``) are the one part of the payload with
-    no typed column: they are read back via ``json_extract`` in
-    ``_reextract_provider_usage_tail_db`` to decide whether a zeroed-out
-    lineage-tail row still carries billing evidence worth keeping. Storing the
-    full raw payload duplicated ~1.28 GiB of already-typed data across 4M+
-    rows (polylogue-ei0d); persist only the provenance subset instead.
-    """
-    provenance = {key: payload.get(key) for key in _PROVIDER_USAGE_PROVENANCE_KEYS if payload.get(key) is not None}
-    return _json_dumps(provenance)
 
 
 def _provider_usage_event_row_has_evidence(
@@ -4842,14 +4830,14 @@ def _reextract_provider_usage_tail_db(
           AND total_cache_write_tokens = 0
           AND total_reasoning_output_tokens = 0
           AND total_tokens = 0
-          AND json_extract(payload_json, '$.estimated_cost_usd') IS NULL
-          AND json_extract(payload_json, '$.actual_cost_usd') IS NULL
-          AND json_extract(payload_json, '$.cost_status') IS NULL
-          AND json_extract(payload_json, '$.cost_source') IS NULL
-          AND json_extract(payload_json, '$.pricing_version') IS NULL
-          AND json_extract(payload_json, '$.billing_provider') IS NULL
-          AND json_extract(payload_json, '$.billing_base_url') IS NULL
-          AND json_extract(payload_json, '$.billing_mode') IS NULL
+          AND estimated_cost_usd IS NULL
+          AND actual_cost_usd IS NULL
+          AND cost_status IS NULL
+          AND cost_source IS NULL
+          AND pricing_version IS NULL
+          AND billing_provider IS NULL
+          AND billing_base_url IS NULL
+          AND billing_mode IS NULL
         """,
         (child_session_id,),
     )
@@ -5155,6 +5143,20 @@ def _payload_optional_int(payload: Mapping[str, object], key: str) -> int | None
     if isinstance(value, str) and value.strip():
         try:
             return max(int(float(value)), 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _payload_optional_float(payload: Mapping[str, object], key: str) -> float | None:
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
         except ValueError:
             return None
     return None

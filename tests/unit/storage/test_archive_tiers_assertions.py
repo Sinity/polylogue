@@ -350,25 +350,6 @@ def test_index_json_contracts_reject_non_object_payloads(tmp_path: Path) -> None
             """,
             (message_id, session_id, 0, "tool_use", "Bash", "tool-json", json.dumps({"command": "true"})),
         )
-
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                """
-                INSERT INTO session_provider_usage_events (
-                    session_id, source_message_id, position, provider_event_type, payload_json
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (session_id, message_id, 0, "token_count", "[]"),
-            )
-
-        conn.execute(
-            """
-            INSERT INTO session_provider_usage_events (
-                session_id, source_message_id, position, provider_event_type, payload_json
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (session_id, message_id, 0, "token_count", json.dumps({"total_tokens": 3})),
-        )
     finally:
         conn.close()
 
