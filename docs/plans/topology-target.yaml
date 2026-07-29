@@ -1924,10 +1924,6 @@ files:
     loc: 333
     target: polylogue/insights/export_bundles.py
     owner: stable
-  - path: polylogue/insights/fable_packet.py
-    loc: 306
-    target: polylogue/insights/fable_packet.py
-    owner: stable
   - path: polylogue/insights/fallback.py
     loc: 72
     target: polylogue/insights/fallback.py
