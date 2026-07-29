@@ -1539,6 +1539,80 @@ class TestUnreadFieldTriage:
         assert "aggregated_output" not in event.payload
         assert "formatted_output" not in event.payload
 
+    def test_patch_apply_end_captures_success_and_structured_changes(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "patch_apply_end",
+                    "call_id": "exec-1",
+                    "turn_id": "turn-1",
+                    "stdout": "Success. Updated the following files:\nM /repo/foo.py\n",
+                    "stderr": "",
+                    "success": True,
+                    "changes": {
+                        "/repo/foo.py": {
+                            "type": "update",
+                            "unified_diff": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+                            "move_path": None,
+                        },
+                        "/repo/renamed.py": {
+                            "type": "update",
+                            "unified_diff": "",
+                            "move_path": "/repo/old_name.py",
+                        },
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        event = result.session_events[0]
+        assert event.event_type == "patch_apply_end"
+        assert event.payload["success"] is True
+        changes = cast(dict[str, Any], event.payload["changes"])
+        assert changes["/repo/foo.py"] == {
+            "type": "update",
+            "unified_diff": "@@ -1,1 +1,1 @@\n-old\n+new\n",
+        }
+        assert changes["/repo/renamed.py"]["move_path"] == "/repo/old_name.py"
+        # stdout/stderr duplicate the paired function_call_output tool_result
+        # text, same dedup rule as exec_command -- deliberately not re-stored.
+        assert "stdout" not in event.payload
+        assert "stderr" not in event.payload
+
+    def test_patch_apply_end_omits_changes_when_no_files_touched(self) -> None:
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "patch_apply_end", "call_id": "exec-2", "success": False, "changes": {}},
+            },
+        ]
+        result = parse(payload, "fallback")
+        event = result.session_events[0]
+        assert event.payload["success"] is False
+        assert "changes" not in event.payload
+
+    def test_turn_context_captures_personality_reasoning_summary_collaboration_mode(self) -> None:
+        payload = [
+            {
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/repo/polylogue",
+                    "personality": "pragmatic",
+                    "summary": "auto",
+                    "collaboration_mode": {
+                        "mode": "plan",
+                        "settings": {"model": "gpt-5.4", "reasoning_effort": "medium"},
+                    },
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        turn_event = result.session_events[0]
+        assert turn_event.payload["personality"] == "pragmatic"
+        assert turn_event.payload["reasoning_summary"] == "auto"
+        assert turn_event.payload["collaboration_mode"] == "plan"
+
     def test_compacted_replacement_history_aggregates_phase_and_ghost_commit(self) -> None:
         payload = [
             {

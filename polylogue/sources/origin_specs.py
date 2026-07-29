@@ -519,6 +519,29 @@ def _codex_spec() -> OriginSpec:
             "codex-dev.db (automation, out-of-scope): local CLI automation "
             "scheduling config, not AI session content; empty on every "
             "install observed.",
+            "patch_apply_end.changes/.success (acquired, polylogue-cgfy codex "
+            "lane): per-file add/update/delete classification plus "
+            "unified_diff/move_path, retained verbatim on the patch_apply_end "
+            "session_event -- the structural equivalent of Claude Code's "
+            "structuredPatch. stdout/stderr/aggregated_output/formatted_output "
+            "on the same record are deliberately not re-stored (duplicate the "
+            "paired function_call_output tool_result text).",
+            "turn_context.personality/.summary/.collaboration_mode (acquired, "
+            "polylogue-cgfy codex lane): agent-persona, reasoning-summary "
+            "verbosity, and collaboration-mode-name knobs reported on every "
+            "turn; collaboration_mode.settings itself duplicates model/effort/"
+            "developer_instructions already captured from the top-level "
+            "turn_context and is not re-stored.",
+            "event_msg.memory_citation (measured negative, polylogue-cgfy "
+            "codex lane): observed null on every sampled record across "
+            "~3,200 real session files -- a constant, not an unread signal; "
+            "not acquired.",
+            "response_item(message).internal_chat_message_metadata_passthrough "
+            "(to-acquire, deferred): carries only {turn_id}, letting a "
+            "message join back to its turn -- messages presently carry no "
+            "turn_id at all. Deferred because it needs a metadata channel on "
+            "ParsedMessage plumbed through every codex.py message "
+            "constructor, not an additive per-event change.",
         ),
     )
 
