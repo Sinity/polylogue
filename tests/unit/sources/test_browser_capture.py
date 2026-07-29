@@ -1273,6 +1273,106 @@ async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_
     ]
 
 
+def test_browser_capture_block_metadata_routes_to_session_events() -> None:
+    """``BrowserCaptureBlock.metadata`` must reach ``session_events``, not just the block.
+
+    Exercises the generic (no-native-payload) turn loop's
+    ``_block_metadata_evidence_events`` wiring. The ``blocks`` table has no
+    metadata column and the write path only reads a ``language`` key back out
+    of it (bd polylogue-9x22), so whatever the capture extension attaches to
+    a block's ``metadata`` (here: an opaque ``dom_selector`` the extension
+    used to locate the tool call in the page) would otherwise be silently
+    dropped at write time. Deleting the
+    ``block_metadata_events.extend(_block_metadata_evidence_events(...))``
+    call in ``parse()`` makes this fail.
+    """
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["turns"] = [
+        {"provider_turn_id": "u1", "role": "user", "text": "run a search", "ordinal": 0},
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "text": "calling search",
+            "ordinal": 1,
+            "blocks": [
+                {
+                    "type": "tool_use",
+                    "tool_name": "web_search",
+                    "tool_id": "call-1",
+                    "tool_input": {"query": "polylogue"},
+                    "metadata": {"dom_selector": "#tool-call-1"},
+                },
+                {"type": "text", "text": "no metadata here"},
+            ],
+        },
+    ]
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    events = [event for event in parsed[0].session_events if event.event_type == "browser_capture_block_metadata"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.source_message_provider_id == "a1"
+    assert event.payload == {"block_index": 0, "dom_selector": "#tool-call-1"}
+
+
+@pytest.mark.asyncio
+async def test_browser_capture_block_metadata_lands_in_archive_session_events(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Full receiver -> parser -> materialize -> index.db round trip.
+
+    Proves the fix on the real production write path
+    (write_capture_envelope + Polylogue.parse_sources), not just the
+    in-memory parser: the archive's session_events table must carry the
+    block's metadata dict even though the blocks table has no metadata
+    column to hold it.
+    """
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["turns"] = [
+        {"provider_turn_id": "u1", "role": "user", "text": "run a search", "ordinal": 0},
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "text": "calling search",
+            "ordinal": 1,
+            "blocks": [
+                {
+                    "type": "tool_use",
+                    "tool_name": "web_search",
+                    "tool_id": "call-1",
+                    "tool_input": {"query": "polylogue"},
+                    "metadata": {"dom_selector": "#tool-call-1"},
+                }
+            ],
+        },
+    ]
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    artifact = write_capture_envelope(envelope, spool_path=tmp_path / "browser-capture").path
+    config = get_config()
+    config.sources = [Source(name="inbox", path=artifact)]
+
+    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+        await polylogue.parse_sources(config.sources)
+
+    with open_index_db(config.archive_root / "index.db") as conn:
+        rows = conn.execute(
+            "SELECT event_type, source_message_provider_id, payload_json FROM session_events "
+            "WHERE event_type = 'browser_capture_block_metadata'"
+        ).fetchall()
+
+    assert len(rows) == 1
+    row = dict(rows[0])
+    assert row["source_message_provider_id"] == "a1"
+    assert json.loads(row["payload_json"]) == {"block_index": 0, "dom_selector": "#tool-call-1"}
+
+
 def test_browser_capture_claude_fallback_turn_blocks_produce_typed_tool_blocks() -> None:
     """Same structural gap on the Claude fallback path (no native chat_messages payload)."""
     payload = {

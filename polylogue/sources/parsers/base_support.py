@@ -81,11 +81,23 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
             )
         elif seg_type in ("image", "document"):
             block_type = BlockType.from_string(seg_type)
+            # bd polylogue-9x22: this ``metadata`` dict is never persisted --
+            # the ``blocks`` table has no metadata column and the write path
+            # only reads a ``language`` key back out of it -- but unlike
+            # every other polylogue-9x22 site, it is NOT routed to
+            # session_events here. The Anthropic-protocol image/document
+            # segment shape's remaining keys after `type`/`media_type` are
+            # dominated by `source` (the inline base64 payload itself, or a
+            # file/url reference already captured by the attachment
+            # pipeline) -- verbatim-copying this dict the way the other
+            # sites do would duplicate large binary/attachment data into a
+            # durable evidence table meant for small JSON payloads. Re-audit
+            # with real corpus evidence if a genuinely small, non-blob,
+            # non-attachment-duplicate field is ever found on these segments.
             blocks.append(
                 ParsedContentBlock(
                     type=block_type,
                     media_type=seg.get("media_type"),
-                    metadata={k: v for k, v in seg.items() if k not in ("type", "media_type")},
                 )
             )
         elif seg_type == "token_budget":

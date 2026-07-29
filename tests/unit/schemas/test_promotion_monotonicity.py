@@ -14,10 +14,14 @@ carrying it would then validate as drift.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
+from polylogue.schemas.registry import SchemaRegistry
 
 
 def _types_by_path(schema: Any, path: str = "") -> dict[str, frozenset[str]]:
@@ -95,3 +99,66 @@ def test_no_typed_node_narrows_under_merge_in_either_order() -> None:
             assert wide_types <= merged_types.get(path, frozenset()), (
                 f"{path} narrowed: {sorted(wide_types)} not preserved in {sorted(merged_types.get(path, []))}"
             )
+
+
+@pytest.fixture
+def tmp_registry(tmp_path: Path) -> SchemaRegistry:
+    return SchemaRegistry(storage_root=tmp_path / "schemas")
+
+
+class TestPromoteClusterElementKindResolution:
+    def test_unspecified_artifact_kind_still_merges_with_real_default_element_kind(
+        self, tmp_registry: SchemaRegistry
+    ) -> None:
+        """`cluster_samples` without `artifact_kinds=` tags every cluster
+        "unspecified" (this is what `infer_schema(cluster=True)` does today).
+        A promotion built from such a cluster must still resolve to whatever
+        element_kind the provider's existing default package actually uses
+        (e.g. codex/claude-code's `session_record_stream`), not register a
+        disconnected "unspecified"/default "session_document" element that
+        orphans it.
+        """
+        tmp_registry.register_schema(
+            "kind-prov",
+            {"type": "object", "properties": {"legacy": {"type": "string"}}},
+            element_kind="session_record_stream",
+        )
+
+        samples = [{"legacy": "x", "fresh": 1}]
+        manifest = tmp_registry.cluster_samples("kind-prov", samples)  # no artifact_kinds -> "unspecified"
+        tmp_registry.save_cluster_manifest(manifest)
+        assert manifest.clusters[0].artifact_kind == "unspecified"
+
+        new_version = tmp_registry.promote_cluster("kind-prov", manifest.clusters[0].cluster_id, samples=samples)
+        schema = tmp_registry.get_schema("kind-prov", version=new_version)
+        assert schema is not None
+        properties = cast("dict[str, Any]", schema["properties"])
+        assert "legacy" in properties
+        assert "fresh" in properties
+        catalog = tmp_registry.load_package_catalog("kind-prov")
+        assert catalog is not None
+        package = catalog.package(new_version)
+        assert package is not None
+        assert package.default_element_kind == "session_record_stream"
+
+    def test_observed_artifact_count_never_decreases(self, tmp_registry: SchemaRegistry) -> None:
+        tmp_registry.register_schema("count-prov", {"type": "object", "properties": {"a": {"type": "string"}}})
+        manifest = tmp_registry.load_cluster_manifest("count-prov")
+        assert manifest is None  # nothing clustered yet; register_schema alone doesn't create one
+
+        samples = [{"a": "x", "b": 1}]
+        manifest = tmp_registry.cluster_samples("count-prov", samples)
+        # Fake a large prior observed-artifact-count directly on the existing
+        # package the way a real full-corpus promotion would have left it.
+        existing = tmp_registry.get_schema("count-prov")
+        assert existing is not None
+        existing["x-polylogue-observed-artifact-count"] = 10_000
+        tmp_registry.write_schema_version("count-prov", "v1", existing)
+        tmp_registry.save_cluster_manifest(manifest)
+
+        new_version = tmp_registry.promote_cluster("count-prov", manifest.clusters[0].cluster_id, samples=samples)
+        schema = tmp_registry.get_schema("count-prov", version=new_version)
+        assert schema is not None
+        observed_count = schema["x-polylogue-observed-artifact-count"]
+        assert isinstance(observed_count, int)
+        assert observed_count >= 10_000

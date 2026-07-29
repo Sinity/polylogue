@@ -1491,6 +1491,43 @@ def _code_mode_child_use_blocks(envelope: _CodexExecEnvelope) -> list[ParsedCont
     return blocks
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the only key the write path
+# reads back out of it is ``language`` (``storage/sqlite/archive_tiers/
+# write.py:_block_language``). ``_code_mode_child_result_blocks`` below still
+# attaches ``codex_functions_exec_*``/``paths``/``byte_count`` to
+# ``metadata`` as an in-process carrier; ``_code_mode_child_result_evidence_
+# events`` projects that same dict into ``session_events`` (same precedent
+# as ``claude/common.py``'s ``claude_ai_web_tool_evidence``), keyed to the
+# tool-result message that owns the child blocks.
+def _code_mode_child_result_evidence_events(
+    envelope: _CodexExecEnvelope,
+    *,
+    source_message_provider_id: str,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for child_index in range(len(envelope.results)):
+        result = envelope.results[child_index]
+        metadata: dict[str, object] = {
+            "codex_functions_exec_child_index": child_index,
+            "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
+        }
+        if result.paths:
+            metadata["paths"] = list(result.paths)
+        if result.byte_count is not None:
+            metadata["byte_count"] = result.byte_count
+        events.append(
+            ParsedSessionEvent(
+                event_type="codex_functions_exec_child_result_evidence",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload=metadata,
+            )
+        )
+    return events
+
+
 def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
     blocks: list[ParsedContentBlock] = []
     for child_index, result in enumerate(envelope.results):
@@ -2133,6 +2170,26 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     messages.append(tool_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, tool_message.timestamp)
+                    # code_mode_envelopes maps BOTH the call record's index
+                    # and the matching output record's index to the same
+                    # (results-enriched) envelope object -- only emit the
+                    # child-result evidence once, on the output/tool_result
+                    # message, not again on the call/tool_use message.
+                    if _record_type(inner) in {
+                        "function_call_output",
+                        "custom_tool_call_output",
+                        "tool_search_output",
+                        "web_search_output",
+                    }:
+                        exec_envelope_for_message = code_mode_envelopes.get(idx)
+                        if exec_envelope_for_message is not None and exec_envelope_for_message.results:
+                            session_events.extend(
+                                _code_mode_child_result_evidence_events(
+                                    exec_envelope_for_message,
+                                    source_message_provider_id=tool_message.provider_message_id,
+                                    timestamp=tool_message.timestamp,
+                                )
+                            )
                 event_message = _codex_event_message(
                     inner,
                     index=idx,

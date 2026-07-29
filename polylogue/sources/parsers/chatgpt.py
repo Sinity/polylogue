@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from pydantic import ValidationError
@@ -982,6 +982,37 @@ def looks_like(payload: object) -> bool:
     return _mapping_nodes_are_valid(mapping)
 
 
+# polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
+# ``blocks`` table has no metadata column and the write path only reads a
+# ``language`` key back out of it (``storage/sqlite/archive_tiers/write.py:
+# _block_language``). ``extract_messages_from_mapping`` above still tags
+# TOOL_USE/THINKING/CODE/TOOL_RESULT/context blocks with
+# ``metadata={"content_type": ...}`` and IMAGE blocks with
+# ``metadata={"asset_pointer": ...}`` as an in-process carrier -- without
+# this projection step that disambiguating detail (e.g. "thoughts" vs.
+# "reasoning_recap" on a THINKING block) is silently dropped at write time.
+# Route it through session_events, same precedent as
+# ``claude/common.py``'s ``claude_ai_web_tool_evidence`` and
+# ``browser_capture.py``'s ``browser_capture_block_metadata``: one event per
+# block carrying non-empty metadata, whole dict verbatim (no fixed key
+# vocabulary to prune against here, unlike the Claude AI web-tool case).
+def _block_metadata_evidence_events(messages: Sequence[ParsedMessage]) -> list[ParsedSessionEvent]:
+    events: list[ParsedSessionEvent] = []
+    for message in messages:
+        for block_index, block in enumerate(message.blocks):
+            if not block.metadata:
+                continue
+            events.append(
+                ParsedSessionEvent(
+                    event_type="chatgpt_block_metadata",
+                    timestamp=message.timestamp,
+                    source_message_provider_id=message.provider_message_id,
+                    payload={"block_index": block_index, **dict(block.metadata)},
+                )
+            )
+    return events
+
+
 def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
@@ -1041,6 +1072,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         )
         for timing in generation_timings
     ]
+    session_events.extend(_block_metadata_evidence_events(messages))
     duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")

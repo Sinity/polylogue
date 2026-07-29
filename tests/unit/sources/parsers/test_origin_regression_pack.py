@@ -821,6 +821,48 @@ def _browser_capture_snapshot_payload() -> JSONDocument:
     }
 
 
+def test_gemini_cli_and_hermes_block_metadata_routes_to_session_events() -> None:
+    """local_agent.py's shared block-metadata carriers must reach session_events.
+
+    The ``blocks`` table has no metadata column and the write path only
+    reads a ``language`` key back out of it (bd polylogue-9x22), so a
+    gemini-cli "thought" block's subject/timestamp and a tool_use/
+    tool_result block's status/displayName (``_tool_metadata``, shared by
+    both gemini-cli and hermes) would otherwise be silently dropped at
+    write time. Deleting either
+    ``session_events.extend(_block_metadata_evidence_events(messages))``
+    call in ``parse_gemini_cli``/``parse_hermes`` makes this fail.
+    """
+    gemini_payload = _gemini_cli_payload()
+    gemini_messages = gemini_payload["messages"]
+    gemini_messages[1]["thoughts"] = [{"text": "Let me think first.", "subject": "planning", "timestamp": "t1"}]
+    gemini_messages[1]["toolCalls"][0]["status"] = "success"
+    gemini_messages[1]["toolCalls"][0]["displayName"] = "Read File"
+
+    gemini_session = parse_gemini_cli(gemini_payload, "fallback")
+    gemini_events = [
+        event for event in gemini_session.session_events if event.event_type == "local_agent_block_metadata"
+    ]
+    gemini_payloads = [event.payload for event in gemini_events]
+    assert any(payload.get("subject") == "planning" and payload.get("timestamp") == "t1" for payload in gemini_payloads)
+    assert any(
+        payload.get("status") == "success" and payload.get("displayName") == "Read File" for payload in gemini_payloads
+    )
+
+    hermes_payload = _hermes_payload()
+    hermes_payload["messages"][1]["tool_calls"][0]["status"] = "success"
+    hermes_payload["messages"][1]["tool_calls"][0]["displayName"] = "Shell"
+
+    hermes_session = parse_hermes(hermes_payload, "fallback")
+    hermes_events = [
+        event for event in hermes_session.session_events if event.event_type == "local_agent_block_metadata"
+    ]
+    assert any(
+        event.payload.get("status") == "success" and event.payload.get("displayName") == "Shell"
+        for event in hermes_events
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main parametrised test
 # ---------------------------------------------------------------------------

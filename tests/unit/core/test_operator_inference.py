@@ -126,6 +126,39 @@ def test_cluster_promotion_drives_real_operator_registry_views(workspace_env: di
     assert {snapshot.provider for snapshot in listing.providers} >= {"chatgpt", "codex"}
 
 
+def test_cluster_promotion_with_samples_matches_the_cluster_it_was_built_from(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Regression: promote_schema_cluster's with_samples path re-derives a
+    fingerprint per candidate sample to find which ones belong to the
+    requested cluster. schema_cluster_id() hashes (artifact_kind,
+    structure_fingerprint) -- not the structure fingerprint alone -- and
+    infer_schema(cluster=True) stamps every cluster "unspecified" (it never
+    passes artifact_kinds through to cluster_samples()). Re-deriving sample
+    fingerprints without threading that same artifact_kind through raised
+    "No samples match cluster ..." for every real cluster ever produced by
+    plain infer_schema(cluster=True) (verified live against gemini-cli's real
+    exact-structure clusters before this fix).
+    """
+    index_db = _seed_chatgpt_raw(workspace_env)
+    inferred = infer_schema(SchemaInferRequest(provider="chatgpt", db_path=index_db, cluster=True))
+    assert inferred.manifest is not None
+    cluster_id = inferred.manifest.clusters[0].cluster_id
+    assert inferred.manifest.clusters[0].artifact_kind == "unspecified"
+
+    promoted = promote_schema_cluster(
+        SchemaPromoteRequest(
+            provider="chatgpt",
+            cluster_id=cluster_id,
+            db_path=index_db,
+            with_samples=True,
+            max_samples=100,
+        )
+    )
+
+    assert promoted.schema is not None
+
+
 def test_infer_schema_normalizes_operator_privacy_configuration(workspace_env: dict[str, Path]) -> None:
     index_db = _seed_chatgpt_raw(workspace_env)
     privacy_payload: JSONDocument = {

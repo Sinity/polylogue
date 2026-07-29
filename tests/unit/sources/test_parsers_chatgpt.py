@@ -449,6 +449,37 @@ CHATGPT_METADATA_CASES: list[MetadataCase] = [
 ]
 
 
+def test_chatgpt_block_content_type_routes_to_session_events() -> None:
+    """``ParsedContentBlock.metadata={"content_type": ...}`` must reach ``session_events``.
+
+    The ``blocks`` table has no metadata column and the write path only
+    reads a ``language`` key back out of it (bd polylogue-9x22), so the
+    "reasoning_recap" vs "thoughts" distinction on a THINKING block --
+    otherwise indistinguishable once both collapse to the same BlockType --
+    would be silently dropped at write time. Deleting the
+    ``session_events.extend(_block_metadata_evidence_events(messages))``
+    call in ``parse()`` makes this fail.
+    """
+    mapping: dict[str, object] = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "assistant"},
+                "content": {"content_type": "reasoning_recap", "parts": [], "text": "Thought about it"},
+            },
+        }
+    }
+
+    session = chatgpt_parse({"mapping": mapping}, "fallback")
+
+    events = [event for event in session.session_events if event.event_type == "chatgpt_block_metadata"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.source_message_provider_id == "msg1"
+    assert event.payload == {"block_index": 0, "content_type": "reasoning_recap"}
+
+
 @pytest.mark.parametrize("metadata,expected_type,desc", CHATGPT_METADATA_CASES)
 def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None, desc: str) -> None:
     """Test metadata extraction from message metadata field.
@@ -1173,8 +1204,9 @@ def test_chatgpt_generation_timing_is_invariant_to_equivalent_provider_timestamp
     assert utc_session.reported_duration_ms == offset_session.reported_duration_ms == 5_190_000
     assert utc_session.messages[0].duration_ms == offset_session.messages[0].duration_ms == 5_190_000
     assert utc_session.session_events == offset_session.session_events
-    assert len(utc_session.session_events) == 1
-    payload = utc_session.session_events[0].payload
+    lifecycle_events = [event for event in utc_session.session_events if event.event_type == "generation_lifecycle"]
+    assert len(lifecycle_events) == 1
+    payload = lifecycle_events[0].payload
     assert payload == {
         "state": "completed",
         "evidence_source": "provider_native",
@@ -1210,7 +1242,8 @@ def test_chatgpt_generation_timing_fallback_rejects_malformed_values(
 
     assert session.messages[0].duration_ms == expected_duration_ms
     assert session.reported_duration_ms == expected_duration_ms
-    assert len(session.session_events) == (1 if expected_duration_ms is not None else 0)
+    lifecycle_events = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
+    assert len(lifecycle_events) == (1 if expected_duration_ms is not None else 0)
 
 
 # ---------------------------------------------------------------------------
