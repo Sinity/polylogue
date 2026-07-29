@@ -360,6 +360,34 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # reprocess instead of a full-corpus replay.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=45,
+        # polylogue-1vpm.7: delegation_facts_source stops pairing a dispatch
+        # to a resolved child by cardinality-gated ordinal position (rank N
+        # dispatch <-> rank N child) and instead joins on identity -- a
+        # trivial 1:1 cohort (no second candidate on either side), or,
+        # non-trivially, provider-asserted content equality between the
+        # dispatch's own instruction text and the child's first turn.
+        # 'ambiguous' is retired from the mapping_state vocabulary. Every
+        # input this recomputation reads (actions, session_links, messages,
+        # blocks) is already fully parsed and persisted in index.db -- no
+        # RAW evidence is reparsed. But delegation_facts is a materialized
+        # TABLE (not the view), and _apply_replace_table's generic copy-
+        # forward only carries EXISTING rows onto a same-shaped schema
+        # (no column added or dropped here); it cannot re-derive VALUES
+        # from the new join logic. A plain REPLACE_TABLE fast-forward would
+        # therefore silently retain stale, ordinal-paired rows -- including
+        # 'ambiguous' ones the whole point of this delta is to make
+        # unreachable. As in v42/v44, DerivedDeltaClass has no category for
+        # "clone-safe shape, values via targeted reprocess of already-
+        # persisted derived rows" (tracked by polylogue-9rw0.1);
+        # SEMANTIC_REPARSE is the honest, conservative classification until
+        # that vocabulary gap is closed, and it keeps the existing
+        # `polylogue ops reset --index && polylogued run` full-rebuild
+        # behaviour rather than risk a fast-forwarded clone disagreeing with
+        # a cold rebuild.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

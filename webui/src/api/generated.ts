@@ -181,7 +181,7 @@ export type DelegationQueryRowPayload = {
   readonly instruction_truncated?: boolean;
   readonly link_confidence?: number | null;
   readonly link_method?: string | null;
-  readonly mapping_state: "resolved" | "unresolved" | "ambiguous" | "edge_only" | "quarantined";
+  readonly mapping_state: "resolved" | "unresolved" | "edge_only" | "quarantined";
   readonly parent_origin: string;
   readonly parent_session_id: string;
   readonly requested_model?: string | null;

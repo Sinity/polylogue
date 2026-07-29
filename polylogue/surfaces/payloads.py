@@ -2427,7 +2427,7 @@ def _bounded_delegation_text(value: str | None) -> str | None:
     return value[:_DELEGATION_TEXT_BOUND] + "…[truncated]"
 
 
-DelegationMappingState: TypeAlias = Literal["resolved", "unresolved", "ambiguous", "edge_only", "quarantined"]
+DelegationMappingState: TypeAlias = Literal["resolved", "unresolved", "edge_only", "quarantined"]
 DelegationResultStatus: TypeAlias = Literal["ok", "error", "unknown"]
 
 
@@ -2436,10 +2436,12 @@ class DelegationAttemptPayload(SurfacePayloadModel):
     `delegations` view, polylogue-lph4 ObjectRef normalization).
 
     ``mapping_state`` mirrors the view's own vocabulary exactly --
-    resolved/unresolved/ambiguous/edge_only/quarantined -- never
-    reinterpreted here. Action-observed rows (resolved/unresolved/ambiguous)
-    always carry a non-null ``instruction_tool_use_block_id``; edge-only rows
-    (edge_only/quarantined) never fabricate one. Instruction/artifact text is
+    resolved/unresolved/edge_only/quarantined -- never reinterpreted here
+    (polylogue-1vpm.7 retired 'ambiguous': with a provider-asserted content
+    or trivial-cohort join key, a cardinality mismatch is not a reachable
+    state). Action-observed rows (resolved/unresolved) always carry a
+    non-null ``instruction_tool_use_block_id``; edge-only rows (edge_only/
+    quarantined) never fabricate one. Instruction/artifact text is
     length-bounded (never full-session content) to keep this a citable
     evidence pointer, not a transcript dump.
     """
@@ -2565,10 +2567,6 @@ class DelegationCardPayload(SurfacePayloadModel):
 #: vocabulary, polylogue-lph4 ObjectRef surface).
 DELEGATION_STATE_CAVEATS: dict[str, str] = {
     "unresolved": "dispatch action observed but no child session resolved yet (mapping_state=unresolved)",
-    "ambiguous": (
-        "dispatch and resolved-child counts disagree for this parent; the real instruction is known but the "
-        "child cannot be attributed without guessing (mapping_state=ambiguous)"
-    ),
     "edge_only": (
         "resolved child session with no discoverable parent-side dispatch action "
         "(mapping_state=edge_only) -- instruction is never fabricated"

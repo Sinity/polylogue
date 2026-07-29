@@ -372,6 +372,14 @@ async def join_typed_annotations(
         payload = resolution.payload
         attempt_raw = payload.get("attempt") if payload else None
         attempt = cast(dict[str, object], attempt_raw) if isinstance(attempt_raw, dict) else None
+        # polylogue-1vpm.7 retired 'ambiguous' from delegation_facts.mapping_state
+        # entirely (a cardinality mismatch is no longer a reachable pairing
+        # state) -- this branch is now dead against current data. Left in
+        # place (rather than deleted) because AnnotationJoinDiagnosticCode's
+        # 'ambiguous_target' member and ambiguous_target_count are a broader,
+        # separately-scoped annotation-join contract (Pydantic field, not
+        # exclusive to delegation) that a full retirement would need to
+        # regenerate schemas for; not part of this bead's write scope.
         if attempt is not None and attempt.get("mapping_state") == "ambiguous":
             ambiguous_count += 1
             diagnose("ambiguous_target", assertion_ref, assertion.target_ref, "delegation mapping_state is ambiguous")

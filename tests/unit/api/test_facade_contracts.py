@@ -3103,18 +3103,22 @@ async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path
         await archive.close()
 
 
-async def test_resolve_ref_returns_ambiguous_delegation_attempt_payload(tmp_path: Path) -> None:
-    """Two dispatch actions but only one resolved child: rank-pairing would
-    have to guess, so both dispatch rows surface as ambiguous with a real
-    instruction but no fabricated child (polylogue-y964)."""
+async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without_matching_content(
+    tmp_path: Path,
+) -> None:
+    """Two dispatch actions but only one resolved child, and no distinguishing
+    content evidence (both `tool_input`s are empty): the content-identity
+    join has nothing to disambiguate on, so both dispatch rows surface
+    honestly as unresolved with a real instruction but no fabricated child --
+    never 'ambiguous' (polylogue-1vpm.7 retires that state entirely)."""
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             parent_session_id = archive_db.write_parsed(
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
-                    provider_session_id="delegation-ambiguous-parent-v1",
-                    title="Delegation ambiguous fixture",
+                    provider_session_id="delegation-unresolved-parent-v1",
+                    title="Delegation unresolved-pair fixture",
                     messages=[
                         ParsedMessage(
                             provider_message_id="dispatch-a",
@@ -3140,10 +3144,10 @@ async def test_resolve_ref_returns_ambiguous_delegation_attempt_payload(tmp_path
             archive_db.write_parsed(
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
-                    provider_session_id="delegation-ambiguous-child-v1",
-                    title="Delegation ambiguous child fixture",
+                    provider_session_id="delegation-unresolved-child-v1",
+                    title="Delegation unresolved-pair child fixture",
                     messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
-                    parent_session_provider_id="delegation-ambiguous-parent-v1",
+                    parent_session_provider_id="delegation-unresolved-parent-v1",
                     branch_type=BranchType.SUBAGENT,
                 )
             )
@@ -3154,10 +3158,10 @@ async def test_resolve_ref_returns_ambiguous_delegation_attempt_payload(tmp_path
         assert payload.resolved is True
         assert payload.payload is not None
         attempt = payload.payload["attempt"]
-        assert attempt["mapping_state"] == "ambiguous"
+        assert attempt["mapping_state"] == "unresolved"
         assert attempt["child_session_id"] is None
         assert attempt["instruction_tool_use_block_id"] == instruction_block_id
-        assert any("ambiguous" in caveat for caveat in payload.caveats)
+        assert any("unresolved" in caveat for caveat in payload.caveats)
     finally:
         await archive.close()
 

@@ -3892,8 +3892,9 @@ class PolylogueArchiveMixin:
         ``instruction_tool_use_block_id`` verbatim; edge-only refs carry the
         deterministic ``edge:<parent>::<child>`` relation identity (no
         parent-side dispatch action exists to key off for edge_only/
-        quarantined attempts). Missing, ambiguous, edge_only, and quarantined
-        states are returned as typed payloads, never silently guessed."""
+        quarantined attempts). Missing, unresolved, edge_only, and
+        quarantined states are returned as typed payloads, never silently
+        guessed."""
 
         from polylogue.surfaces.payloads import (
             DELEGATION_STATE_CAVEATS,
