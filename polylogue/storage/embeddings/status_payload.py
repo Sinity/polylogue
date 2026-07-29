@@ -731,16 +731,18 @@ def _archive_embedding_status_payload(
     *,
     cfg: object,
     include_detail: bool,
+    configured_root: Path | None = None,
 ) -> EmbeddingStatusPayload | None:
     index_db = _archive_index_path(db_path)
     if index_db is None:
         return None
+    root = configured_root if configured_root is not None else db_path.parent
     conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0)
     conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
     try:
         if not _table_exists(conn, "sessions"):
             return None
-        embeddings_db = index_db.with_name("embeddings.db")
+        embeddings_db = root / "embeddings.db"
         if embeddings_db.exists():
             conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
             status_table = _attached_table_name(conn, "embeddings", "embedding_status")
@@ -1033,7 +1035,7 @@ def _archive_embedding_status_payload(
     finally:
         conn.close()
 
-    latest_catchup_run, latest_material_catchup_run = _archive_catchup_runs(index_db.with_name("ops.db"))
+    latest_catchup_run, latest_material_catchup_run = _archive_catchup_runs(root / "ops.db")
 
     return _payload_from_stats(
         config_enabled=bool(getattr(cfg, "embedding_enabled", False)),
@@ -1125,13 +1127,17 @@ def embedding_status_payload(
 ) -> EmbeddingStatusPayload:
     """Read canonical embedding-status statistics for operator surfaces."""
     from polylogue.config import load_polylogue_config
+    from polylogue.storage.archive_identity import archive_file_set_root
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
     from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
     from polylogue.storage.embeddings.support import table_exists_sync
 
     cfg = load_polylogue_config()
     db_path = Path(env.config.db_path)
-    archive_payload = _archive_embedding_status_payload(db_path, cfg=cfg, include_detail=include_detail)
+    configured_root = archive_file_set_root(archive_root=env.config.archive_root, db_path=db_path)
+    archive_payload = _archive_embedding_status_payload(
+        db_path, cfg=cfg, include_detail=include_detail, configured_root=configured_root
+    )
     if archive_payload is not None:
         return archive_payload
     if not db_path.exists():

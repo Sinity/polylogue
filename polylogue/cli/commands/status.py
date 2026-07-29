@@ -756,7 +756,7 @@ def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
     }
 
 
-def _direct_archive_counts(conn: Any) -> dict[str, int]:
+def _direct_archive_counts(conn: Any, *, configured_root: Path | None = None) -> dict[str, int]:
     if _table_exists(conn, "sessions"):
         messages = (
             _fast_count(conn, "SELECT COALESCE(SUM(message_count), 0) FROM sessions")
@@ -766,14 +766,28 @@ def _direct_archive_counts(conn: Any) -> dict[str, int]:
         return {
             "sessions": _fast_count(conn, "SELECT COUNT(*) FROM sessions"),
             "messages": messages,
-            "raw_records": _archive_source_raw_count(conn),
+            "raw_records": _archive_source_raw_count(conn, configured_root=configured_root),
         }
     return {"sessions": 0, "messages": 0, "raw_records": 0}
 
 
-def _archive_source_raw_count(conn: Any) -> int:
+def _archive_source_raw_count(conn: Any, *, configured_root: Path | None = None) -> int:
     if _table_exists(conn, "raw_sessions"):
         return _fast_count(conn, "SELECT COUNT(*) FROM raw_sessions")
+    if configured_root is not None:
+        source_db = configured_root / "source.db"
+        if not source_db.exists():
+            return 0
+        try:
+            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
+                if not _table_exists(source_conn, "raw_sessions"):
+                    return 0
+                return _fast_count(source_conn, "SELECT COUNT(*) FROM raw_sessions")
+            finally:
+                source_conn.close()
+        except sqlite3.Error:
+            return 0
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
     except Exception as exc:
@@ -1617,7 +1631,7 @@ def _show_direct_json(
 
             conn = open_readonly_connection(active_db)
             try:
-                payload.update(_direct_archive_counts(conn))
+                payload.update(_direct_archive_counts(conn, configured_root=root))
                 payload["db_exists"] = True
             finally:
                 conn.close()
@@ -2097,6 +2111,7 @@ def _show_direct_status(
     from polylogue.paths import archive_root, db_path
 
     db = db_path()
+    root = archive_root()
     active_db = _active_status_db(db)
     if active_db is None or not active_db.exists():
         diag = diagnose_first_run(daemon_alive=False)
@@ -2117,7 +2132,7 @@ def _show_direct_status(
 
         conn = open_readonly_connection(active_db)
         try:
-            counts = _direct_archive_counts(conn)
+            counts = _direct_archive_counts(conn, configured_root=root)
             convs = counts["sessions"]
             msgs = counts["messages"]
             raw = counts["raw_records"]

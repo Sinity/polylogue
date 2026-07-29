@@ -358,6 +358,7 @@ def _build_archive_similar_payload(
     *,
     bounded_limit: int,
     disabled_reason: str | None,
+    archive_root_path: Path,
 ) -> dict[str, object] | None:
     conn: sqlite3.Connection | None = None
     index_conn = sqlite3.connect(index_db)
@@ -372,7 +373,7 @@ def _build_archive_similar_payload(
             envelope["limit"] = bounded_limit
             return envelope
 
-        embeddings_db = Path(index_db).with_name("embeddings.db")
+        embeddings_db = archive_root_path / "embeddings.db"
         if not embeddings_db.exists():
             envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
             envelope["session_id"] = session_id
@@ -486,6 +487,7 @@ def build_similar_payload(
             session_id,
             bounded_limit=bounded_limit,
             disabled_reason=disabled_reason,
+            archive_root_path=archive_root(),
         )
     if not dbf.exists():
         # Treat a missing database the same as a missing session —

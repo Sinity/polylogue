@@ -104,10 +104,12 @@ def _iso_from_epoch_ms(value: object) -> str | None:
     return datetime.fromtimestamp(epoch_ms / 1000.0, UTC).isoformat()
 
 
-def _fetch_archive_provenance_row(archive_db: Path, session_id: str) -> ProvenanceRow | None:
+def _fetch_archive_provenance_row(
+    archive_db: Path, session_id: str, *, archive_root_path: Path
+) -> ProvenanceRow | None:
     if not archive_db.exists():
         return None
-    source_db = archive_db.with_name("source.db")
+    source_db = archive_root_path / "source.db"
     conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)
     try:
         conn.row_factory = sqlite3.Row
@@ -206,9 +208,9 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
     # needed.
     archive_db: Path | None = dbp
     if archive_db is not None and archive_db.exists():
-        return _fetch_archive_provenance_row(archive_db, session_id)
+        return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
     if not dbp.exists() and archive_db is not None:
-        return _fetch_archive_provenance_row(archive_db, session_id)
+        return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
     conn = sqlite3.connect(str(dbp))
     try:
         conn.row_factory = sqlite3.Row

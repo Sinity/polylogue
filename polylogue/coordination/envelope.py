@@ -1766,7 +1766,7 @@ def _handoff_payloads(
     if remaining and archive is not None:
         payloads.extend(
             _assertion_handoff_payloads(
-                Path(archive.index_db).with_name("user.db"),
+                Path(archive.archive_root) / "user.db",
                 repo_root=repo_root,
                 limit=remaining,
             )
@@ -1881,8 +1881,8 @@ def _archive_payload(resources: tuple[CoordinationResourceEpisodePayload, ...]) 
         index_db=str(index),
         index_exists=index.exists(),
         index_user_version=_sqlite_user_version(index),
-        source_user_version=_sqlite_user_version(index.with_name("source.db")),
-        user_user_version=_sqlite_user_version(index.with_name("user.db")),
+        source_user_version=_sqlite_user_version(archive / "source.db"),
+        user_user_version=_sqlite_user_version(archive / "user.db"),
         hook_flow_states=hook_flow_states,
         hook_flow_healthy=hook_flow_healthy,
         hook_flow_gaps=hook_flow_gaps,
