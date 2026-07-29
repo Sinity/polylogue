@@ -201,15 +201,75 @@ logic) entirely.
 ### 5. Per-pass candidate requery / resume recompute
 
 **What it is:** `repair_raw_materialization`
-(`polylogue/storage/repair.py:5695`) recomputes its FULL candidate set from
-scratch via `_raw_materialization_candidate_ids()` up to twice per call:
-once at entry (`polylogue/storage/repair.py:5783`) and again after the
-census loop, to re-check what's still uncensused
-(`polylogue/storage/repair.py:5844`). Each call re-scans `raw_sessions`
-joined against `index_tier.sessions`/`raw_revision_applications`/
-`raw_membership_census` (`polylogue/storage/repair.py:3618` onward) — an
-O(backlog size) query repeated every daemon tick regardless of how much of
-the backlog actually changed since the previous tick.
+(`polylogue/storage/repair.py:5959`, verified against the current tree —
+this line has drifted before and will again) recomputes its FULL candidate
+set from scratch via `_raw_materialization_candidate_ids()` up to five times
+per call (entry, after the census loop, on a stale-plan rejection path, once
+per executed replay component inside the apply loop, and once more at the
+end) plus several more call sites elsewhere in the file. Each call re-scans
+`raw_sessions` joined against `index_tier.sessions`/
+`raw_revision_applications`/`raw_membership_census` (`_raw_materialization_candidate_ids`,
+`polylogue/storage/repair.py:3758` in the pre-fix tree) — an O(backlog size)
+query repeated every daemon tick regardless of how much of the backlog
+actually changed since the previous tick.
+
+**Attempted fix (polylogue-iy3n, polylogue-m6tp fast-follow, 2026-07-29) —
+reverted, second failed attempt in this same class:** a generation-counted, explicitly
+invalidated in-process cache was built and then reverted after finding the
+same failure shape as the earlier `PRAGMA data_version` attempt this section
+already describes, just via a different mechanism. Design tried: memoize
+`_raw_materialization_candidate_ids` per `(archive_root, raw_artifact_id,
+provider, source_family, source_root)`, invalidated by an explicit
+`bump_raw_materialization_candidate_generation()` counter called from every
+writer of the five relevant tables that this bead's write scope
+(`repair.py`, `raw_authority.py`,
+`storage/sqlite/archive_tiers/revision_application.py`, `daemon/**`) could
+reach directly, plus a default-invalidate backstop in
+`daemon/write_coordinator.py` (the one choke point every daemon writer
+passes through) for actors outside that scope, with a narrow, individually
+source-audited exemption list for actors proven never to touch those tables
+(FTS merge, embedding backlog, judgment automation, blob GC, heartbeat,
+`PRAGMA optimize`, convergence-debt retry).
+
+This reduced generation-bump noise correctly for every writer *this bead is
+allowed to instrument*. It failed against writers it is not allowed to
+instrument: `tests/unit/storage/test_repair.py::test_raw_materialization_replays_governed_bundle_after_index_reset`
+deletes and reinitializes `index.db` directly between two
+`repair_raw_materialization` calls (modeling the documented, ordinary
+`polylogue ops reset --index && polylogued run` operational flow — see this
+repo's schema-regimes doctrine) and
+`test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt`
+writes `raw_membership_census` via direct SQL between two
+`_raw_materialization_candidate_ids` calls. Neither path routes through any
+function reachable from this bead's write scope: the real writers of
+`raw_sessions`/index-tier `sessions`/`raw_membership_census`/
+`raw_session_memberships` live in `polylogue/sources/live/*` (live ingest,
+explicitly out of scope), `polylogue/storage/repository/**` (explicitly out
+of scope), and `polylogue/storage/sqlite/archive_tiers/archive.py` /
+`storage/sqlite/queries/{raw_writes,raw_state}.py` (not owned by this bead).
+Both failing tests are legitimate simulations of real external-mutation
+scenarios, not test artifacts to route around — an index reset genuinely can
+run against a live archive, and out-of-band census/evidence writes are the
+documented shape of `raw_membership_census`. The cache returned stale
+candidate sets in both cases, the same observable failure the
+`data_version` attempt produced, just reached through unaudited writers
+instead of a WAL-invisible change counter. Reverted cleanly (`git checkout
+--`); `tests/unit/storage/test_repair.py` +
+`tests/unit/devtools/test_raw_authority_scale_proof.py` reconfirmed green
+(86 passed) on the reverted tree.
+
+**Conclusion:** a correct fix needs either (a) invalidation hooks in the
+actual writer modules above, which sit outside every write-scope grant this
+bead has received twice now, or (b) the persistent backlog iterator this
+section already names as the true fix, which restructures the source of
+truth itself instead of trying to cache a query over it. (a) is a
+cross-lane change (touches `sources/live/*`, `storage/repository/**`,
+`storage/sqlite/archive_tiers/archive.py` — each plausibly another lane's
+scope); (b) is squarely phase (c) below. Re-attempting this item with a
+narrower cache (e.g. scoped to only fire when `raw_artifact_id` is set, or
+gated on a coarser "has the daemon done anything since boot" flag) would
+just be a smaller version of the same unsound shape — the failure is
+structural (writers outside instrumentable scope), not a tuning problem.
 
 **Why it exists today:** the conveyor has no persistent memory of "where it
 left off" beyond what's durably recorded in `source.db`/`index.db`
