@@ -324,7 +324,17 @@ def _captured_jsonl_ends_at_record_boundary(
     if not required or path.suffix.lower() not in {".jsonl", ".ndjson"}:
         return True
     if blob_size <= 0:
-        return False
+        # A zero-byte capture has zero records -- none complete, none
+        # incomplete -- so it is trivially at a record boundary. This is
+        # NOT the same condition as a mid-write truncation: a session file
+        # the provider has created but not yet written its first line into
+        # (a live-watcher race) is empty by construction, not corrupted.
+        # Treating it as "incomplete" here misclassified genuinely-empty
+        # raws as truncated-boundary parse failures (polylogue raw-failure
+        # accounting, 2026-07-29); the correct downstream outcome for an
+        # empty payload is the ordinary "produced no sessions" path below,
+        # not this one.
+        return True
     if payload is not None:
         tail = payload.rsplit(b"\n", 1)[-1]
     else:
