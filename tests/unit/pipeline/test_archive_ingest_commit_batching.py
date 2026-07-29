@@ -50,7 +50,17 @@ def _build_sources(tmp_path: Path, *, count: int, seed: int = 7) -> list[Source]
     sources: list[Source] = []
     for spec in specs:
         provider_dir = corpus_dir / spec.provider
-        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="corpus")
+        # Prefix is seed-qualified: some providers (e.g. claude-ai) derive
+        # their session native_id from the artifact filename, not its
+        # content. A fixed "corpus" prefix across two `_build_sources` calls
+        # with different seeds against the same archive_root (as
+        # test_parse_workers_override_bypasses_process_pool does) collides
+        # on session_id despite genuinely different generated content. The
+        # write path's freshness guard then compares each call's
+        # independently-random synthetic timestamp and can skip the second
+        # write outright when it draws an earlier one -- not a bug, just an
+        # unintended interaction this helper must not create.
+        written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix=f"corpus-{seed}")
         sources.extend(Source(name=spec.provider, path=file_path) for file_path in written.files)
     return sources
 
