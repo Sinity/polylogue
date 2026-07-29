@@ -375,8 +375,7 @@ def copy_to_clipboard(env: AppEnv, content: str) -> None:
             "Use --to file --out <path> to capture the output instead."
         )
     raise click.ClickException(
-        "No clipboard tool found. Install wl-clipboard (Wayland) or xclip/xsel (X11), "
-        "or use --to file --out <path>."
+        "No clipboard tool found. Install wl-clipboard (Wayland) or xclip/xsel (X11), or use --to file --out <path>."
     )
 
 

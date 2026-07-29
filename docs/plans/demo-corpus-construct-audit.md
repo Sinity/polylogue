@@ -17,7 +17,7 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | ---: |
 | Sessions | 19 |
 | Messages | 71 indexed |
-| Blocks | 121 |
+| Blocks | 119 |
 | Session profiles | 19 |
 | Origins | aistudio-drive, antigravity-session, chatgpt-export, claude-ai-export, claude-code-session, codex-session, gemini-cli-session, hermes-session |
 | Run rows | 19 |
@@ -48,10 +48,10 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | --- | ---: | ---: | --- |
 | Multi-origin sessions (`multi_origin_sessions`) | 8 | 3 | `ok` |
 | Session profiles (`session_profiles`) | 19 | 3 | `ok` |
-| Tool-use blocks (`tool_use_blocks`) | 24 | 1 | `ok` |
-| Tool-result blocks (`tool_result_blocks`) | 24 | 1 | `ok` |
-| Failed tool results (`failed_tool_results`) | 6 | 1 | `ok` |
-| Provider usage messages (`provider_usage_messages`) | 14 | 1 | `ok` |
+| Tool-use blocks (`tool_use_blocks`) | 26 | 1 | `ok` |
+| Tool-result blocks (`tool_result_blocks`) | 28 | 1 | `ok` |
+| Failed tool results (`failed_tool_results`) | 7 | 1 | `ok` |
+| Provider usage messages (`provider_usage_messages`) | 9 | 1 | `ok` |
 | Attachment rows (`attachment_rows`) | 1 | 1 | `ok` |
 | Acquired attachment rows (`acquired_attachment_rows`) | 1 | 1 | `ok` |
 | Temporary session rows (`temporary_session_rows`) | 1 | 1 | `ok` |
@@ -70,21 +70,21 @@ This datasheet is generated from the deterministic demo family registry, the dec
 | Prefix-sharing lineage links (`prefix_sharing_links`) | 2 | 1 | `ok` |
 | Continuation links (`continuation_links`) | 1 | 1 | `ok` |
 | Subagent links (`subagent_links`) | 1 | 1 | `ok` |
-| Sidechain sessions (`sidechain_sessions`) | 2 | 1 | `ok` |
+| Sidechain sessions (`sidechain_sessions`) | 1 | 1 | `ok` |
 | Compaction events (`compaction_events`) | 1 | 1 | `ok` |
 | Run projection rows (`run_projection_rows`) | 19 | 1 | `ok` |
 | Observed-event rows (`observed_event_rows`) | 43 | 1 | `ok` |
 | Context snapshot rows (`context_snapshot_rows`) | 19 | 1 | `ok` |
 | Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
 | Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
-| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 3 | 1 | `ok` |
-| Error terminal-state rows (`error_terminal_state_rows`) | 4 | 1 | `ok` |
+| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 5 | 1 | `ok` |
+| Error terminal-state rows (`error_terminal_state_rows`) | 2 | 1 | `ok` |
 | Receipts failed test action (`receipts_failed_test_action`) | 1 | 1 | `ok` |
 | Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
 | Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
 | Anti-grep negative control (`anti_grep_control`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 35 | 1 | `ok` |
-| Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 1 | 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 38 | 1 | `ok` |
+| Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
 | Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
 
 ## Interpretation Notes

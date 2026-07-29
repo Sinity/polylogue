@@ -293,15 +293,15 @@ These inferred corpus specs come from the live schema registry and participate i
 
 | Provider | Package | Variants | Targets | Tags |
 | --- | --- | ---: | --- | --- |
-| `antigravity` | `v1` | `1` | `bd9040a63f17bffc` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `antigravity` | `v1` | `1` | `fd950579a81649c6` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `browser-capture` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `chatgpt` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
-| `claude-ai` | `v1` | `1` | `02055b63f88d2b66` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
-| `claude-code` | `v1` | `1` | `094db1eef00db62f` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
-| `codex` | `v1` | `1` | `065d9013ae6321a5` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `claude-ai` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `claude-code` | `v1` | `1` | `session_record_stream` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `codex` | `v1` | `1` | `session_record_stream` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `gemini` | `v1` | `1` | `session_document` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 | `gemini-cli` | `v1` | `1` | `2ea47ff433ce1026` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
-| `hermes` | `v1` | `1` | `380d17a0d92e5408` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
+| `hermes` | `v1` | `1` | `f99c39ed0e5df7ea` | `inferred`<br>`schema`<br>`synthetic`<br>`scenario` |
 
 ## Scenario Projection Catalog
 

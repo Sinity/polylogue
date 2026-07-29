@@ -70,7 +70,7 @@ def _claude_payload(title: str = "hello") -> bytes:
             }
         ],
     }
-    return orjson.dumps(body)
+    return bytes(orjson.dumps(body))
 
 
 def _make_record(raw_id: str, *, payload: bytes) -> RawSessionRecord:
