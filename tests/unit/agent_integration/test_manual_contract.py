@@ -80,7 +80,7 @@ def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
     token = continuation_example_token()
     decoded = QueryContinuation.decode(token)
 
-    assert token.startswith("q1.")
+    assert token.startswith("q2.")
     assert decoded.request.operation == "query"
     assert decoded.request.offset == 20
     assert decoded.request.page_size == 20
