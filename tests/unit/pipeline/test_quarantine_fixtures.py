@@ -272,8 +272,17 @@ async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) 
 
     cases = [
         (
+            # Unlike `ingest_record` (build_raw_payload_envelope,
+            # test_zero_length_blob_quarantines_across_providers below),
+            # `validate_raw_ids` decodes through `pipeline/services/
+            # validation_runtime.py`, which surfaces the active JSON
+            # backend's own decode-error text verbatim after a fixed
+            # "Unable to decode payload: " prefix -- orjson says "Input is
+            # a zero-length, empty document", msgspec (free-threaded) says
+            # "Input data was truncated". Only the facade's own prefix is
+            # backend-invariant; see polylogue/core/json.py.
             _make_raw_record(zero_length_bytes(), "codex", "/exports/empty-codex.jsonl"),
-            "zero-length",
+            "Unable to decode payload:",
         ),
         (
             _make_raw_record(codex_malformed_jsonl_bytes(), "codex", "/exports/malformed-codex.jsonl"),
