@@ -2194,6 +2194,7 @@ def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
 
     repairs: list[FakeConnection] = []
 
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
     monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", ensure)
@@ -2281,6 +2282,7 @@ def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
     def rebuild(fake_conn: FakeConnection) -> None:
         rebuilds.append(fake_conn)
 
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
     monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda _conn: None)
@@ -2691,6 +2693,7 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
             self.closed = True
 
     conn = FakeConnection()
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
     monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr(
@@ -2786,6 +2789,7 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
     conn = FakeConnection()
     rebuilds: list[FakeConnection] = []
     optional_repairs: list[FakeConnection] = []
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
     monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.bootstrap.initialize_archive_tier", lambda *_args: None)
@@ -2914,6 +2918,7 @@ def test_ensure_fts_startup_readiness_skips_non_current_archive_shape(
     restored: list[FakeConnection] = []
     rebuilds: list[FakeConnection] = []
 
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: db.parent)
     monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db)
     monkeypatch.setattr("polylogue.storage.sqlite.connection_profile.open_connection", lambda _db, timeout: conn)
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_index_sync", lambda fake_conn: None)
