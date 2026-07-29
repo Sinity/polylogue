@@ -30,6 +30,7 @@ _MAX_STRUCTURAL_KEY_LENGTH = 128
 _CONTENT_KEY_MARKERS = frozenset("?<>")
 _HIGH_CARDINALITY_KEY_THRESHOLD = 128
 _PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
+_DYNAMIC_KEY_RATIO_THRESHOLD = 0.5
 
 
 @lru_cache(maxsize=4096)
@@ -55,9 +56,47 @@ def _looks_pathlike_key(key: str) -> bool:
     return ":" in key and len(key) > 2
 
 
+def is_content_bearing_key(key: str) -> bool:
+    """True when a key is free text rather than a structural name.
+
+    Separated from :func:`is_dynamic_key` because the consequence differs. A
+    UUID or hex key is merely unhelpful as structure. A key carrying prose --
+    punctuation like ``?``/``<``/``>``, control characters, or simply longer
+    than any real field name -- is *content*, and emitting it into a schema
+    publishes that content verbatim.
+    """
+    if len(key) > _MAX_STRUCTURAL_KEY_LENGTH:
+        return True
+    if any(ord(character) < 32 or ord(character) == 127 for character in key):
+        return True
+    return any(marker in key for marker in _CONTENT_KEY_MARKERS)
+
+
 def should_collapse_observed_keys(keys: Collection[object]) -> bool:
-    """Return whether an observed map must be modeled as a dynamic-key map."""
+    """Return whether an observed map must be modeled as a dynamic-key map.
+
+    A single content-bearing key forces collapse, with no cardinality floor.
+    The floor used to be the only rule below the high-cardinality threshold,
+    and it let real conversation text reach a committed, PUBLIC schema: nine
+    user questions became ``properties`` names under
+    ``toolUseResult.annotations`` -- an annotations map keyed by the question
+    asked -- because nine is under the 24-key floor. ``is_dynamic_key`` would
+    have flagged every one of them on the ``?`` marker; this function simply
+    never asked it. Structure is inferred from map SHAPE, so a map keyed by
+    prose has exactly one honest schema: ``additionalProperties``.
+
+    Identifier-ish keys (UUID, hex, prefixed ids) stay ratio-gated. They are
+    not a disclosure risk, and collapsing a mostly-static map because one id
+    appeared would lose real structure.
+    """
+    if not keys:
+        return False
+    if any(is_content_bearing_key(str(key)) for key in keys):
+        return True
     if len(keys) >= _HIGH_CARDINALITY_KEY_THRESHOLD:
+        return True
+    dynamic = sum(1 for key in keys if is_dynamic_key(str(key)))
+    if dynamic / len(keys) >= _DYNAMIC_KEY_RATIO_THRESHOLD:
         return True
     if len(keys) < 24:
         return False

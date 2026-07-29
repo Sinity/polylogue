@@ -1,99 +1,19 @@
 {
-  "provider": "gemini-cli",
+  "default_version": "v1",
   "generated_at": "2026-05-11T04:14:47.338533+00:00",
   "latest_version": "v1",
-  "default_version": "v1",
-  "recommended_version": "v1",
   "orphan_adjunct_counts": {},
   "packages": [
     {
-      "provider": "gemini-cli",
-      "version": "v1",
       "anchor_kind": "session_document",
-      "default_element_kind": "session_document",
-      "first_seen": "2026-03-14T18:46:59.588045+00:00",
-      "last_seen": "2026-04-27T23:38:16.789546+00:00",
-      "bundle_scope_count": 27,
-      "sample_count": 27,
       "anchor_profile_family_id": "2ea47ff433ce1026",
-      "bundle_scopes": [
-        "session-2026-03-14T17-57-4ab54d29",
-        "session-2026-03-14T21-41-98ede588",
-        "session-2026-03-15T17-05-319579e7",
-        "session-2026-03-15T17-09-19d53de0",
-        "session-2026-03-16T04-28-7d6c3ad4",
-        "session-2026-03-16T09-33-5c12869b",
-        "session-2026-03-16T09-40-5c12869b",
-        "session-2026-03-16T10-01-879fd070",
-        "session-2026-03-16T10-12-db0e137c",
-        "session-2026-03-16T11-44-2bf189e2",
-        "session-2026-03-24T14-38-1c77a3b8",
-        "session-2026-03-29T11-19-2a60b96b",
-        "session-2026-03-29T16-04-61866b05",
-        "session-2026-04-02T09-33-d4ecf1de",
-        "session-2026-04-02T09-57-d4ecf1de",
-        "session-2026-04-02T10-09-56cb9ec1",
-        "session-2026-04-02T10-12-56cb9ec1",
-        "session-2026-04-08T17-10-74cb3454",
-        "session-2026-04-08T20-24-28330ec6",
-        "session-2026-04-08T20-45-44d35feb",
-        "session-2026-04-08T20-47-44d35feb",
-        "session-2026-04-16T16-59-4c3da455",
-        "session-2026-04-26T03-55-7a8a81d2",
-        "session-2026-04-26T04-04-cc771f62",
-        "session-2026-04-27T22-43-c2f685b0",
-        "session-2026-04-27T22-44-e67b9a25",
-        "ssf5l5"
-      ],
-      "profile_family_ids": [
-        "2ea47ff433ce1026"
-      ],
-      "representative_paths": [
-        "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-27T22-43-c2f685b0.json",
-        "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-27T22-44-e67b9a25.json",
-        "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-26T04-04-cc771f62.json",
-        "/home/sinity/.gemini/tmp/sinex/chats/session-2026-04-26T03-55-7a8a81d2.json",
-        "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-16T16-59-4c3da455.json"
-      ],
+      "bundle_scope_count": 27,
+      "default_element_kind": "session_document",
       "elements": [
         {
-          "element_kind": "session_document",
-          "schema_file": "session_document.schema.json.gz",
-          "sample_count": 27,
           "artifact_count": 27,
-          "supported": true,
-          "first_seen": "2026-03-14T18:46:59.588045+00:00",
-          "last_seen": "2026-04-27T23:38:16.789546+00:00",
           "bundle_scope_count": 27,
-          "bundle_scopes": [
-            "session-2026-03-14T17-57-4ab54d29",
-            "session-2026-03-14T21-41-98ede588",
-            "session-2026-03-15T17-05-319579e7",
-            "session-2026-03-15T17-09-19d53de0",
-            "session-2026-03-16T04-28-7d6c3ad4",
-            "session-2026-03-16T09-33-5c12869b",
-            "session-2026-03-16T09-40-5c12869b",
-            "session-2026-03-16T10-01-879fd070",
-            "session-2026-03-16T10-12-db0e137c",
-            "session-2026-03-16T11-44-2bf189e2",
-            "session-2026-03-24T14-38-1c77a3b8",
-            "session-2026-03-29T11-19-2a60b96b",
-            "session-2026-03-29T16-04-61866b05",
-            "session-2026-04-02T09-33-d4ecf1de",
-            "session-2026-04-02T09-57-d4ecf1de",
-            "session-2026-04-02T10-09-56cb9ec1",
-            "session-2026-04-02T10-12-56cb9ec1",
-            "session-2026-04-08T17-10-74cb3454",
-            "session-2026-04-08T20-24-28330ec6",
-            "session-2026-04-08T20-45-44d35feb",
-            "session-2026-04-08T20-47-44d35feb",
-            "session-2026-04-16T16-59-4c3da455",
-            "session-2026-04-26T03-55-7a8a81d2",
-            "session-2026-04-26T04-04-cc771f62",
-            "session-2026-04-27T22-43-c2f685b0",
-            "session-2026-04-27T22-44-e67b9a25",
-            "ssf5l5"
-          ],
+          "element_kind": "session_document",
           "exact_structure_ids": [
             "11de1e7d7ab16df7",
             "19ffaf0e7d802e80",
@@ -123,6 +43,9 @@
             "e03a0fabe84c6b28",
             "e5dcb5856d38ede9"
           ],
+          "first_seen": "2026-03-14T18:46:59.588045+00:00",
+          "last_seen": "2026-04-27T23:38:16.789546+00:00",
+          "observed_artifact_count": 27,
           "profile_family_ids": [
             "2ea47ff433ce1026"
           ],
@@ -150,17 +73,22 @@
             "type:sessionId:string",
             "type:startTime:string"
           ],
-          "representative_paths": [
-            "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-27T22-43-c2f685b0.json",
-            "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-27T22-44-e67b9a25.json",
-            "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-26T04-04-cc771f62.json",
-            "/home/sinity/.gemini/tmp/sinex/chats/session-2026-04-26T03-55-7a8a81d2.json",
-            "/home/sinity/.gemini/tmp/sinnix/chats/session-2026-04-16T16-59-4c3da455.json"
-          ],
-          "observed_artifact_count": 27
+          "sample_count": 27,
+          "schema_file": "session_document.schema.json.gz",
+          "supported": true
         }
       ],
-      "orphan_adjunct_counts": {}
+      "first_seen": "2026-03-14T18:46:59.588045+00:00",
+      "last_seen": "2026-04-27T23:38:16.789546+00:00",
+      "orphan_adjunct_counts": {},
+      "profile_family_ids": [
+        "2ea47ff433ce1026"
+      ],
+      "provider": "gemini-cli",
+      "sample_count": 27,
+      "version": "v1"
     }
-  ]
+  ],
+  "provider": "gemini-cli",
+  "recommended_version": "v1"
 }
