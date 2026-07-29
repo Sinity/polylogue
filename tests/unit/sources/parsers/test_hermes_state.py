@@ -127,3 +127,102 @@ def test_exit_code_and_error_together_prefer_error_but_keep_exit_code(tmp_path: 
     )
     assert blocks[0].is_error is True
     assert blocks[0].exit_code == 1
+
+
+def _write_reasoning_state_db(path: Path) -> None:
+    """A minimal state.db with a reasoning-bearing assistant message.
+
+    ``reasoning_details``/``codex_reasoning_items``/``codex_message_items``
+    are Hermes's captured Codex-native reasoning-trace evidence
+    (bd polylogue-9x22): the ``blocks`` table has no metadata column, so this
+    would be silently dropped at write time if it only reached
+    ``ParsedContentBlock.metadata``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                model TEXT,
+                model_config TEXT,
+                parent_session_id TEXT,
+                started_at REAL,
+                ended_at REAL,
+                title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_name TEXT,
+                tool_calls TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT,
+                timestamp REAL NOT NULL,
+                observed INTEGER DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                compacted INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO sessions (id, source, model, model_config, parent_session_id, started_at, ended_at, title)
+            VALUES ('s1', 'hermes', 'test-model', '{}', NULL, 1775000000.0, 1775000010.0, 'Reasoning fixture');
+            """
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, 'user', 'solve it', ?)",
+            ("s1", 1775000001.0),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, role, content, reasoning_content, reasoning_details,
+                codex_reasoning_items, codex_message_items, timestamp
+            )
+            VALUES ('s1', 'assistant', 'done', 'thinking it through', ?, ?, ?, 1775000002.0)
+            """,
+            (
+                json.dumps([{"type": "text", "text": "step one"}]),
+                json.dumps(["reasoning-item-1"]),
+                json.dumps(["message-item-1"]),
+            ),
+        )
+        conn.commit()
+
+
+def test_reasoning_evidence_routes_to_session_events_not_only_block_metadata(tmp_path: Path) -> None:
+    """Production route: sqlite state.db row -> ``parse_state_db`` -> ``session_events``.
+
+    This fails if ``_reasoning_evidence_events`` (or its wiring into
+    ``_parse_session_row``) is removed, since the reasoning payload would
+    then only live on ``ParsedContentBlock.metadata`` -- a field the archive
+    write path never persists (only ``language`` is read back out of it).
+    """
+    path = tmp_path / "state.db"
+    _write_reasoning_state_db(path)
+    sessions = parse_state_db(path)
+    assert len(sessions) == 1
+    session = sessions[0]
+
+    thinking_blocks = [
+        block for message in session.messages for block in message.blocks if block.type is BlockType.THINKING
+    ]
+    assert len(thinking_blocks) == 1
+    assert thinking_blocks[0].text == "thinking it through"
+
+    reasoning_events = [event for event in session.session_events if event.event_type == "hermes_reasoning_evidence"]
+    assert len(reasoning_events) == 1
+    event = reasoning_events[0]
+    assert event.payload == {
+        "reasoning_details": [{"type": "text", "text": "step one"}],
+        "codex_reasoning_items": ["reasoning-item-1"],
+        "codex_message_items": ["message-item-1"],
+    }
+    assistant_message = next(message for message in session.messages if message.role.value == "assistant")
+    assert event.source_message_provider_id == assistant_message.provider_message_id

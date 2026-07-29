@@ -1172,6 +1172,52 @@ def test_browser_capture_turn_blocks_survive_into_parsed_message_blocks() -> Non
     assert by_id["t1"].parent_message_provider_id == "a1"
 
 
+def test_browser_capture_block_metadata_routes_to_session_events() -> None:
+    """``BrowserCaptureBlock.metadata`` must reach ``session_events``, not just the block.
+
+    Exercises the generic (no-native-payload) turn loop's
+    ``_block_metadata_evidence_events`` wiring. The ``blocks`` table has no
+    metadata column and the write path only reads a ``language`` key back out
+    of it (bd polylogue-9x22), so whatever the capture extension attaches to
+    a block's ``metadata`` (here: an opaque ``dom_selector`` the extension
+    used to locate the tool call in the page) would otherwise be silently
+    dropped at write time. Deleting the
+    ``block_metadata_events.extend(_block_metadata_evidence_events(...))``
+    call in ``parse()`` makes this fail.
+    """
+    payload = _capture_payload()
+    session = payload["session"]
+    assert isinstance(session, dict)
+    session["turns"] = [
+        {"provider_turn_id": "u1", "role": "user", "text": "run a search", "ordinal": 0},
+        {
+            "provider_turn_id": "a1",
+            "role": "assistant",
+            "text": "calling search",
+            "ordinal": 1,
+            "blocks": [
+                {
+                    "type": "tool_use",
+                    "tool_name": "web_search",
+                    "tool_id": "call-1",
+                    "tool_input": {"query": "polylogue"},
+                    "metadata": {"dom_selector": "#tool-call-1"},
+                },
+                {"type": "text", "text": "no metadata here"},
+            ],
+        },
+    ]
+
+    parsed = parse_payload(Provider.CHATGPT, payload, "fallback")
+
+    assert len(parsed) == 1
+    events = [event for event in parsed[0].session_events if event.event_type == "browser_capture_block_metadata"]
+    assert len(events) == 1
+    event = events[0]
+    assert event.source_message_provider_id == "a1"
+    assert event.payload == {"block_index": 0, "dom_selector": "#tool-call-1"}
+
+
 def test_browser_capture_turn_accepts_blocks_only_with_no_text() -> None:
     """A turn with only structured blocks (no rendered text) must validate.
 

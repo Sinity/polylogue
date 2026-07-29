@@ -131,8 +131,7 @@ _BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS = 3600.0  # at most once/hour
 _last_bulk_rebuild_recommendation_monotonic: float | None = None
 
 # polylogue-m6tp phase (a): one parse-stage warmer lives for the daemon
-# process's lifetime, lazily created the first time the
-# ``daemon_parse_stage_split`` config flag is observed on. It is deliberately
+# process's lifetime, lazily created on first use. It is deliberately
 # module-level (not per-pass) so its bounded ``ThreadPoolExecutor`` and
 # ``RawParsePrefetchCache`` persist across ticks -- a raw warmed but not
 # consumed this pass (component-grouping selects a different subset than the
@@ -170,25 +169,22 @@ def _daemon_bulk_rebuild_parse_stage() -> DaemonParseStage:
 async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> tuple[RawParsePrefetchCache | None, int]:
     """Pre-parse this pass's census candidates outside the writer hold.
 
-    polylogue-m6tp phase (a). Off by default (``daemon_parse_stage_split``
-    config flag); returns ``(None, 0)`` unless enabled, which makes
-    ``_drain_raw_materialization_once`` parse every candidate inside the
-    writer hold exactly as before -- the unmodified, always-correct
-    behavior. Runs entirely BEFORE the write coordinator is ever asked for
-    the writer hold, so it never competes with an active writer thread for
-    the GIL (see ``polylogue.daemon.parse_prefetch`` for why that sequencing
-    is what makes threads safe here even on a standard GIL build).
+    polylogue-m6tp phase (a). Always runs -- there is no correctness reason
+    to skip it: a warm failure (or a genuinely GIL-bound interpreter, where
+    the parse threads give little or no speedup but never regress) degrades
+    to ``_drain_raw_materialization_once`` parsing every candidate inside the
+    writer hold, the unmodified always-correct behavior. Runs entirely BEFORE
+    the write coordinator is ever asked for the writer hold, so it never
+    competes with an active writer thread for the GIL (see
+    ``polylogue.daemon.parse_prefetch`` for why that sequencing is what makes
+    threads safe here even on a standard GIL build).
 
     The second element of the returned tuple is how many raws were newly
-    admitted to the cache THIS call (0 on the flag-off/no-op path or a
-    caught warm failure) -- the caller uses it to size the writer-held
-    pass's own limit to match what is already parsed and waiting (see
+    admitted to the cache THIS call (0 on a caught warm failure) -- the
+    caller uses it to size the writer-held pass's own limit to match what is
+    already parsed and waiting (see
     ``docs/design/convergence-simplification-inventory.md`` item 4).
     """
-    from polylogue.config import load_polylogue_config
-
-    if not load_polylogue_config().daemon_parse_stage_split:
-        return None, 0
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
 
@@ -2271,12 +2267,11 @@ async def run_daemon_services(
                 watcher.stop()
             if _daemon_parse_stage_singleton is not None:
                 # polylogue-m6tp phase (a), CodeRabbit PR #3168: the parse-stage
-                # warmer's ThreadPoolExecutor is created lazily only when
-                # daemon_parse_stage_split is enabled, and otherwise never
-                # touched here. shutdown() is non-blocking (wait=False,
-                # cancel_futures=True) so no timeout wrapper is needed: it
-                # cannot itself hang the shutdown sequence; it just stops the
-                # pool from keeping the process alive at exit.
+                # warmer's ThreadPoolExecutor is created lazily on first use,
+                # and otherwise never touched here. shutdown() is non-blocking
+                # (wait=False, cancel_futures=True) so no timeout wrapper is
+                # needed: it cannot itself hang the shutdown sequence; it just
+                # stops the pool from keeping the process alive at exit.
                 _daemon_parse_stage_singleton.shutdown()
             if _daemon_bulk_rebuild_parse_stage_singleton is not None:
                 # polylogue-gd6v: same non-blocking shutdown contract as the

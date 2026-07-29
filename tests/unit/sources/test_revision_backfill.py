@@ -859,6 +859,117 @@ def test_parallel_census_matches_sequential_archive_state(tmp_path: Path) -> Non
     assert _sessions(sequential_root) == _sessions(parallel_root)
 
 
+def test_backfill_content_cache_across_pages_reduces_parses_and_matches_uncached_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """polylogue-oab7 end-to-end proof: a full rebuild is split into many
+    bounded PAGES (``RebuildIndexRequest.raw_batch_size``), each a SEPARATE
+    call to ``backfill_historical_revision_evidence`` -- this reproduces two
+    such pages against two otherwise-identical archives, one sharing a
+    ``RawParsePrefetchCache`` across both page calls and one passing
+    ``prefetch_cache=None`` throughout (today's behavior). It proves BOTH
+    halves of the mission: (1) the shared-cache run pays strictly fewer
+    parses for the page-2 duplicate-content raw, and (2) the two archives'
+    resulting index.db session rows and RevisionBackfillResult counters are
+    byte-for-byte identical regardless -- deduplicating the PARSE never
+    changes which raw's content wins replay authority.
+    """
+    cached_root = tmp_path / "cached"
+    uncached_root = tmp_path / "uncached"
+    payload = _bundle(_chatgpt_session("dup-session", "hello", "world"))
+    other_payload = _bundle(_chatgpt_session("other-session", "distinct", "content"))
+
+    for root in (cached_root, uncached_root):
+        initialize_active_archive_root(root)
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            page_a_raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="page-a/export.json",
+                acquired_at_ms=1,
+            )
+        if root is cached_root:
+            cached_page_a_raw_id = page_a_raw_id
+        else:
+            uncached_page_a_raw_id = page_a_raw_id
+
+    def _run_pages(
+        root: Path, *, prefetch_cache: RawParsePrefetchCache | None
+    ) -> tuple[revision_backfill.RevisionBackfillResult, revision_backfill.RevisionBackfillResult]:
+        page_a_raw_id = cached_page_a_raw_id if root is cached_root else uncached_page_a_raw_id
+        result_a = backfill_historical_revision_evidence(
+            root, selected_raw_ids=[page_a_raw_id], prefetch_cache=prefetch_cache
+        )
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            # Page 2: a re-export of the SAME conversation at a DIFFERENT
+            # acquired path (byte-identical blob_hash, different raw_id) plus
+            # one genuinely distinct session -- the realistic "re-exported
+            # bundle recurs later in acquisition order" shape #1039.
+            page_b_dup_raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path="page-b/export.json",
+                acquired_at_ms=2,
+            )
+            page_b_other_raw_id = archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=other_payload,
+                source_path="page-b/other.json",
+                acquired_at_ms=3,
+            )
+        result_b = backfill_historical_revision_evidence(
+            root,
+            selected_raw_ids=[page_b_dup_raw_id, page_b_other_raw_id],
+            prefetch_cache=prefetch_cache,
+        )
+        return result_a, result_b
+
+    parsed_calls: list[str] = []
+    original_parse = revision_backfill._parse_retained_raw
+
+    def spying_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed_calls.append(raw_id)
+        return original_parse(archive, raw_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", spying_parse)
+
+    shared_cache = RawParsePrefetchCache(max_inflight_bytes=10_000_000)
+    cached_result_a, cached_result_b = _run_pages(cached_root, prefetch_cache=shared_cache)
+    cached_parse_count = len(parsed_calls)
+
+    parsed_calls.clear()
+    uncached_result_a, uncached_result_b = _run_pages(uncached_root, prefetch_cache=None)
+    uncached_parse_count = len(parsed_calls)
+
+    # The cached run never reparses page 2's duplicate-content raw; the
+    # uncached run does -- a strict, measured reduction in parse work.
+    assert cached_parse_count < uncached_parse_count
+
+    # Deduplicating the parse must never change replay outcomes.
+    assert (cached_result_a.scanned, cached_result_a.replayed_logical_sources) == (
+        uncached_result_a.scanned,
+        uncached_result_a.replayed_logical_sources,
+    )
+    assert (cached_result_b.scanned, cached_result_b.replayed_logical_sources) == (
+        uncached_result_b.scanned,
+        uncached_result_b.replayed_logical_sources,
+    )
+
+    def _sessions(root: Path) -> list[tuple[object, ...]]:
+        with sqlite3.connect(root / "index.db") as conn:
+            return conn.execute("SELECT native_id, message_count, raw_id FROM sessions ORDER BY native_id").fetchall()
+
+    def _raw_authority(root: Path) -> list[tuple[object, ...]]:
+        with sqlite3.connect(root / "source.db") as conn:
+            return conn.execute(
+                "SELECT logical_source_key, revision_authority FROM raw_sessions "
+                "WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key, raw_id"
+            ).fetchall()
+
+    assert _sessions(cached_root) == _sessions(uncached_root)
+    assert _raw_authority(cached_root) == _raw_authority(uncached_root)
+
+
 def _state_db_bytes_for_session(tmp_path: Path, *, session_id: str, message_text: str) -> bytes:
     """Variant of _single_session_state_db_bytes with a distinct session id."""
     db_path = tmp_path / f"state-source-{session_id}.db"
@@ -1267,6 +1378,54 @@ def test_raw_parse_prefetch_cache_rejects_non_positive_budget() -> None:
         RawParsePrefetchCache(max_inflight_bytes=0)
 
 
+def test_raw_parse_prefetch_cache_rejects_non_positive_content_budget() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        RawParsePrefetchCache(max_inflight_bytes=100, max_content_cache_bytes=0)
+
+
+def test_raw_parse_prefetch_cache_content_get_put_lru_and_budget() -> None:
+    """polylogue-oab7: the content cache is a SEPARATE store from the raw_id
+    keyed one -- ``get_content``/``put_content`` peek/retain rather than
+    consume, evict least-recently-touched entries once over budget, and
+    never admit a single entry bigger than the whole budget (a whale must
+    not evict everything and then still fail to fit)."""
+    cache = RawParsePrefetchCache(max_inflight_bytes=1_000_000, max_content_cache_bytes=100)
+    key_a = (Provider.CODEX, "hash-A", "")
+    key_b = (Provider.CODEX, "hash-B", "")
+    key_c = (Provider.CODEX, "hash-C", "")
+
+    assert cache.content_len() == 0
+    assert cache.get_content(key_a) is None
+
+    assert cache.put_content(key_a, [], payload_bytes=60, revision_kind=RawRevisionKind.FULL) is True
+    assert cache.content_len() == 1
+    # Re-admitting the same key is a no-op, not an overwrite.
+    assert cache.put_content(key_a, [], payload_bytes=1, revision_kind=RawRevisionKind.FULL) is False
+    assert cache.content_len() == 1
+
+    # A whale bigger than the WHOLE budget is never admitted at all.
+    assert cache.put_content(key_b, [], payload_bytes=101, revision_kind=RawRevisionKind.FULL) is False
+    assert cache.get_content(key_b) is None
+
+    # key_b (50 bytes) fits alongside key_a (60 bytes) up to the 100-byte cap
+    # only after key_a is evicted -- admitting it evicts the LRU entry.
+    assert cache.put_content(key_b, [], payload_bytes=50, revision_kind=RawRevisionKind.UNKNOWN) is True
+    assert cache.get_content(key_a) is None  # evicted to make room
+    hit = cache.get_content(key_b)
+    assert hit is not None
+    sessions, payload_bytes, revision_kind = hit
+    assert (sessions, payload_bytes, revision_kind) == ([], 50, RawRevisionKind.UNKNOWN)
+
+    # Touching key_b via get_content makes it MOST recently used, so a new
+    # key_c admission evicts nothing else if it fits; once budget is
+    # exceeded, the least-recently-touched entry (key_b, just touched, so
+    # none left besides itself) is evicted last.
+    assert cache.put_content(key_c, [], payload_bytes=40, revision_kind=RawRevisionKind.FULL) is True
+    # 50 + 40 = 90 <= 100, nothing evicted.
+    assert cache.get_content(key_b) is not None
+    assert cache.get_content(key_c) is not None
+
+
 def test_parse_retained_raws_prefetch_cache_hit_skips_parse_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
     """A raw_id already popped from the prefetch cache must reach the caller's
     result dict WITHOUT ever calling the parser -- proving the parse-stage
@@ -1355,6 +1514,68 @@ def test_parse_retained_raws_prefetch_cache_miss_is_byte_identical_to_no_cache(
     )
 
     assert baseline == with_empty_cache
+
+
+def test_parse_retained_raws_content_cache_reuses_across_separate_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-oab7: unlike the raw_id-keyed prefetch cache (consumed once,
+    by design, for a raw the daemon warmer already knew about), the content
+    cache is keyed by ``(provider, blob_hash, dedup_path)`` and survives
+    ACROSS separate ``_parse_retained_raws`` invocations sharing the same
+    cache instance -- exactly what a multi-page rebuild needs: a raw parsed
+    on an earlier page's call must not be reparsed just because a LATER
+    page's call is a fresh Python-level invocation of this function."""
+    descriptors = {
+        "page-a-raw": (Provider.CODEX, "hash-A", "a.jsonl", RawRevisionKind.UNKNOWN, 10),
+        "page-b-raw": (Provider.CODEX, "hash-A", "b.jsonl", RawRevisionKind.UNKNOWN, 10),
+        "page-b-cold": (Provider.CODEX, "hash-B", "b.jsonl", RawRevisionKind.UNKNOWN, 20),
+    }
+
+    class FakeArchive:
+        def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
+            return descriptors[raw_id]
+
+    parsed: list[str] = []
+
+    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+        parsed.append(raw_id)
+        descriptor = descriptors[raw_id]
+        return [], descriptor[4], descriptor[3]
+
+    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+
+    cache = RawParsePrefetchCache(max_inflight_bytes=1_000_000)
+
+    page_a_results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        ["page-a-raw"],
+        ingest_workers=1,
+        prefetch_cache=cache,
+    )
+    assert parsed == ["page-a-raw"]
+    assert cache.content_len() == 1
+
+    # A second, independent call -- simulating a LATER rebuild page -- selects
+    # a DIFFERENT raw_id sharing the same blob_hash (a different acquired
+    # source path, e.g. a re-export) plus one genuinely new raw.
+    page_b_results = revision_backfill._parse_retained_raws(
+        FakeArchive(),  # type: ignore[arg-type]
+        ["page-b-raw", "page-b-cold"],
+        ingest_workers=1,
+        prefetch_cache=cache,
+    )
+
+    # page-b-raw's content was already resident from page A -- no second
+    # parse call for it; only the genuinely new blob_hash pays a parse.
+    assert parsed == ["page-a-raw", "page-b-cold"]
+    assert set(page_a_results) == {"page-a-raw"}
+    assert set(page_b_results) == {"page-b-raw", "page-b-cold"}
+    sessions, size, kind = page_b_results["page-b-raw"]  # type: ignore[misc]
+    # size/kind are still resolved from page-b-raw's OWN descriptor, not
+    # borrowed from page-a-raw's -- only the decoded ParsedSession content is
+    # shared.
+    assert (sessions, size, kind) == ([], 10, RawRevisionKind.UNKNOWN)
 
 
 def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

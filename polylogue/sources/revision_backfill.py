@@ -9,6 +9,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -98,6 +99,27 @@ class _PrefetchedParse:
     revision_kind: RawRevisionKind
 
 
+#: Content-cache dedup key: ``(provider, blob_hash, dedup_path)``, identical
+#: in shape to the per-batch grouping key ``_parse_retained_raws`` already
+#: uses (``dedup_path`` is ``""`` for :data:`_PATH_INDEPENDENT_PARSE_PROVIDERS`,
+#: else the raw's own ``source_path``) -- see :func:`_parse_retained_raws`'s
+#: docstring for why that key shape is safe to reuse across rows.
+ContentCacheKey = tuple[Provider, str, str]
+
+#: Default budget for :class:`RawParsePrefetchCache`'s cross-page content
+#: cache (polylogue-oab7). Deliberately a small, fixed, conservative default
+#: independent of ``max_inflight_bytes`` (the daemon's adaptive 64MiB-2GiB
+#: single-tick budget for its OWN raw_id-keyed warm-ahead entries) rather than
+#: reusing that number: the two caches are separate dicts inside the same
+#: object and can both be resident at once, so summing an adaptive multi-GiB
+#: budget with itself risks doubling the daemon's already-tuned whale-memory
+#: ceiling. 256 MiB mirrors this file's own ``_DECODED_CACHE_MIN_TREE_BYTES``
+#: and ``daemon/parse_prefetch.py``'s ``_MIN_MAX_CACHED_TREE_BYTES`` floor --
+#: small enough to be noise against either budget, still large enough to hold
+#: several typical (non-whale) parsed sessions resident across page boundaries.
+_DEFAULT_CONTENT_CACHE_BYTES: Final[int] = 256 * 1024 * 1024
+
+
 class RawParsePrefetchCache:
     """Bounded, thread-safe store of parse results computed off the writer hold.
 
@@ -117,15 +139,38 @@ class RawParsePrefetchCache:
     Admission is capped by ``max_inflight_bytes`` (an explicit whale-memory
     budget): a payload that would exceed the remaining budget is silently NOT
     cached and is parsed normally, in the writer hold, when its turn comes.
+
+    polylogue-oab7: this class ALSO carries a second, independent store --
+    the "content cache" (``get_content``/``put_content``) -- keyed by
+    :data:`ContentCacheKey` rather than ``raw_id``. Unlike the raw_id-keyed
+    entries above (single-pop, meant to be consumed exactly once by the
+    specific raw the daemon's warmer pre-parsed), content-cache entries are
+    LRU-retained until evicted, so a raw whose bytes were already parsed on
+    an EARLIER page of the SAME long-lived cache instance (the daemon's
+    ``DaemonParseStage.cache`` is a process-lifetime singleton -- see
+    ``daemon/cli.py``'s ``_daemon_bulk_rebuild_parse_stage()``) is served
+    from cache on a LATER page instead of reparsed, closing the one real gap
+    left by polylogue-869u's existing dedup (which only reuses a parse
+    WITHIN one bounded ``_parse_retained_raws`` batch/page, never across the
+    many pages one archive-wide rebuild is split into). A miss here degrades
+    identically to a miss on the raw_id-keyed store: parsed normally, nothing
+    lost, only possibly reparsed.
     """
 
-    def __init__(self, *, max_inflight_bytes: int) -> None:
+    def __init__(self, *, max_inflight_bytes: int, max_content_cache_bytes: int | None = None) -> None:
         if max_inflight_bytes < 1:
             raise ValueError("max_inflight_bytes must be positive")
         self._max_inflight_bytes = max_inflight_bytes
         self._lock = threading.Lock()
         self._entries: dict[str, _PrefetchedParse] = {}
         self._inflight_bytes = 0
+        self._max_content_cache_bytes = (
+            max_content_cache_bytes if max_content_cache_bytes is not None else _DEFAULT_CONTENT_CACHE_BYTES
+        )
+        if self._max_content_cache_bytes < 1:
+            raise ValueError("max_content_cache_bytes must be positive")
+        self._content_entries: OrderedDict[ContentCacheKey, _PrefetchedParse] = OrderedDict()
+        self._content_bytes = 0
 
     def __len__(self) -> int:
         with self._lock:
@@ -164,6 +209,55 @@ class RawParsePrefetchCache:
                 return None
             self._inflight_bytes -= entry.payload_bytes
             return entry.sessions, entry.payload_bytes, entry.revision_kind
+
+    def content_len(self) -> int:
+        """Number of distinct content-cache entries currently resident."""
+        with self._lock:
+            return len(self._content_entries)
+
+    def get_content(self, key: ContentCacheKey) -> tuple[list[ParsedSession], int, RawRevisionKind] | None:
+        """Peek a content-cache entry without consuming it (unlike ``pop``).
+
+        Multiple later raw_ids sharing ``key`` may each hit the same entry;
+        touching it here marks it most-recently-used for the LRU eviction
+        order in :meth:`put_content`.
+        """
+        with self._lock:
+            entry = self._content_entries.get(key)
+            if entry is None:
+                return None
+            self._content_entries.move_to_end(key)
+            return entry.sessions, entry.payload_bytes, entry.revision_kind
+
+    def put_content(
+        self,
+        key: ContentCacheKey,
+        sessions: list[ParsedSession],
+        *,
+        payload_bytes: int,
+        revision_kind: RawRevisionKind,
+    ) -> bool:
+        """Admit one freshly-parsed representative's output into the content cache.
+
+        Returns ``False`` (a pure no-op) when ``key`` is already resident or
+        ``payload_bytes`` alone exceeds the whole budget -- a single whale
+        entry must never be admitted only to immediately evict every other
+        entry and then still not fit itself. Otherwise admits and evicts
+        least-recently-used entries (oldest ``get_content``/``put_content``
+        touch first) until back under budget.
+        """
+        with self._lock:
+            if key in self._content_entries:
+                return False
+            if payload_bytes > self._max_content_cache_bytes:
+                return False
+            self._content_entries[key] = _PrefetchedParse(sessions, payload_bytes, revision_kind)
+            self._content_entries.move_to_end(key)
+            self._content_bytes += payload_bytes
+            while self._content_bytes > self._max_content_cache_bytes and self._content_entries:
+                _evicted_key, evicted_entry = self._content_entries.popitem(last=False)
+                self._content_bytes -= evicted_entry.payload_bytes
+            return True
 
 
 class RawRevisionReplayResourceBlockedError(RuntimeError):
@@ -1048,6 +1142,19 @@ def _parse_retained_raws(
     process/thread-pool round trip here. Every raw_id NOT found in the cache
     (including all of them, when ``prefetch_cache`` is ``None`` -- the
     default for every existing caller) is parsed exactly as before.
+
+    polylogue-oab7: after the per-page dedup grouping above, each group's
+    ``(provider, blob_hash, dedup_path)`` key is also checked against
+    ``prefetch_cache``'s CONTENT cache (``get_content``/``put_content``,
+    distinct from the raw_id-keyed ``pop`` used above). A hit there means
+    this exact content was already parsed on an EARLIER call to this
+    function against the SAME ``prefetch_cache`` instance -- e.g. an earlier
+    *page* of the same archive-wide rebuild, not just an earlier row of this
+    same page -- and is reused without a second parse. A miss falls through
+    to the unchanged dispatch path and, once parsed, is admitted into the
+    content cache so a LATER page can reuse it. ``prefetch_cache=None``
+    (every caller that does not opt in) skips this lookup/store entirely and
+    is byte-identical to today's behavior.
     """
     descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
@@ -1065,12 +1172,35 @@ def _parse_retained_raws(
         provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
         dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
         grouped.setdefault((provider, blob_hash, dedup_path), []).append(raw_id)
-    representatives = [members[0] for members in grouped.values()]
+
+    content_hits: dict[tuple[Provider, str, str], tuple[list[ParsedSession], int, RawRevisionKind]] = {}
+    representatives: list[str] = []
+    for key, members in grouped.items():
+        content_hit = prefetch_cache.get_content(key) if prefetch_cache is not None else None
+        if content_hit is not None:
+            content_hits[key] = content_hit
+        else:
+            representatives.append(members[0])
+
     unique = _parse_unique_retained_raws(
         archive, representatives, descriptors=descriptors, ingest_workers=ingest_workers
     )
-    for members in grouped.values():
-        outcome = unique[members[0]]
+
+    if prefetch_cache is not None:
+        for key, members in grouped.items():
+            if key in content_hits:
+                continue
+            fresh_outcome = unique[members[0]]
+            if isinstance(fresh_outcome, Exception):
+                continue
+            sessions, rep_size, rep_kind = fresh_outcome
+            prefetch_cache.put_content(key, sessions, payload_bytes=rep_size, revision_kind=rep_kind)
+
+    for key, members in grouped.items():
+        content_outcome = content_hits.get(key)
+        outcome: tuple[list[ParsedSession], int, RawRevisionKind] | Exception = (
+            content_outcome if content_outcome is not None else unique[members[0]]
+        )
         for raw_id in members:
             if isinstance(outcome, Exception):
                 results[raw_id] = outcome

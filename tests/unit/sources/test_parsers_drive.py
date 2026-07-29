@@ -230,6 +230,45 @@ def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachme
     assert result.attachments[0].size_bytes == 12
 
 
+def test_thinking_block_reasoning_continuity_evidence_routes_to_session_events() -> None:
+    """Gemini's thoughtSignatures/thinkingBudget are dropped by ``blocks.metadata``
+    (bd polylogue-9x22: the ``blocks`` table has no metadata column, and the
+    write path only reads a ``language`` key back out of it), so
+    ``session_events_from_meta_blocks`` must carry them through
+    ``session_events`` instead. Deleting that wiring in
+    ``parse_chunked_prompt`` makes this fail.
+    """
+    payload: JSONDocument = {
+        "id": "gemini-thinking",
+        "displayName": "Gemini Thinking",
+        "chunkedPrompt": {
+            "chunks": [
+                {"id": "msg-user", "role": "user", "text": "question"},
+                {
+                    "id": "msg-thought",
+                    "role": "model",
+                    "text": "reasoning",
+                    "isThought": True,
+                    "thinkingBudget": 32,
+                    "thoughtSignatures": ["sig-1"],
+                },
+            ]
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    thinking_events = [event for event in result.session_events if event.event_type == "gemini_thinking_evidence"]
+    assert len(thinking_events) == 1
+    event = thinking_events[0]
+    assert event.source_message_provider_id == "msg-thought"
+    assert event.payload == {
+        "block_index": 0,
+        "thinkingBudget": 32,
+        "thoughtSignatures": ["sig-1"],
+    }
+
+
 def test_live_fetched_drive_attachment_bytes_reach_inline_bytes_not_block_metadata() -> None:
     """polylogue-83u.2 CodeRabbit/Codex P1: the live-fetch sidecar
     (`polylogue.sources.drive.attachment_fetch`) injects fetched bytes as

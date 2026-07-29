@@ -1042,6 +1042,7 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
     """
     from polylogue.config import Source
     from polylogue.schemas.synthetic import SyntheticCorpus
+    from tests.infra.strategies.providers import _JSONL_PROVIDERS, decode_provider_payload
 
     def _factory(
         provider: str,
@@ -1060,6 +1061,24 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
         )
         provider_dir = tmp_path / "synthetic" / provider
         written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synth")
+
+        if provider in _JSONL_PROVIDERS:
+            # The codex/claude-code baseline schemas lost their
+            # x-polylogue-semantic-role annotations in the 2026-07-29
+            # structural-merge promotion (c53ad94e0), so the generator now
+            # fills the role-discriminator field with an opaque placeholder
+            # instead of a real user/assistant value (see
+            # tests/infra/strategies/providers.py:repair_role_discriminators
+            # for the full rationale). Repair the written files in place so
+            # sessions built through this fixture keep realistic role shapes
+            # until the schema owner restores the annotation at the source
+            # (polylogue-c66i).
+            for written_path in written.files:
+                repaired = decode_provider_payload(provider, written_path.read_bytes())
+                written_path.write_text(
+                    "\n".join(json.dumps(record) for record in repaired) + "\n",
+                    encoding="utf-8",
+                )
 
         if count == 1:
             return Source(name=f"{provider}-test", path=written.files[0])

@@ -10,6 +10,7 @@ existing test imports continue to work unchanged.
 
 from __future__ import annotations
 
+import itertools
 import json
 from pathlib import Path
 from typing import TypedDict
@@ -65,8 +66,74 @@ def _jsonl_documents(raw: bytes) -> list[JSONDocument]:
 def decode_provider_payload(provider: str, raw: bytes) -> ProviderPayload:
     """Decode schema-generated provider bytes into the wire payload type."""
     if provider in _JSONL_PROVIDERS:
-        return _jsonl_documents(raw)
+        return repair_role_discriminators(provider, _jsonl_documents(raw))
     return _json_document_from_bytes(raw)
+
+
+# =============================================================================
+# Role-discriminator repair (schema-annotation regression workaround)
+# =============================================================================
+
+_ROLE_PLACEHOLDER_PREFIX = "synthetic-"
+_MESSAGE_ROLE_CYCLE = ("user", "assistant")
+
+
+def _is_role_placeholder(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(_ROLE_PLACEHOLDER_PREFIX)
+
+
+def repair_role_discriminators(provider: str, records: list[JSONDocument]) -> list[JSONDocument]:
+    """Restore realistic user/assistant role discriminators in-place.
+
+    The codex and claude-code provider schemas used to carry
+    ``x-polylogue-semantic-role: message_role`` annotations on their
+    role-discriminator fields (codex: ``payload.role``; claude-code: the
+    top-level ``type`` field, which doubles as the record's role for chat
+    records) -- see the git history of
+    ``polylogue/schemas/providers/{codex,claude-code}/versions/v1/elements/
+    session_record_stream.schema.json.gz``. Those annotations are what let
+    ``SyntheticCorpus`` fill the field with an alternating ``user``/
+    ``assistant`` cycle instead of an opaque ``x-polylogue-observed-
+    distribution`` categorical placeholder.
+
+    The 2026-07-29 structural-merge promotion (c53ad94e0, "make structural
+    merge monotonic and promote every provider") regenerated every provider
+    schema from scratch and did not carry the annotation overlay forward, so
+    both schemas now emit literal ``synthetic-<n>`` placeholder strings for
+    the role field. Every generated message therefore normalizes to
+    ``Role.UNKNOWN`` -- confirmed by diffing generated output against the
+    pre-promotion schema snapshot with the same seed, which produces correct
+    alternating user/assistant roles. This is a synthetic-corpus generation
+    defect, not a parser defect: real codex/claude-code exports always carry
+    real role values, so parser behavior for actual payloads is unaffected.
+
+    This repairs the generated payload at the test-strategy boundary so the
+    parser property tests keep exercising realistic role shapes until the
+    schema owner restores the annotation at the source (polylogue-c66i).
+    """
+    cycle = itertools.cycle(_MESSAGE_ROLE_CYCLE)
+    if provider == "codex":
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            target = record
+            payload = record.get("payload")
+            if record.get("type") == "response_item" and isinstance(payload, dict):
+                target = payload
+            if _is_role_placeholder(target.get("role")):
+                target["role"] = next(cycle)
+    elif provider == "claude-code":
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            if _is_role_placeholder(record.get("type")):
+                record["type"] = next(cycle)
+            if _is_role_placeholder(message.get("role")):
+                message["role"] = record["type"] if record["type"] in _MESSAGE_ROLE_CYCLE else next(cycle)
+    return records
 
 
 # =============================================================================
@@ -155,7 +222,7 @@ def claude_code_session_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
-    return _jsonl_documents(raw)
+    return repair_role_discriminators("claude-code", _jsonl_documents(raw))
 
 
 # =============================================================================
@@ -222,7 +289,7 @@ def codex_session_strategy(
     seed = draw(st.integers(min_value=0, max_value=2**32))
     n = draw(st.integers(min_value=max(min_messages, 2), max_value=max_messages))
     raw = corpus.generate(count=1, messages_per_session=range(n, n + 1), seed=seed)[0]
-    records = _jsonl_documents(raw)
+    records = repair_role_discriminators("codex", _jsonl_documents(raw))
 
     if use_envelope and records:
         # Wrap in the envelope format the parser also supports

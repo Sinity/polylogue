@@ -11,6 +11,15 @@ Read `docs/architecture.md`/`docs/internals.md` for the daemon's general
 shape before reading this table; each row assumes the reader already knows
 the census -> replay -> materialize pipeline.
 
+**2026-07-29 update:** `daemon_parse_stage_split` (the phase-(a) flag) has
+been deleted -- the daemon raw-materialization parse-stage prefetch
+(`_maybe_warm_raw_materialization_parse_stage` in `polylogue/daemon/cli.py`)
+now always runs; there was no situation where the always-correct in-hold
+fallback was actually preferable (it never regresses even under a GIL build,
+per `polylogue/daemon/parse_prefetch.py`'s module docstring). References
+below to the flag being "off (today's default)" describe the pre-deletion
+state and are historical.
+
 ## Sequencing recap (from polylogue-m6tp's design sketch)
 
 1. **(a) parse-stage extraction behind a flag on the standard build** — this
