@@ -157,12 +157,10 @@ def _chatgpt_payload() -> dict[str, Any]:
 
     ChatGPT uses ``content_type`` to distinguish block semantics:
     - ``"thoughts"``        → THINKING block
-    - ``"code"``            → CODE block (code interpreter input)
+    - ``"code"``            → TOOL_USE block (code interpreter input; bd
+      polylogue-4fm3 -- paired with its execution_output via tool_id)
     - ``"execution_output"``→ TOOL_RESULT block (code interpreter output)
     - default text parts    → TEXT blocks
-
-    ChatGPT does NOT produce TOOL_USE blocks in the polylogue parser; the
-    tool-execution surface is represented by CODE + TOOL_RESULT block pairs.
     """
     return {
         "id": "chatgpt-session-reg-1",
@@ -583,9 +581,12 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
         payload=_chatgpt_payload(),
         parse_fn=chatgpt_parse,
         expected_title="ChatGPT regression fixture",
-        # ChatGPT parser does not produce TOOL_USE blocks; code execution
-        # surfaces as CODE (input) + TOOL_RESULT (output) block pairs.
-        has_tool_use=False,
+        # bd polylogue-4fm3: code-interpreter calls are TOOL_USE (paired with
+        # their execution_output TOOL_RESULT via a shared tool_id), not
+        # CODE -- CODE-typed calls were invisible to action_pairs (which
+        # only joins block_type='tool_use'), permanently unpairing every
+        # code-interpreter result.
+        has_tool_use=True,
         has_thinking=True,
         has_paste=True,
         has_attachment=False,

@@ -663,29 +663,38 @@ def extract_messages_from_mapping(
             )
         elif content_type == "code":
             # Code-interpreter input — top-level text, no parts (#1744).
-            # tool_name = recipient (e.g. "python", "container.exec") when the
-            # provider addressed a tool for this call -- the same identity a
-            # recipient-addressed TOOL_USE block stamps onto itself above
-            # (polylogue-grub: recipient is the tool actually invoked and was
-            # otherwise only inferable from prose for code-shaped calls).
+            # bd polylogue-4fm3: this used to emit BlockType.CODE with no
+            # tool_id, so every code-interpreter call contributed zero rows
+            # to `action_pairs` (which only joins block_type='tool_use') --
+            # its paired execution_output below (a real TOOL_RESULT) was
+            # left permanently unpaired, producing a measured ~4.6:1
+            # tool_result:tool_use skew on browser-captured chatgpt sessions.
+            # Classified as TOOL_USE instead, mirroring the recipient-
+            # addressed JSON tool-call branch above: tool_name = recipient
+            # (e.g. "python", "container.exec") when the provider addressed a
+            # tool for this call (polylogue-grub), falling back to
+            # "code_interpreter" when it didn't; tool_id = this node's own
+            # id, so the execution_output node (whose mapping-tree parent is
+            # this call) can join back via the same id below -- the same
+            # convention polylogue-ah21 established for the browser-capture
+            # typed-blocks path. `text` is kept (not just tool_input) so the
+            # raw source keeps rendering as before.
             content_blocks.append(
                 ParsedContentBlock(
-                    type=BlockType.CODE,
+                    type=BlockType.TOOL_USE,
                     text=text,
-                    tool_name=recipient,
-                    metadata={"content_type": content_type},
+                    tool_name=recipient or "code_interpreter",
+                    tool_id=str(msg_id),
+                    tool_input={"code": text},
                 )
             )
         elif content_type == "execution_output":
             # Code-interpreter output — top-level text, no parts (#1744).
             # tool_id = the calling node's id (mapping-tree `parent`), the
-            # same identifier a recipient-addressed TOOL_USE node stamps onto
-            # itself above. Structurally correct even when the caller was
-            # classified BlockType.CODE rather than TOOL_USE (the
-            # `action_pairs` materialization only joins block_type='tool_use'
-            # rows, so CODE-typed calls stay outside the `actions` view --
-            # that reclassification question is out of this bead's scope --
-            # but the block-level tool_id is no longer silently dropped).
+            # same identifier the code-interpreter TOOL_USE node above now
+            # stamps onto itself (bd polylogue-4fm3) -- both sides of the
+            # pair carry a shared tool_id and the `actions` view can join
+            # them.
             #
             # is_error reads the node's own `status` (polylogue-grub): the
             # export's official terminal states for a completed tool run are
