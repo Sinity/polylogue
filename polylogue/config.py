@@ -635,30 +635,6 @@ class PolylogueConfig:
         return int(str(value))
 
     @property
-    def revision_parse_dispatch_max_bytes(self) -> int | None:
-        """Payload-size ceiling (bytes) for pool-eligible revision parse dispatch.
-
-        ``None``/absent falls back to the caller's hardcoded default
-        (polylogue-amg1).
-        """
-        value = self._data.get("revision_parse_dispatch_max_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
-    def revision_parse_pool_min_bytes(self) -> int | None:
-        """Aggregate pool-eligible payload floor (bytes) for revision parse dispatch.
-
-        ``None``/absent falls back to the caller's hardcoded default
-        (polylogue-amg1 / polylogue-crd8).
-        """
-        value = self._data.get("revision_parse_pool_min_bytes")
-        if value is None:
-            return None
-        return int(str(value))
-
-    @property
     def daemon_parse_stage_split(self) -> bool:
         """Opt-in: pre-parse raw-materialization census candidates off the writer hold.
 
@@ -1467,30 +1443,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "revision_parse_dispatch_max_bytes",
-        toml_path="pipeline.revision_parse.dispatch_max_bytes",
-        env_var="POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Payload-size ceiling (bytes) above which a raw parses "
-            "sequentially in-process instead of dispatching to the parse "
-            "pool (polylogue-amg1)."
-        ),
-    ),
-    ConfigInventoryEntry(
-        "revision_parse_pool_min_bytes",
-        toml_path="pipeline.revision_parse.pool_min_bytes",
-        env_var="POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Aggregate pool-eligible payload floor (bytes) below which pool "
-            "dispatch cannot amortize worker spawn cost, so the batch parses "
-            "sequentially instead (polylogue-amg1 / polylogue-crd8)."
-        ),
-    ),
-    ConfigInventoryEntry(
         "subscription_plans",
         toml_path="cost.subscription.plans",
         owner_class="provider-cost-control",
@@ -1742,8 +1694,6 @@ _INT_CONFIG_KEYS = frozenset(
         "judgment_automation_batch_limit",
         "raw_authority_commit_batch_size",
         "raw_authority_whale_payload_bytes",
-        "revision_parse_dispatch_max_bytes",
-        "revision_parse_pool_min_bytes",
         "daemon_parse_stage_workers",
         "daemon_parse_stage_max_inflight_bytes",
         "daemon_parse_stage_max_cached_tree_bytes",
@@ -1978,8 +1928,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "live_full_ingest_workers": 1,
         "raw_authority_commit_batch_size": None,
         "raw_authority_whale_payload_bytes": None,
-        "revision_parse_dispatch_max_bytes": None,
-        "revision_parse_pool_min_bytes": None,
         "subscription_plans": (),
         "daemon_parse_stage_split": False,
         "daemon_parse_stage_workers": None,

@@ -1110,21 +1110,6 @@ def test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly(
         )
 
 
-def test_partition_raws_by_dispatch_size_routes_small_to_pool_large_sequential() -> None:
-    """polylogue-amg1 lever (b): raws under the size ceiling are pool-eligible
-    (parallel parse pays off), raws at/above it stay sequential (pickling the
-    large returned ParsedSession back across the process boundary would cost
-    more than the parse saved -- the bead's own 0.63x/net-loss measurement)."""
-    payload_sizes = {"small-1": 1_000, "small-2": 200_000, "large-1": 262_144, "large-2": 1_700_000}
-
-    pool_ids, sequential_ids = revision_backfill._partition_raws_by_dispatch_size(
-        ["small-1", "small-2", "large-1", "large-2"], payload_sizes, dispatch_max_bytes=262_144
-    )
-
-    assert pool_ids == ["small-1", "small-2"]
-    assert sequential_ids == ["large-1", "large-2"]
-
-
 def test_parse_retained_raws_dedupes_identical_blob_across_paths_for_safe_providers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1372,22 +1357,6 @@ def test_parse_retained_raws_prefetch_cache_miss_is_byte_identical_to_no_cache(
     assert baseline == with_empty_cache
 
 
-def test_pool_dispatch_floor_rejects_small_aggregate_batches(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Worker spawn+import (~1.5-2s each, measured live 2026-07-19) dominates
-    tiny batches: a per-cohort census batch of a few sub-256KiB raws must parse
-    sequentially, not spawn a short-lived pool that spends ~95% of its life in
-    importlib."""
-    sizes = {"a": 100_000, "b": 200_000, "c": 50_000}
-    assert not revision_backfill._pool_dispatch_amortizes(["a", "b", "c"], sizes)
-    assert not revision_backfill._pool_dispatch_amortizes(["a"], sizes)
-    big = {f"r{i}": 250_000 for i in range(400)}  # 100MB aggregate
-    assert revision_backfill._pool_dispatch_amortizes(list(big), big)
-    monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES", "100000")
-    assert revision_backfill._pool_dispatch_amortizes(["a", "b"], sizes)
-    monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES", "not-a-number")
-    assert not revision_backfill._pool_dispatch_amortizes(["a", "b"], sizes)
-
-
 def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """End-to-end: a small pool-eligible batch under the aggregate floor must
     not construct a ProcessPoolExecutor at all (the churn measured live: 20
@@ -1422,55 +1391,6 @@ def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytes
     result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
     assert result.scanned == 3
     assert result.quarantined == 0
-
-
-def test_size_aware_dispatch_keeps_large_raws_off_the_process_pool(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """End-to-end proof: with a low dispatch ceiling, only the small raw in a
-    mixed corpus is submitted to the process pool; the large one parses
-    in-process, and the archive state matches ingest_workers=1 exactly.
-    Size-based partitioning is a GIL-build-fallback mechanic specifically
-    (the thread path applies no size partition at all, polylogue-xikl) --
-    pin the probe so this test's claim is exercised deterministically
-    regardless of which interpreter (GIL or genuinely free-threaded) runs
-    the suite."""
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
-    monkeypatch.setenv("POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES", "5000")
-    initialize_active_archive_root(tmp_path)
-    small_text = "s" * 200
-    large_text = "l" * 20_000
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        for index, text in enumerate((small_text, large_text, small_text)):
-            payload = (
-                f'{{"type":"session_meta","payload":{{"id":"amg1-mix-{index}"}}}}\n'
-                f'{{"type":"response_item","payload":{{"type":"message","id":"one","role":"user",'
-                f'"content":[{{"type":"input_text","text":"{text}"}}]}}}}\n'
-            ).encode()
-            archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path=f"amg1-mix-{index}.jsonl",
-                acquired_at_ms=index,
-            )
-
-    submitted_raw_ids: list[str] = []
-    original_partition = revision_backfill._partition_raws_by_dispatch_size
-
-    def recording_partition(raw_ids: list[str], payload_sizes: dict[str, int], **kwargs: object) -> object:
-        pool_ids, sequential_ids = original_partition(raw_ids, payload_sizes, **kwargs)  # type: ignore[arg-type]
-        submitted_raw_ids.extend(pool_ids)
-        return pool_ids, sequential_ids
-
-    monkeypatch.setattr(revision_backfill, "_partition_raws_by_dispatch_size", recording_partition)
-
-    result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
-
-    assert result.scanned == 3
-    assert result.replayed_logical_sources == 3
-    assert result.quarantined == 0
-    # Only the two small raws (well under the 5000-byte ceiling) were pool-eligible.
-    assert len(submitted_raw_ids) == 2
 
 
 def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

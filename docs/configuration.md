@@ -352,8 +352,6 @@ A few keys not shown in the full example above, with their TOML path:
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
 | `raw_authority_commit_batch_size` | `pipeline.raw_authority.commit_batch_size` | Census-phase commit batch size for raw-materialization repair (polylogue-amg1); unset uses the built-in default, `<=0` disables batching (per-raw commits). |
 | `raw_authority_whale_payload_bytes` | `pipeline.raw_authority.whale_payload_bytes` | Escalation-tier payload envelope (bytes) for the daemon whale pass (polylogue-t93b); unset/`<=0` uses the built-in default (8 GiB). Widens the resource-block envelope for one dedicated, stream-safe-gated single-component pass only -- the ordinary fast-path envelope is unaffected. |
-| `revision_parse_dispatch_max_bytes` | `pipeline.revision_parse.dispatch_max_bytes` | Payload-size ceiling (bytes) above which a raw parses sequentially in-process instead of dispatching to the parse pool (polylogue-amg1). |
-| `revision_parse_pool_min_bytes` | `pipeline.revision_parse.pool_min_bytes` | Aggregate pool-eligible payload floor (bytes) below which pool dispatch cannot amortize worker-spawn cost (polylogue-amg1 / polylogue-crd8). |
 | `daemon_parse_stage_split` | `daemon.raw_materialization.parse_stage_split` | Opt-in (polylogue-m6tp phase (a), default off): pre-parse raw-materialization census candidates in a bounded daemon-owned thread pool before the writer hold, instead of parsing inside the writer-held pass. |
 | `daemon_parse_stage_workers` | `daemon.raw_materialization.parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool; unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `daemon_parse_stage_max_inflight_bytes` | `daemon.raw_materialization.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for raw payloads admitted while prefetch parses are in flight; unset/`<=0` uses the adaptive 1/16-physical-RAM default (clamped [64 MiB, 2 GiB]). |
@@ -416,8 +414,6 @@ Common runtime overrides:
 | `POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE` | `raw_authority_commit_batch_size` | Census-phase commit batch size for raw-materialization repair. |
 | `POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES` | `raw_authority_whale_payload_bytes` | Escalation-tier payload envelope for the daemon whale pass. |
 | `POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION` | `daemon_whale_raw_materialization` | Escalation tier on/off (default on): bounded whale pass for resource-blocked, stream-safe components. |
-| `POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES` | `revision_parse_dispatch_max_bytes` | Payload-size ceiling for pool-eligible revision-parse dispatch. |
-| `POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES` | `revision_parse_pool_min_bytes` | Aggregate payload floor for revision-parse pool dispatch to amortize. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |

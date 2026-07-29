@@ -987,76 +987,6 @@ def census_parse_worker(
         return raw_id, None, str(exc)
 
 
-_DEFAULT_PARSE_DISPATCH_MAX_BYTES = 262_144  # 256 KiB
-
-
-def _parse_dispatch_max_bytes() -> int:
-    """Payload-size ceiling for pool dispatch to still be a net win (polylogue-amg1).
-
-    polylogue-amg1's own measurement: 200 raws at ~50KB average with 8
-    workers measured 1.22x (net win); 80 raws at ~1.7MB average measured
-    0.63x (net LOSS, slower than sequential) on the same machine. The
-    process-pool round trip pickles the returned ``ParsedSession`` list back
-    across the process boundary -- for large payloads that pickle cost
-    exceeds the parse time saved by running concurrently. Raws at or above
-    this size parse sequentially in-process (no IPC); raws below it dispatch
-    to the pool, where aggregate parse time genuinely dominates transfer
-    cost. Override with POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES.
-    """
-    from polylogue.config import load_polylogue_config
-
-    configured = load_polylogue_config().revision_parse_dispatch_max_bytes
-    return configured if configured is not None else _DEFAULT_PARSE_DISPATCH_MAX_BYTES
-
-
-def _partition_raws_by_dispatch_size(
-    raw_ids: list[str],
-    payload_sizes: dict[str, int],
-    *,
-    dispatch_max_bytes: int,
-) -> tuple[list[str], list[str]]:
-    """Split raw ids into (pool-eligible, sequential) by payload size.
-
-    Preserves ``raw_ids`` input order within each bucket so callers stay
-    deterministic. See ``_parse_dispatch_max_bytes`` for why size, not count,
-    decides pool eligibility (polylogue-amg1).
-    """
-    pool_raw_ids = [raw_id for raw_id in raw_ids if payload_sizes[raw_id] < dispatch_max_bytes]
-    sequential_raw_ids = [raw_id for raw_id in raw_ids if payload_sizes[raw_id] >= dispatch_max_bytes]
-    return pool_raw_ids, sequential_raw_ids
-
-
-_DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES = 48 * 1024 * 1024  # 48 MiB
-
-
-def _parse_pool_min_aggregate_bytes() -> int:
-    """Aggregate-payload floor below which pool dispatch cannot amortize.
-
-    Each spawned worker pays the full interpreter + polylogue import before
-    its first task (~1.5-2.0s measured live 2026-07-19: a 25s py-spy capture
-    of the bulk rebuild census showed 20 short-lived workers spending ~95%
-    of their lifetime inside importlib, because per-cohort census batches
-    dispatch 1-2 sub-256KiB raws at a time and the executor is created per
-    call). Sequential small-payload parse runs at roughly 20MB/s, so with 8
-    workers the pool only beats sequential once the pool-eligible aggregate
-    exceeds ~45MB; below that, worker spawn dominates and "parallel" is
-    strictly slower. Override with
-    ``POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`` (polylogue-crd8 follow-up).
-    """
-    from polylogue.config import load_polylogue_config
-
-    configured = load_polylogue_config().revision_parse_pool_min_bytes
-    return configured if configured is not None else _DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES
-
-
-def _pool_dispatch_amortizes(pool_raw_ids: list[str], payload_sizes: dict[str, int]) -> bool:
-    """Decide whether a pool-eligible batch is worth spawning workers for."""
-    if len(pool_raw_ids) <= 1:
-        return False
-    total = sum(payload_sizes[raw_id] for raw_id in pool_raw_ids)
-    return total >= _parse_pool_min_aggregate_bytes()
-
-
 #: Providers whose parsed session identity is derived purely from payload
 #: bytes, never from ``source_path`` -- safe to dedup census parse ACROSS
 #: source paths sharing a ``blob_hash`` (polylogue-869u). Excluded
@@ -1158,23 +1088,20 @@ def _parse_unique_retained_raws_via_threads(
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-    """Thread-parallel parse, reachable only when ``parallel_threads_effective()``.
+    """Thread-parallel parse over every raw, regardless of size.
 
-    Under a real free-threaded (no-GIL) interpreter, a plain
-    ``ThreadPoolExecutor`` shares parsed ``ParsedSession`` object graphs by
-    reference between threads, so neither of the process pool's two
-    amortization costs applies: no pickle-back of the return value (#3136
+    A plain ``ThreadPoolExecutor`` shares parsed ``ParsedSession`` object
+    graphs by reference between threads, so neither cost that a process pool
+    has to amortize applies here: no pickle-back of the return value (#3136
     measured 0.63x/net-loss above 256KiB) and no per-worker spawn+import tax
     (#3149's ~1.5-2s floor -- threads share the one already-imported
-    interpreter, they never re-pay ``import polylogue``). Both
-    ``_partition_raws_by_dispatch_size`` and ``_pool_dispatch_amortizes``
-    exist solely to protect against those two process-pool-specific costs
-    (#3136/#3149), so this path applies NEITHER: every raw in ``raw_ids``
-    dispatches to the thread pool regardless of payload size or aggregate
-    bytes.
+    interpreter, they never re-pay ``import polylogue``). Every raw in
+    ``raw_ids`` therefore dispatches, with no payload-size ceiling and no
+    aggregate floor; the heuristics that enforced those under the GIL are
+    retired along with the process-pool path itself.
 
-    Dispatches the same ``census_parse_worker`` function the process-pool
-    path uses, deliberately -- NOT ``_parse_retained_raw(archive, raw_id)``
+    Dispatches ``census_parse_worker`` deliberately -- NOT
+    ``_parse_retained_raw(archive, raw_id)``
     directly. ``ArchiveStore`` lazily opens ``_source_conn`` as a plain
     ``sqlite3.Connection`` with the default ``check_same_thread=True``
     (``storage/sqlite/archive_tiers/archive.py:_ensure_source_conn``); the
@@ -1244,19 +1171,37 @@ def _parse_unique_retained_raws(
     regardless of which raws take a parallel path versus the sequential
     path.
 
-    Two parallel strategies, mutually exclusive per call:
-    ``parallel_threads_effective()`` (real free-threading, e.g. 3.14t) routes
-    to ``_parse_unique_retained_raws_via_threads`` with no size partition or
-    amortization floor. Otherwise (the standard GIL build -- today's default
-    and the only build the daemon deploys) falls through to the
-    ``ProcessPoolExecutor`` path below, unchanged: the polylogue-7mtf
-    control-run measurement proved GIL-build threads give zero parse
-    speedup (0.93x-0.96x) and inflate a concurrent writer thread's commit
-    latency ~5000x, so threads must never engage without a genuinely
-    disabled GIL.
+    Parallelism is a plain ``ThreadPoolExecutor`` over every raw, with no
+    size partition and no amortization floor: parsed ``ParsedSession`` graphs
+    are shared between threads by reference, so neither of the costs that
+    used to require tuning applies.
+
+    Parallelism requires a genuinely free-threaded interpreter. ``>=3.14`` in
+    ``requires-python`` does NOT guarantee that -- a standard GIL 3.14 build
+    satisfies it -- so this still probes, and parses sequentially when the GIL
+    is enabled. That is a safety guard, not a tuning knob: polylogue-7mtf
+    measured GIL-build parse threads giving no speedup (0.93x-0.96x) while
+    inflating a concurrent SQLite writer thread's commit latency ~5000x
+    (208ms against an ~0.04ms/5ms cadence), so threads must never engage under
+    a GIL.
+
+    The retired process-pool alternative existed solely to get parallelism
+    under the GIL, and carried two measured heuristics to stay a net win
+    there: a 256 KiB payload ceiling (pickling ``ParsedSession`` graphs back
+    across the process boundary measured 0.63x, a net loss) and a 48 MiB
+    aggregate floor (per-worker spawn+import ~1.5-2.0s). On the reference
+    archive that ceiling routed 98.5% of all bytes to a single core, which is
+    what made a full index rebuild a ~9-hour job on a 24-thread machine.
     """
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
-    if ingest_workers <= 1 or len(raw_ids) <= 1:
+    if ingest_workers <= 1 or len(raw_ids) <= 1 or not parallel_threads_effective():
+        if ingest_workers > 1 and len(raw_ids) > 1:
+            _LOGGER.warning(
+                "parsing %d raws sequentially: this interpreter has the GIL enabled, and "
+                "parse threads under a GIL starve the archive writer rather than speeding "
+                "parse up. Run polylogue on a free-threaded build (3.14t) for parallel parse.",
+                len(raw_ids),
+            )
         for raw_id in raw_ids:
             try:
                 results[raw_id] = _parse_retained_raw(archive, raw_id)
@@ -1264,64 +1209,9 @@ def _parse_unique_retained_raws(
                 results[raw_id] = exc
         return results
 
-    if parallel_threads_effective():
-        return _parse_unique_retained_raws_via_threads(
-            archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers
-        )
-
-    payload_sizes = {raw_id: descriptors[raw_id][4] for raw_id in raw_ids}
-    pool_raw_ids, sequential_raw_ids = _partition_raws_by_dispatch_size(
-        raw_ids, payload_sizes, dispatch_max_bytes=_parse_dispatch_max_bytes()
+    return _parse_unique_retained_raws_via_threads(
+        archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers
     )
-
-    for raw_id in sequential_raw_ids:
-        try:
-            results[raw_id] = _parse_retained_raw(archive, raw_id)
-        except Exception as exc:
-            results[raw_id] = exc
-
-    if not _pool_dispatch_amortizes(pool_raw_ids, payload_sizes):
-        for raw_id in pool_raw_ids:
-            try:
-                results[raw_id] = _parse_retained_raw(archive, raw_id)
-            except Exception as exc:
-                results[raw_id] = exc
-        return results
-
-    from concurrent.futures import as_completed
-
-    from polylogue.pipeline.services.process_pool import process_pool_executor
-
-    blob_root_str = str(archive.archive_root / "blob")
-    source_db_path_str = str(archive.source_db_path)
-    with process_pool_executor(max_workers=min(ingest_workers, len(pool_raw_ids))) as pool:
-        future_to_raw_id = {}
-        for raw_id in pool_raw_ids:
-            provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
-            future = pool.submit(
-                census_parse_worker,
-                raw_id,
-                provider.value,
-                blob_hash,
-                source_path,
-                is_stream_record_provider(source_path, str(provider)),
-                blob_root_str,
-                source_db_path_str,
-            )
-            future_to_raw_id[future] = raw_id
-        for future in as_completed(future_to_raw_id):
-            raw_id = future_to_raw_id[future]
-            try:
-                _raw_id, sessions, error = future.result()
-            except Exception as exc:
-                results[raw_id] = exc
-                continue
-            if error is not None:
-                results[raw_id] = RuntimeError(error)
-                continue
-            _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
-            results[raw_id] = (sessions or [], payload_size, kind)
-    return results
 
 
 def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:

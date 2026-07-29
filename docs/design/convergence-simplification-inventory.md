@@ -80,42 +80,30 @@ every call site that currently gates on `parallel_threads_effective()`
 remains. `resolve_parse_worker_count()`'s bound survives, retargeted at
 thread-pool sizing.
 
-### 2. Pool-amortization heuristics (dispatch-size + aggregate-bytes floors)
+### 2. Pool-amortization heuristics (dispatch-size + aggregate-bytes floors) — DELETED
 
-**What it is:** two independent guards in `polylogue/sources/revision_backfill.py`
-that decide whether a batch is even worth spawning a process pool for:
+**Status: done.** Both guards, their two constants, their two config
+properties (`revision_parse_dispatch_max_bytes`,
+`revision_parse_pool_min_bytes`) and their two environment overrides
+(`POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES`,
+`POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`) are removed, together with the
+process-pool branch in `_parse_unique_retained_raws` that they gated.
 
-- `_partition_raws_by_dispatch_size()` (`polylogue/sources/revision_backfill.py:879`)
-  + `_parse_dispatch_max_bytes()` (`polylogue/sources/revision_backfill.py:857`,
-  default `_DEFAULT_PARSE_DISPATCH_MAX_BYTES = 262_144` / 256 KiB, override
-  `POLYLOGUE_REVISION_PARSE_DISPATCH_MAX_BYTES`) — raws at or above 256 KiB
-  parse sequentially in-process; the process-pool round trip pickles the
-  returned `ParsedSession` list back across the process boundary, which
-  measured a net LOSS (0.63x) above this size (polylogue-amg1/#3136).
-- `_pool_dispatch_amortizes()` (`polylogue/sources/revision_backfill.py:922`)
-  + `_parse_pool_min_aggregate_bytes()` (`polylogue/sources/revision_backfill.py:899`,
-  default `_DEFAULT_PARSE_POOL_MIN_AGGREGATE_BYTES = 48 * 1024 * 1024` / 48 MiB,
-  override `POLYLOGUE_REVISION_PARSE_POOL_MIN_BYTES`) — an aggregate
-  pool-eligible batch under ~45 MB doesn't amortize the ~1.5-2s
-  per-worker spawn+import cost (measured live 2026-07-19: 20 short-lived
-  workers spending ~95% of their lifetime inside `importlib`).
+They existed only to keep a `ProcessPoolExecutor` a net win under the GIL: a
+256 KiB payload ceiling (pickling `ParsedSession` graphs back across the
+process boundary measured 0.63x, a net loss, polylogue-amg1/#3136) and a
+48 MiB aggregate floor (per-worker spawn+import measured ~1.5-2.0s, #3149).
+A free-threaded `ThreadPoolExecutor` shares object graphs by reference and
+reuses the already-imported interpreter, so neither cost exists and neither
+guard has a caller.
 
-**Why it exists today:** both guards protect against process-pool-specific
-costs (pickle-back of large payloads; per-worker spawn+import tax) that only
-exist because `ProcessPoolExecutor` workers are separate interpreters.
+Measured cost of keeping them: on the reference archive the 256 KiB ceiling
+sent 16,417 of 41,363 raws — 90.84 GiB of 92.22 GiB, **98.5% of all bytes** —
+to a single-core sequential parse, which is what made a full index rebuild a
+~9-hour job on a 24-thread machine.
 
-**What makes it deletable:** `_parse_unique_retained_raws_via_threads`'s own
-docstring (`polylogue/sources/revision_backfill.py:989`) already states the
-reason precisely: "Both `_partition_raws_by_dispatch_size` and
-`_pool_dispatch_amortizes` exist solely to protect against those two
-process-pool-specific costs (#3136/#3149), so this path applies NEITHER" —
-a free-threaded `ThreadPoolExecutor` shares `ParsedSession` object graphs by
-reference (no pickle) and reuses the one already-imported interpreter (no
-per-worker spawn). Once the process-pool branch is gone (item 1), these two
-size/aggregate floors have no remaining caller.
-
-**Which phase deletes it:** (b), in the same sweep as item 1 (they gate the
-same dead branch).
+`resolve_parse_worker_count()` survives as the single knob bounding parse
+width, retargeted at thread-pool sizing.
 
 ### 3. The 64 MiB daemon parse envelope narrowing
 

@@ -16,13 +16,10 @@ classifiers = [
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: 3.12",
-  "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 dependencies = [
   "google-auth-oauthlib",
   "google-api-python-client",
