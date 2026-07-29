@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-import orjson
 import pytest
 
+from polylogue.core import json as core_json
 from polylogue.schemas.packages import SchemaElementManifest, SchemaResolution, SchemaVersionPackage
 from polylogue.schemas.validation.artifacts import (
     inspect_raw_artifact_coverage,
@@ -774,7 +774,7 @@ class TestInspectRawArtifactCoverage:
             "name": "Large Claude export",
             "chat_messages": [message_template for _ in range(600)],
         }
-        raw_content = orjson.dumps(payload, option=orjson.OPT_INDENT_2)
+        raw_content = core_json.dumps_bytes(payload, indent=2)
 
         _insert_raw_record(
             db_path=db_path,

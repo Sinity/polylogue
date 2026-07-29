@@ -241,9 +241,25 @@ def collapse_dynamic_keys(schema: JSONDocument) -> JSONDocument:
                 static_props[key] = collapsed_value
 
         if should_collapse_observed_keys(key_names):
-            dynamic_schemas.extend(json_document(value) for value in static_props.values() if json_document(value))
-            static_props = {}
             schema["x-polylogue-high-cardinality-keys"] = True
+            if not dynamic_schemas:
+                # Only fold the individually-static properties away when the
+                # per-key `is_dynamic_key` pass didn't already produce an
+                # `additionalProperties` model on its own -- e.g. a wide,
+                # uniformly-shaped map (256 "ordinary-key-N" names) where no
+                # single key looks dynamic but the aggregate shape still
+                # calls for one. When at least one key already collapsed
+                # (a content-bearing key, or enough identifier-ish keys to
+                # cross the dynamic-ratio threshold), that already produced
+                # a correct additionalProperties block; sweeping the
+                # remaining, individually-static keys into it too would
+                # discard real structure `should_collapse_observed_keys`'s
+                # own docstring says to preserve ("collapsing a mostly-
+                # static map because one id appeared would lose real
+                # structure") -- and disclosure-risk keys are never lost
+                # either way, since `is_dynamic_key` already routed them.
+                dynamic_schemas.extend(json_document(value) for value in static_props.values() if json_document(value))
+                static_props = {}
 
         if dynamic_schemas:
             schema["properties"] = static_props

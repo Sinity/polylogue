@@ -1882,6 +1882,7 @@ def build_verify_steps(
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
         )
+        steps.append(("lab policy bead-graph", _devtools_cmd("lab policy bead-graph")))
     return steps
 
 

@@ -357,6 +357,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "get_metadata": ("archive_routed", "user", "reads user metadata through user.db"),
     "get_raw_artifacts_for_session": ("archive_routed", "source", "reads raw artifacts through source.db"),
     "get_recall_pack": ("archive_routed", "user", "reads recall packs through user.db"),
+    "get_session_events": ("archive_routed", "index", "reads raw session-timeline events from index.db"),
     "get_session_insight_status": ("archive_routed", "index", "reads insight readiness from index.db"),
     "get_session_latency_profile_insight": ("archive_routed", "index", "reads latency profiles from index.db"),
     "get_session_phase_insights": ("archive_routed", "index", "reads phases from index.db"),

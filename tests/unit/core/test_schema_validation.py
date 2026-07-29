@@ -857,10 +857,16 @@ def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_
     row = _read_raw_session_validation(db_path, raw_id)
     assert row is not None
     assert row["validation_status"] == "failed"
-    assert isinstance(row["validation_error"], str) and "zero-length" in row["validation_error"]
+    # "Unable to decode payload: " is this facade's own backend-agnostic
+    # prefix (pipeline/services/validation_runtime.py); the exact wording
+    # after it is the active JSON backend's own decode-error message and
+    # differs by backend -- e.g. orjson says "Input is a zero-length, empty
+    # document", msgspec says "Input data was truncated" -- so only the
+    # facade's own contribution is pinned here, not a specific backend's text.
+    assert isinstance(row["validation_error"], str) and row["validation_error"].startswith("Unable to decode payload:")
     assert row["validation_mode"] == "strict"
     assert row["validated_at_ms"] is not None
-    assert isinstance(row["parse_error"], str) and "zero-length" in row["parse_error"]
+    assert isinstance(row["parse_error"], str) and row["parse_error"].startswith("Unable to decode payload:")
 
 
 def test_verify_raw_corpus_honors_record_limit_and_offset(

@@ -43,9 +43,10 @@ venv/
 coverage.json
 htmlcov/
 
-# Nix build output
-result
-result-*
+# Nix build output (root-anchored: unanchored `result-*` also matched
+# tests/data/semantic_cards/cases/result-before-use.json)
+/result
+/result-*
 
 .scratch
 

@@ -23,13 +23,23 @@ from polylogue.insights.hermes_verification_coverage import correlate_verificati
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.parsers import hermes_verification
+from polylogue.sources.parsers import hermes_identity, hermes_verification
 from polylogue.storage.runtime.archive.records import SessionEventRecord
 from polylogue.storage.sqlite.queries.session_events import get_session_events
 
 
-async def _fetch_verification_events(archive_root: Path, hermes_session_id: str) -> list[SessionEventRecord]:
-    verification_session_id = hermes_verification.observer_session_provider_id(hermes_session_id)
+async def _fetch_verification_events(
+    archive_root: Path, hermes_session_id: str, *, profile_root: Path
+) -> list[SessionEventRecord]:
+    # dispatch.py passes `profile_root=Path(spec.source_path).parent` for the
+    # verification_evidence.db marker (polylogue-fs1.14 / #3227), so the
+    # ingested session identity is profile-qualified by the *install root*
+    # directory (`profile_root` here is that same directory, matching the
+    # WatchSource root the file was ingested from) -- not the bare,
+    # unqualified `verification:<raw_id>` identity `observer_session_
+    # provider_id` returns when called with no profile_key at all.
+    profile_key = hermes_identity.profile_key(profile_root)
+    verification_session_id = hermes_verification.observer_session_provider_id(hermes_session_id, profile_key)
     qualified_session_id = f"hermes-session:{verification_session_id}"
     async with aiosqlite.connect(archive_root / "index.db") as conn:
         conn.row_factory = aiosqlite.Row
@@ -133,7 +143,9 @@ async def test_correlate_verification_coverage_summarizes_passed_and_failed_even
     )
     archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "verification-coverage.db")
     try:
-        events = await _fetch_verification_events(archive_root, hermes_session_id)
+        events = await _fetch_verification_events(
+            archive_root, hermes_session_id, profile_root=workspace_env["data_root"] / "hermes-home"
+        )
         assert events
 
         coverage = correlate_verification_coverage(hermes_session_id, events)
@@ -182,7 +194,7 @@ async def test_correlate_verification_coverage_surfaces_changed_paths(workspace_
         metrics = await processor.ingest_files([source_path], emit_event=False)
         assert metrics.failed_file_count == 0
 
-        events = await _fetch_verification_events(workspace_env["archive_root"], hermes_session_id)
+        events = await _fetch_verification_events(workspace_env["archive_root"], hermes_session_id, profile_root=root)
         coverage = correlate_verification_coverage(hermes_session_id, events)
         assert set(coverage.changed_paths) == {"src/a.py", "src/b.py"}
     finally:

@@ -26,11 +26,11 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-import orjson
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from polylogue.core import json as core_json
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.pipeline.services.validation_flow import evaluate_raw_artifacts
 from polylogue.pipeline.services.validation_runtime import (
@@ -70,7 +70,7 @@ def _claude_payload(title: str = "hello") -> bytes:
             }
         ],
     }
-    return bytes(orjson.dumps(body))
+    return core_json.dumps_bytes(body)
 
 
 def _make_record(raw_id: str, *, payload: bytes) -> RawSessionRecord:

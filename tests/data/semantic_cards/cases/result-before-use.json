@@ -1,0 +1,127 @@
+{
+  "case_id": "result-before-use",
+  "claim": "Whole-document FIFO tool-result pairing pairs a result that appears earlier in the message list than its use, and a purely-paired result row (no independent content) is suppressed from the transcript.",
+  "oracle": "Hand-authored compact contract plus exact frozen card JSON.",
+  "provider_family": "claude-code",
+  "session_id": "fixture:result-before-use",
+  "messages": [
+    {
+      "id": "m-result",
+      "role": "tool",
+      "message_type": "tool_result",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-result",
+          "type": "tool_result",
+          "tool_id": "t1",
+          "text": "ok",
+          "tool_result_is_error": false,
+          "tool_result_exit_code": 0
+        }
+      ]
+    },
+    {
+      "id": "m-use",
+      "role": "assistant",
+      "message_type": "tool_use",
+      "text": null,
+      "blocks": [
+        {
+          "id": "b-use",
+          "type": "tool_use",
+          "tool_name": "Bash",
+          "tool_id": "t1",
+          "tool_input": {
+            "command": "echo ok"
+          }
+        }
+      ]
+    }
+  ],
+  "expected_contract": {
+    "card_count": 1,
+    "kinds": [
+      "shell"
+    ],
+    "outcomes": [
+      "succeeded"
+    ],
+    "entry_types": [
+      "card"
+    ]
+  },
+  "expected_cards": [
+    {
+      "schema_version": "semantic-card.v1",
+      "kind": "shell",
+      "title": "Shell command",
+      "source": {
+        "session_id": "fixture:result-before-use",
+        "provider_family": "claude-code",
+        "message_id": "m-use",
+        "block_id": "b-use",
+        "block_index": 0,
+        "tool_name": "Bash",
+        "tool_id": "t1",
+        "material_origin": "unknown",
+        "result_message_id": "m-result",
+        "result_block_id": "b-result",
+        "result_block_index": 0,
+        "result_material_origin": "unknown"
+      },
+      "fields": [
+        {
+          "label": "tool",
+          "value": "Bash"
+        },
+        {
+          "label": "semantic family",
+          "value": "shell"
+        },
+        {
+          "label": "classification",
+          "value": "exact_alias"
+        },
+        {
+          "label": "command",
+          "value": "echo ok"
+        }
+      ],
+      "previews": [
+        {
+          "kind": "output",
+          "text": "ok",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      ],
+      "caveats": [],
+      "summary": "echo ok",
+      "outcome": {
+        "state": "succeeded",
+        "is_error": false,
+        "exit_code": 0
+      },
+      "raw_evidence": {
+        "tool_input": {
+          "command": "echo ok"
+        },
+        "result_preview": {
+          "kind": "raw_result",
+          "text": "ok",
+          "line_count": 1,
+          "omitted_lines": 0,
+          "omitted_characters": 0,
+          "truncated": false,
+          "strategy": "full",
+          "encoding_replacements": 0
+        }
+      }
+    }
+  ]
+}
