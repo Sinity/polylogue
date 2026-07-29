@@ -289,7 +289,7 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
         if not _embedding_config_enabled():
             return False
         archive_db = _active_archive_index_path(db_path)
-        return _archive_embed_check(archive_db, path) if archive_db is not None else False
+        return _archive_embed_check(archive_db, path, archive_root=db_path.parent) if archive_db is not None else False
 
     def execute(path: Path) -> StageExecuteReturn:
         if not _embedding_config_enabled():
@@ -297,13 +297,17 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
         if _deferred():
             return False
         archive_db = _active_archive_index_path(db_path)
-        return _archive_embed_execute(archive_db, path) if archive_db is not None else True
+        return _archive_embed_execute(archive_db, path, archive_root=db_path.parent) if archive_db is not None else True
 
     def check_many(paths: Sequence[Path]) -> set[Path]:
         if not paths or not _embedding_config_enabled():
             return set()
         archive_db = _active_archive_index_path(db_path)
-        return _archive_embed_check_many(archive_db, paths) if archive_db is not None else set()
+        return (
+            _archive_embed_check_many(archive_db, paths, archive_root=db_path.parent)
+            if archive_db is not None
+            else set()
+        )
 
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         if not paths or not _embedding_config_enabled():
@@ -311,13 +315,21 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
         if _deferred():
             return False
         archive_db = _active_archive_index_path(db_path)
-        return _archive_embed_execute_many(archive_db, paths) if archive_db is not None else True
+        return (
+            _archive_embed_execute_many(archive_db, paths, archive_root=db_path.parent)
+            if archive_db is not None
+            else True
+        )
 
     def check_sessions(session_ids: Sequence[str]) -> set[str]:
         if not session_ids or not _embedding_config_enabled():
             return set()
         archive_db = _active_archive_index_path(db_path)
-        return _archive_embed_check_sessions(archive_db, session_ids) if archive_db is not None else set()
+        return (
+            _archive_embed_check_sessions(archive_db, session_ids, archive_root=db_path.parent)
+            if archive_db is not None
+            else set()
+        )
 
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         if not session_ids or not _embedding_config_enabled():
@@ -325,7 +337,11 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
         if _deferred():
             return False
         archive_db = _active_archive_index_path(db_path)
-        return _archive_embed_execute_sessions(archive_db, session_ids) if archive_db is not None else True
+        return (
+            _archive_embed_execute_sessions(archive_db, session_ids, archive_root=db_path.parent)
+            if archive_db is not None
+            else True
+        )
 
     return ConvergenceStage(
         name="embed",
@@ -416,7 +432,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     def check(path: Path) -> bool:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
-            return _archive_insights_check(archive_db, path)
+            return _archive_insights_check(archive_db, path, archive_root=db_path.parent)
         if not db_path.exists():
             return False
         from polylogue.storage.sqlite.connection_profile import open_connection
@@ -443,7 +459,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     def execute(path: Path) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
-            return _archive_insights_execute(archive_db, path)
+            return _archive_insights_execute(archive_db, path, archive_root=db_path.parent)
         from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 
@@ -484,7 +500,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     def check_many(paths: Sequence[Path]) -> set[Path]:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
-            return _archive_insights_check_many(archive_db, paths)
+            return _archive_insights_check_many(archive_db, paths, archive_root=db_path.parent)
         if not db_path.exists() or not paths:
             return set()
         from polylogue.storage.sqlite.connection_profile import open_connection
@@ -516,7 +532,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
-            return _archive_insights_execute_many(archive_db, paths)
+            return _archive_insights_execute_many(archive_db, paths, archive_root=db_path.parent)
         from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 
@@ -585,7 +601,7 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
     def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
         archive_db = _active_archive_index_path(db_path)
         if archive_db is not None:
-            return _archive_insights_execute_sessions(archive_db, session_ids)
+            return _archive_insights_execute_sessions(archive_db, session_ids, archive_root=db_path.parent)
         from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
         from polylogue.storage.sqlite.connection import open_connection
 
@@ -654,7 +670,7 @@ def _sinex_session_ids_for_paths(
         return {path: [] for path in normalized}
     conn = sqlite3.connect(f"file:{lookup_db}?mode=ro", uri=True, timeout=5.0)
     try:
-        return _schema_archive_session_ids_for_source_paths(conn, normalized)
+        return _schema_archive_session_ids_for_source_paths(conn, normalized, archive_root=db_path.parent)
     finally:
         conn.close()
 
@@ -1011,7 +1027,7 @@ def _stored_dim_from_meta(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
-def _reconcile_archive_embedding_config_change(index_db_path: Path) -> None:
+def _reconcile_archive_embedding_config_change(index_db_path: Path, *, archive_root: Path | None = None) -> None:
     """Reconcile the recipe on the tier that owns embedding state.
 
     Active archives split ``index.db`` source facts from the rebuildable
@@ -1019,11 +1035,19 @@ def _reconcile_archive_embedding_config_change(index_db_path: Path) -> None:
     old same-file behavior. Loading sqlite-vec here keeps dimension-change
     reconciliation able to drop the virtual table on the real production
     route.
+
+    ``archive_root`` names the durable-tier root explicitly when the caller
+    already resolved it (e.g. through ``.index-active-pointer``-aware
+    resolution, where ``index_db_path`` itself may point into a
+    ``.index-generations/<gen>`` subdirectory rather than the archive root
+    housing ``embeddings.db``); it defaults to ``index_db_path.parent`` for
+    callers that never diverge from the plain convention.
     """
 
     from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
-    sibling = index_db_path.with_name("embeddings.db")
+    root = archive_root if archive_root is not None else index_db_path.parent
+    sibling = root / "embeddings.db"
     target = sibling if sibling.exists() else index_db_path
     conn = sqlite3.connect(target, timeout=5.0)
     try:
@@ -1189,18 +1213,20 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
 # ── Archive file-set helpers ─────────────────────────────────────
 
 
-def _attached_source_db_path(conn: sqlite3.Connection) -> Path:
+def _attached_source_db_path(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> Path:
+    if archive_root is not None:
+        return archive_root / "source.db"
     for _, name, path in conn.execute("PRAGMA database_list").fetchall():
         if str(name) == "main" and path:
             return Path(str(path)).with_name("source.db")
     return Path("source.db")
 
 
-def _ensure_source_tier_attached(conn: sqlite3.Connection) -> bool:
+def _ensure_source_tier_attached(conn: sqlite3.Connection, *, archive_root: Path | None = None) -> bool:
     for _, name, _path in conn.execute("PRAGMA database_list").fetchall():
         if str(name) == "source_tier":
             return True
-    source_db = _attached_source_db_path(conn)
+    source_db = _attached_source_db_path(conn, archive_root=archive_root)
     if not source_db.exists():
         return False
     conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
@@ -1232,13 +1258,17 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
         return None
 
 
-def _schema_archive_session_ids_for_source_path(conn: sqlite3.Connection, path: Path) -> list[str]:
-    return _schema_archive_session_ids_for_source_paths(conn, [path]).get(path, [])
+def _schema_archive_session_ids_for_source_path(
+    conn: sqlite3.Connection, path: Path, *, archive_root: Path | None = None
+) -> list[str]:
+    return _schema_archive_session_ids_for_source_paths(conn, [path], archive_root=archive_root).get(path, [])
 
 
 def _schema_archive_session_ids_for_source_paths(
     conn: sqlite3.Connection,
     paths: Sequence[Path],
+    *,
+    archive_root: Path | None = None,
 ) -> dict[Path, list[str]]:
     normalized_paths = tuple(dict.fromkeys(Path(path) for path in paths))
     if not normalized_paths or not _table_exists(conn, "sessions"):
@@ -1247,7 +1277,7 @@ def _schema_archive_session_ids_for_source_paths(
     if not _table_exists(conn, "raw_sessions"):
         raw_table = "source_tier.raw_sessions"
         try:
-            if not _ensure_source_tier_attached(conn):
+            if not _ensure_source_tier_attached(conn, archive_root=archive_root):
                 return {path: [] for path in normalized_paths}
         except sqlite3.Error:
             # Swallowed here, one level below the stage's own check/execute
@@ -1518,22 +1548,26 @@ def repair_fts_surface(db_path: Path, surface: str) -> bool:
         return False
 
 
-def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
+def _archive_pending_embedding_session_ids(
+    conn: sqlite3.Connection, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> list[str]:
     from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
         return []
-    db_row = conn.execute("PRAGMA database_list").fetchone()
-    index_db = Path(str(db_row[2])) if db_row is not None and db_row[2] else None
+    if archive_root is not None:
+        embeddings_db: Path | None = archive_root / "embeddings.db"
+    else:
+        db_row = conn.execute("PRAGMA database_list").fetchone()
+        index_db = Path(str(db_row[2])) if db_row is not None and db_row[2] else None
+        embeddings_db = index_db.with_name("embeddings.db") if index_db is not None else None
     status_table = None
-    if index_db is not None:
-        embeddings_db = index_db.with_name("embeddings.db")
-        if embeddings_db.exists():
-            attached = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall() if len(row) > 1}
-            if "embeddings" not in attached:
-                conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
-            status_table = "embeddings.embedding_status"
+    if embeddings_db is not None and embeddings_db.exists():
+        attached = {str(row[1]) for row in conn.execute("PRAGMA database_list").fetchall() if len(row) > 1}
+        if "embeddings" not in attached:
+            conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        status_table = "embeddings.embedding_status"
     return [
         item.session_id
         for item in select_pending_archive_session_window(
@@ -1546,13 +1580,13 @@ def _archive_pending_embedding_session_ids(conn: sqlite3.Connection, session_ids
     ]
 
 
-def _archive_embed_check(db_path: Path, path: Path) -> bool:
+def _archive_embed_check(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
     try:
-        _reconcile_archive_embedding_config_change(db_path)
+        _reconcile_archive_embedding_config_change(db_path, archive_root=archive_root)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            return bool(_archive_pending_embedding_session_ids(conn, session_ids))
+            session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
+            return bool(_archive_pending_embedding_session_ids(conn, session_ids, archive_root=archive_root))
         finally:
             conn.close()
     except Exception:
@@ -1562,32 +1596,32 @@ def _archive_embed_check(db_path: Path, path: Path) -> bool:
         return True
 
 
-def _archive_embed_execute(db_path: Path, path: Path) -> bool:
+def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
-            pending_ids = _archive_pending_embedding_session_ids(conn, session_ids)
+            session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
+            pending_ids = _archive_pending_embedding_session_ids(conn, session_ids, archive_root=archive_root)
         finally:
             conn.close()
         if not pending_ids:
             return True
-        return _embed_archive_sessions_sync(db_path, pending_ids) and not _archive_embedding_debt_remaining(
-            db_path, session_ids
-        )
+        return _embed_archive_sessions_sync(
+            db_path, pending_ids, archive_root=archive_root
+        ) and not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
     except Exception:
         logger.warning("embed: archive failed", exc_info=True)
         return False
 
 
-def _archive_embed_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
+def _archive_embed_check_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None) -> set[Path]:
     try:
-        _reconcile_archive_embedding_config_change(db_path)
+        _reconcile_archive_embedding_config_change(db_path, archive_root=archive_root)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
+            by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             all_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            pending = set(_archive_pending_embedding_session_ids(conn, all_ids))
+            pending = set(_archive_pending_embedding_session_ids(conn, all_ids, archive_root=archive_root))
             return {path for path, ids in by_path.items() if any(session_id in pending for session_id in ids)}
         finally:
             conn.close()
@@ -1598,32 +1632,34 @@ def _archive_embed_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]
         return set(paths)
 
 
-def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path]) -> bool:
+def _archive_embed_execute_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None) -> bool:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
+            by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
-            pending_ids = _archive_pending_embedding_session_ids(conn, session_ids)
+            pending_ids = _archive_pending_embedding_session_ids(conn, session_ids, archive_root=archive_root)
         finally:
             conn.close()
         if not pending_ids:
             return True
-        return _embed_archive_sessions_sync(db_path, pending_ids) and not _archive_embedding_debt_remaining(
-            db_path, session_ids
-        )
+        return _embed_archive_sessions_sync(
+            db_path, pending_ids, archive_root=archive_root
+        ) and not _archive_embedding_debt_remaining(db_path, session_ids, archive_root=archive_root)
     except Exception:
         logger.warning("embed: archive batch failed", exc_info=True)
         return False
 
 
-def _archive_embed_check_sessions(db_path: Path, session_ids: Sequence[str]) -> set[str]:
+def _archive_embed_check_sessions(
+    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> set[str]:
     try:
-        _reconcile_archive_embedding_config_change(db_path)
+        _reconcile_archive_embedding_config_change(db_path, archive_root=archive_root)
         conn = sqlite3.connect(db_path, timeout=5.0)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
-            return set(_archive_pending_embedding_session_ids(conn, ids))
+            return set(_archive_pending_embedding_session_ids(conn, ids, archive_root=archive_root))
         finally:
             conn.close()
     except Exception:
@@ -1635,21 +1671,25 @@ def _archive_embed_check_sessions(db_path: Path, session_ids: Sequence[str]) -> 
         return set(session_ids)
 
 
-def _archive_embed_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> bool:
+def _archive_embed_execute_sessions(
+    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> bool:
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
         return True
-    ok = _embed_archive_sessions_sync(db_path, ids)
-    return ok and not _archive_embedding_debt_remaining(db_path, ids)
+    ok = _embed_archive_sessions_sync(db_path, ids, archive_root=archive_root)
+    return ok and not _archive_embedding_debt_remaining(db_path, ids, archive_root=archive_root)
 
 
-def _archive_embedding_debt_remaining(db_path: Path, session_ids: Sequence[str]) -> bool:
+def _archive_embedding_debt_remaining(
+    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> bool:
     if not session_ids:
         return False
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            return bool(_archive_pending_embedding_session_ids(conn, session_ids))
+            return bool(_archive_pending_embedding_session_ids(conn, session_ids, archive_root=archive_root))
         finally:
             conn.close()
     except Exception:
@@ -1657,7 +1697,9 @@ def _archive_embedding_debt_remaining(db_path: Path, session_ids: Sequence[str])
         return True
 
 
-def _embed_archive_sessions_sync(db_path: Path, session_ids: Sequence[str]) -> bool:
+def _embed_archive_sessions_sync(
+    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> bool:
     from polylogue.storage.embeddings.materialization import embed_archive_session_sync
     from polylogue.storage.search_providers import create_vector_provider
 
@@ -1665,7 +1707,8 @@ def _embed_archive_sessions_sync(db_path: Path, session_ids: Sequence[str]) -> b
     voyage_key = cfg.get("voyage_api_key")
     if not voyage_key:
         return True
-    embeddings_db = db_path.with_name("embeddings.db")
+    root = archive_root if archive_root is not None else db_path.parent
+    embeddings_db = root / "embeddings.db"
     vec_provider = create_vector_provider(
         voyage_api_key=str(voyage_key),
         db_path=embeddings_db,
@@ -1701,6 +1744,7 @@ def _archive_hot_insight_session_ids(
     session_ids: Sequence[str],
     *,
     now: float | None = None,
+    archive_root: Path | None = None,
 ) -> set[str]:
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not unique_ids or not _table_exists(conn, "sessions"):
@@ -1709,7 +1753,7 @@ def _archive_hot_insight_session_ids(
     if not _table_exists(conn, "raw_sessions"):
         raw_table = "source_tier.raw_sessions"
         try:
-            if not _ensure_source_tier_attached(conn):
+            if not _ensure_source_tier_attached(conn, archive_root=archive_root):
                 return set()
         except sqlite3.Error:
             logger.warning("archive convergence: failed to attach source tier", exc_info=True)
@@ -1809,11 +1853,11 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
     return [str(row[0]) for row in rows]
 
 
-def _archive_insights_check(db_path: Path, path: Path) -> bool:
+def _archive_insights_check(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
+            session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
             return bool(session_ids) and bool(_archive_stale_session_profile_ids(conn, session_ids))
         finally:
             conn.close()
@@ -1824,15 +1868,15 @@ def _archive_insights_check(db_path: Path, path: Path) -> bool:
         return True
 
 
-def _archive_insights_execute(db_path: Path, path: Path) -> StageExecuteReturn:
+def _archive_insights_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
-            session_ids = _schema_archive_session_ids_for_source_path(conn, path)
+            session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
             if not session_ids:
                 logger.info("insights: archive skipped path refresh with no resolved sessions path=%s", path)
                 return True
-            return _archive_insights_execute_ids(conn, session_ids)
+            return _archive_insights_execute_ids(conn, session_ids, archive_root=archive_root)
         finally:
             conn.close()
     except Exception as exc:
@@ -1843,13 +1887,15 @@ def _archive_insights_execute(db_path: Path, path: Path) -> StageExecuteReturn:
         return False
 
 
-def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Path]:
+def _archive_insights_check_many(
+    db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
+) -> set[Path]:
     if not paths:
         return set()
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
+            by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             result = {
                 path
                 for path, session_ids in by_path.items()
@@ -1867,18 +1913,20 @@ def _archive_insights_check_many(db_path: Path, paths: Sequence[Path]) -> set[Pa
         return set(paths)
 
 
-def _archive_insights_execute_many(db_path: Path, paths: Sequence[Path]) -> StageExecuteReturn:
+def _archive_insights_execute_many(
+    db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
+) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
-            by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
+            by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
             if not session_ids:
                 logger.info(
                     "insights: archive skipped batch path refresh with no resolved sessions paths=%d", len(paths)
                 )
                 return True
-            return _archive_insights_execute_ids(conn, session_ids)
+            return _archive_insights_execute_ids(conn, session_ids, archive_root=archive_root)
         finally:
             conn.close()
     except Exception as exc:
@@ -1906,12 +1954,14 @@ def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) 
         return set(session_ids)
 
 
-def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]) -> StageExecuteReturn:
+def _archive_insights_execute_sessions(
+    db_path: Path, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> StageExecuteReturn:
     try:
         conn = _open_archive_insight_write_connection(db_path)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
-            return _archive_insights_execute_ids(conn, ids)
+            return _archive_insights_execute_ids(conn, ids, archive_root=archive_root)
         finally:
             conn.close()
     except Exception as exc:
@@ -1922,13 +1972,15 @@ def _archive_insights_execute_sessions(db_path: Path, session_ids: Sequence[str]
         return False
 
 
-def _archive_insights_execute_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> StageExecuteReturn:
+def _archive_insights_execute_ids(
+    conn: sqlite3.Connection, session_ids: Sequence[str], *, archive_root: Path | None = None
+) -> StageExecuteReturn:
     from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
 
     session_ids = list(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not session_ids:
         return True
-    hot_ids = _archive_hot_insight_session_ids(conn, session_ids)
+    hot_ids = _archive_hot_insight_session_ids(conn, session_ids, archive_root=archive_root)
     if hot_ids:
         logger.info(
             "insights: deferring hot archive source rebuild sessions=%d quiet_s=%.0f",

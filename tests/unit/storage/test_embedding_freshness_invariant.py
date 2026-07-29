@@ -168,7 +168,7 @@ def test_daemon_backlog_mutation_restoring_stale_check_bypass_misses_changed_con
     monkeypatch.setattr(materialization, "embed_archive_session_sync", _observe_embed)
     monkeypatch.setattr(embedding_backlog, "_upsert_archive_embedding_catchup_run", lambda *_args, **_kwargs: "run")
 
-    assert embedding_backlog._drain_archive_embedding_backlog_once(index_db) == 1
+    assert embedding_backlog._drain_archive_embedding_backlog_once(index_db, archive_root=index_db.parent) == 1
     assert selected == [session_id]
 
 

@@ -588,7 +588,9 @@ def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profile
     archive_db.touch()
     source_path = tmp_path / "codex.jsonl"
 
-    monkeypatch.setattr(stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths: {source_path: []})
+    monkeypatch.setattr(
+        stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths, **_kw: {source_path: []}
+    )
 
     def fail_global_missing_profiles(_conn: sqlite3.Connection) -> list[str]:
         raise AssertionError("path-scoped insight convergence must not scan global missing profiles")
@@ -1378,7 +1380,7 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
-    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids: set())
+    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: set())
     monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:
@@ -1424,7 +1426,9 @@ def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_a
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
     monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
-    monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids: {"codex-session:conv-hot"})
+    monkeypatch.setattr(
+        stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: {"codex-session:conv-hot"}
+    )
     monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:

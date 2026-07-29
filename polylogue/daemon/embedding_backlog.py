@@ -31,9 +31,8 @@ async def periodic_embedding_backlog_check(
 ) -> None:
     """Periodically drain one bounded pending-embedding window."""
     from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    db = resolve_active_index_path(archive_root())
+    db = archive_root() / "index.db"
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
@@ -68,7 +67,7 @@ def drain_embedding_backlog_once(db_path: Path) -> int:
     index_db = _active_archive_index_path(db_path)
     if index_db is None:
         return 0
-    return _drain_archive_embedding_backlog_once(index_db)
+    return _drain_archive_embedding_backlog_once(index_db, archive_root=db_path.parent)
 
 
 async def periodic_embedding_orphan_reconcile_check(
@@ -86,9 +85,8 @@ async def periodic_embedding_orphan_reconcile_check(
     remains the break-glass inspect/apply path.
     """
     from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
 
-    db = resolve_active_index_path(archive_root())
+    db = archive_root() / "index.db"
     if catch_up_complete is not None:
         await catch_up_complete.wait()
     while True:
@@ -128,7 +126,7 @@ def reconcile_embedding_orphans_once(db_path: Path) -> EmbeddingOrphanReconcileR
     index_db = _active_archive_index_path(db_path)
     if index_db is None:
         return None
-    embeddings_db = index_db.with_name("embeddings.db")
+    embeddings_db = db_path.parent / "embeddings.db"
     if not embeddings_db.exists():
         return None
 
@@ -172,7 +170,7 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
         return None
 
 
-def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
+def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path) -> int:
     from polylogue.daemon.convergence_stages import (
         _DAEMON_EMBED_MAX_ERRORS,
         _DAEMON_EMBED_MAX_MESSAGES,
@@ -193,13 +191,13 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
     voyage_key = cfg.get("voyage_api_key")
     if not voyage_key:
         return 0
-    embeddings_db = index_db.with_name("embeddings.db")
+    embeddings_db = archive_root / "embeddings.db"
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
     monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
-    ops_db = index_db.with_name("ops.db")
+    ops_db = archive_root / "ops.db"
     if monthly_cap > 0:
         month_spend = _archive_embedding_catchup_estimated_cost_this_month(ops_db)
         if month_spend >= monthly_cap:
@@ -279,7 +277,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path) -> int:
                 monthly_cap,
             )
             break
-        outcome = embed_archive_session_sync(index_db, vec_provider, item.session_id)
+        outcome = embed_archive_session_sync(index_db, vec_provider, item.session_id, embeddings_db_path=embeddings_db)
         processed += 1
         if outcome.status == "embedded":
             embedded += 1
