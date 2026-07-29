@@ -361,8 +361,23 @@
         polylogue-freethreaded = polylogueFreeThreaded;
       };
 
-      devShells.${system} = {
-      default = pkgs.mkShell {
+      devShells.${system} = rec {
+      # The DEFAULT devshell is the free-threaded (3.14t) shell defined below,
+      # because that is what the packaged daemon runs: polylogued.service's
+      # wrapper shebang resolves to python3.14t. While the default was the GIL
+      # build, local verification silently exercised a different interpreter
+      # than production -- `parallel_threads_effective()` returns False under
+      # the GIL, so every thread-parallel parse dispatch degraded to sequential.
+      # A rebuild driven from a devshell CLI therefore parsed single-threaded
+      # while the identical code under the daemon parsed 16-wide.
+      #
+      # The GIL build remains available as `.#gil`: both interpreters are
+      # supported deployment targets (polylogue-xikl builds both package
+      # variants deliberately). But the shell you get by default must be the
+      # one you ship.
+      default = freethreaded;
+
+      gil = pkgs.mkShell {
         buildInputs = with pkgs; [
           python
           uv
