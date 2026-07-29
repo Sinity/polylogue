@@ -1016,6 +1016,11 @@ def _observation_result_evidence(result: JSONDocument) -> dict[str, object]:
     status = extra.get("status")
     if isinstance(status, str) and status:
         evidence["observation_status"] = status
+    metadata = json_document(extra.get("metadata"))
+    for field in ("api_request_id", "telemetry_schema_version", "trajectory_id"):
+        value = metadata.get(field)
+        if isinstance(value, str) and value:
+            evidence[f"observation_metadata_{field}"] = value
     return evidence
 
 
