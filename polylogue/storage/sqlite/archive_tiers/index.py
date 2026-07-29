@@ -507,6 +507,13 @@ CREATE TABLE IF NOT EXISTS file_edits (
 CREATE INDEX IF NOT EXISTS idx_file_edits_session
 ON file_edits(session_id);
 
+-- polylogue-rgbj precedent (see web_content_constructs above): every
+-- messages(message_id) FK child table needs a leading index on the FK
+-- column, or SQLite's ON DELETE CASCADE enforcement falls back to a full
+-- table scan of file_edits for every deleted message row.
+CREATE INDEX IF NOT EXISTS idx_file_edits_message
+ON file_edits(message_id);
+
 CREATE INDEX IF NOT EXISTS idx_file_edits_file_path
 ON file_edits(file_path)
 WHERE file_path IS NOT NULL;
