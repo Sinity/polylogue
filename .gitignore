@@ -17,7 +17,6 @@ build/
 # Dev environment
 .direnv/
 .venv/
-.venv-freethreaded/
 venv/
 
 # Repo-local caches and generated working state

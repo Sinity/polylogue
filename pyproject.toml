@@ -52,25 +52,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Optional fast-JSON accelerators for polylogue.core.json (polylogue-xikl).
-# Neither extra is required: the facade always falls back to stdlib json
-# when its backend is absent. They are split into two extras (rather than
-# one) because orjson has no cp314t (free-threaded Python 3.14) wheels and
-# its build refuses to compile free-threaded -- installing it is simply
-# impossible on a 3.14t interpreter, so a single combined extra would make
-# the whole install fail there. Standard (GIL) builds should install
-# `polylogue[speed]`; a 3.14t build should install `polylogue[speed-msgspec]`
-# instead, since msgspec ships cp314t wheels since 0.20.0 (Nov 2025).
+# Optional fast-JSON accelerator for polylogue.core.json (polylogue-xikl).
+# Not required: the facade always falls back to stdlib json when it's
+# absent. `orjson` used to be a second accelerator option here, selected in
+# preference to msgspec when both were installed, but it ships no cp314t
+# (free-threaded Python 3.14) wheel and its build refuses to compile
+# free-threaded -- the only interpreter polylogue ships on (operator
+# decision 2026-07-19: adopt free-threaded Python fully) -- so it was
+# removed rather than kept as a dead-on-arrival alternative. msgspec ships
+# cp314t wheels since 0.20.0 (Nov 2025) and is what the packaged daemon
+# actually runs.
 speed = [
-  "orjson>=3.11.9",
-]
-speed-msgspec = [
   "msgspec>=0.20.0",
 ]
-# Everything a dev environment needs EXCEPT the JSON accelerators, which are
-# the one part that differs by interpreter. Kept as its own extra so `dev` and
-# `dev-freethreaded` can compose it rather than duplicating the list -- two
-# copies would drift the moment either is edited.
 dev-common = [
   "pytest>=9.1.1",  # CVE-2025-71176
   "pytest-cov>=4",
@@ -96,18 +90,8 @@ dev-common = [
   "pre-commit>=4.6.1",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
-# Standard (GIL) dev environment: both accelerators, so core.json's backend
-# matrix is exercised under test.
 dev = [
-  "polylogue[dev-common,speed,speed-msgspec]",
-]
-# Free-threaded (3.14t) dev environment. Identical except that orjson is
-# omitted -- it has no cp314t wheels and its build refuses to compile
-# free-threaded, so including it makes the whole install fail rather than
-# merely losing a backend. core.json falls back to msgspec there, which is
-# the configuration the free-threaded daemon actually runs.
-dev-freethreaded = [
-  "polylogue[dev-common,speed-msgspec]",
+  "polylogue[dev-common,speed]",
 ]
 fuzz = [
   "atheris>=3.1.0",  # Google's Python fuzzer

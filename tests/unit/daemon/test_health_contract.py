@@ -649,12 +649,12 @@ def test_probe_payloads_are_json_facade_serializable(
 
     The daemon serializes via `core.json.dumps_bytes` (`_json_bytes` in
     `daemon/http.py`), which itself routes to whichever fast backend is
-    active (orjson, or msgspec under the free-threaded interpreter that has
-    no orjson wheel) with a stdlib fallback -- not directly to orjson. Any
-    non-trivial nested type (Path, Enum, datetime) that the facade can't
-    serialize would raise at write time and leak as a 500 regardless of
-    which backend is active, so this exercises the actual facade rather
-    than a single hardcoded backend.
+    active (msgspec, the only accelerator this facade carries) with a
+    stdlib fallback -- not directly to a hardcoded backend. Any non-trivial
+    nested type (Path, Enum, datetime) that the facade can't serialize
+    would raise at write time and leak as a 500 regardless of which backend
+    is active, so this exercises the actual facade rather than a single
+    hardcoded backend.
     """
     from polylogue.core import json as core_json
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded

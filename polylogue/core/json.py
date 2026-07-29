@@ -2,19 +2,23 @@
 
 Backend selection happens once at import time, in priority order:
 
-1. ``orjson`` -- fastest, but ships no ``cp314t`` (free-threaded Python 3.14)
-   wheels and its build explicitly refuses to compile under free-threaded
-   Python (polylogue-xikl phase 1 gate finding, 2026-07-19).
-2. ``msgspec`` -- ships ``cp314t`` wheels since 0.20.0 (Nov 2025); used as
-   the fast fallback whenever orjson is unavailable (e.g. under 3.14t, or
-   any environment that installed polylogue without the ``speed`` extra).
-3. stdlib ``json`` -- always available; the final fallback.
+1. ``msgspec`` -- the fast backend; ships ``cp314t`` wheels since 0.20.0
+   (Nov 2025), so it works on free-threaded Python 3.14, the only
+   interpreter polylogue ships on (operator decision 2026-07-19: adopt
+   free-threaded Python across polylogue, fully). ``orjson`` used to be
+   tried first here, but it ships no ``cp314t`` wheel and its build refuses
+   to compile free-threaded (polylogue-xikl phase 1 gate finding,
+   2026-07-19) -- it could never load on the shipped interpreter, so it was
+   removed rather than kept as a dead accelerator option.
+2. stdlib ``json`` -- always available; the fallback when msgspec isn't
+   installed (e.g. an environment that installed polylogue without the
+   ``speed`` extra).
 
-Every direct ``import orjson`` / ``import msgspec`` elsewhere in the
-codebase should route through this facade instead, so backend selection,
-bytes/str normalization, and decode-error unification live in one place.
-See polylogue-xikl (free-threading adoption epic) and polylogue-7mtf (the
-3.14t experiment that surfaced the orjson blocker).
+Every direct ``import msgspec`` elsewhere in the codebase should route
+through this facade instead, so backend selection, bytes/str normalization,
+and decode-error unification live in one place. See polylogue-xikl
+(free-threading adoption epic) and polylogue-7mtf (the 3.14t experiment
+that surfaced the orjson blocker).
 
 Callers must not assume byte-for-byte output parity *across* backends for
 anything beyond what this module's parameters guarantee (compact vs.
@@ -23,16 +27,18 @@ encoding). Within one process the active backend is fixed at import time,
 so output is self-consistent for hashing/idempotency purposes.
 
 **Float exponent formatting** (byte-stability guarantee, and its limit): the
-facade normalizes msgspec's float-exponent output to match orjson's exactly
-(msgspec omits the ``+`` sign on positive exponents -- ``1e30`` vs orjson's
-``1e+30`` -- everything else already agrees), so canonical/content-hash
-dumps (`material_protocol/v1/canonical.py`) stay byte-identical whether the
-active backend is orjson or msgspec. stdlib json's float formatter is a
+facade normalizes msgspec's float-exponent output to a fixed canonical form
+(msgspec omits the ``+`` sign on positive exponents -- ``1e30`` -- this
+facade always writes ``1e+30``, the format previously established by
+orjson and still required for existing content hashes computed under it),
+so canonical/content-hash dumps (`material_protocol/v1/canonical.py`) stay
+byte-identical across every archive ever written by this facade, regardless
+of which accelerator produced them. stdlib json's float formatter is a
 *larger* departure (a different decimal-vs-exponent threshold entirely, e.g.
-``1e-05`` where orjson/msgspec write ``0.00001``) that this facade does not
-reconcile -- stdlib is a best-effort last resort used only when neither
-accelerator is installed; canonical byte-stability is guaranteed between
-orjson and msgspec, not into the stdlib-only tier.
+``1e-05`` where this facade writes ``0.00001``) that is not reconciled --
+stdlib is a best-effort last resort used only when msgspec isn't installed;
+canonical byte-stability is guaranteed only when msgspec is the active
+backend.
 """
 
 from __future__ import annotations
@@ -51,7 +57,7 @@ JSONDocument: TypeAlias = dict[str, JSONValue]
 JSONDocumentList: TypeAlias = list[JSONDocument]
 JSONEncoder: TypeAlias = Callable[[object], object]
 
-JSONBackend = Literal["orjson", "msgspec", "stdlib"]
+JSONBackend = Literal["msgspec", "stdlib"]
 
 
 class JSONDecodeError(ValueError):
@@ -59,8 +65,8 @@ class JSONDecodeError(ValueError):
 
     Raised by :func:`loads` regardless of which backend is active, so
     callers never need to import or catch a backend-specific exception
-    type (``orjson.JSONDecodeError``, ``msgspec.DecodeError``,
-    ``json.JSONDecodeError``) -- catch this instead.
+    type (``msgspec.DecodeError``, ``json.JSONDecodeError``) -- catch this
+    instead.
     """
 
 
@@ -82,14 +88,11 @@ def _try_import(name: str) -> ModuleType | None:
         return None
 
 
-_orjson = _try_import("orjson")
 _msgspec = _try_import("msgspec")
 _msgspec_json = _try_import("msgspec.json")
 
-if _orjson is not None:
-    _BACKEND: JSONBackend = "orjson"
-elif _msgspec_json is not None:
-    _BACKEND = "msgspec"
+if _msgspec_json is not None:
+    _BACKEND: JSONBackend = "msgspec"
 else:
     _BACKEND = "stdlib"
 
@@ -97,7 +100,7 @@ else:
 def backend() -> JSONBackend:
     """Return the JSON backend selected at import time.
 
-    One of ``"orjson"``, ``"msgspec"``, or ``"stdlib"``. Exposed for
+    One of ``"msgspec"`` or ``"stdlib"``. Exposed for
     diagnostics/benchmarking; production code should not branch on this --
     the whole point of the facade is that callers don't need to know.
     """
@@ -107,22 +110,18 @@ def backend() -> JSONBackend:
 def available_backends() -> tuple[JSONBackend, ...]:
     """Return the JSON backends whose modules actually import in this interpreter.
 
-    ``"stdlib"`` is always available. ``"orjson"``/``"msgspec"`` are included
-    only when their modules imported successfully at module load time.
-    Forcing ``_BACKEND`` (e.g. via test monkeypatching) to a backend outside
-    this set is a misuse, not a real code path: every encode/decode function
-    raises ``RuntimeError`` for a selected-but-absent backend by design (see
-    module docstring) -- orjson in particular ships no ``cp314t`` wheel and
-    cannot be force-installed under free-threaded Python. Cross-backend
-    parity tests should parametrize over this, not over a hardcoded literal
-    of all three names, and skip (with a stated reason) whichever backend
-    this interpreter doesn't have.
+    ``"stdlib"`` is always available. ``"msgspec"`` is included only when its
+    module imported successfully at module load time. Forcing ``_BACKEND``
+    (e.g. via test monkeypatching) to a backend outside this set is a
+    misuse, not a real code path: every encode/decode function raises
+    ``RuntimeError`` for a selected-but-absent backend by design (see module
+    docstring). Cross-backend parity tests should parametrize over this, not
+    over a hardcoded literal of both names, and skip (with a stated reason)
+    whichever backend this interpreter doesn't have.
     """
     backends: list[JSONBackend] = ["stdlib"]
     if _msgspec is not None and _msgspec_json is not None:
         backends.append("msgspec")
-    if _orjson is not None:
-        backends.append("orjson")
     return tuple(backends)
 
 
@@ -317,14 +316,6 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
 
 def _raw_loads(data: str | bytes | bytearray) -> object:
     result: object
-    if _BACKEND == "orjson":
-        if _orjson is None:
-            raise RuntimeError("core.json backend is 'orjson' but the orjson module is unavailable")
-        try:
-            result = _orjson.loads(data)
-        except _orjson.JSONDecodeError as exc:
-            raise JSONDecodeError(str(exc)) from exc
-        return result
     if _BACKEND == "msgspec":
         if _msgspec_json is None or _msgspec is None:
             raise RuntimeError("core.json backend is 'msgspec' but the msgspec module is unavailable")
@@ -353,21 +344,6 @@ def _raw_loads(data: str | bytes | bytearray) -> object:
 
 def _raw_dumps_bytes(obj: object, *, encoder: JSONEncoder, sort_keys: bool, indent: int | None) -> bytes | None:
     """Attempt the fast-backend encode; return ``None`` to signal a stdlib fallback."""
-    if _BACKEND == "orjson":
-        if _orjson is None:
-            raise RuntimeError("core.json backend is 'orjson' but the orjson module is unavailable")
-        option = 0
-        if sort_keys:
-            option |= _orjson.OPT_SORT_KEYS
-        if indent == 2:
-            option |= _orjson.OPT_INDENT_2
-        try:
-            # cast: `_orjson`'s declared type is `ModuleType | None` (for the
-            # optional-import None check above), which widens attribute access
-            # to `Any` -- orjson's own stub types `.dumps()` as `-> bytes`.
-            return cast(bytes, _orjson.dumps(obj, default=encoder, option=option or None))
-        except TypeError:
-            return None
     if _BACKEND == "msgspec":
         if _msgspec_json is None:
             raise RuntimeError("core.json backend is 'msgspec' but the msgspec module is unavailable")

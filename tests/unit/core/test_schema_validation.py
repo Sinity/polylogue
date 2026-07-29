@@ -860,9 +860,9 @@ def test_verify_raw_corpus_quarantine_empty_payload_updates_validation_state(db_
     # "Unable to decode payload: " is this facade's own backend-agnostic
     # prefix (pipeline/services/validation_runtime.py); the exact wording
     # after it is the active JSON backend's own decode-error message and
-    # differs by backend -- e.g. orjson says "Input is a zero-length, empty
-    # document", msgspec says "Input data was truncated" -- so only the
-    # facade's own contribution is pinned here, not a specific backend's text.
+    # differs by backend -- e.g. msgspec says "Input data was truncated",
+    # stdlib json phrases it differently again -- so only the facade's own
+    # contribution is pinned here, not a specific backend's text.
     assert isinstance(row["validation_error"], str) and row["validation_error"].startswith("Unable to decode payload:")
     assert row["validation_mode"] == "strict"
     assert row["validated_at_ms"] is not None
