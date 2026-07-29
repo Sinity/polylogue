@@ -3395,6 +3395,10 @@ files:
     loc: 1982
     target: polylogue/sources/parsers/codex.py
     owner: stable
+  - path: polylogue/sources/parsers/codex_state.py
+    loc: 443
+    target: polylogue/sources/parsers/codex_state.py
+    owner: stable
   - path: polylogue/sources/parsers/drive.py
     loc: 436
     target: polylogue/sources/parsers/drive.py
@@ -3516,7 +3520,7 @@ files:
     target: polylogue/sources/source_walk.py
     owner: stable
   - path: polylogue/sources/sqlite_snapshot.py
-    loc: 204
+    loc: 223
     target: polylogue/sources/sqlite_snapshot.py
     owner: stable
   - path: polylogue/sources/token_store.py
