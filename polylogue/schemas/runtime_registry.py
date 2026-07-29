@@ -318,6 +318,29 @@ class SchemaRegistry:
             self._catalog_cache[provider_token] = catalog
         return catalog
 
+    def _load_local_catalog(self, provider: str) -> SchemaPackageCatalog | None:
+        """Load the catalog written directly at this registry's own storage root.
+
+        Unlike ``load_package_catalog``, this never falls back to the bundled
+        ``SCHEMA_DIR`` package tree. Writers (``write_schema_version``,
+        ``register_schema``) that seed a catalog merge from
+        ``load_package_catalog`` instead of this method silently adopt every
+        *other* version the bundled provider ships -- including versions whose
+        backing element files were never copied to this registry's own
+        ``storage_root`` -- and can recompute ``default_version`` to point at
+        one of them. That is invisible until the bundled catalog gains a new
+        version the local one doesn't know about (as the provider schema
+        promotions that landed alongside this fix did), at which point a
+        registry built purely for local/isolated use (e.g. a test's
+        ``tmp_path``-scoped ``SchemaRegistry``) starts resolving reads through
+        the bundled package instead of the one it was just given.
+        """
+        provider_token = _provider_token(provider)
+        catalog_path = self._catalog_path(provider_token)
+        if not catalog_path.exists():
+            return None
+        return SchemaPackageCatalog.from_dict(_read_json_dict(catalog_path))
+
     def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
         provider_token = _provider_token(catalog.provider)
         provider_dir = self._provider_dir(provider_token)
@@ -631,7 +654,7 @@ class SchemaRegistry:
             schema=copy.deepcopy(dict(schema)),
             element_kind=element_kind,
         )
-        catalog = self.load_package_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
+        catalog = self._load_local_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
         existing_packages = [item for item in catalog.packages if item.version != version]
         existing_packages.append(package)
         existing_packages.sort(key=lambda item: _version_sort_key(item.version))
