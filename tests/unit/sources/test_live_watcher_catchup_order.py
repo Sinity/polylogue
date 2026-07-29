@@ -78,3 +78,29 @@ def test_default_sources_uses_resolved_hermes_root(tmp_path: Path) -> None:
 
     assert hermes.root == configured_root
     assert hermes.accepts(configured_root / "observability" / "hermes-atof.jsonl")
+
+
+def test_default_sources_watch_codex_state_db(monkeypatch: Any, tmp_path: Path) -> None:
+    """polylogue-0jf4: a second, narrower WatchSource covers the five live
+    ~/.codex SQLite databases without widening the existing "codex" JSONL
+    source's root (which would otherwise also walk history.jsonl/config.toml
+    /log/ under the shared ~/.codex root)."""
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    sources = {source.name: source for source in live_watcher.default_sources()}
+
+    codex = sources["codex"]
+    assert codex.root == tmp_path / ".codex" / "sessions"
+
+    codex_state_source = sources["codex-state"]
+    assert codex_state_source.root == tmp_path / ".codex"
+    assert codex_state_source.accepts(tmp_path / ".codex" / "state_5.sqlite")
+    assert codex_state_source.accepts(tmp_path / ".codex" / "goals_1.sqlite")
+    assert codex_state_source.accepts(tmp_path / ".codex" / "memories_1.sqlite")
+    assert codex_state_source.accepts(tmp_path / ".codex" / "logs_2.sqlite")
+    assert codex_state_source.accepts(tmp_path / ".codex" / "codex-dev.db")
+    # JSONL rollouts and non-sqlite files under the shared root are not
+    # picked up by the state-db source -- suffix filtering alone is enough
+    # to keep it from ever reasoning about the sessions/ subtree's content.
+    assert not codex_state_source.accepts(tmp_path / ".codex" / "history.jsonl")
+    assert not codex_state_source.accepts(tmp_path / ".codex" / "config.toml")
