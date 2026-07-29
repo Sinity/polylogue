@@ -11,7 +11,7 @@ import pytest
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.scenarios import CorpusSpec
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
     SHARED_CONVERSATION_INDEX_INGEST_FLAG,
     _coerce_float,
@@ -1299,7 +1299,7 @@ def _code_and_output_nodes(status: str | None, *, recipient: str = "python") -> 
     ]
 
 
-def _parse_execution_output(status: str | None) -> object:
+def _parse_execution_output(status: str | None) -> ParsedContentBlock:
     from polylogue.core.enums import BlockType
 
     nodes = _code_and_output_nodes(status)
