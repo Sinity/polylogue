@@ -428,20 +428,38 @@
             touch "$pyc_stamp"
           fi
 
-          # Create venv if it doesn't exist
+          # The venv must track the devShell interpreter. This previously ran
+          # `uv venv` only when .venv was absent, so a venv created against an
+          # older interpreter survived a toolchain bump forever and shadowed
+          # the nix-provided python on PATH: after the 3.14 migration (#3153)
+          # `nix develop` still handed out 3.13 while CI and the packaged
+          # daemon ran 3.14. Recreate whenever the interpreter identity moves.
+          devshell_python_id="$(python3 -c 'import sys; print(sys.version.split()[0], getattr(sys, "_is_gil_enabled", lambda: True)())')"
+          venv_python_id=""
+          if [ -x .venv/bin/python ]; then
+            venv_python_id="$(.venv/bin/python -c 'import sys; print(sys.version.split()[0], getattr(sys, "_is_gil_enabled", lambda: True)())' 2>/dev/null || true)"
+          fi
           if [ ! -d .venv ]; then
-            echo "devshell: creating virtual environment" >&2
+            echo "devshell: creating virtual environment ($devshell_python_id)" >&2
+            uv venv
+          elif [ "$venv_python_id" != "$devshell_python_id" ]; then
+            echo "devshell: interpreter changed ($venv_python_id -> $devshell_python_id); recreating .venv" >&2
+            rm -rf .venv
             uv venv
           fi
 
           # Activate venv
           source .venv/bin/activate
 
-          # Sync dependencies when pyproject.toml, uv.lock, or Python version change.
+          # Sync dependencies when pyproject.toml, uv.lock, or Python version
+          # change. The interpreter component is the devShell's identity
+          # captured BEFORE activation -- reading `python --version` here would
+          # report the venv that was just activated, which is precisely the
+          # value that cannot detect a toolchain bump.
           sync_fingerprint_file=".venv/.uv-sync-fingerprint"
           sync_fingerprint="$(
             cat pyproject.toml uv.lock 2>/dev/null
-            python --version 2>&1
+            printf '%s' "$devshell_python_id"
           )"
           sync_fingerprint="$(printf '%s' "$sync_fingerprint" | sha256sum | cut -d' ' -f1)"
           current_fingerprint=""
@@ -463,17 +481,19 @@
       };
 
       # Free-threaded (3.14t) devShell variant (polylogue-xikl / polylogue-7mtf
-      # experiment gate). Deliberately lean: it provides the free-threaded
-      # interpreter for interactive smoke/benchmark work, but it does NOT
-      # auto-sync `--extra dev` into a venv the way the standard shell does,
-      # because pyproject.toml's `dev` extra pulls in `orjson` unconditionally
-      # -- orjson has no cp314t wheels and its build refuses to compile
-      # free-threaded, so a frozen sync targeting this interpreter would fail
-      # outright. Running the unit suite here today means a manual,
-      # non-frozen `uv pip install` of the test tooling (pytest/hypothesis/
-      # etc.) plus `msgspec` in place of `orjson`; a proper `dev-freethreaded`
-      # pyproject extra + uv.lock entry is tracked as follow-up, not done
-      # here to keep this lane scoped to packaging.
+      # experiment gate).
+      #
+      # This auto-syncs the `dev-freethreaded` extra, which is `dev` with
+      # orjson omitted: orjson has no cp314t wheels and its build refuses to
+      # compile free-threaded, so a sync of `dev` fails outright here rather
+      # than merely losing a JSON backend. core.json falls back to msgspec,
+      # which is what the packaged free-threaded daemon already runs.
+      #
+      # It deliberately uses its own `.venv-freethreaded` rather than sharing
+      # `.venv`. A single venv cannot serve two interpreters, and sharing one
+      # is exactly the shadowing failure the default shell's interpreter check
+      # now guards against -- the two shells would recreate each other's venv
+      # on every alternation.
       freethreaded = pkgs.mkShell {
         buildInputs = with pkgs; [
           pythonFreeThreaded
@@ -486,9 +506,45 @@
         shellHook = ''
           export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
           export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPYCACHEPREFIX="$PWD/.cache/pycache-freethreaded"
           export POLYLOGUE_REPO_ROOT="$PWD"
+          export UV_PROJECT_ENVIRONMENT="$PWD/.venv-freethreaded"
+          mkdir -p .cache .local "$PYTHONPYCACHEPREFIX"
+
+          devshell_python_id="$(python3 -c 'import sys; print(sys.version.split()[0], sys._is_gil_enabled())')"
+          venv_python_id=""
+          if [ -x .venv-freethreaded/bin/python ]; then
+            venv_python_id="$(.venv-freethreaded/bin/python -c 'import sys; print(sys.version.split()[0], sys._is_gil_enabled())' 2>/dev/null || true)"
+          fi
+          if [ ! -d .venv-freethreaded ]; then
+            echo "devshell(freethreaded): creating virtual environment ($devshell_python_id)" >&2
+            uv venv "$UV_PROJECT_ENVIRONMENT"
+          elif [ "$venv_python_id" != "$devshell_python_id" ]; then
+            echo "devshell(freethreaded): interpreter changed ($venv_python_id -> $devshell_python_id); recreating" >&2
+            rm -rf .venv-freethreaded
+            uv venv "$UV_PROJECT_ENVIRONMENT"
+          fi
+
+          source .venv-freethreaded/bin/activate
+
+          sync_fingerprint_file=".venv-freethreaded/.uv-sync-fingerprint"
+          sync_fingerprint="$(
+            cat pyproject.toml uv.lock 2>/dev/null
+            printf '%s' "$devshell_python_id"
+          )"
+          sync_fingerprint="$(printf '%s' "$sync_fingerprint" | sha256sum | cut -d' ' -f1)"
+          current_fingerprint=""
+          if [ -f "$sync_fingerprint_file" ]; then
+            current_fingerprint="$(cat "$sync_fingerprint_file")"
+          fi
+
+          if [ "$sync_fingerprint" != "$current_fingerprint" ]; then
+            echo "devshell(freethreaded): syncing dev-freethreaded dependencies" >&2
+            uv sync --extra dev-freethreaded --frozen --quiet
+            printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"
+          fi
+
           echo "devshell(freethreaded): $(python3 -c 'import sys; print(sys.version, "GIL enabled:", sys._is_gil_enabled())')" >&2
-          echo "devshell(freethreaded): venv not auto-synced -- see flake.nix comment above this shell for the manual setup" >&2
         '';
       };
       };
