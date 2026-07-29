@@ -10,10 +10,15 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.sources.assembly import get_assembly_spec
 from polylogue.sources.dispatch import RECORD_DETECTOR_PROVIDER_ORDER, STREAM_RECORD_PROVIDERS
 from polylogue.sources.origin_specs import (
+    DROPPED_VALUE_VOCABULARIES,
     ORIGIN_SPEC_REGISTRY,
     ORIGIN_SPECS,
+    DroppedValueVocabulary,
     OriginSpecRegistry,
     artifact_suffixes_for_provider,
+    check_dropped_value_vocabularies,
+    schema_observed_leaf_values,
+    undeclared_schema_values,
     validate_assembly_spec_parity,
     validate_dispatch_precedence,
     validate_stream_parser_parity,
@@ -225,3 +230,56 @@ def test_every_origin_spec_declares_a_display_description() -> None:
 
     assert set(_ORIGIN_DESCRIPTIONS) == {origin.value for origin in Origin}
     assert all(text.strip() for text in _ORIGIN_DESCRIPTIONS.values())
+
+
+def test_dropped_value_vocabularies_match_the_real_parser_constant() -> None:
+    """Production dependency: local_agent.py:_status_is_error's guessed success set.
+
+    Anti-vacuity: the DroppedValueVocabulary declaration is a second copy of
+    the parser's hardcoded set, not an import of it (origin_specs.py stays
+    free of parser-internal imports, per this module's own docstring). This
+    is what keeps that duplication honest -- if a future edit to
+    local_agent.py's set diverges from the declared vocabulary without
+    updating both, this test catches it instead of the declaration silently
+    describing a set the parser no longer uses.
+    """
+    from polylogue.sources.parsers.local_agent import _status_is_error
+
+    gemini_cli_vocab = next(vocab for vocab in DROPPED_VALUE_VOCABULARIES if vocab.schema_provider == "gemini-cli")
+    for value in gemini_cli_vocab.declared_values:
+        assert _status_is_error(value) is False, value
+    # Everything outside the declared set that also isn't an error-marker
+    # substring is classified None (unknown), not silently swept into "ok".
+    assert _status_is_error("some_new_outcome_string") is None
+
+
+def test_dropped_value_vocabularies_have_no_drift_against_the_committed_schema() -> None:
+    """Production dependency: DROPPED_VALUE_VOCABULARIES stays honest against real evidence.
+
+    Anti-vacuity: mutating this test to assert against a stale, hand-copied
+    expected set (rather than calling check_dropped_value_vocabularies,
+    which re-derives observed values from the live committed schema package
+    on disk) would defeat the entire point of polylogue-2qx's ask -- this
+    must read the real gzip schema file, not a fixture standing in for it.
+    """
+    assert check_dropped_value_vocabularies() == {}
+
+
+def test_schema_observed_leaf_values_walks_array_and_scalar_segments() -> None:
+    observed = schema_observed_leaf_values("gemini-cli", "messages[].toolCalls[].status")
+    assert observed == {"success"}
+    # A path with no committed schema evidence resolves to empty, not an error.
+    assert schema_observed_leaf_values("gemini-cli", "no.such.path") == frozenset()
+    assert schema_observed_leaf_values("no-such-provider", "status") == frozenset()
+
+
+def test_undeclared_schema_values_flags_a_value_the_declaration_does_not_cover() -> None:
+    narrow_vocab = DroppedValueVocabulary(
+        field="test-only narrow gemini-cli status vocabulary",
+        schema_provider="gemini-cli",
+        schema_field_path="messages[].toolCalls[].status",
+        declared_values=frozenset(),
+        parser_path="test-only",
+        reason="Anti-vacuity fixture: an empty declared set must show the real observed value as drift.",
+    )
+    assert undeclared_schema_values(narrow_vocab) == {"success"}

@@ -500,6 +500,43 @@ def _compact_response_payload(
         parsed_cmd = payload.get("parsed_cmd")
         if isinstance(parsed_cmd, list) and parsed_cmd:
             compact["parsed_cmd"] = parsed_cmd
+    elif compact.get("type") in {"patch_apply_begin", "patch_apply_end"}:
+        # `success`/`changes` were completely unread (polylogue-cgfy triage,
+        # codex lane): the tool_use block on the paired function_call already
+        # stores the *requested* patch text verbatim
+        # (`_codex_tool_input`/`_PATCH_TOOL_NAMES`), and `stdout` duplicates a
+        # human-readable summary already captured as the function_call_output
+        # tool_result text -- same dedup rule as exec_command above. `changes`
+        # is materially different from both: it is codex's own post-apply
+        # per-file classification (add/update/delete + `unified_diff` +
+        # `move_path` for renames), the structural equivalent of Claude
+        # Code's `structuredPatch` (polylogue-cgfy). Nothing upstream
+        # decomposes it, so it is retained verbatim, keyed by path, alongside
+        # the boolean apply outcome.
+        success = payload.get("success")
+        if isinstance(success, bool):
+            compact["success"] = success
+        changes = _dict_record(payload.get("changes"))
+        if changes:
+            compact_changes: dict[str, object] = {}
+            for changed_path, change in changes.items():
+                change_record = _dict_record(change)
+                if change_record is None:
+                    continue
+                entry: dict[str, object] = {}
+                change_type = change_record.get("type")
+                if isinstance(change_type, str) and change_type:
+                    entry["type"] = change_type
+                unified_diff = change_record.get("unified_diff")
+                if isinstance(unified_diff, str) and unified_diff:
+                    entry["unified_diff"] = unified_diff
+                move_path = change_record.get("move_path")
+                if isinstance(move_path, str) and move_path:
+                    entry["move_path"] = move_path
+                if entry:
+                    compact_changes[str(changed_path)] = entry
+            if compact_changes:
+                compact["changes"] = compact_changes
     return compact
 
 
@@ -2074,6 +2111,23 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 if model_effort := _string_field(normalized_turn_context, "effort", "model_effort"):
                     current_model_effort = model_effort
                     tc_payload["effort"] = model_effort
+                # `personality`/`summary`/`collaboration_mode` were unread
+                # (polylogue-cgfy triage, codex lane): agent-persona,
+                # reasoning-summary-verbosity, and collaboration-mode knobs
+                # reported on every turn_context alongside model/effort, but
+                # never carried through. `collaboration_mode.settings`
+                # duplicates model/effort/developer_instructions already
+                # captured from the top-level turn_context -- only the mode
+                # name itself is new.
+                if personality := _string_field(normalized_turn_context, "personality"):
+                    tc_payload["personality"] = personality
+                if reasoning_summary := _string_field(normalized_turn_context, "summary"):
+                    tc_payload["reasoning_summary"] = reasoning_summary
+                collaboration_mode_raw = _dict_record(normalized_turn_context.get("collaboration_mode"))
+                if collaboration_mode_raw is not None:
+                    collaboration_mode_name = _string_field(collaboration_mode_raw, "mode")
+                    if collaboration_mode_name:
+                        tc_payload["collaboration_mode"] = collaboration_mode_name
                 # Emit agent_policy event when policy fields are present.
                 # Payload keys match what _write_session_events expects via
                 # _payload_string(event.payload, "approval_policy") etc.
