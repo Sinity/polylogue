@@ -743,6 +743,26 @@ def _mark_background_task_start(
 
     Claude's initial Bash result acknowledges only that a task started. Its
     ``is_error=false`` must not be projected as a completed-command success.
+
+    DISPOSITION (bd polylogue-9x22, "dropped, and correctly so"): the
+    ``_BACKGROUND_TASK_ID_METADATA_KEY``/``_BACKGROUND_COMPLETION_STATUS_
+    METADATA_KEY``/``_BACKGROUND_OUTPUT_FILE_METADATA_KEY`` entries this
+    function and ``_project_background_task_completions`` below write into
+    ``block.metadata`` never reach storage (the ``blocks`` table has no
+    metadata column; the write path only reads ``language`` back out of it).
+    Unlike the other polylogue-9x22 sites, that is not a data-loss gap here:
+    ``task_id`` is a same-pass join key with no meaning after
+    ``_project_background_task_completions`` resolves it, and
+    ``status``/``output_file`` are already durably captured -- with more
+    fields (``summary``, ``exit_code``, ``tool_use_id``) and a real
+    ``source_message_provider_id`` join key -- by the independently emitted
+    ``background_task_completion`` session_event (see the
+    ``final_background_notifications`` loop in ``parse_code``, and
+    ``test_parse_code_projects_background_completion_outcomes_through_actions``
+    which pins both the block-metadata carrier and the session_event
+    verbatim). Left as an in-process carrier rather than removed, matching
+    the ``claude_ai_web_tool_evidence`` precedent's use of block.metadata as
+    scratch space.
     """
     if task_id is None:
         return content_blocks
