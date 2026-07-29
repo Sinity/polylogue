@@ -889,10 +889,23 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     plan_rows = 0
     if plan_floor_row is not None:
         floor = int(plan_floor_row[0])
+        # A census carrying an UNRESOLVED blocker is a live durable obligation,
+        # not history: `unresolved_raw_authority_blockers()` and readiness both
+        # read it, an operator may already hold its blocker id, and
+        # `resolve_raw_authority_blocker()` needs its plan row as evidence.
+        # Pruning it would silently report the obligation as cleared. Retain
+        # the whole census -- plans, post-plans, blockers -- until every
+        # blocker on it is resolved, however far it falls outside the window.
         stale = [
             str(row[0])
             for row in conn.execute(
-                "SELECT census_id FROM raw_authority_censuses WHERE sequence_no < ?",
+                """
+                SELECT census_id FROM raw_authority_censuses
+                WHERE sequence_no < ?
+                  AND census_id NOT IN (
+                      SELECT census_id FROM raw_authority_blockers WHERE resolved_at_ms IS NULL
+                  )
+                """,
                 (floor,),
             )
         ]
@@ -915,8 +928,15 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     ).fetchone()
     headers = 0
     if header_floor_row is not None:
+        # Same obligation guard, and additionally an FK guard:
+        # raw_authority_blockers references raw_authority_censuses(census_id),
+        # so a header may only go once nothing references it.
         cursor = conn.execute(
-            "DELETE FROM raw_authority_censuses WHERE sequence_no < ?",
+            """
+            DELETE FROM raw_authority_censuses
+            WHERE sequence_no < ?
+              AND census_id NOT IN (SELECT census_id FROM raw_authority_blockers)
+            """,
             (int(header_floor_row[0]),),
         )
         headers = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0

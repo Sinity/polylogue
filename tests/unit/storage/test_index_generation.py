@@ -463,3 +463,29 @@ def test_pruning_retains_everything_when_the_active_pointer_is_unresolvable(tmp_
     assert store.prune_superseded_generations(keep=0) == []
     assert Path(first.index_path).exists()
     assert Path(second.index_path).exists()
+
+
+def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path) -> None:
+    """An in-flight or paused rebuild candidate is `inactive` -- never promoted --
+    and must survive an unrelated promotion's housekeeping.
+
+    Treating every non-active generation as superseded let a promotion delete a
+    rebuild in progress, and let a newer inactive candidate consume the single
+    retained slot so the real rollback target was pruned instead. Never-promoted
+    candidates belong to ``discard_if_inactive``, driven by their owner.
+    """
+    _archive(tmp_path)
+    store = IndexGenerationStore.for_archive_root(tmp_path)
+
+    first = store.create(owner_id="operator", source_snapshot="snapshot-a")
+    store.promote(first)
+    # A resumable rebuild candidate, created but never promoted.
+    candidate = store.create(owner_id="rebuild", source_snapshot="snapshot-candidate")
+    second = store.create(owner_id="operator", source_snapshot="snapshot-b")
+    store.promote(second)
+
+    assert store.load(candidate.generation_id).state == "inactive"
+    assert Path(candidate.index_path).exists(), "an unrelated promotion deleted a live rebuild candidate"
+    # The genuine rollback target -- the previously-active generation -- is what
+    # the retained slot is for, not the inactive candidate.
+    assert Path(first.index_path).exists()

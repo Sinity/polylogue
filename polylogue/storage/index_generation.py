@@ -542,7 +542,15 @@ class IndexGenerationStore:
                 generation = IndexGeneration(**json.loads(metadata_path.read_text(encoding="utf-8")))
             except (OSError, ValueError, TypeError):
                 continue  # unreadable metadata: retain
-            if generation.state == "promoting":
+            # ONLY previously-promoted generations are superseded history.
+            # `state == "inactive"` means never promoted -- which is exactly
+            # what an in-flight or paused resumable rebuild candidate looks
+            # like (see `create_transaction`). Treating those as prunable let
+            # an unrelated promotion delete a rebuild in progress, and let a
+            # newer inactive candidate consume the single retained slot so the
+            # real rollback target went instead. Never-promoted candidates
+            # belong to `discard_if_inactive`, which their owner drives.
+            if generation.state != "active":
                 continue
             try:
                 if Path(generation.index_path).resolve(strict=True) == active_target:
@@ -552,7 +560,10 @@ class IndexGenerationStore:
                 pass
             candidates.append((generation.created_at_ms, generation.generation_id, metadata_path.parent))
 
-        candidates.sort(key=lambda item: item[0], reverse=True)
+        # generation_id breaks ties: two generations can share a millisecond,
+        # and a stable sort would otherwise fall back to glob order, making
+        # "newest" non-deterministic and the retained slot arbitrary.
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
         removed: list[str] = []
         for _created_at_ms, generation_id, directory in candidates[keep:]:
             shutil.rmtree(directory)
@@ -566,11 +577,18 @@ class IndexGenerationStore:
             key=lambda path: path.name,
             reverse=True,
         )
+        pruned_markers = 0
         for marker in markers[keep:]:
             shutil.rmtree(marker)
+            pruned_markers += 1
 
-        if removed:
+        if removed or pruned_markers:
+            # Markers count toward the fsync gate too: an archive's first
+            # marker is pruned a promotion before any gen-* becomes prunable,
+            # so gating on `removed` alone skipped the durability barrier
+            # exactly when only markers had gone.
             _fsync_directory(self.generations_root)
+        if removed:
             logger.info("pruned %d superseded index generation(s): %s", len(removed), ", ".join(removed))
         return removed
 
