@@ -400,6 +400,458 @@ def protected_active_raw_revision_ids(
 
 
 # ---------------------------------------------------------------------------
+# Stale supersession receipt reissue (polylogue-ktwa)
+# ---------------------------------------------------------------------------
+#
+# ``_active_index_raw_authority`` above is deliberately strict: it only admits
+# a ``superseded`` raw for release when its receipt still joins the CURRENT
+# ``raw_revision_heads`` row on all eight identity columns. That join is
+# correct -- a receipt proven against a head state that no longer holds must
+# not authorize deletion. But nothing re-proves supersession when the head
+# later advances, so a raw superseded against head generation N keeps a
+# receipt naming N forever and becomes permanently unreleasable once the head
+# moves to N+1, even though it is now *more* superseded than when the receipt
+# was written.
+#
+# This section re-evaluates already-``superseded`` receipts against the live
+# head and, when supersession still holds, writes a brand-new receipt (a new
+# ``decision_id`` -- existing rows are never mutated) whose accepted_* fields
+# exactly mirror the current head, so it immediately satisfies the
+# eight-column join above.
+#
+# "Still holds" is proven by the *same* rule already coded into
+# ``_validate_active_revision_chain``'s full-kind branch: "A full payload is
+# a self-contained reset even when historical classification records an
+# older full predecessor." A byte-proven ``full`` raw re-captures a logical
+# source's entire content from scratch, so once it is the accepted head, it
+# unconditionally supersedes every *other* typed, byte-proven raw sharing the
+# same ``logical_source_key`` -- independent of that raw's own lineage. This
+# is deliberately the *only* proof this pass accepts:
+#
+# * An ongoing append chain never needs reissue in the first place -- an
+#   append raw's own predecessors are recorded ``applied_append`` /
+#   ``selected_baseline`` once and stay that way; they are never later
+#   relabelled ``superseded``, and ``active_raw_retention_authority``
+#   protects them (via ``_validate_active_revision_chain``) for as long as
+#   they remain reachable from the accepted head, because their bytes are
+#   still required to reconstruct it. So when the current head is itself an
+#   ``append`` (not a fresh ``full`` reset), this pass fails closed and
+#   reissues nothing for that logical source -- there is no independent,
+#   generally safe rule (short of the ancestor-chain walk retention already
+#   performs, which would only ever re-derive "protected", never "eligible")
+#   that proves a *different* raw is superseded by an in-progress append
+#   chain.
+# * A validated live-data query against the archive that motivated this bead
+#   confirmed the shape empirically: every stale byte-headed receipt where
+#   the head's ``accepted_raw_id`` changed pointed at a head whose own
+#   ``revision_kind`` is ``full``; every stale receipt where the head's
+#   ``accepted_raw_id`` stayed the same only ever differed on a *semantic*
+#   frontier head (already excluded below), never a byte one.
+
+
+@dataclass(frozen=True)
+class _CurrentRawRevisionHead:
+    """Full ``raw_revision_heads`` row -- superset of ``_IndexRawRevisionHead``.
+
+    The retention join intentionally reads only the columns it needs.
+    Reissue additionally needs ``session_id``, ``accepted_content_hash``, and
+    ``decided_at_ms`` to construct a fresh receipt that exactly reproduces the
+    current head's identity, so it reads the table separately rather than
+    widening the safety-critical retention projection.
+    """
+
+    logical_source_key: str
+    session_id: str
+    accepted_raw_id: str
+    accepted_source_revision: str
+    accepted_content_hash: bytes
+    accepted_frontier_kind: str
+    accepted_frontier: int
+    acquisition_generation: int
+    append_end_offset: int | None
+    decided_at_ms: int
+
+
+@dataclass(frozen=True)
+class _StaleSupersededApplication:
+    raw_id: str
+    session_id: str
+    logical_source_key: str
+    source_revision: str
+    accepted_raw_id: str | None
+    accepted_source_revision: str | None
+    accepted_content_hash: bytes | None
+    acquisition_generation: int
+    append_end_offset: int | None
+    decided_at_ms: int
+
+
+def _read_current_raw_revision_heads(index_db_path: Path) -> dict[str, _CurrentRawRevisionHead]:
+    if not index_db_path.is_file():
+        raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
+    try:
+        uri = f"{index_db_path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            rows = conn.execute(
+                """SELECT logical_source_key, session_id, accepted_raw_id, accepted_source_revision,
+                          accepted_content_hash, accepted_frontier_kind, accepted_frontier,
+                          acquisition_generation, append_end_offset, decided_at_ms
+                   FROM raw_revision_heads"""
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
+    heads: dict[str, _CurrentRawRevisionHead] = {}
+    for row in rows:
+        accepted_content_hash = row[4]
+        if not isinstance(accepted_content_hash, bytes):
+            raise RawRetentionSafetyError(f"raw revision head has a non-blob accepted_content_hash: {row[0]!r}")
+        heads[str(row[0])] = _CurrentRawRevisionHead(
+            logical_source_key=str(row[0]),
+            session_id=str(row[1]),
+            accepted_raw_id=str(row[2]),
+            accepted_source_revision=str(row[3]),
+            accepted_content_hash=accepted_content_hash,
+            accepted_frontier_kind=str(row[5]),
+            accepted_frontier=int(row[6]),
+            acquisition_generation=int(row[7]),
+            append_end_offset=int(row[8]) if row[8] is not None else None,
+            decided_at_ms=int(row[9]),
+        )
+    return heads
+
+
+def _read_superseded_applications(index_db_path: Path) -> tuple[_StaleSupersededApplication, ...]:
+    if not index_db_path.is_file():
+        raise RawRetentionSafetyError(f"index tier is unavailable: {index_db_path}")
+    try:
+        uri = f"{index_db_path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
+            conn.execute("PRAGMA query_only = ON")
+            rows = conn.execute(
+                """SELECT raw_id, session_id, logical_source_key, source_revision,
+                          accepted_raw_id, accepted_source_revision, accepted_content_hash,
+                          acquisition_generation, append_end_offset, decided_at_ms
+                   FROM raw_revision_applications
+                   WHERE decision = 'superseded'"""
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        raise RawRetentionSafetyError(f"index tier raw authority is unreadable: {exc}") from exc
+    applications: list[_StaleSupersededApplication] = []
+    for row in rows:
+        accepted_content_hash = row[6]
+        if accepted_content_hash is not None and not isinstance(accepted_content_hash, bytes):
+            raise RawRetentionSafetyError(f"superseded application has a non-blob accepted_content_hash: {row[0]!r}")
+        applications.append(
+            _StaleSupersededApplication(
+                raw_id=str(row[0]),
+                session_id=str(row[1]),
+                logical_source_key=str(row[2]),
+                source_revision=str(row[3]),
+                accepted_raw_id=str(row[4]) if row[4] is not None else None,
+                accepted_source_revision=str(row[5]) if row[5] is not None else None,
+                accepted_content_hash=accepted_content_hash,
+                acquisition_generation=int(row[7]),
+                append_end_offset=int(row[8]) if row[8] is not None else None,
+                decided_at_ms=int(row[9]),
+            )
+        )
+    return tuple(applications)
+
+
+def _application_matches_head(app: _StaleSupersededApplication, head: _CurrentRawRevisionHead) -> bool:
+    """Mirror the exact eight-column join ``_active_index_raw_authority`` uses."""
+    return (
+        app.session_id == head.session_id
+        and app.accepted_raw_id == head.accepted_raw_id
+        and app.accepted_source_revision == head.accepted_source_revision
+        and app.accepted_content_hash == head.accepted_content_hash
+        and app.acquisition_generation == head.acquisition_generation
+        and app.append_end_offset == head.append_end_offset
+        and app.decided_at_ms == head.decided_at_ms
+    )
+
+
+@dataclass(frozen=True)
+class StaleSupersessionCandidate:
+    """One superseded raw whose stale receipt is provably reissuable.
+
+    ``source_revision``/``baseline_raw_id``/``predecessor_raw_id`` are the
+    superseded raw's own source-tier identity (unchanged by reissue);
+    ``current_head`` is the live full-reset head the fresh receipt binds to.
+    """
+
+    raw_id: str
+    session_id: str
+    logical_source_key: str
+    source_revision: str
+    baseline_raw_id: str | None
+    predecessor_raw_id: str | None
+    current_head: _CurrentRawRevisionHead
+
+
+@dataclass(frozen=True)
+class StaleSupersessionIneligible:
+    raw_id: str
+    session_id: str
+    logical_source_key: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class StaleSupersessionReissuePlan:
+    """Read-only projection: what a reissue pass would do against the current head.
+
+    ``already_current_count`` -- superseded raws whose existing receipt
+    already matches the current head (nothing to do; already eligible for
+    release under ``active_raw_retention_authority``).
+    ``stale_count`` -- distinct superseded raws whose receipt does not match
+    the current head and were evaluated for reissue.
+    ``eligible`` -- the *complete* (never sampled) set a reissue would write
+    a fresh receipt for -- callers writing receipts must use every item here,
+    not just ``ineligible_samples``.
+    ``ineligible_reason_counts`` -- exact per-reason counts for the stale
+    raws reissue refuses; ``ineligible_samples`` carries a capped sample for
+    operator inspection.
+    """
+
+    already_current_count: int
+    stale_count: int
+    eligible: tuple[StaleSupersessionCandidate, ...]
+    ineligible_reason_counts: Mapping[str, int]
+    ineligible_samples: tuple[StaleSupersessionIneligible, ...]
+
+
+def plan_stale_supersession_reissue(
+    source_conn: sqlite3.Connection,
+    *,
+    index_db_path: Path,
+    sample_limit: int = 20,
+) -> StaleSupersessionReissuePlan:
+    """Read-only: find superseded receipts stale against the current head.
+
+    A receipt is *stale* when its (session_id, accepted_raw_id,
+    accepted_source_revision, accepted_content_hash, acquisition_generation,
+    append_end_offset, decided_at_ms) tuple no longer matches the live
+    ``raw_revision_heads`` row for its logical source -- the exact eight
+    columns ``_active_index_raw_authority`` joins on (see
+    ``_application_matches_head``).
+
+    A stale raw is eligible for a fresh receipt only when *all* hold:
+
+    * the current head's ``accepted_frontier_kind`` is ``'byte'`` (fail
+      closed on semantic heads, matching the retention join);
+    * the current head's own raw is a byte-proven ``full`` reset -- the one
+      case ``_validate_active_revision_chain`` documents as unconditionally
+      superseding every other raw sharing the logical source, regardless of
+      lineage (see the module comment above for why an in-progress append
+      chain is deliberately never treated as proof of a *different* raw's
+      supersession);
+    * the candidate raw itself is a typed, byte-proven raw for that same
+      logical source, distinct from the head's own raw.
+
+    Every other outcome (missing head, mismatched session, non-full head,
+    untyped/unproven raw, disagreeing source evidence) is recorded as
+    ineligible with an exact reason and never produces a receipt.
+    """
+    original_row_factory = source_conn.row_factory
+    source_conn.row_factory = sqlite3.Row
+    try:
+        heads = _read_current_raw_revision_heads(index_db_path)
+        applications = _read_superseded_applications(index_db_path)
+
+        groups: dict[tuple[str, str, str], list[_StaleSupersededApplication]] = {}
+        for app in applications:
+            groups.setdefault((app.raw_id, app.session_id, app.logical_source_key), []).append(app)
+
+        already_current = 0
+        stale: dict[tuple[str, str, str], _StaleSupersededApplication] = {}
+        ineligible_counts: dict[str, int] = {}
+        ineligible_samples: list[StaleSupersessionIneligible] = []
+
+        def _mark_ineligible(raw_id: str, session_id: str, logical_source_key: str, reason: str) -> None:
+            ineligible_counts[reason] = ineligible_counts.get(reason, 0) + 1
+            if len(ineligible_samples) < sample_limit:
+                ineligible_samples.append(
+                    StaleSupersessionIneligible(
+                        raw_id=raw_id, session_id=session_id, logical_source_key=logical_source_key, reason=reason
+                    )
+                )
+
+        for (raw_id, session_id, logical_source_key), rows in groups.items():
+            head = heads.get(logical_source_key)
+            if head is None:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "no current head for logical source")
+                continue
+            if any(_application_matches_head(row, head) for row in rows):
+                already_current += 1
+                continue
+            if head.accepted_frontier_kind != "byte":
+                _mark_ineligible(raw_id, session_id, logical_source_key, "current head frontier_kind is not byte")
+                continue
+            if session_id != head.session_id:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "current head belongs to a different session")
+                continue
+            representative = max(rows, key=lambda row: row.decided_at_ms)
+            stale[(raw_id, session_id, logical_source_key)] = representative
+
+        # One lookup per distinct head raw, cached across every stale raw that
+        # shares a logical source (typically many-to-one).
+        head_row_cache: dict[str, sqlite3.Row | None] = {}
+        eligible: list[StaleSupersessionCandidate] = []
+        for (raw_id, session_id, logical_source_key), rep in stale.items():
+            head = heads[logical_source_key]
+            if logical_source_key not in head_row_cache:
+                fetched = _raw_revision_rows(source_conn, {head.accepted_raw_id}, allow_missing=True)
+                head_row_cache[logical_source_key] = fetched.get(head.accepted_raw_id)
+            head_row = head_row_cache[logical_source_key]
+            if head_row is None:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "current head raw is missing from source tier")
+                continue
+            if str(head_row["revision_kind"]) != "full":
+                _mark_ineligible(
+                    raw_id,
+                    session_id,
+                    logical_source_key,
+                    "current head is not a byte-proven full reset (in-progress append chain)",
+                )
+                continue
+            if str(head_row["revision_authority"]) != "byte_proven":
+                _mark_ineligible(raw_id, session_id, logical_source_key, "current head lacks byte-proven authority")
+                continue
+            if raw_id == head.accepted_raw_id:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "raw is the current accepted head")
+                continue
+            candidate_rows = _raw_revision_rows(source_conn, {raw_id}, allow_missing=True)
+            row = candidate_rows.get(raw_id)
+            if row is None:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "raw is missing from source tier")
+                continue
+            if str(row["revision_kind"]) not in {"full", "append"}:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "raw lacks typed revision authority")
+                continue
+            if str(row["revision_authority"]) != "byte_proven":
+                _mark_ineligible(raw_id, session_id, logical_source_key, "raw lacks byte-proven authority")
+                continue
+            if row["logical_source_key"] != logical_source_key:
+                _mark_ineligible(raw_id, session_id, logical_source_key, "raw crosses logical sources")
+                continue
+            if str(row["source_revision"]) != rep.source_revision:
+                _mark_ineligible(
+                    raw_id,
+                    session_id,
+                    logical_source_key,
+                    "source revision disagrees between application receipt and source tier",
+                )
+                continue
+            eligible.append(
+                StaleSupersessionCandidate(
+                    raw_id=raw_id,
+                    session_id=session_id,
+                    logical_source_key=logical_source_key,
+                    source_revision=rep.source_revision,
+                    baseline_raw_id=str(row["baseline_raw_id"]) if row["baseline_raw_id"] is not None else None,
+                    predecessor_raw_id=(
+                        str(row["predecessor_raw_id"]) if row["predecessor_raw_id"] is not None else None
+                    ),
+                    current_head=head,
+                )
+            )
+        return StaleSupersessionReissuePlan(
+            already_current_count=already_current,
+            stale_count=len(stale),
+            eligible=tuple(eligible),
+            ineligible_reason_counts=dict(ineligible_counts),
+            ineligible_samples=tuple(ineligible_samples),
+        )
+    finally:
+        source_conn.row_factory = original_row_factory
+
+
+@dataclass(frozen=True)
+class StaleSupersessionReissueResult:
+    already_current_count: int
+    stale_count: int
+    eligible_count: int
+    reissued_count: int
+    ineligible_reason_counts: Mapping[str, int]
+    ineligible_samples: tuple[StaleSupersessionIneligible, ...]
+    errors: tuple[str, ...] = ()
+
+
+def reissue_stale_supersession_receipts(
+    source_conn: sqlite3.Connection,
+    index_conn: sqlite3.Connection,
+    *,
+    index_db_path: Path,
+    dry_run: bool = True,
+    sample_limit: int = 20,
+) -> StaleSupersessionReissueResult:
+    """Re-issue a fresh supersession receipt for raws proven stale against the
+    current head.
+
+    Deletion-authority scope: this writes ONLY new ``raw_revision_applications``
+    rows with ``decision = 'superseded'``. It never deletes a blob, never
+    touches ``raw_revision_heads``, and never mutates an existing receipt row
+    -- ``record_revision_application_sync`` is append-only / immutable by
+    construction (a genuine identity conflict raises rather than overwriting).
+    ``dry_run=True`` (the default) performs no writes at all; it only runs
+    :func:`plan_stale_supersession_reissue` and reports what would happen.
+
+    ``source_conn`` is the source-tier connection (read-only is sufficient:
+    only ``raw_sessions`` chain rows are read). ``index_conn`` must be a
+    writable index-tier connection when ``dry_run=False``, since
+    ``raw_revision_applications`` is an index-tier table; it is not opened by
+    this function so the caller controls transaction/commit scope.
+    """
+    plan = plan_stale_supersession_reissue(source_conn, index_db_path=index_db_path, sample_limit=sample_limit)
+    reissued = 0
+    errors: list[str] = []
+    if not dry_run and plan.eligible:
+        from polylogue.archive.revision_replay import ApplicationDecision
+        from polylogue.storage.sqlite.archive_tiers.revision_application import (
+            RevisionApplicationReceipt,
+            record_revision_application_sync,
+        )
+
+        for item in plan.eligible:
+            head = item.current_head
+            receipt = RevisionApplicationReceipt(
+                raw_id=item.raw_id,
+                session_id=item.session_id,
+                logical_source_key=item.logical_source_key,
+                source_revision=item.source_revision,
+                acquisition_generation=head.acquisition_generation,
+                decision=ApplicationDecision.SUPERSEDED,
+                accepted_raw_id=head.accepted_raw_id,
+                accepted_source_revision=head.accepted_source_revision,
+                accepted_content_hash=head.accepted_content_hash,
+                accepted_frontier_kind=head.accepted_frontier_kind,
+                accepted_frontier=head.accepted_frontier,
+                baseline_raw_id=item.baseline_raw_id,
+                predecessor_raw_id=item.predecessor_raw_id,
+                append_end_offset=head.append_end_offset,
+                detail=f"stale_supersession_reissue:current_head={head.accepted_raw_id}",
+            )
+            try:
+                record_revision_application_sync(index_conn, receipt, decided_at_ms=head.decided_at_ms)
+            except (RuntimeError, ValueError) as exc:
+                errors.append(f"{item.raw_id[:16]}: {exc}")
+            else:
+                reissued += 1
+        index_conn.commit()
+    return StaleSupersessionReissueResult(
+        already_current_count=plan.already_current_count,
+        stale_count=plan.stale_count,
+        eligible_count=len(plan.eligible),
+        reissued_count=reissued,
+        ineligible_reason_counts=plan.ineligible_reason_counts,
+        ineligible_samples=plan.ineligible_samples,
+        errors=tuple(errors),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Raw-frontier integrity readiness (polylogue-yla8.7)
 # ---------------------------------------------------------------------------
 #
@@ -1303,15 +1755,21 @@ __all__ = [
     "RawSnapshotCleanupResult",
     "RawRetentionAuthority",
     "RawRetentionSafetyError",
+    "StaleSupersessionCandidate",
+    "StaleSupersessionIneligible",
+    "StaleSupersessionReissuePlan",
+    "StaleSupersessionReissueResult",
     "active_raw_retention_authority",
     "cleanup_superseded_raw_snapshots",
     "combine_raw_frontier_integrity_statuses",
     "compact_paths_superseded_raw_snapshots",
     "missing_source_raw_integrity_status",
+    "plan_stale_supersession_reissue",
     "protected_active_raw_revision_ids",
     "raw_frontier_integrity_projection",
     "raw_frontier_integrity_summary",
     "raw_frontier_integrity_snapshot",
+    "reissue_stale_supersession_receipts",
     "superseded_raw_snapshot_candidates",
     "unknown_raw_frontier_integrity_projection",
 ]

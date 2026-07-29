@@ -18,10 +18,12 @@ from polylogue.storage.raw_retention import (
     RawRetentionSafetyError,
     active_raw_retention_authority,
     cleanup_superseded_raw_snapshots,
+    plan_stale_supersession_reissue,
     protected_active_raw_revision_ids,
     raw_frontier_integrity_projection,
     raw_frontier_integrity_snapshot,
     raw_frontier_integrity_summary,
+    reissue_stale_supersession_receipts,
     superseded_raw_snapshot_candidates,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -1902,3 +1904,258 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
     assert blob_store.exists(current_blob)
     assert conn.execute("SELECT 1 FROM raw_sessions WHERE raw_id = 'raw-old-not-a-blob-hash'").fetchone() is None
     assert conn.execute("SELECT 1 FROM blob_refs WHERE ref_id = 'raw-old-not-a-blob-hash'").fetchone() is None
+
+
+# ---------------------------------------------------------------------------
+# Stale supersession receipt reissue (polylogue-ktwa)
+# ---------------------------------------------------------------------------
+
+
+def _seed_stale_full_reset_chain(source_db: Path, index_db: Path) -> None:
+    """Three full-reset generations: old -> mid -> new.
+
+    ``raw-old-full``'s receipt was recorded when ``raw-mid-full`` was the
+    accepted head (generation 1). The head has since advanced again to
+    ``raw-new-full`` (generation 2), so ``raw-old-full``'s receipt is stale.
+    ``raw-mid-full`` carries its own receipt recorded against the *current*
+    head, so it is already current (nothing to reissue).
+    """
+    source_path = source_db.parent / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-old-full",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-old",
+            generation=0,
+            blob_size=10,
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-mid-full",
+            source_path=source_path,
+            acquired_at_ms=2,
+            kind="full",
+            source_revision="revision-mid",
+            generation=1,
+            blob_size=20,
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-new-full",
+            source_path=source_path,
+            acquired_at_ms=3,
+            kind="full",
+            source_revision="revision-new",
+            generation=2,
+            blob_size=30,
+            predecessor_raw_id="raw-mid-full",
+            baseline_raw_id="raw-mid-full",
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-new-full",
+        accepted_raw_id="raw-new-full",
+        accepted_revision="revision-new",
+        generation=2,
+        frontier=30,
+        append_end_offset=None,
+    )
+    # Stale: recorded against the now-superseded mid-generation head.
+    _seed_superseded_application(
+        index_db,
+        raw_id="raw-old-full",
+        source_revision="revision-old",
+        accepted_generation=1,
+        accepted_raw_id="raw-mid-full",
+        accepted_revision="revision-mid",
+        accepted_append_end_offset=None,
+    )
+    # Already current: recorded against the live head exactly.
+    _seed_superseded_application(
+        index_db,
+        raw_id="raw-mid-full",
+        source_revision="revision-mid",
+        accepted_generation=2,
+        accepted_raw_id="raw-new-full",
+        accepted_revision="revision-new",
+        accepted_append_end_offset=None,
+    )
+
+
+def test_stale_supersession_reissue_plan_finds_only_the_stale_receipt(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    _seed_stale_full_reset_chain(source_db, index_db)
+
+    with sqlite3.connect(source_db) as conn:
+        plan = plan_stale_supersession_reissue(conn, index_db_path=index_db)
+
+    assert plan.already_current_count == 1
+    assert plan.stale_count == 1
+    assert [item.raw_id for item in plan.eligible] == ["raw-old-full"]
+    candidate = plan.eligible[0]
+    assert candidate.session_id == "codex-session:session-1"
+    assert candidate.logical_source_key == "codex:session-1"
+    assert candidate.source_revision == "revision-old"
+    assert candidate.baseline_raw_id is None
+    assert candidate.predecessor_raw_id is None
+    assert candidate.current_head.accepted_raw_id == "raw-new-full"
+    assert not plan.ineligible_reason_counts
+
+
+def test_stale_supersession_reissue_dry_run_writes_nothing(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    _seed_stale_full_reset_chain(source_db, index_db)
+
+    with sqlite3.connect(source_db) as source_conn:
+        result = reissue_stale_supersession_receipts(source_conn, source_conn, index_db_path=index_db, dry_run=True)
+
+    assert result.eligible_count == 1
+    assert result.reissued_count == 0
+    assert result.errors == ()
+    with sqlite3.connect(index_db) as index_conn:
+        count = index_conn.execute(
+            "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = 'raw-old-full'"
+        ).fetchone()[0]
+    assert count == 1
+
+
+def test_stale_supersession_reissue_authorizes_release_end_to_end(tmp_path: Path) -> None:
+    """The killer integration proof: a reissued receipt must actually flip
+    ``active_raw_retention_authority`` eligibility, exactly as a fresh
+    production-written receipt would."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    _seed_stale_full_reset_chain(source_db, index_db)
+
+    with sqlite3.connect(source_db) as conn:
+        authority_before = active_raw_retention_authority(conn, index_db_path=index_db)
+    # Before reissue: only the already-current mid receipt is eligible; the
+    # stale old receipt authorizes nothing.
+    assert authority_before.eligible_raw_ids == frozenset({"raw-mid-full"})
+    assert authority_before.protected_raw_ids == frozenset({"raw-new-full"})
+
+    with sqlite3.connect(source_db) as source_conn, sqlite3.connect(index_db) as index_conn:
+        result = reissue_stale_supersession_receipts(source_conn, index_conn, index_db_path=index_db, dry_run=False)
+
+    assert result.reissued_count == 1
+    assert result.errors == ()
+
+    with sqlite3.connect(source_db) as conn:
+        authority_after = active_raw_retention_authority(conn, index_db_path=index_db)
+    assert authority_after.eligible_raw_ids == frozenset({"raw-mid-full", "raw-old-full"})
+    assert authority_after.protected_raw_ids == frozenset({"raw-new-full"})
+
+    # The original stale receipt is untouched (immutable); a second, distinct
+    # row now exists for the same raw.
+    with sqlite3.connect(index_db) as index_conn:
+        rows = index_conn.execute(
+            "SELECT accepted_raw_id, acquisition_generation FROM raw_revision_applications "
+            "WHERE raw_id = 'raw-old-full' ORDER BY acquisition_generation"
+        ).fetchall()
+    assert rows == [("raw-mid-full", 1), ("raw-new-full", 2)]
+
+
+def test_stale_supersession_reissue_refuses_when_head_is_in_progress_append(tmp_path: Path) -> None:
+    """Anti-vacuity: an in-progress append chain must never authorize a
+    receipt for a *different* raw. Failure mode this guards: if the proof
+    rule were loosened to "raw is an ancestor of the current head's chain"
+    instead of "the current head is a self-contained full reset", this test
+    would start asserting a receipt for ``raw-baseline`` -- which is still a
+    required, protected ancestor of the live append chain, not something the
+    current head has proven superseded."""
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    source_path = tmp_path / "session.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-baseline",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-baseline",
+            generation=0,
+            blob_size=10,
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-append-1",
+            source_path=source_path,
+            acquired_at_ms=2,
+            kind="append",
+            source_revision="revision-1",
+            generation=1,
+            blob_size=5,
+            predecessor_raw_id="raw-baseline",
+            predecessor_revision="revision-baseline",
+            baseline_raw_id="raw-baseline",
+            append_start_offset=10,
+            append_end_offset=15,
+        )
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-append-2",
+            source_path=source_path,
+            acquired_at_ms=3,
+            kind="append",
+            source_revision="revision-2",
+            generation=2,
+            blob_size=5,
+            predecessor_raw_id="raw-append-1",
+            predecessor_revision="revision-1",
+            baseline_raw_id="raw-baseline",
+            append_start_offset=15,
+            append_end_offset=20,
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-append-2",
+        accepted_raw_id="raw-append-2",
+        accepted_revision="revision-2",
+        generation=2,
+        frontier=20,
+        append_end_offset=20,
+    )
+    # Stale: recorded when raw-append-1 was (momentarily) treated as an
+    # accepted head; the live head has since advanced to raw-append-2. This
+    # receipt should never have existed in real production (an ongoing
+    # append chain's ancestors are never marked superseded), but the reissue
+    # pass must refuse it defensively regardless of how it got here.
+    _seed_superseded_application(
+        index_db,
+        raw_id="raw-baseline",
+        source_revision="revision-baseline",
+        accepted_generation=1,
+        accepted_raw_id="raw-append-1",
+        accepted_revision="revision-1",
+        accepted_append_end_offset=15,
+    )
+
+    with sqlite3.connect(source_db) as conn:
+        plan = plan_stale_supersession_reissue(conn, index_db_path=index_db)
+
+    assert plan.eligible == ()
+    assert plan.stale_count == 1
+    assert any("not a byte-proven full reset" in reason for reason in plan.ineligible_reason_counts)
+
+    with sqlite3.connect(source_db) as source_conn, sqlite3.connect(index_db) as index_conn:
+        result = reissue_stale_supersession_receipts(source_conn, index_conn, index_db_path=index_db, dry_run=False)
+    assert result.reissued_count == 0
+    with sqlite3.connect(index_db) as index_conn:
+        count = index_conn.execute(
+            "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = 'raw-baseline'"
+        ).fetchone()[0]
+    assert count == 1

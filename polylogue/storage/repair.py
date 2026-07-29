@@ -5746,6 +5746,93 @@ def preview_superseded_raw_snapshots(*, count: int) -> RepairResult:
     )
 
 
+def count_stale_supersession_receipts_sync(source_conn: sqlite3.Connection, *, index_db_path: Path) -> int:
+    """Count superseded raws whose receipt is stale but reissuable against the
+    current head (polylogue-ktwa). Read-only; never writes a receipt."""
+    from polylogue.storage.raw_retention import plan_stale_supersession_reissue
+
+    plan = plan_stale_supersession_reissue(source_conn, index_db_path=index_db_path)
+    return len(plan.eligible)
+
+
+def repair_stale_supersession_receipts(config: Config, dry_run: bool = False) -> RepairResult:
+    """Reissue fresh supersession receipts against the current head (polylogue-ktwa).
+
+    Writes ONLY new ``raw_revision_applications`` rows; never deletes a blob
+    and never mutates ``raw_revision_heads`` or an existing receipt. Actual
+    blob release remains solely the job of ``repair_superseded_raw_snapshots``
+    under its own ``active_raw_retention_authority`` gate.
+    """
+    from polylogue.storage.raw_retention import (
+        RawRetentionSafetyError,
+        plan_stale_supersession_reissue,
+        reissue_stale_supersession_receipts,
+    )
+    from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+
+    archive_root = _raw_materialization_archive_root(config)
+    source_db_path = archive_root / "source.db"
+    index_db_path = archive_root / "index.db"
+    if not source_db_path.is_file() or not index_db_path.is_file():
+        return _repair_result(
+            "stale_supersession_receipts",
+            repaired_count=0,
+            success=False,
+            detail=f"Skipped: archive tier file(s) not found: {source_db_path}, {index_db_path}",
+        )
+    with closing(open_readonly_connection(source_db_path)) as source_conn:
+        source_conn.row_factory = sqlite3.Row
+        if dry_run:
+            try:
+                plan = plan_stale_supersession_reissue(source_conn, index_db_path=index_db_path)
+            except RawRetentionSafetyError as exc:
+                return _repair_result(
+                    "stale_supersession_receipts", repaired_count=0, success=False, detail=f"Skipped: {exc}"
+                )
+            ineligible_total = sum(plan.ineligible_reason_counts.values())
+            return _repair_result(
+                "stale_supersession_receipts",
+                repaired_count=len(plan.eligible),
+                success=True,
+                detail=(
+                    f"Would: reissue {len(plan.eligible):,} stale supersession receipt(s) "
+                    f"({plan.stale_count:,} stale, {plan.already_current_count:,} already current, "
+                    f"{ineligible_total:,} ineligible)"
+                ),
+            )
+        with closing(open_connection(index_db_path)) as index_conn:
+            try:
+                result = reissue_stale_supersession_receipts(
+                    source_conn, index_conn, index_db_path=index_db_path, dry_run=False
+                )
+            except RawRetentionSafetyError as exc:
+                return _repair_result(
+                    "stale_supersession_receipts", repaired_count=0, success=False, detail=f"Skipped: {exc}"
+                )
+            return _repair_result(
+                "stale_supersession_receipts",
+                repaired_count=result.reissued_count,
+                success=not result.errors,
+                detail=(
+                    f"Reissued {result.reissued_count:,} of {result.eligible_count:,} eligible stale "
+                    "supersession receipt(s)" + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
+                ),
+            )
+
+
+def preview_stale_supersession_receipts(*, count: int) -> RepairResult:
+    return _repair_result(
+        "stale_supersession_receipts",
+        repaired_count=count,
+        success=True,
+        detail=(
+            f"Would: reissue {count} stale supersession receipts"
+            if count
+            else "Would: No stale supersession receipts found"
+        ),
+    )
+
+
 def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
     try:
         with _open_archive_index_connection() as conn:
