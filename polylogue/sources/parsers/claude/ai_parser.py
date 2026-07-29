@@ -242,6 +242,19 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
                 payload={"status": provider_status},
             )
         )
+    # Claude AI's own generated conversation summary (top-level ``summary``,
+    # distinct from ``name``/``title``) was read nowhere -- parser-diff triage
+    # (2026-07-29) found it populated with real multi-paragraph provider
+    # summaries on the live corpus.
+    provider_summary = _first_string_field(payload, "summary")
+    if provider_summary:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_ai_conversation_summary",
+                timestamp=updated_at or created_at,
+                payload={"summary": provider_summary},
+            )
+        )
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
     title = payload.get("title") or payload.get("name") or fallback_id

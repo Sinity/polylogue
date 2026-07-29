@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -13,7 +13,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, PasteBoundary, Provider, TitleSource
 from polylogue.logging import get_logger
-from polylogue.pipeline.semantic_capture import detect_context_compaction
+from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
 
 if TYPE_CHECKING:
@@ -153,14 +153,29 @@ logger = get_logger(__name__)
 #                                    information content in the corpus as
 #                                    observed. Re-audit if a non-"normal" value
 #                                    is ever seen.
+#
+# Two more sidecar record types (parser-diff triage, 2026-07-29, ~600-file
+# sample of the live corpus) were not in the original twelve and fell through
+# to ordinary message parsing, where they carry no ``message``/text and are
+# silently skipped:
+#   custom-title (1,056)           EVIDENCE, an EXPLICIT user rename -> wins
+#                                    over both the heuristic title and the
+#                                    provider-suggested ai-title (higher
+#                                    intent signal than a provider guess).
+#   file-history-delta (304)       EVIDENCE -> claude_file_history_delta event
+#                                    (per-file incremental backup, the
+#                                    fine-grained sibling of the
+#                                    whole-snapshot file-history-snapshot type)
 _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
         "file-history-snapshot",
+        "file-history-delta",
         "queue-operation",
         "progress",
         "agent-name",
         "ai-title",
+        "custom-title",
         "attachment",
         "bridge-session",
         "last-prompt",
@@ -171,20 +186,23 @@ _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
 )
 
 # record_type -> session_events.event_type for the sidecar types persisted
-# generically via ``_sidecar_evidence_payload``. ``progress`` and ``ai-title``
-# are handled separately in ``_parse_code_records`` (progress needs
-# whole-session deduplication; ai-title feeds title resolution as well as an
-# audit-trail event). ``init``/``mode`` map to nothing (transient, see above).
+# generically via ``_sidecar_evidence_payload``. ``progress``, ``ai-title``,
+# and ``custom-title`` are handled separately in ``_parse_code_records``
+# (progress needs whole-session deduplication; ai-title/custom-title feed
+# title resolution as well as an audit-trail event). ``init``/``mode`` map to
+# nothing (transient, see above).
 _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "agent-name": "claude_agent_name",
     "pr-link": "claude_pr_link",
     "bridge-session": "claude_bridge_session",
     "file-history-snapshot": "claude_file_history_snapshot",
+    "file-history-delta": "claude_file_history_delta",
     "permission-mode": "claude_permission_mode",
     "last-prompt": "claude_last_prompt",
     "queue-operation": "claude_queue_operation",
     "attachment": "claude_attachment",
     "ai-title": "claude_ai_title",
+    "custom-title": "claude_custom_title",
 }
 
 
@@ -256,6 +274,21 @@ def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict
     if record_type == "ai-title":
         ai_title = _string_field(item, "aiTitle")
         return {"ai_title": ai_title, "summary": ai_title} if ai_title else None
+    if record_type == "custom-title":
+        custom_title = _string_field(item, "customTitle")
+        return {"custom_title": custom_title, "summary": custom_title} if custom_title else None
+    if record_type == "file-history-delta":
+        backup = item.get("backup")
+        backup_mapping = backup if isinstance(backup, dict) else {}
+        tracking_path = _string_field(item, "trackingPath")
+        return {
+            "message_id": _string_field(item, "messageId"),
+            "snapshot_message_id": _string_field(item, "snapshotMessageId"),
+            "tracking_path": tracking_path,
+            "backup_file_name": _string_field(backup_mapping, "backupFileName"),
+            "backup_version": backup_mapping.get("version"),
+            "summary": tracking_path,
+        }
     return None
 
 
@@ -333,6 +366,7 @@ def _message_usage_event_payload(
     *,
     model_name: str | None,
     model_effort: str | None,
+    message: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     last_usage: dict[str, int] = {
         "input_tokens": _safe_int(usage.get("input_tokens")),
@@ -364,10 +398,55 @@ def _message_usage_event_payload(
                 "web_search_requests": web_search_requests,
                 "web_fetch_requests": web_fetch_requests,
             }
+    # 1h/5m cache-creation split, service tier, and inference geo are billing
+    # and infra evidence Anthropic began reporting on ``usage`` alongside the
+    # existing aggregate cache_creation_input_tokens -- parser-diff triage
+    # (2026-07-29) found these read nowhere despite carrying real values on
+    # the live corpus (e.g. ephemeral_1h_input_tokens, service_tier=standard,
+    # inference_geo). Recorded only when present so a provider that never
+    # emits them (older CLI versions) does not bloat every event.
+    cache_creation = usage.get("cache_creation")
+    if isinstance(cache_creation, dict):
+        ephemeral_5m = cache_creation.get("ephemeral_5m_input_tokens")
+        ephemeral_1h = cache_creation.get("ephemeral_1h_input_tokens")
+        if ephemeral_5m is not None or ephemeral_1h is not None:
+            payload["cache_creation_by_ttl"] = {
+                "ephemeral_5m_input_tokens": _safe_int(ephemeral_5m),
+                "ephemeral_1h_input_tokens": _safe_int(ephemeral_1h),
+            }
+    service_tier = usage.get("service_tier")
+    if isinstance(service_tier, str) and service_tier:
+        payload["service_tier"] = service_tier
+    inference_geo = usage.get("inference_geo")
+    if isinstance(inference_geo, str) and inference_geo:
+        payload["inference_geo"] = inference_geo
+    iterations = usage.get("iterations")
+    if isinstance(iterations, int) and not isinstance(iterations, bool):
+        payload["iterations"] = iterations
+    speed = usage.get("speed")
+    if isinstance(speed, (int, float)) and not isinstance(speed, bool):
+        payload["speed"] = speed
     if model_name:
         payload["model"] = model_name
     if model_effort:
         payload["model_effort"] = model_effort
+    if message is not None:
+        ttft_ms = message.get("ttftMs")
+        if isinstance(ttft_ms, int) and not isinstance(ttft_ms, bool):
+            payload["ttft_ms"] = ttft_ms
+        stop_reason = message.get("stop_reason")
+        if isinstance(stop_reason, str) and stop_reason:
+            payload["stop_reason"] = stop_reason
+        stop_sequence = message.get("stop_sequence")
+        if isinstance(stop_sequence, str) and stop_sequence:
+            payload["stop_sequence"] = stop_sequence
+        diagnostics = message.get("diagnostics")
+        if isinstance(diagnostics, dict):
+            cache_miss_reason = diagnostics.get("cache_miss_reason")
+            if isinstance(cache_miss_reason, dict):
+                reason_type = cache_miss_reason.get("type")
+                if isinstance(reason_type, str) and reason_type:
+                    payload["cache_miss_reason"] = reason_type
     return payload
 
 
@@ -535,6 +614,111 @@ def _task_output_outcome(item: dict[str, object]) -> tuple[int | None, bool] | N
     if status in ("failed", "killed"):
         return None, True
     return None
+
+
+_TOOL_RESULT_STRUCTURAL_KEYS: tuple[str, ...] = (
+    "sandbox",
+    "interrupted",
+    "isImage",
+    "userModified",
+    "numFiles",
+    "numLines",
+    "totalLines",
+    "durationSeconds",
+    "backgroundedByUser",
+    "assistantAutoBackgrounded",
+    "isAsync",
+)
+
+
+def _tool_execution_result_payload(item: dict[str, object]) -> dict[str, object] | None:
+    """Project Claude Code's own structured tool-result sidecar (``toolUseResult``).
+
+    This is Claude-Code-specific enrichment parallel to (not a duplicate of)
+    the Anthropic-protocol ``tool_result`` content block: the block carries
+    what the model *saw*; ``toolUseResult`` carries facts Claude Code itself
+    recorded about the call (e.g. whether Bash ran sandboxed, a Read's
+    file/line extents, a structured diff). Parser-diff triage (2026-07-29)
+    found only two of its ~60 observed subfields read anywhere
+    (``backgroundTaskId``, ``retrieval_status``/``task`` -- see
+    ``_background_task_id``/``_task_output_outcome`` above); this covers the
+    remaining structurally bounded facts. Deliberately excluded: free-text
+    output fields (``stdout``/``stderr``/``output``/``fullOutput``) that
+    duplicate content already visible in the message's own ``tool_result``
+    block and could be unbounded in size; ``filenames``/``file.filePath`` are
+    kept because they are bounded path lists, not command output.
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    payload: dict[str, object] = {}
+    for key in _TOOL_RESULT_STRUCTURAL_KEYS:
+        value = tool_result.get(key)
+        if isinstance(value, (bool, int, float)):
+            payload[key] = value
+    file_info = tool_result.get("file")
+    if isinstance(file_info, dict):
+        file_path = file_info.get("filePath")
+        if isinstance(file_path, str) and file_path:
+            payload["file_path"] = file_path
+        for key in ("numLines", "totalLines", "startLine"):
+            value = file_info.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                payload[f"file_{key}"] = value
+    elif isinstance(tool_result.get("filePath"), str):
+        payload["file_path"] = tool_result["filePath"]
+    filenames = tool_result.get("filenames")
+    if isinstance(filenames, list):
+        bounded_filenames = [name for name in filenames if isinstance(name, str)]
+        if bounded_filenames:
+            payload["filenames"] = bounded_filenames[:50]
+    structured_patch = tool_result.get("structuredPatch")
+    if isinstance(structured_patch, list) and structured_patch:
+        hunks = [hunk for hunk in structured_patch if isinstance(hunk, dict)]
+        if hunks:
+            payload["structured_patch_hunk_count"] = len(hunks)
+            payload["structured_patch_lines_changed"] = sum(
+                len(hunk.get("lines", [])) if isinstance(hunk.get("lines"), list) else 0 for hunk in hunks
+            )
+    return payload or None
+
+
+def _todo_state_payload(item: dict[str, object]) -> dict[str, object] | None:
+    """Project TodoWrite's before/after task-list state from ``toolUseResult``.
+
+    ``newTodos``/``oldTodos`` are TodoWrite's own structured result (each todo
+    carries ``content``/``status``/``activeForm``/``priority``); the tool
+    *call* input (``content[].input.todos``) is already captured wholesale via
+    the generic ``tool_input`` dict copy, but the *result* -- the actual
+    accepted state transition, including ``priority`` -- was read nowhere.
+    """
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return None
+    new_todos = tool_result.get("newTodos")
+    if not isinstance(new_todos, list):
+        return None
+
+    def _clean_todos(raw: object) -> list[dict[str, object]]:
+        if not isinstance(raw, list):
+            return []
+        cleaned: list[dict[str, object]] = []
+        for todo in raw:
+            if not isinstance(todo, dict):
+                continue
+            cleaned.append(
+                {
+                    key: todo[key]
+                    for key in ("content", "status", "activeForm", "priority")
+                    if isinstance(todo.get(key), str)
+                }
+            )
+        return cleaned
+
+    return {
+        "new_todos": _clean_todos(new_todos),
+        "old_todos": _clean_todos(tool_result.get("oldTodos")),
+    }
 
 
 def _mark_task_output_outcome(
@@ -720,11 +904,31 @@ def _parse_code_records(
     # from ``progress``/``agent_progress`` records -- both need whole-session
     # state, so they are accumulated here and applied/flushed after the loop.
     latest_ai_title: str | None = None
+    latest_custom_title: str | None = None
+    session_kind_value: str | None = None
+    git_branch_value: str | None = None
     delegation_progress: dict[str, _DelegationProgressStats] = {}
 
     for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
             continue
+
+        if session_kind_value is None:
+            raw_session_kind = item.get("sessionKind")
+            if isinstance(raw_session_kind, str) and raw_session_kind:
+                session_kind_value = raw_session_kind
+        if git_branch_value is None:
+            # ``item.gitBranch`` (stamped on every record) was previously read
+            # only via the separate legacy sessions-index.json enrichment path
+            # (index.py, ``enrich_session_from_index``), which is absent for
+            # many sessions -- read it directly from the record itself so
+            # every session with a real branch gets one, not just those with
+            # a surviving sidecar index file. A blank string (no branch
+            # checked out / detached-ish states some CLI versions emit) is
+            # deliberately not treated as a value.
+            raw_git_branch = item.get("gitBranch")
+            if isinstance(raw_git_branch, str) and raw_git_branch:
+                git_branch_value = raw_git_branch
 
         compaction = detect_context_compaction(item)
         if compaction:
@@ -755,6 +959,27 @@ def _parse_code_records(
                 )
             )
             message_position += 1
+            continue
+
+        micro_compaction = detect_micro_compaction(item)
+        if micro_compaction is not None:
+            raw_micro_timestamp = micro_compaction["timestamp"]
+            micro_compaction_timestamp = normalize_timestamp(
+                raw_micro_timestamp if isinstance(raw_micro_timestamp, (int, float, str)) else None
+            )
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="micro_compaction",
+                    timestamp=micro_compaction_timestamp,
+                    payload={
+                        "trigger": micro_compaction["trigger"],
+                        "pre_tokens": micro_compaction["pre_tokens"],
+                        "tokens_saved": micro_compaction["tokens_saved"],
+                        "compacted_tool_use_ids": micro_compaction["compacted_tool_use_ids"],
+                        "cleared_attachment_count": micro_compaction["cleared_attachment_count"],
+                    },
+                )
+            )
             continue
 
         record_type = item.get("type")
@@ -796,6 +1021,10 @@ def _parse_code_records(
                     ai_title_text = _string_field(item, "aiTitle")
                     if ai_title_text:
                         latest_ai_title = ai_title_text
+                elif record_type == "custom-title":
+                    custom_title_text = _string_field(item, "customTitle")
+                    if custom_title_text:
+                        latest_custom_title = custom_title_text
                 event_type = _SIDECAR_EVENT_TYPES.get(record_type)
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
@@ -893,6 +1122,26 @@ def _parse_code_records(
                 timestamp=timestamp,
             )
         )
+        tool_execution_payload = _tool_execution_result_payload(item)
+        if tool_execution_payload is not None:
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="claude_tool_execution_result",
+                    timestamp=timestamp,
+                    source_message_provider_id=provider_message_id,
+                    payload=tool_execution_payload,
+                )
+            )
+        todo_state_payload = _todo_state_payload(item)
+        if todo_state_payload is not None:
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="claude_todo_state",
+                    timestamp=timestamp,
+                    source_message_provider_id=provider_message_id,
+                    payload=todo_state_payload,
+                )
+            )
         if notification is not None:
             background_notifications.append((notification, provider_message_id, timestamp))
         if isinstance(message, dict) and isinstance(message.get("usage"), dict):
@@ -905,6 +1154,7 @@ def _parse_code_records(
                         msg_usage,
                         model_name=msg_model,
                         model_effort=msg_effort,
+                        message=message_payload,
                     ),
                 )
             )
@@ -1011,6 +1261,18 @@ def _parse_code_records(
             )
         )
 
+    # ``sessionKind`` classifies the whole file (e.g. "bg" for a
+    # run_in_background Bash task's own transcript) -- a session-wide fact,
+    # not a per-message one, so it is recorded once rather than per record.
+    if session_kind_value is not None:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_session_kind",
+                timestamp=created_at,
+                payload={"session_kind": session_kind_value},
+            )
+        )
+
     title = str(composed_session_id)
     title_source: TitleSource | None = None
     title_ref: str | None = None
@@ -1050,6 +1312,18 @@ def _parse_code_records(
             title_source = TitleSource.ORIGIN
             title_ref = f"claude-ai-title:{composed_session_id}"
             title_confidence = 1.0
+
+    # An explicit user rename (``custom-title``) is a stronger intent signal
+    # than the provider-suggested ``ai-title`` and wins over it when both are
+    # present -- the user deliberately renamed the session, not the provider
+    # guessing at one.
+    if latest_custom_title:
+        cleaned_custom_title = latest_custom_title.strip()
+        if cleaned_custom_title:
+            title = cleaned_custom_title[:80] + ("..." if len(cleaned_custom_title) > 80 else "")
+            title_source = TitleSource.ORIGIN
+            title_ref = f"claude-custom-title:{composed_session_id}"
+            title_confidence = 1.0
     if title_source is None:
         title_source = TitleSource.UNKNOWN
 
@@ -1071,6 +1345,7 @@ def _parse_code_records(
         reported_duration_ms=total_duration if saw_duration_field else None,
         models_used=sorted(models),
         working_directories=sorted(cwds),
+        git_branch=git_branch_value,
     )
 
 
