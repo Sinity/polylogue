@@ -161,6 +161,24 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "session with no hook events"),
     ),
     SessionViewProfile(
+        view_id="events",
+        label="Events",
+        owner="polylogue.cli.read_views.events.run_read_events",
+        purpose=(
+            "Raw session-timeline evidence (session_events): provider evidence that rides the "
+            "timeline instead of a dialogue message, e.g. Codex world_state/agent_policy/turn_context "
+            "policy facts, Claude Code sidecar events, Hermes tool-availability spans."
+        ),
+        input_scope="single session id",
+        included_kinds=("event type", "timestamp", "structured payload"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured event payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="session event list payload",
+        degraded_states=("missing session", "session with no session_events"),
+    ),
+    SessionViewProfile(
         view_id="context",
         label="Context",
         owner="polylogue.context.preamble.compose_context_preamble",

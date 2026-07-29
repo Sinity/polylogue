@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -474,6 +475,97 @@ class TestPolylogueReadSurfaces:
         assert empty_summary["last_observed_at"] is None
 
         assert await archive.get_hook_event_summary_for_session("missing") is None
+
+    @pytest.mark.asyncio
+    async def test_get_session_events_surfaces_evidence_not_reachable_on_any_prior_surface(
+        self: object, tmp_path: Path
+    ) -> None:
+        """``Session.session_events`` was populated on every full session read
+        (content hashing, a couple of insight materializers) but never
+        rendered or queried on any surface -- this is the generic reader that
+        closes that gap for the whole 2026-07 evidence family (Codex
+        ``world_state``/``agent_policy`` policy facts, Claude Code sidecar
+        events, Hermes tool-availability spans, ...) without one accessor per
+        event type.
+
+        Anti-vacuity: this exercises the real ``ParsedSession.session_events``
+        -> ``write_raw_and_parsed`` -> ``SessionRepository.get`` production
+        path (no test-only reader). Deleting the ``event_type is not None``
+        filter branch in ``Polylogue.get_session_events`` breaks the
+        ``event_type="world_state"`` assertion below (it would return both
+        events instead of one).
+
+        Note: ``event_type="agent_policy"`` is deliberately NOT exercised
+        here -- the archive writer treats it as a redundant type
+        (``_SESSION_EVENTS_REDUNDANT_TYPES`` in
+        ``storage/sqlite/archive_tiers/write.py``) and re-derives it into the
+        dedicated ``session_agent_policies`` table instead of storing it in
+        ``session_events``, so this generic reader cannot see it. That table
+        has no async query method and no surface at all today (storage-lane
+        follow-up, out of this reader's scope).
+        """
+        from polylogue.core.enums import Provider
+        from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        archive = _archive(tmp_path)
+
+        parsed = ParsedSession(
+            source_name=Provider.from_string("codex"),
+            provider_session_id="provider-events-api",
+            title="Session Events API",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-01-01T00:00:00Z",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="hermes_tool_availability_span",
+                    timestamp="2025-01-01T00:00:01Z",
+                    payload={"tool_count": 2, "tools": [{"name": "bash"}, {"name": "read_file"}]},
+                ),
+                ParsedSessionEvent(
+                    event_type="world_state",
+                    timestamp="2025-01-01T00:00:02Z",
+                    payload={"cwd": "/repo"},
+                ),
+            ],
+        )
+        with ArchiveStore(archive.archive_root) as archive_db:
+            _raw_id, native_id = archive_db.write_raw_and_parsed(
+                parsed,
+                payload=b'{"raw": "codex payload"}',
+                source_path="/tmp/raw.jsonl",
+                acquired_at_ms=1735689600000,
+            )
+
+        events = await archive.get_session_events(native_id)
+        assert events is not None
+        assert {event["event_type"] for event in events} == {"hermes_tool_availability_span", "world_state"}
+        world_state = next(event for event in events if event["event_type"] == "world_state")
+        world_state_payload = cast("dict[str, object]", world_state["payload"])
+        assert world_state_payload["cwd"] == "/repo"
+
+        filtered = await archive.get_session_events(native_id, event_type="world_state")
+        assert filtered is not None
+        assert len(filtered) == 1
+        filtered_payload = cast("dict[str, object]", filtered[0]["payload"])
+        assert filtered_payload["cwd"] == "/repo"
+
+        bounded = await archive.get_session_events(native_id, limit=1)
+        assert bounded is not None
+        assert len(bounded) == 1
+
+        no_events_native_id = _seed(
+            archive,
+            "conv-no-events",
+            provider="claude-ai",
+            title="No Events",
+            provider_session_id="provider-no-events",
+        )
+        empty = await archive.get_session_events(no_events_native_id)
+        assert empty == []
+
+        assert await archive.get_session_events("missing") is None
 
     @pytest.mark.asyncio
     async def test_get_sessions_partial_match(self: object, tmp_path: Path) -> None:

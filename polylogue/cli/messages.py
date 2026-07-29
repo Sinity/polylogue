@@ -216,4 +216,54 @@ def run_hooks(
     run_coroutine_sync(_run())
 
 
-__all__ = ["run_hooks", "run_messages", "run_raw"]
+def run_session_events(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    event_type: str | None = None,
+    limit: int | None = None,
+    output_format: str = "json",
+) -> None:
+    """Execute the events verb.
+
+    Renders the raw session-timeline evidence (``Session.session_events``):
+    provider evidence that rides the session timeline instead of a dialogue
+    message -- Codex ``world_state``/``agent_policy``/``turn_context`` policy
+    facts, Claude Code sidecar events, Hermes tool-availability/step spans,
+    and similar. Previously populated on every full session read but never
+    rendered on any surface (this read view is the fix).
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            events = await api.get_session_events(session_id, event_type=event_type, limit=limit)
+
+            if events is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            payload = {
+                "session_id": session_id,
+                "event_type": event_type,
+                "total": len(events),
+                "events": events,
+            }
+
+            if output_format == "json":
+                import json as _json
+
+                # Machine output uses raw stdout so Rich markup never rewrites
+                # JSON bytes and read-view delivery can capture file/clipboard
+                # targets consistently.
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(payload))
+
+    run_coroutine_sync(_run())
+
+
+__all__ = ["run_hooks", "run_messages", "run_raw", "run_session_events"]

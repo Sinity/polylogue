@@ -204,3 +204,70 @@ async def test_read_and_get_accept_stable_session_uris(mcp_server: MCPServerUnde
         exact = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
 
     assert read == exact
+
+
+@pytest.mark.asyncio
+async def test_get_projection_events_surfaces_session_timeline_evidence(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """``get(ref, projection="events")`` reaches ``session_events`` -- the
+    evidence axis Codex ``world_state``/``agent_policy`` facts, Claude Code
+    sidecar events, and Hermes tool-availability spans all ride, and which
+    no MCP tool could reach before this projection.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive_db:
+        parsed = ParsedSession(
+            source_name=Provider.from_string("codex"),
+            provider_session_id="mcp-events-ref",
+            title="MCP events projection",
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="world_state",
+                    payload={"cwd": "/repo"},
+                ),
+            ],
+        )
+        archive_db.write_raw_and_parsed(
+            parsed,
+            payload=b'{"raw": "codex payload"}',
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+    uri = "polylogue://session/codex-session:mcp-events-ref"
+    from polylogue import Polylogue
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        events_payload = json.loads(
+            await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri, projection="events")
+        )
+        default_payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
+
+    assert events_payload["total"] == 1
+    assert events_payload["events"][0]["event_type"] == "world_state"
+    assert events_payload["events"][0]["payload"]["cwd"] == "/repo"
+    # The default (no projection) path still resolves the ordinary session
+    # summary, unaffected by the new projection branch.
+    assert "events" not in default_payload
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        missing = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["get"].fn,
+                ref="polylogue://session/codex-session:does-not-exist",
+                projection="events",
+            )
+        )
+    assert missing["code"] == "not_found"

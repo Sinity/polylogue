@@ -84,6 +84,7 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_session_latency_profile_insight",
         "resume_brief",
         "get_hook_event_summary_for_session",
+        "get_session_events",
     }
 )
 
