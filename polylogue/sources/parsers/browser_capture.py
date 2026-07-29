@@ -173,7 +173,19 @@ def _browser_capture_parsed_block(block: BrowserCaptureBlock) -> ParsedContentBl
     Field names deliberately mirror ``ParsedContentBlock`` (see
     ``BrowserCaptureBlock`` docstring), so this is a lossless carry, not a
     reconstruction -- the archive's blocks channel receives exactly what the
-    capture observed instead of only ``turn.text``.
+    capture observed instead of only ``turn.text``. ``text``/``tool_name``/
+    ``tool_id``/``tool_input``/``media_type``/``is_error``/``exit_code`` all
+    land on real typed columns. ``metadata`` does not -- the ``blocks`` table
+    has no metadata column and the write path only reads a ``language`` key
+    back out of it (``storage/sqlite/archive_tiers/write.py:
+    _block_language``), so anything the capture extension attaches here was
+    silently dropped at write time despite this docstring's "lossless"
+    promise (bd polylogue-9x22). See
+    ``_block_metadata_evidence_events`` below, which routes it through
+    ``session_events`` instead -- the capture extension's own wire protocol
+    has no fixed vocabulary for this field, so (unlike the other
+    polylogue-9x22 sites) the whole dict is carried verbatim rather than
+    picking known keys.
     """
 
     return ParsedContentBlock(
@@ -187,6 +199,34 @@ def _browser_capture_parsed_block(block: BrowserCaptureBlock) -> ParsedContentBl
         is_error=block.is_error,
         exit_code=block.exit_code,
     )
+
+
+def _block_metadata_evidence_events(
+    blocks: list[BrowserCaptureBlock],
+    *,
+    source_message_provider_id: str,
+    timestamp: str | None,
+) -> list[ParsedSessionEvent]:
+    """Carry ``BrowserCaptureBlock.metadata`` into session_events, verbatim.
+
+    One event per block with non-empty metadata; ``block_index`` lets a
+    reader re-associate the event with its block in ``turn.blocks`` order
+    (same shape as ``claude/common.py``'s ``claude_ai_web_tool_evidence``).
+    """
+
+    events: list[ParsedSessionEvent] = []
+    for block_index, block in enumerate(blocks):
+        if not block.metadata:
+            continue
+        events.append(
+            ParsedSessionEvent(
+                event_type="browser_capture_block_metadata",
+                timestamp=timestamp,
+                source_message_provider_id=source_message_provider_id,
+                payload={"block_index": block_index, **dict(block.metadata)},
+            )
+        )
+    return events
 
 
 def _claude_native_segment_from_block(block: BrowserCaptureBlock) -> dict[str, object] | None:
@@ -620,6 +660,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
     seen_turns: set[str] = set()
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
+    block_metadata_events: list[ParsedSessionEvent] = []
     message_position = 0
 
     for turn in envelope.session.turns:
@@ -638,6 +679,13 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
                 variant_index=0,
                 is_active_path=True,
                 model_name=envelope.session.model,
+            )
+        )
+        block_metadata_events.extend(
+            _block_metadata_evidence_events(
+                turn.blocks,
+                source_message_provider_id=turn.provider_turn_id,
+                timestamp=turn.timestamp,
             )
         )
         message_position += 1
@@ -675,7 +723,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        session_events=_capture_session_events(envelope),
+        session_events=[*_capture_session_events(envelope), *block_metadata_events],
         ingest_flags=[
             *dict.fromkeys(
                 [
