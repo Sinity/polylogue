@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import unicodedata
 
-from polylogue.pipeline.ids import _content_block_payload
 from polylogue.core.enums import BlockType
+from polylogue.pipeline.ids import _content_block_payload
 from polylogue.sources.parsers.base import ParsedContentBlock
 
 _NFD = unicodedata.normalize("NFD", "café-résumé")
