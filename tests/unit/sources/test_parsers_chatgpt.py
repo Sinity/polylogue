@@ -11,7 +11,7 @@ import pytest
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.scenarios import CorpusSpec
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
     SHARED_CONVERSATION_INDEX_INGEST_FLAG,
     _coerce_float,
@@ -1262,6 +1262,106 @@ def test_code_interpreter_content_is_preserved() -> None:
     assert any(b.type == BlockType.CODE for b in code_msg.blocks)
     out_msg = next(m for m in conv.messages if m.text == "1\n")
     assert any(b.type == BlockType.TOOL_RESULT for b in out_msg.blocks)
+
+
+# ---------------------------------------------------------------------------
+# polylogue-grub -- execution_output status -> tool_result_is_error
+# ---------------------------------------------------------------------------
+
+
+def _code_and_output_nodes(status: str | None, *, recipient: str = "python") -> list[ChatGPTMapping]:
+    return [
+        _branch_node("u1", "user", "run this", parent=None, children=["tool"]),
+        {
+            "id": "tool",
+            "message": {
+                "id": "tool",
+                "author": {"role": "assistant", "name": recipient},
+                "recipient": recipient,
+                "content": {"content_type": "code", "text": "print(1)"},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool"},
+                "content": {"content_type": "execution_output", "text": "1\n"},
+                "status": status,
+                "create_time": None,
+            },
+            "parent": "tool",
+            "children": [],
+        },
+    ]
+
+
+def _parse_execution_output(status: str | None) -> ParsedContentBlock:
+    from polylogue.core.enums import BlockType
+
+    nodes = _code_and_output_nodes(status)
+    payload = {
+        "title": "Code interpreter status",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+    return next(b for b in out_msg.blocks if b.type == BlockType.TOOL_RESULT)
+
+
+def test_execution_output_finished_successfully_is_not_error() -> None:
+    """The provider's own terminal status resolves the tool_result outcome.
+
+    Before this fix every ChatGPT ``tool_result`` block was
+    ``tool_result_is_error IS NULL`` (100% unknown, live-measured) even though
+    ``finished_successfully``/``finished_partial_completion`` are exactly the
+    export's terminal success/failure states. Deleting the status->is_error
+    mapping in the ``execution_output`` branch of
+    ``polylogue/sources/parsers/chatgpt.py`` makes this fail.
+    """
+    block = _parse_execution_output("finished_successfully")
+    assert block.is_error is False
+
+
+def test_execution_output_finished_partial_completion_is_error() -> None:
+    block = _parse_execution_output("finished_partial_completion")
+    assert block.is_error is True
+
+
+def test_execution_output_in_progress_stays_unknown() -> None:
+    """A still-running tool call has no concluded outcome -- must stay NULL,
+    never guessed as success or failure."""
+    block = _parse_execution_output("in_progress")
+    assert block.is_error is None
+
+
+def test_execution_output_missing_status_stays_unknown() -> None:
+    block = _parse_execution_output(None)
+    assert block.is_error is None
+
+
+def test_code_block_carries_recipient_as_tool_name() -> None:
+    """A recipient-addressed code-interpreter call's tool identity (e.g.
+    "python", "container.exec") is the provider's own ``recipient`` field --
+    not something to infer from prose."""
+    from polylogue.core.enums import BlockType
+
+    nodes = _code_and_output_nodes("finished_successfully", recipient="container.exec")
+    payload = {
+        "title": "Code interpreter recipient",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    code_msg = next(m for m in conv.messages if m.provider_message_id == "tool")
+    code_block = next(b for b in code_msg.blocks if b.type == BlockType.CODE)
+    assert code_block.tool_name == "container.exec"
 
 
 # ---------------------------------------------------------------------------

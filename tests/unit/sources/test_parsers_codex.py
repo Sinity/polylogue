@@ -308,6 +308,121 @@ class TestMessageParsing:
         assert block.is_error is True
         assert block.exit_code == 2
 
+    def test_function_call_output_timed_out_is_error(self) -> None:
+        """A structural ``"timed_out": true`` is itself an outcome signal
+        (e.g. codex's ``wait``/``write_stdin`` timeout envelope) even when no
+        exit_code/is_error field is present."""
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": '{"message": "Wait timed out.", "timed_out": true}',
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is True
+        assert block.exit_code is None
+
+    def test_function_call_output_exec_envelope_success(self) -> None:
+        """Codex's own unified-exec tool (``exec_command``/``write_stdin``)
+        emits a fixed, CLI-generated text envelope rather than a JSON outcome
+        object. This is the single largest unknown-outcome bucket in the live
+        archive (polylogue-cuxz.8) -- read it as structure, not prose.
+        """
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "Chunk ID: 04636b\nWall time: 0.6470 seconds\nProcess exited with code 0\nOutput:\nok\n",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is False
+        assert block.exit_code == 0
+
+    def test_function_call_output_exec_envelope_nonzero_exit(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "Wall time: 4.0933 seconds\nProcess exited with code 1\nOutput:\nboom\n",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is True
+        assert block.exit_code == 1
+
+    def test_function_call_output_exec_envelope_still_running_stays_unknown(self) -> None:
+        """A long-lived chunked session that hasn't exited yet has no
+        concluded outcome -- must stay NULL, never guessed as success."""
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": "Chunk ID: 0f81ae\nWall time: 30.0011 seconds\nProcess running with session ID 3600\nOutput:\n...",
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is None
+        assert block.exit_code is None
+
+    def test_function_call_output_exec_envelope_does_not_match_embedded_prose(self) -> None:
+        """An unrelated occurrence of similar wording deep inside captured
+        subprocess output (e.g. a CI log the command itself printed) must
+        never be mistaken for the tool's own exit status -- only the exact
+        preamble anchored at the very start of the field counts. The real
+        (anchored) exit code here is 0; the embedded text says otherwise and
+        must not override it.
+        """
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call-1",
+                    "output": (
+                        "Chunk ID: abc123\nWall time: 5.0 seconds\nProcess exited with code 0\n"
+                        "Output:\n##[error]Process completed with exit code 1.\nsome CI log tail\n"
+                    ),
+                },
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        block = result.messages[0].blocks[0]
+        assert block.is_error is False
+        assert block.exit_code == 0
+
     def test_state_records_skipped(self) -> None:
         payload = [
             {"record_type": "state"},
