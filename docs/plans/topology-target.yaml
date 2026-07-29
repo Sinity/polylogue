@@ -3606,10 +3606,6 @@ files:
     target: polylogue/storage/blob_store.py
     owner: storage-root
     reason: storage-root cross-cutting helper
-  - path: polylogue/storage/block_anchor.py
-    loc: 231
-    target: TBD
-    owner: storage-domain
   - path: polylogue/storage/cursor_state.py
     loc: 26
     target: polylogue/storage/cursor_state.py
