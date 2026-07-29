@@ -35,7 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from tests.infra.storage_records import db_setup
 
 
-def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
+def _write_codex_session(db_path: Path, *, native_id: str, title: str | None) -> None:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -43,7 +43,7 @@ def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
             source_name=Provider.CODEX,
             provider_session_id=native_id,
             title=title,
-            title_source=TitleSource.ORIGIN,
+            title_source=TitleSource.ORIGIN if title is not None else None,
             messages=[
                 ParsedMessage(
                     provider_message_id="m1",
@@ -77,6 +77,37 @@ def test_archive_store_summary_reads_expose_title_source(tmp_path: Path) -> None
 
         listed = archive.list_summaries(origin="codex-session", limit=10, offset=0)
         assert [s.title_source for s in listed if s.session_id == session_id] == ["origin"]
+
+
+def test_titleless_session_falls_back_to_structural_label(tmp_path: Path) -> None:
+    """polylogue-cijx.4 decision 3: a session with no provider title reads a
+    computed structural label (never a bare/blank title), sourced ``"path"``.
+
+    This is a read-time-only projection: ``sessions.title`` itself stays
+    ``NULL`` in storage -- only the ``ArchiveSessionSummary`` read model is
+    backfilled, exercised here through the real ``ArchiveStore.read_summary``/
+    ``list_summaries`` production routes (not a direct call into
+    ``session_structural_label_for_session``).
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    db_path = tmp_path / "index.db"
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+
+    _write_codex_session(db_path, native_id="codex-ts-notitle", title=None)
+
+    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+        session_id = archive.resolve_session_id("codex-ts-notitle")
+        summary = archive.read_summary(session_id)
+        assert summary.title == "1 msgs"
+        assert summary.title_source == "path"
+
+        listed = archive.list_summaries(origin="codex-session", limit=10, offset=0)
+        matched = [s for s in listed if s.session_id == session_id]
+        assert len(matched) == 1
+        assert matched[0].title == "1 msgs"
+        assert matched[0].title_source == "path"
 
 
 @pytest.mark.asyncio

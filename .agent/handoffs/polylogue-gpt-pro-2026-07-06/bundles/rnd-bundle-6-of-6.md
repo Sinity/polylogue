@@ -1971,14 +1971,14 @@ Grounded in the live tree. The load-bearing discovery: **`VectorProvider.query(t
 ```python
 @mcp.tool()
 async def recall(
-    task_hint: str,                       # free-text description of current task; embedded as the recall anchor
-    repos: str | None = None,             # CSV include-filter of repo scopes; None = ALL repos (cross-project default)
-    exclude_repos: str | None = None,     # CSV exclude-filter (e.g. drop the current repo to force cross-project)
+    task_hint: str,  # free-text description of current task; embedded as the recall anchor
+    repos: str | None = None,  # CSV include-filter of repo scopes; None = ALL repos (cross-project default)
+    exclude_repos: str | None = None,  # CSV exclude-filter (e.g. drop the current repo to force cross-project)
     kinds: str | None = "lesson,blocker,correction,caveat,pathology",  # evidence kinds to attach
-    session_limit: int = 6,               # top-N similar prior sessions
-    token_budget: int = 1200,             # hard cap on assembled payload token cost
-    min_similarity: float = 0.35,         # cosine floor; hits below are dropped, never padded
-    statuses: str | None = "active",      # assertion lifecycle floor; "active,candidate" to see unjudged (QUOTED)
+    session_limit: int = 6,  # top-N similar prior sessions
+    token_budget: int = 1200,  # hard cap on assembled payload token cost
+    min_similarity: float = 0.35,  # cosine floor; hits below are dropped, never padded
+    statuses: str | None = "active",  # assertion lifecycle floor; "active,candidate" to see unjudged (QUOTED)
 ) -> str: ...
 ```
 

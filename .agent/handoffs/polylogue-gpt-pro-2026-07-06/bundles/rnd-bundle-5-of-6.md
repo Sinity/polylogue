@@ -968,15 +968,15 @@ refusals:
 ### 1.2 `DemoFinding` schema (new Pydantic model in `demo/models.py`, sibling of `DemoVerifyResult`)
 
 ```python
-class DemoFinding(ArchiveInsightModel):        # frozen, like PathologyFinding
-    id: str                                    # local slug within the .polydemo
-    claim: str                                 # human sentence
-    metric: FindingMetric                       # {value, unit, kind: point|lower_bound|upper_bound}
-    evidence_anchor: str                        # structural column/field name (validated allowlist)
-    produced_by: str                            # step id that computed metric
-    evidence_refs: tuple[EvidenceRef, ...]      # reuse core.refs.EvidenceRef
-    corpus_datasheet_hash: str                  # copied from frontmatter at compute time
-    finding_id: str                             # content address (§1.4)
+class DemoFinding(ArchiveInsightModel):  # frozen, like PathologyFinding
+    id: str  # local slug within the .polydemo
+    claim: str  # human sentence
+    metric: FindingMetric  # {value, unit, kind: point|lower_bound|upper_bound}
+    evidence_anchor: str  # structural column/field name (validated allowlist)
+    produced_by: str  # step id that computed metric
+    evidence_refs: tuple[EvidenceRef, ...]  # reuse core.refs.EvidenceRef
+    corpus_datasheet_hash: str  # copied from frontmatter at compute time
+    finding_id: str  # content address (§1.4)
 ```
 
 ### 1.3 Corpus datasheet (pins finding_id to a fixed world)
@@ -1471,14 +1471,16 @@ Frozen re-exports: `Session`, `SessionSummary`, `Message`, `Block`, `SessionProf
 # sdk/client.py — reuse the existing, working bridge; don't reinvent
 class SyncClient:
     def __init__(self, archive_root=None, db_path=None, *, check_schema=True):
-        self._async = api.Polylogue(archive_root, db_path)   # existing facade
+        self._async = api.Polylogue(archive_root, db_path)  # existing facade
         if check_schema:
-            schema.check_schema(self._async.backend)          # pin-and-warn (2c)
+            schema.check_schema(self._async.backend)  # pin-and-warn (2c)
+
     # every read verb:
     def sessions(self, **kw) -> "Query":
         return Query(self, spec=SessionQuerySpec.from_kwargs(**kw))
+
     def _run(self, coro):
-        return api.sync.bridge.run_coroutine_sync(coro)        # existing, loop-safe
+        return api.sync.bridge.run_coroutine_sync(coro)  # existing, loop-safe
 ```
 Ground: `api/sync/bridge.py:run_coroutine_sync` already solves the loop problem the premise blames — SDK reuses it, adding nothing.
 
@@ -1507,12 +1509,16 @@ class Query:                       # immutable; every op returns a new Query
 
 ```python
 # sdk/schema.py
-SDK_INDEX_SCHEMA_RANGE = (24, 24)     # generated-checked against INDEX_SCHEMA_VERSION
+SDK_INDEX_SCHEMA_RANGE = (24, 24)  # generated-checked against INDEX_SCHEMA_VERSION
+
+
 def check_schema(backend) -> None:
     v = backend.user_version("index")
     lo, hi = SDK_INDEX_SCHEMA_RANGE
-    if v < lo:  raise SchemaTooOldError(v, lo)      # hard: SDK newer than archive
-    if v > hi:  warnings.warn(SchemaAheadWarning(v, hi))  # soft: archive rebuilt ahead; reads may miss columns
+    if v < lo:
+        raise SchemaTooOldError(v, lo)  # hard: SDK newer than archive
+    if v > hi:
+        warnings.warn(SchemaAheadWarning(v, hi))  # soft: archive rebuilt ahead; reads may miss columns
 ```
 index.db is a *rebuildable derived tier* — a mismatch is a "rebuild + upgrade SDK" signal, never a migration. The SDK **reads** the pin, it never migrates. `SDK_INDEX_SCHEMA_RANGE` is a generated surface checked against `INDEX_SCHEMA_VERSION` by `render all --check`, so bumping index schema without bumping the SDK range fails CI.
 
@@ -2365,11 +2371,11 @@ Registration stays a role filter — only the split changes:
 
 ```python
 def register_tools(mcp, hooks):
-    register_read_verbs(mcp, hooks)        # query, get, explain, context, correlate, coordinate
+    register_read_verbs(mcp, hooks)  # query, get, explain, context, correlate, coordinate
     if role_allows(hooks.role, "write"):
-        register_write_verbs(mcp, hooks)   # assert, retract
+        register_write_verbs(mcp, hooks)  # assert, retract
     if role_allows(hooks.role, "admin"):
-        register_admin_verbs(mcp, hooks)   # maintenance (incl. delete_session)
+        register_admin_verbs(mcp, hooks)  # maintenance (incl. delete_session)
 ```
 
 - `assert`/`retract` are **single-gated at the verb** (write); no per-kind gate needed because the `WRITABLE` allowlist is validation, not authorization — a read client never sees the verb. This is the key coherence win: 15 write tools with 15 gates → 2 tools, 1 gate, 1 allowlist.

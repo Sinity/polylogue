@@ -1082,36 +1082,55 @@ polylogue/analytics/measures.py    # MeasureSpec, MEASURE_REGISTRY, evaluate_mea
 `MeasureSpec` is a frozen pydantic/dataclass declared in code exactly like `InsightType` and `RigorContract` — the registry is a `dict[str, MeasureSpec]`, not a table.
 
 ```python
-class EvidenceTier(str, Enum):        # ordered weakest→strongest for footnote precedence
-    HEURISTIC = "heuristic"; DERIVED = "derived"
-    PROVIDER_REPORTED = "provider_reported"; STRUCTURAL = "structural"
+class EvidenceTier(str, Enum):  # ordered weakest→strongest for footnote precedence
+    HEURISTIC = "heuristic"
+    DERIVED = "derived"
+    PROVIDER_REPORTED = "provider_reported"
+    STRUCTURAL = "structural"
 
-class SampleFrame(str, Enum):         # RISK-3 keystone
-    LOGICAL_SESSION = "logical_session"   # default: dedup lineage via session_links
-    PHYSICAL_SESSION = "physical_session"; ACTION = "action"; MESSAGE = "message"; USAGE_EVENT = "usage_event"
+
+class SampleFrame(str, Enum):  # RISK-3 keystone
+    LOGICAL_SESSION = "logical_session"  # default: dedup lineage via session_links
+    PHYSICAL_SESSION = "physical_session"
+    ACTION = "action"
+    MESSAGE = "message"
+    USAGE_EVENT = "usage_event"
+
 
 class Reducer(str, Enum):
-    COUNT; SUM; MEAN; MEDIAN; QUANTILE; PROPORTION; RATIO; ENTROPY; DISTINCT
+    COUNT
+    SUM
+    MEAN
+    MEDIAN
+    QUANTILE
+    PROPORTION
+    RATIO
+    ENTROPY
+    DISTINCT
+
 
 class UncertaintyMethod(str, Enum):
-    NONE; WILSON; BOOTSTRAP        # WILSON⇒proportions, BOOTSTRAP⇒mean/median/quantile/ratio
+    NONE
+    WILSON
+    BOOTSTRAP  # WILSON⇒proportions, BOOTSTRAP⇒mean/median/quantile/ratio
+
 
 @dataclass(frozen=True, slots=True)
 class MeasureSpec:
     name: str
-    construct: str                       # what it operationalizes (prose)
-    unit_label: str                      # display unit ("ratio","tokens","$/session","bits","1/hr")
-    unit_frame: SampleFrame              # which rows the reducer folds
+    construct: str  # what it operationalizes (prose)
+    unit_label: str  # display unit ("ratio","tokens","$/session","bits","1/hr")
+    unit_frame: SampleFrame  # which rows the reducer folds
     reducer: Reducer
-    numerator_expr: str                  # SQL/column expr over the frame (the "formula ref")
-    denominator_expr: str | None         # EXPLICIT denominator for RATIO/PROPORTION (never implicit)
+    numerator_expr: str  # SQL/column expr over the frame (the "formula ref")
+    denominator_expr: str | None  # EXPLICIT denominator for RATIO/PROPORTION (never implicit)
     quantile: float | None = None
-    default_group_fields: tuple[str, ...] = ()   # ⊆ descriptor.aggregate_group_fields + windows
+    default_group_fields: tuple[str, ...] = ()  # ⊆ descriptor.aggregate_group_fields + windows
     evidence_tier: EvidenceTier
-    required_coverage: tuple[CoveragePredicate, ...] = ()   # checked at composition (§2.B)
-    confounds: tuple[str, ...]           # non-empty is an audit invariant
+    required_coverage: tuple[CoveragePredicate, ...] = ()  # checked at composition (§2.B)
+    confounds: tuple[str, ...]  # non-empty is an audit invariant
     uncertainty: UncertaintyMethod
-    output_schema: str                   # payload model name for render/openapi
+    output_schema: str  # payload model name for render/openapi
 ```
 
 **Optional (deferred, not v1):** a *rebuildable* `measure_snapshot` cache table in index.db (schema v25) keyed `(measure, group_key, window)` for scale, dropped-and-recomputed on any index rebuild. Spec it only when §4 scale numbers demand it; keep v1 compute-on-read.

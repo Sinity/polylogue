@@ -891,6 +891,7 @@ Sketch:
 ACTION_PAIRING_VERSION = 1
 _DAEMON_ACTION_SESSION_PAGE_SIZE = 250
 
+
 @dataclass(frozen=True, slots=True)
 class ActionSourceBlock:
     session_id: str
@@ -908,6 +909,7 @@ class ActionSourceBlock:
     semantic_type: str | None
     tool_result_is_error: int | None
     tool_result_exit_code: int | None
+
 
 def pair_action_blocks(
     session_id: str,
@@ -964,9 +966,7 @@ def make_actions_stage(db_path: Path) -> ConvergenceStage:
         conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True, timeout=5.0)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
-            all_ids = tuple(dict.fromkeys(
-                session_id for ids in by_path.values() for session_id in ids
-            ))
+            all_ids = tuple(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
             stale = set(_archive_actions_check_sessions(conn, all_ids))
             return {path for path, ids in by_path.items() if stale.intersection(ids)}
         finally:
@@ -982,9 +982,7 @@ def make_actions_stage(db_path: Path) -> ConvergenceStage:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths)
-            session_ids = tuple(dict.fromkeys(
-                session_id for ids in by_path.values() for session_id in ids
-            ))
+            session_ids = tuple(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
             return _archive_actions_execute_sessions(conn, session_ids)
         finally:
             conn.close()

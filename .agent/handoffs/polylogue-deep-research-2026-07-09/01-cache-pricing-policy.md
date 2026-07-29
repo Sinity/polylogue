@@ -90,7 +90,7 @@ read. This is correct, not a gap.
 ### How the loader ingests this (`pricing.py:_load_litellm_catalog`)
 
 ```python
-cache_read_usd_per_1m  = float(entry.get("cache_read_input_token_cost") or 0.0)     * 1_000_000
+cache_read_usd_per_1m = float(entry.get("cache_read_input_token_cost") or 0.0) * 1_000_000
 cache_write_usd_per_1m = float(entry.get("cache_creation_input_token_cost") or 0.0) * 1_000_000
 ```
 

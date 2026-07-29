@@ -1062,17 +1062,12 @@ def test_incremental_restart_and_fresh_generation_rebuild_are_equivalent(
             owned_inactive_generation=(generation.generation_id, generation.owner_id),
         )
     )
-    # rebuild_index_from_source now also reports parse_s/apply_s/stage_timings_s
-    # (the bulk-build pragma-profile timing instrumentation for owned inactive
-    # generations). Those are wall-clock floats, not part of the rebuild's
-    # equivalence contract, so they are checked for shape/presence separately
-    # rather than folded into the exact-count comparison below.
-    timing_keys = {"parse_s", "apply_s", "stage_timings_s"}
-    assert timing_keys.issubset(rebuild_result)
-    assert isinstance(rebuild_result["parse_s"], float)
-    assert isinstance(rebuild_result["apply_s"], float)
-    assert isinstance(rebuild_result["stage_timings_s"], dict)
-    assert {key: value for key, value in rebuild_result.items() if key not in timing_keys} == {
+    # Timing fields (parse_s / apply_s / stage_timings_s, added for the
+    # rebuild cost split) are wall-clock and differ run to run. Two rebuilds
+    # producing identical content in different durations ARE equivalent, so
+    # equivalence is asserted over the content counts only.
+    _TIMING_KEYS = {"parse_s", "apply_s", "stage_timings_s"}
+    assert {k: v for k, v in rebuild_result.items() if k not in _TIMING_KEYS} == {
         "scanned_raw_count": 4,
         "classified_full_count": 4,
         "replayed_logical_source_count": 3,

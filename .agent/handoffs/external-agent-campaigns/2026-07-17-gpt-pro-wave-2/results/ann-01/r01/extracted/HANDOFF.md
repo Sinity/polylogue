@@ -133,7 +133,7 @@ from polylogue.annotations.importer import AnnotationBatchImportRequest
 request = AnnotationBatchImportRequest(
     jsonl=jsonl_text,
     batch_id="stable-run-id",
-    schema_id="seed.activity",          # or an operator-promoted archive-local id
+    schema_id="seed.activity",  # or an operator-promoted archive-local id
     schema_version=1,
     target_ref="session:...",
     source_result_ref="result-set:...",
