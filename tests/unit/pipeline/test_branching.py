@@ -8,13 +8,15 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
-from polylogue.archive.models import Session
+from polylogue.archive.models import Message, Session
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.types import SessionId
 from polylogue.sources import iter_source_sessions
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
@@ -84,9 +86,14 @@ def _claude_sidechain_payload(*, session_id: str = "sidechain-session") -> list[
     ]
 
 
-def _chatgpt_branch_payload(*, title: str = "Branched Session") -> dict[str, object]:
+def _chatgpt_branch_payload(*, title: str = "Branched Session", current_node: str = "a1") -> dict[str, object]:
     return {
         "title": title,
+        # Real ChatGPT exports always carry current_node -- it is the sole
+        # signal for which sibling is the accepted one (polylogue-9qq7). A
+        # fixture without it makes every variant's is_active_path unknown,
+        # which is not representative of the real bug this covers.
+        "current_node": current_node,
         "mapping": {
             "root": {"id": "root", "message": None, "children": ["q1"]},
             "q1": {
@@ -175,6 +182,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
             parent_message_id="q1",
             parent_message_provider_id="q1",
             branch_index=0,
+            is_active_path=True,
         )
         .add_message(
             "a2",
@@ -184,6 +192,7 @@ async def _seed_branch_archive(db_path: Path) -> dict[str, str]:
             parent_message_id="q1",
             parent_message_provider_id="q1",
             branch_index=1,
+            is_active_path=False,
         )
         .build(),
     )
@@ -224,6 +233,154 @@ class TestBranchDomainViews:
         assert branches[0][0] == f"{bid}:q1"
         assert [message.branch_index for message in branches[0][1]] == [0, 1]
         assert [message.is_branch for message in branches[0][1]] == [False, True]
+        # is_active_path (not branch_index) is what selected a1: it is the
+        # first-created AND the accepted sibling here (polylogue-9qq7).
+        answers_by_text = {message.text: message for message in branches[0][1]}
+        assert answers_by_text["Answer 1"].is_active_path is True
+        assert answers_by_text["Answer 2"].is_active_path is False
+
+
+class TestMainlineActivePathSelection:
+    """polylogue-9qq7: mainline reads must follow is_active_path, not variant
+    creation order. branch_index/variant_index is assigned in CREATION order,
+    so for an edited/regenerated turn, branch_index == 0 is the FIRST
+    attempt -- not necessarily the one the provider currently considers
+    accepted. is_active_path is that acceptance signal and must win."""
+
+    @pytest.mark.asyncio
+    async def test_mainline_follows_active_path_not_creation_order(self, workspace_env: WorkspaceEnv) -> None:
+        """The accepted edit sits at variant_index=3; variant_index=0 is the
+        superseded original. Reverting to a ``branch_index == 0`` selection
+        rule would make this assert the wrong message and fail."""
+        db_path = db_setup(workspace_env)
+        session = _require_session(
+            await SessionBuilder(db_path, "edited-turn")
+            .provider("chatgpt")
+            .title("Edited turn")
+            .add_message("q1", role="user", text="Question", provider_message_id="q1", branch_index=0)
+            .add_message(
+                "a-original",
+                role="assistant",
+                text="Original answer",
+                provider_message_id="a-original",
+                parent_message_id="q1",
+                parent_message_provider_id="q1",
+                branch_index=0,
+                is_active_path=False,
+            )
+            .add_message(
+                "a-edit-1",
+                role="assistant",
+                text="Edit attempt 1",
+                provider_message_id="a-edit-1",
+                parent_message_id="q1",
+                parent_message_provider_id="q1",
+                branch_index=1,
+                is_active_path=False,
+            )
+            .add_message(
+                "a-edit-2",
+                role="assistant",
+                text="Edit attempt 2",
+                provider_message_id="a-edit-2",
+                parent_message_id="q1",
+                parent_message_provider_id="q1",
+                branch_index=2,
+                is_active_path=False,
+            )
+            .add_message(
+                "a-accepted",
+                role="assistant",
+                text="Accepted final edit",
+                provider_message_id="a-accepted",
+                parent_message_id="q1",
+                parent_message_provider_id="q1",
+                branch_index=3,
+                is_active_path=True,
+            )
+            .build(),
+        )
+
+        mainline_texts = [message.text for message in session.mainline_messages()]
+        assert mainline_texts == ["Question", "Accepted final edit"]
+        assert "Original answer" not in mainline_texts
+
+        accepted = next(message for message in session.messages if message.text == "Accepted final edit")
+        assert accepted.branch_index == 3
+        assert accepted.is_active_path is True
+        original = next(message for message in session.messages if message.text == "Original answer")
+        assert original.branch_index == 0
+        assert original.is_active_path is False
+
+    @pytest.mark.asyncio
+    async def test_mainline_retains_all_messages_for_non_branching_provider(self, workspace_env: WorkspaceEnv) -> None:
+        """Providers with no branch concept (e.g. Codex, Claude Code) never
+        mark a sibling as superseded, so the schema's ``NOT NULL DEFAULT 1``
+        makes every such message ``is_active_path=True`` at storage time --
+        the whole ordinary transcript stays visible."""
+        db_path = db_setup(workspace_env)
+        session = _require_session(
+            await SessionBuilder(db_path, "no-branch-concept")
+            .provider("codex")
+            .title("No branching")
+            .add_message("m1", role="user", text="First")
+            .add_message("m2", role="assistant", text="Second")
+            .add_message("m3", role="user", text="Third")
+            .build(),
+        )
+
+        assert all(message.is_active_path is True for message in session.messages)
+        assert [message.text for message in session.mainline_messages()] == ["First", "Second", "Third"]
+
+    def test_mainline_treats_unresolved_active_path_as_unknown_not_hidden(self) -> None:
+        """Unit contract for the domain filter itself: a read path that has
+        not (yet) threaded ``is_active_path`` through leaves it ``None`` on
+        the domain ``Message`` -- this must fall back to the historical
+        ``branch_index == 0`` rule, never collapse to "hidden". This is the
+        one place ``None`` genuinely occurs: production storage always
+        resolves to a concrete bool (``NOT NULL DEFAULT 1``), so this
+        exercises the incomplete-plumbing case directly against the real
+        ``Session.mainline_messages()`` implementation."""
+
+        def _session(*, a1_active: bool | None, a2_active: bool | None) -> Session:
+            return Session(
+                id=SessionId("test:unresolved-active-path"),
+                origin=Origin.CODEX_SESSION,
+                messages=MessageCollection(
+                    messages=[
+                        Message(id="m:q1", role=Role.USER, text="Question", branch_index=0, is_active_path=None),
+                        Message(
+                            id="m:a1",
+                            role=Role.ASSISTANT,
+                            text="First attempt",
+                            parent_id="m:q1",
+                            branch_index=0,
+                            is_active_path=a1_active,
+                        ),
+                        Message(
+                            id="m:a2",
+                            role=Role.ASSISTANT,
+                            text="Second attempt",
+                            parent_id="m:q1",
+                            branch_index=1,
+                            is_active_path=a2_active,
+                        ),
+                    ]
+                ),
+            )
+
+        # is_active_path unresolved (None) on every message -> falls back to
+        # branch_index == 0, exactly the pre-fix behavior, so ordinary reads
+        # that haven't threaded the column stay unaffected.
+        unresolved = _session(a1_active=None, a2_active=None)
+        assert [message.text for message in unresolved.mainline_messages()] == ["Question", "First attempt"]
+
+        # Now resolve is_active_path for the group: the SECOND attempt is the
+        # one the provider currently accepts. Reverting to a bare
+        # ``branch_index == 0`` selection rule would keep picking "First
+        # attempt" here and fail this assertion.
+        resolved = _session(a1_active=False, a2_active=True)
+        assert [message.text for message in resolved.mainline_messages()] == ["Question", "Second attempt"]
 
 
 class TestBranchRepositoryTraversal:

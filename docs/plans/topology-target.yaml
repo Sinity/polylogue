@@ -1297,7 +1297,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2927
+    loc: 2902
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1531,7 +1531,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2865
+    loc: 2860
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -3171,7 +3171,7 @@ files:
     target: polylogue/sources/assembly_claude_code.py
     owner: stable
   - path: polylogue/sources/assembly_codex.py
-    loc: 313
+    loc: 375
     target: polylogue/sources/assembly_codex.py
     owner: stable
   - path: polylogue/sources/assembly_gemini.py
@@ -3195,7 +3195,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1244
+    loc: 1335
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3327,7 +3327,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/tool_result_sidecars.py
-    loc: 171
+    loc: 246
     target: polylogue/sources/live/tool_result_sidecars.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
@@ -3360,11 +3360,11 @@ files:
     target: polylogue/sources/parsers/beads.py
     owner: stable
   - path: polylogue/sources/parsers/browser_capture.py
-    loc: 699
+    loc: 747
     target: polylogue/sources/parsers/browser_capture.py
     owner: stable
   - path: polylogue/sources/parsers/chatgpt.py
-    loc: 1054
+    loc: 1077
     target: polylogue/sources/parsers/chatgpt.py
     owner: stable
   - path: polylogue/sources/parsers/claude/__init__.py
@@ -3372,7 +3372,7 @@ files:
     target: polylogue/sources/parsers/claude/__init__.py
     owner: stable
   - path: polylogue/sources/parsers/claude/ai_parser.py
-    loc: 290
+    loc: 318
     target: polylogue/sources/parsers/claude/ai_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_detection.py
@@ -3380,11 +3380,11 @@ files:
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_parser.py
-    loc: 1512
+    loc: 1532
     target: polylogue/sources/parsers/claude/code_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/common.py
-    loc: 1140
+    loc: 1202
     target: polylogue/sources/parsers/claude/common.py
     owner: stable
   - path: polylogue/sources/parsers/claude/history.py
@@ -3392,7 +3392,7 @@ files:
     target: polylogue/sources/parsers/claude/history.py
     owner: stable
   - path: polylogue/sources/parsers/claude/index.py
-    loc: 185
+    loc: 210
     target: polylogue/sources/parsers/claude/index.py
     owner: stable
   - path: polylogue/sources/parsers/claude/orchestration.py
@@ -3400,7 +3400,7 @@ files:
     target: polylogue/sources/parsers/claude/orchestration.py
     owner: stable
   - path: polylogue/sources/parsers/codex.py
-    loc: 2269
+    loc: 2370
     target: polylogue/sources/parsers/codex.py
     owner: stable
   - path: polylogue/sources/parsers/codex_state.py
@@ -3408,11 +3408,11 @@ files:
     target: polylogue/sources/parsers/codex_state.py
     owner: stable
   - path: polylogue/sources/parsers/drive.py
-    loc: 436
+    loc: 447
     target: polylogue/sources/parsers/drive.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support.py
-    loc: 42
+    loc: 44
     target: polylogue/sources/parsers/drive_support.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support_attachments.py
@@ -3420,7 +3420,7 @@ files:
     target: polylogue/sources/parsers/drive_support_attachments.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support_blocks.py
-    loc: 112
+    loc: 175
     target: polylogue/sources/parsers/drive_support_blocks.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support_text.py
@@ -3444,7 +3444,7 @@ files:
     target: polylogue/sources/parsers/hermes_spans.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_state.py
-    loc: 984
+    loc: 1013
     target: polylogue/sources/parsers/hermes_state.py
     owner: stable
   - path: polylogue/sources/parsers/hermes_verification.py
@@ -3452,7 +3452,7 @@ files:
     target: polylogue/sources/parsers/hermes_verification.py
     owner: stable
   - path: polylogue/sources/parsers/local_agent.py
-    loc: 473
+    loc: 623
     target: polylogue/sources/parsers/local_agent.py
     owner: stable
   - path: polylogue/sources/provider_completeness.py
@@ -3508,7 +3508,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 1542
+    loc: 1672
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3780,7 +3780,7 @@ files:
     target: polylogue/storage/insights/session/repair_assessment.py
     owner: stable
   - path: polylogue/storage/insights/session/repo_observations.py
-    loc: 272
+    loc: 311
     target: polylogue/storage/insights/session/repo_observations.py
     owner: stable
   - path: polylogue/storage/insights/session/run_projection_rows.py
@@ -3855,7 +3855,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_retention.py
-    loc: 1775
+    loc: 1808
     target: polylogue/storage/raw_retention.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3890,7 +3890,7 @@ files:
     target: polylogue/storage/repository/archive/search.py
     owner: stable
   - path: polylogue/storage/repository/archive/sessions.py
-    loc: 366
+    loc: 386
     target: polylogue/storage/repository/archive/sessions.py
     owner: stable
   - path: polylogue/storage/repository/archive/tree.py
@@ -4108,7 +4108,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/column_spec.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/common.py
-    loc: 76
+    loc: 110
     target: polylogue/storage/sqlite/archive_tiers/common.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/context_delivery_write.py
@@ -4124,7 +4124,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 1804
+    loc: 1841
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
@@ -4164,7 +4164,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 437
+    loc: 449
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
@@ -4196,7 +4196,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 5399
+    loc: 5496
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -4358,6 +4358,10 @@ files:
     target: polylogue/storage/sqlite/queries/raw_writes.py
     owner: stable
     cross_cut: { layer: write }
+  - path: polylogue/storage/sqlite/queries/session_agent_policies.py
+    loc: 120
+    target: polylogue/storage/sqlite/queries/session_agent_policies.py
+    owner: stable
   - path: polylogue/storage/sqlite/queries/session_events.py
     loc: 175
     target: polylogue/storage/sqlite/queries/session_events.py
@@ -4447,7 +4451,7 @@ files:
     target: polylogue/storage/sqlite/query_store.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store_archive.py
-    loc: 334
+    loc: 347
     target: polylogue/storage/sqlite/query_store_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/query_store_insight_profiles.py

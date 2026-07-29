@@ -20,6 +20,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlparse
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
@@ -3802,22 +3803,33 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
     origin_url = (session.git_repository_url or "").strip()
     for root_path in root_paths or ("",):
         repo_name = _repo_name(origin_url, root_path)
-        repo_id = _repo_id(origin_url, root_path)
+        # polylogue-cijx.4 decision 1: identity is the canonicalized remote
+        # (when known), NOT origin_url+root_path -- two worktree checkouts of
+        # the same remote must upsert the SAME repos row. See
+        # `repo_identity_key` for the full rationale.
+        repo_id = repo_identity_key(origin_url, root_path)
         conn.execute(
             """
-            INSERT INTO repos (origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(origin_url, root_path) DO UPDATE SET
-                repo_name = COALESCE(NULLIF(excluded.repo_name, ''), repos.repo_name),
+            INSERT INTO repos (repo_id, origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(repo_id) DO UPDATE SET
+                origin_url = COALESCE(NULLIF(repos.origin_url, ''), excluded.origin_url),
+                root_path = COALESCE(NULLIF(repos.root_path, ''), excluded.root_path),
+                repo_name = COALESCE(NULLIF(repos.repo_name, ''), excluded.repo_name),
                 first_seen_at_ms = MIN(repos.first_seen_at_ms, excluded.first_seen_at_ms),
                 last_seen_at_ms = MAX(repos.last_seen_at_ms, excluded.last_seen_at_ms)
             """,
-            # repos.repo_name is NOT NULL DEFAULT ''. _repo_name() returns None
-            # when no name can be derived (e.g. a session whose cwd is "/" or
-            # "."): insert the schema's empty-string sentinel instead of NULL so
-            # the session is not dropped, while the NULLIF above keeps a later
-            # re-ingest from clobbering a previously-derived name with ''.
+            # repos.origin_url/root_path are now representative display
+            # values, not identity (repo_id is) -- first-seen wins on
+            # conflict rather than being overwritten by a later checkout, so
+            # they stay stable once set. repos.repo_name is NOT NULL DEFAULT
+            # ''. _repo_name() returns None when no name can be derived
+            # (e.g. a session whose cwd is "/" or "."): insert the schema's
+            # empty-string sentinel instead of NULL so the session is not
+            # dropped, while the NULLIF above keeps a later re-ingest from
+            # clobbering a previously-derived name with ''.
             (
+                repo_id,
                 _sqlite_text(origin_url),
                 _sqlite_text(root_path),
                 _sqlite_text(repo_name or ""),
@@ -3827,11 +3839,27 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
         )
         conn.execute(
             """
-            INSERT OR REPLACE INTO session_repos (
-                session_id, repo_id, branch_name, observed_at_ms
-            ) VALUES (?, ?, ?, ?)
+            INSERT INTO repo_checkouts (repo_id, root_path, first_seen_at_ms, last_seen_at_ms)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(repo_id, root_path) DO UPDATE SET
+                first_seen_at_ms = MIN(repo_checkouts.first_seen_at_ms, excluded.first_seen_at_ms),
+                last_seen_at_ms = MAX(repo_checkouts.last_seen_at_ms, excluded.last_seen_at_ms)
             """,
-            (session_id, repo_id, _sqlite_text(session.git_branch or ""), observed_at_ms or 0),
+            (repo_id, _sqlite_text(root_path), observed_at_ms or 0, observed_at_ms or 0),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_repos (
+                session_id, repo_id, root_path, branch_name, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                repo_id,
+                _sqlite_text(root_path),
+                _sqlite_text(session.git_branch or ""),
+                observed_at_ms or 0,
+            ),
         )
         if session.git_commit_hash:
             conn.execute(
@@ -5196,22 +5224,90 @@ def _normalized_repo_root_path(root_path: str) -> str:
     """Resolve ``root_path`` to its git root when one is discoverable.
 
     Without this, two sessions whose cwd differs only by subdirectory (or by
-    worktree path under one checkout) write two distinct ``repos`` rows keyed
-    by the raw cwd, because ``repos.repo_id`` is generated from
-    ``origin_url || root_path`` (schema-level; changing that formula to drop
-    ``root_path`` entirely is an index-tier schema bump, tracked separately --
-    see polylogue-cijx.4). Normalizing the *value* written into ``root_path``
-    to the resolved git root at least collapses same-checkout subdirectory
-    variance and keeps this writer's rows consistent with the
-    attribution-based writer (``repo_observations.py``), which already
-    normalizes this way -- so both writers upsert into the SAME row instead
-    of leaving orphaned divergent rows behind.
+    worktree path under one checkout) would write two distinct checkout
+    roots for what is really one working tree. Normalizing the *value*
+    written into ``root_path`` to the resolved git root collapses
+    same-checkout subdirectory variance and keeps this writer's rows
+    consistent with the attribution-based writer
+    (``storage/insights/session/repo_observations.py``), which already
+    normalizes this way. As of the ``repo_identity_key`` schema fix below,
+    ``root_path`` is no longer part of ``repos.repo_id`` identity when a
+    remote is known -- it still matters as the value recorded in
+    ``repo_checkouts``/``session_repos.root_path`` (decision 2's
+    repo-relative path stripping), and as the sole identity fallback for a
+    repository with no remote.
     """
     return normalize_repo_path(root_path) or root_path
 
 
-def _repo_id(origin_url: str, root_path: str) -> str:
-    return f"{origin_url}\x1f{root_path}"
+_SCP_LIKE_REMOTE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
+
+
+def _canonicalize_repo_remote(origin_url: str) -> str:
+    """Canonicalize a git remote URL to a stable identity token.
+
+    polylogue-cijx.4 decision 1: "a repository is keyed on its normalized
+    remote -- all spellings of one remote are one repo". ``git@host:owner/repo``
+    (SCP-like), ``https://host/owner/repo.git``, and ``ssh://host/owner/repo``
+    must collapse to the same identity. This strips scheme/userinfo,
+    lowercases the host, and strips a trailing ``.git`` suffix and slash.
+
+    Deliberately a small heuristic, not a full git-remote parser: it only
+    needs to be *consistent* for the common hosting-provider URL shapes this
+    archive actually observes (GitHub/GitLab/etc SSH and HTTPS remotes),
+    because it feeds a stored identity key, not a validated remote. Returns
+    ``""`` when ``origin_url`` is blank or unrecognizable, signaling the
+    caller to fall back to the directory identity.
+    """
+    raw = origin_url.strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        path = parsed.path
+    else:
+        match = _SCP_LIKE_REMOTE_RE.match(raw)
+        if match:
+            host, path = match.group(1).lower(), match.group(2)
+        else:
+            host, path = "", raw
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")]
+    if not path:
+        return ""
+    canonical = f"{host}/{path}" if host else path
+    return canonical.lower()
+
+
+def repo_identity_key(origin_url: str, root_path: str) -> str:
+    """Compute the canonical ``repos.repo_id`` (polylogue-cijx.4 decision 1).
+
+    A repository is keyed on its normalized remote when one is known --
+    every worktree checkout of the same remote collapses to a single
+    ``repos`` row (``remote:<host>/<path>``). Only when no remote is known
+    does identity fall back to the resolved checkout root
+    (``dir:<root_path>``, decision 1's "where no remote exists, the
+    outermost git root"); ``root_path`` is expected to already be resolved
+    to that outermost root by ``_normalized_repo_root_path`` before this is
+    called.
+
+    This used to be a SQLite ``GENERATED ALWAYS`` column computed as
+    ``origin_url || root_path`` -- so two worktree checkouts of the exact
+    same remote were two different ``repos`` rows purely because their
+    checkout paths differed (measured: 3.5% session-label collision from
+    this, and repo counts like "polylogue holds 106 distinct repo_ids"
+    that were really ~1 repo checked out 106 places). ``repo_id`` is now a
+    plain Python-computed column instead of a SQL generated expression,
+    because the remote-URL canonicalization above needs real string logic
+    (scheme/userinfo stripping, SCP-vs-URL unification, case folding) a SQL
+    expression cannot express without duplicating this function in SQL.
+    """
+    canonical_remote = _canonicalize_repo_remote(origin_url)
+    if canonical_remote:
+        return f"remote:{canonical_remote}"
+    return f"dir:{root_path}"
 
 
 def _attachment_id(_session_id: str, attachment: ParsedAttachment) -> str:
@@ -5386,6 +5482,7 @@ __all__ = [
     "read_session_work_events",
     "rebuild_archive_messages_fts",
     "replace_parser_ingest_flag_tags",
+    "repo_identity_key",
     "upsert_session_profile_costs",
     "apply_insight_materialization",
     "upsert_insight_materialization",

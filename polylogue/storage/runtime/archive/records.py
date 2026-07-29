@@ -138,7 +138,15 @@ class MessageRecord(BaseModel):
     content_hash: ContentHash
     version: int = 1
     parent_message_id: MessageId | None = None
+    # branch_index (aka variant_index) is CREATION ORDER among siblings, not
+    # display state -- do not treat 0 as "the accepted/mainline variant"; see
+    # is_active_path below (polylogue-9qq7).
     branch_index: int = 0
+    # The provider-reported "this sibling is the currently-accepted one" signal
+    # (messages.is_active_path, schema v45). ``None`` means this read path has
+    # not selected the column (unknown), never a fabricated "not active" --
+    # callers must not collapse unknown into hidden.
+    is_active_path: bool | None = None
     blocks: list[BlockRecord] = Field(default_factory=list)
     source_name: str = ""
     word_count: int = 0

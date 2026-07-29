@@ -130,6 +130,41 @@ class TestAttachBranches:
         result = _attach_branches(msgs)
         assert len(result) == 2
 
+    def test_is_active_path_overrides_creation_order(self) -> None:
+        """polylogue-9qq7: is_active_path (display state), not branch_index
+        (creation order), decides which sibling renders as mainline. Here the
+        LATER-created message (branch_index=1) is the accepted edit, and the
+        earlier one (branch_index=0) is superseded -- reverting to a bare
+        ``branch_index == 0`` selection would attach "Edit" as the branch of
+        "Original" instead of the other way around."""
+        msgs: list[MessagePayload] = [
+            {"id": "m1", "role": "user", "branch_index": 0, "parent_message_id": None, "text": "Q"},
+            {
+                "id": "m2",
+                "role": "assistant",
+                "branch_index": 0,
+                "parent_message_id": "m1",
+                "text": "Original",
+                "is_active_path": False,
+            },
+            {
+                "id": "m3",
+                "role": "assistant",
+                "branch_index": 1,
+                "parent_message_id": "m1",
+                "text": "Edit",
+                "is_active_path": True,
+            },
+        ]
+        result = _attach_branches(msgs)
+        assert len(result) == 2
+        mainline_ids = {m["id"] for m in result}
+        assert mainline_ids == {"m1", "m3"}
+        m3 = next(m for m in result if m["id"] == "m3")
+        branches = _branches(m3)
+        assert len(branches) == 1
+        assert branches[0]["id"] == "m2"
+
 
 class TestBranchRendering:
     """Tests for branch-aware HTML rendering."""
@@ -191,6 +226,27 @@ class TestBranchRendering:
         html = render_session_html(conv)
         assert "branch-message" in html
         assert "branch-label" in html
+
+    def test_active_path_message_renders_as_mainline_not_creation_order(self) -> None:
+        """polylogue-9qq7: the accepted edit (is_active_path=True) renders in
+        the top-level flow even when it was created LATER (higher
+        branch_index); the superseded original collapses into the
+        ``<details>`` branch section instead of appearing as the mainline."""
+        msgs = [
+            _make_msg("m1", "user", "Question"),
+            make_msg(id="m2", role="assistant", text="Original", parent_id="m1", branch_index=0, is_active_path=False),
+            make_msg(
+                id="m3", role="assistant", text="Accepted edit", parent_id="m1", branch_index=1, is_active_path=True
+            ),
+        ]
+        conv = _make_conv(msgs)
+        html = render_session_html(conv)
+        assert "Accepted edit" in html
+        assert "Original" in html
+        # The accepted edit is in the top-level flow (before any <details>
+        # branch section); the superseded original is inside it.
+        assert html.index("Accepted edit") < html.index("<details")
+        assert html.index("<details") < html.index("Original")
 
     def test_mainline_only_in_top_level(self) -> None:
         """Only mainline messages should be in the top-level message list."""

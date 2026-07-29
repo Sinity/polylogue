@@ -34,6 +34,7 @@ def build_projection_html_messages(
             content_blocks=content_blocks,
             parent_message_id=msg.parent_message_id,
             branch_index=msg.branch_index,
+            is_active_path=msg.is_active_path,
             render_html=render_html,
             preview_limit=preview_limit,
         )
@@ -61,6 +62,7 @@ def build_session_html_messages(
             content_blocks=content_blocks,
             parent_message_id=msg.parent_id,
             branch_index=msg.branch_index,
+            is_active_path=msg.is_active_path,
             render_html=render_html,
             preview_limit=preview_limit,
         )

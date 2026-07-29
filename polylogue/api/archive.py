@@ -1813,7 +1813,14 @@ def _archive_message_to_domain(message: ArchiveMessageRow, *, origin: Origin) ->
         has_paste=message.has_paste,
         paste_boundary_state=message.paste_boundary_state,
         duration_ms=message.duration_ms,
+        # variant_index is creation order, NOT display state (polylogue-9qq7):
+        # for a regenerated/edited turn, index 0 is the first attempt, not
+        # necessarily the accepted one. is_active_path is the provider's
+        # "currently accepted sibling" signal and is authoritative for
+        # mainline selection; ArchiveMessageRow.is_active_path is always a
+        # concrete bool (schema default), never a guess.
         branch_index=message.variant_index,
+        is_active_path=message.is_active_path,
         parent_id=message.parent_message_id,
         attachments=[_archive_attachment_to_domain(att) for att in message.attachments],
     )
