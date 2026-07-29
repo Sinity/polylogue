@@ -1220,7 +1220,16 @@ def test_periodic_raw_materialization_burst_continues_through_census_passes(
 ) -> None:
     """A census-paused pass repairs nothing but IS progress: the burst must
     keep going until the persisted parser census completes (22k-raw census
-    at one pass per interval would take half a day)."""
+    at one pass per interval would take half a day).
+
+    polylogue-m6tp item 4: the writer-held pass's limit no longer escalates
+    on a census-mode guess (that mechanism is deleted); with the parse-stage
+    warmer off (the default, unmocked config here), every pass -- census-only
+    or repairing -- uses the plain replay-sized floor. Census throughput is
+    now the warmer's job (see
+    ``test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count``
+    for the flag-on case that actually widens it).
+    """
     from polylogue.daemon import cli as daemon_cli
     from polylogue.product.raw_authority import RawMaterializationCounts
 
@@ -1260,14 +1269,50 @@ def test_periodic_raw_materialization_burst_continues_through_census_passes(
         daemon_cli._RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS,
         daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
     ]
-    # Census-only results escalate the next pass to the census batch size;
-    # the repairing third pass would drop the following one back to the
-    # replay-sized limit.
-    assert limits == [
-        daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
-        daemon_cli._RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT,
-        daemon_cli._RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT,
-    ]
+    assert limits == [daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT] * 3
+
+
+def test_periodic_raw_materialization_flag_on_widens_limit_to_match_warmed_count(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """polylogue-m6tp item 4's replacement for the deleted ``census_mode``
+    escalation: when the parse-stage warmer actually fills its cache, the
+    writer-held pass's own limit widens to match (bounded by the warm
+    ceiling) -- driven by REAL warmed state, not a guess about whether the
+    prior pass "looked like" a census-only pass."""
+    from polylogue.daemon import cli as daemon_cli
+
+    class FakeResolved:
+        daemon_parse_stage_split = True
+        daemon_bulk_rebuild_routing = False
+
+    class FakeStage:
+        cache = object()
+
+        def warm(self, config: object, *, limit: int, max_payload_bytes: int) -> int:
+            assert limit == daemon_cli._RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT
+            return 40
+
+    seen_limits: list[int] = []
+
+    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
+        seen_limits.append(int(cast(functools.partial[object], func).keywords["limit"]))
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: FakeResolved())
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
+    monkeypatch.setattr(daemon_cli, "_daemon_parse_stage", lambda: FakeStage())
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert seen_limits == [40]
+    assert daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT < 40
+    assert daemon_cli._RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT >= 40
 
 
 def test_periodic_raw_materialization_burst_stops_without_progress(

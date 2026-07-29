@@ -74,18 +74,31 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
-# Rows per bounded writer-held pass. Small enough to keep the write
-# coordinator responsive to live appends, large enough to amortise the
-# per-pass census/recovery overhead over more than one row.
+# Rows per bounded writer-held pass. This is now a PURE writer-hold-duration
+# bound: small enough to keep the write coordinator responsive to live
+# appends. It used to also double as a parse-throughput knob for
+# census-only passes (see the removed ``_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT``
+# / ``census_mode`` escalation, docs/design/convergence-simplification-inventory.md
+# item 4) -- that job now belongs entirely to
+# ``_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT`` below, which runs off the
+# writer hold and therefore never has to trade against this bound.
 _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT = 16
 # Between backlog burst passes the loop yields the writer briefly so live
 # ingest and interactive writes never queue behind a long drain.
 _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
-# Census-mode passes (replay planning paused behind the persisted parser
-# census) run no replay transaction, so the batch bounds parse work, not a
-# writer-transaction length — amortize the per-pass census fixed costs
-# (candidate discovery, component ordering, receipt) over more components.
-_RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT = 64
+# Ceiling on how many candidates ``_maybe_warm_raw_materialization_parse_stage``
+# pre-parses OFF the writer hold per pass (polylogue-m6tp item 4). Distinct
+# from ``_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`` on purpose: this is a
+# parse-throughput knob bounded by ``DaemonParseStage``'s own worker-count and
+# in-flight/cached-tree-bytes budgets (``polylogue.daemon.parse_prefetch``),
+# not by writer-hold duration, so it can stay generous regardless of how the
+# writer-held pass sizes itself. When the warmer actually fills the cache,
+# the writer-held pass widens its own limit to match (see the ``limit =
+# max(...)`` derivation in ``_periodic_raw_materialization_convergence``) so
+# already-parsed candidates get consumed without waiting several extra ticks
+# -- consuming a prefetch hit costs a receipt write, not a reparse, so this
+# does not meaningfully extend the writer hold.
+_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
 # polylogue-t93b: escalation-tier envelope for the whale pass. A component
 # permanently resource-blocked at the ordinary fast-path limit above
@@ -154,22 +167,28 @@ def _daemon_bulk_rebuild_parse_stage() -> DaemonParseStage:
     return _daemon_bulk_rebuild_parse_stage_singleton
 
 
-async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> RawParsePrefetchCache | None:
+async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> tuple[RawParsePrefetchCache | None, int]:
     """Pre-parse this pass's census candidates outside the writer hold.
 
     polylogue-m6tp phase (a). Off by default (``daemon_parse_stage_split``
-    config flag); returns ``None`` unless enabled, which makes
+    config flag); returns ``(None, 0)`` unless enabled, which makes
     ``_drain_raw_materialization_once`` parse every candidate inside the
     writer hold exactly as before -- the unmodified, always-correct
     behavior. Runs entirely BEFORE the write coordinator is ever asked for
     the writer hold, so it never competes with an active writer thread for
     the GIL (see ``polylogue.daemon.parse_prefetch`` for why that sequencing
     is what makes threads safe here even on a standard GIL build).
+
+    The second element of the returned tuple is how many raws were newly
+    admitted to the cache THIS call (0 on the flag-off/no-op path or a
+    caught warm failure) -- the caller uses it to size the writer-held
+    pass's own limit to match what is already parsed and waiting (see
+    ``docs/design/convergence-simplification-inventory.md`` item 4).
     """
     from polylogue.config import load_polylogue_config
 
     if not load_polylogue_config().daemon_parse_stage_split:
-        return None
+        return None, 0
     from polylogue.config import Config
     from polylogue.paths import archive_root, render_root
 
@@ -184,10 +203,10 @@ async def _maybe_warm_raw_materialization_parse_stage(*, limit: int) -> RawParse
         )
     except Exception:
         logger.warning("raw materialization: parse-stage prefetch failed; falling back to in-hold parse", exc_info=True)
-        return stage.cache
+        return stage.cache, 0
     if warmed:
         logger.info("raw materialization: parse-stage prefetch warmed %d raw(s) off the writer hold", warmed)
-    return stage.cache
+    return stage.cache, warmed
 
 
 async def _run_startup_fts_readiness(coordinator: DaemonWriteCoordinator) -> None:
@@ -835,7 +854,6 @@ async def _periodic_raw_materialization_convergence(
     if catch_up_complete is not None:
         await catch_up_complete.wait()
 
-    census_mode = False
     while True:
         if _browser_capture_spool_has_pending_files():
             logger.info("raw materialization: yielding to pending browser-capture spool files")
@@ -887,19 +905,23 @@ async def _periodic_raw_materialization_convergence(
                         break
                     await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
                     continue
-                # While replay planning is paused behind the persisted parser
-                # census, a pass does census-only work: no replay transaction
-                # runs, so the small replay-sized batch limit (which bounds
-                # writer-transaction length) only throttles parse-bound census
-                # throughput and stretches a large census into days. Use a
-                # larger batch for census-mode passes; the first pass that
-                # repairs or plans anything drops back to the replay limit.
-                limit = (
-                    _RAW_MATERIALIZATION_CENSUS_BATCH_LIMIT
-                    if census_mode
-                    else _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT
+                # polylogue-m6tp item 4: census throughput is no longer bounded
+                # by escalating the writer-held pass's OWN limit (the old
+                # ``census_mode`` switch) -- it is bounded by how much the
+                # parse-stage warmer, running off the writer hold, admits to
+                # its cache. The writer-held pass widens its own limit only
+                # far enough to consume what is already warmed and waiting;
+                # doing so costs a receipt write per already-parsed candidate,
+                # not a reparse, so it does not meaningfully extend the hold.
+                # With the flag off (``warmed_count`` always 0) this reduces
+                # to the plain replay-sized floor, unchanged from before.
+                prefetch_cache, warmed_count = await _maybe_warm_raw_materialization_parse_stage(
+                    limit=_RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT
                 )
-                prefetch_cache = await _maybe_warm_raw_materialization_parse_stage(limit=limit)
+                limit = max(
+                    _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
+                    min(warmed_count, _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT),
+                )
                 materialized = await daemon_write_coordinator().run_sync(
                     "maintenance.raw_materialization",
                     functools.partial(
@@ -910,11 +932,6 @@ async def _periodic_raw_materialization_convergence(
                     ),
                 )
                 recover = False
-                census_mode = (
-                    materialized.censused_components > 0
-                    and materialized.repaired_sessions == 0
-                    and materialized.executed_plans == 0
-                )
                 _maybe_recommend_bulk_rebuild(materialized)
                 await _maybe_route_daemon_bulk_rebuild(materialized)
                 if materialized.made_progress:
