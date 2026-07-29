@@ -118,7 +118,22 @@ class SessionRuntimeMixin:
         return self.filter(lambda message: message.is_substantive)
 
     def mainline_messages(self) -> list[Message]:
-        return [message for message in self.messages if message.branch_index == 0]
+        """Return the currently-displayed conversation, one message per branch point.
+
+        ``is_active_path`` (not ``branch_index``) is the display-state signal
+        (polylogue-9qq7): ``branch_index`` is creation order, so for an
+        edited/regenerated turn ``branch_index == 0`` is the FIRST attempt,
+        not necessarily the accepted sibling. When ``is_active_path`` is
+        unknown (``None`` -- e.g. a provider with no branch concept, or a read
+        path that hasn't resolved it), fall back to the historical
+        ``branch_index == 0`` rule rather than hiding the message: unknown
+        must never collapse to "not active".
+        """
+        return [
+            message
+            for message in self.messages
+            if (message.is_active_path if message.is_active_path is not None else message.branch_index == 0)
+        ]
 
     def iter_dialogue(self) -> Iterator[Message]:
         for message in self.messages:

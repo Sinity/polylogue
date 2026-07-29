@@ -85,6 +85,32 @@ def _row_int(row: sqlite3.Row, key: str, default: int | None = None) -> int | No
         return default
 
 
+def _row_optional_bool(row: sqlite3.Row, key: str) -> bool | None:
+    """Read a nullable boolean-ish column, preserving None (unknown/unselected).
+
+    Unlike ``_row_int``'s ``default`` parameter, this never substitutes a
+    concrete value for a missing column -- callers such as
+    ``MessageRecord.is_active_path`` must be able to distinguish "this read
+    path didn't select the column" from an actual stored ``False``.
+    """
+    value = _row_get(row, key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, (bytes, bytearray)):
+        try:
+            return bool(int(value.decode("utf-8")))
+        except ValueError:
+            return None
+    try:
+        return bool(int(value))
+    except ValueError:
+        return None
+
+
 def _row_float(row: sqlite3.Row, key: str, default: float | None = None) -> float | None:
     value = _row_get(row, key)
     if value is None:

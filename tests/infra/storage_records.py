@@ -895,6 +895,7 @@ def _record_to_parsed_session(
             position=position,
             branch_index=message.branch_index,
             variant_index=message.branch_index,
+            is_active_path=message.is_active_path,
             occurred_at_ms=(int(message.sort_key * 1000) if message.sort_key is not None else None),
             input_tokens=message.input_tokens,
             output_tokens=message.output_tokens,

@@ -129,6 +129,7 @@ def message_from_record(
         material_origin=record.material_origin,
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,
+        is_active_path=record.is_active_path,
         has_tool_use=bool(record.has_tool_use),
         has_thinking=bool(record.has_thinking),
         has_paste=bool(record.has_paste),

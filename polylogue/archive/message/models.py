@@ -24,7 +24,20 @@ class Message(MessageRuntimeMixin, BaseModel):
     message_type: MessageType = MessageType.MESSAGE
     material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN
     parent_id: str | None = None
+    # branch_index (aka variant_index) is CREATION ORDER among siblings -- for
+    # ChatGPT it's ``children.index(current_node_id)`` at ingest time. It is
+    # NOT display state: an edited/regenerated turn's first attempt is
+    # variant_index 0, but the accepted sibling can be any index. Do not use
+    # this to decide what renders as "the" conversation -- see
+    # ``is_active_path`` (polylogue-9qq7).
     branch_index: int = 0
+    # The provider-reported "this sibling is the currently-accepted one"
+    # signal (storage: messages.is_active_path). This, not branch_index, is
+    # authoritative for mainline/display selection. ``None`` means unknown --
+    # e.g. a read path that has not threaded the column through yet, or a
+    # provider with no branch concept -- and must NOT be treated as "not
+    # active": collapsing unknown to hidden would silently empty transcripts.
+    is_active_path: bool | None = None
     # Stats projected from the storage layer so reader surfaces can
     # render fold/paste indicators without re-deriving them. See #1201
     # (paste rendering) and the session-level flags in

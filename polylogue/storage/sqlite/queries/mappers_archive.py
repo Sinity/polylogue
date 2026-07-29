@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _row_float,
     _row_get,
     _row_int,
+    _row_optional_bool,
     _row_text,
 )
 
@@ -79,6 +80,9 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         version=row["version"],
         parent_message_id=MessageId(parent_message_id) if parent_message_id is not None else None,
         branch_index=_row_int(row, "branch_index", 0) or 0,
+        # None (column not selected by this query) means unknown, not "not
+        # active" -- see MessageRecord.is_active_path.
+        is_active_path=_row_optional_bool(row, "is_active_path"),
         source_name=_row_text(row, "source_name") or "",
         word_count=_row_int(row, "word_count", 0) or 0,
         has_tool_use=_row_int(row, "has_tool_use", 0) or 0,

@@ -28,7 +28,12 @@ class RenderedMessage:
     html_content: str
     timestamp: str | None
     parent_message_id: str | None = None
+    # Creation order among siblings -- NOT display state. See is_active_path.
     branch_index: int = 0
+    # Provider-reported "this sibling is the currently-accepted one" signal.
+    # None means unknown (not selected / no branch concept), never a
+    # fabricated "not active" (polylogue-9qq7).
+    is_active_path: bool | None = None
     role_class: str = ""
     branches: list[RenderedMessage] = field(default_factory=list)
 
@@ -63,8 +68,25 @@ def role_css_class(role: str) -> str:
     return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
 
 
+def _is_mainline_variant(is_active_path: bool | None, branch_index: int) -> bool:
+    """Whether this sibling is the one displayed as the primary/mainline variant.
+
+    ``is_active_path`` (the provider's "currently accepted sibling" signal) is
+    authoritative when known. ``branch_index`` is creation order, not display
+    state, and is used only as a fallback when ``is_active_path`` is unknown
+    (``None``) -- e.g. a provider with no branch concept. Unknown must never
+    collapse to "not mainline" (polylogue-9qq7).
+    """
+    return is_active_path if is_active_path is not None else branch_index == 0
+
+
 def _mapping_branch_index(message: Mapping[str, object]) -> int:
     return normalize_render_branch_index(message.get("branch_index"))
+
+
+def _mapping_is_active_path(message: Mapping[str, object]) -> bool | None:
+    value = message.get("is_active_path")
+    return None if value is None else bool(value)
 
 
 def _mapping_parent_message_id(message: Mapping[str, object]) -> str | None:
@@ -72,6 +94,10 @@ def _mapping_parent_message_id(message: Mapping[str, object]) -> str | None:
     if parent_message_id is None:
         return None
     return str(parent_message_id)
+
+
+def _mapping_is_mainline(message: Mapping[str, object]) -> bool:
+    return _is_mainline_variant(_mapping_is_active_path(message), _mapping_branch_index(message))
 
 
 def _attach_mapping_message_branches(messages: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -82,7 +108,7 @@ def _attach_mapping_message_branches(messages: Sequence[Mapping[str, object]]) -
     mainline = [
         message
         for message in copied_messages
-        if _mapping_branch_index(message) == 0 or _mapping_parent_message_id(message) is None
+        if _mapping_is_mainline(message) or _mapping_parent_message_id(message) is None
     ]
     mainline_by_parent = {
         parent_message_id: message
@@ -91,9 +117,8 @@ def _attach_mapping_message_branches(messages: Sequence[Mapping[str, object]]) -
     }
 
     for message in copied_messages:
-        branch_index = _mapping_branch_index(message)
         parent_message_id = _mapping_parent_message_id(message)
-        if not branch_index or parent_message_id is None:
+        if _mapping_is_mainline(message) or parent_message_id is None:
             continue
         sibling = mainline_by_parent.get(parent_message_id)
         if sibling is None:
@@ -127,14 +152,16 @@ def attach_rendered_message_branches(
             return typed_messages
 
         mainline = [
-            message for message in typed_messages if message.branch_index == 0 or message.parent_message_id is None
+            message
+            for message in typed_messages
+            if _is_mainline_variant(message.is_active_path, message.branch_index) or message.parent_message_id is None
         ]
         mainline_by_parent = {
             message.parent_message_id: message for message in mainline if message.parent_message_id is not None
         }
 
         for message in typed_messages:
-            if not message.branch_index or message.parent_message_id is None:
+            if _is_mainline_variant(message.is_active_path, message.branch_index) or message.parent_message_id is None:
                 continue
             sibling = mainline_by_parent.get(message.parent_message_id)
             if sibling is None:
@@ -158,6 +185,7 @@ def build_rendered_message(
     content_blocks: tuple[RenderableBlock, ...] = (),
     parent_message_id: object = None,
     branch_index: object = 0,
+    is_active_path: bool | None = None,
     preview_limit: int | None = None,
 ) -> RenderedMessage:
     """Build a canonical rendered message shared by HTML/site surfaces."""
@@ -179,6 +207,7 @@ def build_rendered_message(
         timestamp=normalize_render_timestamp(timestamp),
         parent_message_id=normalized_parent,
         branch_index=normalize_render_branch_index(branch_index),
+        is_active_path=is_active_path,
         role_class=role_css_class(normalized_role_text),
     )
 
