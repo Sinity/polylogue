@@ -188,11 +188,22 @@ class RebuildPassCost:
     to show 88% of a 74-hour run was idle wall-clock, but not enough to say
     where the remaining 9.2 hours of compute went.
 
-    ``replay_s`` / ``checkpoint_s``  where the pass went. NOTE: ``replay_source``
-        does not expose a parse-vs-apply split, so ``replay_s`` covers both.
-        Splitting it is the next instrumentation step and is what would say
-        whether decode or the single writer is the bottleneck; recording a
-        fabricated split would be worse than recording none.
+    ``replay_s`` / ``checkpoint_s``  where the pass went. ``replay_s`` is the
+        wall-clock time around the whole ``replay_source`` call (parse +
+        apply + the small async-dispatch overhead between them); ``parse_s``
+        and ``apply_s`` (below) are its breakdown.
+    ``parse_s`` / ``apply_s``  the parse-vs-apply split (polylogue-623q).
+        ``parse_s`` is read-only decode (census parse + spill-cache reload of
+        already-parsed content) -- embarrassingly parallel, scales with
+        ``parse_workers``. ``apply_s`` is everything charged to the single
+        SQLite writer (index/FTS/projection writes) -- serialized, does not
+        scale with worker count. Sourced from
+        ``revision_backfill.split_parse_and_apply_seconds`` over the
+        ``stage_timings_s`` dict threaded back through ``replay_source``'s
+        return value; before that threading existed, ``replay_s`` was the
+        only number recorded and there was no way to tell decode and writer
+        cost apart. Both are ``0.0`` if the pass replayed zero raws (no
+        stage ever ran).
     ``mib_per_s`` / ``raws_per_s``  is throughput holding, or degrading as the
         index grows?
     ``free_threaded`` / ``parse_workers``  did parallel parse actually engage?
@@ -216,6 +227,8 @@ class RebuildPassCost:
     total_bytes: int
     free_threaded: bool
     parse_workers: int
+    parse_s: float = 0.0
+    apply_s: float = 0.0
 
     @property
     def mib_per_s(self) -> float:
@@ -240,6 +253,8 @@ class RebuildPassCost:
         eta = self.eta_s
         return {
             "replay_s": round(self.replay_s, 3),
+            "parse_s": round(self.parse_s, 3),
+            "apply_s": round(self.apply_s, 3),
             "checkpoint_s": round(self.checkpoint_s, 3),
             "pass_s": round(self.pass_s, 3),
             "raws": self.raws,
@@ -613,6 +628,8 @@ async def _rebuild_index_from_source_owned(
                         total_bytes=total_source_blob_bytes(root),
                         free_threaded=parallel_threads_effective(),
                         parse_workers=resolve_parse_worker_count(),
+                        parse_s=cast(float, replay.get("parse_s", 0.0)),
+                        apply_s=cast(float, replay.get("apply_s", 0.0)),
                     )
                     logger.info(
                         "rebuild_pass_cost",

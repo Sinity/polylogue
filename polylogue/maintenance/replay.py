@@ -194,7 +194,10 @@ async def rebuild_index_from_source(
     import asyncio
 
     from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.sources.revision_backfill import (
+        backfill_historical_revision_evidence,
+        split_parse_and_apply_seconds,
+    )
 
     resolved_ingest_workers = ingest_workers if ingest_workers is not None else resolve_parse_worker_count()
     if progress_callback is not None:
@@ -214,6 +217,7 @@ async def rebuild_index_from_source(
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")
+    parse_s, apply_s = split_parse_and_apply_seconds(result.stage_timings_s)
     return {
         "scanned_raw_count": result.scanned,
         "classified_full_count": result.classified_full,
@@ -224,6 +228,15 @@ async def rebuild_index_from_source(
         "scheduled_raw_count": len(raw_ids) if raw_ids is not None else None,
         "raw_batch_size": raw_batch_size,
         "ingest_workers": resolved_ingest_workers,
+        # polylogue-623q: the parse-vs-apply split. ``parse_s`` is read-only
+        # decode (census + spill-cache reload of already-parsed content),
+        # embarrassingly parallel and scaling with ``ingest_workers``.
+        # ``apply_s`` is everything charged to the single SQLite writer
+        # (index/FTS/projection writes) -- see
+        # ``revision_backfill.split_parse_and_apply_seconds``.
+        "parse_s": round(parse_s, 6),
+        "apply_s": round(apply_s, 6),
+        "stage_timings_s": {key: round(value, 6) for key, value in result.stage_timings_s.items()},
     }
 
 

@@ -12,7 +12,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from types import TracebackType
@@ -71,6 +71,51 @@ class RevisionBackfillResult:
     replayed_logical_sources: int
     quarantined: int
     adoption_deferred: int = 0
+    #: Wall-clock seconds per named stage of this backfill call, keyed by the
+    #: SAME names logged as ``"backfill stage timings: ..."`` below --
+    #: ``census``/``census_receipt``/``spill_load`` (decode-side, computed
+    #: here) plus ``revision_replay.*``/``membership_replay.*`` (writer-side,
+    #: recorded by ``ArchiveStore.apply_raw_revision_replay`` /
+    #: ``apply_raw_membership_classification`` through the SAME dict passed
+    #: in as ``stage_timings_s``) and ``total``. This is the parse-vs-apply
+    #: split callers need: it was already being computed and logged, just
+    #: discarded at this function's return boundary -- see
+    #: ``split_parse_and_apply_seconds`` for the two-bucket rollup.
+    #: ``compare=False`` -- wall-clock timings are never equal across two
+    #: independent runs by construction, and existing callers (e.g.
+    #: ``test_thread_parse_matches_sequential_archive_state``) compare two
+    #: ``RevisionBackfillResult``s for LOGICAL equality (same counts across
+    #: execution modes), not identical timing. Diagnostic metadata must not
+    #: change that contract.
+    stage_timings_s: dict[str, float] = field(default_factory=dict, compare=False)
+
+
+#: Stage-timing keys that are decode work (read-only blob->ParsedSession
+#: parse), as opposed to everything else recorded in the same dict, which is
+#: SQLite writer work (index/FTS/projection writes under
+#: ``revision_replay.*`` / ``membership_replay.*`` prefixes, plus the small
+#: ``census_receipt`` parser-fingerprint commit). Used by
+#: ``split_parse_and_apply_seconds`` to answer "is decode or the single
+#: writer the bottleneck?" without guessing at every current and future
+#: writer-stage key name.
+_PARSE_STAGE_TIMING_KEYS: Final[frozenset[str]] = frozenset({"census", "spill_load"})
+
+
+def split_parse_and_apply_seconds(stage_timings_s: dict[str, float]) -> tuple[float, float]:
+    """Roll up a backfill's per-stage timings into (parse_s, apply_s).
+
+    ``parse_s`` is decode work (``census`` + ``spill_load``): read-only,
+    embarrassingly parallel, scales with ``parse_workers``. ``apply_s`` is
+    everything else charged against ``total`` (writer-side index/FTS/
+    projection writes plus the small census receipt commit): serialized
+    through the single SQLite writer and does not scale with worker count.
+    Returns ``(0.0, 0.0)`` if ``total`` was never recorded (e.g. an empty
+    backfill that returned before any stage ran).
+    """
+    total_s = stage_timings_s.get("total", 0.0)
+    parse_s = sum(stage_timings_s.get(key, 0.0) for key in _PARSE_STAGE_TIMING_KEYS)
+    apply_s = max(0.0, total_s - parse_s)
+    return parse_s, apply_s
 
 
 @dataclass(frozen=True, slots=True)
@@ -1018,6 +1063,7 @@ def backfill_historical_revision_evidence(
         replayed,
         census.quarantined + quarantined,
         adoption_deferred,
+        stage_timings_s=stage_timings,
     )
 
 
