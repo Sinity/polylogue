@@ -190,6 +190,15 @@ def test_real_nemo_relay_atif_fixture_yields_step_extra_telemetry_evidence() -> 
     assert all(e.payload["observation_status"] == "<redacted>" for e in tool_events)
     assert all(e.payload["observation_source_call_id"] == "<redacted>" for e in tool_events)
 
+    # Document-level ATIF evidence (trajectory id, agent plugin, aggregate
+    # token/step totals) was also 100% unread before this change.
+    correlation_event = next(e for e in events if e.event_type == "hermes_observer_trace_correlation")
+    assert correlation_event.payload["trajectory_id"] == "real-nemo-relay-trajectory-redacted"
+    assert correlation_event.payload["agent_plugin"] == "<redacted>"
+    assert correlation_event.payload["final_metrics_total_completion_tokens"] == 7
+    assert correlation_event.payload["final_metrics_total_prompt_tokens"] == 8983
+    assert correlation_event.payload["final_metrics_total_steps"] == 6
+
 
 def test_real_nemo_relay_atof_fixture_reaches_the_stream_parser_without_copying_content() -> None:
     """Production dependencies: JSONL detection, stream dispatch, session grouping.

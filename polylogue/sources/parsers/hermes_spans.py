@@ -912,6 +912,7 @@ def parse_atif_document(
                         "and any ATOF observer session (observer:atof:<id>[@profile-<key>]) sharing this "
                         "raw Hermes session id."
                     ),
+                    **_atif_document_evidence(payload, agent),
                 },
             ),
             *events,
@@ -1125,6 +1126,26 @@ def _tool_availability_events(extra: JSONDocument, index: int, step_id: object) 
     if isinstance(reasoning_effort, str) and reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
     return [ParsedSessionEvent(event_type="hermes_tool_availability_span", payload=payload)]
+
+
+def _atif_document_evidence(payload: JSONDocument, agent: JSONDocument) -> dict[str, object]:
+    """Document-level ATIF evidence: trajectory id, agent plugin, and the
+    producer's own aggregate token/step totals -- previously unread
+    (polylogue-2qx.3 parser-diff triage: 100% of live ATIF documents carry
+    ``trajectory_id``/``agent.extra.plugin``/``final_metrics``, none parsed)."""
+    evidence: dict[str, object] = {}
+    trajectory_id = payload.get("trajectory_id")
+    if isinstance(trajectory_id, str) and trajectory_id:
+        evidence["trajectory_id"] = trajectory_id
+    plugin = json_document(agent.get("extra")).get("plugin")
+    if isinstance(plugin, str) and plugin:
+        evidence["agent_plugin"] = plugin
+    final_metrics = json_document(payload.get("final_metrics"))
+    for field in ("total_completion_tokens", "total_prompt_tokens", "total_steps"):
+        value = final_metrics.get(field)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            evidence[f"final_metrics_{field}"] = value
+    return evidence
 
 
 def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> tuple[list[ParsedSessionEvent], int]:
