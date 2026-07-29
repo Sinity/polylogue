@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
@@ -170,8 +171,9 @@ def test_real_nemo_relay_atif_fixture_yields_step_extra_telemetry_evidence() -> 
     assert len(availability_events) == 1
     availability = availability_events[0].payload
     assert availability["tool_count"] == 3
-    assert len(availability["tools"]) == 3
-    assert all({"name", "description", "parameters"} <= tool.keys() for tool in availability["tools"])
+    tools = cast(list[dict[str, Any]], availability["tools"])
+    assert len(tools) == 3
+    assert all({"name", "description", "parameters"} <= tool.keys() for tool in tools)
     assert availability["parallel_tool_calls"] is True
     assert availability["reasoning_effort"] == "<redacted>"
     assert availability["tool_choice"] == "<redacted>"

@@ -6,6 +6,8 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
@@ -1252,7 +1254,8 @@ class TestUnreadFieldTriage:
         turn_event = result.session_events[0]
         assert turn_event.event_type == "turn_context"
         assert turn_event.payload["truncation_policy"] == {"mode": "tokens", "limit": 10000}
-        assert turn_event.payload["final_output_json_schema"]["properties"]["shard_id"] == {"type": "string"}
+        output_schema = cast(dict[str, Any], turn_event.payload["final_output_json_schema"])
+        assert cast(dict[str, Any], output_schema["properties"])["shard_id"] == {"type": "string"}
 
     def test_turn_context_user_instructions_feed_session_instructions_text(self) -> None:
         payload = [
@@ -1396,7 +1399,8 @@ class TestUnreadFieldTriage:
             },
         ]
         result = parse(payload, "fallback")
-        assert result.session_events[0].payload["ghost_commit"]["id"] == "ae5788b8c19de5c4e52491004db8eab9b91910e1"
+        ghost_commit = cast(dict[str, Any], result.session_events[0].payload["ghost_commit"])
+        assert ghost_commit["id"] == "ae5788b8c19de5c4e52491004db8eab9b91910e1"
 
     def test_exec_command_end_captures_process_id_and_parsed_cmd_not_duplicate_output(self) -> None:
         payload = [
