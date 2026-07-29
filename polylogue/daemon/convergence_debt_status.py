@@ -50,9 +50,10 @@ class ConvergenceDebtSummary(BaseModel):
     recent: list[ConvergenceDebtItem] = Field(default_factory=list)
 
 
-def convergence_debt_summary_info(dbf: Path) -> ConvergenceDebtSummary:
+def convergence_debt_summary_info(dbf: Path, *, ops_db: Path | None = None) -> ConvergenceDebtSummary:
     """Return durable post-ingest convergence debt snapshots."""
-    ops_summary = _archive_convergence_debt_summary_info(dbf, dbf.with_name("ops.db"))
+    resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
+    ops_summary = _archive_convergence_debt_summary_info(dbf, resolved_ops_db)
     if ops_summary is not None:
         return ops_summary
     return ConvergenceDebtSummary()
