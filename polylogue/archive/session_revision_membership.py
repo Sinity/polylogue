@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import SessionRevisionProjection
+
+#: Everything that must agree for two revisions to be the same content: the
+#: message and event chains, which attachments exist, and which of their bytes
+#: have been read.
+_ContentKey: TypeAlias = tuple[tuple[bytes, ...], tuple[bytes, ...], frozenset[bytes], frozenset[tuple[bytes, bytes]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +36,19 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
     """Accept one total strict-growth chain; never choose between branches."""
     if not revisions:
         return MembershipClassification((), (), ())
-    by_content: dict[tuple[tuple[bytes, ...], tuple[bytes, ...], frozenset[bytes]], list[MembershipRevision]] = {}
+    # Keyed on acquisition state as well as identity: two revisions are the same
+    # content only when they also agree on which attachment bytes are in hand,
+    # otherwise collapsing them as equivalents could discard the one that
+    # actually carries the bytes.
+    by_content: dict[_ContentKey, list[MembershipRevision]] = {}
     for revision in revisions:
         projection = revision.projection
-        key = (projection.message_hashes, projection.event_hashes, projection.attachment_hashes)
+        key = (
+            projection.message_hashes,
+            projection.event_hashes,
+            projection.attachment_identities,
+            projection.attachment_contents,
+        )
         by_content.setdefault(key, []).append(revision)
     representatives: list[MembershipRevision] = []
     equivalents: list[str] = []
@@ -181,21 +195,59 @@ def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevi
     )
 
 
-def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int]:
-    return len(projection.message_hashes), len(projection.event_hashes), len(projection.attachment_hashes)
+def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int]:
+    """Rank a revision along every axis on which it can only grow.
+
+    Attachment acquisition is its own axis. Without it, a revision that added
+    nothing but the bytes of attachments it already referenced tied with its
+    predecessor on every dimension, the sort fell through to ``raw_id``, and the
+    dominance test was then run in whichever direction the hex happened to
+    order -- half the time backwards, against a revision that genuinely does
+    dominate (polylogue-bu1i).
+    """
+    return (
+        len(projection.message_hashes),
+        len(projection.event_hashes),
+        len(projection.attachment_identities),
+        len(projection.attachment_contents),
+    )
+
+
+def _attachment_evidence_preserved(
+    older: SessionRevisionProjection,
+    newer: SessionRevisionProjection,
+) -> bool:
+    """True when ``newer`` loses no attachment and contradicts no fetched bytes.
+
+    Two distinct regressions are refused here. An attachment whose bytes were
+    read and are no longer present in the newer revision is a fidelity
+    *downgrade*: the newer revision knows strictly less, so accepting it would
+    silently mark an acquired attachment unfetched. An attachment present in
+    both but carrying *different* bytes is a genuine conflict -- two sources
+    disagree about content under one identity -- and no ordering rule can
+    resolve that, so the cohort stays ambiguous.
+    """
+    newer_contents = dict(newer.attachment_contents)
+    return older.attachment_identities <= newer.attachment_identities and all(
+        newer_contents.get(identity) == content for identity, content in older.attachment_contents
+    )
 
 
 def _strictly_dominates(older: SessionRevisionProjection, newer: SessionRevisionProjection) -> bool:
     content_grew = (
         len(newer.message_hashes) > len(older.message_hashes)
         or len(newer.event_hashes) > len(older.event_hashes)
-        or newer.attachment_hashes > older.attachment_hashes
+        or newer.attachment_identities > older.attachment_identities
+        # Resolving the bytes of an already-referenced attachment is growth in
+        # evidence even when the transcript is untouched, which is exactly the
+        # shape a lazily-fetched attachment produces on its second acquisition.
+        or len(newer.attachment_contents) > len(older.attachment_contents)
     )
     return (
         content_grew
         and older.message_hashes == newer.message_hashes[: len(older.message_hashes)]
         and older.event_hashes == newer.event_hashes[: len(older.event_hashes)]
-        and older.attachment_hashes <= newer.attachment_hashes
+        and _attachment_evidence_preserved(older, newer)
     )
 
 
