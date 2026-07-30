@@ -5,6 +5,7 @@ from itertools import permutations
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import (
     MembershipRevision,
+    _content_by_identity,
     _maximal_evidence_fallback,
     _relation,
     classify_membership_revisions,
@@ -387,6 +388,70 @@ def test_refuses_to_guess_when_two_distinct_attachments_share_message_name_and_t
     assert a.projection.attachment_identities == b.projection.attachment_identities
 
 
+def _colliding_attachments_revision(raw_id: str, *contents: bytes) -> MembershipRevision:
+    """A session whose attachments all share (message, name, mime) but carry distinct bytes."""
+    attachments = [
+        ParsedAttachment(
+            provider_attachment_id=f"att-{i}",
+            message_provider_id="0",
+            name="screenshot.png",
+            mime_type="image/png",
+            size_bytes=len(content),
+            inline_bytes=content,
+        )
+        for i, content in enumerate(contents)
+    ]
+    session = ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=attachments,
+    )
+    return MembershipRevision(raw_id, session_revision_projection(session))
+
+
+def test_content_by_identity_retains_every_value_under_a_colliding_identity() -> None:
+    """Grouping must be a set per identity, not a dict entry that silently overwrites.
+
+    Directly exercises the review-found bug: a plain ``dict(contents)`` maps
+    a colliding identity to whichever (identity, content) pair happened to
+    be visited last, discarding the other content hash entirely. The fixed
+    grouping must retain BOTH.
+    """
+    contents = frozenset({(b"identity-1", b"content-a"), (b"identity-1", b"content-b"), (b"identity-2", b"content-c")})
+
+    grouped = _content_by_identity(contents)
+
+    assert grouped == {
+        b"identity-1": frozenset({b"content-a", b"content-b"}),
+        b"identity-2": frozenset({b"content-c"}),
+    }
+
+
+def test_refuses_to_equate_colliding_attachment_identities_with_different_bytes() -> None:
+    """Two acquired attachments sharing one identity but different bytes on one
+    message must degrade to conflict, never silently compare as equal or
+    let the second collapse invisibly into the first.
+
+    Reproduces the review-found bug where `_axis_relation` built the
+    identity->content mapping via plain `dict()`, so the second colliding
+    attachment's content hash silently overwrote the first -- a real
+    conflict could then compare as equal, strictly worse than either honest
+    outcome (equal or conflict), and beyond the documented limitation (which
+    only claims byte-LESS duplicates are indistinguishable).
+    """
+    both = _colliding_attachments_revision("raw-both", b"left bytes", b"right bytes")
+    left_only = _colliding_attachments_revision("raw-left-only", b"left bytes")
+
+    assert both.projection.attachment_identities == left_only.projection.attachment_identities
+    assert len(both.projection.attachment_contents) == 2
+    assert _relation(both.projection, left_only.projection) == "conflict"
+
+    result = classify_membership_revisions([both, left_only])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-both", "raw-left-only")
+
+
 # ---------------------------------------------------------------------------
 # Events: order-insensitive, measurement-excluded set containment
 # (polylogue-nuec)
@@ -650,6 +715,98 @@ def test_disambiguates_multiple_same_type_events_on_one_message_by_content() -> 
     assert _relation(older.projection, newer.projection) == "equal"
 
 
+def test_event_identity_is_stable_when_a_sibling_appears_later() -> None:
+    """An event's identity must not depend on what else is in the set.
+
+    Reproduces the review-found bug where an event's canonical identity
+    shifted from `base_identity` (unique within the revision) to
+    `hash(base_identity, content)` purely because a SECOND event later
+    shared its base identity -- so an ordinary event-growth revision (one
+    block event, then a second block appended in a later export) compared
+    as a disjoint conflict instead of containment, reintroducing exactly the
+    identity-instability bug class polylogue-aggz exists to eliminate.
+    """
+
+    def block_event(index: int) -> ParsedSessionEvent:
+        return ParsedSessionEvent(
+            event_type="chatgpt_block_metadata",
+            timestamp="1.0",
+            source_message_provider_id="0",
+            payload={"block_index": index},
+        )
+
+    single_session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[block_event(0)],
+    )
+    grown_session = single_session.model_copy(update={"session_events": [block_event(0), block_event(1)]})
+
+    older = MembershipRevision("raw-old", session_revision_projection(single_session))
+    newer = MembershipRevision("raw-new", session_revision_projection(grown_session))
+
+    assert older.projection.event_contents <= newer.projection.event_contents
+    assert _relation(older.projection, newer.projection) == "b_contains_a"
+
+    result = classify_membership_revisions([newer, older])
+    assert result.accepted_raw_ids == ("raw-old", "raw-new")
+    assert result.ambiguous_raw_ids == ()
+
+
+def _browser_generation_lifecycle_revision(
+    raw_id: str, observation_id: str, wall_elapsed_ms: int
+) -> MembershipRevision:
+    """A browser-capture-shaped session with one DOM-observed `generation_lifecycle` event."""
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="generation_lifecycle",
+                timestamp="2026-01-01T00:00:00Z",
+                source_message_provider_id="0",
+                payload={
+                    "observation_id": observation_id,
+                    "state": "completed",
+                    "evidence_source": "dom_observation",
+                    "fidelity": "observed",
+                    "duration_semantics": "dom_observed_wall",
+                    "wall_elapsed_ms": wall_elapsed_ms,
+                },
+            )
+        ],
+    )
+    return MembershipRevision(raw_id, session_revision_projection(session))
+
+
+def test_browser_observed_generation_lifecycle_duration_is_real_content_not_stripped() -> None:
+    """The duration-stripping allowlist targets ChatGPT's own re-derived
+    measurement (`duration_semantics == "provider_reported_elapsed"`), not
+    every `generation_lifecycle` event regardless of source.
+
+    Reproduces the review-found bug where the allowlist strip was keyed on
+    `event_type` alone, so it also stripped browser-capture's own DOM/UI
+    generation observations -- this projection's only record of a real
+    first-party measurement, not the provider-remeasured-on-every-export
+    value polylogue-nuec targeted. Two observations with different
+    observation ids and wall-clock durations, but IDENTICAL
+    state/evidence_source/fidelity (the fields the allowlist would keep),
+    must compare as a genuine conflict, not equivalent -- if the allowlist
+    strip fired here, both would collapse to the same stripped payload and
+    compare equal.
+    """
+    left = _browser_generation_lifecycle_revision("raw-a", "obs-1", 4200)
+    right = _browser_generation_lifecycle_revision("raw-b", "obs-2", 9100)
+
+    assert _relation(left.projection, right.projection) == "conflict"
+
+    result = classify_membership_revisions([left, right])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+
+
 # ---------------------------------------------------------------------------
 # Cross-axis fork detection
 # ---------------------------------------------------------------------------
@@ -830,6 +987,71 @@ def test_direct_export_outranks_browser_capture_siblings_regardless_of_growth() 
 
     assert result.accepted_raw_ids == ("raw-direct",)
     assert result.equivalent_raw_ids == ("raw-dom", "raw-native")
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_equal_content_collapse_prefers_direct_export_over_browser_capture() -> None:
+    """Equal content is not equal authority: a direct export must survive over
+    a browser capture that happens to project to identical content, even
+    when timestamp and raw_id both favor the capture.
+
+    Reproduces the review-found bug where the representative for two
+    revisions already proven `equal` was picked by provider timestamp (and,
+    failing that, raw_id) alone, before any source-authority ordering ran --
+    so a later-timestamped, lexically-earlier-raw_id browser DOM scrape
+    could supersede an earlier direct/native export projecting to the exact
+    same content, even though a direct export always outranks a browser
+    capture for authority (`_direct_export_precedence`).
+    """
+    export_projection = _revision("raw-export", "one", "two").projection
+    capture_projection = _revision("raw-capture", "one", "two").projection
+    export = MembershipRevision(
+        "raw-zzzz-export", export_projection, provider_updated_at="2024-01-01T00:00:00Z", browser_snapshot_fidelity=None
+    )
+    capture = MembershipRevision(
+        "raw-aaaa-capture",
+        capture_projection,
+        provider_updated_at="2024-06-01T00:00:00Z",
+        browser_snapshot_fidelity="dom",
+    )
+
+    assert _relation(export.projection, capture.projection) == "equal"
+
+    # Both the (later) timestamp and the (lexically smaller) raw_id favor
+    # the capture -- only source-authority ordering can make the export win.
+    result = classify_membership_revisions([export, capture])
+
+    assert result.accepted_raw_ids == ("raw-zzzz-export",)
+    assert result.equivalent_raw_ids == ("raw-aaaa-capture",)
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_equal_content_collapse_prefers_native_snapshot_over_dom_snapshot() -> None:
+    """Among two equal-content browser captures, native outranks DOM.
+
+    Same defect as the direct-export case above, one authority tier down:
+    fidelity ordering must also run before the timestamp/raw_id tiebreak.
+    """
+    dom_projection = _revision("raw-dom", "one").projection
+    native_projection = _revision("raw-native", "one").projection
+    dom = MembershipRevision(
+        "raw-zzzz-dom", dom_projection, provider_updated_at="2024-06-01T00:00:00Z", browser_snapshot_fidelity="dom"
+    )
+    native = MembershipRevision(
+        "raw-aaaa-native",
+        native_projection,
+        provider_updated_at="2024-01-01T00:00:00Z",
+        browser_snapshot_fidelity="native",
+    )
+
+    assert _relation(dom.projection, native.projection) == "equal"
+
+    # Both the (later) timestamp and the (lexically smaller) raw_id favor
+    # the dom snapshot -- only fidelity ordering can make native win.
+    result = classify_membership_revisions([dom, native])
+
+    assert result.accepted_raw_ids == ("raw-aaaa-native",)
+    assert result.equivalent_raw_ids == ("raw-zzzz-dom",)
     assert result.ambiguous_raw_ids == ()
 
 
