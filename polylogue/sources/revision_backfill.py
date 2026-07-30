@@ -38,6 +38,7 @@ from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes,
 from polylogue.pipeline.services.process_pool import parallel_threads_effective
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
@@ -1654,6 +1655,28 @@ class _ParsedSessionSpill:
         return sessions, payload_bytes
 
 
+def _is_declared_non_session_artifact(provider: Provider, source_path: str) -> bool:
+    """Return whether OriginSpec declares this path a non-session "fact" artifact.
+
+    polylogue-b508: retained raw revisions include OriginSpec-declared fact
+    artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
+    snapshots, ``subagents/workflows/*/journal.jsonl``, ``adopt.json``
+    manifests) admitted as raw authority by ``sources/live/batch.py`` even
+    though their ``parse_policy`` is ``"fact"``, never ``"session"`` --
+    intentional, so the retained bytes stay durable raw evidence. The live
+    daemon's ingest path (``ingest_worker.py``/``batch.py``) already consults
+    this same OriginSpec rule before parsing and refuses to session-parse
+    these; this replay engine (used by ``polylogue ops reset --index`` /
+    ``devtools`` rebuild-index) is a SEPARATE parse chokepoint that did not,
+    and would silently recreate exactly the ``<agent>.meta`` phantom sessions
+    that fix is meant to eliminate on every future rebuild. Same check, same
+    rule table, so a declared fact artifact can never become a session
+    through either entry point.
+    """
+    rule = artifact_rule_for_path(provider, source_path)
+    return rule is not None and rule.parse_policy != "session"
+
+
 def _parse_one(
     provider: Provider,
     payload: bytes,
@@ -1662,6 +1685,8 @@ def _parse_one(
     payload_path: Path | None = None,
     archive_root: Path | None = None,
 ) -> list[ParsedSession]:
+    if _is_declared_non_session_artifact(provider, source_path):
+        return []
     source_name = Path(source_path).name
     fallback_id = Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):
@@ -1718,6 +1743,8 @@ def _sqlite_payload_path(
 
 
 def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
+    if _is_declared_non_session_artifact(provider, source_path):
+        return []
     source_name = Path(source_path).name
     fallback_id = Path(source_path).stem
     return parse_stream_payload(

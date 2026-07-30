@@ -1098,13 +1098,37 @@ def _generic_messages_session(
     payload: PayloadRecord,
     fallback_id: str,
 ) -> ParsedSession | None:
+    """Parse the last-resort "unknown provider, but shaped like messages" bucket.
+
+    polylogue-b508: of every branch in ``_lower_payload_specs``, this is the
+    one with no provider-specific identity handling at all -- every other
+    branch routes to a parser (chatgpt/claude/codex/drive/...) that derives
+    identity from provider-native evidence. Here there is none, so the
+    payload itself must assert its own ``id``. Falling back to
+    ``fallback_id`` -- a filename stem or scratch value the *source
+    discovery walk* invented, never something the provider asserted -- is
+    exactly the "session identity derived from a filename stem" pathology
+    this bead exists to make unrepresentable: a JSON sidecar that merely
+    happens to contain a ``messages`` list must not become a session of its
+    own. Refuse to parse (return ``None``) rather than synthesize an
+    identity.
+    """
     messages_payload = _record_messages(payload)
     if messages_payload is None:
         return None
 
+    # A blank id is not an assertion. ``optional_string`` returns ``""`` for an
+    # empty value rather than ``None``, so an ``"id": ""`` or whitespace-only
+    # field would otherwise satisfy "the provider asserted an identity" and
+    # produce a session keyed on nothing -- the same pathology as a
+    # filename-stem identity, arriving through the guard meant to stop it.
+    asserted_id = optional_string(payload.get("id"))
+    session_id = asserted_id.strip() if asserted_id is not None else None
+    if not session_id:
+        return None
+
     messages = extract_messages_from_list(messages_payload)
     title = optional_string(payload.get("title")) or optional_string(payload.get("name")) or fallback_id
-    session_id = optional_string(payload.get("id")) or fallback_id
     created_at = optional_string(
         payload.get("created_at") or payload.get("create_time") or payload.get("created") or payload.get("createdAt")
     )
