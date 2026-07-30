@@ -47,6 +47,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
@@ -307,8 +308,8 @@ def measure_stratum(archive_root: Path, stratum: Stratum, *, sample_n: int | Non
             os.environ["POLYLOGUE_ARCHIVE_ROOT"] = prior_env
 
     replay = receipt.replay
-    parse_s = float(replay.get("parse_s", 0.0))
-    apply_s = float(replay.get("apply_s", 0.0))
+    parse_s = float(cast("float", replay.get("parse_s", 0.0)))
+    apply_s = float(cast("float", replay.get("apply_s", 0.0)))
     assert receipt.status == "replayed", f"stratum {stratum.label}: unexpected receipt status {receipt.status!r}"
     assert len(raw_ids) == n
     return StratumMeasurement(
