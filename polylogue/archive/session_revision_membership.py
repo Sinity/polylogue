@@ -8,10 +8,14 @@ from typing import Literal, TypeAlias
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import SessionRevisionProjection
 
-#: Everything that must agree for two revisions to be the same content: the
-#: message and event chains, which attachments exist, and which of their bytes
-#: have been read.
-_ContentKey: TypeAlias = tuple[tuple[bytes, ...], tuple[bytes, ...], frozenset[bytes], frozenset[tuple[bytes, bytes]]]
+#: Everything that must agree for two revisions to be the same content: which
+#: messages exist and what they say (order-insensitive -- polylogue-c429),
+#: the event chain with provider-reported measurement excluded
+#: (polylogue-nuec), which attachments exist, and which of their bytes have
+#: been read.
+_ContentKey: TypeAlias = tuple[
+    frozenset[tuple[bytes, bytes]], tuple[bytes, ...], frozenset[bytes], frozenset[tuple[bytes, bytes]]
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,8 +48,8 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
     for revision in revisions:
         projection = revision.projection
         key = (
-            projection.message_hashes,
-            projection.event_hashes,
+            projection.message_contents,
+            projection.event_identity_hashes,
             projection.attachment_identities,
             projection.attachment_contents,
         )
@@ -206,10 +210,33 @@ def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int
     dominate (polylogue-bu1i).
     """
     return (
-        len(projection.message_hashes),
-        len(projection.event_hashes),
+        len(projection.message_contents),
+        len(projection.event_identity_hashes),
         len(projection.attachment_identities),
         len(projection.attachment_contents),
+    )
+
+
+def _message_evidence_preserved(
+    older: SessionRevisionProjection,
+    newer: SessionRevisionProjection,
+) -> bool:
+    """True when ``newer`` loses no message identity and contradicts no shared content.
+
+    A provider's export ordering is not guaranteed stable across separate
+    export requests for the SAME conversation -- Claude.ai's own tree
+    flattening can interleave edited-message siblings differently from one
+    export to the next even though every message's id, role, text, and
+    timestamp are byte-identical (polylogue-c429). Array position is
+    therefore not treated as identity here: this checks only that every
+    message id present in ``older`` is still present in ``newer`` and still
+    maps to the same content, mirroring ``_attachment_evidence_preserved``'s
+    identity/content split. An id whose content actually changed, or an id
+    that disappeared, is real divergence and is refused.
+    """
+    newer_contents = dict(newer.message_contents)
+    return older.message_identities <= newer.message_identities and all(
+        newer_contents.get(identity) == content for identity, content in older.message_contents
     )
 
 
@@ -235,8 +262,11 @@ def _attachment_evidence_preserved(
 
 def _strictly_dominates(older: SessionRevisionProjection, newer: SessionRevisionProjection) -> bool:
     content_grew = (
-        len(newer.message_hashes) > len(older.message_hashes)
-        or len(newer.event_hashes) > len(older.event_hashes)
+        # Order-insensitive: a permuted-but-otherwise-equal message set is not
+        # growth (equal count), but a genuinely appended or resurfaced message
+        # id is (polylogue-c429).
+        len(newer.message_contents) > len(older.message_contents)
+        or len(newer.event_identity_hashes) > len(older.event_identity_hashes)
         or newer.attachment_identities > older.attachment_identities
         # Resolving the bytes of an already-referenced attachment is growth in
         # evidence even when the transcript is untouched, which is exactly the
@@ -245,8 +275,8 @@ def _strictly_dominates(older: SessionRevisionProjection, newer: SessionRevision
     )
     return (
         content_grew
-        and older.message_hashes == newer.message_hashes[: len(older.message_hashes)]
-        and older.event_hashes == newer.event_hashes[: len(older.event_hashes)]
+        and _message_evidence_preserved(older, newer)
+        and older.event_identity_hashes == newer.event_identity_hashes[: len(older.event_identity_hashes)]
         and _attachment_evidence_preserved(older, newer)
     )
 

@@ -165,7 +165,10 @@ def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> No
     older_projection = older.projection.__class__(
         session_hash=b"o" * 32,
         message_hashes=older.projection.message_hashes,
+        message_identities=older.projection.message_identities,
+        message_contents=older.projection.message_contents,
         event_hashes=older.projection.event_hashes,
+        event_identity_hashes=older.projection.event_identity_hashes,
         attachment_identities=frozenset({b"attachment"}),
         attachment_contents=frozenset(),
     )
@@ -227,7 +230,10 @@ def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_u
     newer_projection = newer.projection.__class__(
         session_hash=b"n" * 32,
         message_hashes=newer.projection.message_hashes,
+        message_identities=newer.projection.message_identities,
+        message_contents=newer.projection.message_contents,
         event_hashes=newer.projection.event_hashes,
+        event_identity_hashes=newer.projection.event_identity_hashes,
         attachment_identities=frozenset({b"attachment-v2"}),
         attachment_contents=frozenset(),
     )
