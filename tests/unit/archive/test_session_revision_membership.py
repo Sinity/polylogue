@@ -170,6 +170,7 @@ def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> No
         event_identity_hashes=older.projection.event_identity_hashes,
         attachment_identities=frozenset({b"attachment"}),
         attachment_contents=frozenset(),
+        attachment_records=((b"attachment", b"attachment-loose", None),),
     )
     newer = _revision("raw-new", "prompt", "answer")
     revisions = [
@@ -234,6 +235,7 @@ def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_u
         event_identity_hashes=newer.projection.event_identity_hashes,
         attachment_identities=frozenset({b"attachment-v2"}),
         attachment_contents=frozenset(),
+        attachment_records=((b"attachment-v2", b"attachment-v2-loose", None),),
     )
     revisions = [
         MembershipRevision(
@@ -406,6 +408,304 @@ def test_refuses_contradicted_bytes_even_when_the_revision_otherwise_grew() -> N
     result = classify_membership_revisions([older, newer])
     assert result.accepted_raw_ids == ()
     assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+
+
+def _named_attachment_revision(
+    raw_id: str,
+    *,
+    provider_attachment_id: str,
+    name: str = "screenshot.png",
+    mime_type: str = "image/png",
+    message_provider_id: str = "0",
+    inline: bytes | None = None,
+) -> MembershipRevision:
+    """A session whose single named attachment carries a specific provider id.
+
+    Unlike ``_attachment_revision`` (whose bare fixture leaves name/mime_type
+    ``None``, deliberately colliding with any other bare attachment's loose
+    key), this gives the attachment a real name/mime_type so d8al tests
+    exercise the id-presence correlation they're meant to, not the
+    locally-ambiguous-loose-key fallback.
+    """
+    attachment = ParsedAttachment(
+        provider_attachment_id=provider_attachment_id,
+        message_provider_id=message_provider_id,
+        name=name,
+        mime_type=mime_type,
+        size_bytes=len(inline) if inline is not None else None,
+        inline_bytes=inline,
+    )
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=[attachment],
+    )
+    return MembershipRevision(raw_id, session_revision_projection(session))
+
+
+def test_accepts_real_and_synthetic_id_variants_of_the_same_attachment_as_equivalent() -> None:
+    """Same physical attachment, a real id on one export vintage, none on the other.
+
+    Reproduces the shape measured on the live archive: 268 of 566
+    claude-ai-export equal-message-count ambiguous cohorts had byte-identical
+    messages and events but attachment identity sets that never share a
+    provider id, because Claude.ai does not consistently emit a real
+    attachment id across separate export requests of the same conversation --
+    one vintage carries a real UUID, the other has none and the parser
+    synthesizes one (polylogue-d8al). No id-minting scheme can make a real id
+    and a synthetic hash collide, so the id must be dropped from the
+    comparison in this shape -- correlating instead by (message, name, media
+    type), which is unambiguous here (exactly one attachment on this
+    message).
+    """
+    real_id = _named_attachment_revision("raw-real", provider_attachment_id="e950263f-51d1-4b7a-9c2e-000000000000")
+    synthetic_id = _named_attachment_revision("raw-synthetic", provider_attachment_id="att-ce21cd12d650")
+
+    assert real_id.projection.attachment_identities != synthetic_id.projection.attachment_identities
+    assert not _strictly_dominates(real_id.projection, synthetic_id.projection)
+    assert not _strictly_dominates(synthetic_id.projection, real_id.projection)
+
+    # Same-content-key revisions still need a provider timestamp to pick a
+    # representative (matching the pre-existing metadata_variants mechanism) --
+    # the correlation-based merge gets them INTO that mechanism at all, which
+    # is the fix; it does not bypass the timestamp requirement.
+    real_id = MembershipRevision(real_id.raw_id, real_id.projection, "2026-01-01T00:00:00Z")
+    synthetic_id = MembershipRevision(synthetic_id.raw_id, synthetic_id.projection, "2026-01-02T00:00:00Z")
+
+    result = classify_membership_revisions([real_id, synthetic_id])
+
+    assert result.accepted_raw_ids == ("raw-synthetic",)
+    assert result.equivalent_raw_ids == ("raw-real",)
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_accepts_attachment_growth_despite_id_presence_mismatch_on_the_shared_attachment() -> None:
+    """Growth must still be recognized when the SHARED attachment's id presence differs.
+
+    The newer revision adds a second attachment (real growth) while also
+    losing the real id on the FIRST attachment (id-presence mismatch,
+    polylogue-d8al) -- both must be handled together: the shared attachment
+    correlates via the loose key, and the new attachment is ordinary growth.
+    """
+    older_attachment = ParsedAttachment(
+        provider_attachment_id="e950263f-51d1-4b7a-9c2e-000000000000",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+    )
+    newer_shared = ParsedAttachment(
+        provider_attachment_id="att-ce21cd12d650",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+    )
+    newer_added = ParsedAttachment(
+        provider_attachment_id="att-fedcba987654",
+        message_provider_id="0",
+        name="notes.txt",
+        mime_type="text/plain",
+    )
+    older_session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=[older_attachment],
+    )
+    newer_session = older_session.model_copy(update={"attachments": [newer_shared, newer_added]})
+
+    older = MembershipRevision("raw-old", session_revision_projection(older_session))
+    newer = MembershipRevision("raw-new", session_revision_projection(newer_session))
+
+    assert _strictly_dominates(older.projection, newer.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ("raw-old", "raw-new")
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_attachment_growth_with_id_presence_mismatch_is_a_chain_not_an_equivalence_pick() -> None:
+    """The equivalence-merge step must not swallow genuine growth as a timestamp pick.
+
+    The test above proves growth is recognized by ``_strictly_dominates`` when
+    the two revisions are never pre-grouped into one equivalence bucket, but
+    it does not prove the merge step's own full-correlation requirement
+    (``unmatched_a or unmatched_b`` in ``_attachments_equivalent``) does
+    anything -- session_hash always differs when attachment counts differ, so
+    an over-eager merge just gets re-split by the by_session_hash pass with
+    the SAME final result. This is the shape that forces it: distinct,
+    resolvable provider timestamps. If the merge step ignored the extra,
+    uncorrelated attachment in ``newer`` and merged the groups anyway, the
+    pre-existing metadata_variants timestamp mechanism would pick ONE
+    representative and discard the other as merely-equivalent metadata,
+    instead of recognizing both as an accepted growth chain.
+    """
+    older_attachment = ParsedAttachment(
+        provider_attachment_id="e950263f-51d1-4b7a-9c2e-000000000000",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+    )
+    newer_shared = ParsedAttachment(
+        provider_attachment_id="att-ce21cd12d650",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+    )
+    newer_added = ParsedAttachment(
+        provider_attachment_id="att-fedcba987654",
+        message_provider_id="0",
+        name="notes.txt",
+        mime_type="text/plain",
+    )
+    older_session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=[older_attachment],
+    )
+    newer_session = older_session.model_copy(update={"attachments": [newer_shared, newer_added]})
+
+    older = MembershipRevision("raw-old", session_revision_projection(older_session), "2026-01-01T00:00:00Z")
+    newer = MembershipRevision("raw-new", session_revision_projection(newer_session), "2026-01-02T00:00:00Z")
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ("raw-old", "raw-new")
+    assert result.equivalent_raw_ids == ()
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_refuses_contradicted_bytes_despite_id_presence_mismatch() -> None:
+    """An id-presence mismatch must not launder a genuine byte contradiction.
+
+    Both revisions have acquired bytes for what correlates as the same
+    attachment (real id vs none, matched by the loose key) -- if the bytes
+    disagree, that is a real conflict no ordering rule can resolve, exactly
+    like bu1i's plain-matching-id contradiction case.
+    """
+    older_attachment = ParsedAttachment(
+        provider_attachment_id="e950263f-51d1-4b7a-9c2e-000000000000",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+        size_bytes=len(b"original bytes"),
+        inline_bytes=b"original bytes",
+    )
+    newer_attachment = ParsedAttachment(
+        provider_attachment_id="att-ce21cd12d650",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+        size_bytes=len(b"different bytes"),
+        inline_bytes=b"different bytes",
+    )
+    older_session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=[older_attachment],
+    )
+    newer_session = older_session.model_copy(update={"attachments": [newer_attachment]})
+
+    older = MembershipRevision("raw-old", session_revision_projection(older_session))
+    newer = MembershipRevision("raw-new", session_revision_projection(newer_session))
+
+    assert not _strictly_dominates(older.projection, newer.projection)
+    assert not _strictly_dominates(newer.projection, older.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_refuses_contradicted_bytes_despite_id_presence_mismatch_even_with_resolvable_timestamps() -> None:
+    """The equivalence-merge content check must not be provably unreachable.
+
+    The test above stays ambiguous even without this specific check, because
+    dominance's own contradiction guard (``_attachment_evidence_preserved``)
+    independently refuses the same pair once they fail to merge into one
+    equivalence group -- so it cannot prove the merge step's OWN content
+    check (``_attachments_equivalent``) does anything. This is the shape that
+    forces it: distinct, resolvable provider timestamps on both revisions. If
+    the merge step ignored the byte contradiction and merged them anyway, the
+    pre-existing metadata_variants timestamp mechanism would silently pick
+    the newer-timestamped revision as an "equivalent" upgrade and discard the
+    other -- overwriting a genuine, unresolvable conflict about the same
+    attachment's bytes instead of leaving it ambiguous.
+    """
+    older_attachment = ParsedAttachment(
+        provider_attachment_id="e950263f-51d1-4b7a-9c2e-000000000000",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+        size_bytes=len(b"original bytes"),
+        inline_bytes=b"original bytes",
+    )
+    newer_attachment = ParsedAttachment(
+        provider_attachment_id="att-ce21cd12d650",
+        message_provider_id="0",
+        name="screenshot.png",
+        mime_type="image/png",
+        size_bytes=len(b"different bytes"),
+        inline_bytes=b"different bytes",
+    )
+    older_session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=[older_attachment],
+    )
+    newer_session = older_session.model_copy(update={"attachments": [newer_attachment]})
+
+    older = MembershipRevision("raw-old", session_revision_projection(older_session), "2026-01-01T00:00:00Z")
+    newer = MembershipRevision("raw-new", session_revision_projection(newer_session), "2026-01-02T00:00:00Z")
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_refuses_to_guess_correlation_when_the_loose_key_is_locally_ambiguous() -> None:
+    """Two distinct attachments sharing (message, name, media type) on one side
+    must not be guessed apart by the loose key.
+
+    This is the documented, accepted limit (polylogue-d8al): with no id
+    agreement and no bytes on either side, there is no signal left to
+    correlate the attachments, so the strict identity is kept and the
+    id-presence mismatch stays unresolved (ambiguous) rather than silently
+    picking a pairing by array position -- the exact mistake this feature
+    replaces.
+    """
+    ambiguous_older = [
+        ParsedAttachment(
+            provider_attachment_id="uuid-1", message_provider_id="0", name="image.png", mime_type="image/png"
+        ),
+        ParsedAttachment(
+            provider_attachment_id="uuid-2", message_provider_id="0", name="image.png", mime_type="image/png"
+        ),
+    ]
+    single_newer = [
+        ParsedAttachment(
+            provider_attachment_id="att-hash-1", message_provider_id="0", name="image.png", mime_type="image/png"
+        ),
+    ]
+    older_session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.USER, text="one")],
+        attachments=ambiguous_older,
+    )
+    newer_session = older_session.model_copy(update={"attachments": single_newer})
+
+    older = MembershipRevision("raw-old", session_revision_projection(older_session))
+    newer = MembershipRevision("raw-new", session_revision_projection(newer_session))
+
+    assert not _strictly_dominates(older.projection, newer.projection)
+    assert not _strictly_dominates(newer.projection, older.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
 
 
 def _ordered_message_revision(raw_id: str, *id_text_pairs: tuple[str, str]) -> MembershipRevision:

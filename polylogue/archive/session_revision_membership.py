@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.pipeline.ids import SessionRevisionProjection
+from polylogue.pipeline.ids import AttachmentRecord, SessionRevisionProjection
 
 #: Everything that must agree for two revisions to be the same content: which
 #: messages exist and what they say (order-insensitive -- polylogue-c429),
 #: the event chain with provider-reported measurement excluded
 #: (polylogue-nuec), which attachments exist, and which of their bytes have
-#: been read.
+#: been read. The attachment component is the strict (id-bearing) identity --
+#: two groups differing only in attachment id *presence* do not share a key
+#: here and need the separate correlation-based merge step in
+#: ``classify_membership_revisions`` (polylogue-d8al); this key alone would
+#: under-merge for that case, never over-merge, so it stays a safe first pass.
 _ContentKey: TypeAlias = tuple[
     frozenset[tuple[bytes, bytes]], tuple[bytes, ...], frozenset[bytes], frozenset[tuple[bytes, bytes]]
 ]
@@ -56,7 +61,7 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
         by_content.setdefault(key, []).append(revision)
     representatives: list[MembershipRevision] = []
     equivalents: list[str] = []
-    for group in by_content.values():
+    for group in _merge_attachment_id_presence_variants(by_content):
         by_session_hash: dict[bytes, list[MembershipRevision]] = {}
         for item in group:
             by_session_hash.setdefault(item.projection.session_hash, []).append(item)
@@ -106,6 +111,55 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
         tuple(sorted(equivalents)),
         (),
     )
+
+
+def _merge_attachment_id_presence_variants(
+    by_content: dict[_ContentKey, list[MembershipRevision]],
+) -> list[list[MembershipRevision]]:
+    """Merge content groups that differ only in attachment id presence.
+
+    The strict content key built in ``classify_membership_revisions`` never
+    merges a real-id/synthetic-id pair for the same physical attachment into
+    one group: a provider's export can omit a stable id for the same
+    attachment on a different export request of the same conversation, so an
+    otherwise byte-identical pair's attachment sets hash to disjoint strict
+    identities and the two groups never meet in ``by_content`` (polylogue-d8al).
+    This pass merges any two groups whose message/event portion of the key
+    already matches exactly and whose attachments correlate as fully
+    equivalent (``_attachments_equivalent``): same cardinality, every
+    attachment pairwise-matched by strict id or, when unambiguous on both
+    sides, by the id-independent key, and no content contradiction. Only ever
+    merges groups the strict key under-merged -- it can never combine two
+    groups that genuinely differ in message or event content, so this cannot
+    introduce a false equivalence on those axes.
+    """
+    entries = list(by_content.items())
+    parent = list(range(len(entries)))
+
+    def find(index: int) -> int:
+        while parent[index] != index:
+            parent[index] = parent[parent[index]]
+            index = parent[index]
+        return index
+
+    def union(left: int, right: int) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    for i in range(len(entries)):
+        key_i, revisions_i = entries[i]
+        for j in range(i + 1, len(entries)):
+            key_j, revisions_j = entries[j]
+            if key_i[0] != key_j[0] or key_i[1] != key_j[1]:
+                continue
+            if _attachments_equivalent(revisions_i[0].projection, revisions_j[0].projection):
+                union(i, j)
+
+    merged: dict[int, list[MembershipRevision]] = {}
+    for i, (_key, revisions) in enumerate(entries):
+        merged.setdefault(find(i), []).extend(revisions)
+    return list(merged.values())
 
 
 def _provider_ordered_browser_snapshots(
@@ -241,6 +295,70 @@ def _message_evidence_preserved(
     return all(newer_contents.get(identity) == content for identity, content in older.message_contents)
 
 
+def _correlate_attachments(
+    older: SessionRevisionProjection, newer: SessionRevisionProjection
+) -> tuple[list[tuple[AttachmentRecord, AttachmentRecord]], list[AttachmentRecord], list[AttachmentRecord]]:
+    """Pair each attachment in ``older`` with its counterpart in ``newer``.
+
+    Matches by strict identity first (provider id, anchoring message, name,
+    media type) -- the exact bu1i behavior when both revisions agree on a
+    provider id. When a provider omits a stable id for the same attachment on
+    a different export request, the two revisions never share a strict
+    identity for it (polylogue-d8al): Claude.ai does not consistently emit an
+    id field for the same attachment across separate export requests of the
+    same conversation. In that case matching falls back to the
+    id-independent (anchoring message, name, media type) key, but ONLY when
+    that looser key is unambiguous on BOTH sides being compared (exactly one
+    attachment carries it in ``older`` and exactly one in ``newer``): if
+    either revision has two attachments sharing the same anchor/name/media
+    type, there is no way to tell which is which without an id, and guessing
+    by array position is exactly the bug this replaces -- that ambiguous case
+    is left uncorrelated rather than resolved by a guess.
+
+    Returns matched ``(older, newer)`` record pairs, ``older`` records with no
+    counterpart in ``newer`` (a potential loss), and ``newer`` records with no
+    counterpart in ``older`` (growth).
+    """
+    newer_by_identity = {record[0]: record for record in newer.attachment_records}
+    newer_loose_counts = Counter(record[1] for record in newer.attachment_records)
+    newer_by_loose = {record[1]: record for record in newer.attachment_records}
+    older_loose_counts = Counter(record[1] for record in older.attachment_records)
+
+    matched: list[tuple[AttachmentRecord, AttachmentRecord]] = []
+    unmatched_older: list[AttachmentRecord] = []
+    matched_newer_identities: set[bytes] = set()
+    for older_record in older.attachment_records:
+        identity, loose_identity, _content = older_record
+        newer_record = newer_by_identity.get(identity)
+        if (
+            newer_record is None
+            and older_loose_counts[loose_identity] == 1
+            and newer_loose_counts.get(loose_identity) == 1
+        ):
+            newer_record = newer_by_loose.get(loose_identity)
+        if newer_record is None:
+            unmatched_older.append(older_record)
+            continue
+        matched.append((older_record, newer_record))
+        matched_newer_identities.add(newer_record[0])
+    unmatched_newer = [record for record in newer.attachment_records if record[0] not in matched_newer_identities]
+    return matched, unmatched_older, unmatched_newer
+
+
+def _attachments_equivalent(a: SessionRevisionProjection, b: SessionRevisionProjection) -> bool:
+    """True when every attachment in ``a`` and ``b`` correlates 1:1 with identical content.
+
+    Used only to decide whether two otherwise-identical content groups may
+    merge as the same content (``_merge_attachment_id_presence_variants``);
+    unlike ``_attachment_evidence_preserved`` this is symmetric and requires
+    an exact match on both sides, not merely no loss in one direction.
+    """
+    matched, unmatched_a, unmatched_b = _correlate_attachments(a, b)
+    if unmatched_a or unmatched_b:
+        return False
+    return all(a_record[2] == b_record[2] for a_record, b_record in matched)
+
+
 def _attachment_evidence_preserved(
     older: SessionRevisionProjection,
     newer: SessionRevisionProjection,
@@ -253,12 +371,30 @@ def _attachment_evidence_preserved(
     silently mark an acquired attachment unfetched. An attachment present in
     both but carrying *different* bytes is a genuine conflict -- two sources
     disagree about content under one identity -- and no ordering rule can
-    resolve that, so the cohort stays ambiguous.
+    resolve that, so the cohort stays ambiguous. Correlation
+    (``_correlate_attachments``) is what lets this hold across an id-presence
+    mismatch the same way it always did for a plain matching id
+    (polylogue-d8al).
     """
-    newer_contents = dict(newer.attachment_contents)
-    return older.attachment_identities <= newer.attachment_identities and all(
-        newer_contents.get(identity) == content for identity, content in older.attachment_contents
-    )
+    matched, unmatched_older, _unmatched_newer = _correlate_attachments(older, newer)
+    if unmatched_older:
+        return False
+    return all(older_record[2] is None or older_record[2] == newer_record[2] for older_record, newer_record in matched)
+
+
+def _attachment_axis_grew(older: SessionRevisionProjection, newer: SessionRevisionProjection) -> bool:
+    """True when ``newer`` has a genuinely new attachment or newly-read bytes.
+
+    An uncorrelated attachment in ``newer`` (no older counterpart, by strict
+    id or unambiguous loose key) is growth. So is resolving the bytes of an
+    already-referenced attachment -- growth in evidence even when the
+    transcript is untouched, the shape a lazily-fetched attachment produces
+    on its second acquisition (polylogue-bu1i).
+    """
+    matched, _unmatched_older, unmatched_newer = _correlate_attachments(older, newer)
+    if unmatched_newer:
+        return True
+    return any(older_record[2] is None and newer_record[2] is not None for older_record, newer_record in matched)
 
 
 def _strictly_dominates(older: SessionRevisionProjection, newer: SessionRevisionProjection) -> bool:
@@ -268,11 +404,7 @@ def _strictly_dominates(older: SessionRevisionProjection, newer: SessionRevision
         # id is (polylogue-c429).
         len(newer.message_contents) > len(older.message_contents)
         or len(newer.event_identity_hashes) > len(older.event_identity_hashes)
-        or newer.attachment_identities > older.attachment_identities
-        # Resolving the bytes of an already-referenced attachment is growth in
-        # evidence even when the transcript is untouched, which is exactly the
-        # shape a lazily-fetched attachment produces on its second acquisition.
-        or len(newer.attachment_contents) > len(older.attachment_contents)
+        or _attachment_axis_grew(older, newer)
     )
     return (
         content_grew

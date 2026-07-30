@@ -30,6 +30,11 @@ _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
 HashScalar: TypeAlias = str | int | float | bool | None
 
+#: One attachment's (strict identity, loose/id-independent identity, content
+#: hash or ``None`` if unacquired) triple -- see ``SessionRevisionProjection``
+#: for why the comparison layer needs both identities (polylogue-d8al).
+AttachmentRecord: TypeAlias = tuple[bytes, bytes, bytes | None]
+
 
 @dataclass(frozen=True, slots=True)
 class SessionRevisionProjection:
@@ -50,6 +55,26 @@ class SessionRevisionProjection:
     earlier one and the whole cohort was quarantined as ambiguous. Splitting the
     axes lets a dominance test say what is actually true -- same attachments,
     strictly more of their bytes now known (polylogue-bu1i).
+
+    ``attachment_records`` carries the same per-attachment data as a
+    ``(strict identity, loose identity, content)`` triple instead of two
+    separate sets, so the *comparison layer* (``session_revision_membership.py``)
+    can correlate attachments across two revisions even when a provider's
+    export omits a stable id for the same physical attachment on a different
+    export request of the same conversation -- one vintage has a real UUID,
+    the other has none and a parser synthesizes one, and no synthetic-id
+    scheme can make a real id and a synthetic hash collide by construction
+    (polylogue-d8al). The "loose" identity drops the provider id and keeps
+    only the anchoring message, name, and media type;
+    ``attachment_identities``/``attachment_contents`` stay strict (id
+    included) so this projection's own equality/hashing behavior is
+    unchanged -- only the membership module's pairwise correlation consults
+    the loose key, and only as a fallback when the strict identity does not
+    match and the loose key is unambiguous on both sides being compared.
+    Known, accepted limit stated explicitly rather than engineered around:
+    two genuinely distinct attachments that share one message/name/media-type
+    and carry no bytes on either side of a comparison are indistinguishable
+    by any signal this projection can offer.
 
     Messages get an analogous split, for the same reason applied to a
     different volatility source: a provider's own export can replay an
@@ -83,6 +108,7 @@ class SessionRevisionProjection:
     message_contents: frozenset[tuple[bytes, bytes]]
     attachment_identities: frozenset[bytes]
     attachment_contents: frozenset[tuple[bytes, bytes]]
+    attachment_records: tuple[AttachmentRecord, ...]
     event_hashes: tuple[bytes, ...]
     event_identity_hashes: tuple[bytes, ...]
 
@@ -246,6 +272,26 @@ def _attachment_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSO
     identity can never drift from the content hash it is paired with.
     """
     return {field: payload[field] for field in _ATTACHMENT_IDENTITY_FIELDS}
+
+
+#: The subset of ``_ATTACHMENT_IDENTITY_FIELDS`` that survives even when a
+#: provider omits a stable id for the same physical attachment on a different
+#: export request (polylogue-d8al): Claude.ai does not consistently emit
+#: ``id``/``file_id``/``fileId``/``uuid``/``file_uuid`` for the same
+#: attachment across separate export requests of the same conversation -- one
+#: vintage carries a real UUID-shaped id, the other has none and a parser
+#: synthesizes one instead. No synthetic-id scheme can make a real id and a
+#: synthetic hash collide by construction, so revision comparison correlates
+#: by this looser, id-independent key when the strict identity does not
+#: match (see ``session_revision_projection``'s canonicalization step).
+#: ``size_bytes`` stays excluded for the same lazy-fetch reason it is excluded
+#: from ``_ATTACHMENT_IDENTITY_FIELDS``.
+_ATTACHMENT_LOOSE_IDENTITY_FIELDS = ("message_id", "name", "mime_type")
+
+
+def _attachment_loose_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    """Project the id-independent correlation key of one attachment payload."""
+    return {field: payload[field] for field in _ATTACHMENT_LOOSE_IDENTITY_FIELDS}
 
 
 #: `generation_lifecycle` payload keys that are provider-reported measurement,
@@ -425,14 +471,18 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         content = bytes.fromhex(hash_payload(payload))
         message_contents.add((identity, content))
         message_hashes.append(content)
+    attachment_records: list[AttachmentRecord] = []
     attachment_identities: set[bytes] = set()
     attachment_contents: set[tuple[bytes, bytes]] = set()
     for payload in attachments_payload:
         identity = bytes.fromhex(hash_payload(_attachment_identity_payload(payload)))
-        attachment_identities.add(identity)
+        loose_identity = bytes.fromhex(hash_payload(_attachment_loose_identity_payload(payload)))
         inline_content_hash = payload.get("inline_content_hash")
-        if isinstance(inline_content_hash, str):
-            attachment_contents.add((identity, bytes.fromhex(inline_content_hash)))
+        attachment_content = bytes.fromhex(inline_content_hash) if isinstance(inline_content_hash, str) else None
+        attachment_records.append((identity, loose_identity, attachment_content))
+        attachment_identities.add(identity)
+        if attachment_content is not None:
+            attachment_contents.add((identity, attachment_content))
     event_hashes: list[bytes] = []
     event_identity_hashes: list[bytes] = []
     for event_index, (payload, event) in enumerate(zip(session_events_payload, convo.session_events, strict=True)):
@@ -444,6 +494,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         message_contents=frozenset(message_contents),
         attachment_identities=frozenset(attachment_identities),
         attachment_contents=frozenset(attachment_contents),
+        attachment_records=tuple(attachment_records),
         event_hashes=tuple(event_hashes),
         event_identity_hashes=tuple(event_identity_hashes),
     )

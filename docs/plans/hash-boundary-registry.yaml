@@ -555,6 +555,12 @@ entries:
   classification: content-hash
   note: 'event_identity_hashes -- revision-comparison axis only, provider-reported-elapsed measurement excluded per _event_identity_hash_payload (polylogue-nuec).'
 - path: polylogue/pipeline/ids.py
+  function: '<module>.session_revision_projection'
+  call: hash_payload
+  occurrence: 5
+  classification: content-hash
+  note: 'attachment_records loose identity -- id-independent (message, name, mime_type) correlation key used only as a comparison-layer fallback (polylogue-d8al).'
+- path: polylogue/pipeline/ids.py
   function: '<module>._event_identity_hash_payload'
   call: hash_payload
   occurrence: 0
