@@ -947,6 +947,29 @@ def test_parse_payload_generic_messages_keeps_timestamps(
     assert sessions[0].updated_at == "2026-07-02T00:00:00Z"
 
 
+@pytest.mark.parametrize("provider", [Provider.DRIVE.value, "totally-unrecognized-provider"])
+def test_parse_payload_generic_messages_without_asserted_id_refuses_to_parse(
+    monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    """polylogue-b508: a payload shaped like ``{"messages": [...]}`` with no
+    provider-asserted ``id`` must not become a session keyed by the
+    filename-stem ``fallback_id``. This is the structural rule that replaces
+    the narrow ``*.meta.json`` special-case: a session may only exist when the
+    provider itself asserted the identity, never when the source-discovery
+    walk invented one from a path. Same pathology class as the hook-event
+    inflation fixed by PR #3265 (83,286 -> 18,391 sessions) and the
+    ``agent-*.meta.json`` / ``toolu_*`` / ``wf_*`` phantom sessions this bead
+    tracks -- this test locks in the fix at the one dispatch chokepoint that
+    has no provider-specific identity handling at all.
+    """
+    sessions = parse_payload(
+        provider,
+        {"name": "Named", "messages": [{"role": "user", "content": "hi"}]},
+        "agent-deadbeef.meta",
+    )
+    assert sessions == []
+
+
 def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 
