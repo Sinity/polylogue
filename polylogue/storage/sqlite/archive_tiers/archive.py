@@ -3260,7 +3260,7 @@ class ArchiveStore:
                 accepted_frontier = (
                     len(accepted_projection.message_hashes)
                     + len(accepted_projection.event_hashes)
-                    + len(accepted_projection.attachment_hashes)
+                    + len(accepted_projection.attachment_identities)
                 )
             else:
                 accepted_frontier = None
@@ -3714,7 +3714,7 @@ class ArchiveStore:
                     semantic_frontier = (
                         len(accepted_projection.message_hashes)
                         + len(accepted_projection.event_hashes)
-                        + len(accepted_projection.attachment_hashes)
+                        + len(accepted_projection.attachment_identities)
                     )
                     cohort_raw_ids = (
                         *classification.accepted_raw_ids,
