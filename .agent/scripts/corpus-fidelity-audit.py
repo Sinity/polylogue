@@ -58,6 +58,31 @@ def audit_absences(source: sqlite3.Connection, index: sqlite3.Connection) -> dic
     ):
         by_document[(origin, provider_session_id)].add(decision)
 
+    # Membership rows are not the only place a logical identity lives. The
+    # ordinary single-session ingest path binds evidence to
+    # ``raw_sessions.logical_source_key`` directly and never writes a
+    # membership row (``sources/live/batch.py``), so a census starting only
+    # from memberships omits every byte-revision-governed document -- and would
+    # report no absences while durable raw evidence had no indexed document at
+    # all. Enumerate those too, keyed the same way: the stored key is
+    # ``provider:native_id`` while a session id is ``origin:native_id``, so take
+    # the native id from the key and the origin from the raw.
+    unattributable = 0
+    for origin, logical_source_key in source.execute(
+        """
+        SELECT r.origin, r.logical_source_key
+        FROM raw_sessions AS r
+        WHERE r.raw_id NOT IN (SELECT raw_id FROM raw_session_memberships)
+        """
+    ):
+        if not logical_source_key or ":" not in logical_source_key:
+            # No stored identity to key on. Counted, never silently dropped:
+            # an unattributable raw is exactly the kind of gap this gate exists
+            # to surface rather than round away.
+            unattributable += 1
+            continue
+        by_document.setdefault((origin, logical_source_key.split(":", 1)[1]), set()).add("<byte-revision>")
+
     absent: collections.Counter[tuple[str, str]] = collections.Counter()
     samples: dict[str, list[str]] = collections.defaultdict(list)
     for (origin, provider_session_id), decisions in by_document.items():
@@ -65,7 +90,9 @@ def audit_absences(source: sqlite3.Connection, index: sqlite3.Connection) -> dic
             continue
         # Classify why, so a fix's effect is attributable rather than a single
         # number that moves for unknown reasons.
-        if decisions == {"ambiguous"}:
+        if decisions == {"<byte-revision>"}:
+            cause = "byte-revision-governed"
+        elif decisions == {"ambiguous"}:
             cause = "ambiguous-only"
         elif "ambiguous" in decisions:
             cause = "mixed-ambiguous"
@@ -79,6 +106,7 @@ def audit_absences(source: sqlite3.Connection, index: sqlite3.Connection) -> dic
         "documents_known": len(by_document),
         "documents_present": len(by_document) - sum(absent.values()),
         "absent_total": sum(absent.values()),
+        "raws_without_attributable_identity": unattributable,
         "absent_by_origin_cause": {f"{o}/{c}": n for (o, c), n in sorted(absent.items(), key=lambda kv: -kv[1])},
         "samples": dict(samples),
     }
@@ -155,28 +183,46 @@ def audit_revision_fidelity(source: sqlite3.Connection, index: sqlite3.Connectio
         if message_count > best.get(key, -1):
             best[key] = message_count
 
-    indexed: dict[str, int] = collections.defaultdict(int)
-    for table in ("messages", "session_events"):
-        for session_id, count in index.execute(
-            f"SELECT session_id, COUNT(*) FROM {table} GROUP BY 1"  # table name is a fixed literal, not input
-        ):
-            indexed[session_id] += count
-    for (session_id,) in index.execute("SELECT session_id FROM sessions"):
-        indexed.setdefault(session_id, 0)
+    messages: dict[str, int] = {
+        row[0]: row[1] for row in index.execute("SELECT session_id, COUNT(*) FROM messages GROUP BY 1")
+    }
+    events: dict[str, int] = {
+        row[0]: row[1] for row in index.execute("SELECT session_id, COUNT(*) FROM session_events GROUP BY 1")
+    }
 
     shortfalls: collections.Counter[str] = collections.Counter()
+    explained: collections.Counter[str] = collections.Counter()
     worst: list[dict[str, Any]] = []
     for (origin, provider_session_id), best_count in best.items():
         session_id = f"{origin}:{provider_session_id}"
-        have = indexed.get(session_id)
-        if have is None or have >= best_count:
+        have_messages = messages.get(session_id)
+        if have_messages is None or have_messages >= best_count:
+            continue
+        have_events = events.get(session_id, 0)
+        # Compared message-to-message, the unit ``message_count`` is written in
+        # (``len(projection.message_hashes)``). An events surplus is recorded as
+        # an *explanation* for a shortfall, never as though events substituted
+        # for messages: a session holding one message and nine events does not
+        # satisfy a recorded ten, and scoring it as though it did would hide
+        # nine genuinely missing messages behind the v46 reclassification.
+        if have_messages + have_events >= best_count:
+            explained[origin] += 1
             continue
         shortfalls[origin] += 1
-        worst.append({"session_id": session_id, "indexed": have, "best_recorded": best_count})
-    worst.sort(key=lambda item: item["indexed"] - item["best_recorded"])
+        worst.append(
+            {
+                "session_id": session_id,
+                "indexed_messages": have_messages,
+                "indexed_events": have_events,
+                "best_recorded_messages": best_count,
+            }
+        )
+    worst.sort(key=lambda item: item["indexed_messages"] - item["best_recorded_messages"])
     return {
-        "documents_below_best_evidence": sum(shortfalls.values()),
-        "by_origin": dict(shortfalls.most_common()),
+        "unexplained_shortfall": sum(shortfalls.values()),
+        "explained_by_event_reclassification": sum(explained.values()),
+        "unexplained_by_origin": dict(shortfalls.most_common()),
+        "explained_by_origin": dict(explained.most_common()),
         "worst": worst[:10],
     }
 
@@ -197,8 +243,22 @@ def main() -> int:
         "revision_fidelity": audit_revision_fidelity(source, index),
     }
     absent = report["absences"]["absent_total"]
-    below = report["revision_fidelity"]["documents_below_best_evidence"]
-    report["verdict"] = "PASS" if absent == 0 and below == 0 else "FAIL"
+    below = report["revision_fidelity"]["unexplained_shortfall"]
+    # Attachment acquisition is half of "maximum fidelity", so it gates too. A
+    # not-acquired reference clears by being acquired, or by being shown
+    # genuinely unfetchable -- deleted upstream, over the size cap, a byte-less
+    # attachment kind. That is a judgement belonging in an explicit
+    # justification, not in a metric that quietly omits it, so until then this
+    # must not print PASS over thousands of references whose bytes were never
+    # read.
+    failures = {
+        "absent_documents": absent,
+        "unexplained_revision_shortfall": below,
+        "unacquired_attachment_refs": report["attachment_fidelity"]["refs_not_acquired"],
+        "raws_without_attributable_identity": report["absences"]["raws_without_attributable_identity"],
+    }
+    report["failing_measures"] = {k: v for k, v in failures.items() if v}
+    report["verdict"] = "PASS" if not report["failing_measures"] else "FAIL"
 
     if args.json:
         args.json.write_text(json.dumps(report, indent=2, sort_keys=True))
@@ -213,10 +273,17 @@ def main() -> int:
     for key, count in sorted(f["breakdown"].items(), key=lambda kv: -kv[1])[:8]:
         print(f"    {count:6d}  {key}")
     r = report["revision_fidelity"]
-    print(f"\nREVISION FIDELITY  {r['documents_below_best_evidence']} document(s) below best recorded evidence")
-    for key, count in r["by_origin"].items():
-        print(f"    {count:6d}  {key}")
+    print(
+        f"\nREVISION FIDELITY  {r['unexplained_shortfall']} unexplained, "
+        f"{r['explained_by_event_reclassification']} explained by event reclassification"
+    )
+    for key, count in r["unexplained_by_origin"].items():
+        print(f"    {count:6d}  {key}  (unexplained)")
 
+    if report["failing_measures"]:
+        print("\nFAILING MEASURES")
+        for key, value in report["failing_measures"].items():
+            print(f"    {value:8d}  {key}")
     print(f"\nVERDICT: {report['verdict']}")
     return 0 if report["verdict"] == "PASS" else 1
 
