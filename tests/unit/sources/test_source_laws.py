@@ -970,6 +970,24 @@ def test_parse_payload_generic_messages_without_asserted_id_refuses_to_parse(
     assert sessions == []
 
 
+@pytest.mark.parametrize("blank_id", ["", "   ", "\t\n"])
+def test_parse_payload_generic_messages_blank_asserted_id_refuses_to_parse(blank_id: str) -> None:
+    """A blank ``id`` is not an assertion.
+
+    ``optional_string`` returns ``""`` for an empty value rather than ``None``,
+    so an ``"id": ""`` or whitespace-only field satisfies a bare
+    ``is None`` check and produces a session keyed on nothing -- the same
+    filename-stem pathology arriving *through* the guard written to stop it.
+    Caught by review on PR #3403 rather than by the original fix.
+    """
+    sessions = parse_payload(
+        "unknown",
+        {"id": blank_id, "name": "Named", "messages": [{"role": "user", "content": "hi"}]},
+        "agent-deadbeef.meta",
+    )
+    assert sessions == []
+
+
 def test_parse_payload_dispatches_chatgpt_bundle_items_exactly(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[object, str]] = []
 

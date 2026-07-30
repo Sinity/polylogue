@@ -1117,8 +1117,14 @@ def _generic_messages_session(
     if messages_payload is None:
         return None
 
-    session_id = optional_string(payload.get("id"))
-    if session_id is None:
+    # A blank id is not an assertion. ``optional_string`` returns ``""`` for an
+    # empty value rather than ``None``, so an ``"id": ""`` or whitespace-only
+    # field would otherwise satisfy "the provider asserted an identity" and
+    # produce a session keyed on nothing -- the same pathology as a
+    # filename-stem identity, arriving through the guard meant to stop it.
+    asserted_id = optional_string(payload.get("id"))
+    session_id = asserted_id.strip() if asserted_id is not None else None
+    if not session_id:
         return None
 
     messages = extract_messages_from_list(messages_payload)
