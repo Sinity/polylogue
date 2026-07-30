@@ -18,9 +18,10 @@ one real measured rebuild (4h20m / 41,363 raws / 92.4 GiB), run:
     pytest tests/benchmarks/test_rebuild_cost_model.py::test_full_population_projection \\
       --benchmark-enable -p no:xdist -o "addopts=" -v -s --run-cost-model-full
 
-That variant is opt-in (skipped by default: it makes ~20 real rebuild passes,
-tens of seconds each) and prints a stratum-by-stratum report plus the
-predicted/actual calibration ratio.
+That variant is opt-in (skipped by default: it makes ~40 real rebuild passes
+-- two per stratum, for the fixed/marginal regression -- tens of seconds
+each) and prints a stratum-by-stratum report plus the predicted/actual
+calibration ratio.
 """
 
 from __future__ import annotations
@@ -57,14 +58,17 @@ def test_stratified_model_end_to_end_small(tmp_path: Path) -> None:
         Stratum("codex-small", Provider.CODEX, count=6, total_bytes=6 * 20_000),
         Stratum("claude-code-small", Provider.CLAUDE_CODE, count=6, total_bytes=6 * 20_000),
     ]
-    predicted = run_cost_model(tmp_path, strata=strata, sample_n_override=3)
+    predicted = run_cost_model(tmp_path, strata=strata, sample_sizes_override=(2, 4))
     assert len(predicted.measurements) == 2
     for measurement in predicted.measurements:
-        assert measurement.sample_n == 3
-        assert measurement.wall_s > 0.0
-        assert measurement.predicted_wall_s > 0.0
+        assert measurement.n1 == 2
+        assert measurement.n2 == 4
+        assert measurement.regression_valid
+        assert measurement.wall_s1 > 0.0
+        assert measurement.wall_s2 > 0.0
+        assert measurement.predicted_wall_s >= 0.0
     assert predicted.total_raws == 12
-    assert predicted.total_predicted_wall_s > 0.0
+    assert predicted.total_predicted_wall_s >= 0.0
 
 
 @pytest.mark.benchmark

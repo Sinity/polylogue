@@ -271,28 +271,51 @@ def default_sample_n(stratum: Stratum, *, target_sample_bytes: int = 2_000_000, 
 
 @dataclass(frozen=True, slots=True)
 class StratumMeasurement:
+    """Two-point regression result for one stratum.
+
+    A single-sample measurement conflates two different costs: the FIXED
+    one-time overhead ``rebuild_index_from_source_sync`` pays per PASS
+    (generation bootstrap, embeddings/FTS bulk-repopulate, promote,
+    readiness checks -- paid once no matter how many raws the pass
+    replays) and the MARGINAL cost per raw actually replayed. Dividing a
+    single sample's wall-clock by its (small) sample_n and multiplying by
+    the population count multiplies the fixed cost too, which the real
+    full rebuild pays only ONCE across the whole population -- this was
+    the source of a measured 1.78x over-prediction in the first version of
+    this model (see polylogue-623q notes).
+
+    Fitting two points (``n1`` < ``n2`` raws, same stratum, fresh archive
+    each) separates the two: ``marginal_s_per_raw`` is the slope
+    ``(wall_s2 - wall_s1) / (n2 - n1)``; ``fixed_s`` is the intercept.
+    Population extrapolation then multiplies ONLY the marginal term
+    (``predicted_wall_s``) -- ``fixed_s`` is reported for transparency but
+    deliberately not added into any per-stratum or population total: the
+    real full rebuild runs as ONE pass, so its one-time fixed cost should
+    be counted once across the whole run, not once per stratum sample (and
+    this model does not attempt that separate accounting -- see the
+    module-level report footer).
+    """
+
     stratum: Stratum
-    sample_n: int
+    n1: int
+    n2: int
+    wall_s1: float
+    wall_s2: float
+    fixed_s: float
+    marginal_s_per_raw: float
     sample_bytes: int
-    wall_s: float
     parse_s: float
     apply_s: float
-
-    @property
-    def seconds_per_raw(self) -> float:
-        return self.wall_s / self.sample_n if self.sample_n else 0.0
+    regression_valid: bool
 
     @property
     def predicted_wall_s(self) -> float:
-        return self.seconds_per_raw * self.stratum.count
+        """Population extrapolation using ONLY the marginal per-raw term."""
+        return max(0.0, self.marginal_s_per_raw) * self.stratum.count
 
 
-def measure_stratum(archive_root: Path, stratum: Stratum, *, sample_n: int | None = None) -> StratumMeasurement:
-    """Synthesize + replay a real sample of one stratum through the real engine."""
-    n = sample_n if sample_n is not None else default_sample_n(stratum)
-    raw_ids = build_stratum_sample_corpus(archive_root, stratum, sample_n=n)
-    sample_bytes = n * stratum.mean_bytes
-
+def _run_one_rebuild_pass(archive_root: Path, stratum: Stratum, n: int) -> tuple[float, dict[str, object]]:
+    build_stratum_sample_corpus(archive_root, stratum, sample_n=n)
     prior_env = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
     try:
@@ -306,14 +329,59 @@ def measure_stratum(archive_root: Path, stratum: Stratum, *, sample_n: int | Non
             os.environ.pop("POLYLOGUE_ARCHIVE_ROOT", None)
         else:
             os.environ["POLYLOGUE_ARCHIVE_ROOT"] = prior_env
+    assert receipt.status == "replayed", f"stratum {stratum.label}: unexpected receipt status {receipt.status!r}"
+    return wall_s, receipt.replay
 
-    replay = receipt.replay
+
+def two_point_sample_sizes(stratum: Stratum) -> tuple[int, int]:
+    """(n1, n2) sample sizes for the regression -- n2 > n1 when population allows."""
+    n1 = default_sample_n(stratum)
+    n2 = min(stratum.count, max(n1 + 3, n1 * 4))
+    return n1, n2
+
+
+def measure_stratum(
+    archive_root: Path, stratum: Stratum, *, sample_sizes: tuple[int, int] | None = None
+) -> StratumMeasurement:
+    """Two-point regression: replay the same stratum at two sample sizes to
+    separate fixed per-pass overhead from marginal per-raw cost.
+
+    Each sample gets a fresh scratch archive (``archive_root / "n1"`` /
+    ``"n2"``) so neither pass's index/generation state leaks into the other.
+    """
+    n1, n2 = sample_sizes if sample_sizes is not None else two_point_sample_sizes(stratum)
+    wall_s1, replay1 = _run_one_rebuild_pass(archive_root / "n1", stratum, n1)
+    regression_valid = n2 > n1
+    if regression_valid:
+        wall_s2, replay2 = _run_one_rebuild_pass(archive_root / "n2", stratum, n2)
+        marginal_s_per_raw = (wall_s2 - wall_s1) / (n2 - n1)
+        fixed_s = wall_s1 - marginal_s_per_raw * n1
+        replay = replay2
+    else:
+        # Population too small to split (n2 == n1): fall back to treating the
+        # whole single-sample wall-clock as marginal cost, matching the prior
+        # (known-biased) behavior for this stratum only. These strata are a
+        # tiny fraction of the population by construction (see
+        # POPULATION_SNAPSHOT) so the bias this reintroduces is bounded.
+        wall_s2 = wall_s1
+        marginal_s_per_raw = wall_s1 / n1 if n1 else 0.0
+        fixed_s = 0.0
+        replay = replay1
+
     parse_s = float(cast("float", replay.get("parse_s", 0.0)))
     apply_s = float(cast("float", replay.get("apply_s", 0.0)))
-    assert receipt.status == "replayed", f"stratum {stratum.label}: unexpected receipt status {receipt.status!r}"
-    assert len(raw_ids) == n
     return StratumMeasurement(
-        stratum=stratum, sample_n=n, sample_bytes=sample_bytes, wall_s=wall_s, parse_s=parse_s, apply_s=apply_s
+        stratum=stratum,
+        n1=n1,
+        n2=n2,
+        wall_s1=wall_s1,
+        wall_s2=wall_s2,
+        fixed_s=fixed_s,
+        marginal_s_per_raw=marginal_s_per_raw,
+        sample_bytes=n2 * stratum.mean_bytes,
+        parse_s=parse_s,
+        apply_s=apply_s,
+        regression_valid=regression_valid,
     )
 
 
@@ -337,21 +405,40 @@ class PredictedRun:
         """predicted / actual -- 1.0 is a perfect match, >1 over-predicts."""
         return self.total_predicted_wall_s / calibration_wall_s if calibration_wall_s else float("nan")
 
+    @property
+    def total_fixed_s_measured(self) -> list[float]:
+        """Every stratum's measured one-time pass overhead (not summed into
+        any total -- the real full rebuild pays this ONCE, not once per
+        stratum; see StratumMeasurement's docstring)."""
+        return [m.fixed_s for m in self.measurements if m.regression_valid]
+
     def to_report(self) -> str:
         lines = [
-            f"{'stratum':28s} {'n_pop':>8s} {'sample_n':>8s} {'MiB/s':>8s} {'raws/s':>8s} {'pred_min':>9s}",
+            f"{'stratum':28s} {'n_pop':>8s} {'n1':>4s} {'n2':>4s} {'fixed_s':>8s} {'marg_s/raw':>11s} {'pred_min':>9s}",
         ]
         for m in sorted(self.measurements, key=lambda m: -m.predicted_wall_s):
-            mib_per_s = (m.sample_bytes / (1024 * 1024) / m.wall_s) if m.wall_s > 0 else 0.0
-            raws_per_s = (m.sample_n / m.wall_s) if m.wall_s > 0 else 0.0
+            flag = "" if m.regression_valid else "*"
             lines.append(
-                f"{m.stratum.label:28s} {m.stratum.count:8d} {m.sample_n:8d} "
-                f"{mib_per_s:8.2f} {raws_per_s:8.2f} {m.predicted_wall_s / 60:9.2f}"
+                f"{m.stratum.label:28s} {m.stratum.count:8d} {m.n1:4d} {m.n2:4d} "
+                f"{m.fixed_s:8.3f} {m.marginal_s_per_raw:11.4f} {m.predicted_wall_s / 60:9.2f}{flag}"
             )
         total_min = self.total_predicted_wall_s / 60
         lines.append(
-            f"\npredicted total: {total_min:.1f} min over {self.total_raws} raws, {self.total_bytes / 1024**3:.2f} GiB"
+            f"\npredicted total (marginal term only): {total_min:.1f} min over "
+            f"{self.total_raws} raws, {self.total_bytes / 1024**3:.2f} GiB"
         )
+        fixed_values = self.total_fixed_s_measured
+        if fixed_values:
+            lines.append(
+                f"measured one-time per-pass fixed overhead across strata: "
+                f"min={min(fixed_values):.2f}s max={max(fixed_values):.2f}s "
+                f"median={sorted(fixed_values)[len(fixed_values) // 2]:.2f}s "
+                "-- NOT added into the predicted total (the real run pays this once, "
+                "not once per stratum sample; see module docstring)."
+            )
+        starred = [m.stratum.label for m in self.measurements if not m.regression_valid]
+        if starred:
+            lines.append(f"* regression not possible (population too small to split): {', '.join(starred)}")
         lines.append(
             f"calibration: actual={CALIBRATION_WALL_S / 60:.1f} min "
             f"({CALIBRATION_RAW_COUNT} raws, {CALIBRATION_TOTAL_BYTES / 1024**3:.2f} GiB) "
@@ -364,14 +451,14 @@ def run_cost_model(
     workdir: Path,
     strata: Sequence[Stratum] = POPULATION_SNAPSHOT,
     *,
-    sample_n_override: int | None = None,
+    sample_sizes_override: tuple[int, int] | None = None,
 ) -> PredictedRun:
     """Measure every stratum (each gets a fresh scratch archive) and extrapolate."""
     predicted = PredictedRun()
     for i, stratum in enumerate(strata):
         stratum_root = workdir / f"stratum-{i:03d}"
         try:
-            measurement = measure_stratum(stratum_root, stratum, sample_n=sample_n_override)
+            measurement = measure_stratum(stratum_root, stratum, sample_sizes=sample_sizes_override)
             predicted.measurements.append(measurement)
         finally:
             shutil.rmtree(stratum_root, ignore_errors=True)
@@ -392,4 +479,5 @@ __all__ = [
     "default_sample_n",
     "measure_stratum",
     "run_cost_model",
+    "two_point_sample_sizes",
 ]
