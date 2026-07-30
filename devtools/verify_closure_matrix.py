@@ -12,9 +12,8 @@ For every row in the closure matrix, this lint checks:
 * ``domain`` values are unique.
 
 Wired into ``devtools verify`` so that closure-matrix drift fails locally
-before a PR is opened. The matrix is the executable backstop for
-``docs/plans/test-coverage-domains.yaml`` (qualitative, free-text) and for the
-per-domain coverage callouts in issue #997.
+before a PR is opened. Backstops the per-domain coverage callouts in issue
+#997.
 """
 
 from __future__ import annotations
@@ -123,15 +122,6 @@ def _validate(matrix: dict[str, Any]) -> list[str]:
             if domain in seen:
                 errors.append(f"duplicate domain: {domain!r}")
             seen.add(domain)
-
-    deprecated = matrix.get("deprecated_pointer")
-    if deprecated is not None:
-        if not isinstance(deprecated, dict):
-            errors.append("'deprecated_pointer' must be a mapping when present")
-        else:
-            legacy = deprecated.get("legacy_manifest")
-            if isinstance(legacy, str) and not _path_exists(legacy):
-                errors.append(f"deprecated_pointer.legacy_manifest missing: {legacy}")
 
     return errors
 
