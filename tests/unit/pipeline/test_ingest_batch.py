@@ -1615,6 +1615,113 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
         assert counts["skipped_sessions"] == 0
 
 
+def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Path) -> None:
+    """``_write_session`` -- the daemon's default batch-ingest write path,
+    used for most non-drive origins -- must refuse a session whose OWN
+    ``raw_session_memberships.decision`` is recorded ``'ambiguous'``.
+
+    This mirrors ``ArchiveStore._write_parsed_precedence_result``'s guard
+    (#3397/#3398, polylogue-c737). Before this fix, this path had zero
+    ``raw_session_memberships`` awareness: its only revision-authority check
+    was against ``raw_revision_heads``, populated ONLY when a cohort has an
+    ACCEPTED winner. A cohort ``classify_membership_revisions`` genuinely
+    refused to arbitrate never gets an accepted head, so that check stayed
+    silent and the ordinary freshness/precedence fallback below it wrote the
+    session unconditionally on the raw's next reparse -- arbitrary
+    last-writer-wins over the recorded verdict.
+
+    Scoped per-membership (``raw_id`` AND ``provider_session_id``), not
+    per-raw: one retained raw routinely lowers to many independently-
+    arbitrated sessions (a Claude Code transcript plus its subagent
+    sidechains, a bundle member set). #3398 measured 295 raws carrying a mix
+    of decisions on the live archive, together holding 489 sessions whose own
+    membership is NOT ambiguous. This test builds that exact shape -- one
+    raw, two memberships, one ``ambiguous`` and one ``applied`` -- and
+    asserts BOTH halves, so a raw-scoped predicate (which would refuse both)
+    fails it just as it would have fixed nothing for the settled sibling.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    raw_id = "abcd1234abcd1234"
+    source_db_path = archive_root / "source.db"
+
+    with sqlite3.connect(str(source_db_path)) as source_setup_conn:
+        source_setup_conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id,
+                source_revision, normalized_content_hash, message_count,
+                decision, decided_at_ms
+            ) VALUES (?, 'codex:s-ambiguous', 's-ambiguous', 'rev-1', ?, 1, 'ambiguous', 1)
+            """,
+            (raw_id, b"0" * 32),
+        )
+        source_setup_conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id,
+                source_revision, normalized_content_hash, message_count,
+                decision, decided_at_ms
+            ) VALUES (?, 'codex:s-settled', 's-settled', 'rev-1', ?, 1, 'applied', 1)
+            """,
+            (raw_id, b"1" * 32),
+        )
+        source_setup_conn.commit()
+
+    with (
+        open_connection(archive_root / "index.db") as conn,
+        sqlite3.connect(str(source_db_path)) as source_conn,
+    ):
+        ambiguous_msg = _message_tuple(
+            "a-0",
+            "codex-session:s-ambiguous",
+            role="user",
+            text="left",
+            content_hash="hash-a",
+            sort_key=1.0,
+        )
+        settled_msg = _message_tuple(
+            "b-0",
+            "codex-session:s-settled",
+            role="user",
+            text="right",
+            content_hash="hash-b",
+            sort_key=1.0,
+        )
+        ambiguous_payload = _session_data(
+            "codex-session:s-ambiguous",
+            content_hash="hash-ambiguous",
+            raw_id=raw_id,
+            message_tuples=[ambiguous_msg],
+        )
+        settled_payload = _session_data(
+            "codex-session:s-settled",
+            content_hash="hash-settled",
+            raw_id=raw_id,
+            message_tuples=[settled_msg],
+        )
+
+        changed_ambiguous, counts_ambiguous = _write_session(conn, ambiguous_payload, source_conn=source_conn)
+        changed_settled, counts_settled = _write_session(conn, settled_payload, source_conn=source_conn)
+        conn.commit()
+
+    assert changed_ambiguous is False
+    assert counts_ambiguous["skipped_sessions"] == 1
+
+    assert changed_settled is True
+    assert counts_settled["skipped_sessions"] == 0
+
+    with sqlite3.connect(str(archive_root / "index.db")) as verify_conn:
+        # The ambiguous membership is still refused ...
+        assert verify_conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?", ("codex-session:s-ambiguous",)
+        ).fetchone() == (0,)
+        # ... and its settled sibling on the same raw is not collateral damage.
+        assert verify_conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?", ("codex-session:s-settled",)
+        ).fetchone() == (1,)
+
+
 def test_iter_ingest_results_sync_runs_inline_for_single_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -393,6 +393,7 @@ def _write_session(
     stage_timings_s: dict[str, float] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -436,6 +437,48 @@ def _write_session(
             counts["skipped_attachments"] = payload.attachment_count
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
             return False, counts
+
+    # polylogue-c737: mirrors ArchiveStore._write_parsed_precedence_result's
+    # ambiguous-membership refusal (#3397/#3398). ``governed`` above only
+    # catches a logical identity with an ACCEPTED revision-authority head
+    # (``raw_revision_heads``, populated only when a cohort has a winner). A
+    # cohort ``classify_membership_revisions`` genuinely refused to
+    # arbitrate never gets an accepted head, so ``governed`` stays ``None``
+    # here even though this raw's own membership is recorded authority
+    # debt -- and this batch write path, the daemon's default for most
+    # non-drive origins, never consulted ``raw_session_memberships`` at all
+    # before this fix. Falling through to the freshness/precedence logic
+    # below then writes the session unconditionally on the raw's next
+    # reparse -- last-writer-wins over the "never silently choose between
+    # branches" invariant.
+    #
+    # Scoped to the membership actually being written (raw_id AND
+    # provider_session_id), not to the raw alone: one retained raw routinely
+    # lowers to many independently-arbitrated sessions (a Claude Code
+    # transcript plus its subagent sidechains, a bundle member set), and
+    # #3398 measured 295 raws carrying a mix of decisions with 489 sessions
+    # whose own membership is NOT ambiguous -- a raw-scoped predicate would
+    # suppress all of those too, trading a fidelity downgrade for outright
+    # absence.
+    if source_conn is not None and payload.raw_id:
+        has_memberships = source_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_session_memberships'"
+        ).fetchone()
+        if has_memberships is not None:
+            ambiguous_membership = source_conn.execute(
+                """
+                SELECT 1 FROM raw_session_memberships
+                WHERE raw_id = ? AND provider_session_id = ? AND decision = 'ambiguous'
+                LIMIT 1
+                """,
+                (payload.raw_id, payload.parsed_session.provider_session_id),
+            ).fetchone()
+            if ambiguous_membership is not None:
+                counts["skipped_sessions"] = 1
+                counts["skipped_messages"] = payload.message_count
+                counts["skipped_attachments"] = payload.attachment_count
+                counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+                return False, counts
 
     if (
         not force_write
@@ -671,6 +714,7 @@ def _write_session_entry(
     signature_cache: dict[str, list[tuple[str, str]]] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> bool:
     try:
         t_write = time.perf_counter()
@@ -683,6 +727,7 @@ def _write_session_entry(
             stage_timings_s=write_stage_timings,
             blob_publisher=blob_publisher,
             pending_attachment_receipts=pending_attachment_receipts,
+            source_conn=source_conn,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -794,6 +839,7 @@ def _drain_ready_session_entries(
     force_write: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> int:
     _delete_stale_sessions_for_raw_entries(conn, ready_entries)
     written_count = 0
@@ -812,6 +858,7 @@ def _drain_ready_session_entries(
             signature_cache=signature_cache,
             blob_publisher=blob_publisher,
             pending_attachment_receipts=pending_attachment_receipts,
+            source_conn=source_conn,
         )
         discard_session_data_payload(cdata)
         if not wrote:
@@ -1052,6 +1099,7 @@ def _drain_ingest_result(
     force_write: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -1108,6 +1156,7 @@ def _drain_ingest_result(
         force_write=force_write,
         blob_publisher=blob_publisher,
         pending_attachment_receipts=pending_attachment_receipts,
+        source_conn=source_conn,
     )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
@@ -1140,6 +1189,7 @@ def _consume_ingest_results(
     force_process_pool: bool = False,
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> bool:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -1188,6 +1238,7 @@ def _consume_ingest_results(
                 force_write=force_write,
                 blob_publisher=blob_publisher,
                 pending_attachment_receipts=pending_attachment_receipts,
+                source_conn=source_conn,
             )
         finally:
             discard_ingest_result_payload(ir)
@@ -1347,6 +1398,15 @@ def _process_ingest_batch_sync(
     materialized_ids: set[str] = set()
     blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     pending_attachment_receipts: list[tuple[str, bytes]] = []
+    # polylogue-c737: read-only source.db handle used solely to consult
+    # ``raw_session_memberships`` decisions during the write-precedence
+    # check in ``_write_session`` (mirrors ArchiveStore's own
+    # ``_ensure_source_conn`` read path). Opened once per batch rather than
+    # per session write.
+    source_db_path = archive_root / "source.db"
+    source_conn: sqlite3.Connection | None = None
+    if source_db_path.exists():
+        source_conn = sqlite3.connect(str(source_db_path), timeout=DB_TIMEOUT)
     _observe_current_rss(summary)
     transaction_started = False
     try:
@@ -1367,6 +1427,7 @@ def _process_ingest_batch_sync(
             force_process_pool=force_process_pool,
             blob_publisher=blob_publisher,
             pending_attachment_receipts=pending_attachment_receipts,
+            source_conn=source_conn,
         )
         _flush_ingest_results(
             conn,
@@ -1463,6 +1524,8 @@ def _process_ingest_batch_sync(
             with contextlib.suppress(Exception):
                 conn.execute("PRAGMA foreign_keys = ON")
         conn.close()
+        if source_conn is not None:
+            source_conn.close()
     summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count

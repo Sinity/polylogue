@@ -1668,6 +1668,54 @@ class ArchiveStore:
                 content_changed=False,
                 counts=self._skipped_counts(session),
             )
+        # polylogue-c737: ``governed`` above only catches a logical
+        # identity with an ACCEPTED revision-authority head
+        # (``raw_revision_heads``, populated by
+        # ``apply_raw_membership_classification``/``apply_raw_revision_replay``
+        # only when a cohort has a winner). A cohort that ``classify_
+        # membership_revisions`` refused to arbitrate -- genuinely
+        # ``raw_session_memberships.decision = 'ambiguous'`` -- never gets an
+        # accepted head, so ``governed`` stays ``None`` here even though this
+        # raw's own identity is recorded authority debt. Falling through to
+        # the ordinary browser-capture-precedence/freshness logic below then
+        # writes this raw's session unconditionally on its next parse --
+        # last-writer-wins, exactly the "never silently choose between
+        # branches" invariant this whole subsystem exists to enforce, and
+        # the fidelity-losing side of an aistudio-drive ambiguous pair reaches
+        # the index every time this reparses (measured live: 28 cohorts, 641
+        # attachments reported unfetched despite the bytes existing in the
+        # blob store). Refuse this raw explicitly instead of relying on an
+        # absent head to imply "unclaimed, free to write".
+        #
+        # Scoped to the membership being written, not to the raw. One retained
+        # raw routinely lowers to many sessions -- a Claude Code transcript and
+        # its subagent sidechains, a bundle member set -- and those sessions are
+        # arbitrated independently. Measured on the live archive: 295 raws carry
+        # a mix of decisions, together holding 489 sessions whose own membership
+        # is NOT ambiguous, and one raw carries 106 memberships. A raw-scoped
+        # predicate suppresses every one of those sessions as soon as a single
+        # sibling membership is ambiguous, which trades a fidelity downgrade for
+        # outright absence -- a worse failure, and one that would have landed at
+        # the next full rebuild.
+        ambiguous_membership = (
+            self._ensure_source_conn()
+            .execute(
+                """
+                SELECT 1 FROM raw_session_memberships
+                WHERE raw_id = ? AND provider_session_id = ? AND decision = 'ambiguous'
+                LIMIT 1
+                """,
+                (raw_id, session.provider_session_id),
+            )
+            .fetchone()
+        )
+        if ambiguous_membership is not None:
+            return ArchiveRawParsedWriteResult(
+                raw_id=raw_id,
+                session_id=session_id,
+                content_changed=False,
+                counts=self._skipped_counts(session),
+            )
 
         if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
             existing_is_dom_fallback = session_has_parser_ingest_flag(
@@ -2135,8 +2183,76 @@ class ArchiveStore:
         )
         return tuple(str(row[0]) for row in rows)
 
-    def classify_raw_revision_cohort(self, logical_source_key: str) -> RevisionReplayPlan:
-        """Promote only a unique byte-prefix full chain and contiguous appends."""
+    def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
+        """Detect a same-``source_path`` sibling under a DIFFERENT byte-revision key.
+
+        Polylogue-eqnv: two raws of the identical physical document can end
+        up with different ``logical_source_key`` values -- most concretely
+        when one was censused by a parser version with an identity bug since
+        fixed (the source_revision the other raw's key was assigned under
+        never gets revisited, see ``uncensused_historical_revision_raw_ids``'s
+        exact-fingerprint quiescence gate). Neither raw's own key surfaces
+        the other in ``raw_membership_retired_full_revision_siblings``, so
+        both would otherwise be accepted as independent one-member byte
+        chains. ``source_path`` is the correct join key here (as elsewhere
+        in this module, e.g. ``classify_untyped_full_revision_groups``): a
+        real re-acquisition of the same document always keeps the same path.
+        """
+        detail_placeholders = ", ".join("?" for _ in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS)
+        row = (
+            self._ensure_source_conn()
+            .execute(
+                f"""
+                SELECT 1
+                FROM raw_sessions AS this
+                WHERE this.logical_source_key = ? AND this.revision_kind = 'full'
+                  AND (
+                      EXISTS (
+                          SELECT 1 FROM raw_sessions AS other
+                          WHERE other.source_path = this.source_path
+                            AND other.raw_id != this.raw_id
+                            AND other.revision_kind = 'full'
+                            AND (other.logical_source_key IS NULL OR other.logical_source_key != this.logical_source_key)
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM raw_sessions AS other
+                          JOIN raw_session_memberships AS m ON m.raw_id = other.raw_id
+                          JOIN raw_membership_census AS c ON c.raw_id = other.raw_id
+                          WHERE other.source_path = this.source_path
+                            AND other.raw_id != this.raw_id
+                            AND c.detail IN ({detail_placeholders})
+                      )
+                  )
+                LIMIT 1
+                """,
+                (logical_source_key, *RETIRED_FULL_REVISION_GOVERNANCE_DETAILS),
+            )
+            .fetchone()
+        )
+        return row is not None
+
+    def classify_raw_revision_cohort(
+        self, logical_source_key: str, *, check_source_path_identity_split: bool = False
+    ) -> RevisionReplayPlan:
+        """Promote only a unique byte-prefix full chain and contiguous appends.
+
+        ``check_source_path_identity_split`` (polylogue-eqnv, default
+        ``False`` -- opt in explicitly, see
+        ``_raw_revision_source_path_has_divergent_evidence``) additionally
+        refuses a singleton accept when another 'full' raw shares this raw's
+        ``source_path`` under a DIFFERENT key. That heuristic is sound for a
+        genuine re-acquisition of the same physical document (the offline
+        backfill/rebuild path's use case, where a stale pre-fix parser
+        identity can split one document across two keys) but is NOT sound in
+        general: a watched source path can legitimately be atomically
+        replaced with an entirely different session's content (same path,
+        genuinely different identity, exercised by
+        ``test_full_ingest_does_not_advance_cursor_across_same_size_replacement``
+        et al.) -- the live incremental watcher (``sources/live/batch.py``)
+        must not quarantine that as "divergent evidence", so it leaves this
+        off.
+        """
         if self._blob_publisher is None:
             raise RuntimeError("raw revision classification requires a writable blob publisher")
         source_conn = self._ensure_source_conn()
@@ -2167,6 +2283,34 @@ class ArchiveStore:
         # membership governance instead, where the real prefix-based
         # classifier weighs every known sibling together.
         if full_rows and self.raw_membership_retired_full_revision_siblings(logical_source_key):
+            full_rows = []
+        # polylogue-eqnv: the guard above only catches a retired SIBLING
+        # discoverable under the SAME logical_source_key. A raw whose
+        # identity was assigned by a now-superseded parser (e.g. the
+        # pre-#3179/z1c6 dispatch bug that appended a spurious "-0" to one
+        # of two otherwise-identical Drive re-acquisitions) can carry a
+        # logical_source_key that DIFFERS from a same-document sibling's --
+        # neither raw's own key ever surfaces the other, so each gets
+        # evaluated as a trivial one-member "chain" and unconditionally
+        # accepted as a byte-proven singleton baseline, independent of
+        # which content is actually correct. Two such raws then silently
+        # materialize as two independent sessions (arbitrary last-write-
+        # wins on the shared (origin, native_id) upsert) instead of ever
+        # being compared. Detect this by ``source_path``: a real re-
+        # acquisition of the same physical document always keeps the same
+        # ``source_path``. Refuse the byte-chain path here too whenever
+        # another raw at the same source_path is still an unretired 'full'
+        # row under a different key, OR has already been retired to
+        # membership governance under any key (a prior pass may have
+        # re-derived a DIFFERENT, corrected key during its own retirement
+        # reparse) -- the caller's existing "no accepted chain" fallback
+        # folds this raw into membership governance too, where the real
+        # content-based classifier weighs every known sibling together.
+        if (
+            full_rows
+            and check_source_path_identity_split
+            and self._raw_revision_source_path_has_divergent_evidence(logical_source_key)
+        ):
             full_rows = []
         historical: list[HistoricalRawRevisionStream] = []
         for row in full_rows:

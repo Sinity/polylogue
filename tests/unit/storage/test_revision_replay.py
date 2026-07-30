@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from itertools import permutations
 from pathlib import Path
 
@@ -617,6 +618,144 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
     assert second_plan.accepted_raw_ids == ()
 
 
+def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> None:
+    """A raw whose OWN logical identity is durably recorded
+    ``raw_session_memberships.decision = 'ambiguous'`` must never reach
+    ``sessions`` through the ordinary (non-revision-authoritative) parsed-
+    write path.
+
+    ``ArchiveStore._write_parsed_precedence_result``'s only revision-
+    authority awareness before this fix was a check against
+    ``raw_revision_heads`` -- populated ONLY when a cohort has an ACCEPTED
+    winner (``apply_raw_membership_classification``/
+    ``apply_raw_revision_replay``). A cohort ``classify_membership_
+    revisions`` genuinely refused to arbitrate never gets an accepted head,
+    so that check stays silent and the ordinary browser-capture-precedence/
+    freshness fallback below it writes the session unconditionally on the
+    next reparse -- arbitrary last-writer-wins over the exact invariant this
+    subsystem exists to enforce. Live evidence: 28 aistudio-drive cohorts
+    recorded ambiguous nonetheless materialized a session with 641
+    attachments reported unfetched despite the bytes existing in the blob
+    store, because ``write_parsed_for_retained_raw`` (called from the
+    one-shot importer, ``revision_authoritative=False`` by default) never
+    consulted ``raw_session_memberships`` at all.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="s1",
+        messages=[ParsedMessage(provider_message_id="s1-0", role=Role.USER, text="left")],
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+        )
+        # Durable evidence that this raw's identity was already judged
+        # ambiguous -- the shape ``replace_raw_membership_census`` /
+        # ``apply_raw_membership_classification`` leave behind for a
+        # genuinely divergent cohort (reproduced directly here so the test
+        # isolates the WRITE-PATH guard from the classifier that produces
+        # this state).
+        source_conn = archive._ensure_source_conn()
+        with source_conn:
+            source_conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id,
+                    source_revision, normalized_content_hash, message_count,
+                    decision, decided_at_ms
+                ) VALUES (?, 'chatgpt:s1', 's1', ?, ?, 1, 'ambiguous', 1)
+                """,
+                (raw_id, raw_id, bytes.fromhex(raw_id)),
+            )
+
+        returned_raw_id, session_id = archive.write_parsed_for_retained_raw(
+            session,
+            raw_id=raw_id,
+            source_path="a.json",
+            acquired_at_ms=2,
+        )
+
+    assert returned_raw_id == raw_id
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (0,)
+
+
+def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_raw(tmp_path: Path) -> None:
+    """The ambiguity refusal is per-membership, not per-raw.
+
+    One retained raw routinely lowers to many independently-arbitrated sessions
+    -- a Claude Code transcript plus its subagent sidechains, a bundle member
+    set. Scoping the refusal to ``raw_id`` alone suppresses every session that
+    raw carries the moment a single sibling membership is ambiguous, turning a
+    fidelity downgrade into outright absence.
+
+    Measured on the live archive when this was caught: 295 raws carry a mix of
+    decisions, together holding 489 sessions whose own membership is not
+    ambiguous, and one raw carries 106 memberships. Their content would have
+    silently vanished at the next full rebuild.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    ambiguous_session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="s-ambiguous",
+        messages=[ParsedMessage(provider_message_id="a-0", role=Role.USER, text="left")],
+    )
+    settled_session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="s-settled",
+        messages=[ParsedMessage(provider_message_id="b-0", role=Role.USER, text="right")],
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"two-sessions", source_path="bundle.json", acquired_at_ms=1
+        )
+        source_conn = archive._ensure_source_conn()
+        with source_conn:
+            # One raw, two memberships, arbitrated differently -- the live shape.
+            source_conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id,
+                    source_revision, normalized_content_hash, message_count,
+                    decision, decided_at_ms
+                ) VALUES (?, 'chatgpt:s-ambiguous', 's-ambiguous', ?, ?, 1, 'ambiguous', 1)
+                """,
+                (raw_id, raw_id, bytes.fromhex(raw_id)),
+            )
+            source_conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id,
+                    source_revision, normalized_content_hash, message_count,
+                    decision, decided_at_ms
+                ) VALUES (?, 'chatgpt:s-settled', 's-settled', ?, ?, 1, 'applied', 1)
+                """,
+                (raw_id, raw_id + "-b", bytes.fromhex(raw_id)),
+            )
+
+        _, ambiguous_session_id = archive.write_parsed_for_retained_raw(
+            ambiguous_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=2
+        )
+        _, settled_session_id = archive.write_parsed_for_retained_raw(
+            settled_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=3
+        )
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        # The ambiguous membership is still refused ...
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?", (ambiguous_session_id,)
+        ).fetchone() == (0,)
+        # ... and its settled sibling on the same raw is not collateral damage.
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (settled_session_id,)).fetchone() == (
+            1,
+        )
+
+
 def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail_string(
     tmp_path: Path,
 ) -> None:
@@ -706,6 +845,65 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
     from polylogue.archive.revision_authority import RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
 
     assert "cross-route full revision governance" in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
+
+
+def test_same_source_path_full_siblings_under_different_keys_are_not_independently_accepted(
+    tmp_path: Path,
+) -> None:
+    """polylogue-eqnv: a raw whose byte-revision identity was assigned by a
+    now-superseded parser (e.g. the pre-#3179/z1c6 dispatch bug that
+    appended a spurious ``-0`` to one of two otherwise-identical Drive
+    re-acquisitions of the same document) can carry a
+    ``logical_source_key`` that DIFFERS from a same-``source_path``
+    sibling's. Neither raw's own key ever surfaces the other in
+    ``raw_membership_retired_full_revision_siblings`` (an exact-key-match
+    query), so ``classify_raw_revision_cohort`` evaluates each key as a
+    trivial one-member chain and unconditionally accepts BOTH as
+    independent byte-proven singleton baselines -- silently splitting one
+    physical document into two sessions that then race on the shared
+    ``(origin, native_id)`` upsert (arbitrary last-writer-wins), instead of
+    ever being compared against each other.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_enriched = archive.write_raw_payload(
+            provider=Provider.GEMINI, payload=b"enriched-bytes", source_path="doc.json", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            raw_enriched,
+            RawRevisionEnvelope(
+                "gemini:doc",
+                RawRevisionKind.FULL,
+                raw_enriched,
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        raw_bare = archive.write_raw_payload(
+            provider=Provider.GEMINI, payload=b"bare-bytes", source_path="doc.json", acquired_at_ms=2
+        )
+        archive.bind_raw_revision(
+            raw_bare,
+            RawRevisionEnvelope(
+                # The stale-parser identity split: same source_path, a
+                # DIFFERENT logical_source_key.
+                "gemini:doc-0",
+                RawRevisionKind.FULL,
+                raw_bare,
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+        enriched_plan = archive.classify_raw_revision_cohort("gemini:doc", check_source_path_identity_split=True)
+        bare_plan = archive.classify_raw_revision_cohort("gemini:doc-0", check_source_path_identity_split=True)
+
+    # Neither key's lone member may be promoted alone: a same-source_path
+    # sibling under a different key means this identity is genuinely
+    # contested, not a clean singleton chain.
+    assert enriched_plan.accepted_raw_ids == ()
+    assert bare_plan.accepted_raw_ids == ()
 
 
 def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
