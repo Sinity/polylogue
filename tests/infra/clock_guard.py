@@ -149,9 +149,14 @@ def _guard_host_clock(request: pytest.FixtureRequest) -> Iterator[None]:
     if _opted_out(request):
         yield
         return
-    if "frozen_clock" in request.fixturenames:
-        yield
-        return
+    # A test requesting ``frozen_clock`` manages the clock itself -- but only
+    # partly. ``freeze_clock`` patches ``time.time``, ``time.monotonic`` and the
+    # ``datetime`` symbol in named modules; it does NOT patch ``time.time_ns``
+    # or ``time.monotonic_ns``. Bailing out entirely therefore left the
+    # nanosecond clocks reachable in exactly the tests most likely to read a
+    # clock. Narrow the guard to what ``freeze_clock`` does not cover instead
+    # of disabling it (caught by review on #3407).
+    frozen = "frozen_clock" in request.fixturenames
 
     module: ModuleType | None = getattr(request, "module", None)
     real_datetime_symbol = getattr(module, "datetime", None) if module is not None else None
@@ -165,12 +170,17 @@ def _guard_host_clock(request: pytest.FixtureRequest) -> Iterator[None]:
     # wrapper — breaking the caller-frame check the wrapper relies on to
     # tell test code from production code.
     patches = [
-        patch("time.time", new=_time_raiser("time.time", _time_module.time)),
-        patch("time.monotonic", new=_time_raiser("time.monotonic", _time_module.monotonic)),
         patch("time.monotonic_ns", new=_time_raiser("time.monotonic_ns", _time_module.monotonic_ns)),
         patch("time.time_ns", new=_time_raiser("time.time_ns", _time_module.time_ns)),
     ]
-    if patch_datetime and module is not None:
+    if not frozen:
+        patches.extend(
+            [
+                patch("time.time", new=_time_raiser("time.time", _time_module.time)),
+                patch("time.monotonic", new=_time_raiser("time.monotonic", _time_module.monotonic)),
+            ]
+        )
+    if not frozen and patch_datetime and module is not None:
         patches.append(patch.object(module, "datetime", _make_raising_datetime(rel_path)))
 
     from contextlib import ExitStack
