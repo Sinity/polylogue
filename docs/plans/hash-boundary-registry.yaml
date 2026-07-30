@@ -1076,12 +1076,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'synthetic block-id fallback; 2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md) Table 3.'
-- path: polylogue/storage/sqlite/archive_tiers/archive.py
+- path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
   function: '<module>._raw_revision_payload_digest_and_size'
   call: hashlib.sha256
   occurrence: 0
   classification: content-hash
-  note: 'raw revision content digest consumed by raw-authority/repair reconciliation.'
+  note: 'raw revision content digest consumed by raw-authority/repair reconciliation (moved from archive_tiers/archive.py, polylogue-1r9c governance extraction).'
 - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
   function: '<module>._catalog_hash'
   call: hashlib.sha256
