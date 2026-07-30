@@ -62,6 +62,25 @@ def _identities(contents: frozenset[tuple[bytes, bytes]]) -> frozenset[bytes]:
     return frozenset(identity for identity, _content in contents)
 
 
+def _content_by_identity(contents: frozenset[tuple[bytes, bytes]]) -> dict[bytes, frozenset[bytes]]:
+    """Group content hashes by identity, retaining EVERY value under a colliding identity.
+
+    Identity is not always injective: two acquired attachments on one
+    message can share one identity (same ``message_id``/``name``/
+    ``mime_type``, different bytes -- the accepted limit documented on
+    ``_ATTACHMENT_IDENTITY_FIELDS``, not a new one). Collapsing such a
+    collision to a single arbitrary content hash (a plain ``dict``, last
+    value wins) would let a real content conflict compare as equal instead.
+    Grouping into a set per identity means a collision always degrades to
+    ``conflict`` when compared against a revision that disagrees, never to
+    ``equal``.
+    """
+    grouped: dict[bytes, set[bytes]] = {}
+    for identity, content in contents:
+        grouped.setdefault(identity, set()).add(content)
+    return {identity: frozenset(values) for identity, values in grouped.items()}
+
+
 def _axis_relation(
     identities_a: frozenset[bytes],
     contents_a: frozenset[tuple[bytes, bytes]],
@@ -77,8 +96,8 @@ def _axis_relation(
     events every identity always carries content, so this degrades to plain
     set equality/containment for those two axes.
     """
-    content_a = dict(contents_a)
-    content_b = dict(contents_b)
+    content_a = _content_by_identity(contents_a)
+    content_b = _content_by_identity(contents_b)
     shared = identities_a & identities_b
     for identity in shared:
         value_a, value_b = content_a.get(identity), content_b.get(identity)
@@ -146,6 +165,58 @@ def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int
     )
 
 
+def _equal_content_representative(
+    incumbent: MembershipRevision, candidate: MembershipRevision
+) -> tuple[MembershipRevision, MembershipRevision]:
+    """Pick (winner, loser) between two revisions already proven ``equal`` in content.
+
+    Equal content is not equal authority: a direct/native export and a
+    browser DOM scrape can project to byte-identical messages while one is
+    first-class provenance and the other is a lossy capture, and which one
+    survives as the representative determines what future re-acquisitions
+    are compared against. Source authority is therefore decided BEFORE any
+    timestamp tiebreak -- mirroring, for the equal case, the same
+    ``_direct_export_precedence`` / browser-fidelity ordering
+    (``_browser_snapshot_dominates``) already applied to the non-equal
+    growth-chain case below: a direct export always outranks a
+    browser-capture sibling, and a native browser snapshot always outranks a
+    DOM snapshot of the same underlying session. Only when neither
+    revision's provenance outranks the other's does provider timestamp (and
+    finally a stable raw_id) decide, exactly as before this function
+    existed.
+    """
+    incumbent_direct = incumbent.browser_snapshot_fidelity is None
+    candidate_direct = candidate.browser_snapshot_fidelity is None
+    if incumbent_direct != candidate_direct:
+        return (incumbent, candidate) if incumbent_direct else (candidate, incumbent)
+    if (
+        not incumbent_direct
+        and not candidate_direct
+        and incumbent.browser_snapshot_fidelity != candidate.browser_snapshot_fidelity
+    ):
+        return (incumbent, candidate) if incumbent.browser_snapshot_fidelity == "native" else (candidate, incumbent)
+    incumbent_time = parse_timestamp(incumbent.provider_updated_at)
+    candidate_time = parse_timestamp(candidate.provider_updated_at)
+    if (
+        incumbent_time is not None
+        and candidate_time is not None
+        and candidate_time.timestamp() != incumbent_time.timestamp()
+    ):
+        return (
+            (candidate, incumbent)
+            if candidate_time.timestamp() > incumbent_time.timestamp()
+            else (incumbent, candidate)
+        )
+    # No distinguishing provenance or provider timestamp -- these two are
+    # already proven identical content, so which raw_id represents them does
+    # not matter for correctness; pick deterministically rather than
+    # requiring a timestamp that a re-export of an untouched conversation
+    # may never carry (its own provider updated_at legitimately does not
+    # move when nothing provider-visible changed).
+    winner, loser = sorted((incumbent, candidate), key=lambda item: item.raw_id)
+    return winner, loser
+
+
 def classify_membership_revisions(revisions: list[MembershipRevision]) -> MembershipClassification:
     """Accept one total growth chain by set containment; never choose a branch silently.
 
@@ -182,27 +253,7 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
             representatives.append(revision)
             continue
         incumbent = representatives[match_index]
-        incumbent_time = parse_timestamp(incumbent.provider_updated_at)
-        candidate_time = parse_timestamp(revision.provider_updated_at)
-        if (
-            incumbent_time is not None
-            and candidate_time is not None
-            and candidate_time.timestamp() != incumbent_time.timestamp()
-        ):
-            winner, loser = (
-                (revision, incumbent)
-                if candidate_time.timestamp() > incumbent_time.timestamp()
-                else (incumbent, revision)
-            )
-        else:
-            # No distinguishing provider timestamp -- these two are already
-            # proven identical content, so which raw_id represents them does
-            # not matter for correctness; pick deterministically rather than
-            # requiring a timestamp that a re-export of an untouched
-            # conversation may never carry (its own provider updated_at
-            # legitimately does not move when nothing provider-visible
-            # changed).
-            winner, loser = sorted((incumbent, revision), key=lambda item: item.raw_id)
+        winner, loser = _equal_content_representative(incumbent, revision)
         representatives[match_index] = winner
         equivalents.append(loser.raw_id)
 

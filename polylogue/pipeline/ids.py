@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import unicodedata
-from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
@@ -325,9 +324,25 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
     messages, on a different axis (polylogue-nuec). This never includes
     ``event_index``; ``session_revision_projection`` builds identity purely
     from this content plus the event's own type and anchoring message.
+
+    The allowlist strip is narrowed to the specific provider-remeasured
+    shape it targets: it applies only when the event's own payload declares
+    itself non-durable via ``duration_semantics ==
+    "provider_reported_elapsed"`` (set by the ChatGPT parser). The
+    browser-capture parser emits the SAME ``event_type`` for its own DOM/UI
+    generation observations, tagged with a different ``duration_semantics``
+    (e.g. ``dom_observed_wall``, ``provider_ui_elapsed``) -- those are a real
+    first-party measurement this projection has no other record of, not the
+    re-derived-on-every-export ChatGPT value nuec exists for, so their
+    observation id, timestamp, and duration/label/trigger fields remain
+    content rather than being silently stripped.
     """
     allowlist = _EVENT_CONTENT_PAYLOAD_ALLOWLIST.get(event.event_type)
-    if allowlist is None:
+    provider_reported_elapsed = (
+        allowlist is not None
+        and event.payload.get(_PROVIDER_REPORTED_ELAPSED_MARKER_KEY) == _PROVIDER_REPORTED_ELAPSED_MARKER_VALUE
+    )
+    if allowlist is None or not provider_reported_elapsed:
         payload = event.payload
         timestamp = event.timestamp
     else:
@@ -348,12 +363,14 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
 
 #: The subset of an event content payload that answers *which event slot is
 #: this*, as opposed to *what does it say*: anchoring message plus event
-#: type, content-derived and never the array index. Ambiguous within one
-#: revision when more than one event shares both (e.g. multiple
-#: ``chatgpt_block_metadata`` events on the same message, one per block) --
-#: ``session_revision_projection`` folds the event's own content hash into
-#: identity for those specific events, which is STILL content-derived (each
-#: block's own content, including any content-intrinsic field such as
+#: type, content-derived and never the array index. Can be shared by more
+#: than one event within one revision (e.g. multiple
+#: ``chatgpt_block_metadata`` events on the same message, one per block), so
+#: ``session_revision_projection`` always folds the event's own content hash
+#: into the FINAL identity on top of this base -- unconditionally, not only
+#: when a sibling is present in that particular revision, so identity never
+#: depends on what else happens to be in the set. Still content-derived
+#: (each block's own content, including any content-intrinsic field such as
 #: ``block_index``, already differs), never the array position.
 _EVENT_BASE_IDENTITY_FIELDS = ("event_type", "source_message_provider_id")
 
@@ -513,21 +530,27 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         content_payload = _event_content_payload(event)
         event_base_identities.append(bytes.fromhex(hash_payload(_event_base_identity_payload(content_payload))))
         event_content_hashes.append(bytes.fromhex(hash_payload(content_payload)))
-    base_identity_counts = Counter(event_base_identities)
     event_contents: set[tuple[bytes, bytes]] = set()
     for base_identity, content_hash in zip(event_base_identities, event_content_hashes, strict=True):
-        # A base identity (event type + anchoring message) ambiguous within
-        # this revision -- more than one event shares it, e.g. one
-        # chatgpt_block_metadata event per block on a message -- folds the
-        # event's own content into identity to disambiguate. Still
-        # content-derived, never the array index: distinct blocks already
-        # differ in content (e.g. a content-intrinsic block_index), and
-        # events that are genuine duplicates (same base identity, same
-        # content) correctly collapse to one set entry either way.
-        canonical_identity = (
-            base_identity
-            if base_identity_counts[base_identity] == 1
-            else bytes.fromhex(hash_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
+        # A base identity (event type + anchoring message) is ambiguous
+        # whenever it is EVER possible for more than one event to share it
+        # (e.g. one chatgpt_block_metadata event per block on a message), so
+        # the event's own content is always folded into identity here --
+        # unconditionally, not only when a sibling happens to be present in
+        # THIS revision. An item's identity must not depend on what else is
+        # in the set: computing it from this revision's own sibling count
+        # made the same event's identity shift between `base_identity` (one
+        # instance) and `hash(base_identity, content)` (two or more) purely
+        # because a sibling appeared in a later revision, which made an
+        # ordinary event-growth revision compare as a disjoint conflict
+        # instead of containment. Folding content in always keeps identity
+        # intrinsic to the event itself: still content-derived, never the
+        # array index (distinct blocks already differ in content, e.g. a
+        # content-intrinsic block_index), and true duplicates (same base
+        # identity, same content, whether or not any sibling exists)
+        # correctly collapse to one set entry either way.
+        canonical_identity = bytes.fromhex(
+            hash_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()})
         )
         event_contents.add((canonical_identity, content_hash))
     return SessionRevisionProjection(
