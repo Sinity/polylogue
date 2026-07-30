@@ -1668,6 +1668,39 @@ class ArchiveStore:
                 content_changed=False,
                 counts=self._skipped_counts(session),
             )
+        # polylogue-c737: ``governed`` above only catches a logical
+        # identity with an ACCEPTED revision-authority head
+        # (``raw_revision_heads``, populated by
+        # ``apply_raw_membership_classification``/``apply_raw_revision_replay``
+        # only when a cohort has a winner). A cohort that ``classify_
+        # membership_revisions`` refused to arbitrate -- genuinely
+        # ``raw_session_memberships.decision = 'ambiguous'`` -- never gets an
+        # accepted head, so ``governed`` stays ``None`` here even though this
+        # raw's own identity is recorded authority debt. Falling through to
+        # the ordinary browser-capture-precedence/freshness logic below then
+        # writes this raw's session unconditionally on its next parse --
+        # last-writer-wins, exactly the "never silently choose between
+        # branches" invariant this whole subsystem exists to enforce, and
+        # the fidelity-losing side of an aistudio-drive ambiguous pair reaches
+        # the index every time this reparses (measured live: 28 cohorts, 641
+        # attachments reported unfetched despite the bytes existing in the
+        # blob store). Refuse this raw explicitly instead of relying on an
+        # absent head to imply "unclaimed, free to write".
+        ambiguous_membership = (
+            self._ensure_source_conn()
+            .execute(
+                "SELECT 1 FROM raw_session_memberships WHERE raw_id = ? AND decision = 'ambiguous' LIMIT 1",
+                (raw_id,),
+            )
+            .fetchone()
+        )
+        if ambiguous_membership is not None:
+            return ArchiveRawParsedWriteResult(
+                raw_id=raw_id,
+                session_id=session_id,
+                content_changed=False,
+                counts=self._skipped_counts(session),
+            )
 
         if source_index >= 0 and existing_raw_id and raw_id and existing_raw_id != raw_id:
             existing_is_dom_fallback = session_has_parser_ingest_flag(
