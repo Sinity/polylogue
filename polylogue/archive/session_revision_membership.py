@@ -229,15 +229,16 @@ def _message_evidence_preserved(
     export to the next even though every message's id, role, text, and
     timestamp are byte-identical (polylogue-c429). Array position is
     therefore not treated as identity here: this checks only that every
-    message id present in ``older`` is still present in ``newer`` and still
-    maps to the same content, mirroring ``_attachment_evidence_preserved``'s
-    identity/content split. An id whose content actually changed, or an id
-    that disappeared, is real divergence and is refused.
+    ``(identity, content)`` pair present in ``older`` is still present in
+    ``newer``. Unlike attachments, a message is never lazily fetched -- its
+    content is always known when it exists -- so there is no separate
+    identity-only membership to check: an id that disappeared from ``newer``
+    fails this lookup on its own (``.get()`` returns ``None``, which never
+    equals a real content hash), and an id whose content actually changed
+    fails it too. Both are real divergence and are refused.
     """
     newer_contents = dict(newer.message_contents)
-    return older.message_identities <= newer.message_identities and all(
-        newer_contents.get(identity) == content for identity, content in older.message_contents
-    )
+    return all(newer_contents.get(identity) == content for identity, content in older.message_contents)
 
 
 def _attachment_evidence_preserved(

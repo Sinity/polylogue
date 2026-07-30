@@ -51,17 +51,19 @@ class SessionRevisionProjection:
     axes lets a dominance test say what is actually true -- same attachments,
     strictly more of their bytes now known (polylogue-bu1i).
 
-    Messages get the same identity/content split, for the same reason applied
-    to a different volatility source: a provider's own export can replay an
+    Messages get an analogous split, for the same reason applied to a
+    different volatility source: a provider's own export can replay an
     unchanged message set in a different array sequence across separate export
     requests (Claude.ai's own tree flattening is not guaranteed to serialize
-    the same way twice). ``message_identities`` answers *which message is
-    this* (its provider message id); ``message_contents`` pairs that identity
-    with a hash of its content (role/text/timestamp/blocks). Order lives only
-    in ``message_hashes`` (kept for ``session_hash`` and diagnostics) -- the
-    identity/content axes are order-insensitive by construction, so a bare
-    permutation of the same id-to-content mapping is not read as divergence
-    (polylogue-c429).
+    the same way twice). ``message_contents`` pairs each message's identity
+    hash (its provider message id) with a hash of its content
+    (role/text/timestamp/blocks) -- unlike an attachment, a message is never
+    lazily fetched, so there is no separate identity-only axis to track:
+    ``message_contents`` alone answers both *which messages exist* and *what
+    do they say*. Order lives only in ``message_hashes`` (kept for
+    ``session_hash`` and diagnostics) -- ``message_contents`` is
+    order-insensitive by construction, so a bare permutation of the same
+    id-to-content mapping is not read as divergence (polylogue-c429).
 
     ``event_identity_hashes`` strips designated provider-reported-measurement
     fields (see ``_PROVIDER_REPORTED_ELAPSED_VOLATILE_PAYLOAD_KEYS``) out of
@@ -78,7 +80,6 @@ class SessionRevisionProjection:
 
     session_hash: bytes
     message_hashes: tuple[bytes, ...]
-    message_identities: frozenset[bytes]
     message_contents: frozenset[tuple[bytes, bytes]]
     attachment_identities: frozenset[bytes]
     attachment_contents: frozenset[tuple[bytes, bytes]]
@@ -406,9 +407,9 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     generation-duration measurement (polylogue-nuec): ``session_hash`` still
     covers the full, order-sensitive message array and the full,
     unstripped event payload/timestamp, so a real reorder or a real duration
-    change still triggers a re-write. Only ``message_identities`` /
-    ``message_contents`` / ``event_identity_hashes`` -- the *revision
-    comparison* axes -- are tolerant of the volatility each bug describes.
+    change still triggers a re-write. Only ``message_contents`` /
+    ``event_identity_hashes`` -- the *revision comparison* axes -- are
+    tolerant of the volatility each bug describes.
     """
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
     session_hash_hex = _session_tree_hash(
@@ -417,13 +418,11 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachments_payload=attachments_payload,
         session_events_payload=session_events_payload,
     )
-    message_identities: set[bytes] = set()
     message_contents: set[tuple[bytes, bytes]] = set()
     message_hashes: list[bytes] = []
     for payload in messages_payload:
         identity = bytes.fromhex(hash_payload(_message_identity_payload(payload)))
         content = bytes.fromhex(hash_payload(payload))
-        message_identities.add(identity)
         message_contents.add((identity, content))
         message_hashes.append(content)
     attachment_identities: set[bytes] = set()
@@ -442,7 +441,6 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),
         message_hashes=tuple(message_hashes),
-        message_identities=frozenset(message_identities),
         message_contents=frozenset(message_contents),
         attachment_identities=frozenset(attachment_identities),
         attachment_contents=frozenset(attachment_contents),

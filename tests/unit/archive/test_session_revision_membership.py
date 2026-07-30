@@ -8,7 +8,7 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
 def _revision(raw_id: str, *texts: str) -> MembershipRevision:
@@ -165,7 +165,6 @@ def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> No
     older_projection = older.projection.__class__(
         session_hash=b"o" * 32,
         message_hashes=older.projection.message_hashes,
-        message_identities=older.projection.message_identities,
         message_contents=older.projection.message_contents,
         event_hashes=older.projection.event_hashes,
         event_identity_hashes=older.projection.event_identity_hashes,
@@ -230,7 +229,6 @@ def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_u
     newer_projection = newer.projection.__class__(
         session_hash=b"n" * 32,
         message_hashes=newer.projection.message_hashes,
-        message_identities=newer.projection.message_identities,
         message_contents=newer.projection.message_contents,
         event_hashes=newer.projection.event_hashes,
         event_identity_hashes=newer.projection.event_identity_hashes,
@@ -408,3 +406,386 @@ def test_refuses_contradicted_bytes_even_when_the_revision_otherwise_grew() -> N
     result = classify_membership_revisions([older, newer])
     assert result.accepted_raw_ids == ()
     assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+
+
+def _ordered_message_revision(raw_id: str, *id_text_pairs: tuple[str, str]) -> MembershipRevision:
+    """A session whose messages carry explicit provider ids in a given array order.
+
+    Unlike ``_revision`` (which derives sequential ids from position), this lets
+    a test hold the id-to-content mapping fixed while varying only array order.
+    """
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session",
+        messages=[
+            ParsedMessage(provider_message_id=provider_id, role=Role.USER, text=text)
+            for provider_id, text in id_text_pairs
+        ],
+    )
+    return MembershipRevision(raw_id, session_revision_projection(session))
+
+
+def test_accepts_reordered_message_array_with_identical_content_as_equivalent() -> None:
+    """Same message ids, byte-identical content per id, different array order.
+
+    Reproduces the exact shape measured on the live archive: Claude.ai's own
+    export ordering for a conversation is not guaranteed stable across separate
+    export requests -- 21 of 40 sampled claude-ai-export ambiguous cohorts
+    (52.5%) had the same 36 message ids with identical {role,text,timestamp}
+    per id, just resequenced (polylogue-c429). A strict positional-prefix
+    dominance test refuses both directions and quarantines the whole cohort;
+    this must instead resolve as equivalent content.
+    """
+    chronological = _ordered_message_revision("raw-chrono", ("a", "one"), ("b", "two"), ("c", "three"))
+    resequenced = _ordered_message_revision("raw-resequenced", ("b", "two"), ("a", "one"), ("c", "three"))
+
+    assert chronological.projection.message_hashes != resequenced.projection.message_hashes
+    assert chronological.projection.message_contents == resequenced.projection.message_contents
+
+    # Same-content-key revisions still need a provider timestamp to pick a
+    # representative (matching the pre-existing metadata_variants mechanism,
+    # e.g. test_metadata_only_revision_uses_latest_provider_timestamp) -- the
+    # permutation-tolerant key gets them INTO that mechanism at all, which is
+    # the fix; it does not bypass the timestamp requirement.
+    chronological = MembershipRevision(chronological.raw_id, chronological.projection, "2026-01-01T00:00:00Z")
+    resequenced = MembershipRevision(resequenced.raw_id, resequenced.projection, "2026-01-02T00:00:00Z")
+
+    result = classify_membership_revisions([chronological, resequenced])
+
+    assert result.accepted_raw_ids == ("raw-resequenced",)
+    assert result.equivalent_raw_ids == ("raw-chrono",)
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_accepts_message_growth_across_a_reordered_prefix() -> None:
+    """A genuinely appended message is still growth even when the shared ids reorder.
+
+    The permutation tolerance must not swallow real append-only growth: the
+    newer revision keeps every id-to-content pair from the older revision (just
+    resequenced) and adds one new id.
+    """
+    older = _ordered_message_revision("raw-old", ("b", "two"), ("a", "one"))
+    newer = _ordered_message_revision("raw-new", ("a", "one"), ("c", "three"), ("b", "two"))
+
+    assert _strictly_dominates(older.projection, newer.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ("raw-old", "raw-new")
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_refuses_message_content_change_under_a_shared_id_despite_reorder() -> None:
+    """Permutation tolerance must not launder a real content change.
+
+    Same id set, resequenced, but one shared id's text actually differs -- that
+    is genuine divergence (an edit, not export nondeterminism) and must stay
+    ambiguous, not be waved through by the order-insensitive comparison.
+    """
+    older = _ordered_message_revision("raw-old", ("a", "one"), ("b", "two"))
+    newer = _ordered_message_revision("raw-new", ("b", "two"), ("a", "EDITED"))
+
+    assert not _strictly_dominates(older.projection, newer.projection)
+    assert not _strictly_dominates(newer.projection, older.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_refuses_message_content_change_even_when_the_revision_otherwise_grew() -> None:
+    """Growth elsewhere must not launder a contradicted message.
+
+    The equal-count case above is already refused by the growth test itself
+    (``content_grew`` is ``False`` on both sides, since a same-id edit doesn't
+    change the message count), which leaves the content-agreement clause in
+    ``_message_evidence_preserved`` unexercised and therefore unproven -- the
+    same trap the disappearing-id growth test above closes for the identity
+    axis. This is the shape that genuinely needs it: the newer revision has
+    one more message than the older one (real growth) while also rewriting
+    the text under a shared id.
+    """
+    older = _ordered_message_revision("raw-old", ("a", "one"), ("b", "two"))
+    newer = _ordered_message_revision("raw-new", ("a", "EDITED"), ("b", "two"), ("c", "three"))
+
+    # The count really did grow, so the refusal cannot come from there.
+    assert len(newer.projection.message_contents) > len(older.projection.message_contents)
+    assert not _strictly_dominates(older.projection, newer.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_refuses_message_id_disappearing_despite_reorder() -> None:
+    """A message id present in the older revision but absent from the newer one
+    is a real loss, not a reorder -- must stay ambiguous even though the
+    remaining ids' content and count could otherwise look like a permutation.
+    """
+    older = _ordered_message_revision("raw-old", ("a", "one"), ("b", "two"))
+    newer = _ordered_message_revision("raw-new", ("b", "two"), ("c", "three"))
+
+    assert not _strictly_dominates(older.projection, newer.projection)
+    assert not _strictly_dominates(newer.projection, older.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_refuses_message_id_disappearing_even_when_the_revision_otherwise_grew() -> None:
+    """Growth elsewhere must not launder a lost message id.
+
+    The equal-count case above is already refused by the growth test itself
+    (``content_grew`` is ``False`` on both sides), which leaves the identity-
+    subset clause in ``_message_evidence_preserved`` unexercised and therefore
+    unproven -- the same trap ``test_refuses_contradicted_bytes_even_when_the_
+    revision_otherwise_grew`` closes for attachments. This is the shape that
+    genuinely needs it: the newer revision has one more message than the older
+    one (real growth on the count axis) while dropping an id the older
+    revision had. Accepting that would silently discard a real message under
+    cover of a legitimate-looking frontier advance.
+    """
+    older = _ordered_message_revision("raw-old", ("a", "one"), ("b", "two"))
+    newer = _ordered_message_revision("raw-new", ("a", "one"), ("c", "three"), ("d", "four"))
+
+    # The count really did grow, so the refusal cannot come from there.
+    assert len(newer.projection.message_contents) > len(older.projection.message_contents)
+    assert not _strictly_dominates(older.projection, newer.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_message_reorder_does_change_the_session_content_hash() -> None:
+    """Order tolerance must not leak into idempotency.
+
+    ``session_hash`` must stay order-sensitive: if two array orderings of the
+    same messages hashed identically, a real reorder written by the archive's
+    own writer path (a legitimate content change worth re-indexing) would be
+    silently skipped as unchanged on re-ingest.
+    """
+    chronological = _ordered_message_revision("raw-chrono", ("a", "one"), ("b", "two"))
+    resequenced = _ordered_message_revision("raw-resequenced", ("b", "two"), ("a", "one"))
+
+    assert chronological.projection.session_hash != resequenced.projection.session_hash
+    assert {identity for identity, _content in chronological.projection.message_contents} == {
+        identity for identity, _content in resequenced.projection.message_contents
+    }
+
+
+def _generation_lifecycle_revision(raw_id: str, elapsed_duration_ms: int) -> MembershipRevision:
+    """A ChatGPT-shaped session with one `generation_lifecycle` event.
+
+    Mirrors the exact shape ``polylogue/sources/parsers/chatgpt.py`` emits:
+    ``duration_semantics: "provider_reported_elapsed"`` marking
+    ``elapsed_duration_ms`` as provider-remeasured evidence, not identity.
+    """
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="generation_lifecycle",
+                timestamp=str(elapsed_duration_ms / 1000),
+                source_message_provider_id="0",
+                payload={
+                    "state": "completed",
+                    "evidence_source": "provider_native",
+                    "fidelity": "exact",
+                    "duration_semantics": "provider_reported_elapsed",
+                    "elapsed_duration_ms": elapsed_duration_ms,
+                },
+            )
+        ],
+    )
+    return MembershipRevision(raw_id, session_revision_projection(session))
+
+
+def test_accepts_generation_lifecycle_duration_change_as_equivalent() -> None:
+    """Byte-identical transcript, only a provider-remeasured duration differs.
+
+    Reproduces the shape measured on the live archive: 33 of 35 sampled
+    chatgpt-export ambiguous cohorts (94%) had identical messages and
+    attachments but a `generation_lifecycle` event whose `elapsed_duration_ms`
+    varied non-monotonically between export requests for the SAME generation
+    (polylogue-nuec). This must resolve as equivalent content, not stay
+    quarantined as a branch.
+    """
+    first_export = _generation_lifecycle_revision("raw-first", 13000)
+    second_export = _generation_lifecycle_revision("raw-second", 21000)
+
+    assert first_export.projection.event_hashes != second_export.projection.event_hashes
+    assert first_export.projection.event_identity_hashes == second_export.projection.event_identity_hashes
+    assert first_export.projection.session_hash != second_export.projection.session_hash
+
+    # Same-content-key revisions still need a provider timestamp to pick a
+    # representative (matching the pre-existing metadata_variants mechanism) --
+    # the measurement-tolerant key gets them INTO that mechanism at all, which
+    # is the fix; it does not bypass the timestamp requirement.
+    first_export = MembershipRevision(first_export.raw_id, first_export.projection, "2026-01-01T00:00:00Z")
+    second_export = MembershipRevision(second_export.raw_id, second_export.projection, "2026-01-02T00:00:00Z")
+
+    result = classify_membership_revisions([first_export, second_export])
+
+    assert result.accepted_raw_ids == ("raw-second",)
+    assert result.equivalent_raw_ids == ("raw-first",)
+    assert result.ambiguous_raw_ids == ()
+
+
+def test_refuses_generation_lifecycle_state_change_despite_duration_tolerance() -> None:
+    """Duration tolerance must not launder every field of the event as noise.
+
+    Only the designated measurement keys (and the timestamp they derive) are
+    excluded from identity -- a genuinely different ``state`` on the same event
+    is real divergence and must stay ambiguous.
+    """
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="generation_lifecycle",
+                timestamp="13.0",
+                source_message_provider_id="0",
+                payload={
+                    "state": "completed",
+                    "evidence_source": "provider_native",
+                    "fidelity": "exact",
+                    "duration_semantics": "provider_reported_elapsed",
+                    "elapsed_duration_ms": 13000,
+                },
+            )
+        ],
+    )
+    changed_state = session.model_copy(
+        update={
+            "session_events": [
+                ParsedSessionEvent(
+                    event_type="generation_lifecycle",
+                    timestamp="13.0",
+                    source_message_provider_id="0",
+                    payload={
+                        "state": "in_progress",
+                        "evidence_source": "provider_native",
+                        "fidelity": "exact",
+                        "duration_semantics": "provider_reported_elapsed",
+                        "elapsed_duration_ms": 13000,
+                    },
+                )
+            ]
+        }
+    )
+    older = MembershipRevision("raw-old", session_revision_projection(session))
+    newer = MembershipRevision("raw-new", session_revision_projection(changed_state))
+
+    assert older.projection.event_identity_hashes != newer.projection.event_identity_hashes
+    assert not _strictly_dominates(older.projection, newer.projection)
+    assert not _strictly_dominates(newer.projection, older.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_generation_lifecycle_duration_change_does_change_the_session_content_hash() -> None:
+    """Measurement tolerance must not leak into idempotency.
+
+    The real provider-reported duration is still archive evidence worth
+    keeping and re-indexing when it changes -- only *revision comparison* is
+    tolerant of it, not ``session_hash``.
+    """
+    first_export = _generation_lifecycle_revision("raw-first", 13000)
+    second_export = _generation_lifecycle_revision("raw-second", 21000)
+
+    assert first_export.projection.session_hash != second_export.projection.session_hash
+
+
+def test_non_provider_reported_event_duration_field_stays_load_bearing() -> None:
+    """The volatile-key exclusion is scoped to `duration_semantics ==
+    "provider_reported_elapsed"` events only -- an unrelated event type that
+    happens to carry a same-named field is not touched, so a real difference
+    there still counts as divergence.
+    """
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="chatgpt_block_metadata",
+                timestamp="13.0",
+                source_message_provider_id="0",
+                payload={"elapsed_duration_ms": 13000},
+            )
+        ],
+    )
+    other_value = session.model_copy(
+        update={
+            "session_events": [
+                ParsedSessionEvent(
+                    event_type="chatgpt_block_metadata",
+                    timestamp="13.0",
+                    source_message_provider_id="0",
+                    payload={"elapsed_duration_ms": 21000},
+                )
+            ]
+        }
+    )
+    older = MembershipRevision("raw-old", session_revision_projection(session))
+    newer = MembershipRevision("raw-new", session_revision_projection(other_value))
+
+    assert older.projection.event_identity_hashes != newer.projection.event_identity_hashes
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+
+
+def test_refuses_event_growth_that_is_not_append_only() -> None:
+    """Measurement tolerance on ``generation_lifecycle`` must not turn the event
+    axis's prefix check into a bare count comparison.
+
+    The newer revision has more events than the older one (real growth on the
+    count axis), but the extra event is *prepended*, not appended -- the
+    older revision's one event is not a positional prefix of the newer
+    revision's two. That is a real reshuffle of the event timeline, not
+    ordinary append growth, and must stay ambiguous.
+    """
+    shared_event = ParsedSessionEvent(
+        event_type="generation_lifecycle",
+        timestamp="13.0",
+        source_message_provider_id="0",
+        payload={
+            "state": "completed",
+            "evidence_source": "provider_native",
+            "fidelity": "exact",
+            "duration_semantics": "provider_reported_elapsed",
+            "elapsed_duration_ms": 13000,
+        },
+    )
+    prepended_event = ParsedSessionEvent(
+        event_type="chatgpt_block_metadata",
+        timestamp="1.0",
+        source_message_provider_id="0",
+        payload={"block_index": 0},
+    )
+    older_session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="session",
+        messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+        session_events=[shared_event],
+    )
+    newer_session = older_session.model_copy(update={"session_events": [prepended_event, shared_event]})
+
+    older = MembershipRevision("raw-old", session_revision_projection(older_session))
+    newer = MembershipRevision("raw-new", session_revision_projection(newer_session))
+
+    assert len(newer.projection.event_identity_hashes) > len(older.projection.event_identity_hashes)
+    assert not _strictly_dominates(older.projection, newer.projection)
+
+    result = classify_membership_revisions([older, newer])
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
