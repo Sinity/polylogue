@@ -32,6 +32,10 @@ from polylogue.archive.query.execution_control import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-z9gh.1 execution-control tests measure real elapsed wall-clock by contract: cancellation/deadline abort SLOs against a genuinely running SQLite statement, event-loop heartbeat gaps during worker-thread offload, and cross-thread admission queue waits. frozen_clock cannot substitute for real thread scheduling and SQLite progress-handler cadence."
+)
+
 if TYPE_CHECKING:
     pass
 

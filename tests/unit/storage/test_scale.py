@@ -26,6 +26,10 @@ from polylogue.api import Polylogue
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Scale-tier benchmarks (#1183) measure real wall-clock to enforce growth-shape SLOs."
+)
+
 # 200 is enough to expose N+1 patterns while keeping tests reasonably fast.
 SCALE_COUNT = 200
 

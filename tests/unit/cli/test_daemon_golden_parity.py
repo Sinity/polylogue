@@ -31,6 +31,10 @@ from click.testing import CliRunner
 
 from tests.infra.storage_records import SessionBuilder
 
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-20d.1 golden-parity test starts a real UDS daemon server in a background thread and polls its readiness with a bounded wall-clock deadline before comparing direct vs daemon-proxied CLI output; frozen_clock cannot substitute for waiting on real socket/thread startup."
+)
+
 
 @pytest.fixture
 def golden_parity_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:

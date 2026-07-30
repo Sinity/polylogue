@@ -28,6 +28,8 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
+pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at is opaque metadata.")
+
 WorkspacePaths = dict[str, Path]
 SessionPayload = dict[str, JSONValue]
 VisitSourcesCallback = Callable[[RawSessionRecord], Awaitable[None]]

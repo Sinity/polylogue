@@ -26,6 +26,10 @@ from polylogue.storage.blob_gc import MIN_AGE_S, run_blob_gc
 from polylogue.storage.sqlite.connection_profile import open_connection
 from tests.infra.frozen_clock import FrozenClock
 
+pytestmark = pytest.mark.uses_real_clock(
+    "#1746/#1830 GC generation-gate tests backdate blob mtime with time.time(); production GC reads file mtime, not datetime.now()."
+)
+
 
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
