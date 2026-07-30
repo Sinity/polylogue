@@ -151,6 +151,40 @@ def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path
     assert sessions[0].messages[0].text == "hi"
 
 
+@pytest.mark.parametrize(
+    "source_path_suffix",
+    [
+        "subagents/agent-deadbeef.meta.json",
+        "workflows/wf-run-1.json",
+        "subagents/workflows/wf-run-1/journal.jsonl",
+        "jobs/session-a/adopt.json",
+    ],
+)
+def test_parse_one_refuses_declared_fact_artifacts(tmp_path: Path, source_path_suffix: str) -> None:
+    """Regression for polylogue-b508: OriginSpec-declared "fact" artifacts
+    (agent-*.meta.json sidecars, workflow run snapshots/journals, adopt
+    manifests) must never become a session through this replay engine, the
+    same way the live daemon's ingest path already refuses them.
+
+    Before this fix, ``_parse_one``/``_parse_stream`` had no OriginSpec
+    awareness at all: a full ``polylogue ops reset --index`` rebuild replayed
+    every retained raw -- including these declared-fact sidecars, which are
+    deliberately admitted as raw authority even though they are never meant
+    to be session-parsed -- straight through ``parse_payload``/
+    ``parse_stream_payload``, recreating the exact ``<agent>.meta`` phantom
+    session rows the live path already excludes. Verified against a real
+    fixture corpus: rebuilding an index from 9 real Claude Code files (4
+    agent-*.meta.json sidecars among them) produced 4 phantom sessions before
+    this fix and 0 after.
+    """
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "sess" / source_path_suffix
+    payload = json.dumps({"agentId": "agent-deadbeef", "transcriptPath": "agent-deadbeef.jsonl"}).encode("utf-8")
+
+    sessions = _parse_one(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert sessions == []
+
+
 def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> None:
     """End-to-end proof that the historical-repair entry point (which always
     has a real on-disk blob path, unlike the direct-bytes test above) also
