@@ -77,3 +77,48 @@ def test_symlink_leaving_the_archive_is_still_followed(tmp_path: Path) -> None:
     store = IndexGenerationStore.for_archive_root(root)
 
     assert store.active_pointer == real / "index.db"
+
+
+def test_farm_target_directly_inside_a_similarly_named_directory_is_followed(tmp_path: Path) -> None:
+    """A name match alone must not condemn a valid pointer.
+
+    Rejecting any path that merely mentions `.index-generations` treats a
+    legitimate symlink-farm target that happens to sit in a directory of that
+    name as poisoned, and silently rewrites the pointer back to a stale local
+    `index.db`. What actually breaks the invariant is being *inside a
+    generation*, one level deeper -- because `generations_root` derives from the
+    pointer's parent. A file sitting directly in such a directory derives
+    self-consistent roots and is fine.
+    """
+    real = tmp_path / "outside" / ".index-generations"
+    real.mkdir(parents=True)
+    (real / "index.db").write_bytes(b"")
+    root = tmp_path / "farm"
+    root.mkdir()
+    (root / "index.db").symlink_to(real / "index.db")
+
+    store = IndexGenerationStore.for_archive_root(root)
+
+    assert store.active_pointer == real / "index.db"
+    assert store.generations_root == real / ".index-generations"
+
+
+def test_farm_target_inside_another_archives_generation_is_refused(tmp_path: Path) -> None:
+    """Depth, not the directory name, is the invariant -- and it holds off-archive too.
+
+    A farm whose `index.db` points into some *other* archive's generation would
+    derive `generations_root` as `<gen>/.index-generations`, the same nested
+    nonsense the local case produced. Narrowing the check to depth must not
+    narrow it to locality.
+    """
+    foreign_generation = tmp_path / "other" / ".index-generations" / "gen-1784807190100-34534407"
+    foreign_generation.mkdir(parents=True)
+    (foreign_generation / "index.db").write_bytes(b"")
+    root = tmp_path / "farm"
+    root.mkdir()
+    (root / "index.db").symlink_to(foreign_generation / "index.db")
+
+    store = IndexGenerationStore.for_archive_root(root)
+
+    assert store.active_pointer == root / "index.db"
+    assert store.generations_root == root / ".index-generations"
