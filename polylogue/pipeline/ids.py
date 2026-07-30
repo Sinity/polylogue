@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
@@ -30,90 +31,64 @@ _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
 HashScalar: TypeAlias = str | int | float | bool | None
 
-#: One attachment's (strict identity, loose/id-independent identity, content
-#: hash or ``None`` if unacquired) triple -- see ``SessionRevisionProjection``
-#: for why the comparison layer needs both identities (polylogue-d8al).
-AttachmentRecord: TypeAlias = tuple[bytes, bytes, bytes | None]
-
 
 @dataclass(frozen=True, slots=True)
 class SessionRevisionProjection:
-    """Canonical content hashes used to prove append-only session growth.
+    """Canonical content-only comparison value for a session revision.
 
-    Attachments are projected on two axes deliberately, because folding them
-    into one hash makes acquisition look like divergence. ``attachment_identities``
-    answers *which attachment is this* (provider id, anchoring message, name,
-    media type) and never changes once a provider has emitted the reference.
-    ``attachment_contents`` answers *have we read its bytes yet, and which bytes*
-    -- it carries an ``(identity, content)`` pair only for attachments whose
-    bytes are actually in hand.
+    One invariant governs every field below: *a conversation is a SET of
+    items keyed by content-derived identity, each carrying only
+    content-bearing fields -- nothing else may enter the value used to
+    compare two acquisitions of it* (polylogue-aggz). Concretely:
 
-    A single hash over both axes made an ordinary lazy fetch indistinguishable
-    from a branch: a Drive/Gemini document acquired before and after its
-    attachment bytes were resolved produced equal-cardinality *disjoint* hash
-    sets, so the later revision was neither a superset nor a prefix of the
-    earlier one and the whole cohort was quarantined as ambiguous. Splitting the
-    axes lets a dominance test say what is actually true -- same attachments,
-    strictly more of their bytes now known (polylogue-bu1i).
+    - Identity is never array position. ``message_contents``,
+      ``attachment_contents``, and ``event_contents`` are ``frozenset``s, not
+      ordered tuples -- a provider's export can replay an unchanged item set
+      in a different array sequence across separate export requests (proven
+      for Claude.ai messages and ChatGPT ``generation_lifecycle`` events:
+      same items, different sequence, every re-export), and a set has no
+      order to violate (polylogue-c429, polylogue-nuec).
+    - Identity is derived from content, never a provider id whose PRESENCE
+      is itself unstable. ``attachment_contents``' key is
+      ``(anchoring message, name, media type)`` -- never the provider's own
+      attachment id, which Claude.ai does not consistently emit for the same
+      attachment across export vintages (one vintage carries a real UUID,
+      the other has none) -- no id-minting scheme can make a real id and a
+      synthetic one collide, so the id is simply not part of identity
+      (polylogue-d8al, polylogue-hith). The same reasoning selects
+      ``(event type, anchoring message)`` for events, folding in the event's
+      own content hash only when that pair is ambiguous within one revision
+      (e.g. more than one ``chatgpt_block_metadata`` event on one message,
+      one per block) -- still content-derived, never the array index.
+    - Acquisition state and provider-reported measurement are not content.
+      An attachment's bytes may be known or not (``attachment_contents``
+      omits an identity until its bytes are read, while
+      ``attachment_identities`` already knows the reference exists) --
+      resolving them is evidence *growing*, not the attachment becoming a
+      different one (polylogue-bu1i). ChatGPT's ``generation_lifecycle``
+      event re-derives ``elapsed_duration_ms`` from the raw export's own
+      timing metadata on every export request, and the value is not stable
+      across requests for the SAME generation even when the transcript is
+      byte-identical -- excluded from ``event_contents`` by
+      ``_EVENT_CONTENT_PAYLOAD_ALLOWLIST``, an explicit per-event-type
+      ALLOWLIST of content-bearing payload fields rather than a denylist of
+      fields discovered volatile after the fact (three volatility axes were
+      each found only after shipping: acquisition state, array order,
+      provider-reported duration -- a denylist means the next provider
+      quirk is silently invisible to comparison until someone notices and
+      files a bead; an allowlist means a NEW field a parser adds later
+      cannot silently enter identity without an explicit decision to add it).
 
-    ``attachment_records`` carries the same per-attachment data as a
-    ``(strict identity, loose identity, content)`` triple instead of two
-    separate sets, so the *comparison layer* (``session_revision_membership.py``)
-    can correlate attachments across two revisions even when a provider's
-    export omits a stable id for the same physical attachment on a different
-    export request of the same conversation -- one vintage has a real UUID,
-    the other has none and a parser synthesizes one, and no synthetic-id
-    scheme can make a real id and a synthetic hash collide by construction
-    (polylogue-d8al). The "loose" identity drops the provider id and keeps
-    only the anchoring message, name, and media type;
-    ``attachment_identities``/``attachment_contents`` stay strict (id
-    included) so this projection's own equality/hashing behavior is
-    unchanged -- only the membership module's pairwise correlation consults
-    the loose key, and only as a fallback when the strict identity does not
-    match and the loose key is unambiguous on both sides being compared.
-    Known, accepted limit stated explicitly rather than engineered around:
-    two genuinely distinct attachments that share one message/name/media-type
-    and carry no bytes on either side of a comparison are indistinguishable
-    by any signal this projection can offer.
-
-    Messages get an analogous split, for the same reason applied to a
-    different volatility source: a provider's own export can replay an
-    unchanged message set in a different array sequence across separate export
-    requests (Claude.ai's own tree flattening is not guaranteed to serialize
-    the same way twice). ``message_contents`` pairs each message's identity
-    hash (its provider message id) with a hash of its content
-    (role/text/timestamp/blocks) -- unlike an attachment, a message is never
-    lazily fetched, so there is no separate identity-only axis to track:
-    ``message_contents`` alone answers both *which messages exist* and *what
-    do they say*. Order lives only in ``message_hashes`` (kept for
-    ``session_hash`` and diagnostics) -- ``message_contents`` is
-    order-insensitive by construction, so a bare permutation of the same
-    id-to-content mapping is not read as divergence (polylogue-c429).
-
-    ``event_identity_hashes`` strips designated provider-reported-measurement
-    fields (see ``_PROVIDER_REPORTED_ELAPSED_VOLATILE_PAYLOAD_KEYS``) out of
-    events whose own payload declares them non-durable
-    (``duration_semantics == "provider_reported_elapsed"``) before hashing.
-    ChatGPT's ``generation_lifecycle`` event re-derives its
-    ``elapsed_duration_ms`` from the raw export's own timing metadata on every
-    export request, and that value is not stable across requests for the same
-    generation -- folding it into revision identity made byte-identical
-    conversations look like divergent branches on every re-export
-    (polylogue-nuec). ``event_hashes`` (unstripped, order-preserving) remains
-    unchanged for ``session_hash`` and diagnostics.
-
-    ``metadata_hash`` covers exactly the ``session_hash`` payload fields
-    OTHER than messages/attachments/session_events -- title, created_at,
-    updated_at -- normalized the same way. Membership classification uses it
-    to tell apart two reasons a same-content-key group can still carry
-    different ``session_hash`` values: a genuine title/timestamp edit (needs
-    the existing provider-timestamp tie-break), versus pure serialization
-    noise along an axis this projection already tolerates (message order,
-    attachment id presence, event-duration measurement) with the provider's
-    own metadata otherwise unchanged -- the common shape for a re-export of
-    an untouched conversation, where ``updated_at`` legitimately never moves
-    and a distinct-timestamp tie-break can never fire (polylogue-c429,
-    polylogue-nuec, polylogue-d8al).
+    ``session_hash``, ``message_hashes`` (ordered), and ``event_hashes``
+    (ordered, unstripped) are UNCHANGED by any of this: they still cover the
+    full, order-sensitive, unstripped payload, so a real reorder, a real
+    duration change, or newly-acquired bytes still change the session's
+    content hash and still trigger a re-write (idempotency is a different
+    question from revision *comparison*, and only the latter is
+    content-only). ``attachment_identities`` is kept as a plain
+    ``frozenset[bytes]`` of the same content-derived keys, read by
+    ``storage/repair.py``/``archive.py`` only via ``len()`` for a frontier
+    count.
     """
 
     session_hash: bytes
@@ -121,10 +96,8 @@ class SessionRevisionProjection:
     message_contents: frozenset[tuple[bytes, bytes]]
     attachment_identities: frozenset[bytes]
     attachment_contents: frozenset[tuple[bytes, bytes]]
-    attachment_records: tuple[AttachmentRecord, ...]
     event_hashes: tuple[bytes, ...]
-    event_identity_hashes: tuple[bytes, ...]
-    metadata_hash: bytes
+    event_contents: frozenset[tuple[bytes, bytes]]
 
 
 def _normalize_nested_for_hash(value: object) -> object:
@@ -254,14 +227,29 @@ def _message_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONVa
     return {field: payload[field] for field in _MESSAGE_IDENTITY_FIELDS}
 
 
-#: Fields of an attachment hash payload that answer *which attachment is this*,
-#: as opposed to *what have we managed to read about it*. ``size_bytes`` is
-#: excluded on purpose: for lazily-fetched attachments (Drive/Gemini references,
-#: browser capture) the provider states no size until the bytes are actually
-#: read, so treating it as identity makes acquisition look like a different
-#: attachment. ``inline_content_hash`` is excluded for the same reason and is
-#: recovered separately as acquisition evidence.
-_ATTACHMENT_IDENTITY_FIELDS = ("id", "message_id", "name", "mime_type")
+#: Fields of an attachment hash payload that answer *which attachment is
+#: this*, as opposed to *what have we managed to read about it* -- the
+#: anchoring message plus content descriptors, content-derived and never the
+#: provider's own attachment id. Claude.ai does not consistently emit
+#: ``id``/``file_id``/``fileId``/``uuid``/``file_uuid`` for the same
+#: attachment across separate export requests of the same conversation: one
+#: vintage carries a real UUID-shaped id, the other has none (a positionally
+#: -seeded synthetic id is not identity either -- polylogue-hith). No
+#: id-minting scheme can make a real id and any synthetic value collide by
+#: construction, so the id is excluded from identity altogether rather than
+#: used when present (polylogue-d8al). ``size_bytes`` is excluded because for
+#: lazily-fetched attachments (Drive/Gemini references, browser capture) the
+#: provider states no size until the bytes are actually read, so treating it
+#: as identity would make acquisition look like a different attachment
+#: (polylogue-bu1i). ``inline_content_hash`` is excluded for the same reason
+#: and is recovered separately as acquisition evidence in
+#: ``attachment_contents``.
+#:
+#: Known, accepted limit stated explicitly rather than engineered around: two
+#: genuinely distinct attachments that share one message/name/media-type and
+#: carry no bytes on either side of a comparison are indistinguishable by any
+#: signal this projection can offer.
+_ATTACHMENT_IDENTITY_FIELDS = ("message_id", "name", "mime_type")
 
 
 def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValue]:
@@ -288,26 +276,6 @@ def _attachment_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSO
     return {field: payload[field] for field in _ATTACHMENT_IDENTITY_FIELDS}
 
 
-#: The subset of ``_ATTACHMENT_IDENTITY_FIELDS`` that survives even when a
-#: provider omits a stable id for the same physical attachment on a different
-#: export request (polylogue-d8al): Claude.ai does not consistently emit
-#: ``id``/``file_id``/``fileId``/``uuid``/``file_uuid`` for the same
-#: attachment across separate export requests of the same conversation -- one
-#: vintage carries a real UUID-shaped id, the other has none and a parser
-#: synthesizes one instead. No synthetic-id scheme can make a real id and a
-#: synthetic hash collide by construction, so revision comparison correlates
-#: by this looser, id-independent key when the strict identity does not
-#: match (see ``session_revision_projection``'s canonicalization step).
-#: ``size_bytes`` stays excluded for the same lazy-fetch reason it is excluded
-#: from ``_ATTACHMENT_IDENTITY_FIELDS``.
-_ATTACHMENT_LOOSE_IDENTITY_FIELDS = ("message_id", "name", "mime_type")
-
-
-def _attachment_loose_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
-    """Project the id-independent correlation key of one attachment payload."""
-    return {field: payload[field] for field in _ATTACHMENT_LOOSE_IDENTITY_FIELDS}
-
-
 #: `generation_lifecycle` payload keys that are provider-reported measurement,
 #: not identity, when the event's own payload declares them non-durable via
 #: ``duration_semantics == "provider_reported_elapsed"``. ChatGPT re-derives
@@ -321,36 +289,78 @@ _PROVIDER_REPORTED_ELAPSED_VOLATILE_PAYLOAD_KEYS = frozenset({"elapsed_duration_
 _PROVIDER_REPORTED_ELAPSED_MARKER_KEY = "duration_semantics"
 _PROVIDER_REPORTED_ELAPSED_MARKER_VALUE = "provider_reported_elapsed"
 
+#: Event payload ALLOWLIST by event type: only these fields, per type, ever
+#: enter ``event_contents``. This is deliberately an allowlist, not a
+#: denylist of fields discovered volatile after the fact -- three separate
+#: volatility axes (attachment acquisition state, message array order,
+#: provider-reported generation duration) were each found only after
+#: shipping, one bead and one branch at a time, because a denylist design
+#: means a NEW field silently enters identity the moment a parser starts
+#: emitting it, until someone notices and adds it to the strip-list. Under
+#: an allowlist, a field a parser adds later is excluded from comparison by
+#: construction -- it takes an explicit decision to add it here before it
+#: can affect identity, not an explicit decision to exclude it.
+#:
+#: Event types with no entry here compare their FULL payload (today's
+#: behavior for every type except ``generation_lifecycle``, which is the
+#: only one with proven volatility -- polylogue-nuec; the raw export's own
+#: ``finished_duration_sec``/``reasoning_start_time``/``reasoning_end_time``
+#: metadata is not stable across separate export requests for the SAME
+#: generation, so ``elapsed_duration_ms``/``started_at_ms``/``ended_at_ms``
+#: and the derived ``timestamp`` are excluded; ``duration_semantics`` merely
+#: documents that fact and carries no content of its own).
+_EVENT_CONTENT_PAYLOAD_ALLOWLIST: dict[str, frozenset[str]] = {
+    "generation_lifecycle": frozenset({"state", "evidence_source", "fidelity"}),
+}
 
-def _event_identity_hash_payload(event: ParsedSessionEvent, event_index: int) -> dict[str, JSONValue]:
-    """Build an event hash payload with provider-reported-elapsed measurement excluded.
 
-    Mirrors ``_attachment_identity_payload``'s identity/acquisition split for a
-    different volatility source: an event that labels itself
-    ``duration_semantics: "provider_reported_elapsed"`` carries a measurement,
-    not content, in ``_PROVIDER_REPORTED_ELAPSED_VOLATILE_PAYLOAD_KEYS`` --
-    stripped here before hashing. The event's own ``timestamp`` is stripped
-    alongside it for the same events: ChatGPT sets it from the same
-    ``reasoning_end_time`` value the duration is derived from, so it varies in
-    tandem and is measurement too, not identity. ``session_hash`` still covers
-    the full, unstripped payload and timestamp (see ``session_hash_payload``),
-    so a real change in reported duration still triggers a re-write; only the
-    *revision comparison* axis (``event_identity_hashes``) is tolerant.
+def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
+    """Build the position- and measurement-independent CONTENT payload for one event.
+
+    Array position is not identity for events any more than for messages:
+    ChatGPT's ``generation_lifecycle`` events were independently observed to
+    reorder alongside their duration values across separate export requests
+    of the SAME conversation (same three durations, different array
+    positions each time) -- the same volatility polylogue-c429 found for
+    messages, on a different axis (polylogue-nuec). This never includes
+    ``event_index``; ``session_revision_projection`` builds identity purely
+    from this content plus the event's own type and anchoring message.
     """
-    payload = event.payload
-    timestamp = event.timestamp
-    if payload.get(_PROVIDER_REPORTED_ELAPSED_MARKER_KEY) == _PROVIDER_REPORTED_ELAPSED_MARKER_VALUE:
-        payload = {
-            key: value for key, value in payload.items() if key not in _PROVIDER_REPORTED_ELAPSED_VOLATILE_PAYLOAD_KEYS
-        }
+    allowlist = _EVENT_CONTENT_PAYLOAD_ALLOWLIST.get(event.event_type)
+    if allowlist is None:
+        payload = event.payload
+        timestamp = event.timestamp
+    else:
+        payload = {key: value for key, value in event.payload.items() if key in allowlist}
+        # An event type with a registered allowlist also has its own
+        # provider-remeasured timestamp excluded: for generation_lifecycle,
+        # ChatGPT sets it from the same reasoning_end_time value the
+        # duration is derived from, so it varies in tandem and is
+        # measurement too, not content.
         timestamp = None
     return {
-        "event_index": event_index,
         "event_type": _normalize_for_hash(event.event_type),
         "timestamp": _normalize_for_hash(timestamp),
         "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
         "payload": hash_payload(_normalize_nested_for_hash(payload)),
     }
+
+
+#: The subset of an event content payload that answers *which event slot is
+#: this*, as opposed to *what does it say*: anchoring message plus event
+#: type, content-derived and never the array index. Ambiguous within one
+#: revision when more than one event shares both (e.g. multiple
+#: ``chatgpt_block_metadata`` events on the same message, one per block) --
+#: ``session_revision_projection`` folds the event's own content hash into
+#: identity for those specific events, which is STILL content-derived (each
+#: block's own content, including any content-intrinsic field such as
+#: ``block_index``, already differs), never the array position.
+_EVENT_BASE_IDENTITY_FIELDS = ("event_type", "source_message_provider_id")
+
+
+def _event_base_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    """Project the position-independent base correlation key of one event payload."""
+    return {field: payload[field] for field in _EVENT_BASE_IDENTITY_FIELDS}
 
 
 def _session_hash_payload(
@@ -463,13 +473,15 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     content hash and does trigger a re-write. Only the *revision comparison*
     axes separate identity from acquisition (polylogue-bu1i).
 
-    The same holds for message order (polylogue-c429) and provider-reported
-    generation-duration measurement (polylogue-nuec): ``session_hash`` still
-    covers the full, order-sensitive message array and the full,
-    unstripped event payload/timestamp, so a real reorder or a real duration
-    change still triggers a re-write. Only ``message_contents`` /
-    ``event_identity_hashes`` -- the *revision comparison* axes -- are
-    tolerant of the volatility each bug describes.
+    The same holds for message order (polylogue-c429), attachment identity
+    presence (polylogue-d8al), and provider-reported generation-duration
+    measurement (polylogue-nuec): ``session_hash`` still covers the full,
+    order-sensitive message array, the full attachment payload including
+    whatever id the provider did or didn't emit, and the full, unstripped
+    event payload/timestamp, so a real reorder, a real id change, or a real
+    duration change still triggers a re-write. Only ``message_contents`` /
+    ``attachment_identities`` / ``attachment_contents`` / ``event_contents``
+    -- the *revision comparison* axes -- are content-only (polylogue-aggz).
     """
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
     session_hash_hex = _session_tree_hash(
@@ -485,40 +497,45 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         content = bytes.fromhex(hash_payload(payload))
         message_contents.add((identity, content))
         message_hashes.append(content)
-    attachment_records: list[AttachmentRecord] = []
     attachment_identities: set[bytes] = set()
     attachment_contents: set[tuple[bytes, bytes]] = set()
     for payload in attachments_payload:
         identity = bytes.fromhex(hash_payload(_attachment_identity_payload(payload)))
-        loose_identity = bytes.fromhex(hash_payload(_attachment_loose_identity_payload(payload)))
         inline_content_hash = payload.get("inline_content_hash")
-        attachment_content = bytes.fromhex(inline_content_hash) if isinstance(inline_content_hash, str) else None
-        attachment_records.append((identity, loose_identity, attachment_content))
         attachment_identities.add(identity)
-        if attachment_content is not None:
-            attachment_contents.add((identity, attachment_content))
+        if isinstance(inline_content_hash, str):
+            attachment_contents.add((identity, bytes.fromhex(inline_content_hash)))
     event_hashes: list[bytes] = []
-    event_identity_hashes: list[bytes] = []
-    for event_index, (payload, event) in enumerate(zip(session_events_payload, convo.session_events, strict=True)):
+    event_base_identities: list[bytes] = []
+    event_content_hashes: list[bytes] = []
+    for payload, event in zip(session_events_payload, convo.session_events, strict=True):
         event_hashes.append(bytes.fromhex(hash_payload(payload)))
-        event_identity_hashes.append(bytes.fromhex(hash_payload(_event_identity_hash_payload(event, event_index))))
-    metadata_hash = bytes.fromhex(
-        hash_payload(
-            {
-                "title": _normalize_for_hash(convo.title),
-                "created_at": _normalize_for_hash(convo.created_at),
-                "updated_at": _normalize_for_hash(convo.updated_at),
-            }
+        content_payload = _event_content_payload(event)
+        event_base_identities.append(bytes.fromhex(hash_payload(_event_base_identity_payload(content_payload))))
+        event_content_hashes.append(bytes.fromhex(hash_payload(content_payload)))
+    base_identity_counts = Counter(event_base_identities)
+    event_contents: set[tuple[bytes, bytes]] = set()
+    for base_identity, content_hash in zip(event_base_identities, event_content_hashes, strict=True):
+        # A base identity (event type + anchoring message) ambiguous within
+        # this revision -- more than one event shares it, e.g. one
+        # chatgpt_block_metadata event per block on a message -- folds the
+        # event's own content into identity to disambiguate. Still
+        # content-derived, never the array index: distinct blocks already
+        # differ in content (e.g. a content-intrinsic block_index), and
+        # events that are genuine duplicates (same base identity, same
+        # content) correctly collapse to one set entry either way.
+        canonical_identity = (
+            base_identity
+            if base_identity_counts[base_identity] == 1
+            else bytes.fromhex(hash_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
         )
-    )
+        event_contents.add((canonical_identity, content_hash))
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),
         message_hashes=tuple(message_hashes),
         message_contents=frozenset(message_contents),
         attachment_identities=frozenset(attachment_identities),
         attachment_contents=frozenset(attachment_contents),
-        attachment_records=tuple(attachment_records),
         event_hashes=tuple(event_hashes),
-        event_identity_hashes=tuple(event_identity_hashes),
-        metadata_hash=metadata_hash,
+        event_contents=frozenset(event_contents),
     )

@@ -214,8 +214,12 @@ def test_session_revision_projection_golden_hashes() -> None:
         "65a99313c3ed8b81e69ecc0b36f314b3bf7848bc10fcea11415ddb9b07188941",
         "8efbf7b5b70bef4d73ec3550fe97e6f4d456cd724550bc5621a36766fe7f1f8b",
     ]
+    # Content-derived identity (message_id, name, mime_type) -- no longer a
+    # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
+    # a provider id is not guaranteed present across export vintages, so it
+    # is excluded from identity rather than used when present.
     assert {h.hex() for h in projection.attachment_identities} == {
-        "c233d41c034109580c7d7e74a96944a55eb0fadcc2564001dcf607f727b48062"
+        "2f18566179352065740615ea89e60130da5a8e46aae224e36b44ed626722da54"
     }
     # The golden attachment declares a size but carries no bytes, so it is
     # referenced-but-unacquired: identity is known, content is not.
@@ -270,13 +274,15 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
 
     assert projection.session_hash.hex() == independent_session_hash
     assert list(projection.message_hashes) == [bytes.fromhex(hash_payload(p)) for p in independent_message_payloads]
+    # Content-derived identity: message_id/name/mime_type only, never the
+    # provider attachment id (polylogue-aggz / polylogue-d8al).
     assert projection.attachment_identities == frozenset(
-        bytes.fromhex(hash_payload({field: p[field] for field in ("id", "message_id", "name", "mime_type")}))
+        bytes.fromhex(hash_payload({field: p[field] for field in ("message_id", "name", "mime_type")}))
         for p in independent_attachment_payloads
     )
     assert projection.attachment_contents == frozenset(
         (
-            bytes.fromhex(hash_payload({field: p[field] for field in ("id", "message_id", "name", "mime_type")})),
+            bytes.fromhex(hash_payload({field: p[field] for field in ("message_id", "name", "mime_type")})),
             bytes.fromhex(str(p["inline_content_hash"])),
         )
         for p in independent_attachment_payloads
