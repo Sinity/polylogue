@@ -139,7 +139,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
 | [Query Pipeline Substrate Plan](plans/query-pipeline-substrate.md) | Historical/active query pipeline design plan. |
 | [Semantic Card Tool Map](generated/semantic-card-tool-map.md) | Generated map from semantic cards to tools. |
-| [Topology Status](topology-status.md) | Generated module-topology status dashboard. |
 
 ## Contributor Workflow
 

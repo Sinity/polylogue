@@ -62,14 +62,6 @@ surfaces:
       docs/test-quality-workflows.md from live validation,
       mutation, and benchmark registries. Generated.
 
-  topology_status:
-    path: docs/topology-status.md
-    generated_by: devtools render topology-status
-    verified_by: devtools render all --check
-    notes: >
-      docs/topology-status.md from topology projection and
-      realized tree. Generated.
-
   # User-facing media is rendered on demand from demo fixtures or
   # lab environments when a release/article/site actually
   # needs it. The root README no longer references committed architecture
