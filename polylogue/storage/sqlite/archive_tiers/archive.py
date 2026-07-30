@@ -1686,11 +1686,26 @@ class ArchiveStore:
         # attachments reported unfetched despite the bytes existing in the
         # blob store). Refuse this raw explicitly instead of relying on an
         # absent head to imply "unclaimed, free to write".
+        #
+        # Scoped to the membership being written, not to the raw. One retained
+        # raw routinely lowers to many sessions -- a Claude Code transcript and
+        # its subagent sidechains, a bundle member set -- and those sessions are
+        # arbitrated independently. Measured on the live archive: 295 raws carry
+        # a mix of decisions, together holding 489 sessions whose own membership
+        # is NOT ambiguous, and one raw carries 106 memberships. A raw-scoped
+        # predicate suppresses every one of those sessions as soon as a single
+        # sibling membership is ambiguous, which trades a fidelity downgrade for
+        # outright absence -- a worse failure, and one that would have landed at
+        # the next full rebuild.
         ambiguous_membership = (
             self._ensure_source_conn()
             .execute(
-                "SELECT 1 FROM raw_session_memberships WHERE raw_id = ? AND decision = 'ambiguous' LIMIT 1",
-                (raw_id,),
+                """
+                SELECT 1 FROM raw_session_memberships
+                WHERE raw_id = ? AND provider_session_id = ? AND decision = 'ambiguous'
+                LIMIT 1
+                """,
+                (raw_id, session.provider_session_id),
             )
             .fetchone()
         )
