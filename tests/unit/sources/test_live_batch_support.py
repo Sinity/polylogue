@@ -41,6 +41,7 @@ from polylogue.sources.live.batch_support import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
+from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
@@ -2874,7 +2875,10 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
     with path.open("ab") as handle:
         handle.write(append)
 
-    original_record = archive_tier_module.__dict__["record_revision_application_sync"]
+    # polylogue-1r9c: record_revision_application_sync is called internally by
+    # revision_governance.py (a direct module-internal function reference),
+    # not through archive_tier_module -- patch it there.
+    original_record = archive_revision_governance.__dict__["record_revision_application_sync"]
     fail_once = True
 
     def injected_failure(*args: Any, **kwargs: Any) -> None:
@@ -2884,7 +2888,7 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
             raise sqlite3.IntegrityError("injected append persistence failure")
         original_record(*args, **kwargs)
 
-    monkeypatch.setattr(archive_tier_module, "record_revision_application_sync", injected_failure)
+    monkeypatch.setattr(archive_revision_governance, "record_revision_application_sync", injected_failure)
     failed = asyncio.run(processor.ingest_files([path]))
 
     assert failed.succeeded_file_count == 0
@@ -2993,7 +2997,10 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
         cursor=cursor,
         parser_fingerprint="parser-b",
     )
-    original_record = archive_tier_module.__dict__["record_revision_application_sync"]
+    # polylogue-1r9c: record_revision_application_sync is called internally by
+    # revision_governance.py (a direct module-internal function reference),
+    # not through archive_tier_module -- patch it there.
+    original_record = archive_revision_governance.__dict__["record_revision_application_sync"]
     fail_once = True
 
     def injected_failure(*args: Any, **kwargs: Any) -> None:
@@ -3003,7 +3010,7 @@ def test_failed_parser_upgrade_preserves_accepted_parser_identity(
             raise sqlite3.IntegrityError("injected parser-upgrade persistence failure")
         original_record(*args, **kwargs)
 
-    monkeypatch.setattr(archive_tier_module, "record_revision_application_sync", injected_failure)
+    monkeypatch.setattr(archive_revision_governance, "record_revision_application_sync", injected_failure)
 
     failed = asyncio.run(processor_b.ingest_files([path]))
 
@@ -3207,11 +3214,14 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         lambda _path, fallback_provider: (fallback_provider, True),
     )
     monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
-    original_write = ArchiveStore._write_parsed_precedence_result
+    # polylogue-1r9c: _write_parsed_precedence_result is called internally by
+    # revision_governance.py (a direct module-internal function reference),
+    # not through ArchiveStore's `self.` dispatch -- patch it there.
+    original_write = archive_revision_governance._write_parsed_precedence_result
     write_count = 0
 
     def fail_second_index(
-        archive: ArchiveStore,
+        archive: archive_revision_governance.RawRevisionGovernanceHost,
         session: ParsedSession,
         **kwargs: object,
     ) -> object:
@@ -3221,7 +3231,7 @@ def test_full_multi_session_failure_retries_without_success_mapping(
             raise sqlite3.IntegrityError("injected full second-session index failure")
         return original_write(archive, session, **cast(Any, kwargs))
 
-    monkeypatch.setattr(ArchiveStore, "_write_parsed_precedence_result", fail_second_index)
+    monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", fail_second_index)
     archive_results: list[_ArchiveFullWriteResult] = []
     original_full_write = processor._ingest_full_records_archive
 
@@ -4515,11 +4525,14 @@ def test_append_crash_after_index_commit_repairs_idempotently(
         pass
 
     _path, plan, owner = _seed_live_append_plan(tmp_path, native_id="crash-retry")
-    original_mark_succeeded = ArchiveStore.mark_raw_parse_succeeded
+    # polylogue-1r9c: mark_raw_parse_succeeded is called internally by
+    # revision_governance.py (a direct module-internal function reference),
+    # not through ArchiveStore's `self.` dispatch -- patch it there.
+    original_mark_succeeded = archive_revision_governance.mark_raw_parse_succeeded
     crashed = False
 
     def crash_after_index(
-        archive: ArchiveStore,
+        archive: archive_revision_governance.RawRevisionGovernanceHost,
         raw_id: str,
         *,
         provider: Provider,
@@ -4536,7 +4549,7 @@ def test_append_crash_after_index_commit_repairs_idempotently(
             raise SimulatedProcessCrash
         original_mark_succeeded(archive, raw_id, provider=provider)
 
-    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", crash_after_index)
+    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", crash_after_index)
     with pytest.raises(SimulatedProcessCrash):
         ingest_append_plans(cast(Any, owner), [plan])
 
@@ -4545,7 +4558,7 @@ def test_append_crash_after_index_commit_repairs_idempotently(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
 
-    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", original_mark_succeeded)
+    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", original_mark_succeeded)
     retry = ingest_append_plans(cast(Any, owner), [plan])
 
     assert retry.succeeded == [plan]
