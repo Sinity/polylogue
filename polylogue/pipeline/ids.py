@@ -33,9 +33,29 @@ HashScalar: TypeAlias = str | int | float | bool | None
 
 @dataclass(frozen=True, slots=True)
 class SessionRevisionProjection:
+    """Canonical content hashes used to prove append-only session growth.
+
+    Attachments are projected on two axes deliberately, because folding them
+    into one hash makes acquisition look like divergence. ``attachment_identities``
+    answers *which attachment is this* (provider id, anchoring message, name,
+    media type) and never changes once a provider has emitted the reference.
+    ``attachment_contents`` answers *have we read its bytes yet, and which bytes*
+    -- it carries an ``(identity, content)`` pair only for attachments whose
+    bytes are actually in hand.
+
+    A single hash over both axes made an ordinary lazy fetch indistinguishable
+    from a branch: a Drive/Gemini document acquired before and after its
+    attachment bytes were resolved produced equal-cardinality *disjoint* hash
+    sets, so the later revision was neither a superset nor a prefix of the
+    earlier one and the whole cohort was quarantined as ambiguous. Splitting the
+    axes lets a dominance test say what is actually true -- same attachments,
+    strictly more of their bytes now known (polylogue-bu1i).
+    """
+
     session_hash: bytes
     message_hashes: tuple[bytes, ...]
-    attachment_hashes: frozenset[bytes]
+    attachment_identities: frozenset[bytes]
+    attachment_contents: frozenset[tuple[bytes, bytes]]
     event_hashes: tuple[bytes, ...]
 
 
@@ -149,6 +169,16 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
     return payload
 
 
+#: Fields of an attachment hash payload that answer *which attachment is this*,
+#: as opposed to *what have we managed to read about it*. ``size_bytes`` is
+#: excluded on purpose: for lazily-fetched attachments (Drive/Gemini references,
+#: browser capture) the provider states no size until the bytes are actually
+#: read, so treating it as identity makes acquisition look like a different
+#: attachment. ``inline_content_hash`` is excluded for the same reason and is
+#: recovered separately as acquisition evidence.
+_ATTACHMENT_IDENTITY_FIELDS = ("id", "message_id", "name", "mime_type")
+
+
 def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValue]:
     """Build attachment identity without perturbing legacy metadata-only hashes."""
     payload: dict[str, JSONValue] = {
@@ -161,6 +191,16 @@ def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValu
     if attachment.inline_bytes is not None:
         payload["inline_content_hash"] = hash_bytes(attachment.inline_bytes)
     return payload
+
+
+def _attachment_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    """Project the acquisition-independent identity of one attachment payload.
+
+    Reads the already-normalized values out of ``_attachment_hash_payload``
+    rather than re-deriving them, so there is exactly one normalization site and
+    identity can never drift from the content hash it is paired with.
+    """
+    return {field: payload[field] for field in _ATTACHMENT_IDENTITY_FIELDS}
 
 
 def _session_hash_payload(
@@ -267,6 +307,11 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     time. Output is byte-identical to the previous double-computation --
     this is a pure elimination of redundant work, not an identity-hash
     change (polylogue-fqp0).
+
+    ``session_hash`` still covers the full attachment payload, acquisition state
+    included, so acquiring an attachment's bytes does change the session's
+    content hash and does trigger a re-write. Only the *revision comparison*
+    axes separate identity from acquisition (polylogue-bu1i).
     """
     messages_payload, attachments_payload, session_events_payload = _session_hash_components(convo)
     session_hash_hex = _session_tree_hash(
@@ -275,9 +320,18 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachments_payload=attachments_payload,
         session_events_payload=session_events_payload,
     )
+    attachment_identities: set[bytes] = set()
+    attachment_contents: set[tuple[bytes, bytes]] = set()
+    for payload in attachments_payload:
+        identity = bytes.fromhex(hash_payload(_attachment_identity_payload(payload)))
+        attachment_identities.add(identity)
+        inline_content_hash = payload.get("inline_content_hash")
+        if isinstance(inline_content_hash, str):
+            attachment_contents.add((identity, bytes.fromhex(inline_content_hash)))
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),
         message_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in messages_payload),
-        attachment_hashes=frozenset(bytes.fromhex(hash_payload(payload)) for payload in attachments_payload),
+        attachment_identities=frozenset(attachment_identities),
+        attachment_contents=frozenset(attachment_contents),
         event_hashes=tuple(bytes.fromhex(hash_payload(payload)) for payload in session_events_payload),
     )

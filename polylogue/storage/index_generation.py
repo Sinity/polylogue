@@ -30,6 +30,42 @@ _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
 #: (~35 GB on the reference archive), so keeping more is expensive storage,
 #: not cheap insurance.
 SUPERSEDED_GENERATION_RETENTION = 1
+_GENERATIONS_DIRNAME = ".index-generations"
+
+
+def _is_generation_member(path: Path) -> bool:
+    """True when ``path`` lives inside a generation directory rather than beside one.
+
+    The canonical index pointer must not name a path inside a generation,
+    because ``generations_root`` and ``transactions_root`` are derived from the
+    pointer's *parent*: a pointer at ``…/.index-generations/gen-X/index.db``
+    makes them nest as ``…/gen-X/.index-generations``, which is the shape the
+    self-poisoning bug produced.
+
+    The test is deliberately narrower than "the path mentions
+    ``.index-generations`` somewhere". Two cases must stay distinguishable:
+
+    * ``…/.index-generations/gen-X/index.db`` -- a generation *member*, refused.
+      The pointer is at least one directory below the generations root, which is
+      exactly how a generation's own files sit.
+    * ``…/.index-generations/index.db`` -- a file sitting *directly* in a
+      directory that happens to carry that name, allowed. An archive root may
+      legitimately be named anything, including this, and there the derived
+      roots stay self-consistent. Rejecting it on a name match alone would break
+      a valid symlink-farm target for no invariant's benefit.
+
+    Uses ``absolute()`` rather than ``resolve()`` on purpose: resolving would
+    follow ``index.db``'s own promotion symlink into the generation it targets,
+    so the canonical pointer would classify itself as poisoned.
+    """
+    parts = path.absolute().parts
+    try:
+        depth = parts.index(_GENERATIONS_DIRNAME)
+    except ValueError:
+        return False
+    # A direct child is `.index-generations/<name>` (one part after the root);
+    # anything deeper is inside a generation.
+    return len(parts) - depth > 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,16 +296,34 @@ class IndexGenerationStore:
         self.archive_root = location.configured_root
         self.location = location
         anchor = location.configured_root / ".index-active-pointer"
-        if location.active_pointer is not None:
-            anchored = location.active_pointer
-            if ".index-generations" in anchored.parts:
-                raise RuntimeError(f"invalid canonical index pointer anchor: {anchored}")
+        configured_index = location.configured_tier("index").configured_path
+        anchored = location.active_pointer
+        if anchored is not None and not _is_generation_member(anchored):
             self.active_pointer = anchored
         else:
-            configured_index = location.configured_tier("index").configured_path
+            # Recompute, and rewrite the anchor, when it is absent OR poisoned.
+            #
+            # The canonical pointer is the path ``promote()`` replaces with a
+            # symlink -- i.e. the archive's own ``index.db`` -- never the
+            # generation that symlink currently targets. Following the symlink
+            # here wrote a ``.index-generations/gen-*/index.db`` path into the
+            # anchor, which the next construction then rejected outright; the
+            # store poisoned its own anchor on first use and refused every run
+            # afterwards. It also made ``generations_root`` nest as
+            # ``.index-generations/gen-*/.index-generations``.
+            #
+            # A symlink is still followed when it leaves the archive (an
+            # archive root that is a symlink farm pointing at the real
+            # location), because there the canonical pointer genuinely lives
+            # elsewhere. Only a link that lands *inside a generation* is
+            # refused -- see ``_is_generation_member``. Treating a poisoned
+            # anchor as recoverable rather than fatal lets an archive already
+            # carrying one heal on next open, instead of needing the file
+            # repaired by hand.
             if configured_index.is_symlink():
                 target = Path(os.readlink(configured_index))
-                self.active_pointer = target if target.is_absolute() else configured_index.parent / target
+                resolved = target if target.is_absolute() else configured_index.parent / target
+                self.active_pointer = configured_index if _is_generation_member(resolved) else resolved
             else:
                 self.active_pointer = configured_index
             temporary = anchor.with_suffix(".tmp")
