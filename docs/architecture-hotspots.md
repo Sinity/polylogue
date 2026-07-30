@@ -23,7 +23,7 @@ won't hurt."
 
 | # | Control center | Path | Size | Public contract | Layer |
 | - | --- | --- | --- | --- | --- |
-| 1 | Storage read tier | `storage/sqlite/archive_tiers/archive.py` | 11,382 lines | `ArchiveStore` — every SELECT-shaped query surface (sessions, messages, blocks, insights reads, search) | `storage/` |
+| 1 | Storage read tier | `storage/sqlite/archive_tiers/archive.py` | 11,382 → **11,324** lines (raw-revision/membership governance extracted to `archive_tiers/revision_governance.py`, 2,841 lines, polylogue-1r9c) | `ArchiveStore` — every SELECT-shaped query surface (sessions, messages, blocks, insights reads, search) | `storage/` |
 | 2 | API facade | `api/archive.py` | 5,881 lines | `Polylogue.repository`/`.backend` verb surface consumed by CLI/MCP/daemon | `api/` (surface) |
 | 3 | Storage repair | `storage/repair.py` | 5,558 lines | `repair_*`/`preview_*`/`run_safe_repairs`/`collect_archive_debt_statuses_sync` — every integrity-repair entrypoint the CLI `check`/`repair` commands and daemon convergence call | `storage/` (maintenance-adjacent, see note below) |
 | 4 | Daemon HTTP | `daemon/http.py` | 4,609 lines | the daemon's REST/web-shell route table | `daemon/` (surface) |

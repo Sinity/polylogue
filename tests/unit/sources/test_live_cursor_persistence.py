@@ -13,6 +13,7 @@ from polylogue.core.enums import Provider
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
 
 
@@ -54,11 +55,14 @@ def _raw_parse_states(archive_root: Path, source_path: Path) -> list[tuple[int |
 
 
 def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
-    original = ArchiveStore._write_parsed_precedence_result
+    # polylogue-1r9c: _write_parsed_precedence_result is called internally by
+    # revision_governance.py (a direct module-internal function reference),
+    # not through ArchiveStore's `self.` dispatch -- patch it there.
+    original = archive_revision_governance._write_parsed_precedence_result
     attempts = 0
 
     def lock_once(
-        self: ArchiveStore,
+        self: archive_revision_governance.RawRevisionGovernanceHost,
         session: ParsedSession,
         *,
         raw_id: str,
@@ -91,7 +95,7 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
             defer_fts_rebuild=defer_fts_rebuild,
         )
 
-    monkeypatch.setattr(ArchiveStore, "_write_parsed_precedence_result", lock_once)
+    monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", lock_once)
 
 
 def _watcher(archive: Polylogue, root: Path) -> LiveWatcher:

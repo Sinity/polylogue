@@ -1,5 +1,8 @@
 """Raw revision & membership governance: the authority over which raw bytes win.
 
+Writer module: index, source.
+Twin-write contract: raw-membership-classification.
+
 Extracted from ``archive_tiers/archive.py`` (polylogue-1r9c hotspot-map slice,
 2026-07-30 defect-concentration cut — PRs #3394/#3396/#3397/#3398/#3401 all
 landed in this cluster or its callers). ``archive.py``'s documented contract

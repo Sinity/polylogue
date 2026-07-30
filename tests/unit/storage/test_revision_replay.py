@@ -30,6 +30,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -1507,13 +1508,25 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         )
 
     indexed_raw_ids: list[str] = []
-    original = ArchiveStore._index_parsed_for_retained_raw
+    # polylogue-1r9c: _index_parsed_for_retained_raw's real implementation
+    # moved to revision_governance.py, and apply_raw_revision_replay (also in
+    # that module) calls it as a direct module-internal function reference,
+    # not through `self.` dynamic dispatch -- so the spy must patch the
+    # revision_governance module attribute, not the ArchiveStore delegator
+    # method (which only intercepts *external* callers).
+    original = archive_revision_governance._index_parsed_for_retained_raw
 
-    def spy(self: ArchiveStore, session: ParsedSession, *, raw_id: str, **kwargs: object) -> object:
+    def spy(
+        store: archive_revision_governance.RawRevisionGovernanceHost,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        **kwargs: object,
+    ) -> object:
         indexed_raw_ids.append(raw_id)
-        return original(self, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
+        return original(store, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ArchiveStore, "_index_parsed_for_retained_raw", spy)
+    monkeypatch.setattr(archive_revision_governance, "_index_parsed_for_retained_raw", spy)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(
@@ -1649,13 +1662,25 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
         )
 
     indexed_raw_ids: list[str] = []
-    original = ArchiveStore._index_parsed_for_retained_raw
+    # polylogue-1r9c: _index_parsed_for_retained_raw's real implementation
+    # moved to revision_governance.py, and apply_raw_revision_replay (also in
+    # that module) calls it as a direct module-internal function reference,
+    # not through `self.` dynamic dispatch -- so the spy must patch the
+    # revision_governance module attribute, not the ArchiveStore delegator
+    # method (which only intercepts *external* callers).
+    original = archive_revision_governance._index_parsed_for_retained_raw
 
-    def spy(self: ArchiveStore, session: ParsedSession, *, raw_id: str, **kwargs: object) -> object:
+    def spy(
+        store: archive_revision_governance.RawRevisionGovernanceHost,
+        session: ParsedSession,
+        *,
+        raw_id: str,
+        **kwargs: object,
+    ) -> object:
         indexed_raw_ids.append(raw_id)
-        return original(self, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
+        return original(store, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ArchiveStore, "_index_parsed_for_retained_raw", spy)
+    monkeypatch.setattr(archive_revision_governance, "_index_parsed_for_retained_raw", spy)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = archive.write_raw_payload(

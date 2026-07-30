@@ -1,7 +1,12 @@
 """Small archive-root façade over archive source/index/user tiers.
 
-Writer module: index, source.
-Twin-write contract: raw-membership-classification.
+Writer module: index.
+
+Raw revision/membership governance (the twin-write ``raw-membership-classification``
+contract spanning index and source) moved to
+``polylogue.storage.sqlite.archive_tiers.revision_governance`` (polylogue-1r9c);
+``delete_sessions`` is this module's remaining direct writer, index-only
+(user-tier overlays are deliberately left in place, see its docstring).
 """
 
 from __future__ import annotations
@@ -139,7 +144,18 @@ from polylogue.storage.insights.session.runtime import (
 )
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.revision_governance import (
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    archive_tier_spec,
+    initialize_active_archive_root,
+    initialize_archive_database,
+)
+from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    FullSnapshotFoldAuthorization,
+)
+from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     ActiveByteRevisionChainError,
     ArchiveRawParsedWriteResult,
     _authorize_full_snapshot_fold,
@@ -198,17 +214,6 @@ from polylogue.storage.revision_governance import (
     write_raw_blob_and_parsed_result,
     write_raw_blob_ref,
     write_raw_payload,
-)
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
-from polylogue.storage.search.query_support import normalize_fts5_query
-from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
-from polylogue.storage.sqlite.archive_tiers.bootstrap import (
-    archive_tier_spec,
-    initialize_active_archive_root,
-    initialize_archive_database,
-)
-from polylogue.storage.sqlite.archive_tiers.revision_application import (
-    FullSnapshotFoldAuthorization,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -11312,6 +11317,7 @@ def _month_bucket_end_ms(bucket: str) -> int:
 __all__ = [
     "ActiveByteRevisionChainError",
     "ArchiveFileQueryRow",
+    "ArchiveRawParsedWriteResult",
     "ArchiveStore",
     "ArchiveSessionSearchHit",
     "ArchiveSessionSummary",
