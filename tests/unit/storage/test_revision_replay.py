@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from itertools import permutations
 from pathlib import Path
 
@@ -615,6 +616,71 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
     # unresolved ambiguous siblings that a real classifier must weigh it
     # against, not silently outrank by discovery order.
     assert second_plan.accepted_raw_ids == ()
+
+
+def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> None:
+    """A raw whose OWN logical identity is durably recorded
+    ``raw_session_memberships.decision = 'ambiguous'`` must never reach
+    ``sessions`` through the ordinary (non-revision-authoritative) parsed-
+    write path.
+
+    ``ArchiveStore._write_parsed_precedence_result``'s only revision-
+    authority awareness before this fix was a check against
+    ``raw_revision_heads`` -- populated ONLY when a cohort has an ACCEPTED
+    winner (``apply_raw_membership_classification``/
+    ``apply_raw_revision_replay``). A cohort ``classify_membership_
+    revisions`` genuinely refused to arbitrate never gets an accepted head,
+    so that check stays silent and the ordinary browser-capture-precedence/
+    freshness fallback below it writes the session unconditionally on the
+    next reparse -- arbitrary last-writer-wins over the exact invariant this
+    subsystem exists to enforce. Live evidence: 28 aistudio-drive cohorts
+    recorded ambiguous nonetheless materialized a session with 641
+    attachments reported unfetched despite the bytes existing in the blob
+    store, because ``write_parsed_for_retained_raw`` (called from the
+    one-shot importer, ``revision_authoritative=False`` by default) never
+    consulted ``raw_session_memberships`` at all.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="s1",
+        messages=[ParsedMessage(provider_message_id="s1-0", role=Role.USER, text="left")],
+    )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+        )
+        # Durable evidence that this raw's identity was already judged
+        # ambiguous -- the shape ``replace_raw_membership_census`` /
+        # ``apply_raw_membership_classification`` leave behind for a
+        # genuinely divergent cohort (reproduced directly here so the test
+        # isolates the WRITE-PATH guard from the classifier that produces
+        # this state).
+        source_conn = archive._ensure_source_conn()
+        with source_conn:
+            source_conn.execute(
+                """
+                INSERT INTO raw_session_memberships (
+                    raw_id, logical_source_key, provider_session_id,
+                    source_revision, normalized_content_hash, message_count,
+                    decision, decided_at_ms
+                ) VALUES (?, 'chatgpt:s1', 's1', ?, ?, 1, 'ambiguous', 1)
+                """,
+                (raw_id, raw_id, bytes.fromhex(raw_id)),
+            )
+
+        returned_raw_id, session_id = archive.write_parsed_for_retained_raw(
+            session,
+            raw_id=raw_id,
+            source_path="a.json",
+            acquired_at_ms=2,
+        )
+
+    assert returned_raw_id == raw_id
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (0,)
 
 
 def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail_string(
