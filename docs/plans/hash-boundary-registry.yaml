@@ -542,6 +542,36 @@ entries:
   occurrence: 2
   classification: content-hash
   note: 'feeds session_content_hash / revision projection (2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md), Table 1 row 1).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.session_revision_projection'
+  call: hash_payload
+  occurrence: 3
+  classification: content-hash
+  note: 'event_hashes -- feeds session_content_hash / revision projection, unstripped and order-preserving (polylogue-nuec).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.session_revision_projection'
+  call: hash_payload
+  occurrence: 4
+  classification: content-hash
+  note: 'event base identity (event type + anchoring message), content-derived and position-independent, feeding event_contents (polylogue-aggz, polylogue-nuec).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.session_revision_projection'
+  call: hash_payload
+  occurrence: 5
+  classification: content-hash
+  note: 'per-event content hash (measurement excluded via _event_content_payload''s allowlist), feeding event_contents (polylogue-aggz, polylogue-nuec).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.session_revision_projection'
+  call: hash_payload
+  occurrence: 6
+  classification: content-hash
+  note: 'canonical event identity fold (base identity + content) used only when the base identity is locally ambiguous within one revision -- still content-derived, never the array index (polylogue-aggz).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>._event_content_payload'
+  call: hash_payload
+  occurrence: 0
+  classification: content-hash
+  note: 'per-event content payload feeding event_contents, an explicit per-event-type ALLOWLIST of content-bearing fields rather than a denylist of fields discovered volatile after the fact (polylogue-aggz, polylogue-nuec).'
 - path: polylogue/scenarios/workload.py
   function: '<module>._identity'
   call: hashlib.sha256
