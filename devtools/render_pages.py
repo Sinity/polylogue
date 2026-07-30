@@ -72,7 +72,6 @@ def _run_render_commands(verbose: bool = False) -> None:
         render_devtools_reference,
         render_docs_surface,
         render_quality_reference,
-        render_topology_status,
     )
 
     renderers = [
@@ -80,7 +79,6 @@ def _run_render_commands(verbose: bool = False) -> None:
         ("render devtools-reference", render_devtools_reference.main),
         ("render docs-surface", render_docs_surface.main),
         ("render quality-reference", render_quality_reference.main),
-        ("render topology-status", render_topology_status.main),
     ]
     for name, render in renderers:
         if verbose:

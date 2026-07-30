@@ -53,47 +53,6 @@ def load_manifest(path: Path) -> dict[str, object]:
         raise ValueError(f"failed to load {path}: {exc}") from exc
 
 
-def check_lint_escalation(plans_dir: Path) -> list[str]:
-    """Validate lint-escalation.yaml structure."""
-    errors: list[str] = []
-    path = plans_dir / "lint-escalation.yaml"
-    if not path.exists():
-        errors.append(f"missing: {path}")
-        return errors
-
-    try:
-        data = load_manifest(path)
-    except ValueError as exc:
-        return [str(exc)]
-
-    rules = data.get("rules")
-    if not isinstance(rules, list):
-        errors.append(f"{path}: 'rules' must be a list")
-        return errors
-
-    rule_ids: set[str] = set()
-    for rule in rules:
-        if not isinstance(rule, dict):
-            errors.append(f"{path}: rule is not a mapping")
-            continue
-        rid = rule.get("id")
-        if not isinstance(rid, str) or not rid.strip():
-            errors.append(f"{path}: rule missing 'id'")
-        elif rid in rule_ids:
-            errors.append(f"{path}: duplicate rule id {rid!r}")
-        else:
-            rule_ids.add(rid)
-
-        severity = rule.get("severity")
-        if severity not in ("soft", "hard"):
-            errors.append(f"{path}: rule {rid!r} missing or invalid severity")
-        sunset = rule.get("sunset")
-        if not isinstance(sunset, str):
-            errors.append(f"{path}: rule {rid!r} missing sunset date")
-
-    return errors
-
-
 def check_coverage_gaps(plans_dir: Path) -> list[str]:
     """Validate that passive coverage gaps are tracked as actionable records."""
     errors: list[str] = []
@@ -708,37 +667,6 @@ def check_test_quality_ci_claims(
     return errors
 
 
-def check_test_coverage_domains(plans_dir: Path) -> list[str]:
-    """Validate test-coverage-domains.yaml covering_tests paths exist."""
-    errors: list[str] = []
-    path = plans_dir / "test-coverage-domains.yaml"
-    if not path.exists():
-        return errors
-    try:
-        data = load_manifest(path)
-    except ValueError as exc:
-        return [str(exc)]
-
-    repo_root = plans_dir.parent.parent
-    domains = data.get("domains", [])
-    if not isinstance(domains, list):
-        return errors
-    for domain in domains:
-        if not isinstance(domain, dict):
-            continue
-        name = domain.get("domain", "<unknown>")
-        covering = domain.get("covering_tests", [])
-        if not isinstance(covering, list):
-            continue
-        for test_path in covering:
-            full = repo_root / test_path
-            if not full.exists():
-                errors.append(
-                    f"test-coverage-domains.yaml: domain {name!r}: covering_tests path does not exist: {test_path!r}"
-                )
-    return errors
-
-
 def check_pydantic_models(plans_dir: Path) -> list[str]:
     """Validate every YAML manifest against its Pydantic model schema."""
     errors: list[str] = []
@@ -765,12 +693,10 @@ def main(argv: list[str] | None = None) -> int:
     all_errors: list[str] = []
     for check in (
         check_pydantic_models,
-        check_lint_escalation,
         check_coverage_gaps,
         check_coverage_references,
         check_coverage_status_claims,
         check_campaign_coverage_catalog,
-        check_test_coverage_domains,
         check_distribution_ci_claims,
         check_test_quality_ci_claims,
     ):

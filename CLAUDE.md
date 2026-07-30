@@ -183,8 +183,8 @@ repeatedly reset+reingest the active archive for isolated index additions.
 
 **If you add any module/file under `polylogue/`**: regenerate the topology
 projection or `render all --check` fails — run
-`devtools render topology-projection && devtools render topology-status` and
-commit the updated `docs/plans/topology-target.yaml` + `docs/topology-status.md`.
+`devtools render topology-projection` and commit the updated
+`docs/plans/topology-target.yaml`.
 
 ---
 

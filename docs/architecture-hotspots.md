@@ -126,7 +126,7 @@ flagged as an open question for whichever child bead executes #3's slice.
   low-level-SQL to domain-meaning per the polylogue-c9y placement doctrine)
   would need to check `layering.yaml` for a new permitted edge.
 - Every new module under `polylogue/` requires `devtools render
-  topology-projection && devtools render topology-status` — done for this
+  topology-projection` — done for this
   bead's slice 1 (`session_annotations_write.py`).
 
 ## Mutation/read contracts
@@ -214,7 +214,7 @@ This pass investigated extraction candidates in #3 and #1 before choosing
 - **Verification**: `mypy --strict` clean on both files;
   `tests/unit/storage/test_archive_tiers_write.py` (the file's dedicated
   suite) passes 63/63 unchanged; `ruff check` clean;
-  `devtools render topology-projection && devtools render topology-status`
+  `devtools render topology-projection`
   regenerated for the new module; `devtools render all --check` green.
 
 ## Remaining slices — durable child beads
