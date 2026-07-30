@@ -514,6 +514,83 @@ def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> 
         )
 
 
+def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: Path) -> None:
+    """polylogue-eqnv: two raws of the SAME physical document, one carrying a
+    ``logical_source_key`` assigned by a since-superseded parser (a stale
+    ``raw_authority_parser_census`` receipt persisted before an identity-bug
+    fix -- the exact shape of the pre-#3179/z1c6 dispatch bug), must not be
+    replayed as two independent byte-proven singletons. The retire-to-
+    membership-governance fallback must bucket both raws under the identity
+    the RETIREMENT reparse actually recomputes, not the stale key either raw
+    was originally censused under, so they land in ONE membership cohort and
+    get jointly arbitrated (here: genuinely divergent content -> ambiguous,
+    neither materializes) instead of each becoming an independent
+    membership-governance "singleton winner" -- which would reproduce the
+    exact fidelity-downgrade bug this retirement path exists to prevent, one
+    layer down.
+    """
+    initialize_active_archive_root(tmp_path)
+    correct_key = "chatgpt:s1"
+    stale_key = "chatgpt:s1-0"
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_correct = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("s1", "base", "left")),
+            source_path="conversations.json",
+            acquired_at_ms=1,
+        )
+        raw_stale = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(_chatgpt_session("s1", "base", "right")),
+            source_path="conversations.json",
+            acquired_at_ms=2,
+        )
+
+    # Simulate the durable pre-existing state a since-fixed parser identity
+    # bug leaves behind: both raws already censused and typed 'full', one
+    # under the correct key a fresh reparse yields, the other under a stale,
+    # superseded key -- both stamped with the SAME parser fingerprint, so
+    # the ordinary quiescence gate would never re-derive either.
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        for raw_id, key in ((raw_correct, correct_key), (raw_stale, stale_key)):
+            conn.execute(
+                """
+                UPDATE raw_sessions
+                SET logical_source_key = ?, revision_kind = 'full', source_revision = raw_id,
+                    baseline_raw_id = raw_id, acquisition_generation = 0, revision_authority = 'quarantined'
+                WHERE raw_id = ?
+                """,
+                (key, raw_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_authority_parser_census
+                    (raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms)
+                VALUES (?, 'revision-membership-v1', 'complete', ?, 'pre-seeded for test', 0)
+                """,
+                (raw_id, json.dumps([key])),
+            )
+        conn.commit()
+
+    result = backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_correct, raw_stale])
+    assert result.replayed_logical_sources == 0
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        memberships = conn.execute(
+            "SELECT raw_id, logical_source_key, decision FROM raw_session_memberships ORDER BY raw_id"
+        ).fetchall()
+    assert {row[0] for row in memberships} == {raw_correct, raw_stale}
+    # Both raws must converge on the SAME (freshly re-derived) identity --
+    # not the stale key either was originally censused under -- and both
+    # must be recorded ambiguous, never silently accepted as a singleton.
+    assert {row[1] for row in memberships} == {correct_key}
+    assert {row[2] for row in memberships} == {"ambiguous"}
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
 def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:

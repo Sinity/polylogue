@@ -708,6 +708,65 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
     assert "cross-route full revision governance" in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
 
 
+def test_same_source_path_full_siblings_under_different_keys_are_not_independently_accepted(
+    tmp_path: Path,
+) -> None:
+    """polylogue-eqnv: a raw whose byte-revision identity was assigned by a
+    now-superseded parser (e.g. the pre-#3179/z1c6 dispatch bug that
+    appended a spurious ``-0`` to one of two otherwise-identical Drive
+    re-acquisitions of the same document) can carry a
+    ``logical_source_key`` that DIFFERS from a same-``source_path``
+    sibling's. Neither raw's own key ever surfaces the other in
+    ``raw_membership_retired_full_revision_siblings`` (an exact-key-match
+    query), so ``classify_raw_revision_cohort`` evaluates each key as a
+    trivial one-member chain and unconditionally accepts BOTH as
+    independent byte-proven singleton baselines -- silently splitting one
+    physical document into two sessions that then race on the shared
+    ``(origin, native_id)`` upsert (arbitrary last-writer-wins), instead of
+    ever being compared against each other.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_enriched = archive.write_raw_payload(
+            provider=Provider.GEMINI, payload=b"enriched-bytes", source_path="doc.json", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            raw_enriched,
+            RawRevisionEnvelope(
+                "gemini:doc",
+                RawRevisionKind.FULL,
+                raw_enriched,
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        raw_bare = archive.write_raw_payload(
+            provider=Provider.GEMINI, payload=b"bare-bytes", source_path="doc.json", acquired_at_ms=2
+        )
+        archive.bind_raw_revision(
+            raw_bare,
+            RawRevisionEnvelope(
+                # The stale-parser identity split: same source_path, a
+                # DIFFERENT logical_source_key.
+                "gemini:doc-0",
+                RawRevisionKind.FULL,
+                raw_bare,
+                0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+        enriched_plan = archive.classify_raw_revision_cohort("gemini:doc", check_source_path_identity_split=True)
+        bare_plan = archive.classify_raw_revision_cohort("gemini:doc-0", check_source_path_identity_split=True)
+
+    # Neither key's lone member may be promoted alone: a same-source_path
+    # sibling under a different key means this identity is genuinely
+    # contested, not a clean singleton chain.
+    assert enriched_plan.accepted_raw_ids == ()
+    assert bare_plan.accepted_raw_ids == ()
+
+
 def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 

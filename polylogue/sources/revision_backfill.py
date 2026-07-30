@@ -899,7 +899,15 @@ def backfill_historical_revision_evidence(
         replayed = 0
         byte_replayed_keys: set[str] = set()
         for logical_key in sorted(logical_keys):
-            plan = archive.classify_raw_revision_cohort(logical_key)
+            # polylogue-eqnv: the offline backfill/rebuild path is the one
+            # where a stale pre-fix parser identity can split one physical
+            # document's re-acquisitions across two logical_source_keys (see
+            # ArchiveStore.classify_raw_revision_cohort's docstring) -- opt
+            # into the source_path cross-key guard here. The live watcher
+            # (sources/live/batch.py) does NOT opt in: a watched path can be
+            # legitimately, atomically replaced with a different session's
+            # content, which must not be quarantined as "divergent evidence".
+            plan = archive.classify_raw_revision_cohort(logical_key, check_source_path_identity_split=True)
             if not plan.accepted_raw_ids:
                 # Complete snapshots that are not a unique byte-prefix chain
                 # still carry semantic evidence. Move only that full-only
@@ -921,7 +929,23 @@ def backfill_historical_revision_evidence(
                         detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                         retire_full_revision_governance=True,
                     )
-                    membership_candidates.setdefault(logical_key, set()).add(raw_id)
+                    # polylogue-eqnv: bucket by the identity the retirement
+                    # reparse just recomputed (what actually lands in
+                    # raw_session_memberships.logical_source_key inside
+                    # replace_raw_membership_census), NOT the stale outer-
+                    # loop ``logical_key`` this raw was originally censused
+                    # under. Two same-document raws retired here from
+                    # DIFFERENT stale keys (e.g. one carrying a since-fixed
+                    # parser identity bug) re-derive the SAME fresh key on
+                    # reparse; bucketing by the stale key would keep them in
+                    # separate membership cohorts below and let each be
+                    # accepted as an independent membership singleton --
+                    # reproducing the exact fidelity-downgrade defect this
+                    # retirement path exists to prevent, one layer down.
+                    fresh_session = sessions[0]
+                    fresh_key = f"{fresh_session.source_name.value}:{fresh_session.provider_session_id}"
+                    membership_candidates.setdefault(fresh_key, set()).add(raw_id)
+                    membership_keys.add(fresh_key)
                 membership_keys.add(logical_key)
                 continue
             parsed_by_raw_id: dict[str, ParsedSession] = {}
