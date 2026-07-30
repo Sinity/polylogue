@@ -73,6 +73,26 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
         if len(metadata_variants) == 1:
             representatives.extend(metadata_variants)
             continue
+        # A same-content-key group can still split into multiple session_hash
+        # sub-groups for two different reasons: a genuine title/created_at/
+        # updated_at edit (needs the timestamp tie-break below), or pure
+        # serialization noise along an axis the content key already tolerates
+        # -- message order, attachment id presence, event-duration
+        # measurement -- with every OTHER session_hash input identical. The
+        # second shape is the common one for a re-export of an untouched
+        # conversation: the provider's own updated_at legitimately never
+        # moves, so a distinct-timestamp tie-break can never fire and the
+        # group would otherwise stay ambiguous forever (polylogue-c429,
+        # polylogue-nuec, polylogue-d8al). metadata_hash pins down which
+        # shape this is: if every variant agrees on title/created_at/
+        # updated_at, the ONLY remaining source of a session_hash difference
+        # is one of the tolerated axes, so picking any one is exactly as safe
+        # as the exact-session_hash collapse a few lines above.
+        if len({item.projection.metadata_hash for item in metadata_variants}) == 1:
+            representative = min(metadata_variants, key=lambda item: item.raw_id)
+            representatives.append(representative)
+            equivalents.extend(item.raw_id for item in metadata_variants if item.raw_id != representative.raw_id)
+            continue
         timestamped = [
             (parsed.timestamp(), item)
             for item in metadata_variants

@@ -171,6 +171,7 @@ def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> No
         attachment_identities=frozenset({b"attachment"}),
         attachment_contents=frozenset(),
         attachment_records=((b"attachment", b"attachment-loose", None),),
+        metadata_hash=older.projection.metadata_hash,
     )
     newer = _revision("raw-new", "prompt", "answer")
     revisions = [
@@ -236,6 +237,7 @@ def test_browser_snapshot_accepts_later_attachment_enrichment_without_provider_u
         attachment_identities=frozenset({b"attachment-v2"}),
         attachment_contents=frozenset(),
         attachment_records=((b"attachment-v2", b"attachment-v2-loose", None),),
+        metadata_hash=newer.projection.metadata_hash,
     )
     revisions = [
         MembershipRevision(
@@ -466,17 +468,18 @@ def test_accepts_real_and_synthetic_id_variants_of_the_same_attachment_as_equiva
     assert not _strictly_dominates(real_id.projection, synthetic_id.projection)
     assert not _strictly_dominates(synthetic_id.projection, real_id.projection)
 
-    # Same-content-key revisions still need a provider timestamp to pick a
-    # representative (matching the pre-existing metadata_variants mechanism) --
-    # the correlation-based merge gets them INTO that mechanism at all, which
-    # is the fix; it does not bypass the timestamp requirement.
-    real_id = MembershipRevision(real_id.raw_id, real_id.projection, "2026-01-01T00:00:00Z")
-    synthetic_id = MembershipRevision(synthetic_id.raw_id, synthetic_id.projection, "2026-01-02T00:00:00Z")
-
+    # Both fixtures leave title/created_at/updated_at unset (matching), the
+    # common live shape for a re-export of an untouched conversation: the
+    # correlation-based merge gets them into the same content-key group, and
+    # metadata_hash proves the id-presence mismatch is the ONLY remaining
+    # difference -- no provider timestamp is needed or consulted (real
+    # exports commonly carry an IDENTICAL provider updated_at across two
+    # export requests of unchanged content, so requiring one to differ would
+    # leave this shape ambiguous forever).
     result = classify_membership_revisions([real_id, synthetic_id])
 
-    assert result.accepted_raw_ids == ("raw-synthetic",)
-    assert result.equivalent_raw_ids == ("raw-real",)
+    assert result.accepted_raw_ids == ("raw-real",)
+    assert result.equivalent_raw_ids == ("raw-synthetic",)
     assert result.ambiguous_raw_ids == ()
 
 
@@ -742,18 +745,17 @@ def test_accepts_reordered_message_array_with_identical_content_as_equivalent() 
     assert chronological.projection.message_hashes != resequenced.projection.message_hashes
     assert chronological.projection.message_contents == resequenced.projection.message_contents
 
-    # Same-content-key revisions still need a provider timestamp to pick a
-    # representative (matching the pre-existing metadata_variants mechanism,
-    # e.g. test_metadata_only_revision_uses_latest_provider_timestamp) -- the
-    # permutation-tolerant key gets them INTO that mechanism at all, which is
-    # the fix; it does not bypass the timestamp requirement.
-    chronological = MembershipRevision(chronological.raw_id, chronological.projection, "2026-01-01T00:00:00Z")
-    resequenced = MembershipRevision(resequenced.raw_id, resequenced.projection, "2026-01-02T00:00:00Z")
-
+    # Both fixtures leave title/created_at/updated_at unset (matching), the
+    # common live shape for a re-export of an untouched conversation: the
+    # permutation-tolerant content key gets them into the same group, and
+    # metadata_hash proves the reorder is the ONLY remaining difference -- no
+    # provider timestamp is needed (Claude.ai's own updated_at commonly
+    # carries the SAME value across two export requests of unchanged content,
+    # since re-sequencing an array is not a provider-visible edit).
     result = classify_membership_revisions([chronological, resequenced])
 
-    assert result.accepted_raw_ids == ("raw-resequenced",)
-    assert result.equivalent_raw_ids == ("raw-chrono",)
+    assert result.accepted_raw_ids == ("raw-chrono",)
+    assert result.equivalent_raw_ids == ("raw-resequenced",)
     assert result.ambiguous_raw_ids == ()
 
 
@@ -920,17 +922,18 @@ def test_accepts_generation_lifecycle_duration_change_as_equivalent() -> None:
     assert first_export.projection.event_identity_hashes == second_export.projection.event_identity_hashes
     assert first_export.projection.session_hash != second_export.projection.session_hash
 
-    # Same-content-key revisions still need a provider timestamp to pick a
-    # representative (matching the pre-existing metadata_variants mechanism) --
-    # the measurement-tolerant key gets them INTO that mechanism at all, which
-    # is the fix; it does not bypass the timestamp requirement.
-    first_export = MembershipRevision(first_export.raw_id, first_export.projection, "2026-01-01T00:00:00Z")
-    second_export = MembershipRevision(second_export.raw_id, second_export.projection, "2026-01-02T00:00:00Z")
-
+    # Both fixtures leave title/created_at/updated_at unset (matching), the
+    # common live shape for a re-export of an untouched conversation: the
+    # measurement-tolerant content key gets them into the same group, and
+    # metadata_hash proves the duration change is the ONLY remaining
+    # difference -- no provider timestamp is needed (a remeasured duration is
+    # not a provider-visible edit to the conversation itself, so ChatGPT's
+    # own updated_at commonly carries the SAME value across two export
+    # requests of the same generation).
     result = classify_membership_revisions([first_export, second_export])
 
-    assert result.accepted_raw_ids == ("raw-second",)
-    assert result.equivalent_raw_ids == ("raw-first",)
+    assert result.accepted_raw_ids == ("raw-first",)
+    assert result.equivalent_raw_ids == ("raw-second",)
     assert result.ambiguous_raw_ids == ()
 
 

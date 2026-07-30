@@ -566,6 +566,12 @@ entries:
   occurrence: 0
   classification: content-hash
   note: 'per-event identity hash feeding event_identity_hashes, measurement fields stripped for provider_reported_elapsed events (polylogue-nuec).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.session_revision_projection'
+  call: hash_payload
+  occurrence: 6
+  classification: content-hash
+  note: 'metadata_hash -- title/created_at/updated_at only, lets membership classification tell a genuine metadata edit apart from pure order/duration/id-presence noise within an already-tolerant content-key group (polylogue-c429, polylogue-nuec, polylogue-d8al).'
 - path: polylogue/scenarios/workload.py
   function: '<module>._identity'
   call: hashlib.sha256

@@ -101,6 +101,19 @@ class SessionRevisionProjection:
     conversations look like divergent branches on every re-export
     (polylogue-nuec). ``event_hashes`` (unstripped, order-preserving) remains
     unchanged for ``session_hash`` and diagnostics.
+
+    ``metadata_hash`` covers exactly the ``session_hash`` payload fields
+    OTHER than messages/attachments/session_events -- title, created_at,
+    updated_at -- normalized the same way. Membership classification uses it
+    to tell apart two reasons a same-content-key group can still carry
+    different ``session_hash`` values: a genuine title/timestamp edit (needs
+    the existing provider-timestamp tie-break), versus pure serialization
+    noise along an axis this projection already tolerates (message order,
+    attachment id presence, event-duration measurement) with the provider's
+    own metadata otherwise unchanged -- the common shape for a re-export of
+    an untouched conversation, where ``updated_at`` legitimately never moves
+    and a distinct-timestamp tie-break can never fire (polylogue-c429,
+    polylogue-nuec, polylogue-d8al).
     """
 
     session_hash: bytes
@@ -111,6 +124,7 @@ class SessionRevisionProjection:
     attachment_records: tuple[AttachmentRecord, ...]
     event_hashes: tuple[bytes, ...]
     event_identity_hashes: tuple[bytes, ...]
+    metadata_hash: bytes
 
 
 def _normalize_nested_for_hash(value: object) -> object:
@@ -488,6 +502,15 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     for event_index, (payload, event) in enumerate(zip(session_events_payload, convo.session_events, strict=True)):
         event_hashes.append(bytes.fromhex(hash_payload(payload)))
         event_identity_hashes.append(bytes.fromhex(hash_payload(_event_identity_hash_payload(event, event_index))))
+    metadata_hash = bytes.fromhex(
+        hash_payload(
+            {
+                "title": _normalize_for_hash(convo.title),
+                "created_at": _normalize_for_hash(convo.created_at),
+                "updated_at": _normalize_for_hash(convo.updated_at),
+            }
+        )
+    )
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),
         message_hashes=tuple(message_hashes),
@@ -497,4 +520,5 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachment_records=tuple(attachment_records),
         event_hashes=tuple(event_hashes),
         event_identity_hashes=tuple(event_identity_hashes),
+        metadata_hash=metadata_hash,
     )
