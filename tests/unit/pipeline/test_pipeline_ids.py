@@ -195,6 +195,16 @@ def test_session_revision_projection_golden_hashes() -> None:
     change. If this test ever needs updating, that is an evidence epoch and
     requires the migration/fingerprint-bump story in polylogue-fqp0's design,
     not a routine test-fixture update.
+
+    The session, message and event digests below are deliberately unchanged by
+    polylogue-bu1i's attachment split, which is what proves that change did not
+    move the content-hash boundary: it replaced the single ``attachment_hashes``
+    projection with an identity axis and an acquisition axis used only for
+    revision comparison, and left every hash that feeds ``session_content_hash``
+    byte-identical. Pinning ``session_hash`` here is what would catch a future
+    attempt to "simplify" that split by excluding acquisition state from the
+    content hash too -- which would silently make a newly-fetched attachment
+    look like an unchanged session and skip its re-ingest.
     """
     session = _golden_session()
     projection = session_revision_projection(session)
@@ -204,9 +214,12 @@ def test_session_revision_projection_golden_hashes() -> None:
         "65a99313c3ed8b81e69ecc0b36f314b3bf7848bc10fcea11415ddb9b07188941",
         "8efbf7b5b70bef4d73ec3550fe97e6f4d456cd724550bc5621a36766fe7f1f8b",
     ]
-    assert {h.hex() for h in projection.attachment_hashes} == {
-        "f0a9ad8518ab2426ed33575cf5eb0ee0a55d852d3c40c7a2f8f600f4f2f8e89b"
+    assert {h.hex() for h in projection.attachment_identities} == {
+        "c233d41c034109580c7d7e74a96944a55eb0fadcc2564001dcf607f727b48062"
     }
+    # The golden attachment declares a size but carries no bytes, so it is
+    # referenced-but-unacquired: identity is known, content is not.
+    assert projection.attachment_contents == frozenset()
     assert [h.hex() for h in projection.event_hashes] == [
         "8f6539c2bc89ff2c78e183cda534a04f4d14823a0416df54d73fbee6f1f0824f"
     ]
@@ -257,7 +270,16 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
 
     assert projection.session_hash.hex() == independent_session_hash
     assert list(projection.message_hashes) == [bytes.fromhex(hash_payload(p)) for p in independent_message_payloads]
-    assert projection.attachment_hashes == frozenset(
-        bytes.fromhex(hash_payload(p)) for p in independent_attachment_payloads
+    assert projection.attachment_identities == frozenset(
+        bytes.fromhex(hash_payload({field: p[field] for field in ("id", "message_id", "name", "mime_type")}))
+        for p in independent_attachment_payloads
+    )
+    assert projection.attachment_contents == frozenset(
+        (
+            bytes.fromhex(hash_payload({field: p[field] for field in ("id", "message_id", "name", "mime_type")})),
+            bytes.fromhex(str(p["inline_content_hash"])),
+        )
+        for p in independent_attachment_payloads
+        if "inline_content_hash" in p
     )
     assert list(projection.event_hashes) == [bytes.fromhex(hash_payload(p)) for p in independent_event_payloads]
