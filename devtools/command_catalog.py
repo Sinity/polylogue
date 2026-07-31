@@ -618,6 +618,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace lane-brief",
+        "workspace",
+        "Generate a dispatch brief for a bead lane with live footprint/prior-art evidence.",
+        "devtools.lane_brief",
+        use_when=(
+            "Before dispatching a batch of bead ids as one lane/branch to a subagent, produce a "
+            "markdown brief carrying the full bead records plus LIVE evidence: every file path "
+            "mentioned in the bead text is checked against the working tree (exists? line count? "
+            "last 3 commits?) so a dispatcher does not hand a subagent stale bead prose, and closed "
+            "beads mentioning the same paths are surfaced as prior art. Sections the tool cannot "
+            "fill (measured baseline, non-goals) are emitted as explicit placeholders, never "
+            "silently dropped."
+        ),
+        examples=(
+            "devtools workspace lane-brief polylogue-abc polylogue-def",
+            "devtools workspace lane-brief polylogue-ei94 --out .agent/scratch/lane-ei94.md",
+        ),
+    ),
+    CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
         "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
