@@ -5403,7 +5403,12 @@ class PolylogueArchiveMixin:
     ) -> JSONDocument | None:
         """Return git/GitHub correlation evidence as a JSON surface payload."""
 
-        from polylogue.insights.session_commit import build_correlation_result, correlation_result_to_payload
+        from polylogue.insights.session_commit import (
+            bridge_session_ids_from_events,
+            build_correlation_result,
+            correlation_result_to_payload,
+            typed_refs_from_session_refs,
+        )
 
         session = await self.get_session(session_id)
         if session is None:
@@ -5432,6 +5437,10 @@ class PolylogueArchiveMixin:
                 }
             )
 
+        session_refs = await self.repository.get_session_refs(session_id)
+        typed_pr_refs, typed_issue_refs = typed_refs_from_session_refs(session_refs)
+        bridge_session_ids = bridge_session_ids_from_events(session.session_events)
+
         result = build_correlation_result(
             session_id=session_id,
             messages=messages,
@@ -5441,6 +5450,9 @@ class PolylogueArchiveMixin:
             before_hours=since_hours,
             after_hours=since_hours,
             confidence_threshold=confidence_threshold,
+            typed_pr_refs=typed_pr_refs,
+            typed_issue_refs=typed_issue_refs,
+            bridge_session_ids=bridge_session_ids,
         )
         return cast(JSONDocument, correlation_result_to_payload(result))
 
