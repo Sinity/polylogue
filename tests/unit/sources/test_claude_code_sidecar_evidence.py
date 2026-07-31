@@ -323,7 +323,7 @@ def test_attachment_hook_subtypes_share_one_event_type() -> None:
         ],
         "sess-hook",
     )
-    event_types = [e.event_type for e in parsed.session_events]
+    event_types = [e.event_type for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert event_types == ["claude_hook_event", "claude_hook_event"]
 
 
@@ -342,7 +342,7 @@ def test_attachment_queued_command_reuses_queue_operation_event_type() -> None:
         ],
         "sess-queue",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_queue_operation",
@@ -372,7 +372,7 @@ def test_attachment_transient_subtype_emits_no_event() -> None:
         ],
         "sess-transient",
     )
-    assert parsed.session_events == []
+    assert [e for e in parsed.session_events if e.event_type != "claude_parse_coverage"] == []
 
 
 def test_attachment_unrecognized_subtype_fails_loud() -> None:
@@ -389,7 +389,7 @@ def test_attachment_unrecognized_subtype_fails_loud() -> None:
         ],
         "sess-unknown",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_attachment_unclassified",
@@ -415,7 +415,7 @@ def test_attachment_deferred_tools_delta_drops_body_text_keeps_names() -> None:
         ],
         "sess-delta",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_capability_delta",
@@ -444,7 +444,7 @@ def test_attachment_skill_listing_extracts_names_not_full_text() -> None:
         ],
         "sess-skills",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_capability_snapshot",
@@ -481,7 +481,7 @@ def test_attachment_diagnostics_bounds_to_per_file_counts() -> None:
         ],
         "sess-diag",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_diagnostics",
