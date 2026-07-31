@@ -1249,19 +1249,14 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
     polylogue-t93b: called only after the ordinary trickle conveyor has
     drained to quiescence for this tick (see
     ``_periodic_raw_materialization_convergence``), so a whale pass never
-    competes with ordinary-scale backlog for the writer hold. Off switch:
-    ``daemon_whale_raw_materialization`` (on by default -- a permanent
-    offline-only requirement for whale components is the policy bug this
-    closes).
+    competes with ordinary-scale backlog for the writer hold. Unconditional:
+    a permanent offline-only requirement for whale components is the policy
+    bug this closes, so there is no off switch.
 
     Returns whether a pass was genuinely attempted this call, mirroring
     ``_maybe_route_daemon_bulk_rebuild``'s return-value contract so the
     caller can decide burst-vs-outer-interval pacing the same way.
     """
-    from polylogue.config import load_polylogue_config
-
-    if not load_polylogue_config().daemon_whale_raw_materialization:
-        return False
     from polylogue.config import Config
     from polylogue.daemon.events import emit_daemon_event
     from polylogue.paths import archive_root, render_root
