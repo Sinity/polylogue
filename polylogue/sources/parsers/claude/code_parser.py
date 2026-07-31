@@ -1469,6 +1469,7 @@ def _parse_code_records(
                     attachment_event = _attachment_sidecar_event(item, timestamp)
                     if attachment_event is not None:
                         session_events.append(attachment_event)
+                        persisted_this_record = True
                 event_type = _SIDECAR_EVENT_TYPES.get(record_type)
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
