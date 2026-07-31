@@ -116,3 +116,92 @@ class TestScanSecrets:
         assert "blocks scanned: 1" in result.output
         assert "secret candidates found: 1" in result.output
         assert "AKIAABCDEFGHIJKLMNOP" not in result.output
+
+    def test_no_session_no_all_no_status_is_a_usage_error(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        with patch("polylogue.cli.commands.scan_secrets.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "scan-secrets"])
+        assert result.exit_code != 0
+
+    def test_session_and_all_together_is_a_usage_error(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_session_with_block_text(archive_root, native_id="scan-x", text="x")
+        with patch("polylogue.cli.commands.scan_secrets.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "scan-secrets", "--session", session_id, "--all"])
+        assert result.exit_code != 0
+
+
+class TestScanSecretsAll:
+    """Coverage for the bulk `--all` mode (polylogue-layg.1).
+
+    Anti-vacuity: before this bead, `--session` was `required=True`
+    (`scan_secrets.py:22`) -- there was no way to discover candidates
+    archive-wide without an operator already knowing a session id. Reverting
+    `--all` to a no-op, or dropping the loop that drains every page, makes
+    ``test_all_finds_every_planted_secret_across_multiple_sessions`` fail
+    because it asserts a candidate exists for *every* seeded session, not
+    just one.
+    """
+
+    def test_all_finds_every_planted_secret_across_multiple_sessions(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        for i in range(4):
+            _seed_session_with_block_text(archive_root, native_id=f"all-{i}", text=f"AWS_ACCESS_KEY_ID=AKIA{i:016X}")
+        with patch("polylogue.cli.commands.scan_secrets.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "scan-secrets", "--all", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["sessions_scanned"] == 4
+        assert payload["candidates_found"] == 4
+        assert payload["remaining_pending"] == 0
+
+        user_conn = sqlite3.connect(archive_root / "user.db")
+        try:
+            count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = ?", (AssertionKind.SECRET_CANDIDATE.value,)
+            ).fetchone()[0]
+        finally:
+            user_conn.close()
+        assert count == 4
+
+    def test_all_with_limit_scans_one_bounded_page(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        for i in range(4):
+            _seed_session_with_block_text(archive_root, native_id=f"page-{i}", text=f"AWS_ACCESS_KEY_ID=AKIA{i:016X}")
+        with patch("polylogue.cli.commands.scan_secrets.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "scan-secrets", "--all", "--limit", "2", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["sessions_scanned"] == 2
+        assert payload["remaining_pending"] == 2
+        assert payload["more_pending"] is True
+
+    def test_status_reports_pending_count_without_scanning(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_session_with_block_text(archive_root, native_id="status-1", text="AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP")
+        with patch("polylogue.cli.commands.scan_secrets.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            status_before = runner.invoke(cli, ["ops", "scan-secrets", "--status", "--json"])
+            assert json.loads(status_before.output)["remaining_pending"] == 1
+
+            scan_result = runner.invoke(cli, ["ops", "scan-secrets", "--all", "--json"])
+            assert json.loads(scan_result.output)["sessions_scanned"] == 1
+
+            status_after = runner.invoke(cli, ["ops", "scan-secrets", "--status", "--json"])
+        assert status_after.exit_code == 0
+        assert json.loads(status_after.output)["remaining_pending"] == 0
+
+    def test_all_never_leaks_the_matched_literal(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        secret_value = "sk-ant-api03-" + "c" * 60
+        _seed_session_with_block_text(archive_root, native_id="leak-check", text=f"ANTHROPIC_API_KEY={secret_value}")
+        with patch("polylogue.cli.commands.scan_secrets.archive_root", return_value=archive_root):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["ops", "scan-secrets", "--all"])
+        assert result.exit_code == 0
+        assert secret_value not in result.output
