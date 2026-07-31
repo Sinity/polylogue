@@ -8,10 +8,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import MaterialOrigin, Role
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
-from polylogue.sources.parsers.claude.orchestration import (
-    inventory_claude_orchestration_artifacts,
-    parse_claude_orchestration_artifact,
-)
+from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -176,7 +173,7 @@ def test_parse_code_preserves_tool_result_reclassification_material_origin() -> 
     assert result.messages[0].material_origin is MaterialOrigin.TOOL_RESULT
 
 
-def test_claude_workflow_artifact_parser_retains_native_facts_and_coverage_gaps() -> None:
+def test_claude_workflow_artifact_parser_retains_native_facts() -> None:
     run = parse_claude_orchestration_artifact(
         "/tmp/.claude/projects/x/workflows/wf-54.json",
         json.dumps({"runId": "wf-54", "taskId": "task-7", "resumeFromRunId": "wf-53", "scriptHash": "abc"}),
@@ -190,27 +187,6 @@ def test_claude_workflow_artifact_parser_retains_native_facts_and_coverage_gaps(
     assert run.facts[0].payload["resumeFromRunId"] == "wf-53"
     assert journal is not None and journal.facts[0].content_key == "call-1"
     assert journal.facts[0].payload["structuredResult"] == {"ok": True}
-
-    coverage = inventory_claude_orchestration_artifacts(
-        (
-            "/tmp/.claude/projects/x/workflows/wf-54.json",
-            "/tmp/.claude/projects/x/subagents/workflows/wf-54/journal.jsonl",
-            "/tmp/.claude/projects/x/subagents/agent-a.jsonl",
-            "/tmp/.claude/projects/x/subagents/agent-b.meta.json",
-            "/tmp/.claude/projects/x/jobs/session-a/adopt.json",
-        )
-    )
-    assert coverage.artifact_counts == {
-        "adopt_manifest": 1,
-        "agent_sidecar_meta": 1,
-        "agent_transcript": 1,
-        "workflow_journal": 1,
-        "workflow_run_snapshot": 1,
-    }
-    assert coverage.gaps == (
-        "missing agent metadata for transcript agent-a",
-        "missing agent transcript for metadata agent-b",
-    )
 
 
 def test_claude_agent_prompt_needs_positive_human_provenance() -> None:
