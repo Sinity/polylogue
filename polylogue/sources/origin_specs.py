@@ -434,7 +434,7 @@ def _claude_code_spec() -> OriginSpec:
             "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
             "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
             "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
-            "code_parser.py's _SKIPPED_SIDECAR_RECORD_TYPES (14 sidecar record "
+            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES (14 sidecar record "
             "types) already carries a per-type disposition with corpus counts "
             "in a comment block (polylogue-pbuh/parser-diff triage, "
             "2026-07-29) -- not converted to a DroppedValueVocabulary "
@@ -794,7 +794,11 @@ def _beads_spec() -> OriginSpec:
         acquisition_modes=("issue-jsonl",),
         parser_paths=("polylogue/sources/parsers/beads.py",),
         fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
-        stream_parser_path="polylogue/sources/parsers/beads.py:parse_beads_stream",
+        # dispatch.py:parse_stream_payload routes Provider.BEADS to the
+        # plain ``beads.parse`` entry point -- there is no dedicated
+        # ``parse_beads_stream`` function; this declaration must name the
+        # function dispatch actually calls.
+        stream_parser_path="polylogue/sources/parsers/beads.py:parse",
         display_description="Beads issue exports (non-chat work artifacts)",
     )
 
@@ -809,6 +813,42 @@ def _claude_ai_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
         fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),
         display_description="Claude web exports (lab: Anthropic)",
+    )
+
+
+def _claude_design_spec() -> OriginSpec:
+    return _executable_spec(
+        Origin.CLAUDE_DESIGN_SESSION,
+        provider=Provider.CLAUDE_DESIGN,
+        tightness=82,
+        discovery="Claude Design chat document admission (design_chats/*.json in a Claude AI GDPR export).",
+        acquisition_modes=("export-json",),
+        parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
+        fixture_paths=("tests/unit/sources/test_parsers_claude_design.py",),
+        display_description="Claude Design agentic sessions (lab: Anthropic)",
+        fidelity_notes=(
+            "bd polylogue-tbun: measured over the 11 design_chats in the 2026-07-30 export. Claude Design is "
+            "NOT claude.ai with a flag -- distinct camelCase wire shape (contentBlocks/authorAccountUuid/"
+            "turnChanges), message.content is a dict not a list, admitted as its own Origin/Provider rather "
+            "than folded into claude-ai-export.",
+            "turnChanges (created/edited/deleted/moved file lists per turn) is stored as a "
+            "claude_design_turn_changes session_event rather than a new construct type or table -- it is "
+            "turn-scoped structured evidence, exactly what session_events + payload_json already models "
+            "(the same mechanism ai_parser.py already uses for claude_ai_conversation_summary/"
+            "claude_ai_web_tool_evidence); no schema addition needed.",
+            "user_interjection (a user message nested inside an assistant turn) is NOT flattened into an "
+            "ordinary same-position user message: the assistant turn's contentBlocks are split at the "
+            "interjection boundary into separate ParsedMessage segments sharing incrementing positions, so "
+            "the interjection lands as a real role=user message physically between the two half-turns, "
+            "preserving interruption ordering instead of destroying it.",
+            "attachment_kind gains 'skill' and 'folder' (attachment_kind is an open string field, not a "
+            "CHECK-constrained column -- see ParsedAttachment.attachment_kind docstring -- so no schema "
+            "change is needed for the new values).",
+            "Only 11 real chats have been observed; the parser is deliberately strict (unrecognized "
+            "contentBlocks types are logged and skipped, never guessed) rather than modeling a shape that "
+            "is still moving. No committed schema-harvest package exists yet -- see the 'proposed' "
+            "completeness maturity below.",
+        ),
     )
 
 
@@ -832,6 +872,10 @@ def _aistudio_drive_spec() -> OriginSpec:
             "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
             "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
             "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+            "chunkedPrompt.pendingInputs (unsent textbox drafts) is read and stored verbatim as "
+            "sessions.pending_drafts_json (polylogue-o4j2), deliberately as a session-row field rather than a "
+            "session_event: a draft is mutable current UI state, and session_events participate in "
+            "session_revision_projection's append-only comparison axes (polylogue-aggz Invariant 1).",
             "drive_support_blocks.py's _SUCCESS_OUTCOMES ({'ok', 'success', "
             "'succeeded', 'completed', 'outcome_ok'}) is not (yet) a "
             "DroppedValueVocabulary (polylogue-2qx): Gemini's own committed "
@@ -1087,6 +1131,31 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
             docs_paths=("docs/providers/claude-ai.md",),
         ),
     ),
+    Origin.CLAUDE_DESIGN_SESSION: (
+        _completeness_mode(
+            "provider-package:claude-design-session/export-json@v1",
+            "export-json",
+            Provider.CLAUDE_DESIGN,
+            # Kept "proposed" (not "accepted") deliberately: the detector and parser are real and admitted
+            # (OriginSpec.lifecycle="executable" above), but no schema-discovery harvesting pass has run --
+            # the wire shape is reconstructed from 11 real design_chats sampled from one 2026-07-30 export,
+            # not a harvested provider-package catalog. "accepted" would require schema_package evidence
+            # this origin does not yet have, and would fail `devtools provider-completeness --check`.
+            "proposed",
+            detector_paths=("polylogue/sources/parsers/claude/ai_parser.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
+            parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
+            normalizer_paths=("polylogue/sources/parsers/claude/common.py",),
+            fixture_paths=("tests/unit/sources/test_parsers_claude_design.py",),
+            schema_paths=(),
+            docs_paths=("docs/provider-origin-identity.md",),
+            caveats=(
+                "No schema-discovery harvesting pass has run against a broad Claude Design corpus; the wire "
+                "shape is reconstructed from 11 real design_chats in one 2026-07-30 GDPR export sample. "
+                "Promote to accepted once a harvested provider-package catalog exists.",
+            ),
+        ),
+    ),
     Origin.AISTUDIO_DRIVE: (
         _completeness_mode(
             "provider-package:aistudio-drive/drive-export@v1",
@@ -1147,6 +1216,7 @@ for _spec in (
     _grok_spec(),
     _chatgpt_spec(),
     _claude_ai_spec(),
+    _claude_design_spec(),
     _aistudio_drive_spec(),
     _unknown_spec(),
 ):

@@ -790,6 +790,7 @@ ORIGIN_MEANINGS: tuple[OriginMeaning, ...] = (
     OriginMeaning("grok-export", "Grok conversation exports."),
     OriginMeaning("chatgpt-export", "ChatGPT web/data exports."),
     OriginMeaning("claude-ai-export", "Claude web/data exports."),
+    OriginMeaning("claude-design-session", "Claude Design agentic chat sessions."),
     OriginMeaning("aistudio-drive", "Google AI Studio or Drive/Takeout conversation exports."),
     OriginMeaning("unknown-export", "Imported material whose provider/source could not be classified reliably."),
 )

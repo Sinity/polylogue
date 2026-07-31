@@ -294,6 +294,7 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
         Origin.GROK_EXPORT: ("#d1d5db", "#29313a"),
         Origin.CHATGPT_EXPORT: ("#86efac", "#123522"),
         Origin.CLAUDE_AI_EXPORT: ("#fed7aa", "#3b2410"),
+        Origin.CLAUDE_DESIGN_SESSION: ("#fdba74", "#3a2a12"),
         Origin.AISTUDIO_DRIVE: ("#a5b4fc", "#24264b"),
     },
     "light": {
@@ -306,6 +307,7 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
         Origin.GROK_EXPORT: ("#374151", "#e5e7eb"),
         Origin.CHATGPT_EXPORT: ("#166534", "#dcfce7"),
         Origin.CLAUDE_AI_EXPORT: ("#9a3412", "#ffedd5"),
+        Origin.CLAUDE_DESIGN_SESSION: ("#c2410c", "#ffedd5"),
         Origin.AISTUDIO_DRIVE: ("#3730a3", "#e0e7ff"),
     },
 }

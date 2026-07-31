@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -1365,7 +1366,16 @@ def test_provider_usage_model_switch_on_reingest_does_not_double_count(tmp_path:
 def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_path: Path) -> None:
     """A message's model can vanish between full re-ingests (e.g. corrected
     message-boundary re-parsing). The old model's session_model_usage row
-    must not survive as an orphaned, stale contributor to per-model sums."""
+    must not survive as an orphaned, stale contributor to per-model sums.
+
+    polylogue-geop note: this is a SAME-ACQUISITION re-parse (neither write
+    passes a ``raw_id``, so ``_union_with_existing_rows`` has no positive
+    evidence of a different acquisition and falls back to plain replace) --
+    the corrected re-parse must be able to retract m1's stale attribution.
+    Contrast with ``test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them``,
+    which passes two DIFFERENT ``raw_id``s and asserts the opposite: a
+    genuinely different acquisition must never delete what a prior one
+    supplied."""
     conn = _connect(tmp_path / "index.db")
 
     def _usage_event(model: str, *, input_tokens: int, cached: int, output: int) -> ParsedSessionEvent:
@@ -4252,3 +4262,200 @@ def test_merge_append_advances_derived_updated_at_ms_from_new_message_evidence(
     # updated_at_ms advances to the newly appended message's timestamp.
     assert second_row["created_at_ms"] == 1_775_001_600_000
     assert second_row["updated_at_ms"] == 1_775_007_000_000  # 2026-04-01T01:30:00Z
+
+
+def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_path: Path) -> None:
+    """polylogue-geop: newer provider exports are not supersets of older ones.
+
+    Measured on chatgpt (2026-07-31): a 2026-07 export of the same
+    conversations as a 2026-04 export dropped the ENTIRE tool/system role
+    layer (24,914 tool messages, 20,384 code blocks) and, within citation
+    records both exports still carried, dropped several keys one level
+    deeper (start_idx/end_idx/matched_text/refs/safe_urls/error/status/
+    style) while keeping identical record counts and byte-identical message
+    text. This pins the fix: re-ingesting a POORER acquisition of an
+    already-archived session must never delete a message, a block, or a
+    field within a block's ``tool_input`` that a prior, richer acquisition
+    supplied -- it must union, not replace.
+
+    The two writes pass DIFFERENT ``raw_id``s (distinct content-addressed
+    acquisitions -- the April and July export blobs are genuinely different
+    bytes), which is what makes this the union path rather than a
+    same-acquisition replace: see ``_union_with_existing_rows``'s docstring
+    and contrast with
+    ``test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup``,
+    which passes no ``raw_id`` at all (unknown provenance, falls back to
+    replace) and asserts the opposite -- a corrected re-parse retracting a
+    stale attribution.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rich = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="union-rich-vs-poor",
+            title="citations",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    text="see citation",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TEXT,
+                            text="see citation",
+                            tool_input={
+                                "content_references": [
+                                    {
+                                        "type": "webpage",
+                                        "start_idx": 10,
+                                        "end_idx": 42,
+                                        "matched_text": "the source",
+                                        "refs": ["r1", "r2"],
+                                        "safe_urls": ["https://example.com"],
+                                        "url": "https://example.com",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                ),
+                # A whole message/role the newer export drops entirely (the
+                # measured tool-layer removal).
+                ParsedMessage(
+                    provider_message_id="m2-tool",
+                    role=Role.TOOL,
+                    text="tool output",
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="tool output")],
+                ),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-2026-04-export")
+
+        # The July-shaped re-export: message m1's citation record survives but
+        # loses several keys one level deeper; message m2-tool is entirely
+        # absent (the dropped tool layer).
+        poorer = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="union-rich-vs-poor",
+            title="citations",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    text="see citation",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TEXT,
+                            text="see citation",
+                            tool_input={
+                                "content_references": [
+                                    {
+                                        "type": "webpage",
+                                        "url": "https://example.com",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, poorer, raw_id="raw-2026-07-export")
+
+        message_rows = conn.execute(
+            "SELECT native_id FROM messages WHERE session_id = ? ORDER BY native_id",
+            (session_id,),
+        ).fetchall()
+        native_ids = {row["native_id"] for row in message_rows}
+        assert native_ids == {"m1", "m2-tool"}, (
+            f"the poorer re-export deleted a message the richer acquisition supplied: {native_ids}"
+        )
+
+        block_row = conn.execute(
+            """
+            SELECT b.tool_input FROM blocks b
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND m.native_id = 'm1' AND b.position = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        merged_tool_input = json.loads(block_row["tool_input"])
+        merged_citation = merged_tool_input["content_references"][0]
+        assert merged_citation == {
+            "type": "webpage",
+            "start_idx": 10,
+            "end_idx": 42,
+            "matched_text": "the source",
+            "refs": ["r1", "r2"],
+            "safe_urls": ["https://example.com"],
+            "url": "https://example.com",
+        }, f"field-path union dropped keys the richer acquisition supplied: {merged_citation}"
+
+        tool_block_row = conn.execute(
+            """
+            SELECT b.text FROM blocks b
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND m.native_id = 'm2-tool' AND b.position = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        assert tool_block_row["text"] == "tool output"
+    finally:
+        conn.close()
+
+
+def test_reingest_with_same_raw_id_replaces_instead_of_unioning(tmp_path: Path) -> None:
+    """polylogue-geop: the SAME raw acquisition re-parsed must be able to
+    retract a message the previous parse produced -- explicitly exercises
+    the ``existing_raw_id == raw_id`` branch of ``_union_with_existing_rows``
+    (not just the "no raw_id supplied" fallback that
+    ``test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup``
+    covers). A `reprocess` re-run (parse-only, no re-acquire) always carries
+    forward the identical content-addressed ``raw_id`` its original ingest
+    used, so this is the real-world shape of a parser bugfix re-run."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        first_parse = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="reparse-same-raw-id",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mis-split first half")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mis-split second half")],
+                ),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, first_parse, raw_id="raw-unchanged-file")
+
+        # A parser bugfix re-parses the SAME bytes (same raw_id) and decides
+        # m1/m2 were one message wrongly split in two -- the corrected parse
+        # must be able to retract the wrong boundary, not have it unioned
+        # back in.
+        corrected_parse = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="reparse-same-raw-id",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1-corrected",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="correctly joined message")],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, corrected_parse, raw_id="raw-unchanged-file")
+
+        native_ids = {
+            row["native_id"]
+            for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
+        }
+        assert native_ids == {"m1-corrected"}, (
+            f"same-raw_id re-parse must replace, not union -- retracted messages resurfaced: {native_ids}"
+        )
+    finally:
+        conn.close()

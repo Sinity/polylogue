@@ -325,7 +325,7 @@ def inspect_completion_claims(
     with _connect(archive_root / "index.db") as conn:
         from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
-        check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
+        check_fts_readiness(message_fts_search_readiness_sync(conn))
         candidates_rows = conn.execute(
             """
             SELECT b.block_id, b.text, b.position AS block_position, m.session_id,

@@ -13,9 +13,17 @@ _PATH_ONLY_SIDECARS = {
 }
 _SUBAGENT_SUFFIXES = (".jsonl", ".jsonl.txt", ".ndjson")
 _SCALAR_TYPES = (str, int, float, bool, type(None))
+#: Keys specific enough that their bare presence alone is positive evidence of
+#: a provider conversation/tool record. Deliberately does NOT include bare
+#: ``"type"`` (see ``_TYPE_ENVELOPE_MARKERS`` below): a generic ``"type"``
+#: field shows up on all kinds of non-conversational structured data (graph
+#: edges, index rows, run manifests), so "record has *a* type key" is not
+#: discriminating evidence on its own -- treating it as sufficient is exactly
+#: how a third-party analysis artifact like ``conversation_relationships.jsonl``
+#: (rows shaped ``{"conversation", "parent", "child", "type", "timestamp"}``,
+#: no envelope at all) misclassified as a session-record stream (polylogue-9ykn).
 _RECORDISH_KEYS = frozenset(
     {
-        "type",
         "record_type",
         "sessionId",
         "parentUuid",
@@ -25,8 +33,21 @@ _RECORDISH_KEYS = frozenset(
         "tool_input",
     }
 )
+#: A bare ``"type"`` key only counts as positive record evidence when it
+#: co-occurs with at least one of these genuine provider-record envelope
+#: markers (mirrors ``sources/parsers/claude/code_detection.py``'s
+#: ``looks_like_code``, which has the same "type-only is too weak" defect and
+#: the same fix shape).
+_TYPE_ENVELOPE_MARKERS = frozenset({"uuid", "sessionId", "parentUuid", "message", "payload", "cwd", "version"})
 _MESSAGE_KEYS = frozenset({"role", "content", "text", "parts", "author"})
+#: Third-party graph/relationship-index JSONL rows (e.g. a sinex analysis
+#: artifact recording conversation parent/child edges) that happen to sit
+#: under a watched Claude Code directory tree. Both observed field-name
+#: variants are guarded explicitly rather than relying solely on the
+#: ``_TYPE_ENVELOPE_MARKERS`` fix above, so this shape is refused even if a
+#: future provider record legitimately grows one of the envelope markers.
 _RELATIONSHIP_INDEX_KEYS = frozenset({"session", "parent", "child", "type", "timestamp"})
+_RELATIONSHIP_INDEX_KEYS_CONVERSATION = frozenset({"conversation", "parent", "child", "type", "timestamp"})
 _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider"})
 _BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "extra"})
 
@@ -64,11 +85,14 @@ def looks_like_record_stream(payload: list[JSONDocument]) -> bool:
 
 
 def looks_like_record_entry(payload: JSONDocument) -> bool:
-    if _RELATIONSHIP_INDEX_KEYS.issubset(payload) and not any(
-        key in payload for key in ("message", "payload", "sessionId", "parentUuid", "uuid")
-    ):
+    has_envelope_marker = any(key in payload for key in _TYPE_ENVELOPE_MARKERS)
+    if (
+        _RELATIONSHIP_INDEX_KEYS.issubset(payload) or _RELATIONSHIP_INDEX_KEYS_CONVERSATION.issubset(payload)
+    ) and not has_envelope_marker:
         return False
     if any(key in payload for key in _RECORDISH_KEYS):
+        return True
+    if "type" in payload and has_envelope_marker:
         return True
     if "role" in payload and any(key in payload for key in ("content", "text")) and len(payload) <= 16:
         return True

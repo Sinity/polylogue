@@ -23,6 +23,17 @@ import pytest
 
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.runtime import BlockRecord, MessageRecord, SessionRecord
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-cost-model-full",
+        action="store_true",
+        default=False,
+        help="Run the full stratified rebuild-cost projection (real rebuild passes, ~minutes).",
+    )
+
+
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.storage_records import make_content_block, make_message, make_session, store_records

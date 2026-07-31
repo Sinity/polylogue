@@ -1335,12 +1335,24 @@ def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[Candida
     return ordered
 
 
-def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
+def default_sources(*, hermes_root: Path | None = None, beads_roots: tuple[Path, ...] = ()) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
     Includes the archive inbox so that ``polylogue ingest PATH``
     (which stages to ``archive_root()/inbox``) is observed by the
     daemon-owned watcher.
+
+    ``beads_roots`` are repository roots (not ``.beads`` directories
+    themselves) whose append-only ``.beads/interactions.jsonl`` ledger
+    should be watched. Beads is opt-in and unlike every other source here:
+    a single global runtime directory does not exist for it (each git
+    repository owns its own ledger), so there is no home-relative default
+    -- callers must supply the repository roots explicitly (see
+    ``PolylogueConfig.beads_roots`` / ``sources.beads_roots`` in
+    ``polylogue.toml``). A repository without a ``.beads/interactions.jsonl``
+    ledger yet is still watched (``WatchSource.exists()`` reports it
+    absent) so a ledger created later is picked up without a daemon
+    restart.
     """
     from polylogue.core.enums import Provider
     from polylogue.paths import (
@@ -1353,6 +1365,19 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         hermes_sessions_path,
     )
     from polylogue.sources.origin_specs import artifact_suffixes_for_provider
+
+    beads_sources = tuple(
+        WatchSource(
+            name=f"beads:{repository_root.name}",
+            root=repository_root / ".beads",
+            # Scoped to the append-only interaction ledger, never the
+            # mutable current-state ``issues.jsonl``/backup snapshots that
+            # also live under ``.beads/`` -- those are not evidence
+            # timelines and would misrepresent issue history if ingested.
+            suffixes=("interactions.jsonl",),
+        )
+        for repository_root in beads_roots
+    )
 
     return (
         WatchSource(
@@ -1393,6 +1418,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
         WatchSource(name="hooks", root=pending_hook_spool_dir(), suffixes=(".json",)),
+        *beads_sources,
     )
 
 

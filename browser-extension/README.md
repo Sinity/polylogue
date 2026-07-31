@@ -28,6 +28,20 @@ For active development against the in-tree source:
 3. Click **Load unpacked** and select this directory (`browser-extension/`)
 4. Pin the extension to the toolbar so the badge is always visible
 
+**Load from a stable, permanent checkout only** (e.g. the main
+`/realm/project/polylogue` clone) — never from a throwaway agent worktree.
+An unpacked extension is just a filesystem reference: if the directory it
+points at is deleted (routine `git worktree remove` after a merged PR is
+explicitly authorized as non-destructive cleanup elsewhere in this repo's
+conventions), Chrome silently stops running its service worker with no
+error surfaced anywhere — not in the extension's own UI, not in the
+receiver's logs, nothing. This has happened for real: an unpacked install
+pointed at an agent worktree that was later cleaned up, and live-capture
+was silently dead from that moment until someone thought to check
+`chrome://extensions` and noticed the entry had no running service worker.
+If you must develop from a worktree, copy or symlink the built extension
+into a stable location and load unpacked from there instead.
+
 ### 2b. Chrome / Chromium — packed `.zip` from a release
 
 For users who want a stable artifact rather than a working tree:
@@ -62,7 +76,9 @@ Nightly with `xpinstall.signatures.required = false`.
 polylogued browser-capture status
 ```
 
-Then navigate to `chatgpt.com`, `claude.ai`, or a supported Grok/X route.
+Then navigate to `chatgpt.com`, `claude.ai`, or `grok.com`. (Grok on `x.com`/`twitter.com`
+is not supported: it is served through X's own API rather than grok.com's, so it has no
+capture path here.)
 Open the popup and use **Capture page** for the current page or
 **Sync open tabs** for all currently open supported tabs. The extension does
 not continuously watch page mutations or capture while you type.
@@ -214,7 +230,7 @@ pages the badge shows grey and no data is sent.
 
 | Symptom | Check |
 |---------|-------|
-| Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or Grok/X) |
+| Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or grok.com) |
 | Badge is red | Receiver is not running — start `polylogued browser-capture serve` |
 | Captures not appearing in archive | Run `polylogue check` to verify the daemon is ingesting |
 | Popup says `stale` | The receiver has a newer spool artifact than the indexed archive. Leave the daemon running and inspect the debug log request id if it does not converge. |

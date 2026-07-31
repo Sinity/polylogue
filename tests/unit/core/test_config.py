@@ -451,6 +451,12 @@ class TestPolylogueConfigDefaults:
         cfg = load_polylogue_config()
         assert cfg.source_roots == ()
 
+    def test_beads_roots_default(self, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        assert cfg.beads_roots == ()
+
     def test_hermes_root_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
 
@@ -613,6 +619,46 @@ class TestPolylogueConfigTOML:
         )
         cfg = load_polylogue_config(config_path=toml_path)
         assert cfg.source_roots == ("/tmp/extra", "/tmp/more")
+
+    def test_toml_sets_beads_roots(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+        from polylogue.config import load_polylogue_config, resolve_runtime_config
+
+        repo_a = tmp_path / "repo-a"
+        repo_b = tmp_path / "repo-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            f'[sources]\nbeads_roots = ["{repo_a}", "{repo_b}"]\n',
+            encoding="utf-8",
+        )
+        cfg = load_polylogue_config(config_path=toml_path)
+        assert cfg.beads_roots == (str(repo_a), str(repo_b))
+        assert resolve_runtime_config(config_path=toml_path).source_paths.beads == (repo_a, repo_b)
+
+    def test_configured_beads_root_with_ledger_is_a_discovered_source(
+        self, tmp_path: Path, workspace_env: dict[str, Path]
+    ) -> None:
+        """A repo with an on-disk ledger shows up in ``sources`` for status/diagnostics
+        surfaces; a configured root without one yet does not (nothing to report)."""
+        from polylogue.config import resolve_runtime_config
+
+        with_ledger = tmp_path / "with-ledger"
+        (with_ledger / ".beads").mkdir(parents=True)
+        (with_ledger / ".beads" / "interactions.jsonl").write_text("", encoding="utf-8")
+        without_ledger = tmp_path / "without-ledger"
+        without_ledger.mkdir()
+        toml_path = tmp_path / "polylogue.toml"
+        toml_path.write_text(
+            f'[sources]\nbeads_roots = ["{with_ledger}", "{without_ledger}"]\n',
+            encoding="utf-8",
+        )
+
+        runtime = resolve_runtime_config(config_path=toml_path)
+
+        names = {source.name for source in runtime.sources}
+        assert "beads:with-ledger" in names
+        assert "beads:without-ledger" not in names
 
     def test_toml_sets_hermes_root(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config, resolve_runtime_config

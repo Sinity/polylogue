@@ -2,7 +2,7 @@
 
 Each test exercises ``polylogue.sources.parsers.claude.code_parser``, the
 sole production code path that decides what happens to a Claude Code JSONL
-record whose ``type`` is in ``_SKIPPED_SIDECAR_RECORD_TYPES``. Before this
+record whose ``type`` is in ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``. Before this
 bead, every record type below was silently dropped by a bare frozenset
 membership check with no per-type rationale; these tests pin that dropping
 one of the evidence-bearing types (or reverting the ai-title title-override)
@@ -278,10 +278,14 @@ def test_queue_operation_enqueue_persists_content_dequeue_does_not() -> None:
     ]
 
 
-def test_attachment_persists_generic_typed_payload() -> None:
-    """attachment.type covers 20 distinct shapes in the live corpus; this
-    pins that the generic pass-through keeps the full typed payload (not an
-    opaque blob truncation) for at least one representative shape."""
+def test_attachment_file_subtype_gets_its_own_event_type() -> None:
+    """A real referenced file must not share an event_type with hook chatter.
+
+    ``attachment.type`` covers 38 distinct shapes in the live corpus
+    (polylogue lane, 2026-07-31 full-corpus enumeration); this pins that a
+    real file attachment is routed to ``claude_attachment_file``, not the
+    single collapsed ``claude_attachment`` bucket the dispatch replaced.
+    """
     parsed = parse_code(
         [
             {
@@ -295,8 +299,198 @@ def test_attachment_persists_generic_typed_payload() -> None:
     events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
-            "claude_attachment",
+            "claude_attachment_file",
             {"type": "file", "path": "/tmp/example.txt", "sizeBytes": 42, "summary": "file"},
+        )
+    ]
+
+
+def test_attachment_hook_subtypes_share_one_event_type() -> None:
+    """Six hook-lifecycle subtypes are the same real-world entity (a hook
+    firing) distinguished by outcome, not six near-identical event types."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-hook",
+                "attachment": {"type": "hook_success", "hookName": "SessionStart:startup"},
+            },
+            {
+                "type": "attachment",
+                "sessionId": "sess-hook",
+                "attachment": {"type": "hook_blocking_error", "hookName": "PreToolUse:Bash"},
+            },
+        ],
+        "sess-hook",
+    )
+    event_types = [e.event_type for e in parsed.session_events]
+    assert event_types == ["claude_hook_event", "claude_hook_event"]
+
+
+def test_attachment_queued_command_reuses_queue_operation_event_type() -> None:
+    """``queued_command`` (attachment subtype) and ``queue-operation``
+    (top-level record type) describe the same message-queue entity through
+    two different provider code paths -- they must land on the same
+    event_type, not a sibling type for an identical concept."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-queue",
+                "attachment": {"type": "queued_command", "prompt": "run the tests", "commandMode": "prompt"},
+            }
+        ],
+        "sess-queue",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_queue_operation",
+            {
+                "operation": "queued_command",
+                "content": "run the tests",
+                "command_mode": "prompt",
+                "summary": "queued_command",
+            },
+        )
+    ]
+
+
+def test_attachment_transient_subtype_emits_no_event() -> None:
+    """Confirmed-zero-information subtypes (e.g. the constant
+    total_tokens_reminder text) are dropped, not persisted as noise."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-transient",
+                "attachment": {
+                    "type": "total_tokens_reminder",
+                    "text": "<total_tokens>Infinite tokens left</total_tokens>",
+                },
+            }
+        ],
+        "sess-transient",
+    )
+    assert parsed.session_events == []
+
+
+def test_attachment_unrecognized_subtype_fails_loud() -> None:
+    """A future/unrecognized attachment subtype must still surface -- tagged
+    distinctly so it is triageable, not silently merged into a known bucket
+    or dropped on the floor."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-unknown",
+                "attachment": {"type": "some_future_subtype", "value": 1},
+            }
+        ],
+        "sess-unknown",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_attachment_unclassified",
+            {"type": "some_future_subtype", "value": 1, "summary": "some_future_subtype"},
+        )
+    ]
+
+
+def test_attachment_deferred_tools_delta_drops_body_text_keeps_names() -> None:
+    """Capability deltas keep the added tool/skill names but drop the full
+    injected instruction-block text (unbounded, duplicative)."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-delta",
+                "attachment": {
+                    "type": "deferred_tools_delta",
+                    "addedNames": ["WebFetch", "WebSearch"],
+                    "addedLines": ["full description of WebFetch...", "full description of WebSearch..."],
+                },
+            }
+        ],
+        "sess-delta",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_capability_delta",
+            {
+                "added_names": ["WebFetch", "WebSearch"],
+                "added_body_count": 2,
+                "summary": "deferred_tools_delta",
+            },
+        )
+    ]
+
+
+def test_attachment_skill_listing_extracts_names_not_full_text() -> None:
+    """``skill_listing`` keeps skill names, not the full concatenated
+    markdown description of every available skill."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-skills",
+                "attachment": {
+                    "type": "skill_listing",
+                    "content": "- update-config: long description here\n- keybindings-help: another description",
+                },
+            }
+        ],
+        "sess-skills",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_capability_snapshot",
+            {
+                "skill_names": ["update-config", "keybindings-help"],
+                "skill_count": 2,
+                "summary": "skill_listing",
+            },
+        )
+    ]
+
+
+def test_attachment_diagnostics_bounds_to_per_file_counts() -> None:
+    """``diagnostics`` keeps per-file finding counts, not the full LSP
+    message text/ranges/codes for every finding."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-diag",
+                "attachment": {
+                    "type": "diagnostics",
+                    "files": [
+                        {
+                            "uri": "/repo/foo.py",
+                            "diagnostics": [
+                                {"message": "long pyright message", "severity": "Error"},
+                                {"message": "another long message", "severity": "Warning"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+        "sess-diag",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_diagnostics",
+            {
+                "file_count": 1,
+                "diagnostic_count": 2,
+                "files": [{"uri": "/repo/foo.py", "diagnostic_count": 2}],
+                "summary": "diagnostics",
+            },
         )
     ]
 

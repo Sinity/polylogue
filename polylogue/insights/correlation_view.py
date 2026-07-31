@@ -24,7 +24,11 @@ def run_correlation_view(
 ) -> None:
     """Show git commits and GitHub refs within the session's time window (#1690)."""
     from polylogue.api.sync.bridge import run_coroutine_sync
-    from polylogue.insights.session_commit import build_correlation_result
+    from polylogue.insights.session_commit import (
+        bridge_session_ids_from_events,
+        build_correlation_result,
+        typed_refs_from_session_refs,
+    )
 
     conv = run_coroutine_sync(env.polylogue.get_session(session_id))
     if conv is None:
@@ -57,6 +61,10 @@ def run_correlation_view(
         msg_dict["content_blocks"] = list(content_blocks) if content_blocks else []
         messages.append(msg_dict)
 
+    session_refs = run_coroutine_sync(env.polylogue.repository.get_session_refs(session_id))
+    typed_pr_refs, typed_issue_refs = typed_refs_from_session_refs(session_refs)
+    bridge_session_ids = bridge_session_ids_from_events(conv.session_events)
+
     result = build_correlation_result(
         session_id=session_id,
         messages=messages,
@@ -66,6 +74,9 @@ def run_correlation_view(
         before_hours=since_hours,
         after_hours=since_hours,
         confidence_threshold=confidence_threshold,
+        typed_pr_refs=typed_pr_refs,
+        typed_issue_refs=typed_issue_refs,
+        bridge_session_ids=bridge_session_ids,
     )
 
     if github_api and (result.issue_refs or result.pr_refs):
@@ -124,7 +135,7 @@ def _print_otlp_evidence(env: AppEnv, session_id: str, output_format: str | None
 
 def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelationResult:
     """Cross-reference issue/PR refs against the GitHub API via gh CLI."""
-    from polylogue.insights.session_commit import GitHubRef
+    from polylogue.insights.session_commit import GitHubRef, SessionCorrelationResult
 
     all_refs: list[tuple[GitHubRef, str]] = []
     for ref in result.issue_refs:
@@ -163,6 +174,7 @@ def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelat
                         url=data.get("url") or ref.url,
                         raw_match=ref.raw_match,
                         message_id=ref.message_id,
+                        source=ref.source,
                     )
                     if default_kind == "pr":
                         enriched_prs.append(enriched)
@@ -185,6 +197,7 @@ def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelat
         issue_refs=enriched_issues,
         pr_refs=enriched_prs,
         file_paths=result.file_paths,
+        disagreements=result.disagreements,
     )
 
 
@@ -213,6 +226,7 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
         env.ui.console.print(f"\n[bold]Commits:[/bold] {len(commits)}")
         for c in commits:
             method_label = {
+                "origin_reported": "=",
                 "explicit_ref": "*",
                 "file_overlap": "o",
                 "time_window": ".",
@@ -222,6 +236,8 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
                 f"(confidence: {c.confidence:.2f}, files: {c.file_overlap_count}) "
                 f"[dim]{c.detection_method}[/dim]"
             )
+            if c.disagreement_note:
+                env.ui.console.print(f"    ! {c.disagreement_note}", style="yellow", markup=False)
     else:
         env.ui.console.print("\n[dim]No commits found in session window.[/dim]")
 
@@ -230,11 +246,17 @@ def _print_correlation_result(env: AppEnv, result: SessionCorrelationResult) -> 
         env.ui.console.print(f"\n[bold]Issue references:[/bold] {len(issue_refs)}")
         for ref in issue_refs:
             label = f"{ref.owner}/{ref.repo}#{ref.number}" if ref.owner else f"#{ref.number}"
-            env.ui.console.print(f"  - {label} [dim]{ref.raw_match}[/dim]")
+            env.ui.console.print(f"  - {label} [dim]{ref.raw_match} ({ref.source})[/dim]")
 
     pr_refs = result.pr_refs or []
     if pr_refs:
         env.ui.console.print(f"\n[bold]PR references:[/bold] {len(pr_refs)}")
         for ref in pr_refs:
             label = f"{ref.owner}/{ref.repo}#{ref.number}" if ref.owner else f"#{ref.number}"
-            env.ui.console.print(f"  - {label} [dim]{ref.raw_match}[/dim]")
+            env.ui.console.print(f"  - {label} [dim]{ref.raw_match} ({ref.source})[/dim]")
+
+    disagreements = result.disagreements or []
+    if disagreements:
+        env.ui.console.print(f"\n[bold yellow]Disagreements:[/bold yellow] {len(disagreements)}")
+        for d in disagreements:
+            env.ui.console.print(f"  - {d.kind}: {d.detail}", style="yellow", markup=False)
