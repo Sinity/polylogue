@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -15,7 +16,9 @@ from devtools.bead_landing_check import (
     Evidence,
     PrChecker,
     PrResult,
+    build_open_parent_child_dependents_index,
     extract_evidence,
+    find_suppression_signal,
     load_beads_from_jsonl,
     remove_worktree,
     verdict_for_bead,
@@ -158,28 +161,162 @@ def test_extract_evidence_empty_when_no_signal() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_verdict_empty_diff_commit_is_likely_stale_strong() -> None:
+def test_verdict_empty_diff_commit_is_likely_stale_strong_when_consumed() -> None:
     bead = _bead("polylogue-a")
     ev = extract_evidence(_bead(description="commit abc1234ff already did this"))
-    v = verdict_for_bead(bead, ev, {"abc1234ff": "empty-diff"}, {})
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "empty-diff"}, {}, commit_consumer={"abc1234ff": True})
     assert v.verdict == "LIKELY-STALE"
     assert v.confidence == "strong"
 
 
-def test_verdict_already_on_master_is_likely_stale_strong() -> None:
+def test_verdict_already_on_master_is_likely_stale_strong_when_consumed() -> None:
     bead = _bead("polylogue-a")
     ev = Evidence(commit_candidates=["abc1234ff"])
-    v = verdict_for_bead(bead, ev, {"abc1234ff": "already-on-master"}, {})
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "already-on-master"}, {}, commit_consumer={"abc1234ff": True})
     assert v.verdict == "LIKELY-STALE"
     assert v.confidence == "strong"
 
 
-def test_verdict_content_equivalent_is_likely_stale_strong() -> None:
+def test_verdict_content_equivalent_is_likely_stale_strong_when_consumed() -> None:
     bead = _bead("polylogue-a")
     ev = Evidence(commit_candidates=["abc1234ff"])
-    v = verdict_for_bead(bead, ev, {"abc1234ff": "content-equivalent"}, {})
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "content-equivalent"}, {}, commit_consumer={"abc1234ff": True})
     assert v.verdict == "LIKELY-STALE"
     assert v.confidence == "strong"
+
+
+# ---------------------------------------------------------------------------
+# fix 1 (2026-07-31): live-consumer check -- landed without a live caller
+# must NOT be LIKELY-STALE. Measured against 114 human-verified beads: ~95%
+# of "cited commit exists on master" verdicts were false positives, and the
+# dominant cause was exactly this -- shipped code with zero production
+# callers (e.g. polylogue-rxdo.9.6's blind_items(), polylogue-yp0's EventBus).
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_landed_but_unconsumed_commit_is_undetermined_not_stale() -> None:
+    bead = _bead("polylogue-a")
+    ev = Evidence(commit_candidates=["abc1234ff"])
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "empty-diff"}, {}, commit_consumer={"abc1234ff": False})
+    assert v.verdict == "UNDETERMINED"
+    assert any("no live production consumer" in r.lower() for r in v.reasons)
+
+
+def test_verdict_landed_but_consumer_unknown_is_undetermined_not_stale() -> None:
+    # No symbols extracted (e.g. a non-Python change) -- inconclusive, and
+    # inconclusive must never default to LIKELY-STALE.
+    bead = _bead("polylogue-a")
+    ev = Evidence(commit_candidates=["abc1234ff"])
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "already-on-master"}, {}, commit_consumer={"abc1234ff": None})
+    assert v.verdict == "UNDETERMINED"
+    assert any("could not be checked" in r for r in v.reasons)
+
+
+def test_verdict_missing_commit_consumer_entry_defaults_to_unknown_not_stale() -> None:
+    # If the caller forgets to populate commit_consumer for a landed commit,
+    # the safe default is "unknown", not "assume consumed".
+    bead = _bead("polylogue-a")
+    ev = Evidence(commit_candidates=["abc1234ff"])
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "empty-diff"}, {}, commit_consumer={})
+    assert v.verdict == "UNDETERMINED"
+
+
+# ---------------------------------------------------------------------------
+# fix 2 (2026-07-31): open parent-child dependents suppress a stale verdict
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_suppressed_by_open_parent_child_dependents() -> None:
+    bead = _bead("polylogue-epic")
+    ev = Evidence(commit_candidates=["abc1234ff"])
+    open_dependents = [{"id": "polylogue-epic.1", "status": "open"}, {"id": "polylogue-epic.2", "status": "open"}]
+    v = verdict_for_bead(
+        bead,
+        ev,
+        {"abc1234ff": "empty-diff"},
+        {},
+        commit_consumer={"abc1234ff": True},
+        open_dependents=open_dependents,
+    )
+    assert v.verdict == "UNDETERMINED"
+    assert any("open parent-child dependent" in r for r in v.reasons)
+
+
+def test_verdict_open_dependents_do_not_suppress_a_live_verdict() -> None:
+    # The downgrade only applies to LIKELY-STALE -- it must not mask genuine
+    # LIKELY-LIVE evidence.
+    bead = _bead("polylogue-epic")
+    ev = Evidence(commit_candidates=["abc1234ff"])
+    open_dependents = [{"id": "polylogue-epic.1", "status": "open"}]
+    v = verdict_for_bead(bead, ev, {"abc1234ff": "non-empty-diff"}, {}, open_dependents=open_dependents)
+    assert v.verdict == "LIKELY-LIVE"
+
+
+def test_build_open_parent_child_dependents_index() -> None:
+    beads = [
+        _bead("polylogue-parent"),
+        {
+            **_bead("polylogue-parent.1"),
+            "status": "open",
+            "dependencies": [{"depends_on_id": "polylogue-parent", "type": "parent-child"}],
+        },
+        {
+            **_bead("polylogue-parent.2"),
+            "status": "closed",
+            "dependencies": [{"depends_on_id": "polylogue-parent", "type": "parent-child"}],
+        },
+        {
+            **_bead("polylogue-parent.3"),
+            "status": "open",
+            "dependencies": [{"depends_on_id": "polylogue-parent", "type": "related"}],
+        },
+    ]
+    index = build_open_parent_child_dependents_index(beads)
+    assert [d["id"] for d in index["polylogue-parent"]] == ["polylogue-parent.1"]
+
+
+# ---------------------------------------------------------------------------
+# fix 3 (2026-07-31): the bead's own words suppress a stale verdict
+# ---------------------------------------------------------------------------
+
+
+def test_verdict_suppressed_by_bead_own_not_done_note() -> None:
+    bead = _bead(
+        "polylogue-a",
+        notes="Landed the core in commit abc1234ff. AC4 is NOT satisfied: the DSL still lacks float literals.",
+    )
+    ev = Evidence(commit_candidates=["abc1234ff"])
+    v = verdict_for_bead(
+        bead,
+        ev,
+        {"abc1234ff": "empty-diff"},
+        {},
+        commit_consumer={"abc1234ff": True},
+        suppression_signal=find_suppression_signal(bead),
+    )
+    assert v.verdict == "UNDETERMINED"
+    assert any("contradicts a stale verdict" in r for r in v.reasons)
+
+
+def test_find_suppression_signal_detects_common_phrasings() -> None:
+    assert (
+        find_suppression_signal(_bead(notes="EventBus core landed. NOT wired to a live producer/consumer.")) is not None
+    )
+    assert find_suppression_signal(_bead(notes="14 SELECT methods / 503 accessors untouched, still open.")) is not None
+    assert find_suppression_signal(_bead(notes="Everything here is done and fully wired end to end.")) is None
+
+
+def test_find_suppression_signal_catches_deferred_and_xfail() -> None:
+    # Confirmed false positive against polylogue-hg97: the PR merged, but the
+    # bead's own text says the follow-on work was "Explicitly deferred this
+    # session" and the regression test is "Marked xfail" pending it.
+    bead = _bead(
+        notes=(
+            "Explicitly deferred this session (2026-07-18) per operator scoping choice. "
+            "Marked xfail (strict=False, reason references this bead) rather than deleted."
+        )
+    )
+    assert find_suppression_signal(bead) is not None
 
 
 def test_verdict_non_empty_diff_is_likely_live_strong() -> None:
@@ -243,7 +380,13 @@ def test_verdict_pr_not_found_is_undetermined_not_guessed() -> None:
 def test_verdict_mixed_empty_and_non_empty_notes_partial_landing() -> None:
     bead = _bead("polylogue-a")
     ev = Evidence(commit_candidates=["aaa1111ff", "bbb2222ff"])
-    v = verdict_for_bead(bead, ev, {"aaa1111ff": "empty-diff", "bbb2222ff": "non-empty-diff"}, {})
+    v = verdict_for_bead(
+        bead,
+        ev,
+        {"aaa1111ff": "empty-diff", "bbb2222ff": "non-empty-diff"},
+        {},
+        commit_consumer={"aaa1111ff": True},
+    )
     assert v.verdict == "LIKELY-STALE"
     assert any("partial" in r.lower() for r in v.reasons)
 
@@ -341,6 +484,105 @@ def test_commit_checker_rejects_worktree_dir_equal_to_repo_root(tmp_path: Path) 
     repo = _make_repo(tmp_path / "repo")
     with pytest.raises(ValueError):
         CommitChecker(repo, repo, base_ref="master")
+
+
+# ---------------------------------------------------------------------------
+# fix 1 (2026-07-31): live-consumer check against a real throwaway repo
+# ---------------------------------------------------------------------------
+
+
+def test_added_symbols_extracts_new_function_and_class_names(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    (repo / "module.py").write_text("def existing():\n    pass\n")
+    _run_git(["add", "module.py"], cwd=repo)
+    _run_git(["commit", "-m", "add module"], cwd=repo)
+
+    (repo / "module.py").write_text(
+        "def existing():\n    pass\n\n\ndef new_helper():\n    pass\n\n\nclass NewThing:\n    pass\n"
+    )
+    _run_git(["add", "module.py"], cwd=repo)
+    _run_git(["commit", "-m", "add new_helper and NewThing"], cwd=repo)
+    sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+    checker = CommitChecker(repo, tmp_path / "wt", base_ref="master")
+    symbols = checker.added_symbols(sha)
+    assert "new_helper" in symbols
+    assert "NewThing" in symbols
+    assert "existing" not in symbols  # only NEW definitions, not pre-existing ones
+
+
+def test_has_live_consumer_true_when_symbol_used_elsewhere(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    (repo / "lib.py").write_text("def blind_items():\n    return []\n")
+    _run_git(["add", "lib.py"], cwd=repo)
+    _run_git(["commit", "-m", "add lib"], cwd=repo)
+    sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+    # The caller lands in a LATER, separate commit -- has_live_consumer must
+    # find it via base_ref, not just the cited commit's own touched files.
+    (repo / "caller.py").write_text("from lib import blind_items\n\nblind_items()\n")
+    _run_git(["add", "caller.py"], cwd=repo)
+    _run_git(["commit", "-m", "wire up the real caller"], cwd=repo)
+
+    checker = CommitChecker(repo, tmp_path / "wt", base_ref="master")
+    assert checker.has_live_consumer(sha, ["blind_items"]) is True
+
+
+def test_has_live_consumer_false_when_symbol_unreferenced(tmp_path: Path) -> None:
+    # Models polylogue-rxdo.9.6: blind_items() shipped, nothing outside its
+    # own file (and no test) calls it.
+    repo = _make_repo(tmp_path / "repo")
+    (repo / "lib.py").write_text("def blind_items():\n    return []\n")
+    _run_git(["add", "lib.py"], cwd=repo)
+    _run_git(["commit", "-m", "add lib, unconsumed"], cwd=repo)
+    sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+    checker = CommitChecker(repo, tmp_path / "wt", base_ref="master")
+    assert checker.has_live_consumer(sha, ["blind_items"]) is False
+
+
+def test_has_live_consumer_ignores_test_only_references(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    (repo / "lib.py").write_text("def blind_items():\n    return []\n")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_lib.py").write_text("from lib import blind_items\n\ndef test_x():\n    blind_items()\n")
+    _run_git(["add", "lib.py", "tests/test_lib.py"], cwd=repo)
+    _run_git(["commit", "-m", "add lib, only referenced from its own test"], cwd=repo)
+    sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+    checker = CommitChecker(repo, tmp_path / "wt", base_ref="master")
+    # lib.py and tests/test_lib.py were BOTH touched by this commit, so the
+    # only reference is inside the commit's own touched files -- no external
+    # production consumer.
+    assert checker.has_live_consumer(sha, ["blind_items"]) is False
+
+
+def test_has_live_consumer_none_when_no_symbols(tmp_path: Path) -> None:
+    # No extractable symbols (e.g. a non-Python change) is inconclusive, not
+    # a "no consumer" verdict -- the two must stay distinguishable so the
+    # verdict layer can report them with different reasons.
+    repo = _make_repo(tmp_path / "repo")
+    checker = CommitChecker(repo, tmp_path / "wt", base_ref="master")
+    assert checker.has_live_consumer("deadbeef", []) is None
+
+
+def test_consumer_check_is_cached(tmp_path: Path) -> None:
+    repo = _make_repo(tmp_path / "repo")
+    (repo / "lib.py").write_text("def blind_items():\n    return []\n")
+    _run_git(["add", "lib.py"], cwd=repo)
+    _run_git(["commit", "-m", "add lib"], cwd=repo)
+    sha = _run_git(["rev-parse", "HEAD"], cwd=repo).stdout.strip()
+
+    (repo / "caller.py").write_text("from lib import blind_items\n\nblind_items()\n")
+    _run_git(["add", "caller.py"], cwd=repo)
+    _run_git(["commit", "-m", "wire up the real caller"], cwd=repo)
+
+    checker = CommitChecker(repo, tmp_path / "wt", base_ref="master")
+    first = checker.consumer_check(sha)
+    assert first is True
+    assert sha in checker._consumer_cache
+    # Second call must reuse the cache rather than re-run git show/grep.
+    assert checker.consumer_check(sha) is True
 
 
 # ---------------------------------------------------------------------------
@@ -457,3 +699,105 @@ def test_load_beads_from_jsonl(tmp_path: Path) -> None:
     p.write_text('{"id": "a"}\n\n{"id": "b"}\n')
     beads = load_beads_from_jsonl(p)
     assert [b["id"] for b in beads] == ["a", "b"]
+
+
+# ---------------------------------------------------------------------------
+# Labelled-evaluation regression: five independent human reviewers checked
+# all 190 LIKELY-STALE verdicts from the pre-fix sweep against 114 real
+# beads (2026-07-31) and found ~95% were false positives. These tests pin
+# the fixes against the ACTUAL live archive and repo history so precision
+# cannot silently regress -- no synthetic fixtures, real .beads/issues.jsonl
+# and real git objects. Network-free: PR merge state is not queried here, so
+# only the commit-consumer and text-based checks are exercised.
+# ---------------------------------------------------------------------------
+
+
+def _test_worktree_dir(repo_root: Path) -> Path:
+    # Worker-scoped so `-n auto` distribution can't race two xdist workers
+    # onto the same throwaway worktree path.
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "main")
+    return repo_root / ".cache" / "bead-landing-check" / f"test-worktree-{worker}"
+
+
+def _repo_root() -> Path:
+    result = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True)
+    return Path(result.stdout.strip())
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _cleanup_live_repo_test_worktree() -> Any:
+    """These regression tests exercise CommitChecker against the real repo
+    (not tmp_path) so they see real production evidence -- but that means
+    they create a real, gitignored throwaway worktree under the checkout's
+    own .cache/. Remove it after this module's tests finish so it doesn't
+    linger as a stray artifact (same safety contract as --remove-worktree:
+    only ever removes a path this fixture created, via remove_worktree()).
+    """
+    yield
+    repo_root = _repo_root()
+    test_worktree = _test_worktree_dir(repo_root)
+    if test_worktree.exists():
+        remove_worktree(repo_root, test_worktree)
+
+
+def _live_bead(bead_id: str) -> dict[str, Any] | None:
+    repo_root = _repo_root()
+    beads_file = repo_root / ".beads" / "issues.jsonl"
+    if not beads_file.exists():
+        return None
+    for bead in load_beads_from_jsonl(beads_file):
+        if bead["id"] == bead_id:
+            return bead
+    return None
+
+
+@pytest.mark.parametrize(
+    "bead_id",
+    [
+        "polylogue-rxdo.9.6",  # blind_items() has zero callers outside its own test
+        "polylogue-rxdo.6",  # ReferenceQueryPipeline has zero CLI/MCP/daemon references, still hard-errors
+        "polylogue-rxdo.9.7",  # ClaimWithControls has zero callers outside its own test
+        "polylogue-dcz5",  # 3.14t live in prod, but daemon_parse_stage_split is still False
+        "polylogue-hg97",  # cost_outlook absent from polylogue/mcp/, contract test still xfail
+        "polylogue-yp0",  # EventBus core landed but notes say "NOT wired to a live producer/consumer"
+    ],
+)
+def test_known_false_positive_no_longer_verifies_as_strong_likely_stale(bead_id: str) -> None:
+    """Five independent human reviewers checked all 190 LIKELY-STALE verdicts
+    from the pre-fix sweep against 114 real beads (2026-07-31) and found
+    roughly 95% were false positives -- these six were named explicitly. Run
+    the REAL pipeline (evidence extraction, real git history for commit/
+    consumer checks, real .beads/issues.jsonl for dependents/suppression)
+    against each one and require the fixed verdict logic to no longer call
+    it a strong-confidence LIKELY-STALE. PR-merge state is not queried here
+    (network-free); PR numbers this bead cites are treated as unverified,
+    which only ever pushes a verdict TOWARD UNDETERMINED, never masks a
+    regression back to LIKELY-STALE.
+    """
+    bead = _live_bead(bead_id)
+    if bead is None or bead.get("status") not in ("open", "in_progress"):
+        pytest.skip(f"{bead_id} no longer open in the live backlog -- regression target moved on")
+
+    repo_root = _repo_root()
+    beads_file = repo_root / ".beads" / "issues.jsonl"
+    all_beads = load_beads_from_jsonl(beads_file)
+    dependents_index = build_open_parent_child_dependents_index(all_beads)
+
+    evidence = extract_evidence(bead)
+    checker = CommitChecker(repo_root, _test_worktree_dir(repo_root))
+    commit_results = {c: checker.check(c) for c in evidence.commit_candidates}
+    landed_states = {"empty-diff", "already-on-master", "content-equivalent"}
+    commit_consumer = {c: checker.consumer_check(c) for c, s in commit_results.items() if s in landed_states}
+
+    verdict = verdict_for_bead(
+        bead,
+        evidence,
+        commit_results,
+        {},  # PR state unverified (network-free) -- can only push toward UNDETERMINED, never mask a regression
+        commit_consumer=commit_consumer,
+        open_dependents=dependents_index.get(bead_id, []),
+        suppression_signal=find_suppression_signal(bead),
+    )
+    assert verdict.verdict != "LIKELY-STALE" or verdict.confidence != "strong", (
+        f"{bead_id} regressed back to a strong-confidence LIKELY-STALE verdict: {verdict.reasons}"
+    )

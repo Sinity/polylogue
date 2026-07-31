@@ -33,6 +33,38 @@ tool and MUST be reported UNDETERMINED, never guessed either way. This tool
 never auto-closes anything -- it only reports; a human or a follow-up bead
 decides.
 
+CORRECTION (2026-07-31, five independent human reviewers checked all 190
+LIKELY-STALE verdicts from the first sweep against the live archive): "a
+cited commit exists on master" is not "the bead is done" -- roughly 6 of
+every 114 checked were genuinely safe to close. The dominant failure mode is
+exactly the defect class this repo has spent the night finding elsewhere:
+code SHIPPED with no live production consumer (an unreferenced function, an
+unwired EventBus, a contract test still `xfail`). A second failure mode is
+epic/parent beads whose own commit landed while most of their dotted-id
+children or `parent-child` dependents are still open. A third is beads whose
+own latest note already says "remaining" / "deferred" / "not attempted" in
+plain language, contradicted only by an earlier landed-prerequisite citation.
+
+Three corrective checks now run before a verdict is allowed to reach
+LIKELY-STALE:
+
+  1. LIVE-CONSUMER CHECK: a landed commit only counts as strong evidence if
+     at least one top-level symbol it added has a `git grep` hit outside the
+     commit's own touched files and outside tests/. A landed commit with no
+     provable consumer (or no extractable symbols at all -- non-Python
+     changes) downgrades the bead to UNDETERMINED instead of LIKELY-STALE.
+  2. OPEN-DEPENDENTS CHECK: a bead with unresolved `parent-child` dependents
+     (open or in_progress) is never LIKELY-STALE regardless of its own
+     evidence -- an epic landing a foundational commit does not mean its
+     children are done.
+  3. SUPPRESSION-PHRASE CHECK: if the bead's own text contains an explicit
+     remaining/deferred/not-implemented/no-consumer phrase, that overrides
+     any commit/PR evidence and forces UNDETERMINED.
+
+None of these upgrade a verdict -- they only ever downgrade toward
+UNDETERMINED, in keeping with the rule that a wrong LIKELY-STALE is worse
+than an honest "not verifiable".
+
 Usage:
     # Sweep every open + in_progress bead (the default):
     devtools workspace bead-landing-check
@@ -96,6 +128,25 @@ _FILE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# A line added by a diff that defines a top-level-ish function/class -- used
+# by the live-consumer check to find what a landed commit actually shipped.
+_ADDED_SYMBOL_PATTERN = re.compile(r"^\+\s*(?:async\s+)?(?:def|class)\s+(\w+)")
+
+# Phrases indicating a bead's own text already says the work is unfinished --
+# a strong suppression signal against a stale verdict built on commit/PR
+# citation alone. Case-insensitive; matched anywhere in the bead's combined
+# text, not only its most recent note (notes are an unstructured blob here).
+_SUPPRESSION_PATTERN = re.compile(
+    r"\b(?:"
+    r"not attempted|no code written|not implemented|not yet implemented|"
+    r"not wired|zero callers|no callers|no live (?:producer|consumer)|"
+    r"remains? open|still open|still not|deferred(?: to)?|explicitly deferred|"
+    r"not yet wired|xfail|"
+    r"is NOT satisfied|not satisfied|not attempted"
+    r")\b",
+    re.IGNORECASE,
+)
+
 _CACHE_DIR_NAME = ".cache/bead-landing-check"
 _DEFAULT_WORKTREE_SUBDIR = "worktree"
 _DEFAULT_CACHE_TTL_DAYS = 7
@@ -156,13 +207,56 @@ def extract_evidence(bead: BeadDict) -> Evidence:
     return Evidence(pr_numbers=sorted(prs), commit_candidates=sorted(commits), file_paths=files)
 
 
+def find_suppression_signal(bead: BeadDict) -> str | None:
+    """Return a short excerpt if the bead's own text already says the work is
+    unfinished (fix 3: weight the bead's own words above commit existence).
+    """
+    text = _bead_text(bead)
+    m = _SUPPRESSION_PATTERN.search(text)
+    if not m:
+        return None
+    start = max(0, m.start() - 40)
+    end = min(len(text), m.end() + 40)
+    return " ".join(text[start:end].split())
+
+
+def build_open_parent_child_dependents_index(all_beads: list[BeadDict]) -> dict[str, list[dict[str, str]]]:
+    """Map ``parent_bead_id -> [{"id": ..., "status": ...}, ...]`` for every
+    still-open/in_progress bead whose ``dependencies`` list records a
+    ``parent-child`` edge onto that parent (fix 2: an epic's own commit
+    landing does not mean its children are done).
+    """
+    index: dict[str, list[dict[str, str]]] = {}
+    for bead in all_beads:
+        if bead.get("status") not in ("open", "in_progress"):
+            continue
+        for dep in bead.get("dependencies") or []:
+            if dep.get("type") != "parent-child":
+                continue
+            parent_id = dep.get("depends_on_id")
+            if not parent_id:
+                continue
+            index.setdefault(parent_id, []).append({"id": bead["id"], "status": bead["status"]})
+    return index
+
+
 # ---------------------------------------------------------------------------
 # git plumbing
 # ---------------------------------------------------------------------------
 
 
+_MAX_CONSUMER_SYMBOLS_PER_COMMIT = 4
+
+
 def _run(cmd: list[str], *, cwd: Path | None = None, timeout: float | None = 30) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
+def _is_test_path(path: str) -> bool:
+    if not path:
+        return True  # empty/unparseable -- treat conservatively as not a production consumer
+    parts = path.split("/")
+    return "tests" in parts or parts[-1].startswith("test_") or parts[-1].endswith("_test.py")
 
 
 class CommitChecker:
@@ -176,6 +270,7 @@ class CommitChecker:
         self.base_ref = base_ref
         self._ensured = False
         self._fetched = False
+        self._consumer_cache: dict[str, bool | None] = {}
 
     def _ensure_fetch(self) -> None:
         if not self._fetched:
@@ -274,6 +369,60 @@ class CommitChecker:
         empty = not diff.stdout.strip()
         self._reset_worktree()
         return "empty-diff" if empty else "non-empty-diff"
+
+    def added_symbols(self, commit: str) -> list[str]:
+        """Top-level function/class names *commit* added, per its diff.
+
+        Best-effort text extraction, not an AST diff -- good enough to seed
+        `git grep` lookups for the live-consumer check.
+        """
+        result = _run(["git", "show", "--unified=0", "--no-color", commit], cwd=self.repo_root, timeout=30)
+        if result.returncode != 0:
+            return []
+        symbols: list[str] = []
+        for line in result.stdout.splitlines():
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            m = _ADDED_SYMBOL_PATTERN.match(line)
+            if not m:
+                continue
+            name = m.group(1)
+            if name.startswith("test_") or name in ("__init__", "__post_init__", "__repr__", "__str__"):
+                continue
+            if name not in symbols:
+                symbols.append(name)
+        return symbols[:_MAX_CONSUMER_SYMBOLS_PER_COMMIT]
+
+    def has_live_consumer(self, commit: str, symbols: list[str]) -> bool | None:
+        """Return True if any *symbols* has a reference outside the commit's
+        own touched files and outside tests/, False if none do, None if there
+        was nothing checkable (e.g. a non-Python change with no symbols).
+        """
+        if not symbols:
+            return None
+        touched = set(self._commit_touched_files(commit))
+        for symbol in symbols:
+            result = _run(
+                ["git", "grep", "--no-color", "-w", "-l", symbol, self.base_ref, "--", "*.py"],
+                cwd=self.repo_root,
+                timeout=15,
+            )
+            if result.returncode not in (0, 1):
+                continue  # grep error on this symbol -- skip, don't crash the sweep
+            for line in result.stdout.splitlines():
+                _, _, path = line.partition(":")
+                if path in touched or _is_test_path(path):
+                    continue
+                return True
+        return False
+
+    def consumer_check(self, commit: str) -> bool | None:
+        """Combined added_symbols + has_live_consumer, cached per commit."""
+        if commit in self._consumer_cache:
+            return self._consumer_cache[commit]
+        result = self.has_live_consumer(commit, self.added_symbols(commit))
+        self._consumer_cache[commit] = result
+        return result
 
 
 def check_file_paths(repo_root: Path, paths: list[str], base_ref: str) -> list[dict[str, Any]]:
@@ -465,10 +614,19 @@ def verdict_for_bead(
     evidence: Evidence,
     commit_results: dict[str, str],
     pr_results: dict[int, PrResult],
+    *,
+    commit_consumer: dict[str, bool | None] | None = None,
+    open_dependents: list[dict[str, str]] | None = None,
+    suppression_signal: str | None = None,
 ) -> BeadVerdict:
     reasons: list[str] = []
+    commit_consumer = commit_consumer or {}
+    open_dependents = open_dependents or []
 
-    landed = sorted(c for c, s in commit_results.items() if s in _LANDED_COMMIT_STATES)
+    landed_all = sorted(c for c, s in commit_results.items() if s in _LANDED_COMMIT_STATES)
+    landed_verified = sorted(c for c in landed_all if commit_consumer.get(c) is True)
+    landed_unconsumed = sorted(c for c in landed_all if commit_consumer.get(c) is False)
+    landed_unknown_consumer = sorted(c for c in landed_all if c not in landed_verified and c not in landed_unconsumed)
     live = sorted(c for c, s in commit_results.items() if s == "non-empty-diff")
     unresolved = sorted(c for c, s in commit_results.items() if s == "unknown-revision")
     inapplicable = sorted(c for c, s in commit_results.items() if s == "does-not-apply")
@@ -477,10 +635,10 @@ def verdict_for_bead(
     open_prs = sorted(n for n, r in pr_results.items() if r.found and r.state != "MERGED")
     missing_prs = sorted(n for n, r in pr_results.items() if not r.found)
 
-    if landed:
+    if landed_verified:
         verdict, confidence = "LIKELY-STALE", "strong"
-        detail = ", ".join(f"{c} ({commit_results[c]})" for c in landed)
-        reasons.append(f"cited commit(s) already on master: {detail}")
+        detail = ", ".join(f"{c} ({commit_results[c]})" for c in landed_verified)
+        reasons.append(f"cited commit(s) already on master AND reachable from a live caller: {detail}")
         if live:
             reasons.append(
                 f"NOTE: commit(s) {', '.join(live)} still produce a non-empty diff -- "
@@ -491,6 +649,24 @@ def verdict_for_bead(
         reasons.append(
             f"cited commit(s) cherry-pick with a real (non-empty) diff, not yet on master: {', '.join(live)}"
         )
+    elif landed_unconsumed or landed_unknown_consumer:
+        # Landed on master, but the live-consumer check (fix 1, 2026-07-31)
+        # could not prove the shipped code is reachable from a production
+        # caller. Measured against 114 human-verified verdicts, "cited commit
+        # exists on master" alone was right about 6 times in 114 -- this is
+        # exactly the "shipped, nothing reads it" defect class the check
+        # exists to catch, so it does NOT count as LIKELY-STALE on its own.
+        verdict, confidence = "UNDETERMINED", "none"
+        if landed_unconsumed:
+            reasons.append(
+                "commit(s) already on master but NO live production consumer found outside tests -- "
+                f"shipped without being wired in, treat as still open: {', '.join(landed_unconsumed)}"
+            )
+        if landed_unknown_consumer:
+            reasons.append(
+                "commit(s) already on master but consumer-reachability could not be checked (non-Python "
+                f"change or no top-level symbols added) -- not enough to confirm wiring: {', '.join(landed_unknown_consumer)}"
+            )
     elif merged_prs and not open_prs:
         verdict, confidence = "LIKELY-STALE", "weak"
         reasons.append(
@@ -520,11 +696,30 @@ def verdict_for_bead(
         if not reasons:
             reasons.append("no cited commit hash or PR number found in bead text -- not verifiable by this tool")
 
+    # Cross-cutting downgrades (fix 2, fix 3, 2026-07-31): applied after the
+    # evidence-shape branch above. Both only ever pull a verdict DOWN toward
+    # UNDETERMINED -- neither can upgrade LIKELY-LIVE or UNDETERMINED to STALE.
+    if verdict == "LIKELY-STALE" and open_dependents:
+        verdict, confidence = "UNDETERMINED", "none"
+        examples = ", ".join(d["id"] for d in open_dependents[:5])
+        more = f" (+{len(open_dependents) - 5} more)" if len(open_dependents) > 5 else ""
+        reasons.append(
+            f"{len(open_dependents)} open parent-child dependent bead(s) still unresolved -- an epic/parent "
+            f"commit landing does not mean its children are done: {examples}{more}"
+        )
+
+    if verdict == "LIKELY-STALE" and suppression_signal:
+        verdict, confidence = "UNDETERMINED", "none"
+        reasons.append(
+            "bead's own text contains an explicit remaining/deferred/not-done phrase that contradicts a stale "
+            f'verdict built on commit/PR citation alone: "...{suppression_signal}..."'
+        )
+
     if verdict == "LIKELY-STALE":
         reasons.append(
-            "CAVEAT: this proves the cited commit(s)/PR(s) exist on master, not that every acceptance "
-            "criterion is satisfied -- a bead can cite a landed prerequisite, a partial-progress note, or a "
-            "verification-pass anchor while real remaining scope stays open. Read the bead's AC list before closing."
+            "CAVEAT: this proves the cited commit(s)/PR(s) exist on master AND (for commit evidence) that the "
+            "shipped code has a live caller -- it is still not proof every acceptance criterion is satisfied. "
+            "Read the bead's AC list before closing."
         )
 
     evidence_payload: dict[str, Any] = {
@@ -532,6 +727,9 @@ def verdict_for_bead(
         "commit_candidates": evidence.commit_candidates,
         "file_paths": evidence.file_paths,
         "commit_checks": dict(commit_results),
+        "commit_consumer_checks": dict(commit_consumer),
+        "open_parent_child_dependents": open_dependents,
+        "suppression_signal": suppression_signal,
         "pr_checks": {
             str(n): {
                 "found": r.found,
@@ -590,7 +788,8 @@ def _render_human(results: list[BeadVerdict], stats: dict[str, Any]) -> None:
     counts = Counter(r.verdict for r in results)
     print(
         f"Checked {stats['beads_checked']} beads in {stats['elapsed_seconds']}s "
-        f"({stats['commits_checked']} commit checks, {stats['prs_checked']} PR checks)"
+        f"({stats['commits_checked']} commit checks, {stats.get('consumer_checks', 0)} consumer checks, "
+        f"{stats['prs_checked']} PR checks)"
     )
     print("Verdicts: " + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     removal_note = (
@@ -703,19 +902,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     )
 
+    dependents_index = build_open_parent_child_dependents_index(all_beads)
+
     t_start = time.time()
     results: list[BeadVerdict] = []
     n_commits_checked = 0
     n_prs_checked = 0
+    n_consumer_checks = 0
 
     for bead in selected:
         evidence = extract_evidence(bead)
 
         commit_results: dict[str, str] = {}
+        commit_consumer: dict[str, bool | None] = {}
         if commit_checker is not None:
             for commit in evidence.commit_candidates:
-                commit_results[commit] = commit_checker.check(commit)
+                status = commit_checker.check(commit)
+                commit_results[commit] = status
                 n_commits_checked += 1
+                if status in _LANDED_COMMIT_STATES:
+                    commit_consumer[commit] = commit_checker.consumer_check(commit)
+                    n_consumer_checks += 1
 
         pr_results: dict[int, PrResult] = {}
         if pr_checker is not None:
@@ -723,7 +930,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 pr_results[number] = pr_checker.check(number)
                 n_prs_checked += 1
 
-        results.append(verdict_for_bead(bead, evidence, commit_results, pr_results))
+        results.append(
+            verdict_for_bead(
+                bead,
+                evidence,
+                commit_results,
+                pr_results,
+                commit_consumer=commit_consumer,
+                open_dependents=dependents_index.get(bead["id"], []),
+                suppression_signal=find_suppression_signal(bead),
+            )
+        )
 
     if pr_checker is not None:
         pr_checker.flush()
@@ -742,6 +959,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     stats = {
         "beads_checked": len(selected),
         "commits_checked": n_commits_checked,
+        "consumer_checks": n_consumer_checks,
         "prs_checked": n_prs_checked,
         "elapsed_seconds": round(elapsed, 2),
         "worktree_dir": str(worktree_dir),
