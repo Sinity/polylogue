@@ -111,6 +111,7 @@ def message_from_record(
                 "tool_result_is_error": b.tool_result_is_error,
                 "tool_result_exit_code": b.tool_result_exit_code,
                 "tool_result_outcome_unknown_reason": b.tool_result_outcome_unknown_reason,
+                "signature": b.signature,
             }
         )
 

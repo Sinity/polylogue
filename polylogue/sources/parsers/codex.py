@@ -1728,6 +1728,86 @@ def _codex_tool_message(
     return None
 
 
+def _codex_reasoning_joined_text(value: object) -> str | None:
+    """Join recoverable text out of a Codex ``reasoning`` record's `summary`/`content`.
+
+    Both fields share the same OpenAI Responses-API shape: either a bare
+    string, or a list of ``{"type": "summary_text"|"reasoning_text", "text": ...}``
+    (or equivalent) dicts. Anything else (encrypted ciphertext, missing
+    fields) yields no text -- that is a genuine absence, handled by the
+    caller, not an extraction bug here.
+    """
+    if isinstance(value, str):
+        return value or None
+    if not isinstance(value, list):
+        return None
+    parts: list[str] = []
+    for item in value:
+        text: object = item.get("text") if isinstance(item, dict) else item
+        if isinstance(text, str) and text:
+            parts.append(text)
+    return "\n\n".join(parts) if parts else None
+
+
+def _codex_reasoning_message(
+    record: dict[str, object],
+    *,
+    index: int,
+    position: int,
+    timestamp_fallback: str | int | float | None = None,
+) -> ParsedMessage | None:
+    """Materialize a Codex ``reasoning`` response_item as a THINKING-block message.
+
+    polylogue-vf9x: previously this record type was read only by
+    ``_compact_response_payload``'s generic session_event compactor, which
+    has no `reasoning`-specific branch -- neither `summary` nor `content` was
+    read at all (not merely char-counted: the emitted session_event carries
+    only ``{source_index, type}``), so every one of the measured 1,182,071
+    Codex reasoning records in this operator's raw corpus contributed zero
+    words to the archive, unreachable from FTS/search even in principle.
+
+    `summary` (OpenAI's human-readable condensation) is present with
+    recoverable text on ~24% of records measured; `content` (the full trace)
+    is essentially always null on the wire -- Codex encrypts it into
+    `encrypted_content` instead, which this archive cannot decrypt and does
+    not attempt to store. Even when neither carries text, the message is
+    still recorded (block text=None) so the FACT that the model reasoned
+    here survives -- the same rationale as Claude Code's empty-body thinking
+    blocks (base_support.py).
+
+    Routed into `messages`/`blocks` (not left as a session_event only) so
+    reasoning joins the normal content tree: FTS coverage, `thinking_count`,
+    and the `material_origin`/`BlockType.THINKING` vocabulary every other
+    origin's reasoning content already uses.
+    """
+    if _record_type(record) != "reasoning":
+        return None
+    payload = _record_payload(record)
+    summary_text = _codex_reasoning_joined_text(payload.get("summary"))
+    content_text = _codex_reasoning_joined_text(payload.get("content"))
+    blocks: list[ParsedContentBlock] = []
+    if summary_text:
+        blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=summary_text))
+    if content_text and content_text != summary_text:
+        blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=content_text))
+    if not blocks:
+        blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=None))
+    combined_text = "\n\n".join(t for t in (summary_text, content_text) if t) or None
+    timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
+    return ParsedMessage(
+        provider_message_id=f"reasoning-{index}",
+        role=Role.ASSISTANT,
+        text=combined_text,
+        timestamp=timestamp,
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        blocks=blocks,
+        message_type=MessageType.THINKING,
+        material_origin=MaterialOrigin.ASSISTANT_AUTHORED,
+    )
+
+
 def _mcp_invocation_tool_name(invocation: dict[str, object]) -> str:
     server = _string_value(invocation.get("server"))
     tool = _string_value(invocation.get("tool"))
@@ -2255,6 +2335,16 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     messages.append(event_message)
                     message_position += 1
                     latest_message_timestamp = _newer_timestamp(latest_message_timestamp, event_message.timestamp)
+                reasoning_message = _codex_reasoning_message(
+                    inner,
+                    index=idx,
+                    position=message_position,
+                    timestamp_fallback=timestamp_fallback,
+                )
+                if reasoning_message is not None:
+                    messages.append(reasoning_message)
+                    message_position += 1
+                    latest_message_timestamp = _newer_timestamp(latest_message_timestamp, reasoning_message.timestamp)
                 mcp_messages = _codex_mcp_tool_call_messages(
                     inner,
                     index=idx,
