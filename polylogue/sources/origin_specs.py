@@ -573,6 +573,7 @@ def _chatgpt_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/chatgpt.py",),
         stream_parser_path=None,
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
+        assembly_spec_path="polylogue/sources/assembly_chatgpt.py:ChatGPTAssemblySpec",
         fixture_paths=("tests/unit/sources/test_parsers_chatgpt.py", "tests/data/golden/chatgpt-simple.md"),
         coverage_refs=("provider-package:chatgpt-export/takeout-json@v1",),
         fidelity_notes=("Browser capture remains an acquisition mode and is not a new public origin.",),

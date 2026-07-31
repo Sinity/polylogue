@@ -524,6 +524,64 @@ def test_chatgpt_bundle_small_metadata_only_array_does_not_warn(caplog: pytest.L
     assert not any("ChatGPT bundle payload" in record.message for record in caplog.records)
 
 
+def _chatgpt_codex_task_record(task_id: str) -> dict[str, object]:
+    return {
+        "archived": False,
+        "id": task_id,
+        "title": "Fix a bug",
+        "turns": [
+            {
+                "id": f"{task_id}~usertrn_1",
+                "input_items": [{"content": [{"content_type": "text", "text": "Fix it"}], "role": "user"}],
+                "role": "user",
+            },
+            {
+                "branch": "master",
+                "external_pull_request_id": "None",
+                "id": f"{task_id}~assttrn_1",
+                "output_items": [{"content": [{"content_type": "text", "text": "Fixed"}]}],
+                "previous_turn_id": f"{task_id}~usertrn_1",
+                "pull_request_status": "not_created",
+                "role": "assistant",
+                "turn_status": "TaskTurnStatusEnum.COMPLETED",
+            },
+        ],
+    }
+
+
+def test_chatgpt_codex_task_parses_as_its_own_session(caplog: pytest.LogCaptureFixture) -> None:
+    """codex.json (bd polylogue-2m2e): Codex Cloud tasks delivered inside a
+    ChatGPT export are unpacked one dict per item by the ordinary per-.json-
+    file walk (same shape ``_chatgpt_bundle_record_specs`` handles for a
+    whole array, and the single-record path handles for one already-
+    unpacked item) -- both must route to ``chatgpt_codex_sidecar.parse_codex_task``
+    rather than falling into ``chatgpt.parse``, which would silently emit a
+    zero-message session (no "mapping" key) that gets dropped downstream.
+    """
+    task = _chatgpt_codex_task_record("task_e_abc123")
+
+    # Single already-unpacked record (the actually-exercised per-.json-file path).
+    single_sessions = parse_payload(Provider.CHATGPT, task, "codex-0")
+    assert len(single_sessions) == 1
+    assert single_sessions[0].provider_session_id == "task_e_abc123"
+    assert len(single_sessions[0].messages) == 2
+
+    # Whole-array path (defensive: any caller that hands the raw list over).
+    bundle_sessions = parse_payload(Provider.CHATGPT, [task], "codex-json")
+    assert len(bundle_sessions) == 1
+    assert bundle_sessions[0].provider_session_id == "task_e_abc123"
+
+
+def test_chatgpt_codex_task_and_conversation_coexist_in_one_bundle(caplog: pytest.LogCaptureFixture) -> None:
+    task = _chatgpt_codex_task_record("task_e_def456")
+    conversation = _chatgpt_conversation_record("real-conversation-2")
+
+    sessions = parse_payload(Provider.CHATGPT, [task, conversation], "mixed-bundle")
+
+    session_ids = {s.provider_session_id for s in sessions}
+    assert session_ids == {"task_e_def456", "real-conversation-2"}
+
+
 def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yields_messages() -> None:
     """A long Codex rollout that repeats ``session_meta`` (fork/resume/compaction
     markers physically re-emit the header) and interleaves reasoning,

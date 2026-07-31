@@ -26,6 +26,37 @@ def test_relationship_index_jsonl_is_metadata_not_session_stream() -> None:
     assert artifact.parse_as_session is False
 
 
+def test_chatgpt_codex_cloud_task_classifies_as_session_document() -> None:
+    """bd polylogue-2m2e: without this branch, a codex.json task record fails
+    every generic session-document heuristic (no "mapping"/"messages" list)
+    AND fails looks_metadataish_dict (its "turns" list is not scalarish), so
+    it fell through to UNKNOWN/parse_as_session=False and was silently
+    dropped before dispatch.py's chatgpt_codex_task lowering ever ran.
+    """
+    task: JSONValue = {
+        "archived": False,
+        "id": "task_e_abc123",
+        "title": "Fix a bug",
+        "turns": [
+            {"id": "task_e_abc123~usertrn_1", "input_items": [], "role": "user"},
+            {"id": "task_e_abc123~assttrn_1", "output_items": [], "role": "assistant"},
+        ],
+    }
+
+    artifact = classify_artifact(task, provider="chatgpt")
+
+    assert artifact.kind is ArtifactKind.SESSION_DOCUMENT
+    assert artifact.parse_as_session is True
+
+
+def test_chatgpt_library_files_entry_is_not_a_session() -> None:
+    entry: JSONValue = {"file_id": "file_abc", "file_name": "notes.md", "mime_type": "text/markdown"}
+
+    artifact = classify_artifact(entry, provider="chatgpt")
+
+    assert artifact.parse_as_session is False
+
+
 def test_claude_workflow_artifacts_follow_origin_spec_path_rules() -> None:
     cases = {
         "/tmp/.claude/projects/x/workflows/wf-run.json": (ArtifactKind.WORKFLOW_RUN_SNAPSHOT, False),
