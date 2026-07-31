@@ -451,3 +451,53 @@ async def test_get_projection_agent_policies_surfaces_sandbox_facts(
             )
         )
     assert missing["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_get_default_projection_surfaces_display_name_when_title_absent(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """``get(ref)`` (no projection) reaches ``sessions.display_name``
+    (polylogue-cgfy): a session with no title-worthy sidecar evidence (the
+    common Claude Code subagent case) now surfaces its provider-assigned
+    slug as the title instead of a raw session id -- read through the real
+    ``ArchiveStore``-backed summary path (``_resolve_session_object_ref`` ->
+    ``_archive_summary_to_domain`` -> ``SessionSummaryPayload``), not the
+    storage row in isolation.
+    """
+    from polylogue.core.enums import BlockType, Provider, Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive_db:
+        parsed = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="mcp-slug-only-ref",
+            title=None,
+            display_name="greedy-squishing-hamming",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                ),
+            ],
+        )
+        archive_db.write_raw_and_parsed(
+            parsed,
+            payload=b'{"raw": "claude payload"}',
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+    uri = "polylogue://session/claude-code-session:mcp-slug-only-ref"
+    from polylogue import Polylogue
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
+
+    assert payload["title"] == "greedy-squishing-hamming"

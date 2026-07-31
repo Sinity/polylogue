@@ -1995,6 +1995,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
         provider_project_ref=summary.provider_project_ref,
+        display_name=summary.display_name,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
