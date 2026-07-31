@@ -105,7 +105,27 @@ def classify_artifact_path(
         )
     if provider_token is Provider.ANTIGRAVITY:
         if inner_name.endswith(".md.metadata.json"):
-            return None
+            # Per-artifact brain metadata is a sidecar, never a primary
+            # session: fragmenting one file per artifact produced 116
+            # single-message "sessions" that were 100% noise (all real
+            # conversation content lives in the .pb trajectories the
+            # language-server export route now acquires directly --
+            # polylogue-eo81, GH #1764). Still accounted for via
+            # ``raw_artifacts.artifact_kind`` rather than silently dropped.
+            # The one legitimate use of this shape -- a degraded fallback
+            # when the language server truly cannot be reached -- is wired
+            # explicitly in ``source_parsing._iter_antigravity_brain_metadata_fallback``,
+            # which calls ``parse_brain_metadata`` directly and bypasses this
+            # path-only classification.
+            return ArtifactClassification(
+                provider=provider_token,
+                kind=ArtifactKind.AGENT_SIDECAR_META,
+                parse_as_session=False,
+                schema_eligible=False,
+                default_priority=0,
+                reason="Antigravity brain-artifact metadata sidecar (superseded by "
+                "language-server conversation export; polylogue-eo81)",
+            )
         if inner_name.endswith((".pb", ".pbtxt", ".resolved")) or ".resolved." in inner_name:
             return ArtifactClassification(
                 provider=provider_token,

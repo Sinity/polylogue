@@ -290,9 +290,24 @@ class _FakeClientForExports:
         return self._markdown[cascade_id]
 
 
+def _touch_conversation_pb(root: Path, *cascade_ids: str) -> None:
+    """Create empty ``conversations/<cascade_id>.pb`` files.
+
+    Cascade discovery is now ground-truthed off this directory listing
+    (polylogue-eo81) rather than the language server's own search/list RPCs,
+    which only surface a small recently-tracked subset -- so driver tests
+    against a fake client must still provide the disk-truth files.
+    """
+    conversations = root / "conversations"
+    conversations.mkdir(parents=True, exist_ok=True)
+    for cascade_id in cascade_ids:
+        (conversations / f"{cascade_id}.pb").write_bytes(b"")
+
+
 def test_iter_language_server_exports_yields_parsed_sessions(
     tmp_path: Path,
 ) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1", "cascade-2")
     summaries = [
         AntigravitySessionSummary(cascade_id="cascade-1", title="One", workspace_name="ws"),
         AntigravitySessionSummary(cascade_id="cascade-2", title="Two"),
@@ -318,6 +333,7 @@ def test_iter_language_server_exports_yields_parsed_sessions(
 
 
 def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
     summaries = [
         AntigravitySessionSummary(cascade_id="cascade-1", title="One"),
     ]
@@ -337,6 +353,8 @@ def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monke
 
 
 def test_iter_language_server_exports_closes_client_on_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+
     class _ExplodingClient(_FakeClientForExports):
         def export_markdown(self, cascade_id: str) -> str:
             raise AntigravityExportError("boom")

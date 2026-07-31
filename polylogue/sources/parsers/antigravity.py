@@ -9,6 +9,7 @@ import subprocess
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from glob import glob
 from pathlib import Path
 from types import TracebackType
@@ -310,33 +311,72 @@ def iter_language_server_exports(
     *,
     client: AntigravityLanguageServerClient | None = None,
 ) -> Iterable[ParsedSession]:
+    """Export every real conversation trajectory under ``conversations/``.
+
+    Ground truth for *which* cascades exist is the ``conversations/*.pb``
+    file listing, not ``SearchConversations`` -- the search/list RPCs only
+    surface a small recently-tracked subset (10 of 44 real conversations on
+    the reference archive, verified empirically), while
+    ``ConvertTrajectoryToMarkdown`` and ``GetCascadeTrajectory`` happily
+    serve any cascade id whose ``.pb`` file is still on disk regardless of
+    whether the language server's live index currently tracks it
+    (polylogue-eo81). Search results are still consulted to enrich title /
+    workspace / snippet metadata for the cascades that *are* indexed.
+    """
     owned_client = client is None
     runtime_client = client or AntigravityLanguageServerClient(root)
     if owned_client:
         runtime_client.start()
     try:
-        summaries = runtime_client.search_sessions()
-        expected = len(summaries)
-        for obtained, summary in enumerate(summaries):
+        pb_paths = _conversation_pb_paths(root)
+        if not pb_paths:
+            return
+        try:
+            summaries_by_id = {summary.cascade_id: summary for summary in runtime_client.search_sessions()}
+        except AntigravityExportError:
+            summaries_by_id = {}
+        expected = len(pb_paths)
+        for obtained, pb_path in enumerate(pb_paths):
+            cascade_id = pb_path.stem
+            summary = summaries_by_id.get(cascade_id) or AntigravitySessionSummary(
+                cascade_id=cascade_id,
+                last_modified_time=_iso_mtime(pb_path),
+            )
             try:
-                markdown = runtime_client.export_markdown(summary.cascade_id)
+                markdown = runtime_client.export_markdown(cascade_id)
             except AntigravityExportError as exc:
                 # A mid-iteration export failure would otherwise abort the
                 # generator after yielding only the sessions seen so far,
                 # silently dropping the remainder. Surface obtained-vs-expected
                 # so the caller can distinguish partial loss from a benign
                 # binary-absent fallback. ``obtained`` is the number already
-                # yielded (the index of the failing summary).
+                # yielded (the index of the failing cascade).
                 raise AntigravityPartialExportError(
-                    f"Antigravity export aborted on cascade {summary.cascade_id}: {exc}",
+                    f"Antigravity export aborted on cascade {cascade_id}: {exc}",
                     obtained=obtained,
                     expected=expected,
                 ) from exc
             else:
-                yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), summary.cascade_id)
+                yield parse_markdown_export_payload(markdown_export_payload(summary, markdown), cascade_id)
     finally:
         if owned_client:
             runtime_client.close()
+
+
+def _conversation_pb_paths(root: Path) -> list[Path]:
+    """List real conversation trajectory files, sorted for deterministic order."""
+    conversations_dir = root / "conversations"
+    if not conversations_dir.is_dir():
+        return []
+    return sorted(conversations_dir.glob("*.pb"))
+
+
+def _iso_mtime(path: Path) -> str | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
 
 
 def discover_language_server() -> Path | None:
@@ -462,6 +502,7 @@ __all__ = [
     "AntigravityLanguageServerClient",
     "AntigravityPartialExportError",
     "BRAIN_METADATA_FRAGMENT_FLAG",
+    "conversation_pb_paths",
     "discover_language_server",
     "iter_language_server_exports",
     "looks_like_brain_metadata",
@@ -471,3 +512,7 @@ __all__ = [
     "parse_markdown_export",
     "parse_markdown_export_payload",
 ]
+
+# Public alias -- ``source_parsing.py`` needs the same disk-truth listing to
+# locate the raw ``.pb`` bytes for blob snapshotting per exported session.
+conversation_pb_paths = _conversation_pb_paths
