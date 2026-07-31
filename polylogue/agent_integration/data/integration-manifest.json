@@ -46,7 +46,12 @@
     "unacknowledged_failures",
     "sessions_touching_file",
     "cost_of",
-    "agent_coordination_brief"
+    "agent_coordination_brief",
+    "analyze_errors",
+    "summarize_week",
+    "extract_code",
+    "compare_sessions",
+    "extract_patterns"
   ],
   "recipe_ids": [
     "resume-session",

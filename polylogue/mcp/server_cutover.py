@@ -691,6 +691,15 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
     ) -> str:
         """Execute a terminal DSL page, or resume it using only its q2 token.
 
+        The default projection (unit-source rows) honours
+        origin/tag/repo/since/until/min_messages/max_messages/min_words as
+        additional session-scope filters applied on top of ``expression``.
+        ``sort`` has no meaning for unit-source rows (there is no session
+        ordering to apply) and raises ``invalid_argument`` if given with the
+        default projection; use ``projection="sessions"`` for sorted session
+        listings. ``origin`` (all projections) is validated against the
+        known origin vocabulary and rejected loudly if unrecognised.
+
         ``projection="sessions"`` switches to session-level rows instead of
         unit-source rows: ``expression`` becomes a free-text ranked search
         (top-k) when given, or an exhaustive listing filtered by
@@ -719,6 +728,26 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 reference_result = await _resolve_reference_query_pipeline(hooks, expression, limit=limit)
                 if reference_result is not None:
                     return reference_result
+
+            if origin is not None:
+                from polylogue.core.sources import CORE_SCHEMA_ORIGINS
+
+                bad_origins = [token.strip() for token in origin.split(",") if token.strip()]
+                bad_origins = [token for token in bad_origins if token not in CORE_SCHEMA_ORIGINS]
+                if bad_origins:
+                    return hooks.error_json(
+                        f"unknown origin(s): {', '.join(bad_origins)}. Valid: {', '.join(CORE_SCHEMA_ORIGINS)}",
+                        code="invalid_argument",
+                        tool="query",
+                    )
+
+            if projection == "default" and sort is not None:
+                return hooks.error_json(
+                    "query(projection='default') does not support sort; "
+                    "use projection='sessions' for sorted session listings",
+                    code="invalid_argument",
+                    tool="query",
+                )
 
             if projection == "sessions":
                 if continuation is not None:
@@ -781,6 +810,14 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         expression,
                         limit=limit,
                         continuation=continuation,
+                        origin=origin,
+                        tag=tag,
+                        repo=repo,
+                        since=since,
+                        until=until,
+                        min_messages=min_messages,
+                        max_messages=max_messages,
+                        min_words=min_words,
                     )
                     return hooks.json_payload(payload)
             except QueryContinuationInvalidError as exc:

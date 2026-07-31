@@ -740,6 +740,11 @@ Prompts: `cost_of`.
 - `sessions_touching_file` — workflow `file-touch`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
 - `cost_of` — workflow `cost-analysis`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.2`.
 - `agent_coordination_brief` — workflow `coordination`; required capability `read`; mutation authority `none`; owner `polylogue-t46.8.3`.
+- `analyze_errors` — workflow `error-analysis`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
+- `summarize_week` — workflow `weekly-summary`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
+- `extract_code` — workflow `code-extraction`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
+- `compare_sessions` — workflow `session-comparison`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
+- `extract_patterns` — workflow `pattern-extraction`; required capability `read`; mutation authority `none`; owner `polylogue-il50`.
 
 ## Source origins
 
