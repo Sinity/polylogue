@@ -35,11 +35,10 @@ def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None
     assert catalog.preview_target_names() == (
         "session_insights",
         "message_type_backfill",
-        "session_timestamp_backfill",
     )
     assert catalog.help_text() == (
         "Limit maintenance to named targets such as session_insights, "
-        "message_type_backfill, session_timestamp_backfill, orphaned_messages, "
+        "message_type_backfill, orphaned_messages, "
         "empty_sessions, orphaned_attachments, orphaned_blobs, or superseded_raw_snapshots"
     )
 
