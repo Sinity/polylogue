@@ -1139,6 +1139,94 @@ async def test_async_large_session_rebuild_uses_bounded_degraded_profile(
     assert work_events == 0
 
 
+def test_large_session_rebuild_derives_terminal_state_from_bounded_tail(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """polylogue-wofr: bounded/degraded large-session profiles previously
+    hardcoded terminal_state="unknown" unconditionally -- all 1,575 live
+    bounded_large_session profiles carried terminal_state="unknown", making
+    the longest (and most failure-prone) sessions terminal-state-blind. The
+    bounded path now reads a bounded tail window (last N messages + their
+    blocks + trailing session events) and reuses the exact same structural
+    derivation the unbounded path uses (`_terminal_state` in
+    `archive/session/runtime.py`), not a parallel heuristic. A session whose
+    tail message's final tool outcome is a typed error (with a
+    provider-reported ``stop_reason`` on that turn, mirroring a real Claude
+    Code assistant message) must derive terminal_state="error_left" via the
+    bounded path. Reverting `_large_session_profile_record_from_row` to
+    hardcode terminal_state="unknown" makes every assertion below fail."""
+    db_path = tmp_path / "large-session-terminal-tail.db"
+    native = "conv-large-bounded-terminal"
+    session_id = _sid(native, "claude-code-session")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(native, source_name="claude-code", title="Large bounded terminal"),
+            messages=[
+                make_message(
+                    f"{native}:msg-1",
+                    native,
+                    role="assistant",
+                    text="Running the deploy.",
+                    stop_reason="tool_use",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "bash",
+                            "tool_id": "call-1",
+                            "tool_input": {"command": "./deploy.sh"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "call-1",
+                            "text": "deploy failed: exit 1",
+                            "tool_result_is_error": 1,
+                        },
+                    ],
+                ),
+                make_message(f"{native}:msg-2", native, role="assistant", text="All done."),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            """
+            UPDATE sessions
+            SET message_count = ?, word_count = ?, tool_use_count = ?, thinking_count = ?
+            WHERE session_id = ?
+            """,
+            (50, 1234, 7, 3, session_id),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+
+        def fail_full_load(_conn: sqlite3.Connection, _session_ids: object) -> object:
+            raise AssertionError("large-session degraded path must not hydrate the full session")
+
+        monkeypatch.setattr(rebuild_mod, "load_sync_batch", fail_full_load)
+        counts = rebuild_session_insights_sync(conn, session_ids=[session_id])
+        profile = conn.execute(
+            "SELECT terminal_state, terminal_state_method, terminal_state_confidence, workflow_shape,"
+            " evidence_payload_json FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    assert counts.profiles == 1
+    assert profile is not None
+    assert profile["workflow_shape"] == "bounded_large_session"
+    assert profile["terminal_state"] == "error_left"
+    assert profile["terminal_state_method"] == "action_outcome"
+    assert profile["terminal_state_confidence"] > 0.0
+    evidence = json.loads(profile["evidence_payload_json"])["terminal_state_evidence"]
+    # The real structural evidence is present alongside the bounded-path
+    # marker -- the record still honestly discloses it came from the
+    # degraded path, but no longer replaces the actual finding with silence.
+    assert evidence["bounded_materialization"] == "large_session_bounded"
+    assert evidence["action_id"] is not None
+    assert evidence["evidence_class"] == "raw_evidence"
+
+
 def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -> None:
     """Bounded-WAL full rebuild (#2458) must:
 
@@ -1924,3 +2012,81 @@ async def test_heavy_session_profile_agrees_between_refresh_and_rebuild(
     assert refreshed["workflow_shape"] == "bounded_large_session"
     assert refreshed == rebuilt
     assert refreshed_again == rebuilt
+
+
+def test_bounded_and_unbounded_terminal_state_agree_on_shared_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """polylogue-wofr AC2: a clean session materialized once through the
+    ordinary full-analysis path and once through the bounded/degraded path
+    (same session, same messages -- only the degraded-threshold monkeypatch
+    differs) must derive the identical terminal_state via both routes. This
+    is only true because the bounded path reuses the exact same
+    `_terminal_state` derivation the unbounded path calls, over a tail
+    window (default 50 messages) that fully covers this session's 2 real
+    messages -- proving parity, not coincidence."""
+    db_path = tmp_path / "bounded-unbounded-terminal-parity.db"
+    native = "conv-parity-terminal"
+    session_id = _sid(native, "claude-code-session")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(native, source_name="claude-code", title="Parity terminal"),
+            messages=[
+                make_message(
+                    f"{native}:msg-1",
+                    native,
+                    role="assistant",
+                    text="Running the build.",
+                    blocks=[
+                        {
+                            "type": "tool_use",
+                            "tool_name": "bash",
+                            "tool_id": "call-1",
+                            "tool_input": {"command": "./build.sh"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_id": "call-1",
+                            "text": "exit 2",
+                            "tool_result_is_error": 1,
+                        },
+                    ],
+                ),
+                make_message(f"{native}:msg-2", native, role="assistant", text="All done."),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+        # Unbounded: the default degraded-message threshold is far above this
+        # session's 2 real messages, so the ordinary full-analysis path
+        # materializes it.
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+        unbounded = conn.execute(
+            "SELECT terminal_state, terminal_state_method, terminal_state_confidence, workflow_shape"
+            " FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert unbounded is not None
+        assert unbounded["workflow_shape"] != "bounded_large_session"
+        assert unbounded["terminal_state"] == "error_left"
+        assert unbounded["terminal_state_method"] == "action_outcome"
+
+        # Now force the degraded/bounded path over the identical session: the
+        # tail window (50 messages) still covers both real messages, so the
+        # structural derivation sees the same evidence.
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 1)
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+        bounded = conn.execute(
+            "SELECT terminal_state, terminal_state_method, terminal_state_confidence, workflow_shape"
+            " FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    assert bounded is not None
+    assert bounded["workflow_shape"] == "bounded_large_session"
+    assert bounded["terminal_state"] == unbounded["terminal_state"]
+    assert bounded["terminal_state_method"] == unbounded["terminal_state_method"]
+    assert bounded["terminal_state_confidence"] == unbounded["terminal_state_confidence"]
