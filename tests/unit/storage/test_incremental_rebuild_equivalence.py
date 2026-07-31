@@ -207,10 +207,21 @@ def _codex_session(
     *,
     parent_native_id: str | None = None,
 ) -> bytes:
+    # Real Codex continuation/resume rollouts (sampled from ~/.codex/sessions,
+    # 490/494 multi-session_meta files) replay the parent's original
+    # session_meta as the file's second distinct session_meta, and that
+    # replayed header shares the same cwd (and usually the same git
+    # repository_url) with the child, because a resume continues in the same
+    # working tree. `_has_continuation_evidence`
+    # (polylogue/sources/parsers/codex.py, #3484) requires that structural
+    # match -- a bare second session_meta id is no longer sufficient -- so
+    # this fixture must carry it for the legacy (no forked_from_id)
+    # CONTINUATION fallback to classify.
+    shared_cwd = "/realm/project/lineage-fixture"
     rows: list[dict[str, object]] = [
         {
             "type": "session_meta",
-            "payload": {"id": native_id, "timestamp": "2026-07-16T10:00:00Z"},
+            "payload": {"id": native_id, "timestamp": "2026-07-16T10:00:00Z", "cwd": shared_cwd},
         }
     ]
     if parent_native_id is not None:
@@ -220,6 +231,7 @@ def _codex_session(
                 "payload": {
                     "id": parent_native_id,
                     "timestamp": "2026-07-16T09:00:00Z",
+                    "cwd": shared_cwd,
                 },
             }
         )
