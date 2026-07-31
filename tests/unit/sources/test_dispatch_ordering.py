@@ -240,3 +240,31 @@ def test_dispatch_ordering(payload: object, expected_provider: Provider, rationa
 def test_unambiguous_payloads_still_work(payload: object, expected_provider: Provider) -> None:
     """Regression: unambiguous payloads must still resolve correctly."""
     assert detect_provider(payload) is expected_provider
+
+
+def test_relationship_index_records_do_not_detect_as_claude_code() -> None:
+    """Regression for polylogue-9ykn (gvgi): a third-party graph-edge index
+    JSONL (real shape: a sinex analysis artifact recording conversation
+    parent/child edges) sitting under a watched Claude Code directory has no
+    session/message envelope at all -- just conversation/parent/child/type/
+    timestamp keys, whose bare ``type`` value happens to be the generic role
+    word "assistant"/"user". Before this fix, ``claude.looks_like_code``
+    treated a bare ``type in {"user", "assistant"}`` match as sufficient
+    Claude Code evidence on its own, misdetecting this shape and (via the
+    dispatch-level auto-detection paths that call ``detect_provider`` when no
+    provider is already known from the watched directory) letting it become a
+    phantom claude-code-session with one empty message per JSONL line -- the
+    single largest contributor to the archive's empty-message rows (96,748 of
+    101,765, ~95%, per the live-archive measurement in polylogue-gvgi).
+    """
+    payload = [
+        {
+            "conversation": f"conv-{index}",
+            "parent": f"parent-{index}",
+            "child": f"child-{index}",
+            "type": "assistant" if index % 2 else "user",
+            "timestamp": "2026-05-01T00:00:00.000Z",
+        }
+        for index in range(8)
+    ]
+    assert detect_provider(payload) is None
