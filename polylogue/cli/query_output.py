@@ -944,12 +944,10 @@ def output_results(
     _send_output(env, content, output.destinations, output.output_format, None)
 
 
-# Internal aliases used by query.py and tests
-_output_summary_list = output_summary_list
+# Internal aliases used within this module and by tests
 _write_message_streaming = write_message_streaming
 _copy_to_clipboard = copy_to_clipboard
 _open_in_browser = open_in_browser
-_open_result = open_result
 _format_list = format_list
 _render_session_rich = render_session_rich
 

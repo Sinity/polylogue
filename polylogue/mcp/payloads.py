@@ -16,10 +16,7 @@ from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.surfaces.payloads import (
-    AssertionClaimListPayload,
-    AssertionClaimPayload,
     MutationResultPayload,
-    PublicRefResolutionPayload,
     SearchCursor,
     SearchEnvelope,
     SurfacePayloadModel,
@@ -62,10 +59,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
-MCPAssertionClaimPayload = AssertionClaimPayload
-MCPAssertionClaimListPayload = AssertionClaimListPayload
-MCPPublicRefResolutionPayload = PublicRefResolutionPayload
-MCPContextImagePayload = ContextImage
 
 TRoot = TypeVar("TRoot")
 
@@ -1049,7 +1042,6 @@ __all__ = [
     "MCPContextDeliveryListPayload",
     "MCPContextDeliveryPayload",
     "MCPContextDeliverySummaryPayload",
-    "MCPContextImagePayload",
     "MCPSessionDetailPayload",
     "MCPSessionNeighborCandidateListPayload",
     "MCPSessionNeighborCandidatePayload",
@@ -1084,9 +1076,6 @@ __all__ = [
     "MCPArchiveSessionListPayload",
     "MCPArchiveSessionPayload",
     "MCPArchiveSessionSummaryPayload",
-    "MCPAssertionClaimPayload",
-    "MCPAssertionClaimListPayload",
-    "MCPPublicRefResolutionPayload",
     "MCPSessionTreePayload",
     "MCPStatsByPayload",
     "MCPTagCountsPayload",

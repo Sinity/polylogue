@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import click
 
 from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.query_contracts import QueryExecutionPlan, QueryParams
+from polylogue.cli.query_contracts import QueryExecutionPlan
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.logging import get_logger
@@ -97,16 +97,6 @@ def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
     run_coroutine_sync(async_execute_query_request(env, request))
 
 
-def execute_query(env: AppEnv, params: QueryParams) -> None:
-    """Execute a query-mode command from raw params."""
-    execute_query_request(env, RootModeRequest.from_params(params))
-
-
-async def async_execute_query(env: AppEnv, params: QueryParams) -> None:
-    """Async compatibility wrapper for raw param execution."""
-    await async_execute_query_request(env, RootModeRequest.from_params(params))
-
-
 async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
     """Async core of query execution."""
     import_started_at = perf_counter()
@@ -118,9 +108,7 @@ async def async_execute_query_request(env: AppEnv, request: RootModeRequest) -> 
 
 __all__ = [
     "QueryFirstGroupBase",
-    "async_execute_query",
     "async_execute_query_request",
-    "execute_query",
     "execute_query_request",
     "handle_query_mode",
     "project_query_results",

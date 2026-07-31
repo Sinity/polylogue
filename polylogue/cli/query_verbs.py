@@ -2512,18 +2512,7 @@ def run_read_context_image(
     _deliver_content(env, content, destination=destination, out_path=out_path)
 
 
-QUERY_VERBS = (
-    select_verb,
-    read_verb,
-    continue_verb,
-    delete_verb,
-    mark_verb,
-    analyze_verb,
-)
-
-
 __all__ = [
-    "QUERY_VERBS",
     "VERB_NAMES",
     "analyze_verb",
     "continue_verb",

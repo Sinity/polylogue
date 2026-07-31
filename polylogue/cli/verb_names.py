@@ -12,7 +12,4 @@ VERB_NAMES: frozenset[str] = frozenset(
         "select",
     }
 )
-QUERY_VERB_NAMES = VERB_NAMES
-QUERY_VERBS = VERB_NAMES
-
-__all__ = ["QUERY_VERBS", "QUERY_VERB_NAMES", "VERB_NAMES"]
+__all__ = ["VERB_NAMES"]

@@ -83,9 +83,13 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
             raise RuntimeError("archive embeddings initialization requires sqlite-vec") from error
     conn.executescript(spec.ddl)
     if tier is ArchiveTier.OPS:
+        from polylogue.storage.sqlite.archive_tiers.ops_write import (
+            ensure_embedding_catchup_run_outcome_columns,
+        )
+
         _ensure_ops_runtime_columns(conn)
         _ensure_ops_cursor_lag_sample_columns(conn)
-        _ensure_ops_embedding_catchup_run_columns(conn)
+        ensure_embedding_catchup_run_outcome_columns(conn)
     if tier is ArchiveTier.INDEX:
         from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
@@ -148,18 +152,6 @@ def _ensure_ops_cursor_lag_sample_columns(conn: sqlite3.Connection) -> None:
         ON cursor_lag_samples(family, sampled_at_ms DESC)
         """
     )
-
-
-def _ensure_ops_embedding_catchup_run_columns(conn: sqlite3.Connection) -> None:
-    """Ensure disposable OPS-tier embedding catch-up rows carry run outcomes."""
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
-    additions = {
-        "embedded_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0)",
-        "error_count": "INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0)",
-    }
-    for name, definition in additions.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE embedding_catchup_runs ADD COLUMN {name} {definition}")
 
 
 def initialize_archive_database(

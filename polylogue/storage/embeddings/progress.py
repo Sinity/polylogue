@@ -1,16 +1,21 @@
-"""Durable progress ledger for embedding catch-up runs."""
+"""Legacy-monolith read path for embedding catch-up runs.
+
+The split-file archive's only ``embedding_catchup_runs`` writer is
+``upsert_embedding_catchup_run`` in ``storage/sqlite/archive_tiers/ops_write.py``
+against the ops-tier DDL in ``archive_tiers/ops.py`` (statuses ``running`` /
+``completed`` / ``failed`` / ``cancelled``). This module used to define a
+second, same-named table with its own shape and status vocabulary
+(``stopped`` / ``interrupted``); that writer half is deleted. What remains is
+the read-only accessor for pre-split single-file archives, whose legacy table
+shape (``started_at`` TEXT, ``stop_reason``, ``rebuild``, planned/limit
+columns) still surfaces through the embedding-status fallback in
+``storage/embeddings/status_payload.py`` and ``daemon/metrics.py``.
+"""
 
 from __future__ import annotations
 
 import sqlite3
-import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal, TypedDict
-
-CatchupRunStatus = Literal["running", "completed", "stopped", "failed", "interrupted"]
+from typing import TypedDict
 
 
 class EmbeddingCatchupRunPayload(TypedDict):
@@ -34,183 +39,6 @@ class EmbeddingCatchupRunPayload(TypedDict):
     embedded_messages: int
     estimated_cost_usd: float
     last_session_id: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class CatchupRunStart:
-    """Inputs persisted when a bounded embedding catch-up pass starts."""
-
-    rebuild: bool
-    max_sessions: int | None
-    max_messages: int | None
-    stop_after_seconds: int | None
-    max_errors: int | None
-    planned_sessions: int
-    planned_messages: int
-
-
-@dataclass(frozen=True, slots=True)
-class CatchupRunDelta:
-    """Progress increment for one attempted session."""
-
-    session_id: str
-    embedded: bool = False
-    skipped: bool = False
-    errored: bool = False
-    embedded_messages: int = 0
-    estimated_cost_usd: float = 0.0
-
-
-def ensure_embedding_catchup_runs_table(conn: sqlite3.Connection) -> None:
-    """Create the catch-up run ledger if it is missing.
-
-    polylogue-u6tl: this table shares its name with, but is a completely
-    separate schema from, the canonical production
-    `embedding_catchup_runs` defined in
-    ``storage/sqlite/archive_tiers/ops.py`` (written by
-    ``ops_write.upsert_embedding_catchup_run`` via cli/commands/embed.py and
-    daemon/embedding_backlog.py). This module's own write helpers
-    (``start_``/``record_``/``finish_embedding_catchup_run``) have zero
-    production callers -- only ``test_embed_status_fast.py`` and
-    ``test_embedding_contracts.py`` exercise them, which is why this local
-    CHECK is free to carry the full 5-value ``CatchupRunStatus`` vocabulary
-    (including 'stopped'/'interrupted') while the canonical table's CHECK
-    only accepts the 4 values its real writer ever produces
-    ('running'/'completed'/'failed'/'cancelled'). See ops.py's DDL comment
-    on the canonical table for the full cross-reference; unifying the two
-    is tracked as a polylogue-u6tl follow-up, not done here.
-    """
-
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
-            run_id TEXT PRIMARY KEY,
-            started_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            completed_at TEXT,
-            status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'stopped', 'failed', 'interrupted')),
-            stop_reason TEXT,
-            rebuild INTEGER NOT NULL DEFAULT 0,
-            max_sessions INTEGER,
-            max_messages INTEGER,
-            stop_after_seconds INTEGER,
-            max_errors INTEGER,
-            planned_sessions INTEGER NOT NULL DEFAULT 0,
-            planned_messages INTEGER NOT NULL DEFAULT 0,
-            processed_sessions INTEGER NOT NULL DEFAULT 0,
-            embedded_sessions INTEGER NOT NULL DEFAULT 0,
-            skipped_sessions INTEGER NOT NULL DEFAULT 0,
-            error_count INTEGER NOT NULL DEFAULT 0,
-            embedded_messages INTEGER NOT NULL DEFAULT 0,
-            estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
-            last_session_id TEXT
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_embedding_catchup_runs_started
-        ON embedding_catchup_runs(started_at DESC)
-    """)
-
-
-@contextmanager
-def _connect(db_path: Path) -> Iterator[sqlite3.Connection]:
-    # ``with conn`` commits on success / rolls back on error; the ``finally``
-    # closes it (a bare ``with sqlite3.connect(...)`` only commits, never
-    # closes — a per-call connection leak).
-    conn = sqlite3.connect(db_path, timeout=30.0)
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
-
-
-def start_embedding_catchup_run(db_path: Path, start: CatchupRunStart) -> str:
-    """Persist and return a new catch-up run identifier."""
-
-    run_id = uuid.uuid4().hex
-    with _connect(db_path) as conn:
-        ensure_embedding_catchup_runs_table(conn)
-        conn.execute(
-            """
-            INSERT INTO embedding_catchup_runs (
-                run_id, started_at, updated_at, status, rebuild,
-                max_sessions, max_messages, stop_after_seconds, max_errors,
-                planned_sessions, planned_messages
-            ) VALUES (?, datetime('now'), datetime('now'), 'running', ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                run_id,
-                int(start.rebuild),
-                start.max_sessions,
-                start.max_messages,
-                start.stop_after_seconds,
-                start.max_errors,
-                start.planned_sessions,
-                start.planned_messages,
-            ),
-        )
-        conn.commit()
-    return run_id
-
-
-def record_embedding_catchup_progress(db_path: Path, run_id: str, delta: CatchupRunDelta) -> None:
-    """Add one attempted session to a persisted catch-up run."""
-
-    with _connect(db_path) as conn:
-        ensure_embedding_catchup_runs_table(conn)
-        cursor = conn.execute(
-            """
-            UPDATE embedding_catchup_runs
-            SET updated_at = datetime('now'),
-                processed_sessions = processed_sessions + 1,
-                embedded_sessions = embedded_sessions + ?,
-                skipped_sessions = skipped_sessions + ?,
-                error_count = error_count + ?,
-                embedded_messages = embedded_messages + ?,
-                estimated_cost_usd = estimated_cost_usd + ?,
-                last_session_id = ?
-            WHERE run_id = ?
-            """,
-            (
-                int(delta.embedded),
-                int(delta.skipped),
-                int(delta.errored),
-                delta.embedded_messages,
-                delta.estimated_cost_usd,
-                delta.session_id,
-                run_id,
-            ),
-        )
-        if cursor.rowcount != 1:
-            raise LookupError(f"embedding catch-up run not found for progress update: {run_id}")
-        conn.commit()
-
-
-def finish_embedding_catchup_run(
-    db_path: Path,
-    run_id: str,
-    *,
-    status: CatchupRunStatus,
-    stop_reason: str | None = None,
-) -> None:
-    """Mark a catch-up run terminal."""
-
-    with _connect(db_path) as conn:
-        ensure_embedding_catchup_runs_table(conn)
-        cursor = conn.execute(
-            """
-            UPDATE embedding_catchup_runs
-            SET updated_at = datetime('now'),
-                completed_at = datetime('now'),
-                status = ?,
-                stop_reason = ?
-            WHERE run_id = ?
-            """,
-            (status, stop_reason, run_id),
-        )
-        if cursor.rowcount != 1:
-            raise LookupError(f"embedding catch-up run not found for finalization: {run_id}")
-        conn.commit()
 
 
 def latest_embedding_catchup_run(conn: sqlite3.Connection) -> EmbeddingCatchupRunPayload | None:
@@ -255,13 +83,6 @@ def latest_embedding_catchup_run(conn: sqlite3.Connection) -> EmbeddingCatchupRu
 
 
 __all__ = [
-    "CatchupRunDelta",
-    "CatchupRunStart",
-    "CatchupRunStatus",
     "EmbeddingCatchupRunPayload",
-    "ensure_embedding_catchup_runs_table",
-    "finish_embedding_catchup_run",
     "latest_embedding_catchup_run",
-    "record_embedding_catchup_progress",
-    "start_embedding_catchup_run",
 ]

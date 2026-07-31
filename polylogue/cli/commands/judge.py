@@ -20,7 +20,6 @@ from polylogue.surfaces.payloads import (
     AssertionCandidateQueueHealthPayload,
     AssertionCandidateReviewItemPayload,
     AssertionCandidateReviewListPayload,
-    AssertionClaimPayload,
     serialize_surface_payload,
 )
 
@@ -34,19 +33,6 @@ class JudgeCandidateRow:
     evidence_refs: tuple[str, ...] = ()
     review_status: str = "pending"
     evidence_lines: tuple[str, ...] = ()
-
-    @classmethod
-    def from_claim(cls, claim: AssertionClaimPayload) -> JudgeCandidateRow:
-        """Compatibility constructor for callers that already hold a claim."""
-
-        return cls(
-            assertion_id=claim.assertion_id,
-            kind=claim.kind.value,
-            target_ref=claim.target_ref,
-            body=str(claim.body_text or claim.value or ""),
-            evidence_refs=claim.evidence_refs,
-            evidence_lines=tuple(f"unresolved {ref}" for ref in claim.evidence_refs[:5]),
-        )
 
     @classmethod
     def from_review(cls, item: AssertionCandidateReviewItemPayload) -> JudgeCandidateRow:

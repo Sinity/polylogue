@@ -14,11 +14,6 @@ from click.testing import CliRunner
 from polylogue.cli.commands.embed import embed_command
 from polylogue.storage.embeddings import status_payload as status_payload_mod
 from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, embedding_input_hash
-from polylogue.storage.embeddings.progress import (
-    CatchupRunStart,
-    finish_embedding_catchup_run,
-    start_embedding_catchup_run,
-)
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     begin_embedding_attempt,
     record_embedding_failure,
@@ -1174,19 +1169,48 @@ def test_status_json_includes_latest_catchup_run(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
 
-    run_id = start_embedding_catchup_run(
-        db_path,
-        CatchupRunStart(
-            rebuild=True,
-            max_sessions=2,
-            max_messages=10,
-            stop_after_seconds=None,
-            max_errors=None,
-            planned_sessions=2,
-            planned_messages=2,
-        ),
-    )
-    finish_embedding_catchup_run(db_path, run_id, status="interrupted", stop_reason="keyboard interrupt")
+    # Seed the pre-split monolith table shape directly: the split archive's
+    # only writer is the ops-tier upsert_embedding_catchup_run; this exercises
+    # the read-only legacy fallback in status_payload.py.
+    run_id = "legacy-run-1"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL,
+                stop_reason TEXT,
+                rebuild INTEGER NOT NULL DEFAULT 0,
+                max_sessions INTEGER,
+                max_messages INTEGER,
+                stop_after_seconds INTEGER,
+                max_errors INTEGER,
+                planned_sessions INTEGER NOT NULL DEFAULT 0,
+                planned_messages INTEGER NOT NULL DEFAULT 0,
+                processed_sessions INTEGER NOT NULL DEFAULT 0,
+                embedded_sessions INTEGER NOT NULL DEFAULT 0,
+                skipped_sessions INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                embedded_messages INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+                last_session_id TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO embedding_catchup_runs (
+                run_id, started_at, updated_at, completed_at, status, stop_reason,
+                rebuild, max_sessions, max_messages, planned_sessions, planned_messages
+            ) VALUES (?, datetime('now'), datetime('now'), datetime('now'), 'interrupted',
+                      'keyboard interrupt', 1, 2, 10, 2, 2)
+            """,
+            (run_id,),
+        )
+        conn.commit()
 
     payload = _run_status(db_path)
 
