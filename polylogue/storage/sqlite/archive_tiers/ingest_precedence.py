@@ -16,6 +16,60 @@ from polylogue.sources.parsers.base_models import ParsedSessionEvent
 BrowserCapturePrecedence = Literal["default", "replace", "skip"]
 
 
+def should_skip_stale_replace(
+    *,
+    incoming_freshness_ms: int | None,
+    existing_updated_at_ms: int | None,
+) -> bool:
+    """Return whether an incoming full-replace write is strictly staler than what is stored.
+
+    This is the ONE freshness-tie policy for whether an incoming session
+    write should be skipped as stale, consolidated from three previously
+    independent copies (polylogue-t83e): ``write_parsed_session_to_archive``
+    in ``archive_tiers/write.py``, the daemon batch-write path in
+    ``pipeline/services/ingest_batch/_core.py``, and
+    ``revision_governance.py``'s raw-parsed write path. Each call site keeps
+    its own surrounding guard conditions (``force_write``/``force_replace``,
+    browser-capture precedence, append-only, revision-authority membership,
+    ``source_index`` gating) — those decide *whether this check applies at
+    all*, not the comparison itself.
+
+    Deliberately a strict ``<``, not ``<=``: a genuine tie (same
+    ``updated_at_ms``) still replaces, so a replay that legitimately carries
+    identical freshness but different/corrected content is not silently
+    dropped.
+
+    This is a *timestamp* tie-break only, deliberately narrow: it is not
+    where "which raw is the real content" gets decided when two raws
+    resolve to the same ``session_id`` and one is a strict content subset of
+    the other (e.g. an appended-to Claude Code transcript re-acquired twice
+    at different completeness). That is decided upstream, before this
+    function's timestamp comparison is ever reached, by
+    ``archive/session_revision_membership.py``'s content-only set relation
+    (``equal``/``a_contains_b``/``b_contains_a``/``conflict`` — polylogue-aggz,
+    landed in #3401/#3405) via ``raw_session_memberships``/
+    ``raw_revision_heads``: a cohort with an accepted head is written from
+    that head, never from this per-write timestamp comparison. This function
+    only governs the fallback for raws revision governance never classified
+    into a cohort (single-raw sessions, or a governance table not yet
+    populated for older data) — see polylogue-t83e for a live example where
+    stale pre-#3401 ``raw_session_memberships`` rows briefly left two raws
+    of one session_id -- a local Claude Code transcript and an older byte-
+    prefix copy of the same file the operator had uploaded into an AI Studio
+    conversation -- without an accepted head, and this function's ordinary
+    timestamp comparison (not content-subset awareness) decided the
+    outcome. Recomputing revision membership under current code (any
+    ``rebuild_index_from_source`` replay, which calls
+    ``backfill_historical_revision_evidence``) resolves that case correctly
+    upstream of this function.
+    """
+    return (
+        existing_updated_at_ms is not None
+        and incoming_freshness_ms is not None
+        and incoming_freshness_ms < existing_updated_at_ms
+    )
+
+
 def browser_capture_precedence(
     *,
     existing_is_dom_fallback: bool,
