@@ -330,6 +330,69 @@ describe("first-party provider page transport", () => {
     expect(body.mapping["reply-a"].children).toEqual([]);
   });
 
+  it("preserves is_temporary/conversation_template_id/gizmo_id so session_kind and project scoping survive the bridge", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        is_temporary: true,
+        conversation_template_id: "g-p-project123",
+        gizmo_id: "g-custom-gpt-456",
+        mapping: {
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "user" }, content: { parts: ["hi"] } } },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    // polylogue.sources.parsers.chatgpt.parse() reads these three fields to
+    // set session_kind (is_temporary) and provider_project_ref
+    // (conversation_template_id/gizmo_id) -- they must survive the bridge
+    // now that the projection advertises itself as native_full.
+    const body = JSON.parse(result.response.body);
+    expect(body).toMatchObject({
+      is_temporary: true,
+      conversation_template_id: "g-p-project123",
+      gizmo_id: "g-custom-gpt-456",
+    });
+  });
+
+  it("evicts an abandoned chunk cache entry on a timer even when the tab makes no further bridge calls at all", async () => {
+    vi.useFakeTimers();
+    try {
+      const token = "synthetic-bearer-secret";
+      const accountId = "synthetic-account-secret";
+      const fetchImpl = vi.fn(async (input) => {
+        const url = new URL(input);
+        if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+        const mapping = {};
+        for (let index = 0; index < 4; index += 1) {
+          mapping[`node-${index}`] = { id: `node-${index}`, parent: null, message: { id: `message-${index}`, author: { role: "assistant" }, content: { parts: ["x".repeat(7 * 1024 * 1024)] } } };
+        }
+        return new Response(JSON.stringify({ id: "idle-tab-conversation", mapping }));
+      });
+      installWindow("https://chatgpt.com/", fetchImpl);
+
+      const chunk0 = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "idle-tab-conversation" }, maxResponseBytes: 32 * 1024 * 1024 });
+      expect(JSON.parse(chunk0.response.body).chunked).toBe(true);
+      expect(globalThis.window.__polylogueChatGptChunkCache.has("idle-tab-conversation")).toBe(true);
+
+      // No further bridge call of any kind -- the tab genuinely goes idle.
+      // Only the per-entry window.setTimeout scheduled at insertion can
+      // free this; the sweep-on-next-call path never gets a next call.
+      await vi.advanceTimersByTimeAsync(6 * 60 * 1000);
+
+      expect(globalThis.window.__polylogueChatGptChunkCache.has("idle-tab-conversation")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("fails loud on a stale chunk request instead of silently reassembling a truncated conversation", async () => {
     const token = "synthetic-bearer-secret";
     const accountId = "synthetic-account-secret";

@@ -1125,6 +1125,132 @@ describe("background receiver diagnostics", () => {
     expect(envelope.session.turns.map((turn) => turn.text)).toEqual(["first half", "second half"]);
   }, 20000);
 
+  it("does not forward an oversized reassembled conversation through the exact-capture message channel, and still archives it at full fidelity", async () => {
+    // chrome.tabs.sendMessage (used by captureOverride/captureProviderConversation
+    // to hand the reassembled body to the content script as `nativePayload`,
+    // and to receive its envelope back) is a second Chrome extension IPC
+    // channel with its own size ceiling, independent of the scripting-result
+    // bridge page_transport.js chunks around. A conversation whose full
+    // reassembled body is too large for that second channel must not be
+    // forwarded as an override -- captureOverride falls back to whatever
+    // captureProviderConversation's content-script side does on its own
+    // (mocked here as a DOM-only capture with weaker turns), then attaches
+    // the full raw_provider_payload back in the background process, where it
+    // already lives in memory from reassembly. The receiver must still get
+    // full fidelity either way.
+    const pairing = { state: "online", receiver_id: "rx-oversize-test", api_schema: "polylogue-browser-capture/v1", endpoint: "http://127.0.0.1:8875" };
+    stored.polylogueReceiverPairing = pairing;
+    tabs = [{ id: 42, url: "https://chatgpt.com/", title: "ChatGPT" }];
+
+    let observedNativePayload = "not-called";
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_tabId, message) => {
+      if (message.type === "polylogue.capturePage") {
+        observedNativePayload = message.nativePayload;
+        // Content script's own fallback when it gets no override: a DOM-only
+        // capture, deliberately weaker than the bridge's full-fidelity data,
+        // to prove the receiver ends up with the BACKGROUND-attached native
+        // payload, not this fallback's own (lesser) view.
+        return {
+          ok: true,
+          envelope: {
+            provider_meta: { capture_fidelity: "dom_degraded" },
+            raw_provider_payload: null,
+            session: {
+              provider: "chatgpt",
+              provider_session_id: message.providerSessionId,
+              provider_meta: { capture_fidelity: "dom_degraded" },
+              turns: [{ provider_turn_id: "dom-turn", text: "dom-only fallback text" }],
+            },
+          },
+        };
+      }
+      return { ok: false, error: "unexpected_capture_message" };
+    });
+
+    const accountHandle = "stable-chatgpt-account-id";
+    const conversationChunkIndexes = [];
+    const bigText = (label) => `${label}-${"x".repeat(7 * 1024 * 1024)}`;
+    const chunkBodies = [0, 1, 2, 3].map((index) => ({
+      polylogue_bridge_projection: "chatgpt-native-bridge-v1", id: "oversize-conversation", title: "Oversize",
+      chunked: true, chunkIndex: index, totalChunks: 4,
+      mapping: { [`node-${index}`]: { id: `node-${index}`, parent: index > 0 ? `node-${index - 1}` : null, message: { id: `message-${index}`, author: { role: "assistant" }, content: { content_type: "text", parts: [bigText(`node-${index}`)] } } } },
+    }));
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      const request = details.args?.[0];
+      if (request?.operation === "identity") return [{ result: { ok: true, response: { accountHandle } } }];
+      if (request?.operation === "inventory") {
+        return [{ result: { ok: true, response: {
+          ok: true, status: 200, contentType: "application/json",
+          body: JSON.stringify({ items: [{ id: "oversize-conversation" }], total: 1 }),
+        } } }];
+      }
+      if (request?.operation === "conversation") {
+        const chunkIndex = request.params?.chunkIndex ?? 0;
+        conversationChunkIndexes.push(chunkIndex);
+        return [{ result: { ok: true, response: {
+          ok: true, status: 200, contentType: "application/json",
+          body: JSON.stringify(chunkBodies[chunkIndex]),
+        } } }];
+      }
+      return [{ result: undefined }];
+    });
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const captureJobResponse = captureJobFixtureResponse(url, options);
+      if (captureJobResponse) return captureJobResponse;
+      const path = new URL(url).pathname;
+      if (path === "/v1/status") {
+        return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
+      }
+      if (path === "/v1/browser-captures/capabilities") {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      if (path === "/v1/backfill-checkpoint") return responseJson({ stored_at: "now" }, { status: 202 });
+      if (path === "/v1/browser-captures") {
+        const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(options.body));
+        const contentHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+        return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "oversize-conversation", state: "complete", artifact_ref: "chatgpt/oversize-conversation.json", content_hash: contentHash });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    let simulatedNowMs = Date.now();
+    const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNowMs);
+    try {
+      const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+      await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
+      for (let wake = 0; wake < 5; wake += 1) {
+        simulatedNowMs += 20000;
+        alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+        if (fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
+      }
+      expect(conversationChunkIndexes.length).toBeGreaterThanOrEqual(4);
+      for (let submitWake = 0; submitWake < 3; submitWake += 1) {
+        if (fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
+        simulatedNowMs += 20000;
+        alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+      }
+      await vi.waitFor(() => expect(fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")).toBe(true), { timeout: 4000 });
+    } finally {
+      clockSpy.mockRestore();
+    }
+
+    // The oversized reassembled body never crossed the second IPC channel.
+    expect(observedNativePayload).toBeNull();
+
+    const captureCall = fetchCalls.find((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
+    const envelope = JSON.parse(captureCall.options.body);
+    // Despite the content script's own fallback capture being DOM-only and
+    // weaker, the receiver gets the background-attached full-fidelity native
+    // payload -- all four chunks merged -- and the fidelity label reflects
+    // that, not the fallback's dom_degraded label.
+    expect(Object.keys(envelope.raw_provider_payload.mapping).sort()).toEqual(["node-0", "node-1", "node-2", "node-3"]);
+    expect(envelope.provider_meta.capture_fidelity).toBe("native_full");
+    expect(envelope.session.provider_meta.capture_fidelity).toBe("native_full");
+  }, 20000);
+
   it("holds the job visibly when the receiver authority cannot commit", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });

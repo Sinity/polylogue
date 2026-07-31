@@ -317,12 +317,33 @@ async function backfillCoordinator() {
         captureOverride: async ({ provider, nativeId, response }) => {
           if (provider !== "chatgpt") return null;
           const nativePayload = await response.json();
+          const nativePayloadBytes = new TextEncoder().encode(JSON.stringify(nativePayload)).length;
+          const fitsExactCaptureChannel = nativePayloadBytes <= MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES;
           const captured = await captureProviderConversation(
             provider,
             nativeId,
             "backfill_exact_capture",
-            { deferReceiver: true, nativePayload },
+            // A conversation whose full-fidelity projection doesn't fit this
+            // second IPC channel's safe budget is not forwarded as an
+            // override -- captureProviderConversation's content-script side
+            // falls back to its own pre-existing (independent of this
+            // bridge) native-fetch/DOM-capture path instead of receiving an
+            // oversized message. The full nativePayload is still attached to
+            // the returned envelope below, entirely inside this background
+            // process, so archival fidelity is never actually lost -- only
+            // the exact-capture DOM enrichment step for a payload this size.
+            { deferReceiver: true, nativePayload: fitsExactCaptureChannel ? nativePayload : null },
           );
+          if (!fitsExactCaptureChannel && captured?.envelope) {
+            captured.envelope.raw_provider_payload = nativePayload;
+            captured.envelope.provider_meta = { ...captured.envelope.provider_meta, capture_fidelity: "native_full" };
+            if (captured.envelope.session) {
+              captured.envelope.session = {
+                ...captured.envelope.session,
+                provider_meta: { ...captured.envelope.session.provider_meta, capture_fidelity: "native_full" },
+              };
+            }
+          }
           return captured.envelope;
         },
         alarms: chrome.alarms,
@@ -1678,6 +1699,18 @@ function scriptingResultTooLarge(error) {
 // conversation chunk count is bounded by its own byte size divided by the
 // bridge's per-chunk packing target).
 const MAX_PROVIDER_PAGE_CHUNKS = 64;
+
+// chrome.tabs.sendMessage (used by captureProviderConversation below to hand
+// the reassembled conversation to the content script as `nativePayload`, and
+// to receive the resulting envelope back) is a second, independent Chrome
+// extension IPC channel with its own size ceiling -- distinct from, but the
+// same order of magnitude as, chrome.scripting.executeScript's ~32 MiB
+// structured-clone result limit that page_transport.js's chunking budget is
+// built around. Before the chunking fix, `nativePayload` was implicitly
+// capped at the old single-shot bridge's ~24 MiB projection limit; removing
+// that ceiling from the bridge itself must not silently remove it from this
+// second channel too.
+const MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES = 24 * 1024 * 1024;
 
 async function runProviderPageScript(transport, request) {
   const executions = await withTimeout(

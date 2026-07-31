@@ -137,6 +137,16 @@ export async function executeProviderPageRequest(request) {
       create_time: typeof source.create_time === "string" || typeof source.create_time === "number" ? source.create_time : null,
       update_time: typeof source.update_time === "string" || typeof source.update_time === "number" ? source.update_time : null,
       current_node: typeof source.current_node === "string" ? source.current_node : null,
+      // polylogue.sources.parsers.chatgpt.parse() reads these three
+      // top-level fields to set session_kind (is_temporary) and
+      // provider_project_ref (conversation_template_id/gizmo_id) -- omitting
+      // them silently downgraded every temporary/project-scoped ChatGPT
+      // conversation to a standard/unscoped session the moment this
+      // projection started advertising itself as native_full instead of the
+      // old degraded/compact signal.
+      is_temporary: typeof source.is_temporary === "boolean" ? source.is_temporary : null,
+      conversation_template_id: typeof source.conversation_template_id === "string" ? source.conversation_template_id : null,
+      gizmo_id: typeof source.gizmo_id === "string" ? source.gizmo_id : null,
     };
   }
 
@@ -238,7 +248,19 @@ export async function executeProviderPageRequest(request) {
       header = chatGptConversationHeader(source);
       projectedChunks = buildChatGptChunks(source);
       if (projectedChunks.length > 1) {
-        chunkCache.set(nativeId, { chunks: projectedChunks, header, createdAtMs: Date.now() });
+        const entry = { chunks: projectedChunks, header, createdAtMs: Date.now() };
+        chunkCache.set(nativeId, entry);
+        // Scheduled at insertion time, not left to a future bridge call: a
+        // tab that goes idle right after the first chunk (no further
+        // identity/inventory/conversation traffic at all) would otherwise
+        // never trigger the sweep above, holding the entry indefinitely.
+        // The `chunkCache.get(nativeId) === entry` guard matters -- without
+        // it, a stale timer firing after this nativeId's entry was already
+        // replaced by a newer fetch (same conversation re-pulled) would
+        // delete that unrelated newer entry instead of a no-op.
+        window.setTimeout(() => {
+          if (chunkCache.get(nativeId) === entry) chunkCache.delete(nativeId);
+        }, chunkCacheTtlMs);
       } else {
         chunkCache.delete(nativeId);
       }
