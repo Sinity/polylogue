@@ -198,6 +198,61 @@ def test_parse_chunked_prompt_without_run_settings_leaves_it_none() -> None:
     assert result.run_settings is None
 
 
+def test_parse_chunked_prompt_records_nonempty_pending_input_as_draft_event() -> None:
+    """``chunkedPrompt.pendingInputs`` (polylogue-o4j2) is the operator's
+    not-yet-submitted textbox content -- unrecoverable once overwritten if
+    dropped at parse. A non-blank entry must survive as a ``draft_input``
+    session event.
+    """
+    payload: JSONDocument = {
+        "id": "gemini-pending-draft",
+        "updateTime": "2024-01-15T11:45:00Z",
+        "chunkedPrompt": {
+            "chunks": [{"id": "msg-user", "role": "user", "text": "hi"}],
+            "pendingInputs": [{"text": "unsent follow-up question", "role": "user", "tokenCount": 4}],
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    draft_events = [e for e in result.session_events if e.event_type == "draft_input"]
+    assert len(draft_events) == 1
+    assert draft_events[0].payload == {
+        "text": "unsent follow-up question",
+        "role": "user",
+        "token_count": 4,
+    }
+    assert draft_events[0].timestamp == "2024-01-15T11:45:00Z"
+
+
+def test_parse_chunked_prompt_skips_blank_pending_input() -> None:
+    """The wire-common case -- the textbox was empty when Drive synced -- carries
+    no evidence and must not be emitted as a session event.
+    """
+    payload: JSONDocument = {
+        "id": "gemini-pending-blank",
+        "chunkedPrompt": {
+            "chunks": [{"id": "msg-user", "role": "user", "text": "hi"}],
+            "pendingInputs": [{"text": "", "role": "user"}, {"text": "   ", "role": "user"}],
+        },
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert not [e for e in result.session_events if e.event_type == "draft_input"]
+
+
+def test_parse_chunked_prompt_without_pending_inputs_emits_no_draft_events() -> None:
+    payload: JSONDocument = {
+        "id": "gemini-no-pending",
+        "chunkedPrompt": {"chunks": [{"id": "msg-user", "role": "user", "text": "hi"}]},
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert not [e for e in result.session_events if e.event_type == "draft_input"]
+
+
 def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     payload: JSONDocument = {
         "id": "gemini-fallback-title",

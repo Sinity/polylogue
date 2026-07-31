@@ -215,6 +215,41 @@ def _model_config_event(
     )
 
 
+def _draft_input_events(pending_inputs: object, *, timestamp: str | None) -> list[ParsedSessionEvent]:
+    """Model ``chunkedPrompt.pendingInputs`` as session events.
+
+    AI Studio's Drive-synced JSON carries the operator's not-yet-submitted
+    textbox content here -- draft prompts that never became a chunk and are
+    otherwise unrecoverable once overwritten (polylogue-o4j2). Entries with
+    blank/whitespace-only text are the overwhelmingly common case (the
+    textbox was empty when synced) and carry no evidence, so they are
+    skipped rather than emitted as near-100%-empty noise.
+    """
+    if not isinstance(pending_inputs, list):
+        return []
+    events: list[ParsedSessionEvent] = []
+    for entry in pending_inputs:
+        entry_obj = json_document(entry)
+        text = entry_obj.get("text")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        payload: dict[str, object] = {"text": text}
+        role_val = _string_field(entry_obj, "role")
+        if role_val is not None:
+            payload["role"] = role_val
+        token_count = _non_negative_int_field(entry_obj, "tokenCount", "token_count")
+        if token_count is not None:
+            payload["token_count"] = token_count
+        events.append(
+            ParsedSessionEvent(
+                event_type="draft_input",
+                timestamp=timestamp,
+                payload=payload,
+            )
+        )
+    return events
+
+
 def _delivery_status(chunk_obj: JSONDocument) -> str | None:
     if _string_field(chunk_obj, "errorMessage", "error_message") is not None:
         return "error"
@@ -379,6 +414,9 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         str(payload.get("updateTime"))
         if payload.get("updateTime")
         else _select_timestamp(observed_timestamps, latest=True)
+    )
+    session_events.extend(
+        _draft_input_events(prompt.get("pendingInputs"), timestamp=update_time_str or default_timestamp)
     )
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
