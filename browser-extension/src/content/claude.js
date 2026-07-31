@@ -84,6 +84,21 @@
   // BlockType names and the is_error contract mirror BrowserCaptureBlock
   // (polylogue/browser_capture/models.py): outcome fields are read from the
   // provider's own segment, never inferred from rendered text.
+  // tool_result.content per Anthropic's API is either a plain string or an
+  // array of content blocks (type: "text" | "image" | ...). Join the text of
+  // "text"-typed blocks, newline-separated; return null only when no text
+  // content is present at all (e.g. an image-only result).
+  function textFromToolResultContent(content) {
+    if (typeof content === "string") return content || null;
+    if (Array.isArray(content)) {
+      const texts = content
+        .filter((part) => part && typeof part === "object" && part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text);
+      return texts.length ? texts.join("\n") : null;
+    }
+    return null;
+  }
+
   function nativeTurnBlocks(message) {
     const segments = Array.isArray(message && message.content) ? message.content : [];
     const blocks = [];
@@ -108,7 +123,12 @@
         blocks.push({
           type: "tool_result",
           tool_id: segment.tool_use_id || null,
-          text: typeof segment.content === "string" ? segment.content : null,
+          // Anthropic's tool_result content can be a plain string OR an array
+          // of content blocks (text/image/...) -- join the text blocks'
+          // `text` fields when it's an array. Never invent text for
+          // non-text blocks (e.g. images); text stays null only when no
+          // text content exists at all.
+          text: textFromToolResultContent(segment.content),
           // Provider-reported outcome. Absent stays null (unknown), never false.
           is_error: typeof segment.is_error === "boolean" ? segment.is_error : null,
           metadata: { tool_name: segment.name || null }
@@ -126,13 +146,17 @@
   function nativeTurnAttachments(message, index) {
     const out = [];
     const messageId = String(message.uuid || message.id || `claude-message-${index}`);
-    for (const attachment of Array.isArray(message.attachments) ? message.attachments : []) {
+    const messageAttachments = Array.isArray(message.attachments) ? message.attachments : [];
+    for (const [attachmentPosition, attachment] of messageAttachments.entries()) {
       if (!attachment || typeof attachment !== "object") continue;
       const name = attachment.file_name || attachment.name || null;
       if (!name) continue;
       const size = Number.parseInt(attachment.file_size, 10);
+      // Include the loop index in the hash input: two attachments with the
+      // same name and size in one message would otherwise collide on the
+      // same synthesised id (name/size alone are not unique within a message).
       out.push({
-        provider_attachment_id: `claude-attachment:${window.polylogueCapture.fnv1a(`${messageId}:${name}:${attachment.file_size || ""}`)}`,
+        provider_attachment_id: `claude-attachment:${window.polylogueCapture.fnv1a(`${messageId}:${attachmentPosition}:${name}:${attachment.file_size || ""}`)}`,
         message_provider_id: messageId,
         name,
         mime_type: attachment.file_type || null,
@@ -314,6 +338,11 @@
   }
 
   window.polylogueCapture.capturePage = capture;
+  // Test-only exposure of the pure structured-block/attachment extractors so
+  // tests exercise the real implementation instead of a hand-copied one that
+  // can silently drift (polylogue-ah21's dropped-`blocks` regression was
+  // caused by exactly that drift). Not used by any runtime capture path.
+  window.polylogueCapture.__claudeNativeInternals = { nativeTurnBlocks, nativeTurnAttachments };
   if (window.polylogueMessageLayer) {
     messageLayer = window.polylogueMessageLayer.mount({
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
