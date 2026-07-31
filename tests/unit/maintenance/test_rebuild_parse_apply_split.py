@@ -31,7 +31,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.config import Config
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.sources.census_parse_stage import CensusParseStage
 from polylogue.sources.revision_backfill import split_parse_and_apply_seconds
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
 
@@ -107,3 +109,51 @@ def test_rebuild_records_parse_apply_split_summing_to_stage_total(
     # This corpus is genuinely replayed (not empty), so real writer work
     # happened: apply_s must be strictly positive, not merely non-negative.
     assert apply_s > 0.0
+
+
+def test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-czq2: the offline CLI route must get the SAME off-writer
+    census prefetch seam ``daemon/bulk_rebuild.py`` has always had, not just
+    a caller that remembers to construct its own ``CensusParseStage``.
+
+    Anti-vacuity: this drives the real production entry point
+    (``rebuild_index_from_source_sync``, the exact function the CLI's
+    ``rebuild-index`` command and ``polylogued``'s own HTTP maintenance route
+    call) with a request that leaves ``RebuildIndexRequest.prefetch_cache``
+    at its default ``None`` -- exactly what those two callers do today. Before
+    ``_rebuild_index_from_source_owned`` grew its internal
+    ``_warm_offline_prefetch_cache`` call, ``CensusParseStage.warm_raw_ids``
+    was reached by exactly one caller in the whole codebase
+    (``daemon/bulk_rebuild.py``): deleting the internal warm call this test
+    exercises makes ``warm_raw_ids`` unreached again from this route and this
+    assertion fails, proving the spy is wired to production code, not a
+    self-authorized double.
+    """
+    root = tmp_path / "archive"
+    raw_ids = build_independent_raw_corpus(root, raw_count=6, avg_payload_bytes=20_000)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    warmed_raw_id_batches: list[tuple[str, ...]] = []
+    real_warm_raw_ids = CensusParseStage.warm_raw_ids
+
+    def _spy_warm_raw_ids(self: CensusParseStage, config: Config, *, raw_ids: list[str], max_payload_bytes: int) -> int:
+        warmed_raw_id_batches.append(tuple(raw_ids))
+        return real_warm_raw_ids(self, config, raw_ids=raw_ids, max_payload_bytes=max_payload_bytes)
+
+    monkeypatch.setattr(CensusParseStage, "warm_raw_ids", _spy_warm_raw_ids)
+
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            promote=True,
+            raw_batch_size=500,  # single page: whole corpus fits in one pass
+        )
+    )
+
+    assert receipt.status == "replayed"
+    assert warmed_raw_id_batches, "offline rebuild_index_from_source_sync never warmed a prefetch cache"
+    # Every raw the census phase went on to process was offered to the warmer
+    # first -- the exact set this pass selected, not a subset/superset.
+    assert set(warmed_raw_id_batches[0]) == set(raw_ids)

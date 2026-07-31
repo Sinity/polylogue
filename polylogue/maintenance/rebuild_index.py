@@ -52,6 +52,58 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
 
 logger = get_logger(__name__)
 
+#: Passed through to ``CensusParseStage.warm_raw_ids``'s ``max_payload_bytes``
+#: parameter for symmetry with the daemon's own call site
+#: (``daemon/bulk_rebuild.py``); the parameter is currently accepted but not
+#: consulted inside ``warm_raw_ids`` itself, so this value has no observable
+#: effect today, but every caller supplies one so a future budget check does
+#: not silently start unbounded for whichever caller forgot to pass it.
+_OFFLINE_PREFETCH_WARM_MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
+
+
+def _warm_offline_prefetch_cache(config: Config, raw_ids: list[str]) -> RawParsePrefetchCache | None:
+    """Pre-parse this pass's raw ids in a bounded thread pool before replay.
+
+    polylogue-czq2: closes the gap where every rebuild caller EXCEPT the
+    daemon's own bulk-rebuild loop (``daemon/bulk_rebuild.py``, #3168) left
+    ``RebuildIndexRequest.prefetch_cache`` at its default ``None`` -- the
+    offline ``polylogue ops maintenance rebuild-index`` CLI and the daemon's
+    own ``/api/maintenance/rebuild-index`` HTTP route both construct a
+    ``RebuildIndexRequest`` without ever threading one, so ``census``'s parse
+    step (and the ``spill_load`` reload it feeds) always paid the full
+    unwarmed cost on those routes even though the exact machinery to avoid it
+    (``CensusParseStage``/``RawParsePrefetchCache``,
+    ``polylogue.sources.census_parse_stage``) already existed and was fully
+    wired through ``backfill_historical_revision_evidence``.
+
+    Called from ``_rebuild_index_from_source_owned`` only when
+    ``request.prefetch_cache is None`` (a caller that already warmed its own
+    cache off a writer hold it does not yet hold -- the daemon's bulk-rebuild
+    loop -- is never overridden here). Returns ``None`` for an empty
+    ``raw_ids`` (nothing to warm); a construction/warm failure is never
+    raised -- this is a pure optimization over the unmodified parse path, so
+    any failure here must degrade to that path exactly like an ordinary
+    prefetch miss, never abort the rebuild pass itself.
+    """
+    if not raw_ids:
+        return None
+    from polylogue.sources.census_parse_stage import CensusParseStage
+
+    stage = CensusParseStage()
+    try:
+        warmed = stage.warm_raw_ids(config, raw_ids=raw_ids, max_payload_bytes=_OFFLINE_PREFETCH_WARM_MAX_PAYLOAD_BYTES)
+        logger.info(
+            "rebuild_index_offline_prefetch_warm",
+            requested=len(raw_ids),
+            warmed=warmed,
+        )
+    except Exception:
+        logger.warning("rebuild_index_offline_prefetch_warm_failed", exc_info=True)
+        stage.shutdown()
+        return None
+    stage.shutdown()
+    return stage.cache
+
 
 def _should_refresh_generation_planner_statistics(
     *,
@@ -170,12 +222,16 @@ class RebuildIndexRequest:
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
     pass_deadline_seconds: float | None = None
-    # polylogue-gd6v: daemon-internal callers only (never CLI/HTTP -- there is
-    # no JSON wire shape for a live cache object). Lets the daemon's bulk
-    # rebuild routing substitute parse output already computed off the
-    # writer hold (``DaemonParseStage``) for this pass's census phase. Every
-    # existing caller leaves this ``None`` and gets the exact unmodified
-    # parse path.
+    # polylogue-gd6v: in-process callers only (never CLI/HTTP wire params --
+    # there is no JSON shape for a live cache object). Lets a caller that
+    # already computed parse output off a writer hold (the daemon's own
+    # ``CensusParseStage``, e.g. ``daemon/bulk_rebuild.py``) substitute it for
+    # this pass's census phase. Leaving this ``None`` (every CLI/HTTP-facing
+    # caller) does NOT skip prefetching any more: ``_rebuild_index_from_source_owned``
+    # warms one itself for exactly this pass's selected raw ids before
+    # replaying (see ``_warm_offline_prefetch_cache``) -- a caller only needs
+    # to set this explicitly to reuse a cache warmed AHEAD of a writer hold it
+    # does not yet hold, which is what the daemon's bulk-rebuild loop does.
     prefetch_cache: RawParsePrefetchCache | None = None
 
 
@@ -550,6 +606,24 @@ async def _rebuild_index_from_source_owned(
                 sources=[],
                 db_path=Path(generation.index_path),
             )
+            # polylogue-czq2: warm THIS pass's own raw ids before replay when
+            # the caller did not already hand us a prefetch cache (the
+            # daemon's bulk-rebuild loop is the only caller that does --
+            # `resolve_or_start_daemon_bulk_rebuild_transaction` warms off a
+            # writer hold it does not yet hold, so its cache is left alone
+            # here). Every other caller (offline CLI, the daemon's own HTTP
+            # rebuild-index route) gets the same census-parse seam the daemon
+            # loop always had, closing the gap that let ``spill_load`` pay a
+            # full serial re-parse/reload cost on those routes. Reads from the
+            # REAL archive root (`root`), not `generation_root`: source.db and
+            # the blob store live beside the outer archive, never inside a
+            # not-yet-promoted generation directory.
+            effective_prefetch_cache = request.prefetch_cache
+            if effective_prefetch_cache is None and selected_raw_ids:
+                warm_config = Config(archive_root=root, render_root=render_root(), sources=[])
+                effective_prefetch_cache = await asyncio.to_thread(
+                    _warm_offline_prefetch_cache, warm_config, selected_raw_ids
+                )
             pass_started_at_s = time.perf_counter()
             replay = await replay_source(
                 config,
@@ -575,7 +649,7 @@ async def _rebuild_index_from_source_owned(
                 # _repopulate_bulk_build_derived_state, called below right
                 # before readiness.
                 bulk_build=True,
-                prefetch_cache=request.prefetch_cache,
+                prefetch_cache=effective_prefetch_cache,
             )
             pass_elapsed_s = time.perf_counter() - pass_started_at_s
             processed_before = transaction.processed_raw_count if transaction is not None else None

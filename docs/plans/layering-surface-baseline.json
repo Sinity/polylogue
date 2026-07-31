@@ -1387,27 +1387,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/parse_prefetch.py",
-    "import": "polylogue.pipeline.parsed_tree_size"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/parse_prefetch.py",
-    "import": "polylogue.sources"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/parse_prefetch.py",
-    "import": "polylogue.sources.dispatch"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/parse_prefetch.py",
-    "import": "polylogue.sources.revision_backfill"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/parse_prefetch.py",
-    "import": "polylogue.storage.repair"
+    "import": "polylogue.sources.census_parse_stage"
   },
   {
     "target": "polylogue/daemon",

@@ -239,7 +239,13 @@ def test_max_inflight_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.
     with an adequate budget) — the budget must grow on capable machines
     while keeping the 64 MiB floor semantics on small ones.
     """
-    from polylogue.daemon import parse_prefetch as pp
+    # polylogue-czq2: the adaptive-budget resolution functions (and the
+    # ``_physical_memory_bytes`` helper they call) now live in
+    # ``polylogue.sources.census_parse_stage`` -- ``polylogue.daemon.parse_prefetch``
+    # only re-exports the same function objects, so monkeypatching an
+    # attribute there would rebind the re-export's local name, not the
+    # global the functions actually read from when they execute.
+    from polylogue.sources import census_parse_stage as pp
 
     monkeypatch.delenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES", raising=False)
 
@@ -474,7 +480,13 @@ def test_max_cached_tree_bytes_default_is_adaptive_and_clamped(monkeypatch: pyte
     range [256 MiB, 4 GiB] and distinct RAM fraction (1/8, not 1/16). A
     mutation that swapped in the inflight-bytes clamp/fraction, or dropped
     the env override, would flip these assertions."""
-    from polylogue.daemon import parse_prefetch as pp
+    # polylogue-czq2: the adaptive-budget resolution functions (and the
+    # ``_physical_memory_bytes`` helper they call) now live in
+    # ``polylogue.sources.census_parse_stage`` -- ``polylogue.daemon.parse_prefetch``
+    # only re-exports the same function objects, so monkeypatching an
+    # attribute there would rebind the re-export's local name, not the
+    # global the functions actually read from when they execute.
+    from polylogue.sources import census_parse_stage as pp
 
     monkeypatch.delenv("POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES", raising=False)
 
