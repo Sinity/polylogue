@@ -227,8 +227,10 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
 | `devtools workspace index-fast-forward` | Apply a declared clone-first index.db fast-forward with receipts and rollback. |
 | `devtools workspace index-v37-fast-forward` | Clone-forward index v36 to v37 by retiring derived caches without raw replay. |
+| `devtools workspace lane-brief` | Generate a dispatch brief for a bead lane with live footprint/prior-art evidence. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace mandate-continuity-replay` | Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact. |
+| `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |

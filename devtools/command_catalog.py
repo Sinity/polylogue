@@ -618,6 +618,45 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace lane-brief",
+        "workspace",
+        "Generate a dispatch brief for a bead lane with live footprint/prior-art evidence.",
+        "devtools.lane_brief",
+        use_when=(
+            "Before dispatching a batch of bead ids as one lane/branch to a subagent, produce a "
+            "markdown brief carrying the full bead records plus LIVE evidence: every file path "
+            "mentioned in the bead text is checked against the working tree (exists? line count? "
+            "last 3 commits?) so a dispatcher does not hand a subagent stale bead prose, and closed "
+            "beads mentioning the same paths are surfaced as prior art. Sections the tool cannot "
+            "fill (measured baseline, non-goals) are emitted as explicit placeholders, never "
+            "silently dropped."
+        ),
+        examples=(
+            "devtools workspace lane-brief polylogue-abc polylogue-def",
+            "devtools workspace lane-brief polylogue-ei94 --out .agent/scratch/lane-ei94.md",
+        ),
+    ),
+    CommandSpec(
+        "workspace merge-conductor",
+        "workspace",
+        "Mechanical-conflict triage for the PR merge train (dry-run by default).",
+        "devtools.merge_conductor",
+        use_when=(
+            "Before or during a merge train, classify each roster PR's conflicting/modified files "
+            "into AUTO-RESOLVABLE mechanical classes (.beads/issues.jsonl take-master, regenerable "
+            "surfaces) vs ESCALATE classes (schema migrations, hooks config, anything else) and "
+            "detect cross-PR contention (two PRs claiming the same migration slot or generated-"
+            "surface family). Implements the mechanical slice of the polylogue-ei94 merge-conductor "
+            "design. --execute only touches AUTO-RESOLVABLE PRs, in a scratch worktree, and aborts "
+            "back to ESCALATE on any deviation; escalate-class PRs are never touched under --execute."
+        ),
+        examples=(
+            "devtools workspace merge-conductor --pr 3301 --pr 3302",
+            "devtools workspace merge-conductor --pr 3301 --json",
+            "devtools workspace merge-conductor --pr 3301 --execute",
+        ),
+    ),
+    CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
         "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",
