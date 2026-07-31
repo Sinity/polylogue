@@ -85,7 +85,27 @@ def run_correlation_view(
     if output_format == "json":
         from polylogue.insights.session_commit import correlation_result_to_payload
 
-        env.ui.console.print(json.dumps(correlation_result_to_payload(result), indent=2))
+        payload = correlation_result_to_payload(result)
+        # polylogue-cijx.3 AC3: session_commits (the parser-reported repo
+        # checkout HEAD at session capture) was a write-only table with no
+        # reader anywhere. Surface it as a distinct field, clearly separate
+        # from `commits` (detect_session_commits' scored/heuristic list
+        # above), matching the same field added to the HTTP correlation
+        # surface (api/archive.py::session_correlation_payload).
+        checkout_commits = run_coroutine_sync(env.polylogue.repository.get_session_commits(session_id))
+        payload["checkout_commits"] = [
+            {
+                "commit_sha": record.commit_sha,
+                "short_sha": record.commit_sha[:8],
+                "repo_id": record.repo_id,
+                "detection_type": record.detection_type,
+                "method": record.method,
+                "confidence": record.confidence,
+                "evidence": record.evidence,
+            }
+            for record in checkout_commits
+        ]
+        env.ui.console.print(json.dumps(payload, indent=2))
         return
 
     _print_correlation_result(env, result)

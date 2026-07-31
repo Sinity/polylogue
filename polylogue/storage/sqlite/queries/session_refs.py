@@ -10,7 +10,6 @@ issue-tracker reference. Follows the same shape as
 
 from __future__ import annotations
 
-import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -22,7 +21,6 @@ from polylogue.storage.sqlite.queries.mappers import _row_to_session_ref
 __all__ = [
     "get_session_refs",
     "get_session_refs_batch",
-    "sync_get_session_refs",
 ]
 
 _SELECT_COLUMNS = "ref_id, session_id, position, kind, repo, ref_number, url, observed_at_ms"
@@ -73,18 +71,3 @@ async def get_session_refs_batch(
         record = _row_to_session_ref(row)
         result[str(record.session_id)].append(record)
     return dict(result)
-
-
-def sync_get_session_refs(conn: sqlite3.Connection, session_id: str) -> list[SessionRefRecord]:
-    """Sync sibling of :func:`get_session_refs`."""
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        f"""
-        SELECT {_SELECT_COLUMNS}
-        FROM session_refs
-        WHERE session_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return [_row_to_session_ref(row) for row in rows]

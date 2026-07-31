@@ -271,3 +271,233 @@ async def test_get_projection_events_surfaces_session_timeline_evidence(
             )
         )
     assert missing["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_get_projection_file_edits_surfaces_structured_patch_evidence(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """``get(ref, projection="file-edits")`` reaches the ``file_edits`` table
+    (polylogue-nua7/polylogue-cgfy): structured unified diffs, pre-edit file
+    content, and old/new string pairs captured on Edit/Write tool calls, but
+    unreachable from any surface before this projection existed -- the exact
+    "what did this session change" evidence a postmortem report needs.
+    """
+    from polylogue.core.enums import BlockType, Provider, Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit, ParsedMessage, ParsedSession
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive_db:
+        parsed = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="mcp-file-edits-ref",
+            title="MCP file-edits projection",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    position=0,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Edit",
+                            tool_id="edit-tool-1",
+                            tool_input={"file_path": "/tmp/foo.py"},
+                        ),
+                    ],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.USER,
+                    position=1,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            tool_id="edit-tool-1",
+                            text="applied",
+                            file_edit=ParsedFileEdit(
+                                file_path="/tmp/foo.py",
+                                structured_patch=[
+                                    {"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}
+                                ],
+                                original_file="old contents\n",
+                                old_string="old",
+                                new_string="new",
+                                replace_all=False,
+                                user_modified=True,
+                            ),
+                        ),
+                    ],
+                ),
+            ],
+        )
+        archive_db.write_raw_and_parsed(
+            parsed,
+            payload=b'{"raw": "claude payload"}',
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+    uri = "polylogue://session/claude-code-session:mcp-file-edits-ref"
+    from polylogue import Polylogue
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        payload = json.loads(
+            await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri, projection="file-edits")
+        )
+        default_payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
+
+    assert payload["total"] == 1
+    edit = payload["file_edits"][0]
+    assert edit["file_path"] == "/tmp/foo.py"
+    assert edit["original_file"] == "old contents\n"
+    assert edit["old_string"] == "old"
+    assert edit["new_string"] == "new"
+    assert edit["structured_patch"] == [{"oldStart": 1, "oldLines": 1, "newStart": 1, "newLines": 2, "lines": ["+x"]}]
+    assert "file_edits" not in default_payload
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        missing = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["get"].fn,
+                ref="polylogue://session/claude-code-session:does-not-exist",
+                projection="file-edits",
+            )
+        )
+    assert missing["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_get_projection_agent_policies_surfaces_sandbox_facts(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """``get(ref, projection="agent-policies")`` reaches the dedicated
+    ``session_agent_policies`` table (polylogue-nua7) -- Codex sandbox/
+    approval/network policy facts the writer diverts out of
+    ``session_events`` for zero-loss re-derivation, but which had zero
+    surface consumers before this projection.
+    """
+    from polylogue.core.enums import BlockType, Provider, Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive_db:
+        parsed = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="mcp-agent-policies-ref",
+            title="MCP agent-policies projection",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="run it",
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run it")],
+                ),
+            ],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="agent_policy",
+                    timestamp="2026-01-01T00:00:01+00:00",
+                    payload={
+                        "approval_policy": "never",
+                        "sandbox_policy": "danger-full-access",
+                        "network_policy": "true",
+                    },
+                ),
+            ],
+        )
+        archive_db.write_raw_and_parsed(
+            parsed,
+            payload=b'{"raw": "codex payload"}',
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+    uri = "polylogue://session/codex-session:mcp-agent-policies-ref"
+    from polylogue import Polylogue
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        payload = json.loads(
+            await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri, projection="agent-policies")
+        )
+        default_payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
+
+    assert payload["total"] == 1
+    policy = payload["agent_policies"][0]
+    assert policy["approval_policy"] == "never"
+    assert policy["sandbox_policy"] == "danger-full-access"
+    assert policy["network_policy"] == "true"
+    assert "agent_policies" not in default_payload
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        missing = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["get"].fn,
+                ref="polylogue://session/codex-session:does-not-exist",
+                projection="agent-policies",
+            )
+        )
+    assert missing["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_get_default_projection_surfaces_display_name_when_title_absent(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """``get(ref)`` (no projection) reaches ``sessions.display_name``
+    (polylogue-cgfy): a session with no title-worthy sidecar evidence (the
+    common Claude Code subagent case) now surfaces its provider-assigned
+    slug as the title instead of a raw session id -- read through the real
+    ``ArchiveStore``-backed summary path (``_resolve_session_object_ref`` ->
+    ``_archive_summary_to_domain`` -> ``SessionSummaryPayload``), not the
+    storage row in isolation.
+    """
+    from polylogue.core.enums import BlockType, Provider, Role
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root) as archive_db:
+        parsed = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="mcp-slug-only-ref",
+            title=None,
+            display_name="greedy-squishing-hamming",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                ),
+            ],
+        )
+        archive_db.write_raw_and_parsed(
+            parsed,
+            payload=b'{"raw": "claude payload"}',
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+    uri = "polylogue://session/claude-code-session:mcp-slug-only-ref"
+    from polylogue import Polylogue
+
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=archive_root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
+
+    assert payload["title"] == "greedy-squishing-hamming"

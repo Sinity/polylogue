@@ -40,12 +40,36 @@ def _block_metadata_evidence_events(messages: list[ParsedMessage]) -> list[Parse
     return events
 
 
+#: Gemini CLI's own "kind" enum for a chat/session checkpoint (present on
+#: both wire shapes below).
+_GEMINI_CLI_KIND_VALUES = frozenset({"chat", "main", "subagent"})
+
+
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
-    return (
-        isinstance(payload.get("sessionId"), str)
-        and isinstance(payload.get("messages"), list)
-        and ("startTime" in payload or "lastUpdated" in payload or payload.get("kind") in {"chat", "main", "subagent"})
-    )
+    """Detect a Gemini CLI checkpoint document in either of its two shapes.
+
+    The common "one JSON object per session, ``messages`` embedded" shape
+    (``sessionId`` + a ``messages`` list + ``startTime``/``lastUpdated``/
+    ``kind``) is the original detector. Gemini CLI also has a genuinely
+    different on-disk shape for its ``.jsonl`` chat-log checkpoints: a
+    session-*open* stub record (``sessionId`` + ``projectHash`` + ``kind``,
+    written the instant a session starts, before any turn exists) followed
+    by one JSON object per turn/event on subsequent lines -- the stub itself
+    carries no ``messages`` key at all. Without a positive check for that
+    stub shape, its only strong-looking field is a bare ``sessionId``, which
+    also happens to be one of Claude Code's own
+    ``code_detection._STRONG_SESSION_KEYS`` -- so a freshly-opened Gemini CLI
+    session (no turns yet, or read mid-write) silently misclassified as
+    ``claude-code-session`` (polylogue-hs3y, 4 confirmed live archive rows
+    under ``~/.gemini/tmp/*/chats/*.jsonl``). ``projectHash`` is unique to
+    Gemini CLI's own checkpoint envelope, so requiring it alongside the
+    ``kind`` enum keeps this branch as tight as the ``messages``-bearing one.
+    """
+    if not isinstance(payload.get("sessionId"), str):
+        return False
+    if isinstance(payload.get("messages"), list):
+        return "startTime" in payload or "lastUpdated" in payload or payload.get("kind") in _GEMINI_CLI_KIND_VALUES
+    return isinstance(payload.get("projectHash"), str) and payload.get("kind") in _GEMINI_CLI_KIND_VALUES
 
 
 def looks_like_hermes(payload: JSONDocument) -> bool:

@@ -1221,7 +1221,7 @@ class TestBooleanQueryExpression:
             parse_unit_source_expression(f"{source} where {descriptor.fields[0].example} | count")
 
     def test_pipeline_rejects_aggregate_sort_before_count(self) -> None:
-        with pytest.raises(ExpressionCompileError, match="require an aggregate `count` stage"):
+        with pytest.raises(ExpressionCompileError, match="requires an aggregate `count` stage"):
             parse_unit_source_expression("messages where role:assistant | group by role | sort by count desc")
 
     def test_pipeline_rejects_aggregate_sort_after_limit(self) -> None:

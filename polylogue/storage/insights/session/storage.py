@@ -98,6 +98,10 @@ _SESSION_PROFILE_BASE_COLUMNS = (
     "per_model_cost_json",
     "primary_model_name",
     "primary_model_family",
+    "cost_usd",
+    "cost_credits",
+    "priced_with",
+    "priced_at_ms",
 )
 _SESSION_PROFILE_PAYLOAD_COLUMNS = (
     "evidence_payload_json",
@@ -341,6 +345,10 @@ def session_profile_insert_values(
         record.per_model_cost_json,
         record.primary_model_name,
         record.primary_model_family,
+        record.cost_usd,
+        record.cost_credits,
+        record.priced_with,
+        record.priced_at_ms,
     ]
     payload_values: tuple[SqlValue, ...] = (
         _json_or_none(record.evidence_payload),

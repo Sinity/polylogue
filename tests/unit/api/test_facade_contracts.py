@@ -85,6 +85,8 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "resume_brief",
         "get_hook_event_summary_for_session",
         "get_session_events",
+        "get_file_edits",
+        "get_agent_policies",
     }
 )
 
@@ -139,6 +141,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_usage_timeline_insights",
         "list_archive_debt_insights",
         "provider_usage_report",
+        "session_usage_reconciliation",
         "count_sessions",
         "rebuild_index",
         "get_index_status",
@@ -275,6 +278,12 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "compare_sessions",
         "find_similar_sessions_by_metadata",
         "correlate_sessions",
+        # Comparative judgment storage (rxdo.9.6/.9.7/.9.11/.9.12), wired
+        # into the real `polylogue compare` CLI command (tests/unit/cli/
+        # test_compare_command.py) and the finding-controls read path
+        # (test_resolve_ref_renders_finding_claim_with_controls above).
+        "record_comparative_judgment",
+        "list_comparative_judgments",
     }
 )
 
@@ -744,6 +753,37 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
     assert result.total_messages == 2
     assert result.origins == {"claude-ai-export": 1}
     assert result.tags == {"work": 1}
+
+
+async def test_archive_facet_buckets_include_deferred_default_populates_sql_families(tmp_path: Path) -> None:
+    """``_archive_facet_buckets``'s shipped default (``include_deferred=True``)
+    must actually run the SQL facet-family aggregation (polylogue-f5tq).
+
+    The only prior test of this helper passed a ``SimpleNamespace`` with
+    ``_conn=None`` and ``include_deferred=False`` -- it could not exercise the
+    default path at all: passing ``True`` against that stub would crash
+    dereferencing a ``None`` connection. This test drives the real default
+    against a real ``ArchiveStore`` connection and asserts the SQL-derived
+    families (role_counts / message_types) are populated, not the hard-coded
+    empty dicts the ``include_deferred=False`` branch returns.
+    """
+    from polylogue.api.archive import _archive_facet_buckets
+
+    db_path = tmp_path / "index.db"
+    await _seed_two_sessions(db_path)
+
+    with ArchiveStore(tmp_path) as archive:
+        result = _archive_facet_buckets(archive, None, include_deferred=True)
+
+    assert result.total_sessions == 2
+    assert result.total_messages == 3
+    # The SQL-aggregated families below are exactly what the
+    # ``include_deferred=False`` branch hard-codes to ``{}`` -- a passing
+    # test against that branch cannot tell them apart from a broken default.
+    assert result.role_counts, "role_counts must be populated by the shipped default, not left empty"
+    assert result.role_counts.get("user") == 2
+    assert result.role_counts.get("assistant") == 1
+    assert result.message_types, "message_types must be populated by the shipped default"
 
 
 # ---------------------------------------------------------------------------
@@ -1794,7 +1834,7 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
             )
         )
     try:
-        messages, total = await archive.get_messages_paginated(
+        messages, total, _completeness = await archive.get_messages_paginated(
             session_id,
             content_projection=ContentProjectionSpec.prose_only(),
         )
@@ -1840,7 +1880,7 @@ async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tm
             )
         )
     try:
-        messages, total = await archive.get_messages_paginated(session_id, limit=10)
+        messages, total, _completeness = await archive.get_messages_paginated(session_id, limit=10)
     finally:
         await archive.close()
 
@@ -1880,11 +1920,11 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
             )
         )
     try:
-        role_messages, role_total = await archive.get_messages_paginated(
+        role_messages, role_total, _role_completeness = await archive.get_messages_paginated(
             session_id,
             message_role=(Role.USER,),
         )
-        authored_messages, authored_total = await archive.get_messages_paginated(
+        authored_messages, authored_total, authored_completeness = await archive.get_messages_paginated(
             session_id,
             material_origin=(MaterialOrigin.HUMAN_AUTHORED,),
         )
@@ -1895,6 +1935,60 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
     assert [str(message.id).rsplit(":", 1)[-1] for message in role_messages] == ["protocol-user", "authored-user"]
     assert authored_total == 1
     assert str(authored_messages[0].id).endswith(":authored-user")
+    # polylogue-ppkj: the material_origin branch computes completeness via a
+    # dedicated probe (repository.get_lineage_completeness) rather than
+    # silently claiming complete=True -- this session has no lineage, so it
+    # is trivially complete, but the probe must actually run.
+    assert authored_completeness.complete is True
+
+
+async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Path) -> None:
+    """polylogue-cijx.3 AC3: session_commits (the parser-reported repo
+    checkout HEAD at session capture, written by write_parsed_session_to_archive
+    whenever ParsedSession.git_commit_hash is set) was a write-only table --
+    zero readers anywhere. session_correlation_payload (the HTTP
+    GET /api/sessions/:id/correlate surface, daemon/http.py) must now surface
+    it as `checkout_commits`, distinct from the on-demand `commits` list."""
+
+    archive = _archive(tmp_path)
+    with ArchiveStore(tmp_path) as archive_db:
+        session_id = archive_db.write_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="checkout-commit-session",
+                title="Checkout commit session",
+                created_at="2026-05-28T20:26:40Z",
+                updated_at="2026-05-28T20:26:40Z",
+                git_repository_url="https://github.com/example/repo",
+                git_commit_hash="deadbeefcafe0001",
+                git_branch="main",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hello",
+                    )
+                ],
+            )
+        )
+    try:
+        # No github_api toggle on this facade method -- it never shells to
+        # `gh`, only `git log` against repo_path, which fails harmlessly
+        # against the nonexistent repo path in this fixture.
+        payload = await archive.session_correlation_payload(session_id)
+    finally:
+        await archive.close()
+
+    assert payload is not None
+    checkout_commits = cast("list[dict[str, object]]", payload["checkout_commits"])
+    assert len(checkout_commits) == 1
+    assert checkout_commits[0]["commit_sha"] == "deadbeefcafe0001"
+    assert checkout_commits[0]["detection_type"] == "explicit_ref"
+    assert checkout_commits[0]["method"] == "parser-git-meta"
+    assert checkout_commits[0]["confidence"] == 1.0
+    # Distinct from the on-demand heuristic `commits` list.
+    assert "commits" in payload
+    assert checkout_commits != payload["commits"]
 
 
 # ---------------------------------------------------------------------------
@@ -2938,6 +3032,106 @@ async def test_resolve_ref_returns_finding_provenance_payload(tmp_path: Path) ->
         await archive.close()
 
 
+async def test_resolve_ref_renders_finding_claim_with_controls(tmp_path: Path) -> None:
+    """polylogue-rxdo.9.7: a finding with declared negative controls renders claim-vs-control.
+
+    Before this, ``ClaimWithControls`` (rxdo.9.7, mutation-tested) had zero
+    callers outside its own unit tests. This is the real production route:
+    a finding written through the real storage writer, resolved through the
+    real ``Polylogue.resolve_ref`` facade.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, upsert_findings_as_assertions
+
+    archive = _archive(tmp_path)
+    try:
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="controlled-claim",
+                        target_ref="query:controlled-claim-v1",
+                        body_text="A claim backed by a passing negative control.",
+                        finding_kind="measure",
+                        statistic={"op": "rate", "value": 0.18, "unit": "fraction"},
+                        n=200,
+                        query_ref="query:controlled-claim-v1",
+                        result_set_ref="result-set:controlled-claim-run",
+                        detector_ref="agent:controls-detector",
+                        controls=(
+                            {
+                                "control_kind": "shifted_window",
+                                "query_ref": "query:controlled-claim-control",
+                                "result_ref": "result-set:controlled-claim-control",
+                                "matching_variables": ["repo"],
+                                "expected_null": "no rate change outside the treatment window",
+                                "observed_null_held": True,
+                            },
+                        ),
+                        control_frame_variables=("repo",),
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        assertion_id = envelopes[0].assertion_id
+
+        passing = await archive.resolve_ref(f"finding:{assertion_id}")
+        assert passing.payload is not None
+        assert passing.payload["rank_tier"] == "controlled_pass"
+        assert passing.payload["downgraded"] is False
+        assert passing.payload["controls"][0]["observed_null_held"] is True
+        # The control's own query/result refs are ad-hoc (not backed by real
+        # archived query/result-set rows), so staleness caveats independently
+        # about evidence resolvability are expected here; the assertion of
+        # interest is that no *downgrade* caveat is added for a passing control.
+        assert not any("downgraded" in caveat for caveat in passing.caveats)
+
+        with sqlite3.connect(user_db) as conn:
+            failing_envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="downgraded-claim",
+                        target_ref="query:downgraded-claim-v1",
+                        body_text="A claim whose negative control failed.",
+                        finding_kind="measure",
+                        statistic={"op": "rate", "value": 0.18, "unit": "fraction"},
+                        n=200,
+                        query_ref="query:downgraded-claim-v1",
+                        result_set_ref="result-set:downgraded-claim-run",
+                        detector_ref="agent:controls-detector",
+                        controls=(
+                            {
+                                "control_kind": "shifted_window",
+                                "query_ref": "query:downgraded-claim-control",
+                                "result_ref": "result-set:downgraded-claim-control",
+                                "matching_variables": ["repo"],
+                                "expected_null": "no rate change outside the treatment window",
+                                "observed_null_held": False,
+                            },
+                        ),
+                        control_frame_variables=("repo",),
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        failing_assertion_id = failing_envelopes[0].assertion_id
+
+        downgraded = await archive.resolve_ref(f"finding:{failing_assertion_id}")
+        assert downgraded.payload is not None
+        assert downgraded.payload["rank_tier"] == "controlled_fail"
+        assert downgraded.payload["downgraded"] is True
+        assert any("downgraded" in caveat for caveat in downgraded.caveats)
+    finally:
+        await archive.close()
+
+
 def _delegation_parent_session(*, provider_session_id: str, with_dispatch: bool) -> ParsedSession:
     """Ingest-shaped parent fixture: writes real session/message/block rows
     through the live archive writer (``ArchiveStore.write_parsed`` ->
@@ -3556,7 +3750,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             origin="codex-session",
             limit=3,
         )
-        paged_messages, total_messages = await archive.get_messages_paginated(
+        paged_messages, total_messages, _paged_completeness = await archive.get_messages_paginated(
             "codex-session:api-v1",
             message_role=(Role.USER,),
             message_type="tool_use",

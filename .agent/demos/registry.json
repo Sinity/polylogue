@@ -23,6 +23,17 @@
     ]
   },
   {
+    "slug": "d1-receipts",
+    "prompt_path": ".agent/demos/d1-receipts/PROMPT.md",
+    "packet_dir": ".agent/demos/d1-receipts",
+    "mode": "private",
+    "required_primitives": [
+      "session_refs",
+      "polylogue find",
+      "polylogue read --view correlation"
+    ]
+  },
+  {
     "slug": "anti-demo-multi-source-reconstruction",
     "prompt_path": ".agent/demos/anti-demo-multi-source-reconstruction/PROMPT.md",
     "packet_dir": ".agent/demos/anti-demo-multi-source-reconstruction",

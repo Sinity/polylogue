@@ -24,6 +24,7 @@ from polylogue.core.payload_coercion import (
     optional_date,
     optional_datetime,
     optional_string,
+    row_float,
     string_int_mapping,
     string_sequence,
 )
@@ -179,6 +180,17 @@ class SessionProfile:
     primary_model_name: str | None = None
     primary_model_family: str | None = None
 
+    # polylogue-f2qv.6: a strictly-nullable, catalog-priced session snapshot,
+    # distinct from total_cost_usd/total_credit_cost above (which default to
+    # 0.0/"unknown" so every profile always carries a summary number).
+    # cost_usd/cost_credits/priced_with stay None when no model in this
+    # session was ever catalog-priced (no fabricated $0.00) -- the same "no
+    # fabrication" contract session_model_usage.cost_usd already honors per
+    # model (write.py:_aggregate_message_tokens_into_model_usage).
+    cost_usd: float | None = None
+    cost_credits: float | None = None
+    priced_with: str | None = None
+
     def __post_init__(self) -> None:
         if not isinstance(self.latency_percentiles_ms, dict):
             object.__setattr__(self, "latency_percentiles_ms", dict(self.latency_percentiles_ms or {}))
@@ -252,6 +264,9 @@ class SessionProfile:
             "per_model_cost_json": self.per_model_cost_json,
             "primary_model_name": self.primary_model_name,
             "primary_model_family": self.primary_model_family,
+            "cost_usd": self.cost_usd,
+            "cost_credits": self.cost_credits,
+            "priced_with": self.priced_with,
         }
 
     @classmethod
@@ -339,6 +354,9 @@ class SessionProfile:
             per_model_cost_json=optional_string(payload.get("per_model_cost_json")) or "{}",
             primary_model_name=optional_string(payload.get("primary_model_name")),
             primary_model_family=optional_string(payload.get("primary_model_family")),
+            cost_usd=row_float(payload.get("cost_usd")),
+            cost_credits=row_float(payload.get("cost_credits")),
+            priced_with=optional_string(payload.get("priced_with")),
         )
 
 

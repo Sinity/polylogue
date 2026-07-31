@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.readiness import ReadinessReport
+    from polylogue.storage.runtime import LineageCompleteness
     from polylogue.storage.search import SearchResult
     from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 
@@ -40,7 +41,7 @@ class SyncSessionQueriesMixin:
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[list[Message], int, LineageCompleteness]:
         return run_coroutine_sync(
             self._facade.get_messages_paginated(
                 session_id,

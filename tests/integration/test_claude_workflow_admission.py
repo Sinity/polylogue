@@ -37,6 +37,16 @@ ATTEMPT_COUNT = 91
 UNRELATED_COUNT = 38
 
 
+def _status_gap_count(status: dict[str, object]) -> int:
+    value = status["gap_count"]
+    return int(value) if isinstance(value, int | float) else 0
+
+
+def _status_gaps(status: dict[str, object]) -> list[str]:
+    value = status["gaps"]
+    return [str(gap) for gap in value] if isinstance(value, list) else []
+
+
 @pytest.mark.asyncio
 async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_rebuilds(
     workspace_env: dict[str, Path],
@@ -247,6 +257,91 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert degraded.metadata_sidecar_count == 90
     assert degraded.linked_session_count == 90
     assert any("missing paired agent metadata sidecar" in gap for gap in degraded.gaps)
+
+
+@pytest.mark.asyncio
+async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The claude_workflow convergence stage's gap count must reach doctor readiness.
+
+    Coverage/gap tracking for Claude Workflow artifacts was computed every
+    convergence pass but only ever logged (bd polylogue-uh9l /
+    polylogue-z9gh.6): ``polylogue doctor`` could report healthy while
+    materialization gaps existed. This drives the actual production callers —
+    ``ConvergenceStage.execute`` (``daemon/convergence_stages.py``, what the
+    daemon invokes every pass) and ``get_readiness`` (``readiness/__init__``,
+    what ``polylogue doctor`` reads) — rather than asserting against the
+    materializer's summary struct in isolation.
+
+    Anti-vacuity: removing the ``_record_claude_workflow_stage_event`` call
+    from ``execute()``, or removing the
+    ``_claude_workflow_materialization_check`` registration in
+    ``run_archive_readiness``, makes the degraded-report assertions below fail
+    (status stays SKIP / count stays 0 instead of surfacing the real gap).
+    """
+    from polylogue.config import Config
+    from polylogue.daemon.convergence_stages import make_claude_workflow_stage
+    from polylogue.readiness import VerifyStatus, get_readiness
+    from polylogue.storage.archive_readiness import claude_workflow_materialization_status
+
+    archive_root = workspace_env["archive_root"]
+    claude_root, run_path, first_meta_path = _write_fixture(workspace_env["data_root"] / ".claude")
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name=Provider.CLAUDE_CODE.value, path=claude_root)],
+    )
+    assert result.parse_failures == 0
+
+    stage = make_claude_workflow_stage(archive_root / "index.db")
+    assert stage.execute(run_path) is True
+
+    # The fixture bakes in one deliberately unresolved call (ATTEMPT_COUNT-1
+    # attempts are clean; see the module docstring / summary.unresolved_call_count
+    # in the sibling admission test), so the baseline is not gap-free -- assert
+    # against it rather than assuming zero.
+    baseline_status = claude_workflow_materialization_status(archive_root / "ops.db")
+    assert baseline_status is not None
+    baseline_gap_count = _status_gap_count(baseline_status)
+    baseline_gaps = _status_gaps(baseline_status)
+    assert "missing paired agent metadata sidecar" not in " ".join(baseline_gaps)
+
+    config = Config(archive_root=archive_root, render_root=archive_root, sources=[])
+    baseline_check = next(
+        check for check in get_readiness(config).checks if check.name == "claude_workflow_materialization"
+    )
+    assert baseline_check.count == baseline_gap_count
+    if baseline_gap_count == 0:
+        assert baseline_check.status == VerifyStatus.OK
+    else:
+        assert baseline_check.status == VerifyStatus.WARNING
+
+    # Representative source-loss mutation: delete one retained metadata member.
+    with sqlite3.connect(archive_root / "source.db") as source_conn:
+        source_conn.execute("PRAGMA foreign_keys = ON")
+        source_conn.execute("DELETE FROM raw_artifacts WHERE source_path = ?", (str(first_meta_path),))
+        source_conn.execute("DELETE FROM raw_sessions WHERE source_path = ?", (str(first_meta_path),))
+        source_conn.commit()
+
+    assert stage.execute(run_path) is True
+
+    degraded_status = claude_workflow_materialization_status(archive_root / "ops.db")
+    assert degraded_status is not None
+    assert degraded_status["status"] == "gaps"
+    degraded_gap_count = _status_gap_count(degraded_status)
+    degraded_gaps = _status_gaps(degraded_status)
+    assert degraded_gap_count > baseline_gap_count
+    assert any("missing paired agent metadata sidecar" in gap for gap in degraded_gaps)
+
+    degraded_check = next(
+        check for check in get_readiness(config).checks if check.name == "claude_workflow_materialization"
+    )
+    assert degraded_check.status == VerifyStatus.WARNING
+    assert degraded_check.count >= 1
+    assert any("missing paired agent metadata sidecar" in detail for detail in degraded_check.details)
 
 
 def _write_fixture(claude_root: Path) -> tuple[Path, Path, Path]:

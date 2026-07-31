@@ -93,7 +93,11 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
     ):
         env.ui.console.print(f"Wrote to {invocation.out_path}")
         return
-    updated = _request_for_standard_read(request, invocation).with_param_updates(output_format=fmt)
+    updated = (
+        _request_for_standard_read(request, invocation)
+        .with_param_updates(output_format=fmt)
+        .with_param_updates(view=invocation.view)
+    )
     if invocation.destination in ("stdout", "terminal"):
         execute_query_request(env, updated)
     elif invocation.destination == "clipboard":

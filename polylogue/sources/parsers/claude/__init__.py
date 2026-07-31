@@ -27,7 +27,7 @@ from .index import (
     find_sessions_index,
     parse_sessions_index,
 )
-from .orchestration import inventory_claude_orchestration_artifacts, parse_claude_orchestration_artifact
+from .orchestration import parse_claude_orchestration_artifact
 
 
 def looks_like_ai(payload: object) -> bool:
@@ -65,7 +65,6 @@ __all__ = [
     "looks_like_claude_memories",
     "looks_like_code",
     "normalize_timestamp",
-    "inventory_claude_orchestration_artifacts",
     "parse",
     "parse_ai",
     "parse_code",

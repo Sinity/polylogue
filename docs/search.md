@@ -38,6 +38,9 @@ through the same typed AST and query planner:
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
 projection-query   ::= (compact-query | boolean-query) "with" projection-list
+projection-list    ::= projection-item ("," projection-item)*
+projection-item    ::= unit ["(" field ("," field)* ")"] ["[" bracket-clause ("," bracket-clause)* "]"]
+bracket-clause     ::= field ":" value | ("first" | "last") ":" integer
 unit-query         ::= ("messages" | "actions" | "blocks" | "files" | "assertions" | "runs" | "observed-events" | "context-snapshots" | "delegations") "where" predicate
 pipeline-query     ::= unit-query ("|" pipeline-stage)+
                      | "sessions" "where" predicate "|" unit-query ("|" pipeline-stage)*
@@ -65,11 +68,15 @@ sequence-step      ::= action-field-clause ("AND" action-field-clause)*
 action-field-clause ::= "action:" value | "tool:" value | "command:" value
                       | "path:" value | "output:" value | "text:" value
 pipeline-stage     ::= "sort" "by" "time" ["asc" | "desc"]
-                     | "group" "by" field
+                     | "group" "by" field ["," field]*
                      | "count"
+                     | "agg" agg-metric ["," agg-metric]*
                      | "sort" "by" ("count" | "key") ["asc" | "desc"]
                      | "limit" integer
                      | "offset" integer
+
+agg-metric         ::= "count"
+                     | ("sum" | "avg" | "min" | "max" | "p" digit+) ":" field
 ```
 
 <!-- BEGIN GENERATED: query-discovery -->
@@ -120,8 +127,8 @@ Featured parser-gated examples:
 | `exhaustive` | `files` | `files where session.repo:example-repo AND path:src/mcp/server.py` | Returns file evidence for one path within one repository. | `unit, session_id, origin, title, path, action_count, first_message_id, first_tool_use_block_id, last_tool_use_block_id, first_seen_ms, last_seen_ms` | `selective` |
 | `exhaustive` | `assertions` | `assertions where kind:decision AND text:"schema migration"` | Returns decision assertions about a named topic. | `unit, assertion_id, target_ref, scope_ref, kind, key, body_text, value, author_ref, author_kind, status, visibility, evidence_refs, staleness, context_policy, created_at_ms, updated_at_ms` | `corpus-scale` |
 | `exhaustive` | `messages` | `sessions where repo:example-repo AND origin:unknown-export \| messages where role:assistant` | Returns assistant messages scoped to repository sessions from one origin. | `unit, message_id, session_id, origin, title, role, message_type, material_origin, occurred_at_ms, position, word_count, text` | `selective` |
-| `aggregate` | `messages` | `messages where text:timeout \| group by role \| count` | Counts timeout-matching messages by role. | `unit, group_by, group_key, count` | `corpus-scale` |
-| `aggregate` | `actions` | `actions where is_error:true \| group by tool \| count` | Counts error-marked actions by tool. | `unit, group_by, group_key, count` | `corpus-scale` |
+| `aggregate` | `messages` | `messages where text:timeout \| group by role \| count` | Counts timeout-matching messages by role. | `unit, group_by, group_key, count, metrics` | `corpus-scale` |
+| `aggregate` | `actions` | `actions where is_error:true \| group by tool \| count` | Counts error-marked actions by tool. | `unit, group_by, group_key, count, metrics` | `corpus-scale` |
 | `bounded-context` | `sessions` | `repo:example-repo with messages(message_id,role,text)` | Builds bounded session orientation with selected message columns. | `session_id, message_id, role, text` | `selective` |
 | `bounded-context` | `sessions` | `sessions where title:"query compiler" with messages(message_id,role), actions(tool_name,semantic_type), files(path)` | Builds bounded mixed evidence for sessions whose title mentions the query compiler. | `session_id, message_id, role, tool_name, semantic_type, path` | `selective` |
 | `recursive-page` | `sessions` | `lineage:id:example-origin:session-child` | Seeds a recursive lineage walk from one session. | `session_id, parent_refs, child_refs, continuation` | `selective` |
@@ -146,10 +153,45 @@ session Boolean lowerers against the terminal row's owning session. Semantic
 vector predicates still reject in a session pipeline stage until terminal row
 queries have explicit ranked-result semantics. Terminal pipeline stages
 currently support `sort by time [asc|desc]`,
-`group by FIELD | count`, aggregate `sort by count|key [asc|desc]`, `limit N`,
+`group by FIELD[,FIELD...] | count`, `group by FIELD[,FIELD...] | agg METRIC[,METRIC...]`,
+aggregate `sort by count|key [asc|desc]`, `limit N`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
+
+### Named aggregate metrics (`| agg ...`)
+
+`| agg ...` extends the `count`-only aggregate rollup with named,
+per-group reducer metrics (polylogue-fnm.1). It follows an optional
+`group by` stage (or reduces the whole matched row set with no `group by`)
+and precedes `limit`/`offset`:
+
+```bash
+polylogue --format json messages where session.repo:polylogue | group by role | agg count, avg:word_count, p90:word_count
+polylogue --format json actions where session.repo:polylogue | group by tool | agg count, avg:is_error, sum:is_error
+```
+
+Each metric is `count` (field-less) or `FN:FIELD`, where `FN` is `sum`,
+`avg`, `min`, `max`, or a nearest-rank percentile `pNN` (`p1`..`p99`), and
+`FIELD` is one of the unit's declared numeric metric fields (`message`:
+`word_count`; `action`: `is_error`, `exit_code`). An unsupported function or
+field raises a typed error naming the unit, the metric, and the supported
+field set. Metric labels are stable output keys: `count` for the count
+metric, otherwise `f"{fn}_{field}"` (e.g. `avg_word_count`).
+
+`avg`/`sum`/`min`/`max`/percentile reducers are **not** pushed down to SQL
+today — the `count`-only aggregate lowerer (`ArchiveStore.query_unit_counts`)
+computes exact grouped counts directly in SQL, but named-metric reduction
+fetches up to 50,000 predicate-matching rows through the unit's existing
+row query and reduces them in Python. The pipeline result payload reports
+this explicitly: `result.exact` is `true` when every matching row was
+fetched (the aggregate is exact), or `false` plus `result.sampled_rows` when
+the match set was larger than the cap (the aggregate is a bounded sample of
+the first 50,000 rows in time order, not the full population). Narrow the
+query with session/time/repo filters before trusting an `agg` result on a
+large archive; a `count`-only `| group by ... | count` stage stays exact at
+any scale because it is fully SQL-pushed.
+
 `runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed terminal rows
 over source-derived archive relations (polylogue-dab): main runs,
 `session_started` events, tool-finished events, and session-start context
@@ -177,6 +219,48 @@ Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as
 `messages where` are errors when malformed; they are not treated as ordinary
 text terms.
+
+### Bracket predicates/windows on attached units (`with unit[...]`)
+
+The `with <units>` projection clause (session-selecting queries, not
+terminal pipelines) accepts an optional bracket after each unit item,
+narrowing what gets attached to every selected session (polylogue-fnm.2):
+
+```bash
+polylogue --format json 'repo:polylogue with messages[role:user, last:20]'
+polylogue --format json 'repo:polylogue with actions[tool:Bash, first:5]'
+polylogue --format json 'repo:polylogue with messages(message_id,role,text)[role:user, last:10]'
+```
+
+A bracket is a comma-separated list of `field:value` equality predicates
+and/or a single `first:N`/`last:N` window, combinable with the existing
+`unit(field, field)` payload-field selector in either order. Bracket
+predicate fields are a small, explicit vocabulary per unit — the fields
+already present on that unit's attached row payload, not the full
+`<unit> where ...` structural predicate field set:
+
+| Unit | Bracket predicate fields |
+|------|---------------------------|
+| `message` | `role`, `type` |
+| `action` | `tool`, `action`, `type`, `is_error`, `exit_code`, `followup_class` |
+| `file` | `path` |
+| `assertion` | `kind`, `status`, `visibility`, `author_kind` |
+
+An unsupported bracket field or malformed clause raises a typed error naming
+the unit, the field, and the supported set. `first:N`/`last:N` trims each
+session's attached rows to the first/last *N* after predicates are applied,
+by fetch order — `last:N` fetches that unit in descending time order (then
+restores ascending order) precisely so the per-session/per-page row cap
+lands on the session's actual tail instead of silently landing on its head
+whenever a session has more matching rows than the cap.
+
+Bracket predicates/windows apply to the already-fetched, capped attached-row
+set (`attached_units.py`'s existing `_MAX_ROWS_PER_SESSION`/
+`_MAX_ROWS_PER_PAGE` caps) — they are not pushed down to the SQL fetch
+itself. A predicate combined with `last:N` on a session whose *matching*
+rows are sparser than the fetch cap can still under-fetch; this is the same
+bounded-fetch tradeoff every other post-fetch filter on this path already
+has, not a window-specific gap.
 
 ### DSL Fields
 

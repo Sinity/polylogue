@@ -76,6 +76,13 @@ class SessionProfileRecord(BaseModel):
     per_model_cost_json: str = "{}"
     primary_model_name: str | None = None
     primary_model_family: str | None = None
+    # polylogue-f2qv.6: strictly-nullable catalog-priced snapshot, distinct
+    # from total_cost_usd/total_credit_cost above -- see SessionProfile's
+    # matching fields for the "no fabrication" contract.
+    cost_usd: float | None = None
+    cost_credits: float | None = None
+    priced_with: str | None = None
+    priced_at_ms: int | None = None
     evidence_payload: SessionEvidencePayload
     inference_payload: SessionInferencePayload
     search_text: str

@@ -338,6 +338,49 @@ class SessionRefRecord(BaseModel):
         return v
 
 
+class SessionCommitRecord(BaseModel):
+    """One ``session_commits`` row (polylogue-cijx.3): the repo checkout's
+    HEAD commit at the moment this session was captured, as the provider's
+    own runtime metadata reports it (``detection_type='explicit_ref'``,
+    ``method='parser-git-meta'``, ``confidence=1.0`` -- the writer's sole
+    populator, ``archive_tiers/write.py``, only inserts a row when the
+    parser reported ``session.git_commit_hash``).
+
+    This is a narrow, honest fact -- "what commit was checked out when the
+    session began" -- NOT a claim that the session produced or is
+    associated with this commit as work output. That broader, on-demand
+    correlation (time-window/file-overlap scoring, or a Claude-Session git
+    trailer match) is a distinct mechanism: see
+    ``insights.session_commit.detect_session_commits`` and
+    ``build_correlation_result``.
+    """
+
+    session_id: SessionId
+    commit_sha: str
+    repo_id: str | None = None
+    detection_type: str
+    method: str | None = None
+    confidence: float
+    evidence: JSONObject = Field(default_factory=dict)
+    created_at_ms: int
+
+    @field_validator("session_id", "commit_sha", "detection_type")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def _parse_evidence(cls, v: object) -> object:
+        if isinstance(v, str):
+            import json
+
+            return json.loads(v) if v else {}
+        return v
+
+
 class SessionEventRecord(BaseModel):
     event_id: SessionEventId
     session_id: SessionId

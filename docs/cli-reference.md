@@ -205,6 +205,7 @@ Commands:
   Other commands:
     agent        Install executable agent guidance.
     annotations  Import typed annotation batches.
+    compare      Blind pairwise comparative judgment and calibration.
 ```
 
 ## Analyze Verb
@@ -297,9 +298,9 @@ Usage: polylogue read [OPTIONS] [REF]
 Projection:
   -v, --view VIEW[,VIEW...]       What to render (summary, transcript,
                                   dialogue, messages, raw, hooks, events,
-                                  context, context-image, neighbors,
-                                  correlation, temporal, chronicle).
-                                  [default: summary]
+                                  file-edits, agent-policies, context,
+                                  context-image, neighbors, correlation,
+                                  temporal, chronicle).  [default: summary]
   --render TEXT                   Render expression, e.g. layout:context-
                                   image,timestamps:include-
                                   available,format:markdown. Known keys:

@@ -12,8 +12,8 @@ payload model are both resolved from the query-unit descriptor registry
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, cast
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.archive.query.metadata import QueryUnitDescriptor, query_unit_descriptor
 from polylogue.archive.query.predicate import (
@@ -27,6 +27,7 @@ from polylogue.surfaces import payloads as surface_payloads
 from polylogue.surfaces.payloads import model_json_document
 
 if TYPE_CHECKING:
+    from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 #: Defensive cap on rows fetched per page across all selected sessions, so a
@@ -121,6 +122,7 @@ def _fetch_unit_rows(
     predicate: QueryPredicate,
     *,
     limit: int,
+    sort_direction: Literal["asc", "desc"] = "asc",
 ) -> Sequence[Any]:
     method_name = descriptor.sql_query_method
     if method_name is None:
@@ -134,7 +136,7 @@ def _fetch_unit_rows(
             offset=0,
             session_filters=None,
             sort="time",
-            sort_direction="asc",
+            sort_direction=sort_direction,
         ),
     )
 
@@ -145,6 +147,7 @@ def _fetch_session_unit_rows(
     session_ids: Sequence[str],
     *,
     limit: int,
+    sort_direction: Literal["asc", "desc"] = "asc",
 ) -> Sequence[Any] | None:
     method_name = {
         "message": "query_session_messages",
@@ -160,9 +163,35 @@ def _fetch_session_unit_rows(
             session_ids,
             limit=limit,
             offset=0,
-            sort_direction="asc",
+            sort_direction=sort_direction,
         ),
     )
+
+
+def _bracket_field_value(payload_document: JSONDocument, descriptor: QueryUnitDescriptor, key: str) -> Any:
+    attr = descriptor.attached_bracket_fields.get(key, key)
+    return payload_document.get(attr)
+
+
+def _matches_window_predicates(
+    payload_document: JSONDocument,
+    descriptor: QueryUnitDescriptor,
+    window: WithUnitWindow,
+) -> bool:
+    for key, value in window.predicates:
+        actual = _bracket_field_value(payload_document, descriptor, key)
+        if actual is None or str(actual).lower() != value.lower():
+            return False
+    return True
+
+
+def _apply_window_trim(rows: list[JSONDocument], window: WithUnitWindow | None) -> list[JSONDocument]:
+    """Trim a session's already time-ascending row list to ``first:N``/``last:N``."""
+
+    if window is None or window.window is None:
+        return rows
+    kind, count = window.window
+    return rows[:count] if kind == "first" else rows[-count:]
 
 
 def fetch_attached_units(
@@ -170,6 +199,7 @@ def fetch_attached_units(
     session_ids: Sequence[str],
     units: Sequence[str],
     unit_fields: dict[str, tuple[str, ...]] | None = None,
+    unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> dict[str, dict[str, tuple[JSONDocument, ...]]]:
     """Return attached-unit rows per unit, bucketed by session id.
 
@@ -177,6 +207,24 @@ def fetch_attached_units(
     ``row_payload`` is a JSON-ready dict produced by the descriptor-owned row
     payload model. Sessions with no rows for a unit are omitted from that unit's
     bucket.
+
+    ``unit_windows`` (polylogue-fnm.2) carries an optional per-unit
+    :class:`~polylogue.archive.query.expression.WithUnitWindow`: bracket
+    equality predicates are applied to each fetched row (against the unit's
+    declared ``attached_bracket_fields``) before the field selection/
+    compaction below, then an optional ``first:N``/``last:N`` trim is applied
+    per session. Both operate on the already-fetched, capped row set -- they
+    narrow what is attached, they do not push a predicate down to the SQL
+    fetch itself. A ``last:N`` window fetches that unit in descending time
+    order instead of the default ascending order (then restores ascending
+    order before trimming), so the per-session/per-page row cap
+    (``_MAX_ROWS_PER_SESSION``) captures the session's tail instead of
+    silently capturing only its head -- without this, `last:N` on a session
+    with more than the cap's worth of rows would trim the wrong end.
+    Predicate + ``last:N`` together on a session whose *matching* rows are
+    still sparser than the fetch cap can still under-fetch; this is the same
+    bounded-fetch caveat as every other post-fetch filter here, not a
+    window-specific gap.
     """
 
     result: dict[str, dict[str, tuple[JSONDocument, ...]]] = {}
@@ -196,9 +244,16 @@ def fetch_attached_units(
             raise ValueError(f"query unit {descriptor.unit!r} has no row payload model")
         selected_fields = () if unit_fields is None else unit_fields.get(descriptor.unit, ())
         _validate_payload_fields(descriptor.unit, payload_model, selected_fields)
-        rows = _fetch_session_unit_rows(archive, descriptor, session_ids, limit=fetch_limit)
+        window = None if unit_windows is None else unit_windows.get(descriptor.unit)
+        wants_tail = window is not None and window.window is not None and window.window[0] == "last"
+        fetch_direction: Literal["asc", "desc"] = "desc" if wants_tail else "asc"
+        rows = _fetch_session_unit_rows(
+            archive, descriptor, session_ids, limit=fetch_limit, sort_direction=fetch_direction
+        )
         if rows is None:
-            rows = _fetch_unit_rows(archive, descriptor, predicate, limit=fetch_limit)
+            rows = _fetch_unit_rows(archive, descriptor, predicate, limit=fetch_limit, sort_direction=fetch_direction)
+        if fetch_direction == "desc":
+            rows = list(reversed(rows))
         buckets: dict[str, list[JSONDocument]] = {}
         for row in rows:
             session_id = _row_session_id(row)
@@ -206,13 +261,21 @@ def fetch_attached_units(
                 continue
             payload = cast(Any, payload_model).from_row(row)
             payload_document = model_json_document(payload, exclude_none=not bool(selected_fields))
+            if (
+                window is not None
+                and window.predicates
+                and not _matches_window_predicates(payload_document, descriptor, window)
+            ):
+                continue
             buckets.setdefault(session_id, []).append(
                 _select_payload_fields(
                     _compact_attached_payload(payload_document),
                     selected_fields,
                 )
             )
-        result[descriptor.unit] = {session_id: tuple(rows) for session_id, rows in buckets.items()}
+        result[descriptor.unit] = {
+            session_id: tuple(_apply_window_trim(rows, window)) for session_id, rows in buckets.items()
+        }
     return result
 
 

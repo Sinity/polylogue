@@ -57,6 +57,7 @@ def test_run_correlation_view_json_emits_payload() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
+    env.polylogue.repository.get_session_commits = AsyncMock(return_value=[])
 
     with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
         run_correlation_view(env, session_id="target", output_format="json", github_api=False)
@@ -72,6 +73,52 @@ def test_run_correlation_view_json_emits_payload() -> None:
         "file:polylogue/core/refs.py",
     ]
     assert all(ObjectRef.parse(ref).format() == ref for ref in payload["object_refs"])
+    assert payload["checkout_commits"] == []
+
+
+def test_run_correlation_view_json_surfaces_checkout_commit() -> None:
+    """polylogue-cijx.3: session_commits (repo checkout HEAD at session
+    capture) must reach the JSON output, distinct from the `commits` list
+    (detect_session_commits' scored/heuristic candidates)."""
+    from polylogue.core.types import SessionId
+    from polylogue.storage.runtime import SessionCommitRecord
+
+    env = MagicMock()
+    env.polylogue.get_session = AsyncMock(return_value=_session())
+    env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
+    env.polylogue.repository.get_session_commits = AsyncMock(
+        return_value=[
+            SessionCommitRecord(
+                session_id=SessionId("target"),
+                commit_sha="deadbeef00112233",
+                repo_id="repo-1",
+                detection_type="explicit_ref",
+                method="parser-git-meta",
+                confidence=1.0,
+                evidence={"git_branch": "main"},
+                created_at_ms=1_700_000_000_000,
+            )
+        ]
+    )
+
+    with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
+        run_correlation_view(env, session_id="target", output_format="json", github_api=False)
+
+    printed = "".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)
+    payload = json.loads(printed)
+    assert payload["checkout_commits"] == [
+        {
+            "commit_sha": "deadbeef00112233",
+            "short_sha": "deadbeef",
+            "repo_id": "repo-1",
+            "detection_type": "explicit_ref",
+            "method": "parser-git-meta",
+            "confidence": 1.0,
+            "evidence": {"git_branch": "main"},
+        }
+    ]
+    # Distinct from the heuristic `commits` list -- not merged into it.
+    assert [c["commit_sha"] for c in payload["commits"]] == ["abc123456789"]
 
 
 def test_run_correlation_view_missing_session_exits() -> None:
@@ -93,6 +140,7 @@ def test_run_correlation_view_github_enrichment_does_not_crash() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
+    env.polylogue.repository.get_session_commits = AsyncMock(return_value=[])
 
     with (
         patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()),

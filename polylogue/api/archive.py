@@ -55,6 +55,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
+from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -104,6 +105,7 @@ if TYPE_CHECKING:
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.insights.judgment.types import ComparativeJudgment
     from polylogue.insights.pathology import PathologyReport
     from polylogue.insights.portfolio import PortfolioBundle
     from polylogue.insights.postmortem import PostmortemBundle
@@ -128,7 +130,7 @@ if TYPE_CHECKING:
         ArchiveAssertionEnvelope,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-    from polylogue.storage.usage import ProviderUsageReport
+    from polylogue.storage.usage import ProviderUsageReport, SessionUsageReconciliation
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
         AssertionBulkJudgmentPayload,
@@ -1816,6 +1818,58 @@ def _archive_judge_assertion_candidates(
         raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
 
 
+def _archive_record_comparative_judgment(
+    config: Config,
+    judgment: Any,
+    *,
+    author_kind: str,
+) -> Any:
+    """Write one comparative judgment (rxdo.9.11/9.6/9.7/9.12) as an assertion row.
+
+    Mirrors :func:`_archive_judge_assertion_candidates`'s connection
+    lifecycle. This is the first production caller of
+    :func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`
+    -- the storage/read functions were fully built and tested but never
+    invoked outside ``tests/unit/storage/`` before the ``judge compare`` /
+    ``judge calibration`` CLI commands.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_comparative_judgment_assertion
+
+    user_db = _active_archive_root(config) / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    try:
+        conn = open_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind=author_kind)
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to record comparative judgment: {exc}") from exc
+
+
+def _archive_list_comparative_judgments(config: Config) -> Any:
+    """Read back every live comparative-judgment assertion row."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import list_comparative_judgments
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(user_db)
+        try:
+            return list_comparative_judgments(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to list comparative judgments: {exc}") from exc
+
+
 def _archive_count_table_rows(conn: Any, table_name: str) -> int | None:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
@@ -1943,6 +1997,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
         provider_project_ref=summary.provider_project_ref,
+        display_name=summary.display_name,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -3023,6 +3078,30 @@ class PolylogueArchiveMixin:
         result = _archive_judge_assertion_candidates(self.config, items=items)
         return AssertionBulkJudgmentPayload.from_envelope(cast("ArchiveAssertionBulkJudgmentEnvelope", result))
 
+    async def record_comparative_judgment(
+        self,
+        judgment: ComparativeJudgment,
+        *,
+        author_kind: str = "user",
+    ) -> ArchiveAssertionEnvelope:
+        """Persist one blind pairwise/n-wise comparative judgment (rxdo.9.6/.9.7/.9.11/.9.12).
+
+        ``author_kind`` follows the existing promotion gate: a non-``"user"``
+        author (an agent judge) is coerced to a non-injected ``CANDIDATE``
+        row regardless of the caller's request, per the recursive-safety
+        spine. Reuses the storage layer's fully-tested write chokepoint
+        (:func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`),
+        which previously had no production caller.
+        """
+        return cast(
+            "ArchiveAssertionEnvelope",
+            _archive_record_comparative_judgment(self.config, judgment, author_kind=author_kind),
+        )
+
+    async def list_comparative_judgments(self) -> list[ComparativeJudgment]:
+        """Read back every live comparative-judgment assertion row."""
+        return cast("list[ComparativeJudgment]", _archive_list_comparative_judgments(self.config))
+
     async def join_typed_annotations(
         self,
         *,
@@ -3939,6 +4018,7 @@ class PolylogueArchiveMixin:
         with closing(open_readonly_connection(user_db)) as conn:
             conn.row_factory = sqlite3.Row
             provenance = compute_finding_provenance(conn, object_ref.object_id)
+            controls_document = self._finding_controls_document(conn, object_ref.object_id)
         if provenance is None:
             return cast(
                 PublicRefResolutionPayload,
@@ -3978,13 +4058,21 @@ class PolylogueArchiveMixin:
                 if ref_value
             )
         )
+        payload_document = model_json_document(payload)
+        if controls_document is not None:
+            payload_document["controls"] = controls_document["controls"]
+            payload_document["rank_tier"] = controls_document["rank_tier"]
+            payload_document["downgraded"] = controls_document["downgraded"]
+            if controls_document["downgraded"]:
+                caveats = (*caveats, "claim downgraded: at least one bound negative control failed")
+
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,
             kind="finding",
             resolved=True,
             payload_kind="finding-provenance",
-            payload=model_json_document(payload),
+            payload=payload_document,
             title=provenance.claim_key or provenance.finding_kind or "finding",
             summary=f"{provenance.finding_kind or 'finding'} ({provenance.status})",
             object_refs=object_refs,
@@ -3992,6 +4080,54 @@ class PolylogueArchiveMixin:
             caveats=caveats,
             actions=(_resolution_action("list target evidence", f"polylogue find {provenance.target_ref} then read"),),
         )
+
+    @staticmethod
+    def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] | None:
+        """Render claim-vs-control together when the finding declared controls (rxdo.9.7).
+
+        Reuses :class:`~polylogue.insights.judgment.controls.ClaimWithControls`
+        (mutation-tested, previously constructed only by its own unit tests)
+        rather than re-deriving the downgrade/rank-tier logic here.
+        """
+        from polylogue.insights.judgment.controls import ClaimWithControls, ControlOutcome, NegativeControl
+        from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
+
+        envelope = read_assertion_envelope(conn, assertion_id)
+        if envelope is None or not isinstance(envelope.value, dict):
+            return None
+        raw_controls = envelope.value.get("controls")
+        if not isinstance(raw_controls, list) or not raw_controls:
+            return None
+        outcomes = tuple(
+            ControlOutcome(
+                control=NegativeControl(
+                    control_kind=cast(Any, raw["control_kind"]),
+                    query_ref=cast(str, raw["query_ref"]),
+                    result_ref=cast(str, raw["result_ref"]),
+                    matching_variables=tuple(cast("Sequence[str]", raw.get("matching_variables", ()))),
+                    expected_null=cast(str, raw["expected_null"]),
+                    confounds_checked=tuple(cast("Sequence[str]", raw.get("confounds_checked", ()))),
+                ),
+                observed_null_held=bool(raw["observed_null_held"]),
+            )
+            for raw in raw_controls
+            if isinstance(raw, dict)
+        )
+        claim = ClaimWithControls(claim_ref=f"assertion:{assertion_id}", controls=outcomes)
+        return {
+            "controls": [
+                {
+                    "control_kind": outcome.control.control_kind,
+                    "query_ref": outcome.control.query_ref,
+                    "result_ref": outcome.control.result_ref,
+                    "expected_null": outcome.control.expected_null,
+                    "observed_null_held": outcome.observed_null_held,
+                }
+                for outcome in claim.controls
+            ],
+            "rank_tier": claim.rank_tier,
+            "downgraded": claim.downgraded,
+        }
 
     def _resolve_annotation_batch_object_ref(
         self,
@@ -4849,6 +4985,27 @@ class PolylogueArchiveMixin:
             workload_class="scan",
         )
 
+    async def session_usage_reconciliation(self, session_id: str) -> SessionUsageReconciliation:
+        """Return the fast, session-scoped usage/cost reconciliation for one session.
+
+        Reads only ``session_id``-indexed rows (``session_model_usage``,
+        ``session_profiles`` PK lookup) instead of the archive-wide
+        ``provider_usage_report`` audit, so it stays cheap regardless of
+        archive size (polylogue-zumd).
+        """
+        from polylogue.storage.usage import session_usage_reconciliation_for_connection
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_usage_reconciliation",
+            arguments={"session_id": session_id},
+            work=lambda archive: session_usage_reconciliation_for_connection(
+                archive._conn,
+                session_id=session_id,
+            ),
+            projection="session-usage-reconciliation",
+        )
+
     async def stats(self) -> ArchiveStats:
         from polylogue.operations import ArchiveStats as PublicArchiveStats
 
@@ -5102,10 +5259,14 @@ class PolylogueArchiveMixin:
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[list[Message], int, LineageCompleteness]:
         """Return paginated ``Message`` objects for a session.
 
-        Raises ``SessionNotFoundError`` if the session does not exist.
+        Raises ``SessionNotFoundError`` if the session does not exist. The
+        third element reports whether the composed transcript is the full
+        logical transcript or was silently truncated by a dangling lineage
+        branch point / depth-limited composition (polylogue-ppkj) -- the same
+        read-time signal the MCP surface already carries.
         """
         if material_origin:
             session = await self.get_session(session_id, content_projection=content_projection)
@@ -5121,10 +5282,11 @@ class PolylogueArchiveMixin:
                     material_origin=material_origin,
                 )
             ]
-            return messages[offset : offset + limit], len(messages)
+            completeness = await self.repository.get_lineage_completeness(session_id)
+            return messages[offset : offset + limit], len(messages), completeness
 
         resolved_session_id = await self.repository.resolve_id(session_id) or session_id
-        messages, total = await self.repository.get_messages_paginated(
+        messages, total, completeness = await self.repository.get_messages_paginated(
             resolved_session_id,
             message_role=message_role,
             message_type=message_type,
@@ -5135,7 +5297,7 @@ class PolylogueArchiveMixin:
             raise SessionNotFoundError(session_id)
         if content_projection is not None and content_projection.filters_content():
             messages = project_message_content(messages, content_projection)
-        return messages, total
+        return messages, total, completeness
 
     def iter_messages(
         self,
@@ -5291,6 +5453,76 @@ class PolylogueArchiveMixin:
                 "payload": event.payload,
             }
             for event in events
+        ]
+
+    async def get_file_edits(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return file-edit tool-call evidence (structuredPatch/originalFile/...) for one session.
+
+        polylogue-nua7: the writer materializes ``ParsedFileEdit`` evidence
+        (Claude Code Edit/Write/MultiEdit tool calls -- structured unified
+        diffs, pre-edit file content, old/new string pairs) into the
+        dedicated ``file_edits`` index table on every ingest
+        (``storage/repository/archive/sessions.py::get_file_edits``), but
+        before this reader nothing above the storage layer could reach it.
+        This is the read surface: what a "what did this session change"
+        report needs instead of re-deriving edits from tool-call prose.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but made no captured edits).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        edits = await self.repository.get_file_edits(resolved_id)
+        return [
+            {
+                "tool_use_block_id": edit.tool_use_block_id,
+                "message_id": str(edit.message_id),
+                "file_path": edit.file_path,
+                "structured_patch": edit.structured_patch,
+                "original_file": edit.original_file,
+                "old_string": edit.old_string,
+                "new_string": edit.new_string,
+                "replace_all": edit.replace_all,
+                "user_modified": edit.user_modified,
+                "observed_at_ms": edit.observed_at_ms,
+            }
+            for edit in edits
+        ]
+
+    async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return sandbox/approval/network policy facts recorded for one session.
+
+        polylogue-nua7: the writer diverts Codex ``agent_policy`` events out
+        of ``session_events`` into the dedicated ``session_agent_policies``
+        table (fully re-derivable, zero evidence loss -- see
+        ``archive_tiers/write.py:_SESSION_EVENTS_REDUNDANT_TYPES``), but
+        before this reader nothing above the storage layer could reach it
+        back. This is the read surface.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but reported no agent-policy
+        facts -- expected for non-Codex origins).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        policies = await self.repository.get_agent_policies(resolved_id)
+        return [
+            {
+                "policy_id": policy.policy_id,
+                "position": policy.position,
+                "approval_policy": policy.approval_policy,
+                "sandbox_policy": policy.sandbox_policy,
+                "network_policy": policy.network_policy,
+                "observed_at_ms": policy.observed_at_ms,
+                "source_message_id": policy.source_message_id,
+            }
+            for policy in policies
         ]
 
     async def query_sessions(
@@ -5623,7 +5855,27 @@ class PolylogueArchiveMixin:
             typed_issue_refs=typed_issue_refs,
             bridge_session_ids=bridge_session_ids,
         )
-        return cast(JSONDocument, correlation_result_to_payload(result))
+        payload = correlation_result_to_payload(result)
+        # polylogue-cijx.3 AC3: session_commits was a write-only table (the
+        # parser-reported repo checkout HEAD at session capture, distinct
+        # from the on-demand commit-authorship correlation above). Surface
+        # it here, clearly separated from `commits` (which is
+        # detect_session_commits' scored/heuristic list) rather than merged
+        # into it.
+        checkout_commits = await self.repository.get_session_commits(session_id)
+        payload["checkout_commits"] = [
+            {
+                "commit_sha": record.commit_sha,
+                "short_sha": record.commit_sha[:8],
+                "repo_id": record.repo_id,
+                "detection_type": record.detection_type,
+                "method": record.method,
+                "confidence": record.confidence,
+                "evidence": record.evidence,
+            }
+            for record in checkout_commits
+        ]
+        return cast(JSONDocument, payload)
 
     async def get_session_tree(self, session_id: str) -> list[Session]:
         """Return the full session tree (parent + children) for a session."""

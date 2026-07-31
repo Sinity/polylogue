@@ -16,6 +16,7 @@ from polylogue.archive.query.archive_execution import list_summaries_archive
 from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
     ExpressionCompileError,
+    WithUnitWindow,
     compile_expression,
     compile_expression_into,
     parse_expression_ast,
@@ -73,7 +74,7 @@ class TestWithClauseParsing:
         }
 
     def test_split_with_projection_clause_returns_field_map(self) -> None:
-        head, units, fields = split_with_projection_clause(
+        head, units, fields, windows = split_with_projection_clause(
             "repo:polylogue with files(path,action_count), assertions(assertion_id,body_text)"
         )
         assert head == "repo:polylogue"
@@ -82,6 +83,7 @@ class TestWithClauseParsing:
             "file": ("path", "action_count"),
             "assertion": ("assertion_id", "body_text"),
         }
+        assert windows == {}
 
     def test_empty_unit_field_selection_raises(self) -> None:
         with pytest.raises(ExpressionCompileError, match="field selection"):
@@ -321,3 +323,148 @@ class TestAttachBehaviour:
         )
         target = next(summary for summary in summaries if summary.id == session_id)
         assert target.attached_units == {}
+
+
+# ---------------------------------------------------------------------------
+# Bracket predicate/window clause: ``with unit[field:value, last:N]`` (polylogue-fnm.2)
+# ---------------------------------------------------------------------------
+
+
+class TestWithUnitBracketParsing:
+    def test_bracket_predicate_and_window_are_parsed(self) -> None:
+        spec = compile_expression("repo:polylogue with messages[role:user, last:20]")
+        assert spec.with_units == ("message",)
+        assert spec.with_unit_windows == {
+            "message": WithUnitWindow(predicates=(("role", "user"),), window=("last", 20)),
+        }
+
+    def test_bracket_combines_with_field_selection(self) -> None:
+        spec = compile_expression("repo:polylogue with messages(message_id,role,text)[role:user, first:5]")
+        assert spec.with_unit_fields == {"message": ("message_id", "role", "text")}
+        assert spec.with_unit_windows == {
+            "message": WithUnitWindow(predicates=(("role", "user"),), window=("first", 5)),
+        }
+
+    def test_bracket_predicate_only_no_window(self) -> None:
+        spec = compile_expression("repo:polylogue with actions[tool:Bash]")
+        assert spec.with_unit_windows == {
+            "action": WithUnitWindow(predicates=(("tool", "Bash"),), window=None),
+        }
+
+    def test_bracket_window_only_no_predicate(self) -> None:
+        spec = compile_expression("repo:polylogue with messages[last:10]")
+        assert spec.with_unit_windows == {"message": WithUnitWindow(predicates=(), window=("last", 10))}
+
+    def test_bracket_comma_inside_does_not_break_item_splitting(self) -> None:
+        # A literal comma inside ``[...]`` must not be mistaken for the
+        # top-level ``with`` clause's unit-separating comma.
+        spec = compile_expression("repo:polylogue with messages[role:user, last:5], actions[tool:Bash]")
+        assert spec.with_units == ("message", "action")
+        assert spec.with_unit_windows == {
+            "message": WithUnitWindow(predicates=(("role", "user"),), window=("last", 5)),
+            "action": WithUnitWindow(predicates=(("tool", "Bash"),), window=None),
+        }
+
+    def test_unsupported_bracket_field_names_unit_field_and_supported_set(self) -> None:
+        with pytest.raises(
+            ExpressionCompileError,
+            match=r"messages\[nope:\.\.\.\] is not a supported bracket field for messages rows; "
+            r"supported fields: role, type",
+        ):
+            compile_expression("repo:polylogue with messages[nope:1]")
+
+    def test_unsupported_window_key_value_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="window size must be a positive integer"):
+            compile_expression("repo:polylogue with messages[last:0]")
+        with pytest.raises(ExpressionCompileError, match="window size must be a positive integer"):
+            compile_expression("repo:polylogue with messages[last:abc]")
+
+    def test_two_windows_on_same_unit_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="can only carry one first:N or last:N window"):
+            compile_expression("repo:polylogue with messages[first:5, last:5]")
+
+    def test_malformed_bracket_clause_rejected(self) -> None:
+        with pytest.raises(ExpressionCompileError, match="not a valid bracket clause"):
+            compile_expression("repo:polylogue with messages[justaword]")
+
+
+class TestWithUnitBracketExecution:
+    def _seed_role_sequence(self, tmp_path: Path) -> str:
+        from tests.infra.storage_records import SessionBuilder
+
+        index_db = tmp_path / "index.db"
+        (
+            SessionBuilder(index_db, "bracket-window")
+            .provider("claude-code")
+            .add_message("m1", role="user", text="one")
+            .add_message("m2", role="assistant", text="two three")
+            .add_message("m3", role="user", text="four five six")
+            .add_message("m4", role="assistant", text="seven")
+            .add_message("m5", role="user", text="eight nine ten eleven")
+            .save()
+        )
+        return "claude-code-session:ext-bracket-window"
+
+    def test_bracket_predicate_filters_attached_rows(self, tmp_path: Path) -> None:
+        session_id = self._seed_role_sequence(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(
+                archive,
+                [session_id],
+                ["message"],
+                unit_windows={"message": WithUnitWindow(predicates=(("role", "user"),))},
+            )
+        rows = attached["message"][session_id]
+        assert [row["role"] for row in rows] == ["user", "user", "user"]
+        assert [row["text"] for row in rows] == ["one", "four five six", "eight nine ten eleven"]
+
+    def test_last_window_returns_true_tail_not_head(self, tmp_path: Path) -> None:
+        """``last:N`` must return the session's actual tail, not the head of a capped fetch.
+
+        Anti-vacuity: this seeds more than one message so a naive fetch that
+        only ever reads ascending-from-start and then slices ``[-n:]`` would
+        coincidentally look right for a 5-message session; the assertion pins
+        the exact tail-role predicate-filtered rows so a regression to
+        ascending-only fetching (which silently mis-selects the tail once a
+        session exceeds the per-session row cap, verified against the live
+        archive at PR time) would fail this test.
+        """
+        session_id = self._seed_role_sequence(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(
+                archive,
+                [session_id],
+                ["message"],
+                unit_windows={"message": WithUnitWindow(predicates=(("role", "user"),), window=("last", 2))},
+            )
+        rows = attached["message"][session_id]
+        assert [row["text"] for row in rows] == ["four five six", "eight nine ten eleven"]
+
+    def test_first_window_returns_head(self, tmp_path: Path) -> None:
+        session_id = self._seed_role_sequence(tmp_path)
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            attached = fetch_attached_units(
+                archive,
+                [session_id],
+                ["message"],
+                unit_windows={"message": WithUnitWindow(predicates=(("role", "user"),), window=("first", 2))},
+            )
+        rows = attached["message"][session_id]
+        assert [row["text"] for row in rows] == ["one", "four five six"]
+
+    async def test_bracket_predicate_and_window_compose_end_to_end_via_dsl(self, tmp_path: Path) -> None:
+        session_id = self._seed_role_sequence(tmp_path)
+        spec = compile_expression(f"id:{session_id} with messages[role:user, last:2]")
+        summaries = await list_summaries_archive(
+            spec.to_plan(),
+            archive_root=tmp_path,
+            config=None,
+            with_units=spec.with_units,
+            with_unit_fields=spec.with_unit_fields,
+            with_unit_windows=spec.with_unit_windows,
+        )
+        target = next(summary for summary in summaries if summary.id == session_id)
+        assert [row["text"] for row in target.attached_units["message"]] == [
+            "four five six",
+            "eight nine ten eleven",
+        ]

@@ -27,6 +27,7 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
     QueryUnitSource,
+    WithUnitWindow,
     parse_unit_source_expression,
     split_with_projection_clause,
 )
@@ -60,7 +61,11 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveSessionSummary,
     ArchiveStore,
 )
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
+from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveMessageRow,
+    ArchiveSessionEnvelope,
+    archive_message_display_text,
+)
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
     InvalidSearchCursorError,
@@ -202,13 +207,17 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
     fields = _optional_str(params.get("fields"))
+    read_view = str(params.get("view") or "transcript")
     # Split a trailing ``with <units>`` projection clause off the FTS text so it
     # is not searched literally; the units drive the attached-unit projection.
     unit_source_query = raw_query
     with_units: tuple[str, ...] = ()
     with_unit_fields: dict[str, tuple[str, ...]] = {}
+    with_unit_windows: dict[str, WithUnitWindow] = {}
     if unit_source_query and not (unit_source_query.startswith("{") or unit_source_query.startswith("[")):
-        unit_source_query, with_units, with_unit_fields = split_with_projection_clause(unit_source_query)
+        unit_source_query, with_units, with_unit_fields, with_unit_windows = split_with_projection_clause(
+            unit_source_query
+        )
     unit_source = (
         parse_unit_source_expression(unit_source_query)
         if unit_source_query and not _optional_str(params.get("similar_text"))
@@ -225,6 +234,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
         with_unit_fields = compiled_spec.with_unit_fields
+        with_unit_windows = compiled_spec.with_unit_windows
     env.record_timing("compile", compile_started_at)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
@@ -320,6 +330,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
         query=query,
         limit=limit,
         offset=page_offset,
@@ -655,6 +666,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         typo_hint=typo_hint,
                         with_units=with_units,
                         with_unit_fields=with_unit_fields,
+                        with_unit_windows=with_unit_windows,
                         diagnostics=(
                             _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why")))
                             if not page_hits
@@ -690,6 +702,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 envelope,
                 output_format=output_format,
                 fields=fields,
+                view=read_view,
             )
             return
         if query and not similar_text:
@@ -703,6 +716,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     envelope,
                     output_format=output_format,
                     fields=fields,
+                    view=read_view,
                 )
                 return
         if query or similar_text or similar_session_id:
@@ -779,6 +793,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 typo_hint=typo_hint,
                 with_units=with_units,
                 with_unit_fields=with_unit_fields,
+                with_unit_windows=with_unit_windows,
                 diagnostics=(
                     _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why"))) if not page_hits else None
                 ),
@@ -846,6 +861,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             archive=archive,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
+            with_unit_windows=with_unit_windows,
             lineage_seed_session_id=lineage_seed_session_id,
         )
 
@@ -1035,6 +1051,7 @@ def _try_emit_daemon_session_page(
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
+    with_unit_windows: Mapping[str, WithUnitWindow],
     query: str,
     limit: int,
     offset: int,
@@ -1069,6 +1086,7 @@ def _try_emit_daemon_session_page(
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
         tags_to_add=tags_to_add,
         metadata_to_set=metadata_to_set,
         delete_matched=delete_matched,
@@ -1211,6 +1229,7 @@ def _daemon_session_page_supported(
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
+    with_unit_windows: Mapping[str, WithUnitWindow],
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
     delete_matched: bool,
@@ -1223,7 +1242,7 @@ def _daemon_session_page_supported(
     similar_session_id: str | None,
     retrieval_lane: str,
 ) -> bool:
-    if unit_source is not None or with_units or with_unit_fields:
+    if unit_source is not None or with_units or with_unit_fields or with_unit_windows:
         return False
     if any(params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest", "open_result")):
         return False
@@ -2131,6 +2150,7 @@ def _inject_attached_units(
     archive: ArchiveStore | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> None:
     """Attach ``with <units>`` projection rows to each rendered row payload.
 
@@ -2141,7 +2161,9 @@ def _inject_attached_units(
 
     if not with_units or archive is None or not items:
         return
-    attached = fetch_attached_units(archive, session_ids, with_units, unit_fields=with_unit_fields)
+    attached = fetch_attached_units(
+        archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
+    )
     for item, session_id in zip(items, session_ids, strict=False):
         item["attached_units"] = {unit: list(by_session.get(session_id, ())) for unit, by_session in attached.items()}
 
@@ -2159,6 +2181,7 @@ def _emit_list(
     archive: ArchiveStore | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     lineage_seed_session_id: str | None = None,
 ) -> None:
     lineage_edges: dict[str, tuple[str | None, tuple[str, ...]]] = {}
@@ -2196,6 +2219,7 @@ def _emit_list(
         archive=archive,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
     )
     envelope: dict[str, object] = {
         "mode": "list",
@@ -2254,6 +2278,7 @@ def _emit_search(
     typo_hint: str | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     diagnostics: QueryMissDiagnosticsPayload | None = None,
 ) -> None:
     items = [
@@ -2270,6 +2295,7 @@ def _emit_search(
         archive=archive,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
     )
     envelope: dict[str, object] = {
         "mode": "search",
@@ -2293,6 +2319,7 @@ def _emit_session(
     *,
     output_format: str,
     fields: str | None,
+    view: str = "transcript",
 ) -> None:
     payload = _session_payload(envelope)
     if output_format == "json":
@@ -2312,6 +2339,9 @@ def _emit_session(
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
+    if view == "summary":
+        click.echo(_session_summary_text(envelope))
+        return
     click.echo(_session_text(envelope))
 
 
@@ -2719,6 +2749,57 @@ def _session_text(envelope: ArchiveSessionEnvelope) -> str:
         text = "\n".join(block.text or "" for block in message.blocks if block.text)
         lines.append(text)
         lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _session_summary_text(envelope: ArchiveSessionEnvelope) -> str:
+    """Condensed session synopsis: counts, roles, tool usage, first/last excerpts.
+
+    Deliberately distinct from ``_session_text`` (the full transcript) --
+    ``read --view summary`` previously routed to the same renderer as
+    ``read --view transcript`` and produced byte-identical output for any
+    session (polylogue-zumd class: a surface claiming to do X silently did
+    the whole-transcript Y instead).
+    """
+    messages = envelope.messages
+    role_counts: dict[str, int] = {}
+    tool_use_message_count = 0
+    total_words = 0
+    for message in messages:
+        role_counts[message.role] = role_counts.get(message.role, 0) + 1
+        total_words += message.word_count
+        if message.has_tool_use:
+            tool_use_message_count += 1
+
+    lines = [
+        f"# {envelope.title or envelope.session_id}",
+        "",
+        f"`{envelope.session_id}`  ({envelope.origin})",
+        "",
+        f"- messages: {len(messages)}",
+    ]
+    for role in sorted(role_counts):
+        lines.append(f"  - {role}: {role_counts[role]}")
+    lines.append(f"- words (sum of per-message word_count): {total_words}")
+    lines.append(f"- messages with tool use: {tool_use_message_count}")
+    if envelope.created_at or envelope.updated_at:
+        lines.append(f"- created: {envelope.created_at or 'unknown'}  updated: {envelope.updated_at or 'unknown'}")
+
+    def _first_authored_text(candidates: Iterable[ArchiveMessageRow]) -> str:
+        for message in candidates:
+            if message.role not in ("user", "assistant"):
+                continue
+            text = archive_message_display_text(message.blocks)
+            if text.strip():
+                return text
+        return ""
+
+    first_text = _first_authored_text(messages)
+    last_text = _first_authored_text(reversed(messages))
+    if first_text:
+        lines += ["", "## First turn", "", bound_display_text(first_text, max_chars=500)]
+    if last_text and last_text != first_text:
+        lines += ["", "## Last turn", "", bound_display_text(last_text, max_chars=500)]
     return "\n".join(lines).rstrip()
 
 

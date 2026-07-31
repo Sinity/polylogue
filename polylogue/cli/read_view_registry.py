@@ -56,6 +56,8 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "raw": ReadViewHandlerMetadata("raw", "required", MESSAGE_READ_VIEW_OPTION_NAMES),
     "hooks": ReadViewHandlerMetadata("hooks", "required"),
     "events": ReadViewHandlerMetadata("events", "required", EVENTS_READ_VIEW_OPTION_NAMES),
+    "file-edits": ReadViewHandlerMetadata("file-edits", "required"),
+    "agent-policies": ReadViewHandlerMetadata("agent-policies", "required"),
     "context": ReadViewHandlerMetadata("context", "required", CONTEXT_READ_VIEW_OPTION_NAMES),
     "context-image": ReadViewHandlerMetadata("context-image", "none", CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES),
     "neighbors": ReadViewHandlerMetadata("neighbors", "query_or_session", NEIGHBOR_READ_VIEW_OPTION_NAMES),

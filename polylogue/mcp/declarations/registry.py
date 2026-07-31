@@ -525,6 +525,14 @@ TARGET_PROMPTS: Final[tuple[MCPPromptDeclaration, ...]] = (
     MCPPromptDeclaration("sessions_touching_file", "file-touch", None, "none", "polylogue-t46.8.2"),
     MCPPromptDeclaration("cost_of", "cost-analysis", None, "none", "polylogue-t46.8.2"),
     MCPPromptDeclaration("agent_coordination_brief", "coordination", None, "none", "polylogue-t46.8.3"),
+    # Live-registered (polylogue/mcp/server_prompts.py) but previously absent
+    # here, leaving completeness/discovery consumers blind to them
+    # (polylogue-il50).
+    MCPPromptDeclaration("analyze_errors", "error-analysis", None, "none", "polylogue-il50"),
+    MCPPromptDeclaration("summarize_week", "weekly-summary", None, "none", "polylogue-il50"),
+    MCPPromptDeclaration("extract_code", "code-extraction", None, "none", "polylogue-il50"),
+    MCPPromptDeclaration("compare_sessions", "session-comparison", None, "none", "polylogue-il50"),
+    MCPPromptDeclaration("extract_patterns", "pattern-extraction", None, "none", "polylogue-il50"),
 )
 
 if len(TARGET_DEFAULT_READ_ALGEBRA) > 15:

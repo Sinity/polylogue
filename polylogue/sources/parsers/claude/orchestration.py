@@ -9,8 +9,7 @@ are separate: missing peers become coverage debt instead of filename guesses.
 from __future__ import annotations
 
 import json
-from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -140,14 +139,6 @@ class ClaudeOrchestrationArtifact:
     parse_error: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class ClaudeOrchestrationCoverage:
-    artifact_counts: dict[str, int]
-    paired_agent_ids: tuple[str, ...]
-    run_ids: tuple[str, ...]
-    gaps: tuple[str, ...]
-
-
 def parse_claude_orchestration_artifact(
     source_path: str,
     payload: bytes | str | object,
@@ -174,45 +165,6 @@ def parse_claude_orchestration_artifact(
     else:
         facts = ()
     return ClaudeOrchestrationArtifact(rule.kind, source_path, rule.parse_policy, facts)
-
-
-def inventory_claude_orchestration_artifacts(paths: Iterable[str | Path]) -> ClaudeOrchestrationCoverage:
-    """Inventory declared members and report only evidence-backed gaps."""
-
-    artifacts: list[tuple[str, str]] = []
-    transcripts: set[str] = set()
-    metas: set[str] = set()
-    runs: set[str] = set()
-    journals: set[str] = set()
-    for candidate in paths:
-        source_path = str(candidate)
-        rule = artifact_rule_for_path(Provider.CLAUDE_CODE, source_path)
-        if rule is None:
-            continue
-        artifacts.append((rule.kind, source_path))
-        name = Path(source_path).name
-        if rule.kind == "agent_transcript":
-            if agent_id := _agent_id_from_path(source_path):
-                transcripts.add(agent_id)
-        elif rule.kind == "agent_sidecar_meta":
-            if agent_id := _agent_id_from_path(source_path):
-                metas.add(agent_id)
-        elif rule.kind == "workflow_run_snapshot":
-            runs.add(name.removesuffix(".json"))
-        elif rule.kind == "workflow_journal":
-            journals.add(Path(source_path).parent.name)
-    gaps = [
-        *(f"missing agent metadata for transcript {agent_id}" for agent_id in sorted(transcripts - metas)),
-        *(f"missing agent transcript for metadata {agent_id}" for agent_id in sorted(metas - transcripts)),
-        *(f"missing workflow run snapshot for journal {run_id}" for run_id in sorted(journals - runs)),
-        *(f"missing workflow journal for run snapshot {run_id}" for run_id in sorted(runs - journals)),
-    ]
-    return ClaudeOrchestrationCoverage(
-        artifact_counts=dict(sorted(Counter(kind for kind, _ in artifacts).items())),
-        paired_agent_ids=tuple(sorted(transcripts & metas)),
-        run_ids=tuple(sorted(runs | journals)),
-        gaps=tuple(gaps),
-    )
 
 
 def _decode(payload: bytes | str | object, *, jsonl: bool) -> object:
@@ -273,8 +225,6 @@ def _journal_fact(source_path: str, line: int, payload: Mapping[str, object]) ->
 
 __all__ = [
     "ClaudeOrchestrationArtifact",
-    "ClaudeOrchestrationCoverage",
     "ClaudeOrchestrationFact",
-    "inventory_claude_orchestration_artifacts",
     "parse_claude_orchestration_artifact",
 ]

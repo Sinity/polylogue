@@ -451,6 +451,7 @@ class ToolCountFiltersPayload(SurfacePayloadModel):
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
+    session_id: str | None = None
     detail_patterns: tuple[str, ...] = ()
     days: int | None = None
     basis: ToolCountBasis
@@ -2829,6 +2830,13 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
     group_by: str | None = None
     group_key: str | None = None
     count: int
+    metrics: dict[str, float | int | None] | None = None
+    """Named ``| agg count, avg:FIELD, ...`` metric values (polylogue-fnm.1).
+
+    ``None`` for plain ``| group by ... | count`` rows (the legacy count-only
+    aggregate path); populated for rows produced by an ``| agg ...`` stage,
+    keyed by each metric's stable label (``count``, ``avg_word_count``, ...).
+    """
 
     @classmethod
     def from_row(cls, row: ArchiveQueryUnitAggregateRow) -> QueryUnitAggregateRowPayload:
@@ -3368,6 +3376,13 @@ class SessionMessagesResponsePayload(SurfacePayloadModel):
     total: int
     limit: int
     offset: int
+    # polylogue-ppkj: whether ``messages`` is a page of the full composed
+    # lineage transcript, or was silently truncated by a dangling branch
+    # point / depth-limited composition. Mirrors the MCP surface's
+    # ``lineage_complete``/``lineage_truncation_reason`` fields (the
+    # previously "safe" surface for this same signal).
+    lineage_complete: bool = True
+    lineage_truncation_reason: str | None = None
 
 
 ProjectionAvailabilityState = Literal["ready", "degraded", "unavailable"]
