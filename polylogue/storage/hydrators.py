@@ -242,6 +242,7 @@ def session_from_records(
         parent_id=session.parent_session_id,
         branch_type=session.branch_type,
         tags_m2m=tags,
+        reported_cost_usd=session.reported_cost_usd,
     )
 
 

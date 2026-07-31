@@ -35,7 +35,6 @@ from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
     CostEstimatePayload,
-    CostUsagePayload,
     estimate_session_cost,
 )
 from polylogue.cost.aggregation import session_costs_to_daily_usd
@@ -107,22 +106,35 @@ def _basis_to_dict(basis: CostBasisPayload) -> dict[str, float]:
 
 
 def _exact_estimate() -> CostEstimatePayload:
-    return CostEstimatePayload(
-        origin="claude-code-session",
-        session_id="conv-exact",
-        model_name="claude-sonnet-4-5",
-        normalized_model="claude-sonnet-4-5",
-        status="exact",
-        confidence=1.0,
-        total_usd=1.25,
-        usage=CostUsagePayload(input_tokens=1000, output_tokens=500),
-        basis=CostBasisPayload(
-            provider_reported_usd=1.25,
-            api_equivalent_usd=1.25,
-            catalog_priced_usd=0.002,
+    """Exercise the real production exact-cost path (polylogue-gt1z).
+
+    Before polylogue-gt1z this built a ``CostEstimatePayload`` from literals
+    that ``_exact_estimate()`` in ``pricing.py`` (zero production callers at
+    the time) would have produced -- verifying nothing but that pydantic can
+    round-trip the fields it was just assigned. Now it builds a real
+    ``Session`` with ``reported_cost_usd`` set (the field
+    ``_session_level_estimate`` actually reads, populated in production from
+    ``sessions.reported_cost_usd`` / ``ParsedSession.reported_cost_usd`` for
+    claude-code-session/hermes-session) and calls ``estimate_session_cost()``
+    on it -- the same function ``polylogue/insights/cost_enrichment.py``'s
+    ``enrich_session_cost_insight`` calls in production.
+    """
+    session = make_conv(
+        id="conv-exact",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                _msg_with_tokens(
+                    id="m1",
+                    model="claude-sonnet-4-5",
+                    input_tokens=1000,
+                    output_tokens=500,
+                )
+            ]
         ),
-        provenance=("archive_session_reported_cost",),
+        reported_cost_usd=1.25,
     )
+    return estimate_session_cost(session)
 
 
 def _priced_estimate() -> CostEstimatePayload:

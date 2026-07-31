@@ -1269,7 +1269,7 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
         "output_tokens": 30,
         "cache_read_tokens": 20,
         "cache_write_tokens": 0,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
 
 
@@ -1501,7 +1501,7 @@ def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_tota
         "output_tokens": 11,
         "cache_read_tokens": 2,
         "cache_write_tokens": 3,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
 
 
@@ -1920,7 +1920,7 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
     assert dict(row) == {
         "input_tokens": 30,
         "output_tokens": 15,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
 
 
@@ -1997,7 +1997,7 @@ def test_provider_usage_append_incremental_rolls_up_last_usage(tmp_path: Path) -
         "output_tokens": 9,
         "cache_read_tokens": 0,
         "cache_write_tokens": 0,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
 
 
@@ -2064,7 +2064,7 @@ def test_provider_usage_append_last_usage_does_not_override_cumulative(tmp_path:
     assert dict(row) == {
         "input_tokens": 100,
         "output_tokens": 40,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
 
 
@@ -2540,15 +2540,19 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
         """,
         (session_id,),
     ).fetchone()
-    assert dict(row) == {
-        "model_name": "gpt-4o",
-        "input_tokens": 1_000,
-        "output_tokens": 500,
-        "cost_provenance": "origin_reported",
-        "cost_usd": None,
-        "priced_with": None,
-        "priced_at_ms": None,
-    }
+    # polylogue-shnc: gpt-4o is catalog-priced, so the provider-usage-event
+    # rollup (1,000/500, superseding the smaller 10/5 message-derived
+    # numbers) is now catalog-priced too, not hardcoded NULL/'origin_reported'.
+    from polylogue.archive.semantic.pricing import estimate_cost
+
+    row_dict = dict(row)
+    assert row_dict["model_name"] == "gpt-4o"
+    assert row_dict["input_tokens"] == 1_000
+    assert row_dict["output_tokens"] == 500
+    assert row_dict["cost_provenance"] == "priced"
+    assert row_dict["cost_usd"] == estimate_cost(1_000, 500, "gpt-4o")
+    assert row_dict["priced_with"] is not None
+    assert row_dict["priced_at_ms"] is not None
 
 
 def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: Path) -> None:

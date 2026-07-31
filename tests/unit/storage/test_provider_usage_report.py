@@ -266,7 +266,7 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
     assert report_payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
 
 
-def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tmp_path: Path) -> None:
+def test_provider_usage_report_separates_priced_and_unpriced_repricing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     conn.execute(
         """
@@ -279,18 +279,28 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
             ('codex-session', 'unknown', 'unknown', 'standard', 3, 3, 1, 1, zeroblob(32))
         """
     )
+    conn.execute(
+        """
+        INSERT INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
+        VALUES ('test-catalog', 'test-hash', 'test', 0)
+        """
+    )
+    # polylogue-shnc: 'priced' now requires cost_usd AND priced_with both set
+    # (CHECK constraint, v49); 'origin_reported' now means a genuine
+    # provider-reported dollar figure, so a NULL cost_usd row must carry no
+    # provenance claim at all instead of a mislabeled 'origin_reported'.
     conn.executemany(
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd, priced_with
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         """,
         [
-            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25),
-            ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, "origin_reported", None),
-            ("codex-session:origin", "gpt-4o-mini", 1_000_000, 0, 0, 0, "origin_reported", None),
-            ("codex-session:unknown", "not-in-price-catalog", 1000, 100, 0, 0, "origin_reported", None),
+            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25, "test-catalog"),
+            ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, None, None, None),
+            ("codex-session:origin", "gpt-4o-mini", 1_000_000, 0, 0, 0, None, None, None),
+            ("codex-session:unknown", "not-in-price-catalog", 1000, 100, 0, 0, None, None, None),
         ],
     )
 
@@ -308,24 +318,27 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     assert lanes["priced"].stored_cost_usd == pytest.approx(1.25)
     assert lanes["priced"].catalog_api_equivalent_usd == pytest.approx(1.25)
     assert lanes["priced"].catalog_priced_subtotal_usd == pytest.approx(1.25)
-    assert lanes["origin_reported"].stored_cost_usd == 0
-    assert lanes["origin_reported"].catalog_api_equivalent_usd is None
-    assert lanes["origin_reported"].catalog_priced_subtotal_usd == pytest.approx(3.65)
-    assert lanes["origin_reported"].row_count == 3
-    assert lanes["origin_reported"].session_count == 2
-    assert lanes["origin_reported"].matched_model_row_count == 2
-    assert lanes["origin_reported"].unmatched_model_row_count == 1
-    assert lanes["origin_reported"].caveats == ("missing_price",)
-    assert lanes["origin_reported"].exact_total_tokens_evidence.value_state == "known"
-    assert lanes["origin_reported"].exact_total_tokens_evidence.value == 2_101_100
-    assert lanes["origin_reported"].catalog_api_equivalent_evidence.value_state == "unknown"
-    assert lanes["origin_reported"].catalog_api_equivalent_evidence.value is None
-    assert lanes["origin_reported"].catalog_api_equivalent_evidence.coverage.supported_count == 2
-    assert lanes["origin_reported"].catalog_api_equivalent_evidence.coverage.exclusions[0].reason == (
-        "unpriced-model-rows:1"
-    )
-    assert USAGE_LANE_EXACT_TOKENS_FAMILY.validate(lanes["origin_reported"].exact_total_tokens_evidence) == ()
-    assert USAGE_LANE_CATALOG_COST_FAMILY.validate(lanes["origin_reported"].catalog_api_equivalent_evidence) == ()
+    # polylogue-shnc: rows with provider-reported tokens but no catalog price
+    # (or model) carry cost_provenance=NULL, not 'origin_reported' -- that
+    # label is reserved for a genuine provider-reported dollar figure. NULL
+    # groups under the report's "unknown" lane (COALESCE(cost_provenance,
+    # 'unknown') in _pricing_lane_reports).
+    assert lanes["unknown"].stored_cost_usd == 0
+    assert lanes["unknown"].catalog_api_equivalent_usd is None
+    assert lanes["unknown"].catalog_priced_subtotal_usd == pytest.approx(3.65)
+    assert lanes["unknown"].row_count == 3
+    assert lanes["unknown"].session_count == 2
+    assert lanes["unknown"].matched_model_row_count == 2
+    assert lanes["unknown"].unmatched_model_row_count == 1
+    assert lanes["unknown"].caveats == ("missing_price",)
+    assert lanes["unknown"].exact_total_tokens_evidence.value_state == "known"
+    assert lanes["unknown"].exact_total_tokens_evidence.value == 2_101_100
+    assert lanes["unknown"].catalog_api_equivalent_evidence.value_state == "unknown"
+    assert lanes["unknown"].catalog_api_equivalent_evidence.value is None
+    assert lanes["unknown"].catalog_api_equivalent_evidence.coverage.supported_count == 2
+    assert lanes["unknown"].catalog_api_equivalent_evidence.coverage.exclusions[0].reason == ("unpriced-model-rows:1")
+    assert USAGE_LANE_EXACT_TOKENS_FAMILY.validate(lanes["unknown"].exact_total_tokens_evidence) == ()
+    assert USAGE_LANE_CATALOG_COST_FAMILY.validate(lanes["unknown"].catalog_api_equivalent_evidence) == ()
     assert report.exact_total_tokens_evidence.value_state == "known"
     assert report.exact_total_tokens_evidence.value == 2_104_200
     assert report.catalog_api_equivalent_evidence.value_state == "unknown"
@@ -333,9 +346,9 @@ def test_provider_usage_report_separates_priced_and_origin_reported_repricing(tm
     assert report.catalog_api_equivalent_evidence.coverage.supported_count == 1
     assert logical_lanes["priced"].stored_cost_usd == 0
     assert logical_lanes["priced"].catalog_api_equivalent_usd == pytest.approx(0.0051)
-    assert logical_lanes["origin_reported"].catalog_api_equivalent_usd is None
-    assert logical_lanes["origin_reported"].catalog_priced_subtotal_usd == pytest.approx(3.65)
-    assert logical_lanes["origin_reported"].session_count == 2
+    assert logical_lanes["unknown"].catalog_api_equivalent_usd is None
+    assert logical_lanes["unknown"].catalog_priced_subtotal_usd == pytest.approx(3.65)
+    assert logical_lanes["unknown"].session_count == 2
     payload = report.to_dict()
     assert payload["pricing_catalog_provenance"] == "litellm-model-prices-vendored+polylogue-curated-overrides"
     assert payload["stored_provider_priced_usd"] == pytest.approx(1.25)
@@ -376,16 +389,26 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
             ('codex-session', 'origin', 'origin', 'standard', 2, 2, 1, 1, zeroblob(32))
         """
     )
+    conn.execute(
+        """
+        INSERT INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
+        VALUES ('test-catalog', 'test-hash', 'test', 0)
+        """
+    )
+    # polylogue-shnc: a row with provider-reported tokens but no stored cost
+    # carries cost_provenance=NULL, not 'origin_reported' -- that label is
+    # reserved for a genuine provider-reported dollar figure. NULL groups
+    # under the report's "unknown" lane.
     conn.executemany(
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd, priced_with
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
         """,
         [
-            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25),
-            ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, "origin_reported", None),
+            ("claude-code-session:priced", "claude-sonnet-4-5", 1000, 100, 2000, 0, "priced", 1.25, "test-catalog"),
+            ("codex-session:origin", "gpt-4o", 1_000_000, 100_000, 0, 0, None, None, None),
         ],
     )
 
@@ -400,11 +423,11 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
     assert priced_lane.subscription_credit_usd < priced_catalog_cost
 
     # gpt-4o has no declared Claude Code credit rate: never fabricate a figure.
-    origin_reported_lane = lanes["origin_reported"]
-    origin_catalog_cost = origin_reported_lane.catalog_api_equivalent_usd
-    assert origin_catalog_cost is not None
-    assert origin_reported_lane.subscription_credit_usd == 0.0
-    assert origin_catalog_cost > 0.0
+    unknown_lane = lanes["unknown"]
+    unknown_catalog_cost = unknown_lane.catalog_api_equivalent_usd
+    assert unknown_catalog_cost is not None
+    assert unknown_lane.subscription_credit_usd == 0.0
+    assert unknown_catalog_cost > 0.0
 
     report_catalog_cost = report.catalog_api_equivalent_usd
     assert report_catalog_cost is not None

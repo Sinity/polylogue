@@ -58,6 +58,10 @@ class SessionRecord(BaseModel):
     # verbatim (aistudio-drive runSettings). None when the read path didn't
     # select the column or the provider carries none.
     run_settings: JSONObject | None = None
+    # polylogue-gt1z (v49): exact provider-reported session cost total, when
+    # the origin's export carries one. None means the origin never reports
+    # a session-level total (not a measured zero).
+    reported_cost_usd: float | None = None
     # polylogue-o4j2 (v47): non-blank chunkedPrompt.pendingInputs entries
     # (unsent AI Studio textbox drafts), stored verbatim. Deliberately a
     # plain session-row field, outside session_revision_projection's

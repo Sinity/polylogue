@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 7240
+    loc: 7241
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -576,7 +576,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
-    loc: 947
+    loc: 995
     target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -632,7 +632,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/domain_models.py
-    loc: 152
+    loc: 157
     target: polylogue/archive/session/domain_models.py
     owner: archive-session
     reason: archive-domain semantics
@@ -3215,7 +3215,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1431
+    loc: 1430
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3347,7 +3347,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/tool_result_sidecars.py
-    loc: 409
+    loc: 246
     target: polylogue/sources/live/tool_result_sidecars.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
@@ -3408,7 +3408,7 @@ files:
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_parser.py
-    loc: 2035
+    loc: 2019
     target: polylogue/sources/parsers/claude/code_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/common.py
@@ -3737,7 +3737,7 @@ files:
     target: polylogue/storage/fts/sql.py
     owner: stable
   - path: polylogue/storage/hydrators.py
-    loc: 254
+    loc: 255
     target: polylogue/storage/hydrators.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3788,7 +3788,7 @@ files:
     target: polylogue/storage/insights/session/profiles.py
     owner: stable
   - path: polylogue/storage/insights/session/rebuild.py
-    loc: 1866
+    loc: 1945
     target: polylogue/storage/insights/session/rebuild.py
     owner: stable
   - path: polylogue/storage/insights/session/records.py
@@ -4005,7 +4005,7 @@ files:
     target: polylogue/storage/runtime/archive/__init__.py
     owner: stable
   - path: polylogue/storage/runtime/archive/records.py
-    loc: 404
+    loc: 408
     target: polylogue/storage/runtime/archive/records.py
     owner: stable
   - path: polylogue/storage/runtime/raw/__init__.py
@@ -4148,7 +4148,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 2009
+    loc: 2065
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
@@ -4224,7 +4224,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 6025
+    loc: 6192
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -4256,7 +4256,7 @@ files:
     target: polylogue/storage/sqlite/finding_provenance.py
     owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
-    loc: 622
+    loc: 635
     target: polylogue/storage/sqlite/lifecycle.py
     owner: stable
   - path: polylogue/storage/sqlite/maintenance.py
@@ -4324,7 +4324,7 @@ files:
     target: polylogue/storage/sqlite/queries/mappers.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_archive.py
-    loc: 285
+    loc: 286
     target: polylogue/storage/sqlite/queries/mappers_archive.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/mappers_insight_aggregates.py
@@ -4453,7 +4453,7 @@ files:
     target: polylogue/storage/sqlite/queries/sessions_identity.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/sessions_reads.py
-    loc: 418
+    loc: 420
     target: polylogue/storage/sqlite/queries/sessions_reads.py
     owner: stable
     cross_cut: { layer: read }

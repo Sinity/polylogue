@@ -15,7 +15,7 @@ from typing import TypeVar
 
 import aiosqlite
 
-from polylogue.archive.semantic.cost_records import ModelUsageTotals
+from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostSummary
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
@@ -835,12 +835,50 @@ async def _session_count_row_async(conn: aiosqlite.Connection, session_id: str) 
     return row
 
 
+def _bounded_session_cost_summary(
+    session_id: str,
+    origin: str,
+    model_usage: Sequence[ModelUsageTotals],
+) -> SessionCostSummary:
+    """Compute a bounded/large session's cost the same way ordinary sessions get it.
+
+    polylogue-umfp: the bounded profile path previously hardcoded
+    ``total_cost_usd=0.0``/``cost_provenance="unknown"`` unconditionally,
+    even when ``session_model_usage`` (the single per-session cost/usage
+    authority, polylogue-r7p6) already had real priced data -- the exact
+    surface-coherence gap the audit measured ($9.88 in the usage table,
+    $0.00/"unknown" from the profile, for the same session). Reading
+    ``session_model_usage`` here is O(few rows) keyed by
+    ``(session_id, model_name)``, not O(message_count), so it does not
+    reintroduce the walk the bounded path exists to avoid.
+
+    The message-less dummy ``Session`` below is safe: ``compute_session_cost``
+    only falls back to walking ``session.messages`` when ``model_usage`` is
+    empty (``_per_model_from_messages`` in ``cost_compute.py``), and
+    ``estimate_if_missing=False`` keeps it from calling
+    ``estimate_session_cost`` (which also walks messages) for the ``exact``
+    basis. A bounded session with no ``session_model_usage`` rows keeps its
+    honest zero-cost/"unknown" result, same as before this fix.
+    """
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.semantic.cost_compute import compute_session_cost
+    from polylogue.core.enums import Origin as _Origin
+
+    dummy_session = Session(
+        id=SessionId(session_id),
+        origin=_Origin.from_string(origin),
+        messages=MessageCollection(messages=[]),
+    )
+    return compute_session_cost(dummy_session, estimate_if_missing=False, model_usage=model_usage)
+
+
 def _large_session_profile_record_from_row(
     row: sqlite3.Row,
     session_id: str,
     *,
     logical_session_id: str | None,
     materialized_at: str,
+    model_usage: Sequence[ModelUsageTotals] = (),
 ) -> SessionProfileRecord:
     created_at = parse_archive_datetime(row["created_at"])
     updated_at = parse_archive_datetime(row["updated_at"])
@@ -865,6 +903,32 @@ def _large_session_profile_record_from_row(
     timestamped_count = message_count if canonical_at is not None else 0
     untimestamped_count = 0 if canonical_at is not None else message_count
     timestamp_coverage = "session_bounds_only" if canonical_at is not None else "none"
+
+    # polylogue-umfp: read the real per-session cost/usage authority
+    # (session_model_usage) instead of leaving every bounded-path profile at
+    # a hardcoded 0.0/"unknown" -- see _bounded_session_cost_summary.
+    if model_usage:
+        from polylogue.archive.session.runtime import _primary_model
+
+        cost_summary = _bounded_session_cost_summary(session_id, origin, model_usage)
+        primary_model_name, primary_model_family = _primary_model(cost_summary)
+        cost_provenance = cost_summary.cost_provenance
+        cost_is_estimated = cost_summary.cost_confidence != "reported"
+        per_model_cost_json = _json.dumps(
+            [breakdown.model_dump(mode="json") for breakdown in cost_summary.per_model],
+            sort_keys=True,
+        )
+    else:
+        # No session_model_usage rows at all: an honest "we did not compute
+        # this" label, distinguishable from a session actually priced at
+        # $0.00 -- never a bare "unknown" that reads the same as every other
+        # missing-cost case.
+        cost_summary = SessionCostSummary(cost_provenance="unknown_bounded_no_usage_rollup")
+        primary_model_name, primary_model_family = None, None
+        cost_provenance = cost_summary.cost_provenance
+        cost_is_estimated = True
+        per_model_cost_json = "[]"
+
     evidence = SessionEvidencePayload(
         created_at=created_at.isoformat() if created_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
@@ -892,7 +956,7 @@ def _large_session_profile_record_from_row(
         parent_id=str(row["parent_session_id"]) if row["parent_session_id"] else None,
         logical_session_id=resolved_logical_session_id,
         timing_provenance="bounded_session_counters",
-        cost_provenance="unknown",
+        cost_provenance=cost_provenance,
     )
 
     inference = SessionInferencePayload(
@@ -965,6 +1029,17 @@ def _large_session_profile_record_from_row(
             sort_keys=True,
         ),
         timing_provenance="bounded_session_counters",
+        total_cost_usd=cost_summary.total_api_cost_usd,
+        total_credit_cost=cost_summary.total_credit_cost,
+        cost_is_estimated=cost_is_estimated,
+        total_input_tokens=cost_summary.total_input_tokens,
+        total_output_tokens=cost_summary.total_output_tokens,
+        total_cache_read_tokens=cost_summary.total_cache_read_tokens,
+        total_cache_write_tokens=cost_summary.total_cache_write_tokens,
+        cost_provenance=cost_provenance,
+        per_model_cost_json=per_model_cost_json,
+        primary_model_name=primary_model_name,
+        primary_model_family=primary_model_family,
         evidence_payload=evidence,
         inference_payload=inference,
         enrichment_payload=enrichment,
@@ -983,11 +1058,13 @@ def _large_session_profile_record(
     materialized_at: str,
 ) -> SessionProfileRecord:
     row = _session_count_row(conn, session_id)
+    model_usage = sync_model_usage_batch(conn, [session_id]).get(session_id, [])
     return _large_session_profile_record_from_row(
         row,
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=materialized_at,
+        model_usage=model_usage,
     )
 
 
@@ -1049,11 +1126,13 @@ async def build_large_session_insight_record_bundle_async(
 ) -> SessionInsightRecordBundle:
     built_at = materialized_at or now_iso()
     row = await _session_count_row_async(conn, session_id)
+    model_usage = (await get_model_usage_batch(conn, [session_id])).get(session_id, [])
     profile = _large_session_profile_record_from_row(
         row,
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=built_at,
+        model_usage=model_usage,
     )
     return SessionInsightRecordBundle(
         profile_record=profile,
