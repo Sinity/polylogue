@@ -923,7 +923,15 @@ def backfill_historical_revision_evidence(
             # (sources/live/batch.py) does NOT opt in: a watched path can be
             # legitimately, atomically replaced with a different session's
             # content, which must not be quarantined as "divergent evidence".
-            plan = archive.classify_raw_revision_cohort(logical_key, check_source_path_identity_split=True)
+            plan = archive.classify_raw_revision_cohort(
+                logical_key,
+                check_source_path_identity_split=True,
+                # Batched replay defers the classification's source.db
+                # authority updates into the same batch window as the replay
+                # writes (idempotent, re-derived on resume -- see
+                # classify_raw_revision_cohort's docstring).
+                manage_transaction=not replay_batched,
+            )
             if not plan.accepted_raw_ids:
                 # Complete snapshots that are not a unique byte-prefix chain
                 # still carry semantic evidence. Move only that full-only
