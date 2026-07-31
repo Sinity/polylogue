@@ -104,6 +104,10 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
+    session_id: str | None = None
+    """Scope rollups to one session. Pushed into SQL as an equality predicate
+    on the indexed ``blocks.session_id`` column so a single-session lookup
+    stays cheap instead of joining/materializing the whole archive."""
     since_ms: int | None = None
     limit: int | None = None
 

@@ -73,6 +73,18 @@
           "default": null,
           "title": "Origin"
         },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
         "tool": {
           "anyOf": [
             {

@@ -451,6 +451,7 @@ class ToolCountFiltersPayload(SurfacePayloadModel):
     tool: str | None = None
     mcp_server: str | None = None
     action_kind: str | None = None
+    session_id: str | None = None
     detail_patterns: tuple[str, ...] = ()
     days: int | None = None
     basis: ToolCountBasis

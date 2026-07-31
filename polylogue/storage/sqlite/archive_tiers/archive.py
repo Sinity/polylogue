@@ -4090,6 +4090,9 @@ class ArchiveStore:
         if request.action_kind:
             where.append("COALESCE(NULLIF(b.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
+        if request.session_id:
+            where.append("b.session_id = ?")
+            params.append(request.session_id)
         if request.since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(request.since_ms)
@@ -4168,6 +4171,9 @@ class ArchiveStore:
         if request.action_kind:
             where.append(f"{handler_expr} = ?")
             params.append(request.action_kind)
+        if request.session_id:
+            where.append("u.session_id = ?")
+            params.append(request.session_id)
         if request.since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(request.since_ms)
@@ -4248,6 +4254,9 @@ class ArchiveStore:
         if request.action_kind:
             where.append("COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') = ?")
             params.append(request.action_kind)
+        if request.session_id:
+            where.append("u.session_id = ?")
+            params.append(request.session_id)
         effective_since_ms = since_ms if since_ms is not None else request.since_ms
         if effective_since_ms is not None:
             where.append("s.sort_key_ms >= ?")

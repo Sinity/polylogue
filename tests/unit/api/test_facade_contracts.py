@@ -141,6 +141,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_usage_timeline_insights",
         "list_archive_debt_insights",
         "provider_usage_report",
+        "session_usage_reconciliation",
         "count_sessions",
         "rebuild_index",
         "get_index_status",
@@ -752,6 +753,37 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
     assert result.total_messages == 2
     assert result.origins == {"claude-ai-export": 1}
     assert result.tags == {"work": 1}
+
+
+async def test_archive_facet_buckets_include_deferred_default_populates_sql_families(tmp_path: Path) -> None:
+    """``_archive_facet_buckets``'s shipped default (``include_deferred=True``)
+    must actually run the SQL facet-family aggregation (polylogue-f5tq).
+
+    The only prior test of this helper passed a ``SimpleNamespace`` with
+    ``_conn=None`` and ``include_deferred=False`` -- it could not exercise the
+    default path at all: passing ``True`` against that stub would crash
+    dereferencing a ``None`` connection. This test drives the real default
+    against a real ``ArchiveStore`` connection and asserts the SQL-derived
+    families (role_counts / message_types) are populated, not the hard-coded
+    empty dicts the ``include_deferred=False`` branch returns.
+    """
+    from polylogue.api.archive import _archive_facet_buckets
+
+    db_path = tmp_path / "index.db"
+    await _seed_two_sessions(db_path)
+
+    with ArchiveStore(tmp_path) as archive:
+        result = _archive_facet_buckets(archive, None, include_deferred=True)
+
+    assert result.total_sessions == 2
+    assert result.total_messages == 3
+    # The SQL-aggregated families below are exactly what the
+    # ``include_deferred=False`` branch hard-codes to ``{}`` -- a passing
+    # test against that branch cannot tell them apart from a broken default.
+    assert result.role_counts, "role_counts must be populated by the shipped default, not left empty"
+    assert result.role_counts.get("user") == 2
+    assert result.role_counts.get("assistant") == 1
+    assert result.message_types, "message_types must be populated by the shipped default"
 
 
 # ---------------------------------------------------------------------------

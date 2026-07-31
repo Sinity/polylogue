@@ -460,10 +460,9 @@ Session summaries:
         return f"""Rebuild working context for repo '{repo_name}' from the Polylogue archive.
 
 Call sequence:
-1. find_resume_candidates(repo_path="{cwd}", cwd=<current cwd>, recent_files=<recent files>, limit={limit}) — ranked resumable logical sessions for this checkout.
-2. get_resume_brief(session_id=<top candidate>, repo_path="{cwd}", recent_files=<same recent files>) — typed brief: goals, open threads, next actions, provenance refs, and overlap_basis.
-3. agent_coordination_brief(view="self") — check concurrent agents/worktrees before claiming work.
-4. blackboard_list(scope_repo="{repo_name}", unresolved=True) — unresolved notes/handoffs addressed to agents here.
+1. context(intent="resume", repo_path="{cwd}", cwd="{cwd}", recent_files=<recent files>, limit={limit}) — SessionStart preamble in one call: session lineage, ranked resume candidates, project git state, and provenance-gated assertion guidance.
+2. status(scope="coordination") — check concurrent agents/worktrees before claiming work.
+3. query(projection="blackboard", limit=20) — blackboard notes (unfiltered listing; filter client-side on scope_repo="{repo_name}" for notes addressed to agents here).
 
 Rules:
 - Cite refs (session_id, message_id) instead of pasting transcripts; fetch full text only for messages you will act on.
@@ -473,14 +472,14 @@ Rules:
     @mcp.prompt()
     async def postmortem_last(repo: str = "", since: str = "14d") -> str:
         """Postmortem the most recent failed or abandoned session for a repo."""
-        repo_name, cwd = _repo_context(repo)
+        repo_name, _cwd = _repo_context(repo)
         return f"""Postmortem the most recent failed or abandoned session for repo '{repo_name}'.
 
 Call sequence:
-1. find_abandoned_sessions(repo_path="{cwd}", since="{since}") and find_stuck_sessions(since="{since}") — candidates with dangling work or stuck tool calls.
-2. Pick the most recent relevant session; orient with get_session_summary(id=<session_id>).
-3. get_postmortem_bundle(repo="{repo_name}", since="{since}") — forensic bundle: timeline, decisions, tool errors.
-4. get_pathologies(repo="{repo_name}", since="{since}") — detected anti-patterns in the same window.
+1. query(projection="abandoned_sessions", repo="{repo_name}", since="{since}") and query(projection="stuck_sessions", repo="{repo_name}", since="{since}") — candidates with dangling work or stuck tool calls.
+2. Pick the most recent relevant session; orient with get(ref="session:<session_id>").
+3. query(projection="postmortem", repo="{repo_name}", since="{since}") — forensic bundle: timeline, decisions, tool errors.
+4. query(projection="pathologies", repo="{repo_name}", since="{since}") — detected anti-patterns in the same window.
 
 Report: what was attempted, where it failed (cite tool_result errors by ref), what remained undone, and the smallest next action.
 """
@@ -493,9 +492,8 @@ Report: what was attempted, where it failed (cite tool_result errors by ref), wh
         return f"""Find what was decided about '{topic}'.
 
 Call sequence:
-1. list_assertion_claims(kinds="decision,judgment,lesson", statuses="active,candidate", limit={limit}) — recorded decisions (authoritative when user-authored).
-2. query(expression={assertion_query!r}) — targeted assertion search.
-3. search(query={ranked_query!r}, limit=10) — decision discussions never recorded as assertions.
+1. query(expression={assertion_query!r}, limit={limit}) — recorded decision assertions about the topic (authoritative when user-authored).
+2. query(projection="sessions", expression={ranked_query!r}, limit=10) — ranked free-text search for decision discussions never recorded as assertions.
 
 Rules:
 - Recorded assertions outrank inferred prose; label each finding as recorded vs inferred.
@@ -511,8 +509,8 @@ Rules:
 
 Call sequence:
 1. query(expression={failure_query!r}, limit=20) — action rows for sessions containing failed tool outcomes.
-2. find_stuck_sessions(since="{since}") — sessions whose provider tool calls are bounded as stuck.
-3. For each hit: list_marks(session_id=<session_id>) and list_annotations for that session — an existing mark/annotation means acknowledged.
+2. query(projection="stuck_sessions", repo="{repo_name}", since="{since}") — sessions whose provider tool calls are bounded as stuck.
+3. query(projection="marks", limit=50) and query(projection="annotations", limit=50) — unfiltered listings; filter client-side by session_id per hit. An existing mark/annotation for that session means acknowledged.
 
 Report only sessions with failures and no acknowledgment; cite the failing action refs (tool, path, error).
 """
@@ -528,8 +526,8 @@ Report only sessions with failures and no acknowledgment; cite the failing actio
 Call sequence:
 1. query(expression={repository_query!r}, limit=20) — file/action rows for sessions that touched the path.
 2. query(expression={path_query!r}, limit=20) — per-file action rows (edits, reads, shell references).
-3. search(query='"{path}"', limit=10) — mentions in prose that never became edits.
-4. get_session_summary(id=<session_id>) on each hit for orientation.
+3. query(projection="sessions", expression='"{path}"', limit=10) — ranked free-text search for mentions in prose that never became edits.
+4. get(ref="session:<session_id>") on each hit for orientation.
 
 Rules: path matching is substring — prefer repo-relative fragments (e.g. polylogue/mcp/server_prompts.py) over bare filenames.
 """
