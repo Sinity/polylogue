@@ -384,6 +384,103 @@ def test_attachment_unrecognized_subtype_fails_loud() -> None:
     ]
 
 
+def test_attachment_deferred_tools_delta_drops_body_text_keeps_names() -> None:
+    """Capability deltas keep the added tool/skill names but drop the full
+    injected instruction-block text (unbounded, duplicative)."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-delta",
+                "attachment": {
+                    "type": "deferred_tools_delta",
+                    "addedNames": ["WebFetch", "WebSearch"],
+                    "addedLines": ["full description of WebFetch...", "full description of WebSearch..."],
+                },
+            }
+        ],
+        "sess-delta",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_capability_delta",
+            {
+                "added_names": ["WebFetch", "WebSearch"],
+                "added_body_count": 2,
+                "summary": "deferred_tools_delta",
+            },
+        )
+    ]
+
+
+def test_attachment_skill_listing_extracts_names_not_full_text() -> None:
+    """``skill_listing`` keeps skill names, not the full concatenated
+    markdown description of every available skill."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-skills",
+                "attachment": {
+                    "type": "skill_listing",
+                    "content": "- update-config: long description here\n- keybindings-help: another description",
+                },
+            }
+        ],
+        "sess-skills",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_capability_snapshot",
+            {
+                "skill_names": ["update-config", "keybindings-help"],
+                "skill_count": 2,
+                "summary": "skill_listing",
+            },
+        )
+    ]
+
+
+def test_attachment_diagnostics_bounds_to_per_file_counts() -> None:
+    """``diagnostics`` keeps per-file finding counts, not the full LSP
+    message text/ranges/codes for every finding."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-diag",
+                "attachment": {
+                    "type": "diagnostics",
+                    "files": [
+                        {
+                            "uri": "/repo/foo.py",
+                            "diagnostics": [
+                                {"message": "long pyright message", "severity": "Error"},
+                                {"message": "another long message", "severity": "Warning"},
+                            ],
+                        }
+                    ],
+                },
+            }
+        ],
+        "sess-diag",
+    )
+    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    assert events == [
+        (
+            "claude_diagnostics",
+            {
+                "file_count": 1,
+                "diagnostic_count": 2,
+                "files": [{"uri": "/repo/foo.py", "diagnostic_count": 2}],
+                "summary": "diagnostics",
+            },
+        )
+    ]
+
+
 def test_progress_agent_progress_dedups_into_one_delegation_event() -> None:
     """Three ``agent_progress`` ticks under the same dispatching tool_use
     collapse into ONE ``claude_delegation_progress`` event with a tick count

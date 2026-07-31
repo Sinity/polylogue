@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -368,6 +368,97 @@ _ATTACHMENT_TRANSIENT_SUBTYPES = frozenset(
 _ATTACHMENT_UNCLASSIFIED_EVENT_TYPE = "claude_attachment_unclassified"
 
 
+_SKILL_LISTING_NAME_RE = re.compile(r"^-\s*([\w-]+):", re.MULTILINE)
+
+
+def _bounded_delta_payload(attachment: Mapping[str, object]) -> dict[str, object]:
+    """Bound a capability-delta attachment to names/counts.
+
+    ``deferred_tools_delta``/``mcp_instructions_delta``/``agent_listing_delta``
+    carry an ``added*`` name list alongside an ``added*`` body-text list (full
+    tool/skill/MCP-server instruction blocks, potentially large and already
+    duplicated on disk or in the provider's own capability registry). Keeping
+    the names but dropping the body text matches the existing bounded-summary
+    precedent in ``_tool_execution_result_payload`` (hunk counts, not full
+    diffs) and ``_file_history_snapshot`` handling (file list, not file
+    contents).
+    """
+    added_names: list[str] = []
+    added_body_count = 0
+    for key, value in attachment.items():
+        if not isinstance(value, list):
+            continue
+        if key.endswith("Names") or key.endswith("Types"):
+            added_names.extend(str(v) for v in value if isinstance(v, str))
+        elif key.endswith("Lines") or key.endswith("Blocks"):
+            added_body_count += len(value)
+    return {"added_names": added_names, "added_body_count": added_body_count}
+
+
+def _bounded_capability_snapshot_payload(attachment: Mapping[str, object]) -> dict[str, object]:
+    """Bound a capability-snapshot attachment to names/counts.
+
+    ``skill_listing`` carries one large concatenated-markdown ``content``
+    string (all available skills' full descriptions); ``invoked_skills``
+    carries a ``skills`` list whose ``content`` field is each skill's full
+    body. Both duplicate content that already exists as a skill file on
+    disk -- extract just the names (bounded, queryable) rather than persist
+    the full text verbatim into every session that loads the skill roster.
+    """
+    skills = attachment.get("skills")
+    if isinstance(skills, list):
+        names = [str(skill.get("name")) for skill in skills if isinstance(skill, dict) and skill.get("name")]
+        return {"skill_names": names, "skill_count": len(skills)}
+    content = attachment.get("content")
+    if isinstance(content, str):
+        names = _SKILL_LISTING_NAME_RE.findall(content)
+        return {"skill_names": names, "skill_count": len(names)}
+    return {"skill_names": [], "skill_count": 0}
+
+
+def _bounded_diagnostics_payload(attachment: Mapping[str, object]) -> dict[str, object]:
+    """Bound a diagnostics attachment to per-file counts, not full messages.
+
+    ``diagnostics.files[].diagnostics[]`` carries full Pyright/LSP message
+    text, source ranges, and codes per finding -- unbounded in principle (as
+    many findings as the language server reports). Persist file-level counts
+    (queryable: "how many diagnostics did this session generate, on which
+    files") rather than the full message text, matching the
+    ``structured_patch_hunk_count`` precedent in ``_tool_execution_result_payload``.
+    """
+    files = attachment.get("files")
+    if not isinstance(files, list):
+        return {"file_count": 0, "diagnostic_count": 0, "files": []}
+    file_summaries: list[dict[str, object]] = []
+    total = 0
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            continue
+        diagnostics = file_entry.get("diagnostics")
+        count = len(diagnostics) if isinstance(diagnostics, list) else 0
+        total += count
+        uri = file_entry.get("uri")
+        file_summaries.append({"uri": uri if isinstance(uri, str) else None, "diagnostic_count": count})
+    return {"file_count": len(file_summaries), "diagnostic_count": total, "files": file_summaries}
+
+
+# Subtypes whose generic ``dict(attachment)`` payload carries unbounded free
+# text (full injected instruction blocks, full skill bodies, full diagnostic
+# messages) -- these get a dedicated bounded builder instead of the raw
+# pass-through every other subtype uses. Real file/reference content
+# (file/edited_text_file/nested_memory/plan_file_reference/task_reminder) is
+# deliberately NOT in this set: the full text there IS the evidence, not
+# duplicated decoration around it.
+_ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS: dict[str, Callable[[Mapping[str, object]], dict[str, object]]] = {
+    "deferred_tools_delta": _bounded_delta_payload,
+    "mcp_instructions_delta": _bounded_delta_payload,
+    "agent_listing_delta": _bounded_delta_payload,
+    "skill_listing": _bounded_capability_snapshot_payload,
+    "invoked_skills": _bounded_capability_snapshot_payload,
+    "diagnostics": _bounded_diagnostics_payload,
+}
+
+
 def _attachment_sidecar_event(item: dict[str, object], timestamp: str | None) -> ParsedSessionEvent | None:
     """Build the typed session_event for one ``attachment`` sidecar record.
 
@@ -388,15 +479,18 @@ def _attachment_sidecar_event(item: dict[str, object], timestamp: str | None) ->
         if subtype
         else _ATTACHMENT_UNCLASSIFIED_EVENT_TYPE
     )
-    payload = dict(attachment)
     if subtype == "queued_command":
         # Fold into the shared claude_queue_operation shape (operation/content)
         # instead of the raw commandMode/prompt field names.
-        payload = {
+        payload: dict[str, object] = {
             "operation": "queued_command",
             "content": attachment.get("prompt"),
             "command_mode": attachment.get("commandMode"),
         }
+    elif subtype is not None and subtype in _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS:
+        payload = _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS[subtype](attachment)
+    else:
+        payload = dict(attachment)
     payload["summary"] = subtype or "attachment"
     return ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=payload)
 
