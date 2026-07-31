@@ -26,6 +26,98 @@ def test_relationship_index_jsonl_is_metadata_not_session_stream() -> None:
     assert artifact.parse_as_session is False
 
 
+def test_relationship_index_jsonl_conversation_field_is_metadata_not_session_stream() -> None:
+    """Regression for polylogue-9ykn (gvgi): the REAL live-archive shape uses
+    a ``"conversation"`` field, not ``"session"`` (the field name the sibling
+    test above happens to use). Both must be refused -- pinning only the
+    ``"session"`` spelling gave false confidence: with the real field name,
+    ``looks_like_record_entry`` fell through to the generic ``"type"``-key
+    match and misclassified this as a session-record stream before this fix
+    (verified against a synthetic fixture matching the measured shape of
+    ``conversation_relationships.jsonl``, the single largest contributor to
+    the archive's empty-message rows: 96,748 of 101,765, ~95%).
+    """
+    records: list[JSONValue] = [
+        {
+            "conversation": f"conv-{index}",
+            "parent": f"parent-{index}",
+            "child": f"child-{index}",
+            "type": "assistant" if index % 2 else "user",
+            "timestamp": "2026-05-01T00:00:00.000Z",
+        }
+        for index in range(4)
+    ]
+
+    artifact = classify_artifact(
+        records,
+        provider="claude-code",
+        source_path="/tmp/project/analysis/index/conversation_relationships.jsonl",
+    )
+
+    assert artifact.kind is ArtifactKind.METADATA_DOCUMENT
+    assert artifact.parse_as_session is False
+
+
+def test_bare_tool_use_id_record_does_not_classify_as_session() -> None:
+    """Regression for polylogue-9ykn: a record whose only distinguishing
+    field is a ``tool_use_id``-shaped value (the real archive has 3 sessions
+    whose native_id is a bare ``toolu_*`` tool-use id, evidence of a
+    tool-result artifact acquired as an independent session rather than
+    joined as a sidecar -- see the sibling investigation polylogue-omsw for
+    the tool-result-specific acquisition-scope fix). A record with no
+    session/message envelope and no recognized record-ish key must fall
+    through to UNKNOWN, not default into a session.
+    """
+    record: JSONValue = {
+        "tool_use_id": "toolu_01AbCdEfGhIjKlMnOpQrStUv",
+        "output": "some tool output text, not a conversation turn",
+    }
+
+    artifact = classify_artifact(
+        record,
+        provider="claude-code",
+        source_path="/tmp/.claude/projects/x/tool-results/toolu_01AbCdEfGhIjKlMnOpQrStUv.json",
+    )
+
+    # Falls through the metadata-shaped fallback (a small scalar-valued dict)
+    # rather than UNKNOWN -- either way the invariant that matters holds: it
+    # never becomes a session.
+    assert artifact.kind in (ArtifactKind.UNKNOWN, ArtifactKind.METADATA_DOCUMENT)
+    assert artifact.parse_as_session is False
+
+
+def test_agent_sidecar_meta_never_classifies_as_session() -> None:
+    """Regression pin for polylogue-b508, re-verified as part of the
+    polylogue-9ykn general classifier: an agent-*.meta.json sidecar must
+    never become a session regardless of its content, only its path."""
+    payload: JSONValue = {"agentId": "agent-deadbeef", "transcriptPath": "agent-deadbeef.jsonl"}
+
+    artifact = classify_artifact(
+        payload,
+        provider="claude-code",
+        source_path="/tmp/.claude/projects/x/subagents/agent-deadbeef.meta.json",
+    )
+
+    assert artifact.kind is ArtifactKind.AGENT_SIDECAR_META
+    assert artifact.parse_as_session is False
+
+
+def test_workflow_run_snapshot_never_classifies_as_session() -> None:
+    """Regression pin: a workflows/wf_*.json run-snapshot record (real shape:
+    top-level runId/taskId/script keys, no session/message envelope) must
+    never become a session regardless of content, only its path."""
+    payload: JSONValue = {"runId": "wf_54d4fb2e-841", "taskId": "wq88yulle", "script": "export const meta = {}"}
+
+    artifact = classify_artifact(
+        payload,
+        provider="claude-code",
+        source_path="/tmp/.claude/projects/x/workflows/wf_54d4fb2e-841.json",
+    )
+
+    assert artifact.kind is ArtifactKind.WORKFLOW_RUN_SNAPSHOT
+    assert artifact.parse_as_session is False
+
+
 def test_chatgpt_codex_cloud_task_classifies_as_session_document() -> None:
     """bd polylogue-2m2e: without this branch, a codex.json task record fails
     every generic session-document heuristic (no "mapping"/"messages" list)
