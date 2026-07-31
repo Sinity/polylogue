@@ -133,6 +133,24 @@ async def _resolve_reference_query_pipeline(
     )
 
 
+def _metric_definition_payload(hooks: ServerCallbacks, metric_id: str) -> str:
+    """Resolve a ``metric:<hash-or-registered-name>`` ref (rxdo.9.1 identity layer).
+
+    Looks up the friendly name first (the common case for a hand-typed
+    ref), falling back to a direct content-hash lookup for
+    ``metric:<hash>`` refs copied from another surface's output.
+    """
+    from polylogue.insights.measurement.registered_metrics import DEFAULT_METRIC_REGISTRY
+
+    definition = DEFAULT_METRIC_REGISTRY.resolve(metric_id) or DEFAULT_METRIC_REGISTRY.get(f"metric:{metric_id}")
+    if definition is None:
+        return hooks.error_json(f"metric not found in the default registry: metric:{metric_id}", code="not_found")
+    return hooks.json_payload(
+        MCPRootPayload(root={"ref": definition.ref, "definition": definition.canonical_payload()}),
+        exclude_none=True,
+    )
+
+
 async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, method: str | None) -> str:
     """Project the current billing cycle for ``plan_name`` (``get`` tool, ``cost-outlook:`` refs).
 
@@ -812,14 +830,23 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         no replacement otherwise -- see polylogue-hg97). ``projection``
         selects the projection method (``linear`` default, ``trailing-7d-mean``,
         or ``eom-naive``).
+
+        ``ref="metric:<hash-or-registered-name>"`` resolves a canonical
+        ``metric:<hash>`` definition (rxdo.9.1) from the process-wide
+        default registry (``polylogue/insights/measurement/
+        registered_metrics.py``) -- identity/schema resolution only, not
+        execution (no aggregation engine exists yet; see polylogue-9l5.7).
         """
         normalized = _object_ref(ref)
         session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
         plan_name = normalized.removeprefix("cost-outlook:") if normalized.startswith("cost-outlook:") else None
+        metric_id = normalized.removeprefix("metric:") if normalized.startswith("metric:") else None
 
         async def run() -> str:
             if plan_name is not None:
                 return await _cost_outlook_payload(hooks, plan_name=plan_name, method=projection)
+            if metric_id is not None:
+                return _metric_definition_payload(hooks, metric_id)
             if projection == "events" and session_id is not None:
                 events = await hooks.get_polylogue().get_session_events(session_id)
                 if events is None:
