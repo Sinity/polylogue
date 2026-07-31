@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 from polylogue.core.enums import Origin
-from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
+from polylogue.schemas.drift_sentinel import DriftClassification
+from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
 OPS_SCHEMA_VERSION = 1
 
@@ -123,6 +126,30 @@ CREATE TABLE IF NOT EXISTS daemon_lifecycle (
 CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
 ON daemon_lifecycle(started_at_ms DESC);
 
+-- polylogue-u6tl: this is the canonical, production-reachable definition of
+-- `embedding_catchup_runs` -- written only by ops_write.upsert_embedding_
+-- catchup_run, whose sole callers are cli/commands/embed.py (the
+-- 'stopped'/'complete' payload vocabulary is translated to
+-- 'cancelled'/'completed' at embed.py:~878 before this INSERT) and
+-- daemon/embedding_backlog.py (writes 'running'/'completed'/'failed'
+-- directly). A SECOND, same-named table with a richer column set and its
+-- own CHECK -- CatchupRunStatus's full 5-value vocabulary (running,
+-- completed, stopped, failed, interrupted) -- is defined in
+-- storage/embeddings/progress.py (`ensure_embedding_catchup_runs_table`),
+-- reachable only from that module's own write helpers
+-- (start_/record_/finish_embedding_catchup_run), which have zero
+-- production callers -- only tests (test_embed_status_fast.py,
+-- test_embedding_contracts.py) exercise them directly. The two schemas are
+-- NOT the same table converging on two CHECKs: they are two independent,
+-- never-simultaneously-live implementations that happen to share a name.
+-- This CHECK is correct for what it actually governs (measured live,
+-- 2026-07-31: only 'completed'/'cancelled' ever observed, both accepted);
+-- widening it to CatchupRunStatus's 5 values would accept 'stopped'/
+-- 'interrupted' that this table's real writer never produces. Unifying the
+-- two implementations is tracked separately (polylogue-u6tl follow-up) --
+-- not attempted here because it requires either deleting a tested code
+-- path or reconciling two divergent column sets, neither of which is a
+-- CHECK-constraint-lockstep fix.
 CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     run_id              TEXT PRIMARY KEY,
     started_at_ms       INTEGER NOT NULL,
@@ -288,11 +315,25 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- read back as a windowed rate instead of discovered manually. ops.db is
 -- disposable, so this is a plain freeform-additive table (no migration),
 -- pruned by time and row count like fts_drift_samples/route_observations.
+--
+-- polylogue-u6tl: `classification` previously hand-listed only 3 of
+-- DriftClassification's 4 values (schemas/drift_sentinel.py), silently
+-- omitting 'known_field_unread'. record_schema_drift_observations_to_ops_sync
+-- (schemas/drift_sentinel_sampling.py) writes classification=observation.
+-- classification -- a real DriftClassification value -- inside a bare
+-- `except sqlite3.Error: return 0` best-effort guard, so every
+-- 'known_field_unread' observation was silently dropped by the CHECK
+-- instead of raising. Confirmed live (ops.db, read-only, 2026-07-31):
+-- schema_drift_samples has 313 'unseen_shape' rows and exactly 0
+-- 'known_field_unread' rows despite the classifier actively producing that
+-- label. Generating the CHECK from DriftClassification via literal_check
+-- closes the gap; ops.db is disposable so this needs no migration/version
+-- bump, just the corrected DDL for the next bootstrap/bootstrap-repair.
 CREATE TABLE IF NOT EXISTS schema_drift_samples (
     sample_id             TEXT PRIMARY KEY,
     origin                TEXT NOT NULL CHECK ({check("origin", Origin)}),
     element_kind          TEXT NOT NULL,
-    classification        TEXT NOT NULL CHECK(classification IN ('unseen_shape', 'new_field', 'field_changed')),
+    classification        TEXT NOT NULL CHECK ({literal_check("classification", *get_args(DriftClassification))}),
     unseen_key_signature  TEXT NOT NULL DEFAULT '',
     native_id_example     TEXT NOT NULL,
     raw_id                TEXT NOT NULL,

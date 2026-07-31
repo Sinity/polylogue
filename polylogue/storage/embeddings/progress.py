@@ -62,7 +62,24 @@ class CatchupRunDelta:
 
 
 def ensure_embedding_catchup_runs_table(conn: sqlite3.Connection) -> None:
-    """Create the catch-up run ledger if it is missing."""
+    """Create the catch-up run ledger if it is missing.
+
+    polylogue-u6tl: this table shares its name with, but is a completely
+    separate schema from, the canonical production
+    `embedding_catchup_runs` defined in
+    ``storage/sqlite/archive_tiers/ops.py`` (written by
+    ``ops_write.upsert_embedding_catchup_run`` via cli/commands/embed.py and
+    daemon/embedding_backlog.py). This module's own write helpers
+    (``start_``/``record_``/``finish_embedding_catchup_run``) have zero
+    production callers -- only ``test_embed_status_fast.py`` and
+    ``test_embedding_contracts.py`` exercise them, which is why this local
+    CHECK is free to carry the full 5-value ``CatchupRunStatus`` vocabulary
+    (including 'stopped'/'interrupted') while the canonical table's CHECK
+    only accepts the 4 values its real writer ever produces
+    ('running'/'completed'/'failed'/'cancelled'). See ops.py's DDL comment
+    on the canonical table for the full cross-reference; unifying the two
+    is tracked as a polylogue-u6tl follow-up, not done here.
+    """
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
