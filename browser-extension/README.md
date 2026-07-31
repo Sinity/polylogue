@@ -76,7 +76,9 @@ Nightly with `xpinstall.signatures.required = false`.
 polylogued browser-capture status
 ```
 
-Then navigate to `chatgpt.com`, `claude.ai`, or a supported Grok/X route.
+Then navigate to `chatgpt.com`, `claude.ai`, or `grok.com`. (Grok on `x.com`/`twitter.com`
+is not supported: it is served through X's own API rather than grok.com's, so it has no
+capture path here.)
 Open the popup and use **Capture page** for the current page or
 **Sync open tabs** for all currently open supported tabs. The extension does
 not continuously watch page mutations or capture while you type.
@@ -228,7 +230,7 @@ pages the badge shows grey and no data is sent.
 
 | Symptom | Check |
 |---------|-------|
-| Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or Grok/X) |
+| Badge is grey | Navigate to a supported page (chatgpt.com, claude.ai, or grok.com) |
 | Badge is red | Receiver is not running — start `polylogued browser-capture serve` |
 | Captures not appearing in archive | Run `polylogue check` to verify the daemon is ingesting |
 | Popup says `stale` | The receiver has a newer spool artifact than the indexed archive. Leave the daemon running and inspect the debug log request id if it does not converge. |
