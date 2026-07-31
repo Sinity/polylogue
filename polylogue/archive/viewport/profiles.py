@@ -179,6 +179,41 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "session with no session_events"),
     ),
     SessionViewProfile(
+        view_id="file-edits",
+        label="File Edits",
+        owner="polylogue.cli.read_views.file_edits.run_read_file_edits",
+        purpose=(
+            "Captured Claude Code Edit/Write/MultiEdit tool-call evidence: structured unified diffs "
+            "(structured_patch), pre-edit file content (original_file), and old/new string pairs -- "
+            "the typed 'what did this session change' data (polylogue-nua7/polylogue-cgfy)."
+        ),
+        input_scope="single session id",
+        included_kinds=("file path", "structured patch", "original file", "old/new string pair"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured file-edit payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="file edit list payload",
+        degraded_states=("missing session", "session with no captured file edits"),
+    ),
+    SessionViewProfile(
+        view_id="agent-policies",
+        label="Agent Policies",
+        owner="polylogue.cli.read_views.file_edits.run_read_agent_policies",
+        purpose=(
+            "Sandbox/approval/network policy facts (e.g. Codex agent_policy events), diverted out of "
+            "session_events into a dedicated table for zero-loss re-derivation (polylogue-nua7)."
+        ),
+        input_scope="single session id",
+        included_kinds=("approval policy", "sandbox policy", "network policy"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured policy payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="agent policy list payload",
+        degraded_states=("missing session", "session with no recorded agent-policy facts"),
+    ),
+    SessionViewProfile(
         view_id="context",
         label="Context",
         owner="polylogue.context.preamble.compose_context_preamble",
