@@ -51,6 +51,11 @@ class Origin(PolylogueStrEnum):
     GROK_EXPORT = "grok-export"
     CHATGPT_EXPORT = "chatgpt-export"
     CLAUDE_AI_EXPORT = "claude-ai-export"
+    # bd polylogue-tbun: Claude Design is a distinct product with its own wire
+    # format (camelCase contentBlocks/turnChanges/authorAccountUuid, content
+    # is a dict not a list) -- not claude.ai with a flag. See
+    # sources/parsers/claude/ai_parser.py's design-chat parser.
+    CLAUDE_DESIGN_SESSION = "claude-design-session"
     AISTUDIO_DRIVE = "aistudio-drive"
     UNKNOWN_EXPORT = "unknown-export"
 
@@ -70,6 +75,7 @@ class Provider(PolylogueStrEnum):
 
     CHATGPT = "chatgpt"
     CLAUDE_AI = "claude-ai"
+    CLAUDE_DESIGN = "claude-design"
     CLAUDE_CODE = "claude-code"
     CODEX = "codex"
     GEMINI = "gemini"

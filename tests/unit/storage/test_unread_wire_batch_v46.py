@@ -157,6 +157,75 @@ async def test_session_display_name_and_run_settings_round_trip(tmp_path: Path) 
     assert sessions[0].run_settings == {"temperature": 0.7, "topP": 0.9}
 
 
+async def test_session_pending_drafts_round_trips_through_writer_and_repository(tmp_path: Path) -> None:
+    """sessions.pending_drafts_json (v47, polylogue-o4j2): written by the real writer.
+
+    Fails if the writer stops persisting ``ParsedSession.pending_drafts`` (a
+    revert of the ``sessions`` INSERT column list), or if
+    ``SessionRepository.get_sessions_batch`` stops selecting/mapping the
+    column. Deliberately NOT a session_event round trip -- see
+    ``ParsedSession.pending_drafts``'s docstring for why a draft must stay
+    outside session_revision_projection's comparison axes.
+    """
+    backend = SQLiteBackend(db_path=tmp_path / "pending-drafts.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        session_id = await ingest_session(
+            ParsedSession(
+                source_name=Provider.GEMINI,
+                provider_session_id="pending-drafts-1",
+                title="Untitled",
+                pending_drafts=[{"text": "unsent follow-up", "role": "user", "token_count": 3}],
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hi",
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                    ),
+                ],
+            ),
+            backend=backend,
+        )
+        sessions = await repo.get_sessions_batch([session_id])
+    finally:
+        await repo.close()
+
+    assert len(sessions) == 1
+    assert sessions[0].pending_drafts == [{"text": "unsent follow-up", "role": "user", "token_count": 3}]
+
+
+async def test_session_pending_drafts_empty_for_session_without_drafts(tmp_path: Path) -> None:
+    """No pendingInputs on the wire must round-trip as None, not an empty list."""
+    backend = SQLiteBackend(db_path=tmp_path / "pending-drafts-empty.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        session_id = await ingest_session(
+            ParsedSession(
+                source_name=Provider.GEMINI,
+                provider_session_id="pending-drafts-empty-1",
+                title="Untitled",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hi",
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                    ),
+                ],
+            ),
+            backend=backend,
+        )
+        sessions = await repo.get_sessions_batch([session_id])
+    finally:
+        await repo.close()
+
+    assert len(sessions) == 1
+    assert sessions[0].pending_drafts is None
+
+
 async def test_file_edits_round_trip_keyed_by_tool_use_block(tmp_path: Path) -> None:
     """file_edits: a new relation keyed by the tool_use block id.
 

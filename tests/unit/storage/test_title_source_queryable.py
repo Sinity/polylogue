@@ -110,6 +110,65 @@ def test_titleless_session_falls_back_to_structural_label(tmp_path: Path) -> Non
         assert matched[0].title_source == "path"
 
 
+def test_unknown_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
+    """polylogue-cijx.4 decision 3: ``title_source='unknown'`` is NOT a real
+    title, even when ``sessions.title`` is non-blank.
+
+    Claude Code's parser (``sources/parsers/claude/code_parser.py``)
+    initializes ``title`` to the raw composed session id (e.g.
+    ``"<uuid>:agent-<hash>"`` for a subagent) and only promotes
+    ``title_source`` off ``UNKNOWN`` when a real signal (human message,
+    ``agent-name``, ``ai-title``, ``custom-title``) is found. So a real
+    Claude Code row can carry a non-NULL, non-blank ``title`` *and*
+    ``title_source='unknown'`` simultaneously -- exactly the case decision 3
+    exists to fix ("a structural label today reads 'agent-<hash> - 27f -
+    499m' -- worse than the UUID it replaces"). Before this fix,
+    ``_summary_from_row`` treated any non-blank title as a real one
+    regardless of provenance, so the structural-label fallback never fired
+    for this population (measured live: 48.7% of root sessions).
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    db_path = tmp_path / "index.db"
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        session = ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="raw-uuid-1234",
+            title="raw-uuid-1234",  # the code_parser.py raw-id fallback shape
+            title_source=TitleSource.UNKNOWN,
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="hi",
+                    position=0,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, session)
+        conn.commit()
+    finally:
+        conn.close()
+
+    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+        session_id = archive.resolve_session_id("raw-uuid-1234")
+        summary = archive.read_summary(session_id)
+        assert summary.title != "raw-uuid-1234"
+        assert summary.title_source == "path"
+
+        listed = archive.list_summaries(origin="claude-code-session", limit=10, offset=0)
+        matched = [s for s in listed if s.session_id == session_id]
+        assert len(matched) == 1
+        assert matched[0].title != "raw-uuid-1234"
+        assert matched[0].title_source == "path"
+
+
 @pytest.mark.asyncio
 async def test_session_filter_summary_exposes_title_source(workspace_env: dict[str, Path]) -> None:
     """``SessionFilter.list_summaries()`` yields a domain ``SessionSummary`` with ``title_source`` set."""

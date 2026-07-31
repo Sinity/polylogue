@@ -16,11 +16,11 @@ from polylogue.daemon.route_contracts import (
     route_contract_for_pattern,
     stable_route_contracts,
 )
+from tests.infra.daemon_http_harness import capture_responses
 from tests.unit.daemon.test_daemon_http_security import (
     ENDPOINTS_DELETE,
     ENDPOINTS_GET,
     ENDPOINTS_POST,
-    _capture_responses,
     _make_handler,
 )
 
@@ -105,7 +105,7 @@ def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_br
         ).encode(),
         server=bridge,
     )
-    _send_error, send_json = _capture_responses(handler)
+    _send_error, send_json = capture_responses(handler)
 
     handler._handle_rebuild_index()
 
@@ -300,7 +300,7 @@ def test_shell_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
     """Local shell bootstrap remains frictionless on loopback."""
 
     handler = _make_handler("GET", path)
-    send_error, _ = _capture_responses(handler)
+    send_error, _ = capture_responses(handler)
     handler._serve_web_shell = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
     handler._serve_paste_browser_page = lambda: None  # type: ignore[method-assign]
@@ -323,7 +323,7 @@ def test_shell_bootstrap_requires_token_on_non_loopback(path: str) -> None:
     handler = _make_handler("GET", path)
     handler.server = RemoteMockServer()  # type: ignore[assignment]
     handler.client_address = ("192.0.2.10", 12345)
-    send_error, _ = _capture_responses(handler)
+    send_error, _ = capture_responses(handler)
 
     handler.do_GET()
 

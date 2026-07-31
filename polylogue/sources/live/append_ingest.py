@@ -77,7 +77,10 @@ def _ingest_append_plans_archive(
     t0 = time.perf_counter()
     from polylogue.sources.decoders import _iter_json_stream
     from polylogue.sources.dispatch import parse_payload
-    from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+    from polylogue.sources.revision_backfill import (
+        _is_declared_non_session_artifact,
+        parse_retained_raw_sessions,
+    )
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     _add_timing(timings, "append.imports", t0)
@@ -109,6 +112,39 @@ def _ingest_append_plans_archive(
                     t0 = time.perf_counter()
                     payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
                     _add_timing(timings, "append.json_stream", t0)
+                    # polylogue-xwkh: this was the third, ungated chokepoint.
+                    # Live daemon ingest (ingest_worker.py) and rebuild replay
+                    # (revision_backfill.py's _parse_one/_parse_stream) both
+                    # already refuse to session-parse an OriginSpec-declared
+                    # "fact" artifact (workflow_run_snapshot / workflow_journal
+                    # / agent_sidecar_meta / adopt_manifest) or non-
+                    # conversational content with no matching path rule, via
+                    # this same classify_artifact-backed check. This path had
+                    # none: parse_payload ran unconditionally below, so a
+                    # growing fact-artifact file (e.g. a workflow
+                    # journal.jsonl whose ops.db cursor was lost and
+                    # resynthesized from a durable 'full' baseline in
+                    # source.db -- see batch.py's
+                    # _resynthesize_cursor_from_source) reached parse_payload
+                    # ungated. Empirically it was NOT reaching
+                    # write_parsed_session_to_archive: parse_retained_raw_sessions
+                    # (used a few lines below, for replay) applies this same
+                    # gate and returns no sessions, which trips the
+                    # 'did not replay to exactly one session' RuntimeError and
+                    # the whole plan fails -- but only after a wasted raw
+                    # write, a wasted parse, and a crash-shaped failure log,
+                    # repeated on every single observation of the file
+                    # forever, since a failed append never advances its
+                    # cursor. Refusing here, before any of that work, closes
+                    # the third chokepoint on the same terms as the other two.
+                    if _is_declared_non_session_artifact(provider, str(plan.path), sample=payloads[:64]):
+                        archive.mark_raw_parse_failed(
+                            raw_id,
+                            provider=provider,
+                            error=ValueError("append payload is a declared non-session artifact"),
+                        )
+                        failed.append(plan)
+                        continue
                     t0 = time.perf_counter()
                     sessions = parse_payload(
                         provider,

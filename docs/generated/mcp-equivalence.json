@@ -904,7 +904,7 @@
           "access_result_shape": "context:bounded_context:single_object",
           "authority": "mcp-capability:read",
           "durability": "transport-adapter; domain-owner-controls-durability",
-          "identity": "mcp-tool:context-snapshot",
+          "identity": "mcp-tool:context-snapshot,context-delivery",
           "lifecycle": "registered-handler-retained"
         },
         "completeness_edges": [
@@ -958,7 +958,8 @@
       },
       "name": "context",
       "object_kinds": [
-        "context-snapshot"
+        "context-snapshot",
+        "context-delivery"
       ],
       "observed_use": "observed",
       "operation_owner": "polylogue.api.Polylogue.context_image_payload",

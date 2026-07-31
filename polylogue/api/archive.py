@@ -1128,6 +1128,78 @@ def _archive_get_context_delivery(
         return None
 
 
+def _archive_list_context_deliveries(
+    config: Config,
+    *,
+    recipient_ref: str | None,
+    assertion_ref: str | None,
+    limit: int,
+) -> list[ArchiveContextDeliveryEnvelope]:
+    """List bounded delivery-receipt envelopes, most recent first."""
+
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import list_context_deliveries
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return list_context_deliveries(conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return []
+
+
+def _archive_record_context_delivery(
+    config: Config,
+    *,
+    image: ContextImage,
+    boundary: str,
+    recipient_ref: str,
+    delivered_by_ref: str,
+    run_ref: str | None,
+    inheritance_mode: str,
+) -> ArchiveContextDeliveryEnvelope:
+    """Persist one exact delivery receipt for a compiled context image.
+
+    This is the delivery boundary the storage layer (fs1.11/PR #2703) was
+    built for but that no surface called: compilation alone is not evidence.
+    Exact retries are idempotent and any drift in the immutable delivery
+    identity is rejected -- both enforced by ``write_context_delivery``, not
+    reimplemented here.
+    """
+
+    from polylogue.context.compiler import context_snapshot_record_from_image
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("context-delivery user tier is not initialized")
+    record = context_snapshot_record_from_image(
+        image, boundary=boundary, run_ref=run_ref, inheritance_mode=inheritance_mode
+    )
+    try:
+        conn = open_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = write_context_delivery(
+                conn,
+                image=image,
+                record=record,
+                recipient_ref=recipient_ref,
+                delivered_by_ref=delivered_by_ref,
+            )
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to record context delivery: {exc}") from exc
+
+
 def _archive_correlate_hermes_context_deliveries(
     config: Config,
     *,
@@ -2593,6 +2665,102 @@ class PolylogueArchiveMixin:
             self.config,
             snapshot_ref=snapshot_ref,
             recipient_ref=recipient_ref,
+        )
+
+    async def list_context_deliveries(
+        self,
+        *,
+        recipient_ref: str | None = None,
+        assertion_ref: str | None = None,
+        limit: int = 50,
+    ) -> list[ArchiveContextDeliveryEnvelope]:
+        """List bounded delivery-receipt envelopes, most recent first.
+
+        Read-only audit seam over the durable user-tier ledger, filterable by
+        recipient and/or assertion ref. Callers that need full disclosure of
+        one receipt's exact content still go through :meth:`get_context_delivery`,
+        which scopes disclosure to the recorded recipient.
+        """
+
+        return _archive_list_context_deliveries(
+            self.config,
+            recipient_ref=recipient_ref,
+            assertion_ref=assertion_ref,
+            limit=max(1, min(limit, 200)),
+        )
+
+    async def record_context_delivery(
+        self,
+        *,
+        image: ContextImage,
+        boundary: str,
+        recipient_ref: str,
+        delivered_by_ref: str,
+        run_ref: str | None = None,
+        inheritance_mode: str = "explicit",
+    ) -> ArchiveContextDeliveryEnvelope:
+        """Persist one exact delivery receipt for an already-compiled context image.
+
+        This is the low-level delivery boundary: it records exactly the
+        ``image`` passed in, scoped to ``recipient_ref``. Exact retries
+        (identical image + identity fields) are idempotent; any drift in the
+        immutable delivery identity is rejected. Most callers should use
+        :meth:`compile_and_record_context`, which also performs the
+        compilation and returns the exact image alongside the receipt.
+        """
+
+        return _archive_record_context_delivery(
+            self.config,
+            image=image,
+            boundary=boundary,
+            recipient_ref=recipient_ref,
+            delivered_by_ref=delivered_by_ref,
+            run_ref=run_ref,
+            inheritance_mode=inheritance_mode,
+        )
+
+    async def compile_and_record_context(
+        self,
+        *,
+        recipient_ref: str,
+        delivered_by_ref: str,
+        boundary: str,
+        query: str | None = None,
+        max_sessions: int = 5,
+        max_tokens: int | None = None,
+        include_messages: bool = True,
+        include_assertions: bool = True,
+        redact_paths: bool = True,
+        seed_session_id: str | None = None,
+        run_ref: str | None = None,
+        inheritance_mode: str = "explicit",
+    ) -> ArchiveContextDeliveryEnvelope:
+        """Compile one bounded context image and record its exact delivery receipt.
+
+        This is the named delivery boundary: it compiles through
+        :meth:`context_image_payload` (the same engine every other context
+        surface uses -- no parallel compiler) and the returned receipt's
+        ``context_image`` is exactly the image that was compiled, so the call
+        itself is evidence of what crossed the boundary, not merely that
+        compilation happened.
+        """
+
+        image = await self.context_image_payload(
+            query=query,
+            max_sessions=max_sessions,
+            max_tokens=max_tokens,
+            include_messages=include_messages,
+            include_assertions=include_assertions,
+            redact_paths=redact_paths,
+            seed_session_id=seed_session_id,
+        )
+        return await self.record_context_delivery(
+            image=image,
+            boundary=boundary,
+            recipient_ref=recipient_ref,
+            delivered_by_ref=delivered_by_ref,
+            run_ref=run_ref,
+            inheritance_mode=inheritance_mode,
         )
 
     async def correlate_hermes_context_deliveries(
@@ -5093,7 +5261,7 @@ class PolylogueArchiveMixin:
         ``world_state``/``agent_policy``/``turn_context`` policy facts
         (sandbox/truncation policy, rate limits, ghost commits, developer
         instructions), every Claude Code sidecar event (``claude_todo_state``,
-        ``claude_tool_result_sidecar``, ``claude_attachment``, ``micro_compaction``,
+        ``claude_tool_result_sidecar``, ``claude_attachment_file``, ``micro_compaction``,
         etc.), Hermes ``hermes_tool_availability_span``/``hermes_*`` step
         telemetry, and ``claude_ai_conversation_summary`` all surface through
         the same one reader instead of a bespoke accessor per event type.
@@ -5403,7 +5571,12 @@ class PolylogueArchiveMixin:
     ) -> JSONDocument | None:
         """Return git/GitHub correlation evidence as a JSON surface payload."""
 
-        from polylogue.insights.session_commit import build_correlation_result, correlation_result_to_payload
+        from polylogue.insights.session_commit import (
+            bridge_session_ids_from_events,
+            build_correlation_result,
+            correlation_result_to_payload,
+            typed_refs_from_session_refs,
+        )
 
         session = await self.get_session(session_id)
         if session is None:
@@ -5432,6 +5605,10 @@ class PolylogueArchiveMixin:
                 }
             )
 
+        session_refs = await self.repository.get_session_refs(session_id)
+        typed_pr_refs, typed_issue_refs = typed_refs_from_session_refs(session_refs)
+        bridge_session_ids = bridge_session_ids_from_events(session.session_events)
+
         result = build_correlation_result(
             session_id=session_id,
             messages=messages,
@@ -5441,6 +5618,9 @@ class PolylogueArchiveMixin:
             before_hours=since_hours,
             after_hours=since_hours,
             confidence_threshold=confidence_threshold,
+            typed_pr_refs=typed_pr_refs,
+            typed_issue_refs=typed_issue_refs,
+            bridge_session_ids=bridge_session_ids,
         )
         return cast(JSONDocument, correlation_result_to_payload(result))
 

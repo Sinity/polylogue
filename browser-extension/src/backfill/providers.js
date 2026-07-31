@@ -50,6 +50,22 @@ function chatGptText(content) {
   }
   if (typeof content?.text === "string" && content.text) return content.text;
   if (typeof content?.result === "string" && content.result) return content.result;
+  // A "thoughts" (reasoning) node keeps its payload as an array of
+  // {summary, content} entries rather than parts/text/result. Without this,
+  // a turn whose ONLY content is a thoughts node produces an empty text ->
+  // the caller's `if (!text) return []` in normalizeCapture drops the turn
+  // silently, which can misclassify a genuine (if reasoning-only) exchange
+  // as `no_turns` and skip the whole conversation. This session-summary
+  // text is a dedup/no_turns signal, not the archival record (the fixed
+  // full-fidelity raw_provider_payload.mapping is), but it should not lie.
+  if (Array.isArray(content?.thoughts)) {
+    const thoughts = content.thoughts.flatMap((thought) => {
+      if (typeof thought?.content === "string" && thought.content) return [thought.content];
+      if (typeof thought?.summary === "string" && thought.summary) return [thought.summary];
+      return [];
+    });
+    if (thoughts.length) return thoughts.join("\n");
+  }
   return "";
 }
 
@@ -104,11 +120,19 @@ function claudeText(message) {
   return message.content.flatMap((part) => {
     if (typeof part === "string") return [part];
     if (part && typeof part === "object" && typeof part.text === "string") return [part.text];
+    // Claude's extended-thinking content blocks carry their payload under
+    // `thinking`, not `text`. Without this, a turn whose ONLY content is a
+    // thinking block yields an empty summary text and is dropped by
+    // normalizeCapture's `if (!text) return []` -- same class of gap as the
+    // ChatGPT `thoughts` fix above, for the same reason (this session-
+    // summary text is a dedup/no_turns signal; the archival record is the
+    // unmodified rawPayload body, already full-fidelity for Claude).
+    if (part && typeof part === "object" && typeof part.thinking === "string") return [part.thinking];
     return [];
   }).filter(Boolean).join("\n");
 }
 
-function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawPayload, adapterName, sourceUrl, attribution, captureFidelity = "native_full" }) {
+function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawPayload, adapterName, sourceUrl, attribution, captureFidelity = "native_full", sessionKind = "standard" }) {
   return {
     polylogue_capture_kind: "browser_llm_session",
     schema_version: 1,
@@ -127,6 +151,7 @@ function envelope({ provider, nativeId, title, createdAt, updatedAt, turns, rawP
     session: {
       provider,
       provider_session_id: nativeId,
+      session_kind: sessionKind === "temporary" ? "temporary" : "standard",
       title: title || nativeId,
       created_at: createdAt,
       updated_at: updatedAt,
@@ -221,8 +246,14 @@ export class ChatGptBackfillAdapter {
         },
       }];
     });
-    const compact = body.polylogue_bridge_projection === "chatgpt-native-compact-v1";
-    return envelope({ provider: "chatgpt", nativeId: item.native_id, title: body.title || item.title, createdAt: isoTimestamp(body.create_time), updatedAt: isoTimestamp(body.update_time) || item.updated_at, turns, rawPayload: body, adapterName: compact ? "chatgpt-backfill-compact-v1" : "chatgpt-backfill-native-v1", sourceUrl: `https://chatgpt.com/c/${item.native_id}`, attribution, captureFidelity: compact ? "native_compact" : "native_full" });
+    // page_transport.js's ChatGPT bridge projection is full-fidelity (every
+    // content-type payload key and every metadata key preserved, chunked
+    // across bounded scripting-result calls rather than field-dropped -- see
+    // polylogue-thoughts-fidelity), so a backfilled ChatGPT capture is always
+    // native_full now; the lossy "compact" projection tag/capture_fidelity
+    // value no longer exists on the emitting side (the Python parser retains
+    // read support for historical archive rows tagged native_compact).
+    return envelope({ provider: "chatgpt", nativeId: item.native_id, title: body.title || item.title, createdAt: isoTimestamp(body.create_time), updatedAt: isoTimestamp(body.update_time) || item.updated_at, turns, rawPayload: body, adapterName: "chatgpt-backfill-native-v1", sourceUrl: `https://chatgpt.com/c/${item.native_id}`, attribution, captureFidelity: "native_full" });
   }
 }
 
@@ -308,10 +339,114 @@ export class ClaudeBackfillAdapter {
   }
 }
 
+// grok.com's own REST surface (verified live 2026-07-31, see
+// src/content/grok_bridge.js): pageToken-based pagination
+// (`nextPageToken` absent/empty marks the last page -- confirmed against a
+// 20-conversation account with pageSize=200), plus a two-fetch conversation
+// read (metadata + `/responses`) combined into one synthetic Response-like
+// object so this adapter's fetchNative/normalizeCapture contract matches
+// ChatGPT/Claude's single-response shape.
+const GROK_PAGE_SIZE = 60;
+
+export class GrokBackfillAdapter {
+  constructor(fetchImpl = globalThis.fetch, options = {}) {
+    this.fetchImpl = fetchImpl;
+    this.requirePageContext = Boolean(options.requirePageContext);
+    this.provider = "grok";
+  }
+  configure() {}
+  // Every native fetch costs two provider requests (conversation metadata +
+  // responses), same accounting ChatGPT uses for its own two-stage fetch.
+  requestCost() { return 2; }
+  async enumerate(cursor = "0", cutoff = null) {
+    const pageToken = cursor && cursor !== "0" ? cursor : null;
+    const url = new URL("https://grok.com/rest/app-chat/conversations");
+    url.searchParams.set("pageSize", String(GROK_PAGE_SIZE));
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const response = await providerRequest(this.fetchImpl, url.href);
+    if (this.requirePageContext && response.polyloguePageContext !== true) {
+      return { response, classification: "auth_or_challenge", items: [], next_cursor: cursor, done: false, request_count: 1 };
+    }
+    if (!response.ok) return { response, classification: responseClass(response), items: [], next_cursor: cursor, done: false, request_count: 1 };
+    const body = await jsonResponse(response, "grok_inventory");
+    const records = requireArray(body.conversations, "grok_inventory.conversations");
+    const projected = records.map((item, index) => ({
+      native_id: requireString(item.conversationId, `grok_inventory.conversations[${index}].conversationId`),
+      title: typeof item.title === "string" ? item.title : null,
+      updated_at: isoTimestamp(item.modifyTime),
+    }));
+    const items = projected.filter((item) => !cutoff || !item.updated_at || item.updated_at >= cutoff);
+    const crossedCutoff = Boolean(cutoff && projected.some((item) => item.updated_at && item.updated_at < cutoff));
+    const nextPageToken = typeof body.nextPageToken === "string" && body.nextPageToken ? body.nextPageToken : null;
+    const done = !nextPageToken || crossedCutoff;
+    return { response, classification: "success", items, next_cursor: nextPageToken || cursor, done, request_count: 1 };
+  }
+  async fetchNative(nativeId) {
+    const conversationResponse = await providerRequest(this.fetchImpl, `https://grok.com/rest/app-chat/conversations/${encodeURIComponent(nativeId)}`);
+    if (!conversationResponse.ok) return conversationResponse;
+    const responsesResponse = await providerRequest(this.fetchImpl, `https://grok.com/rest/app-chat/conversations/${encodeURIComponent(nativeId)}/responses`);
+    if (!responsesResponse.ok) return responsesResponse;
+    const conversation = await jsonResponse(conversationResponse, "grok_conversation");
+    const responsesBody = await jsonResponse(responsesResponse, "grok_conversation_responses");
+    const responses = requireArray(responsesBody.responses, "grok_conversation_responses.responses");
+    return {
+      ok: true,
+      status: 200,
+      polyloguePageContext: responsesResponse.polyloguePageContext,
+      async json() {
+        return { ...conversation, responses };
+      },
+    };
+  }
+  classifyResponse(response) {
+    if (this.requirePageContext && response.polyloguePageContext !== true) return "auth_or_challenge";
+    return responseClass(response);
+  }
+  async normalizeCapture(response, item, attribution) {
+    const body = await jsonResponse(response, "grok_conversation_combined");
+    const responses = requireArray(body.responses, "grok_conversation_combined.responses");
+    const turns = responses.flatMap((entry, index) => {
+      if (!entry || typeof entry.responseId !== "string") return [];
+      const text = grokConversationText(entry).trim();
+      if (!text) return [];
+      return [{
+        provider_turn_id: requireString(entry.responseId, `grok_conversation_combined.responses[${index}].responseId`),
+        role: normalizedRole(String(entry.sender || "").toLowerCase()),
+        text,
+        timestamp: isoTimestamp(entry.createTime),
+        parent_turn_id: entry.parentResponseId || null,
+        provider_meta: {
+          model: entry.model || null,
+          sender: entry.sender || null,
+          capture_source: "grok_app_chat_api",
+        },
+      }];
+    });
+    return envelope({
+      provider: "grok",
+      nativeId: item.native_id,
+      title: body.title || item.title,
+      createdAt: isoTimestamp(body.createTime),
+      updatedAt: isoTimestamp(body.modifyTime) || item.updated_at,
+      turns,
+      rawPayload: body,
+      adapterName: "grok-backfill-native-v1",
+      sourceUrl: `https://grok.com/c/${item.native_id}`,
+      attribution,
+      sessionKind: body.temporary === true ? "temporary" : "standard",
+    });
+  }
+}
+
+function grokConversationText(response) {
+  return typeof response?.message === "string" ? response.message : "";
+}
+
 export function providerAdapters(fetchImpl = globalThis.fetch, options = {}) {
   return {
     chatgpt: new ChatGptBackfillAdapter(fetchImpl, { requirePageContext: options.requirePageContext }),
     "claude-ai": new ClaudeBackfillAdapter(fetchImpl, options.claudeOrganizationId || null, { requirePageContext: options.requirePageContext }),
+    grok: new GrokBackfillAdapter(fetchImpl, { requirePageContext: options.requirePageContext }),
   };
 }
 import { PROVIDER_REQUEST_TIMEOUT_MS } from "./models.js";

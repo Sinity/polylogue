@@ -434,6 +434,37 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # behaviour.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=47,
+        # polylogue-o4j2: sessions.pending_drafts_json -- aistudio-drive
+        # pendingInputs draft text, moved off the session_events axis (see
+        # index.py's v47 header comment). Values depend on parser semantics
+        # (the new column is populated only by re-parsing the drive.py
+        # payload), so a shape-only copy-forward would leave every row NULL
+        # -- the same v42/v44/v45/v46 precedent. SEMANTIC_REPARSE routes
+        # through `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=48,
+        # polylogue-lzh8: retroactive declaration for 1e0246d77 (#3088,
+        # "admit Claude Workflow artifacts through OriginSpec", merged
+        # 2026-07-18), which changed origin_specs.py's artifact rules to
+        # correctly classify workflow_run_snapshot / workflow_journal /
+        # agent_sidecar_meta / adopt_manifest paths as parse_policy="fact"
+        # (never session-parsed) without declaring an INDEX_SCHEMA_VERSION
+        # bump. There is no DDL surface to fast-forward: this is a pure
+        # values/classification change over already-persisted rows, the
+        # same v42/v44/v45/v46 "SEMANTIC_REPARSE with no clone-safe SQL
+        # delta" shape. See index.py's v48 header comment for the measured
+        # live-impact counts (172 zero-message sessions from the four
+        # workflow-artifact kinds, all acquired before the fix reached the
+        # deployed daemon build). Resolving these existing rows requires
+        # `polylogue ops reset --index && polylogued run` -- deliberately
+        # NOT executed by this declaration; see the accompanying PR body for
+        # the explicit operator-facing instruction.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
