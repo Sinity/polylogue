@@ -4295,6 +4295,7 @@ def test_periodic_raw_materialization_convergence_skips_whale_pass_mid_burst(
 
 def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_events(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """A found whale candidate must run through the writer coordinator
     scoped to that one raw id at the resolved whale envelope, and emit
@@ -4306,6 +4307,17 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
         "polylogue.daemon.events.emit_daemon_event",
         lambda kind, *, payload: events.append((kind, payload)),
     )
+    # ``archive_root()`` is patched directly (the established seam used
+    # throughout this file) rather than via ``load_polylogue_config``: the
+    # autouse env-clearing fixture removes ``POLYLOGUE_ARCHIVE_ROOT``, so
+    # production's real ``archive_root()`` falls through to
+    # ``resolve_archive_root()``, which calls
+    # ``load_polylogue_config(_bootstrap=...)`` -- a call shape a bare
+    # zero-arg lambda here cannot satisfy without also faking a full
+    # ``ResolvedSettings``-like object. Patching the resolved-path functions
+    # keeps this test focused on the whale-pass call it actually verifies.
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
         lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None),
@@ -4350,12 +4362,18 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
 
 def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """No qualifying component this tick must never touch the writer
     coordinator -- the read-only candidate lookup is the only thing that
     runs."""
     from polylogue.daemon import cli as daemon_cli
 
+    # See the sibling whale-pass test above for why ``archive_root()``/
+    # ``render_root()`` are patched directly instead of relying solely on
+    # ``load_polylogue_config`` to satisfy production's env-fallback path.
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
         lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None),
