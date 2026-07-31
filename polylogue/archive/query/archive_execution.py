@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, TypedDict, TypeVar
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.query.spec import resolve_default_root_filter
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Origin, TitleSource
@@ -135,6 +136,7 @@ class _ArchiveFilterKwargs(TypedDict):
     until_ms: int | None
     since_session_id: str | None
     boolean_predicate: QueryPredicate | None
+    root: bool | None
 
 
 def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
@@ -171,6 +173,7 @@ def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
         "until_ms": _datetime_to_ms(plan.until),
         "since_session_id": plan.since_session_id,
         "boolean_predicate": plan.boolean_predicate,
+        "root": resolve_default_root_filter(plan.root, boolean_predicate=plan.boolean_predicate),
     }
 
 

@@ -368,6 +368,37 @@ def predicate_from_payload(payload: Mapping[str, object]) -> QueryPredicate:
     raise ValueError(f"unsupported predicate payload kind: {kind!r}")
 
 
+def lineage_seed_from_predicate(predicate: QueryPredicate | None) -> str | None:
+    """Return the ``lineage:id:`` seed session id carried by *predicate*, if any.
+
+    ``lineage:id:<ref>`` compiles to :class:`QueryLineagePredicate` (possibly
+    ANDed with other clauses), which the SQL layer uses to filter session rows
+    to one shared-root lineage family -- root and every descendant. That is
+    already the "explicit projection" a lineage-seeded query asks for
+    (polylogue-j8u2), so callers use this to exempt such a query from the
+    default top-level-only ``root`` filter: forcing root-only on top of an
+    explicit family walk would silently drop the very children the query
+    asked for.
+
+    Only descends into ``and`` nodes. A ``lineage:id:X or repo:foo`` result
+    set is NOT purely lineage X's family -- rows matched only via the ``or``
+    branch would get X's family semantics applied incorrectly. An ``or`` node
+    (or a ``not`` wrapping the predicate, which isn't a
+    ``QueryBoolPredicate``/``QueryLineagePredicate`` at all) correctly yields
+    no seed here.
+    """
+    if predicate is None:
+        return None
+    if isinstance(predicate, QueryLineagePredicate):
+        return predicate.seed_session_id
+    if isinstance(predicate, QueryBoolPredicate) and predicate.op == "and":
+        for child in predicate.children:
+            seed = lineage_seed_from_predicate(child)
+            if seed is not None:
+                return seed
+    return None
+
+
 __all__ = [
     "QueryBoolOp",
     "QueryBoolPredicate",
@@ -385,5 +416,6 @@ __all__ = [
     "QuerySequenceConstraint",
     "QuerySequenceConstraintKind",
     "QueryTextPredicate",
+    "lineage_seed_from_predicate",
     "predicate_from_payload",
 ]

@@ -18,6 +18,7 @@ from polylogue.archive.query.predicate import (
     QueryNotPredicate,
     QueryPredicate,
     QuerySequencePredicate,
+    lineage_seed_from_predicate,
 )
 from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.dates import parse_date
@@ -218,6 +219,59 @@ def optional_bool(field: str, value: object) -> bool | None:
     if text in {"false", "0", "no"}:
         return False
     raise QuerySpecError(field, str(value))
+
+
+def resolve_default_root_filter(
+    root: bool | None,
+    *,
+    boolean_predicate: QueryPredicate | None = None,
+) -> bool | None:
+    """Resolve the SQL-level ``root`` filter a session query should apply.
+
+    polylogue-j8u2: the default result *unit* for a session query is the
+    top-level session -- subagent/branch children (measured 45.6% of the
+    archive, ``session_links`` rows with ``link_type='subagent'``) previously
+    filled default result lists at equal weight, making them unreadable.
+    ``root is None`` means the caller (CLI/MCP param parsing, the ``root:``
+    DSL field) never got an explicit choice from the user, so it resolves to
+    ``True`` (top-level only) here, at the SQL-filter-kwargs boundary --
+    deliberately *not* by mutating ``SessionQuerySpec.root``/
+    ``SessionQueryPlan.root`` themselves, which stay ``None``-by-default so
+    that ``has_filters()`` (delete/mark unscoped-mutation guards, "bare
+    invocation shows stats" detection, ``latest`` resolution, ...) still
+    reflects genuine user intent rather than this structural default.
+    Explicit ``root:false``/``--no-root`` (children only) or ``root:true``
+    (redundant with the default) both pass a non-``None`` value here and are
+    returned unchanged -- the default only fills the unset case.
+
+    A ``lineage:id:<ref>`` predicate is itself an explicit "give me this
+    session's whole family, root plus descendants" projection (see
+    :func:`~polylogue.archive.query.predicate.lineage_seed_from_predicate`);
+    stacking the root-only default on top of it would silently drop the
+    children the query explicitly asked for, so it is exempted (returns
+    ``None``, unfiltered by structure) whenever *root* itself is unset.
+    """
+    if root is not None:
+        return root
+    if lineage_seed_from_predicate(boolean_predicate) is not None:
+        return None
+    return True
+
+
+def session_count_unit_label(root: bool | None) -> str:
+    """Name the unit a session count/total refers to (polylogue-j8u2, AC2).
+
+    *root* mirrors the resolved SQL-pushed ``root`` filter (see
+    :func:`resolve_default_root_filter`): ``True`` (the implicit default for
+    a param-driven query) counts only top-level sessions; ``False`` counts
+    only subagent/branch children; ``None`` (an explicit, unfiltered request
+    such as a ``lineage:id:`` family walk) counts both structurally.
+    """
+    if root is True:
+        return "top-level sessions"
+    if root is False:
+        return "subagent/branch child sessions"
+    return "sessions (top-level and subagent/branch children)"
 
 
 # Set of all recognized query-spec parameter names (drives strict-param mode).

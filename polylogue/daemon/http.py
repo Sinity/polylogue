@@ -647,7 +647,18 @@ def _archive_filter_kwargs_from_spec(
     test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field``).
     ``session_id`` is deliberately NOT included: it is passed as a separate
     keyword by the caller because ``count_sessions`` does not accept it.
+
+    ``root`` (polylogue-j8u2) resolves the default result unit to top-level
+    sessions when the request left it unset -- see
+    :func:`~polylogue.archive.query.spec.resolve_default_root_filter`. This
+    keeps the daemon-proxied session-list route in parity with the direct CLI
+    query executor (``polylogue/cli/archive_query.py``), which is the same
+    resolution this daemon path must match exactly (golden-parity coverage:
+    ``tests/unit/cli/test_daemon_golden_parity.py::
+    test_find_list_json_parity_between_direct_and_daemon``).
     """
+    from polylogue.archive.query.spec import resolve_default_root_filter
+
     origins = spec.origins
     origin = origins[0] if len(origins) == 1 else None
     return {
@@ -681,6 +692,7 @@ def _archive_filter_kwargs_from_spec(
         "until_ms": until_ms,
         "since_session_id": spec.since_session_id,
         "boolean_predicate": spec.boolean_predicate,
+        "root": resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate),
     }
 
 
@@ -2998,9 +3010,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             items.append(row)
 
         route_state_name, route_state_reason = _session_list_state(total, filtered=spec.has_filters())
+        from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
+
         result: dict[str, object] = {
             "items": items,
             "total": total,
+            "total_unit": session_count_unit_label(
+                resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate)
+            ),
             "limit": limit,
             "offset": offset,
             "route_state": _route_readiness_payload(route_state_name, "/api/sessions", reason=route_state_reason),
@@ -3233,6 +3250,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     ),
                 )
                 route_state_name, route_state_reason = _session_list_state(total, filtered=True)
+                from polylogue.archive.query.spec import session_count_unit_label
+
                 payload: dict[str, object] = {
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
@@ -3240,6 +3259,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "ranking_policy_version": "1",
                     "hits": [self._archive_search_hit_payload(hit) for hit in hits],
                     "total": total,
+                    "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
                     "limit": limit,
                     "offset": offset,
                     "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),
@@ -3296,9 +3316,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
             )
             route_state_name, route_state_reason = _session_list_state(total, filtered=filtered)
+            from polylogue.archive.query.spec import session_count_unit_label
+
             return {
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
                 "total": total,
+                "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
                 "limit": limit,
                 "offset": offset,
                 "route_state": _route_readiness_payload(route_state_name, route, reason=route_state_reason),

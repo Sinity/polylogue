@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from polylogue.archive.query.spec import parse_query_date
+from polylogue.archive.query.spec import parse_query_date, resolve_default_root_filter
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
 from polylogue.paths import archive_file_set_index_available_for_paths
@@ -91,6 +91,7 @@ class ArchiveQueryFilters(TypedDict):
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
+    root: bool | None
 
 
 def active_archive_root(config: Config) -> Path | None:
@@ -156,6 +157,7 @@ def archive_query_filters(spec: SessionQuerySpec) -> ArchiveQueryFilters:
         "since_ms": _date_ms(spec.since),
         "until_ms": _date_ms(spec.until),
         "since_session_id": spec.since_session_id,
+        "root": resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate),
     }
 
 
