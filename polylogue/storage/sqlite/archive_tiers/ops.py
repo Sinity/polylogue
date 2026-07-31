@@ -126,6 +126,30 @@ CREATE TABLE IF NOT EXISTS daemon_lifecycle (
 CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
 ON daemon_lifecycle(started_at_ms DESC);
 
+-- polylogue-u6tl: this is the canonical, production-reachable definition of
+-- `embedding_catchup_runs` -- written only by ops_write.upsert_embedding_
+-- catchup_run, whose sole callers are cli/commands/embed.py (the
+-- 'stopped'/'complete' payload vocabulary is translated to
+-- 'cancelled'/'completed' at embed.py:~878 before this INSERT) and
+-- daemon/embedding_backlog.py (writes 'running'/'completed'/'failed'
+-- directly). A SECOND, same-named table with a richer column set and its
+-- own CHECK -- CatchupRunStatus's full 5-value vocabulary (running,
+-- completed, stopped, failed, interrupted) -- is defined in
+-- storage/embeddings/progress.py (`ensure_embedding_catchup_runs_table`),
+-- reachable only from that module's own write helpers
+-- (start_/record_/finish_embedding_catchup_run), which have zero
+-- production callers -- only tests (test_embed_status_fast.py,
+-- test_embedding_contracts.py) exercise them directly. The two schemas are
+-- NOT the same table converging on two CHECKs: they are two independent,
+-- never-simultaneously-live implementations that happen to share a name.
+-- This CHECK is correct for what it actually governs (measured live,
+-- 2026-07-31: only 'completed'/'cancelled' ever observed, both accepted);
+-- widening it to CatchupRunStatus's 5 values would accept 'stopped'/
+-- 'interrupted' that this table's real writer never produces. Unifying the
+-- two implementations is tracked separately (polylogue-u6tl follow-up) --
+-- not attempted here because it requires either deleting a tested code
+-- path or reconciling two divergent column sets, neither of which is a
+-- CHECK-constraint-lockstep fix.
 CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     run_id              TEXT PRIMARY KEY,
     started_at_ms       INTEGER NOT NULL,
