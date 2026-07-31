@@ -1022,6 +1022,7 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
         fallback_id: str,
         *,
         tool_result_sidecars: object | None = None,
+        trust_fallback_id: bool = False,
     ) -> ParsedSession:
         calls.append((payload, fallback_id))
         return _parsed_session(
@@ -1614,9 +1615,14 @@ def test_claude_code_stream_payload_does_not_materialize_whole_stream(
         for index in range(3)
     )
 
-    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "fallback")
+    # bd polylogue-jc4q: fallback_id matches this file's own real content id
+    # (the production shape -- Claude Code names each session file after its
+    # own sessionId) rather than an arbitrary placeholder, so this single
+    # group is recognized as the file's own primary content and its identity
+    # is not carryover-qualified.
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "session-1")
 
-    assert [session.provider_session_id for session in sessions] == ["fallback"]
+    assert [session.provider_session_id for session in sessions] == ["session-1"]
     assert seen_record_counts == [3]
 
 
@@ -1659,11 +1665,16 @@ def test_claude_code_stream_payload_splits_contiguous_session_groups(
         ]
     )
 
-    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "fallback")
+    # bd polylogue-jc4q: fallback_id matches the LARGER group's own real
+    # content id (the production shape), so it is recognized as this file's
+    # primary content; "session-2" has no parentUuid evidence connecting it
+    # to the primary and keeps its own bare id as a genuinely independent
+    # session.
+    sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "session-1")
 
-    assert [session.provider_session_id for session in sessions] == ["fallback", "session-2"]
+    assert [session.provider_session_id for session in sessions] == ["session-1", "session-2"]
     assert parsed_groups == [
-        ("fallback", ["session-1", "session-1"]),
+        ("session-1", ["session-1", "session-1"]),
         ("session-2", ["session-2"]),
     ]
 

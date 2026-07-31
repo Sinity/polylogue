@@ -163,7 +163,15 @@ class PytestStepArtifacts:
 class VerifyRun:
     """A filesystem-backed verification run ledger."""
 
-    def __init__(self, *, tier: str, argv: list[str], git_head: str | None, root: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tier: str,
+        argv: list[str],
+        git_head: str | None,
+        root: Path | None = None,
+        polylogue_import_path: str | None = None,
+    ) -> None:
         self.root = root or Path.cwd()
         self.run_id = make_run_id(tier=tier)
         self.run_dir = self.root / VERIFY_RUNS_DIR / self.run_id
@@ -173,6 +181,12 @@ class VerifyRun:
             "argv": list(argv),
             "git_head": git_head,
             "git_dirty": git_dirty(),
+            # Receipt for the worktree-import hazard (devtools/checkout_guard.py):
+            # the resolved `polylogue` package path this run actually used, so a
+            # wrong-tree run is visible after the fact from the run artifact
+            # even where the live preflight already refused for an in-process
+            # caller and this fired for a different process boundary.
+            "polylogue_import_path": polylogue_import_path,
             "owner_pid": os.getpid(),
             "started_at": utc_now(),
             "status": "running",

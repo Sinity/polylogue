@@ -31,6 +31,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -121,6 +122,13 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        polylogue_import_path = assert_polylogue_matches_checkout(ROOT, context="devtools test")
+    except CheckoutImportMismatchError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 125
+    sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
+
     selection = list(sys.argv[1:] if argv is None else argv)
     # The control-plane dispatch may append a bare ``--json`` machine-readable
     # flag; it is meaningless for a streamed test run, so drop it before pytest.
@@ -139,7 +147,13 @@ def main(argv: list[str] | None = None) -> int:
     no_lock = os.environ.get("POLYLOGUE_TEST_NO_LOCK") == "1"
     with _run_lock(enabled=not no_lock):
         _clear_pytest_report(cmd)
-        run = VerifyRun(tier="focused-test", argv=selection, git_head=git_head(ROOT), root=ROOT)
+        run = VerifyRun(
+            tier="focused-test",
+            argv=selection,
+            git_head=git_head(ROOT),
+            root=ROOT,
+            polylogue_import_path=str(polylogue_import_path),
+        )
         started = time.monotonic()
         rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
         run.finish(exit_code=rc, duration_s=time.monotonic() - started, diagnosis=metadata.get("diagnosis"))

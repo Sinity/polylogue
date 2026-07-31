@@ -210,7 +210,17 @@ async def rebuild_index_from_source(
         max_cached_payload_bytes=_REBUILD_CENSUS_SPILL_CACHE_BYTES,
         ingest_workers=resolved_ingest_workers,
         commit_batch_size=_REBUILD_COMMIT_BATCH_UNITS,
-        replay_commit_batch_size=1,
+        # Replay-phase batching was previously pinned to 1 (per-cohort
+        # commits) because a cohort with pending attachment blobs flushes
+        # publication receipts on a SEPARATE source.db connection that waits
+        # at BEGIN IMMEDIATE behind the batch's held write lock. Both apply
+        # paths now commit the open batch before any NON-EMPTY flush
+        # (``ArchiveBlobPublisher.has_pending``), so attachment-free cohorts
+        # -- the overwhelming bulk of a rebuild -- share one commit per
+        # batch and blob-carrying cohorts degrade to the old per-cohort
+        # boundary instead of deadlocking. Measured: per-cohort commits were
+        # ~38% of a rebuild pass's wall (4 transactions per cohort).
+        replay_commit_batch_size=_REBUILD_COMMIT_BATCH_UNITS,
         bulk_fts=bulk_fts,
         bulk_build=bulk_build,
         prefetch_cache=prefetch_cache,
