@@ -1050,7 +1050,7 @@ def upsert_embedding_catchup_run(
     """Create or replace one ``embedding_catchup_runs`` row and return ``run_id``."""
     if run_id is None:
         run_id = str(uuid.uuid4())
-    _ensure_embedding_catchup_run_outcome_columns(conn)
+    ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
         INSERT INTO embedding_catchup_runs (
@@ -1142,7 +1142,14 @@ def read_embedding_catchup_run(conn: sqlite3.Connection, run_id: str) -> Archive
     return ArchiveEmbeddingCatchupRun(*row)
 
 
-def _ensure_embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> None:
+def ensure_embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> None:
+    """Converge pre-existing ops.db files onto the full outcome column set.
+
+    Single implementation — ops-tier bootstrap calls this too. A prior
+    bootstrap-local copy drifted (it lacked ``skipped_sessions``), so a
+    freshly bootstrapped-but-never-written ops.db under-provisioned the
+    table relative to this writer's expectations.
+    """
     existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
     additions = {
         "embedded_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0)",
@@ -1640,6 +1647,7 @@ __all__ = [
     "SchemaDriftOriginSummary",
     "OpsCompactState",
     "add_convergence_debt",
+    "ensure_embedding_catchup_run_outcome_columns",
     "list_cursor_lag_samples",
     "list_fts_drift_samples",
     "list_schema_drift_samples",

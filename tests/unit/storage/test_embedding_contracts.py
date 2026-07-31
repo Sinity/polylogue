@@ -30,14 +30,7 @@ from polylogue.storage.embeddings.materialization import (
     select_pending_session_window,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
-from polylogue.storage.embeddings.progress import (
-    CatchupRunDelta,
-    CatchupRunStart,
-    finish_embedding_catchup_run,
-    latest_embedding_catchup_run,
-    record_embedding_catchup_progress,
-    start_embedding_catchup_run,
-)
+from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.sqlite.schema import SCHEMA_VERSION
 
@@ -148,62 +141,88 @@ def _insert_session(conn: sqlite3.Connection, session_id: str, *, message_count:
         )
 
 
-def test_embedding_catchup_run_ledger_persists_progress(tmp_path: Path) -> None:
-    """Backfill progress survives process exit as a run-level ledger."""
+_LEGACY_CATCHUP_RUNS_DDL = """
+    CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
+        run_id TEXT PRIMARY KEY,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        status TEXT NOT NULL,
+        stop_reason TEXT,
+        rebuild INTEGER NOT NULL DEFAULT 0,
+        max_sessions INTEGER,
+        max_messages INTEGER,
+        stop_after_seconds INTEGER,
+        max_errors INTEGER,
+        planned_sessions INTEGER NOT NULL DEFAULT 0,
+        planned_messages INTEGER NOT NULL DEFAULT 0,
+        processed_sessions INTEGER NOT NULL DEFAULT 0,
+        embedded_sessions INTEGER NOT NULL DEFAULT 0,
+        skipped_sessions INTEGER NOT NULL DEFAULT 0,
+        error_count INTEGER NOT NULL DEFAULT 0,
+        embedded_messages INTEGER NOT NULL DEFAULT 0,
+        estimated_cost_usd REAL NOT NULL DEFAULT 0.0,
+        last_session_id TEXT
+    )
+"""
+
+
+def _seed_legacy_catchup_run(
+    conn: sqlite3.Connection,
+    run_id: str,
+    *,
+    started_at: str,
+    status: str,
+    stop_reason: str | None = None,
+    rebuild: bool = False,
+    planned_sessions: int = 0,
+) -> None:
+    """Insert a pre-split monolith-shaped catch-up run row.
+
+    The split archive's only writer is ``upsert_embedding_catchup_run``
+    (ops tier); this seeds the *legacy* table shape the read-only
+    ``latest_embedding_catchup_run`` fallback still serves.
+    """
+    conn.execute(_LEGACY_CATCHUP_RUNS_DDL)
+    conn.execute(
+        """
+        INSERT INTO embedding_catchup_runs (
+            run_id, started_at, updated_at, status, stop_reason, rebuild, planned_sessions
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (run_id, started_at, started_at, status, stop_reason, int(rebuild), planned_sessions),
+    )
+    conn.commit()
+
+
+def test_embedding_catchup_reader_returns_latest_legacy_run(tmp_path: Path) -> None:
+    """The legacy-monolith reader surfaces the newest run row unchanged."""
     db_path = tmp_path / "archive.db"
     _setup_minimal_embedding_file(db_path)
 
-    run_id = start_embedding_catchup_run(
-        db_path,
-        CatchupRunStart(
-            rebuild=False,
-            max_sessions=3,
-            max_messages=20,
-            stop_after_seconds=30,
-            max_errors=1,
-            planned_sessions=3,
-            planned_messages=12,
-        ),
-    )
-    record_embedding_catchup_progress(
-        db_path,
-        run_id,
-        CatchupRunDelta(
-            session_id="conv-1",
-            embedded=True,
-            embedded_messages=5,
-            estimated_cost_usd=0.001,
-        ),
-    )
-    record_embedding_catchup_progress(
-        db_path,
-        run_id,
-        CatchupRunDelta(session_id="conv-empty", skipped=True),
-    )
-    record_embedding_catchup_progress(
-        db_path,
-        run_id,
-        CatchupRunDelta(session_id="conv-error", errored=True),
-    )
-    finish_embedding_catchup_run(db_path, run_id, status="stopped", stop_reason="max errors reached (1)")
-
     with sqlite3.connect(db_path) as conn:
+        _seed_legacy_catchup_run(
+            conn,
+            "run-old",
+            started_at="2026-05-24 00:00:00",
+            status="completed",
+        )
+        _seed_legacy_catchup_run(
+            conn,
+            "run-new",
+            started_at="2026-05-25 00:00:00",
+            status="stopped",
+            stop_reason="max errors reached (1)",
+            planned_sessions=3,
+        )
         payload = latest_embedding_catchup_run(conn)
 
     assert payload is not None
-    assert payload["run_id"] == run_id
+    assert payload["run_id"] == "run-new"
     assert payload["status"] == "stopped"
     assert payload["stop_reason"] == "max errors reached (1)"
     assert payload["rebuild"] is False
-    assert payload["max_sessions"] == 3
     assert payload["planned_sessions"] == 3
-    assert payload["planned_messages"] == 12
-    assert payload["processed_sessions"] == 3
-    assert payload["embedded_sessions"] == 1
-    assert payload["skipped_sessions"] == 1
-    assert payload["error_count"] == 1
-    assert payload["embedded_messages"] == 5
-    assert payload["last_session_id"] == "conv-error"
 
 
 def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_path: Path) -> None:
@@ -211,62 +230,25 @@ def test_embedding_catchup_latest_run_uses_insert_order_for_timestamp_ties(tmp_p
     db_path = tmp_path / "archive.db"
     _setup_minimal_embedding_file(db_path)
 
-    first = start_embedding_catchup_run(
-        db_path,
-        CatchupRunStart(
-            rebuild=False,
-            max_sessions=None,
-            max_messages=None,
-            stop_after_seconds=None,
-            max_errors=None,
-            planned_sessions=1,
-            planned_messages=1,
-        ),
-    )
-    second = start_embedding_catchup_run(
-        db_path,
-        CatchupRunStart(
-            rebuild=True,
-            max_sessions=None,
-            max_messages=None,
-            stop_after_seconds=None,
-            max_errors=None,
-            planned_sessions=2,
-            planned_messages=2,
-        ),
-    )
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            UPDATE embedding_catchup_runs
-            SET started_at = '2026-05-25 00:00:00',
-                updated_at = '2026-05-25 00:00:00'
-            WHERE run_id IN (?, ?)
-            """,
-            (first, second),
+        _seed_legacy_catchup_run(
+            conn,
+            "run-first",
+            started_at="2026-05-25 00:00:00",
+            status="completed",
         )
-        conn.commit()
+        _seed_legacy_catchup_run(
+            conn,
+            "run-second",
+            started_at="2026-05-25 00:00:00",
+            status="completed",
+            rebuild=True,
+        )
         payload = latest_embedding_catchup_run(conn)
 
     assert payload is not None
-    assert payload["run_id"] == second
+    assert payload["run_id"] == "run-second"
     assert payload["rebuild"] is True
-
-
-def test_embedding_catchup_progress_fails_for_missing_run(tmp_path: Path) -> None:
-    """A DB/path mismatch must not silently drop progress updates."""
-    db_path = tmp_path / "archive.db"
-    _setup_minimal_embedding_file(db_path)
-
-    with pytest.raises(LookupError, match="progress update"):
-        record_embedding_catchup_progress(
-            db_path,
-            "missing-run",
-            CatchupRunDelta(session_id="conv-1", embedded=True, embedded_messages=1),
-        )
-
-    with pytest.raises(LookupError, match="finalization"):
-        finish_embedding_catchup_run(db_path, "missing-run", status="failed", stop_reason="missing")
 
 
 # ---------------------------------------------------------------------------

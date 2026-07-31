@@ -123,6 +123,12 @@ CREATE TABLE IF NOT EXISTS daemon_lifecycle (
 CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
 ON daemon_lifecycle(started_at_ms DESC);
 
+-- Sole live embedding_catchup_runs table (writer: ops_write.upsert_embedding_catchup_run).
+-- Status vocabulary: the CLI backfill payload says 'stopped'/'complete';
+-- cli/commands/embed.py:_record_archive_backfill_run translates those to
+-- 'cancelled'/'completed' at this write boundary. A pre-split monolith table
+-- of the same name (different shape, statuses incl. 'stopped'/'interrupted')
+-- survives read-only via storage/embeddings/progress.py.
 CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     run_id              TEXT PRIMARY KEY,
     started_at_ms       INTEGER NOT NULL,
@@ -131,6 +137,7 @@ CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     origin              TEXT CHECK ({nullable_check("origin", Origin)}),
     scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
     embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),
+    skipped_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0),
     error_count         INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
     embedded_messages   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_messages >= 0),
     estimated_cost_usd  REAL,
