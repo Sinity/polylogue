@@ -2165,10 +2165,6 @@ files:
     loc: 445
     target: polylogue/maintenance/failure_routing.py
     owner: stable
-  - path: polylogue/maintenance/hook_deinflation.py
-    loc: 157
-    target: polylogue/maintenance/hook_deinflation.py
-    owner: stable
   - path: polylogue/maintenance/invalidation.py
     loc: 54
     target: polylogue/maintenance/invalidation.py
@@ -3215,7 +3211,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1430
+    loc: 1431
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3347,7 +3343,7 @@ files:
     target: polylogue/sources/live/sqlite_locking.py
     owner: stable
   - path: polylogue/sources/live/tool_result_sidecars.py
-    loc: 246
+    loc: 422
     target: polylogue/sources/live/tool_result_sidecars.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
@@ -3408,7 +3404,7 @@ files:
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_parser.py
-    loc: 2019
+    loc: 2035
     target: polylogue/sources/parsers/claude/code_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/common.py
@@ -4224,7 +4220,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 6194
+    loc: 6228
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -4644,7 +4640,7 @@ files:
     target: polylogue/verification/manifests/__init__.py
     owner: stable
   - path: polylogue/verification/manifests/models.py
-    loc: 600
+    loc: 605
     target: polylogue/verification/manifests/models.py
     owner: stable
   - path: polylogue/version.py
