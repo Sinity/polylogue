@@ -28,7 +28,7 @@ from polylogue.rendering.semantic_card_models import (
 )
 from polylogue.rendering.semantic_card_placement import semantic_card_placement_for_messages
 from polylogue.rendering.semantic_card_registry import (
-    card_kind_for_tool,
+    classify_tool,
     provider_namespace_documents,
     semantic_type_policy_documents,
     tool_mapping_rows,
@@ -197,22 +197,22 @@ def test_provider_namespace_policy_discloses_open_world_fallback() -> None:
 
 def test_unknown_tool_remains_fallback_even_when_input_looks_like_shell() -> None:
     assert (
-        card_kind_for_tool(
+        classify_tool(
             provider_family="codex",
             tool_name="unregistered_magic",
             semantic_type=None,
-        ).value
+        ).card_kind.value
         == "fallback"
     )
 
 
 def test_persisted_semantic_type_is_provider_neutral() -> None:
     assert (
-        card_kind_for_tool(
+        classify_tool(
             provider_family="unknown",
             tool_name="provider_private_name",
             semantic_type="shell",
-        ).value
+        ).card_kind.value
         == "shell"
     )
 
@@ -513,11 +513,11 @@ def test_chatgpt_web_recipient_extracts_structured_query_without_raw_json_title(
 def test_mcp_identity_precedes_generic_persisted_family() -> None:
     """Production dependency: structural MCP identity has highest registry precedence."""
 
-    kind = card_kind_for_tool(
+    kind = classify_tool(
         provider_family="unknown",
         tool_name="mcp__github__get_issue",
         semantic_type="other",
-    )
+    ).card_kind
     assert kind is SemanticCardKind.MCP
 
 

@@ -474,21 +474,6 @@ def classify_tool(
     )
 
 
-def card_kind_for_tool(
-    *,
-    provider_family: str,
-    tool_name: str | None,
-    semantic_type: str | None,
-) -> SemanticCardKind:
-    """Compatibility wrapper returning the shared classification's card kind."""
-
-    return classify_tool(
-        provider_family=provider_family,
-        tool_name=tool_name,
-        semantic_type=semantic_type,
-    ).card_kind
-
-
 def tool_mapping_rows() -> tuple[ToolMapping, ...]:
     return _TOOL_MAPPINGS
 
@@ -532,7 +517,6 @@ def tool_mapping_documents() -> list[JSONDocument]:
 
 
 __all__ = [
-    "card_kind_for_tool",
     "ClassificationBasis",
     "classify_tool",
     "MappingEvidenceKind",

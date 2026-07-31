@@ -18,7 +18,7 @@ from collections.abc import Iterable, Sequence
 
 import click
 
-from polylogue.cli.verb_names import QUERY_VERB_NAMES, VERB_NAMES
+from polylogue.cli.verb_names import VERB_NAMES
 
 
 def _format_tokens(tokens: Iterable[str]) -> str:
@@ -107,7 +107,7 @@ def format_unknown_subcommand_hint(token: str, registered: Sequence[str]) -> str
 
 def is_query_verb(name: str) -> bool:
     """Return True if ``name`` is one of the query-first action verbs."""
-    return name in QUERY_VERB_NAMES or name in VERB_NAMES
+    return name in VERB_NAMES
 
 
 __all__ = [

@@ -59,7 +59,8 @@ from typing import ClassVar, Literal
 from pydantic import ConfigDict
 
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.operations.operation_contract import OperationFollowUp, OperationStatus
+from polylogue.operations.operation_contract import OperationFollowUp
+from polylogue.operations.operation_status import OperationStatus
 from polylogue.operations.specs import OperationKind
 from polylogue.surfaces.payloads import SurfacePayloadModel
 

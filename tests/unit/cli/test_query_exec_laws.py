@@ -25,7 +25,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Session
 from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.stats import ArchiveStats
-from polylogue.cli.query import async_execute_query, project_query_results
+from polylogue.cli.query import async_execute_query_request, project_query_results
 from polylogue.cli.query_contracts import (
     QueryAction,
     QueryDeliveryTarget,
@@ -33,6 +33,7 @@ from polylogue.cli.query_contracts import (
     QueryMutationSpec,
     QueryOutputSpec,
 )
+from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import MaterialOrigin, Provider
 from polylogue.services import build_runtime_services
@@ -40,6 +41,12 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchH
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.builders import make_conv, make_msg
+
+
+async def _execute_query_params(env: AppEnv, params: dict[str, object]) -> None:
+    """Drive the archive executor from raw params (the retired shim's shape)."""
+    await async_execute_query_request(env, RootModeRequest.from_params(params))
+
 
 pytestmark = [
     pytest.mark.uses_real_clock(
@@ -485,7 +492,7 @@ def test_async_execute_query_archive_lists_archive(
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    asyncio.run(async_execute_query(env, {"archive": True, "limit": 2, "output_format": "json"}))
+    asyncio.run(_execute_query_params(env, {"archive": True, "limit": 2, "output_format": "json"}))
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "list"
@@ -511,7 +518,7 @@ def test_async_execute_query_uses_archive_when_index_db_exists(
 
     monkeypatch.setattr("polylogue.cli.archive_query.execute_archive_query", fake_execute_archive_query)
 
-    asyncio.run(async_execute_query(env, {"limit": 2}))
+    asyncio.run(_execute_query_params(env, {"limit": 2}))
 
     assert len(calls) == 1
 
@@ -557,7 +564,7 @@ def test_async_execute_query_archive_projects_fields(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {"archive": True, "limit": 1, "fields": "id,title", "output_format": "json"},
         )
@@ -614,7 +621,7 @@ def test_async_execute_query_archive_routes_pure_structured_terms_to_list(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -673,7 +680,7 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -733,7 +740,7 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -784,7 +791,7 @@ def test_async_execute_query_archive_unresolved_bare_ref_falls_back_to_fts(
 
     with pytest.raises(SystemExit) as exc_info:
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -838,7 +845,7 @@ def test_async_execute_query_archive_uses_daemon_for_supported_session_pages(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -899,7 +906,7 @@ def test_async_execute_query_archive_preserves_daemon_degraded_search_json(
 
     with pytest.raises(SystemExit) as exc_info:
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -958,7 +965,7 @@ def test_async_execute_query_archive_preserves_daemon_degraded_search_plain(
 
     with pytest.raises(SystemExit) as exc_info:
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -1018,7 +1025,7 @@ def test_async_execute_query_archive_falls_back_when_daemon_unavailable(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1073,7 +1080,7 @@ def test_async_execute_query_archive_keeps_stats_local(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1142,7 +1149,7 @@ def test_async_execute_query_archive_sorts_lists(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {"archive": True, "sort": "messages", "reverse": True, "output_format": "json"},
         )
@@ -1193,7 +1200,7 @@ def test_async_execute_query_archive_delivers_to_output_path(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1238,7 +1245,7 @@ def test_async_execute_query_archive_samples_copied_archive(
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    asyncio.run(async_execute_query(env, {"archive": True, "sample": 3, "output_format": "json"}))
+    asyncio.run(_execute_query_params(env, {"archive": True, "sample": 3, "output_format": "json"}))
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "list"
@@ -1282,7 +1289,7 @@ def test_async_execute_query_archive_outputs_stats(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1334,7 +1341,7 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1386,7 +1393,7 @@ def test_async_execute_query_archive_count_applies_boolean_predicate(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1435,7 +1442,7 @@ def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1490,7 +1497,7 @@ def test_async_execute_query_archive_outputs_grouped_search_stats(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1633,7 +1640,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1704,7 +1711,7 @@ def test_async_execute_query_archive_filters_multiple_providers(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1777,7 +1784,7 @@ def test_async_execute_query_archive_searches_within_session_id(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1822,7 +1829,7 @@ def test_async_execute_query_archive_filters_since_session_id(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1887,7 +1894,7 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
         classmethod(lambda cls, root: fake),
     )
 
-    asyncio.run(async_execute_query(env, {"archive": True, "limit": 2, "output_format": "json"}))
+    asyncio.run(_execute_query_params(env, {"archive": True, "limit": 2, "output_format": "json"}))
     first_page = json.loads(capsys.readouterr().out)
     cursor = first_page["next_cursor"]
 
@@ -1896,7 +1903,7 @@ def test_async_execute_query_archive_paginates_lists_with_cursor(
     assert first_page["next_offset"] == 2
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {"archive": True, "limit": 2, "cursor": cursor, "output_format": "json"},
         )
@@ -1940,7 +1947,7 @@ def test_async_execute_query_archive_open_prints_session_url(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -1998,7 +2005,7 @@ def test_async_execute_query_archive_open_uses_first_list_result(
 
     with patch("polylogue.cli.archive_query.webbrowser.open") as mock_open:
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -2091,7 +2098,7 @@ def test_async_execute_query_archive_streams_session_messages(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2140,7 +2147,7 @@ def test_async_execute_query_archive_accepts_lexical_retrieval_flags(
     # envelope still emitted on stdout for machine consumers.
     with pytest.raises(SystemExit) as exc_info:
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -2192,7 +2199,7 @@ def test_async_execute_query_archive_sorts_search_terms(
     # envelope still emitted on stdout for machine consumers.
     with pytest.raises(SystemExit) as exc_info:
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -2289,7 +2296,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2394,7 +2401,7 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2443,7 +2450,7 @@ def test_async_execute_query_archive_session_seed_without_vector_backend_raises_
 
     with pytest.raises(click.UsageError, match="near:id: requires configured"):
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,
@@ -2619,7 +2626,7 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2712,7 +2719,7 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
     monkeypatch.setattr("polylogue.cli.archive_query.create_vector_provider", fake_create_vector_provider)
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2761,7 +2768,7 @@ def test_async_execute_query_archive_adds_tags_to_session(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2811,7 +2818,7 @@ def test_async_execute_query_archive_deletes_session_by_id(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2864,7 +2871,7 @@ def test_async_execute_query_archive_sets_session_metadata(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2913,7 +2920,7 @@ def test_async_execute_query_archive_delete_dry_run_does_not_delete(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -2946,7 +2953,7 @@ def test_async_execute_query_archive_rejects_combined_delete_mutations(
 
     with pytest.raises(click.UsageError, match="cannot combine delete with --set"):
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {"archive": True, "delete_matched": True, "set_meta": (("priority", "1"),)},
             )
@@ -3013,7 +3020,7 @@ def test_async_execute_query_archive_reads_session_by_id(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {"archive": True, "conv_id": "codex-session:native-1", "output_format": "json"},
         )
@@ -3124,7 +3131,7 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
     )
 
     asyncio.run(
-        async_execute_query(
+        _execute_query_params(
             env,
             {
                 "archive": True,
@@ -3168,7 +3175,7 @@ def test_async_execute_query_archive_rejects_unsupported_historical_filters(
     monkeypatch.setattr("polylogue.cli.archive_query.ArchiveStore.open_existing", MagicMock())
 
     with pytest.raises(click.UsageError, match="[Hh]ybrid retrieval requires lexical query"):
-        asyncio.run(async_execute_query(env, {"archive": True, "retrieval_lane": "hybrid"}))
+        asyncio.run(_execute_query_params(env, {"archive": True, "retrieval_lane": "hybrid"}))
 
 
 # ---------------------------------------------------------------------------
@@ -3844,7 +3851,7 @@ def test_daemon_unit_fast_path_defers_session_only_modes_to_local_validation(
 
     with pytest.raises(click.UsageError, match="do not combine"):
         asyncio.run(
-            async_execute_query(
+            _execute_query_params(
                 env,
                 {
                     "archive": True,

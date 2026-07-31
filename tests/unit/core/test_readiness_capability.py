@@ -6,7 +6,7 @@ import pytest
 
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
-from polylogue.operations.operation_contract import OperationStatus
+from polylogue.operations.operation_status import OperationStatus
 from polylogue.readiness import (
     LEGACY_READINESS_SOURCE_TYPES,
     CapabilityReadinessState,

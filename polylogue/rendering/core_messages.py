@@ -212,36 +212,9 @@ def build_rendered_message(
     )
 
 
-def build_rendered_message_payload(
-    *,
-    message_id: object,
-    role: object,
-    text: str,
-    timestamp: object,
-    render_html: Callable[[str], str],
-    content_blocks: tuple[RenderableBlock, ...] = (),
-    parent_message_id: object = None,
-    branch_index: object = 0,
-    preview_limit: int | None = None,
-) -> RenderedMessage:
-    """Backward-compatible alias for the canonical rendered message builder."""
-    return build_rendered_message(
-        message_id=message_id,
-        role=role,
-        text=text,
-        timestamp=timestamp,
-        render_html=render_html,
-        content_blocks=content_blocks,
-        parent_message_id=parent_message_id,
-        branch_index=branch_index,
-        preview_limit=preview_limit,
-    )
-
-
 __all__ = [
     "attach_rendered_message_branches",
     "build_rendered_message",
-    "build_rendered_message_payload",
     "normalize_render_branch_index",
     "normalize_render_timestamp",
     "role_css_class",

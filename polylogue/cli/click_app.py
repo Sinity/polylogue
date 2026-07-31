@@ -26,7 +26,7 @@ from polylogue.cli.query_group import QueryFirstGroupBase
 from polylogue.cli.shared.formatting import should_use_plain
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.shell_words import completion_words
-from polylogue.cli.verb_names import QUERY_VERB_NAMES
+from polylogue.cli.verb_names import VERB_NAMES
 from polylogue.logging import configure_logging
 from polylogue.version import POLYLOGUE_VERSION
 
@@ -202,7 +202,7 @@ def _should_complete_then_connector(incomplete: str) -> bool:
     prior = words[:-1]
     if not prior or "then" in prior:
         return False
-    if prior[0] in QUERY_VERB_NAMES:
+    if prior[0] in VERB_NAMES:
         return False
     if prior[0] == "find":
         return len(prior) > 1
@@ -616,7 +616,7 @@ _QUERY_VERB_HELP: dict[str, str] = {
     "select": "Select one matched session or print candidate identities.",
 }
 
-for _verb in sorted(QUERY_VERB_NAMES):
+for _verb in sorted(VERB_NAMES):
     _attr = f"{_verb.replace('-', '_')}_verb"
     _cls = _LazyGroup if _verb in {"analyze", "mark"} else _LazyCommand
     _command = _cls(
