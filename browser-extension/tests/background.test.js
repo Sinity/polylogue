@@ -2023,6 +2023,63 @@ describe("background receiver diagnostics", () => {
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
   });
 
+  it("captures a ChatGPT temporary chat instead of silently skipping it (background.js conversationIdForUrl asymmetry)", async () => {
+    // background.js's own conversationIdForUrl used to return null for a
+    // temporary-chat URL (?temporary-chat=true), which made captureTab's
+    // automatic-capture gate (`!conversationIdForUrl(conversationUrl)`)
+    // treat every temporary chat tab as having no session and silently
+    // never send it a polylogue.capturePage message at all -- content
+    // script capture code was ready for temporary chats the whole time.
+    // Zero temporary chats had ever landed in the archive because of this.
+    expect(activatedListener).toBeTypeOf("function");
+    tabs = [{ id: 42, url: "https://chatgpt.com/?temporary-chat=true", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-auto-capture",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      fetchCalls.push({ url });
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-auto-capture", api_schema: "polylogue-browser-capture/v1" });
+      }
+      if (String(url).endsWith("/v1/browser-captures")) {
+        return responseJson({
+          provider: "chatgpt",
+          provider_session_id: "temp:ephemeral-session",
+          state: "spooled_only",
+          receiver_request_id: "capture-request-temp",
+        }, { requestId: "capture-request-temp" });
+      }
+      return responseJson(
+        { provider: "chatgpt", provider_session_id: "temp:ephemeral-session", state: "missing", lifecycle: "missing", captured: false, spooled: false },
+        { requestId: "archive-state-temp" },
+      );
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (tabId, message) => {
+      if (message.type !== "polylogue.capturePage") return null;
+      const envelope = {
+        session: { provider: "chatgpt", provider_session_id: "temp:ephemeral-session", session_kind: "temporary", turns: [{ role: "user" }] },
+      };
+      const captureResult = await new Promise((resolve) => {
+        messageListener(
+          { type: "polylogue.capture", envelope, reason: message.reason },
+          { tab: { id: tabId, url: "https://chatgpt.com/?temporary-chat=true" } },
+          resolve,
+        );
+      });
+      return { ok: true, envelope, captureResult, archiveState: { state: "spooled_only" } };
+    });
+
+    activatedListener({ tabId: 42 });
+
+    await vi.waitFor(() => expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalled());
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, expect.objectContaining({ type: "polylogue.capturePage" }));
+    await vi.waitFor(() => expect(stored.polylogueState?.captured).toBe(true));
+    expect(fetchCalls.map((call) => call.url)).toContain("http://127.0.0.1:8875/v1/browser-captures");
+  });
+
   it("does not recapture an already-safe conversation on activation", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-throttle", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async () => responseJson({
@@ -2168,6 +2225,47 @@ describe("background receiver diagnostics", () => {
     ).toBe("receiver_unpaired"));
     expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("accepts a temporary chat's freshness hint even though its real ephemeral id differs from the URL sentinel", async () => {
+    // background.js's conversationIdForUrl returns TEMPORARY_CHAT_SENTINEL
+    // for a ChatGPT temporary-chat URL (there is no /c/<id> to read), but
+    // chatgpt.js's freshness hints always carry the conversation's true
+    // ephemeral id (read from the intercepted native payload). Before this
+    // fix, the sender-identity check compared the sentinel against that real
+    // id, found a mismatch, and threw -- rejecting every freshness hint a
+    // temporary chat ever sent after its first capture, so later turns were
+    // never re-captured (P1 finding on PR #3411's Codex review).
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const response = await sendRuntimeMessage(
+      {
+        type: "polylogue.captureFreshnessHint",
+        provider: "chatgpt",
+        provider_session_id: "temp-conv-ephemeral-42",
+        reason: "generation_completed",
+        delay_ms: 0,
+      },
+      { tab: { id: 42, url: "https://chatgpt.com/?temporary-chat=true" } },
+    );
+
+    expect(response.ok).toBe(true);
+    expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:temp-conv-ephemeral-42"]).toBeDefined();
+  });
+
+  it("still rejects a freshness hint whose id does not match an ordinary (non-temporary) tab's own URL", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const response = await sendRuntimeMessage(
+      {
+        type: "polylogue.captureFreshnessHint",
+        provider: "chatgpt",
+        provider_session_id: "some-other-conversation",
+        reason: "generation_completed",
+        delay_ms: 0,
+      },
+      { tab: { id: 42, url: "https://chatgpt.com/c/conv-actually-open" } },
+    );
+
+    expect(response).toMatchObject({ ok: false, error: "freshness_hint_sender_identity_mismatch" });
   });
 
   it("does not fetch a missing conversation while automatic capture is paused", async () => {

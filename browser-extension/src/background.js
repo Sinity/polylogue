@@ -18,6 +18,13 @@ import {
   scheduleFreshnessHint,
 } from "./capture/freshness.js";
 
+// Must match src/common.js's TEMPORARY_CHAT_ID_KEY-adjacent sentinel exactly
+// (sessionIdFromUrl's `__polylogue_temporary_chat__` return value) -- this
+// module has no access to the content script's per-tab sessionStorage, so it
+// cannot know the eventual real `temporary:<hex>` session id in advance. It
+// only needs a stable, regex-valid ([A-Za-z0-9_-]{1,256}) truthy signal that
+// a temporary-chat URL is a real, capturable conversation.
+const TEMPORARY_CHAT_SENTINEL = "__polylogue_temporary_chat__";
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
 const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
@@ -1278,6 +1285,13 @@ async function setStateForTab(tabId, state, expectedTabUrl = null) {
     expectedProvider
     && expectedSessionId
     && activeSessionId
+    // TEMPORARY_CHAT_SENTINEL is a "this tab has a real, capturable
+    // conversation" signal, not the conversation's real identity -- it can
+    // never equal a captured state's true provider_session_id (the
+    // ephemeral id from the native payload), so this staleness guard would
+    // reject every state write for a temporary chat tab, including the
+    // capture that just succeeded on it.
+    && activeSessionId !== TEMPORARY_CHAT_SENTINEL
     && (
       activeProvider !== expectedProvider
       || activeSessionId !== expectedSessionId
@@ -1903,7 +1917,19 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
       const pageProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
-      const pageSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "") || providerSessionId;
+      // conversationIdForUrl(tab.url) is normally the right identity to log/
+      // record here (it is what every other caller in this file keys tab
+      // state by). The one exception is TEMPORARY_CHAT_SENTINEL: it is a
+      // "this tab has a real, capturable conversation" signal, not the
+      // conversation's real ephemeral id, so preferring it over the
+      // just-captured envelope's actual provider_session_id would record
+      // the sentinel as this tab's "captured" identity -- self-consistent
+      // locally, but never matching the real id the receiver/archive
+      // actually stored it under, so the tab would show "not captured"
+      // forever afterward (and setStateForTab's own staleness guard has a
+      // matching sentinel exemption for the same reason).
+      const urlSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "");
+      const pageSessionId = urlSessionId === TEMPORARY_CHAT_SENTINEL ? (providerSessionId || urlSessionId) : (urlSessionId || providerSessionId);
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -2582,7 +2608,16 @@ function conversationIdForUrl(url) {
     if (provider === "chatgpt") {
       const marker = parts.indexOf("c");
       if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
-      if (parsed.searchParams.get("temporary-chat") === "true") return null;
+      // Mirror src/common.js:sessionIdFromUrl exactly. A temporary chat has
+      // no /c/<id> path (ChatGPT never persists one), but it is still a
+      // real, capturable conversation -- returning null here made every
+      // gate downstream that checks `conversationIdForUrl(...)` truthy
+      // (captureTab's automatic-capture gate chief among them) treat every
+      // temporary chat tab as "no session" and silently never capture it,
+      // even though the content-script capture path (common.js) has always
+      // been ready to build a per-tab temporary session id. That asymmetry
+      // is why zero temporary chats have ever landed in the archive.
+      if (parsed.searchParams.get("temporary-chat") === "true") return TEMPORARY_CHAT_SENTINEL;
       return null;
     }
     if (provider === "claude-ai") {
@@ -2607,6 +2642,15 @@ function conversationIdForUrl(url) {
   return null;
 }
 
+// Known limitation for a ChatGPT temporary chat: providerSessionId below is
+// TEMPORARY_CHAT_SENTINEL, not the conversation's real ephemeral id (there is
+// no per-tab "last known real captured id" cache to consult instead), so the
+// /v1/archive-state query it drives always reports state:"missing" even
+// after a real capture landed under the true id. This does not lose data --
+// it just makes captureTab's "auto_capture_missing" branch below re-fire
+// (throttled to once per BACKGROUND_CAPTURE_MIN_INTERVAL_MS) instead of
+// confirming "already archived", and the UI's captured badge stays
+// inaccurate for that tab. Ref polylogue-upbv.
 async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowRecovery = true) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
@@ -3171,7 +3215,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const senderSessionId = conversationIdForUrl(senderUrl);
       const provider = message.provider || senderProvider;
       const nativeId = message.provider_session_id || senderSessionId;
-      if (sender.tab && (provider !== senderProvider || (senderSessionId && nativeId !== senderSessionId))) {
+      // TEMPORARY_CHAT_SENTINEL is a "this tab has a real, capturable
+      // conversation" signal, not a real provider identity -- it cannot
+      // equal chatgpt.js's freshness hints, which always carry the
+      // conversation's true ephemeral id (nativeCaptureIdentity, read from
+      // the intercepted native payload's own conversation_id/id). Enforcing
+      // strict equality against the sentinel here rejected every freshness
+      // hint a temporary chat ever sent after its first capture, silently
+      // stopping later turns from ever being re-captured.
+      if (
+        sender.tab
+        && (provider !== senderProvider
+          || (senderSessionId && senderSessionId !== TEMPORARY_CHAT_SENTINEL && nativeId !== senderSessionId))
+      ) {
         throw new Error("freshness_hint_sender_identity_mismatch");
       }
       sendResponse({
