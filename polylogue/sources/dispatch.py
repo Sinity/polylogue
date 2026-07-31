@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI})
+BUNDLE_PROVIDERS = frozenset({Provider.CHATGPT, Provider.CLAUDE_AI, Provider.CLAUDE_DESIGN})
 GROUP_PROVIDERS = frozenset(
     {Provider.CLAUDE_CODE, Provider.CODEX, Provider.GEMINI, Provider.DRIVE, Provider.BEADS, Provider.HERMES}
 )
@@ -59,6 +59,7 @@ RECORD_DETECTOR_PROVIDER_ORDER = (
     Provider.CLAUDE_CODE,
     Provider.CHATGPT,
     Provider.CLAUDE_AI,
+    Provider.CLAUDE_DESIGN,
     Provider.GROK,
     Provider.GEMINI,
 )
@@ -213,6 +214,14 @@ def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
     # ``chatgpt.looks_like``'s document-identity requirements (polylogue-t0ta).
     if chatgpt.looks_like_fragment(record):
         return Provider.CHATGPT
+    # Claude Design (bd polylogue-tbun) checked before the general claude.ai
+    # detector: its shape (messages + project, no chat_messages, camelCase
+    # contentBlocks) is a distinct, tighter product signature -- not a
+    # claude.ai variant.
+    if claude.looks_like_claude_design(record):
+        return Provider.CLAUDE_DESIGN
+    if claude.looks_like_claude_memories(record):
+        return Provider.CLAUDE_AI
     if claude.looks_like_ai(record):
         return Provider.CLAUDE_AI
     if grok.looks_like_export(record):
@@ -248,6 +257,12 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
             return Provider.CHATGPT
         if isinstance(first_record.get("chat_messages"), list):
             return Provider.CLAUDE_AI
+        # Claude AI account memory export (memories.json, bd polylogue-zng9)
+        # arrives as a bare top-level JSON array of one-per-account records.
+        if claude.looks_like_claude_memories(first_record):
+            return Provider.CLAUDE_AI
+        if claude.looks_like_claude_design(first_record):
+            return Provider.CLAUDE_DESIGN
         if grok.looks_like_export(first_record):
             return Provider.GROK
         if _looks_like_gemini_mapping(first_record):
@@ -1201,6 +1216,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
     if spec.provider is Provider.CLAUDE_AI:
         record = _payload_record(spec.payload)
         return [claude.parse_ai(record, spec.fallback_id)] if record is not None else []
+
+    if spec.provider is Provider.CLAUDE_DESIGN:
+        record = _payload_record(spec.payload)
+        return [claude.parse_design(record, spec.fallback_id)] if record is not None else []
 
     if spec.provider is Provider.GROK:
         record = _payload_record(spec.payload)

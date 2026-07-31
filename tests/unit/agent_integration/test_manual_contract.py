@@ -94,5 +94,5 @@ def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
 def test_origin_teaching_follows_authoritative_enum_including_beads_issue() -> None:
     """Mutation: using the mission's stale count of ten or omitting a new Origin token fails here."""
     assert tuple(item.token for item in ORIGIN_MEANINGS) == tuple(item.value for item in Origin)
-    assert len(ORIGIN_MEANINGS) == 11
+    assert len(ORIGIN_MEANINGS) == 12
     assert "beads-issue" in {item.token for item in ORIGIN_MEANINGS}

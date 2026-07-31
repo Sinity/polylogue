@@ -10,10 +10,27 @@ import pytest
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, Provider
-from polylogue.sources.dispatch import _payload_record, _payload_sequence, parse_payload, parse_stream_payload
+from polylogue.sources.dispatch import (
+    _payload_record,
+    _payload_sequence,
+    detect_provider,
+    parse_payload,
+    parse_stream_payload,
+)
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 HERMES_ATOF_FIXTURE = Path(__file__).parents[2] / "fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.jsonl"
+
+
+def test_detect_provider_claims_claude_memories_array_as_claude_ai() -> None:
+    """bd polylogue-zng9: memories.json is a bare top-level JSON array of
+    one-per-account records with no ``chat_messages``/``messages`` key at
+    all -- previously unrecognized by any detector (dropped entirely)."""
+    payload = [{"account_uuid": "acct-1", "conversations_memory": "hello"}]
+    assert detect_provider(payload) is Provider.CLAUDE_AI
+    sessions = parse_payload(Provider.CLAUDE_AI, payload, "fallback")
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id == "account-memory:acct-1"
 
 
 def test_payload_sequence_normalizes_streaming_decimals() -> None:
