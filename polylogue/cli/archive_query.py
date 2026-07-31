@@ -125,6 +125,7 @@ class _ArchiveFilterKwargs(TypedDict):
     since_ms: int | None
     until_ms: int | None
     since_session_id: str | None
+    root: bool | None
     boolean_predicate: NotRequired[QueryPredicate]
 
 
@@ -304,6 +305,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         "since_ms": since_ms,
         "until_ms": until_ms,
         "since_session_id": since_session_id,
+        "root": compiled_spec.root,
     }
     if compiled_spec.boolean_predicate is not None:
         filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate

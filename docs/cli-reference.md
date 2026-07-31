@@ -127,6 +127,10 @@ Options:
                                   Sort by field
   --reverse                       Reverse sort order
   --sample INTEGER                Random sample of N sessions
+  --root / --no-root              Only top-level sessions (--root) or only
+                                  subagent/branch children (--no-root). Unset
+                                  (default) selects both, unfiltered by
+                                  structure.
   -o, --output TEXT               Output destinations: browser, clipboard,
                                   stdout (comma-separated)
   --json                          Shortcut for --format json. Disables color

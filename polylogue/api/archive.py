@@ -5227,7 +5227,7 @@ class PolylogueArchiveMixin:
         ``world_state``/``agent_policy``/``turn_context`` policy facts
         (sandbox/truncation policy, rate limits, ghost commits, developer
         instructions), every Claude Code sidecar event (``claude_todo_state``,
-        ``claude_tool_result_sidecar``, ``claude_attachment``, ``micro_compaction``,
+        ``claude_tool_result_sidecar``, ``claude_attachment_file``, ``micro_compaction``,
         etc.), Hermes ``hermes_tool_availability_span``/``hermes_*`` step
         telemetry, and ``claude_ai_conversation_summary`` all surface through
         the same one reader instead of a bespoke accessor per event type.

@@ -135,7 +135,7 @@ def _print_otlp_evidence(env: AppEnv, session_id: str, output_format: str | None
 
 def _enrich_with_github_api(result: SessionCorrelationResult) -> SessionCorrelationResult:
     """Cross-reference issue/PR refs against the GitHub API via gh CLI."""
-    from polylogue.insights.session_commit import GitHubRef
+    from polylogue.insights.session_commit import GitHubRef, SessionCorrelationResult
 
     all_refs: list[tuple[GitHubRef, str]] = []
     for ref in result.issue_refs:
