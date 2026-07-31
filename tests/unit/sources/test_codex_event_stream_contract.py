@@ -405,6 +405,54 @@ class TestCrossMessageReferences:
     """Pins the cross-message reference contract carried in the stream."""
 
     def test_second_session_meta_becomes_parent_continuation(self) -> None:
+        # A genuine resume physically replays the parent's own session_meta
+        # as the second distinct meta; the replayed header's timestamp
+        # precedes the new session's, and it shares the same cwd/git remote
+        # (same working tree) -- the structural evidence
+        # `_has_continuation_evidence` requires. Absent that evidence, a
+        # bare second session_meta id is not proof of a parent relationship
+        # (see the negative case below).
+        records: list[object] = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child",
+                    "timestamp": "2025-01-15T14:00:00Z",
+                    "cwd": "/repo/polylogue",
+                    "git": {"repository_url": "git@github.com:example/polylogue.git"},
+                },
+            },
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "parent",
+                    "timestamp": "2025-01-15T13:00:00Z",
+                    "cwd": "/repo/polylogue",
+                    "git": {"repository_url": "git@github.com:example/polylogue.git"},
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": "u1",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "continued"}],
+                },
+            },
+        ]
+        session = _parse(records, "fallback")
+        assert session.provider_session_id == "child"
+        assert session.parent_session_provider_id == "parent"
+        assert session.branch_type == BranchType.CONTINUATION
+
+    def test_second_session_meta_without_structural_evidence_is_unclassified(self) -> None:
+        # Two session_metas with no forked_from_id marker, no shared cwd/git
+        # remote, and no earlier-timestamp relationship: the bare count of
+        # session_meta records must NOT be enough evidence for CONTINUATION.
+        # Reverting `_has_continuation_evidence`'s call site back to the old
+        # `elif len(session_metas_seen) > 1:` heuristic makes this assertion
+        # fail (it would classify "parent" as the CONTINUATION parent).
         records: list[object] = [
             {"type": "session_meta", "payload": {"id": "child", "timestamp": "2025-01-15T14:00:00Z"}},
             {"type": "session_meta", "payload": {"id": "parent", "timestamp": "2025-01-15T13:00:00Z"}},
@@ -420,8 +468,8 @@ class TestCrossMessageReferences:
         ]
         session = _parse(records, "fallback")
         assert session.provider_session_id == "child"
-        assert session.parent_session_provider_id == "parent"
-        assert session.branch_type == BranchType.CONTINUATION
+        assert session.parent_session_provider_id is None
+        assert session.branch_type is None
 
     def test_turn_context_cwd_changes_collected_into_working_directories(self) -> None:
         records = _load_catalog("interleaved_stream.jsonl")

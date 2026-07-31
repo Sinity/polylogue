@@ -198,6 +198,39 @@ def _newer_timestamp_pair(
     return current
 
 
+def _has_continuation_evidence(
+    *,
+    first_timestamp: _TimestampPair | None,
+    second_timestamp: _TimestampPair | None,
+    first_cwd: str | None,
+    second_cwd: str | None,
+    first_repo_url: str | None,
+    second_repo_url: str | None,
+) -> bool:
+    """Structural test for the legacy (no `forked_from_id`) continuation fallback.
+
+    A resumed Codex session physically replays the parent conversation's own
+    original `session_meta` record as the file's second distinct `session_meta`
+    (verified against real multi-meta rollout files: the replayed header's
+    timestamp always *precedes* the new session's own start time, and reports
+    the same `cwd`/git remote, because the resumed conversation continues in
+    the same working tree). A bare count of session_meta records proves
+    neither fact -- two structurally unrelated session_meta records
+    concatenated into one payload would satisfy the count without satisfying
+    this check, so the count alone is not sufficient evidence of a parent
+    relationship.
+    """
+    if first_timestamp is None or second_timestamp is None:
+        return False
+    if second_timestamp[0] > first_timestamp[0]:
+        # The candidate parent's own header postdates the child's -- not a
+        # replayed prefix.
+        return False
+    cwd_match = bool(first_cwd) and bool(second_cwd) and first_cwd == second_cwd
+    repo_match = bool(first_repo_url) and bool(second_repo_url) and first_repo_url == second_repo_url
+    return cwd_match or repo_match
+
+
 def _validate_record(item: object, *, index: int, context: str = "record") -> CodexRecord | None:
     if not isinstance(item, dict):
         return None
@@ -2079,6 +2112,17 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     # prefix in this rollout. See docs/design/session-lineage-model.md.
     forked_from_id: str | None = None
     is_subagent_spawn = False
+    # Structural evidence for the legacy (no forked_from_id) continuation
+    # fallback below: the child's own cwd/git, and the same facts read off
+    # the second distinct session_meta encountered (a resumed session
+    # physically replays the parent's original session_meta as the next
+    # record). Captured independently of `session_git`, which prefers the
+    # *first* meta's git and must not be overwritten by the second's.
+    first_meta_cwd: str | None = None
+    first_meta_repo_url: str | None = None
+    second_meta_timestamp_pair: _TimestampPair | None = None
+    second_meta_cwd: str | None = None
+    second_meta_repo_url: str | None = None
     session_git: dict[str, object] | None = None  # Git context from session metadata
     session_instructions: str | None = None  # System instructions from session metadata
     working_directories: set[str] = set()
@@ -2399,6 +2443,29 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                     source_val = session_meta.get("source")
                     if isinstance(source_val, dict) and isinstance(source_val.get("subagent"), dict):
                         is_subagent_spawn = True
+                    cwd_val = session_meta.get("cwd")
+                    if isinstance(cwd_val, str) and cwd_val.strip():
+                        first_meta_cwd = cwd_val.strip()
+                    first_meta_git = _git_context(session_meta)
+                    if first_meta_git is not None:
+                        repo_val = first_meta_git.get("repository_url")
+                        if isinstance(repo_val, str) and repo_val.strip():
+                            first_meta_repo_url = repo_val.strip()
+                elif len(session_metas_seen) == 2:
+                    # The second distinct session_meta is the legacy-fallback
+                    # candidate parent (see the CONTINUATION classification
+                    # below) -- capture its own facts independently of
+                    # `session_git`/`session_timestamp`, which track the
+                    # first (child) meta only.
+                    second_meta_timestamp_pair = parse_timestamp_pair(_record_timestamp(session_meta))
+                    cwd_val = session_meta.get("cwd")
+                    if isinstance(cwd_val, str) and cwd_val.strip():
+                        second_meta_cwd = cwd_val.strip()
+                    second_meta_git = _git_context(session_meta)
+                    if second_meta_git is not None:
+                        repo_val = second_meta_git.get("repository_url")
+                        if isinstance(repo_val, str) and repo_val.strip():
+                            second_meta_repo_url = repo_val.strip()
             git_context = _git_context(session_meta)
             if git_context and not session_git:
                 session_git = git_context
@@ -2504,12 +2571,25 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
     #     than fabricate FORK from absent evidence. The prefix-sharing
     #     normalization still records the branch point + `inheritance`, so the
     #     shared-prefix fact is preserved.
-    # Fall back to the legacy heuristic (a second embedded session_meta id) when
-    # no explicit marker is present.
+    # Fall back to the legacy heuristic (older exports with no `forked_from_id`
+    # field at all) when no explicit marker is present: a second distinct
+    # session_meta *can* be the replayed parent header of a plain resume, but
+    # only when it carries the structural evidence of that -- see
+    # `_has_continuation_evidence`. A second session_meta id with none of that
+    # evidence is not proof of any relationship (e.g. two structurally
+    # unrelated session_metas concatenated in one payload), so it stays fully
+    # unclassified rather than fabricating CONTINUATION from a bare count.
     if forked_from_id is not None:
         parent_id: str | None = forked_from_id
         branch_type = BranchType.SUBAGENT if is_subagent_spawn else None
-    elif len(session_metas_seen) > 1:
+    elif len(session_metas_seen) > 1 and _has_continuation_evidence(
+        first_timestamp=session_timestamp_pair,
+        second_timestamp=second_meta_timestamp_pair,
+        first_cwd=first_meta_cwd,
+        second_cwd=second_meta_cwd,
+        first_repo_url=first_meta_repo_url,
+        second_repo_url=second_meta_repo_url,
+    ):
         parent_id = session_metas_seen[1]
         branch_type = BranchType.CONTINUATION
     else:

@@ -96,10 +96,33 @@ class TestSessionMetadata:
         result = parse(payload, "fallback")
         assert result.provider_session_id == "conv-abc"
 
-    def test_second_session_meta_sets_parent(self) -> None:
+    def test_second_session_meta_with_structural_evidence_sets_continuation(self) -> None:
+        # A genuine resume physically replays the parent conversation's own
+        # session_meta as the second distinct meta in the file. Real Codex
+        # rollout files (verified against multi-meta exports on disk) show
+        # two structural facts about that replayed header: its timestamp
+        # *precedes* the new session's own start time, and it reports the
+        # same cwd/git remote, because the resume continues in the same
+        # working tree.
         payload = [
-            {"type": "session_meta", "payload": {"id": "conv-abc", "timestamp": "2024-01-01"}},
-            {"type": "session_meta", "payload": {"id": "parent-xyz", "timestamp": "2024-01-01"}},
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "conv-abc",
+                    "timestamp": "2024-01-01T12:00:20Z",
+                    "cwd": "/realm/project/sinnix",
+                    "git": {"repository_url": "git@github.com:Sinity/sinnix.git"},
+                },
+            },
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "parent-xyz",
+                    "timestamp": "2024-01-01T12:00:00Z",
+                    "cwd": "/realm/project/sinnix",
+                    "git": {"repository_url": "git@github.com:Sinity/sinnix.git"},
+                },
+            },
             {
                 "type": "response_item",
                 "payload": {
@@ -113,6 +136,47 @@ class TestSessionMetadata:
         assert result.provider_session_id == "conv-abc"
         assert result.parent_session_provider_id == "parent-xyz"
         assert result.branch_type == BranchType.CONTINUATION
+
+    def test_second_session_meta_without_structural_evidence_stays_unclassified(self) -> None:
+        # Two session_metas with no forked_from_id marker and no structural
+        # relationship (different cwd/repo, and the second one's timestamp
+        # does NOT precede the first's) must not be inferred as a
+        # continuation from the bare count alone. Reverting to the old
+        # count-based heuristic (`elif len(session_metas_seen) > 1:` with no
+        # further check) makes this assertion fail because it would classify
+        # this payload as CONTINUATION with parent "unrelated-session".
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "conv-abc",
+                    "timestamp": "2024-01-01T12:00:00Z",
+                    "cwd": "/realm/project/sinnix",
+                    "git": {"repository_url": "git@github.com:Sinity/sinnix.git"},
+                },
+            },
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "unrelated-session",
+                    "timestamp": "2024-06-15T09:00:00Z",
+                    "cwd": "/realm/project/polylogue",
+                    "git": {"repository_url": "git@github.com:Sinity/polylogue.git"},
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.provider_session_id == "conv-abc"
+        assert result.parent_session_provider_id is None
+        assert result.branch_type is None
 
     def test_no_session_meta_uses_fallback(self) -> None:
         payload = [
