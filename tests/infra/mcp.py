@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 from polylogue.archive.models import Session
 from polylogue.core.enums import Provider
 from polylogue.mcp.declarations.models import MCPCapabilities
-from polylogue.mcp.declarations.registry import declared_tool_names
+from polylogue.mcp.declarations.registry import TARGET_PROMPTS, declared_tool_names
 from tests.infra.builders import make_conv, make_msg
 
 MCP_TOOL_NAME_BASELINE = frozenset({"query", "read", "get", "explain", "context", "status"})
@@ -27,25 +27,23 @@ ALL_CAPABILITIES = MCPCapabilities(write=True, judge=True, maintenance=True)
 # declaration in the same change cannot make the test surface self-authorize.
 EXPECTED_TOOL_NAMES = set(declared_tool_names(ALL_CAPABILITIES))
 
-EXPECTED_RESOURCE_URIS = {
-    "polylogue://agent/manual",
-    "polylogue://agent/reference",
-    "polylogue://agent/manifest",
-    "polylogue://capabilities/query",
-}
+# Prompt discovery, like tool discovery above, is declaration-derived rather
+# than a hand-copied literal set -- a prompt registered in
+# polylogue/mcp/server_prompts.py without a matching TARGET_PROMPTS entry (or
+# vice versa) fails discovery tests instead of drifting silently
+# (polylogue-il50: the prior hand-maintained set here was never referenced by
+# any test and had gone stale in both directions).
+EXPECTED_PROMPT_NAMES = {entry.name for entry in TARGET_PROMPTS}
 
-EXPECTED_RESOURCE_TEMPLATE_URIS = {
-    "polylogue://session/{conv_id}",
-}
-
-EXPECTED_PROMPT_NAMES = {
-    "resume_context",
-    "postmortem_last",
-    "decisions_about",
-    "unacknowledged_failures",
-    "sessions_touching_file",
-    "cost_of",
-}
+# NOTE: there is no declaration-derived resource-URI pin yet. TARGET_RESOURCES
+# (polylogue/mcp/declarations/registry.py) describes an aspirational future
+# resource surface (polylogue-t46.8.2/polylogue-t46.8.3) that does not match
+# today's live registrations in polylogue/mcp/server_resources.py, so
+# deriving an expected set from it here would assert something not yet true.
+# A prior hand-maintained EXPECTED_RESOURCE_URIS/EXPECTED_RESOURCE_TEMPLATE_URIS
+# pair was found unreferenced and stale in both directions (polylogue-il50)
+# and removed rather than left as misleading dead code; reintroduce it once
+# TARGET_RESOURCES is reconciled with live registration.
 
 SurfaceResult = TypeVar("SurfaceResult")
 MCPSurfaceHandler: TypeAlias = Callable[..., str | Awaitable[str]]

@@ -215,6 +215,41 @@
       "name": "agent_coordination_brief",
       "required_capability": null,
       "workflow": "coordination"
+    },
+    {
+      "migration_owner": "polylogue-il50",
+      "mutation_authority": "none",
+      "name": "analyze_errors",
+      "required_capability": null,
+      "workflow": "error-analysis"
+    },
+    {
+      "migration_owner": "polylogue-il50",
+      "mutation_authority": "none",
+      "name": "summarize_week",
+      "required_capability": null,
+      "workflow": "weekly-summary"
+    },
+    {
+      "migration_owner": "polylogue-il50",
+      "mutation_authority": "none",
+      "name": "extract_code",
+      "required_capability": null,
+      "workflow": "code-extraction"
+    },
+    {
+      "migration_owner": "polylogue-il50",
+      "mutation_authority": "none",
+      "name": "compare_sessions",
+      "required_capability": null,
+      "workflow": "session-comparison"
+    },
+    {
+      "migration_owner": "polylogue-il50",
+      "mutation_authority": "none",
+      "name": "extract_patterns",
+      "required_capability": null,
+      "workflow": "pattern-extraction"
     }
   ],
   "target_resources": [
