@@ -777,6 +777,104 @@ def census_historical_revision_evidence(
     )
 
 
+def _lineage_aware_replay_order(
+    logical_keys: set[str],
+    archive: ArchiveStore,
+    spill: _ParsedSessionSpill,
+    archive_root: Path,
+) -> list[str]:
+    """Order one rebuild's byte-typed logical keys so a parent's cohort
+    replays before any of its children's (polylogue-5q2u).
+
+    Replaying a child before its parent forces ``_resolve_session_graph`` to
+    store the child's shared prefix WHOLE, then re-walk and normalize it
+    (delete the duplicate prefix rows, remap ``session_events`` refs, delete
+    prefix-scoped dependents) once the parent finally arrives -- the
+    #2467 deferred-tail path, O(orphaned_children * shared_prefix_size) real
+    row-mutation work. The previous ``sorted(logical_keys)`` lexicographic
+    order has zero relationship to parent/child lineage, so it triggers this
+    expensive path roughly as often as not during a cold/full rebuild.
+    Visiting roots first (and each child only after its parent) minimizes
+    how often it triggers.
+
+    This is deliberately scheduling-only: it must never change WHAT gets
+    replayed or adopted, only the order this module's own replay loop visits
+    logical keys in. A key whose parent cannot be resolved here -- no
+    ``parent_session_provider_id``, a parent outside this rebuild's
+    ``logical_keys`` (missing/external/cross-batch parent), or a lineage
+    cycle -- degrades to the original lexicographic position among the
+    unresolved remainder. Nothing is ever skipped.
+    """
+    sorted_keys = sorted(logical_keys)
+    if len(sorted_keys) <= 1:
+        return sorted_keys
+
+    placeholders = ",".join("?" for _ in sorted_keys)
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT logical_source_key, raw_id
+            FROM raw_sessions
+            WHERE logical_source_key IN ({placeholders})
+            ORDER BY logical_source_key, acquired_at_ms DESC
+            """,
+            sorted_keys,
+        ).fetchall()
+    representative_raw_id: dict[str, str] = {}
+    for logical_source_key, raw_id in rows:
+        representative_raw_id.setdefault(str(logical_source_key), str(raw_id))
+
+    parent_of: dict[str, str | None] = {}
+    for key in sorted_keys:
+        parent_key: str | None = None
+        raw_id = representative_raw_id.get(key)
+        if raw_id is not None:
+            try:
+                sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+            except Exception:
+                # Lineage ordering is a scheduling optimization only -- any
+                # failure here degrades to "treat as unresolved", never to a
+                # replay/adoption failure.
+                sessions = []
+            if sessions:
+                session = sessions[0]
+                parent_provider_id = session.parent_session_provider_id
+                if parent_provider_id:
+                    parent_key = f"{session.source_name.value}:{parent_provider_id}"
+        parent_of[key] = parent_key
+
+    children: dict[str, list[str]] = {}
+    roots: list[str] = []
+    for key in sorted_keys:
+        parent_key = parent_of[key]
+        if parent_key is not None and parent_key in logical_keys and parent_key != key:
+            children.setdefault(parent_key, []).append(key)
+        else:
+            roots.append(key)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def visit(key: str) -> None:
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(key)
+        for child in children.get(key, ()):
+            visit(child)
+
+    for key in roots:
+        visit(key)
+    # Cycles: every remaining member has a not-yet-visited parent inside the
+    # set. Fall back to lexicographic order for the unresolved remainder --
+    # ``visit`` still walks each one's children once reached, so nothing is
+    # skipped or duplicated.
+    for key in sorted_keys:
+        if key not in seen:
+            visit(key)
+    return ordered
+
+
 def backfill_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -972,13 +1070,23 @@ def backfill_historical_revision_evidence(
                 and len(logical_keys) + len(membership_keys) >= _PIPELINE_DECODE_MIN_COHORTS
             )
         )
+        # polylogue-5q2u: replay in lineage order (roots, then children after
+        # their parent) instead of lexicographic order -- see
+        # ``_lineage_aware_replay_order``'s docstring. Scheduling-only: the
+        # SET of keys replayed and the plan/adoption outcome for each is
+        # unaffected, only wall-clock and how often the deferred-tail path
+        # (#2467) triggers. Both the pipeline-decode prefetcher and the
+        # writer's own replay loop consume this SAME order so the
+        # prefetcher's lookahead actually matches what the writer visits
+        # next.
+        ordered_logical_keys = _lineage_aware_replay_order(logical_keys, archive, spill, archive_root)
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
             decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
             spill.attach_prefetcher(decode_prefetcher)
-            decode_prefetcher.start_phase(sorted(logical_keys), provisional_full_raw_ids)
+            decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
         try:
-            for logical_key in sorted(logical_keys):
+            for logical_key in ordered_logical_keys:
                 if decode_prefetcher is not None:
                     decode_prefetcher.enter_key(logical_key)
                 # polylogue-eqnv: the offline backfill/rebuild path is the one

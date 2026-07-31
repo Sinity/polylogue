@@ -23,6 +23,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     RawParsePrefetchCache,
     _browser_snapshot_fidelity,
+    _lineage_aware_replay_order,
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
@@ -30,6 +31,7 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
+from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -2416,3 +2418,200 @@ def test_pipelined_decode_respects_batched_replay_commits(tmp_path: Path, monkey
 
     assert serial_result == pipelined_result
     assert _index_content_manifest(serial_root) == _index_content_manifest(pipelined_root)
+
+
+def _codex_session_payload(
+    session_id: str,
+    message_texts: list[str],
+    *,
+    forked_from_id: str | None = None,
+) -> bytes:
+    """Build a codex JSONL raw with one message per ``message_texts`` entry.
+
+    Mirrors how a real Codex resume payload looks: a ``session_meta`` record
+    carrying ``forked_from_id`` when this session is a resume/fork, followed
+    by ``response_item`` message records. Passing the SAME leading
+    ``message_texts`` for a parent and one of its children (plus extra tail
+    entries on the child) reproduces the on-disk shape #2467's deferred-tail
+    extraction exists for: the child's JSONL physically re-contains the
+    parent's entire prefix.
+    """
+    meta_payload: dict[str, object] = {"id": session_id, "timestamp": "2026-06-01T00:00:00Z"}
+    if forked_from_id is not None:
+        meta_payload["forked_from_id"] = forked_from_id
+    lines = [json.dumps({"type": "session_meta", "payload": meta_payload}, separators=(",", ":"))]
+    for position, text in enumerate(message_texts):
+        lines.append(
+            json.dumps(
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "id": f"m{position}",
+                        "role": "user" if position % 2 == 0 else "assistant",
+                        "content": [{"type": "input_text", "text": text}],
+                    },
+                },
+                separators=(",", ":"),
+            )
+        )
+    return ("\n".join(lines) + "\n").encode()
+
+
+def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
+    """One parent (native_id sorts LAST lexicographically) plus N children
+    (native_ids sort BEFORE the parent) that each replay the parent's full
+    message prefix plus one new tail message -- a real Codex resume shape.
+    """
+    initialize_active_archive_root(root)
+    parent_native_id = "zparent"
+    parent_texts = [f"parent-{i}" for i in range(4)]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_session_payload(parent_native_id, parent_texts),
+            source_path=f"{parent_native_id}.jsonl",
+            acquired_at_ms=1,
+        )
+        for index in range(n_children):
+            child_native_id = f"achild{index}"
+            child_texts = [*parent_texts, f"child-{index}-tail"]
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_codex_session_payload(child_native_id, child_texts, forked_from_id=parent_native_id),
+                source_path=f"{child_native_id}.jsonl",
+                acquired_at_ms=2 + index,
+            )
+
+
+def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path) -> None:
+    """polylogue-5q2u: roots first, then each child only after its parent --
+    NOT the lexicographic order a plain ``sorted()`` would produce (the
+    parent's native id, "zparent", sorts LAST here)."""
+    root = tmp_path / "archive"
+    _seed_lineage_fixture(root, n_children=5)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        revision_backfill._census_historical_revision_evidence(
+            archive,
+            revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None),
+            selected_raw_ids=None,
+            max_payload_bytes=None,
+        )
+        archive.commit()
+        _expanded, logical_keys = archive.expand_raw_membership_selection(None)
+        with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
+            order = _lineage_aware_replay_order(set(logical_keys), archive, spill, root)
+
+    assert order[0] == "codex:zparent"
+    parent_position = order.index("codex:zparent")
+    for index in range(5):
+        child_key = f"codex:achild{index}"
+        assert child_key in order
+        assert order.index(child_key) > parent_position
+    # Lexicographic order would have put every child before the parent.
+    assert sorted(logical_keys)[0] != "codex:zparent"
+
+
+def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
+    """A parent outside this call's ``logical_keys`` set (missing/external/
+    cross-batch) must not crash or drop the child -- it degrades to the
+    lexicographic position among the unresolved remainder. Two orphans (not
+    one) so the real DB lookup + ``spill.for_raw`` path is exercised instead
+    of the single-key short-circuit."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for native_id in ("zorphan", "aorphan"):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_codex_session_payload(native_id, ["only-message"], forked_from_id="never-ingested-parent"),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=1,
+            )
+        with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
+            order = _lineage_aware_replay_order({"codex:zorphan", "codex:aorphan"}, archive, spill, root)
+    assert sorted(order) == ["codex:aorphan", "codex:zorphan"]
+    # Neither key's parent is in the set, so both are roots -- fallback
+    # degrades to lexicographic order among them.
+    assert order == ["codex:aorphan", "codex:zorphan"]
+
+
+def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-5q2u AC1: lineage-aware replay must trigger the #2467
+    deferred-tail/orphaned-child normalization path (``_reextract_prefix_tail_db``)
+    strictly less often than the previous lexicographic order for a
+    representative parent-with-many-children fixture, where the parent's
+    native id sorts lexicographically AFTER its children's.
+
+    Anti-vacuity: reverting the ``_lineage_aware_replay_order`` call at the
+    ``for logical_key in ...:`` call site back to ``sorted(logical_keys)``
+    makes this test fail (both counts become equal and >0, since every
+    child would then replay before the parent it depends on).
+    """
+    lineage_root = tmp_path / "lineage"
+    lexicographic_root = tmp_path / "lexicographic"
+    n_children = 5
+    _seed_lineage_fixture(lineage_root, n_children=n_children)
+    _seed_lineage_fixture(lexicographic_root, n_children=n_children)
+
+    def _count_deferred_tail_hits(root: Path, *, force_lexicographic: bool) -> int:
+        calls = 0
+        original = archive_tier_write._reextract_prefix_tail_db
+
+        def counting_wrapper(*args: object, **kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(archive_tier_write, "_reextract_prefix_tail_db", counting_wrapper)
+        if force_lexicographic:
+            monkeypatch.setattr(
+                revision_backfill,
+                "_lineage_aware_replay_order",
+                lambda logical_keys, archive, spill, archive_root: sorted(logical_keys),
+            )
+        backfill_historical_revision_evidence(root)
+        monkeypatch.undo()
+        return calls
+
+    lexicographic_hits = _count_deferred_tail_hits(lexicographic_root, force_lexicographic=True)
+    lineage_hits = _count_deferred_tail_hits(lineage_root, force_lexicographic=False)
+
+    assert lexicographic_hits == n_children, (
+        f"expected every one of the {n_children} children (native ids sorting before "
+        f"the parent's) to hit the deferred-tail path under lexicographic order, got {lexicographic_hits}"
+    )
+    assert lineage_hits == 0, (
+        f"lineage-aware order should replay the parent before any child, avoiding the "
+        f"deferred-tail path entirely; got {lineage_hits} hits"
+    )
+
+
+def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-5q2u AC2: lineage-aware scheduling must not change WHAT gets
+    replayed/adopted -- only the order. Two archives seeded identically,
+    replayed once under lineage order and once forced to the previous
+    lexicographic order, must reach byte-identical index.db content
+    (sessions/messages/blocks/session_links), matching the equivalence
+    currency ``_index_content_manifest`` already uses for other replay-order
+    equivalence proofs in this file (e.g.
+    ``test_pipelined_decode_respects_batched_replay_commits``).
+    """
+    lineage_root = tmp_path / "lineage"
+    lexicographic_root = tmp_path / "lexicographic"
+    _seed_lineage_fixture(lineage_root, n_children=5)
+    _seed_lineage_fixture(lexicographic_root, n_children=5)
+
+    lineage_result = backfill_historical_revision_evidence(lineage_root)
+
+    monkeypatch.setattr(
+        revision_backfill,
+        "_lineage_aware_replay_order",
+        lambda logical_keys, archive, spill, archive_root: sorted(logical_keys),
+    )
+    lexicographic_result = backfill_historical_revision_evidence(lexicographic_root)
+
+    assert lineage_result.replayed_logical_sources == lexicographic_result.replayed_logical_sources
+    assert lineage_result.quarantined == lexicographic_result.quarantined
+    assert lineage_result.adoption_deferred == lexicographic_result.adoption_deferred
+    assert _index_content_manifest(lineage_root) == _index_content_manifest(lexicographic_root)
