@@ -6,6 +6,26 @@ The daemon drains those envelopes into ``source.db`` and only moves a file to
 ``acknowledged`` after its ``raw_hook_events`` row has committed.  A crash in
 between is safe: replay uses the stable event id as the source-tier key.
 
+Both ``pending`` and ``acknowledged`` are sharded into UTC day-of-arrival
+subdirectories (``pending/2026-07-31/<event_id>.json``) so a stalled consumer
+cannot silently accumulate six figures of dentries in one directory again
+(polylogue-31r1 follow-up: a hook drain root pointed at a stale archive path
+sat un-drained for ~17 days and grew to 108K+ flat files, making every
+liveness/glob pass over the directory increasingly expensive). A day shard is
+a natural retention unit -- it self-bounds to roughly one day's arrival
+volume, and an emptied shard directory is removed opportunistically so the
+shard count itself stays small. File-per-event (not an append-only journal)
+is kept deliberately: an append-only journal needs either a cross-process
+file lock or a write smaller than ``PIPE_BUF`` to guarantee atomic concurrent
+appends, and hook payloads (tool output previews, etc.) are not reliably
+under that bound -- a torn concurrent write would corrupt evidence. Atomic
+``mkstemp`` + ``os.replace`` per event avoids that risk entirely and is what
+this module already had proven safe.
+
+A *legacy* flat ``pending/<event_id>.json`` layout (no day subdirectory) is
+still recognized on drain for backward compatibility with envelopes enqueued
+before day-sharding landed, or migrated in from a stale spool root.
+
 Hermes support (fs1.7) reuses this exact mechanism rather than inventing a
 parallel spool: Hermes lifecycle hooks are best-effort in the same way Claude
 Code/Codex hooks are (a synchronous call can be lost during an outage), so the
@@ -69,8 +89,13 @@ class HookSpoolRecordError(ValueError):
 class HookSpoolDrainResult:
     """Outcome of one durable hook-spool drain attempt.
 
-    ``remaining`` counts pending files left after the pass — failures plus
-    anything beyond ``limit`` — so a bounded caller knows to drain again.
+    ``remaining`` is a lower-bound signal, not an exact backlog count: it
+    equals the batch's own unacknowledged count, plus 1 if collection proved
+    at least one more path exists beyond this batch. A bounded caller only
+    needs ``remaining <= failed`` to know whether draining again would make
+    progress; computing an *exact* backlog size would require a full listing
+    of the pending directory, which is exactly the O(n) cost this module
+    exists to avoid at scale.
     """
 
     acknowledged: int
@@ -104,6 +129,103 @@ def hook_spool_root() -> Path:
     return hooks_sidecar_dir()
 
 
+def _day_shard(moment: datetime | None = None) -> str:
+    """UTC ``YYYY-MM-DD`` bucket name a pending/acknowledged file lands under."""
+
+    return (moment or datetime.now(UTC)).strftime("%Y-%m-%d")
+
+
+_DAY_SHARD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _iter_pending_event_paths(pending: Path, *, limit: int | None = None) -> list[Path]:
+    """Collect up to ``limit`` pending envelope paths without enumerating the
+    entire backlog.
+
+    Walks day-shard subdirectories oldest-first (bounded by day count, not
+    event count) plus any legacy flat ``*.json`` files sitting directly under
+    ``pending`` (pre-sharding envelopes, or files migrated in from a stale
+    root). Stops as soon as ``limit`` paths are collected: a 108K-file
+    backlog no longer costs an ``O(n log n)`` full listing+sort on every
+    bounded drain call, only ``O(limit)`` plus one cheap directory listing per
+    shard actually visited.
+    """
+
+    collected: list[Path] = []
+
+    def want_more() -> bool:
+        return limit is None or len(collected) < limit
+
+    try:
+        entries = sorted(pending.iterdir())
+    except OSError:
+        return collected
+    shard_dirs = [entry for entry in entries if entry.is_dir() and _DAY_SHARD_RE.match(entry.name)]
+    legacy_files = [entry for entry in entries if entry.is_file() and entry.suffix == ".json"]
+    for legacy in sorted(legacy_files):
+        if not want_more():
+            return collected
+        collected.append(legacy)
+    for shard in shard_dirs:
+        if not want_more():
+            return collected
+        try:
+            with os.scandir(shard) as it:
+                for dirent in sorted(it, key=lambda e: e.name):
+                    if not want_more():
+                        break
+                    if dirent.is_file() and dirent.name.endswith(".json"):
+                        collected.append(Path(dirent.path))
+        except OSError:
+            continue
+    return collected
+
+
+def hook_spool_pending_depth(root: Path | None = None, *, cap: int = 5000) -> int:
+    """Bounded pending-event count for observability, never an exact backlog size.
+
+    Returns ``cap`` (not the true count) once the backlog reaches ``cap``, so
+    a daemon health/heartbeat pass can log "queue depth >= N, growing
+    unbounded" without itself paying for the O(n) listing that caused the
+    original incident (a stalled consumer let 108K+ files accumulate silently
+    for ~17 days before a human happened to notice a directory listing).
+    Callers should treat ``depth >= cap`` as "alert now", not "count later".
+    """
+
+    pending = pending_hook_spool_dir(root)
+    return len(_iter_pending_event_paths(pending, limit=cap))
+
+
+def hook_spool_has_pending_events(root: Path | None = None) -> bool:
+    """O(1)-ish liveness check: is there at least one pending hook envelope?
+
+    Unlike a full listing, this stops at the first ``*.json`` dentry it finds
+    -- an existence probe, not an enumeration -- so it stays cheap regardless
+    of how large the backlog is. Used by the daemon's hook-aware maintenance
+    passes instead of materializing the whole pending directory just to ask
+    a yes/no question.
+    """
+
+    pending = pending_hook_spool_dir(root)
+    try:
+        entries = sorted(pending.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if entry.is_file() and entry.suffix == ".json":
+            return True
+    for entry in entries:
+        if not (entry.is_dir() and _DAY_SHARD_RE.match(entry.name)):
+            continue
+        try:
+            with os.scandir(entry) as it:
+                if any(dirent.is_file() and dirent.name.endswith(".json") for dirent in it):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
 def enqueue_hook_event(
     *,
     event_type: str,
@@ -127,7 +249,7 @@ def enqueue_hook_event(
     normalized = _validated_record(record)
     if not _SAFE_EVENT_ID.fullmatch(str(normalized["event_id"])):
         raise HookSpoolRecordError("hook spool event_id must contain only letters, digits, '_' or '-'")
-    pending = pending_hook_spool_dir(root)
+    pending = pending_hook_spool_dir(root) / _day_shard()
     pending.mkdir(parents=True, exist_ok=True)
     target = pending / f"{normalized['event_id']}.json"
     if target.exists():
@@ -153,12 +275,22 @@ def drain_hook_event_spool(
     thousand spooled events into a multi-minute writer monopoly that starved
     every other ingest path (observed live 2026-07-18). ``limit`` bounds one
     writer hold; the caller loops on ``remaining``.
+
+    Path collection is bounded (:func:`_iter_pending_event_paths`), not a full
+    listing, so a large backlog cannot inflate the cost of asking for one
+    bounded batch. ``remaining`` therefore reports "at least this many are
+    still pending" rather than an exact backlog size when the backlog exceeds
+    what one collection pass inspected.
     """
 
     pending = pending_hook_spool_dir(root)
     if not pending.exists():
         return HookSpoolDrainResult(acknowledged=0, failed=0)
-    paths = sorted(pending.glob("*.json"))
+    # Collect one extra path beyond the limit (when bounded) purely to learn
+    # whether more remain after this batch, without paying for a full count.
+    probe_limit = None if limit is None else limit + 1
+    paths = _iter_pending_event_paths(pending, limit=probe_limit)
+    more_remain_beyond_batch = limit is not None and len(paths) > limit
     selected = paths if limit is None else paths[:limit]
     if not selected:
         return HookSpoolDrainResult(acknowledged=0, failed=0)
@@ -169,9 +301,15 @@ def drain_hook_event_spool(
         store = ArchiveStore.open_existing(archive_root, read_only=False)
     except (OSError, sqlite3.Error, ValueError):
         logger.warning("hook spool drain could not open the archive; all events remain pending", exc_info=True)
-        return HookSpoolDrainResult(acknowledged=0, failed=len(selected), remaining=len(paths))
+        return HookSpoolDrainResult(
+            acknowledged=0,
+            failed=len(selected),
+            remaining=len(selected) + (1 if more_remain_beyond_batch else 0),
+        )
+    touched_shards: set[Path] = set()
     with store as archive:
         for path in selected:
+            touched_shards.add(path.parent)
             try:
                 record = _read_record(path)
                 _persist_record(archive, path, record)
@@ -184,11 +322,29 @@ def drain_hook_event_spool(
                 logger.warning("hook spool event remains pending: %s", path, exc_info=True)
             else:
                 acknowledged += 1
+    _prune_empty_shards(touched_shards, pending)
     return HookSpoolDrainResult(
         acknowledged=acknowledged,
         failed=failed,
-        remaining=len(paths) - acknowledged,
+        remaining=(len(selected) - acknowledged) + (1 if more_remain_beyond_batch else 0),
     )
+
+
+def _prune_empty_shards(shards: set[Path], pending_root: Path) -> None:
+    """Remove a day-shard directory once it has been fully drained.
+
+    Keeps the shard count itself bounded (only recent/still-arriving days
+    persist) instead of accumulating one empty directory per day forever.
+    Best-effort: a shard that still has a legacy-format neighbor or a
+    concurrent late arrival simply fails ``rmdir`` and is left for the next
+    pass.
+    """
+
+    for shard in shards:
+        if shard == pending_root:
+            continue
+        with contextlib.suppress(OSError):
+            shard.rmdir()
 
 
 def _read_record(path: Path) -> dict[str, object]:
@@ -295,7 +451,12 @@ def _persist_record(archive: ArchiveStore, path: Path, record: dict[str, object]
 
 
 def _acknowledge(path: Path, *, root: Path | None) -> None:
-    acknowledged = acknowledged_hook_spool_dir(root)
+    # Shard acknowledged receipts by day-of-acknowledgment (not the pending
+    # file's original arrival day): acknowledgment always has a well-defined
+    # "now", whereas a replayed/migrated pending file may carry no shard
+    # context at all (legacy flat layout). Keeps ``acknowledged`` bounded the
+    # same way ``pending`` is, without needing to parse the source path.
+    acknowledged = acknowledged_hook_spool_dir(root) / _day_shard()
     acknowledged.mkdir(parents=True, exist_ok=True)
     os.replace(path, acknowledged / path.name)
     _fsync_directory(acknowledged)

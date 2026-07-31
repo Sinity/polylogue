@@ -606,6 +606,71 @@ async def _periodic_heartbeat() -> None:
             )
         except Exception:
             logger.warning("daemon: heartbeat query failed", exc_info=True)
+        await asyncio.to_thread(_log_spool_depth_if_notable)
+
+
+# A healthy hook spool drains at roughly one daemon tick's worth of arrivals
+# (observed ~200/hour); a depth at or above this threshold means the
+# consumer has stopped draining, not that traffic spiked -- exactly the
+# silent-for-17-days failure this alerts on instead of leaving to a human to
+# notice a directory listing.
+_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD = 2000
+_BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP = 2000
+
+
+def _log_spool_depth_if_notable() -> None:
+    """Log pending-queue depth once per heartbeat when it looks abnormal.
+
+    Bounded/capped counts only (see ``hook_spool_pending_depth`` and the
+    browser-capture count below) -- this must never itself become an O(n)
+    scan of an unboundedly large backlog.
+    """
+    from polylogue.hooks import hook_install_sidecar_drift
+    from polylogue.sources.hooks import hook_spool_pending_depth
+
+    with contextlib.suppress(Exception):
+        hook_depth = hook_spool_pending_depth(cap=_HOOK_SPOOL_DEPTH_ALERT_THRESHOLD * 4)
+        if hook_depth >= _HOOK_SPOOL_DEPTH_ALERT_THRESHOLD:
+            logger.warning(
+                "daemon heartbeat: hook spool pending depth is >= %d (consumer may be stalled or "
+                "misrouted -- compare the resolved sidecar dir against any installed hook command)",
+                hook_depth,
+            )
+    for harness in ("claude-code", "codex"):
+        with contextlib.suppress(Exception):
+            drift = hook_install_sidecar_drift(harness)
+            if drift:
+                logger.warning(
+                    "daemon heartbeat: installed %s hook command(s) still point at stale sidecar "
+                    "dir(s) %s -- re-run `polylogue hooks install` to pick up the current archive root",
+                    harness,
+                    ", ".join(str(path) for path in drift),
+                )
+    with contextlib.suppress(Exception):
+        browser_capture_depth = _browser_capture_spool_pending_file_count(cap=_BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP)
+        if browser_capture_depth >= _BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP:
+            logger.warning(
+                "daemon heartbeat: browser-capture spool file count is >= %d",
+                browser_capture_depth,
+            )
+
+
+def _browser_capture_spool_pending_file_count(*, cap: int) -> int:
+    """Bounded count of ``*.json`` files under the browser-capture spool.
+
+    Purely for observability logging: capped so a large spool cannot turn
+    this into the same O(n) hazard the hook spool had. Distinct from
+    ``_browser_capture_spool_has_pending_files`` (which answers a
+    content-vs-cursor question, not a raw file count).
+    """
+    from itertools import islice
+
+    from polylogue.paths import browser_capture_spool_root
+
+    spool = browser_capture_spool_root()
+    if not spool.exists():
+        return 0
+    return sum(1 for _ in islice(spool.rglob("*.json"), cap))
 
 
 async def _periodic_lifecycle_heartbeat(*, interval_s: float | None = None) -> None:
