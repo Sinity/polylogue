@@ -434,7 +434,7 @@ def _claude_code_spec() -> OriginSpec:
             "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
             "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
             "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
-            "code_parser.py's _SKIPPED_SIDECAR_RECORD_TYPES (14 sidecar record "
+            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES (14 sidecar record "
             "types) already carries a per-type disposition with corpus counts "
             "in a comment block (polylogue-pbuh/parser-diff triage, "
             "2026-07-29) -- not converted to a DroppedValueVocabulary "
