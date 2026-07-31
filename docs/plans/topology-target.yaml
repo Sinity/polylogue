@@ -1700,7 +1700,7 @@ files:
     target: polylogue/daemon/otlp_receiver.py
     owner: stable
   - path: polylogue/daemon/parse_prefetch.py
-    loc: 417
+    loc: 39
     target: polylogue/daemon/parse_prefetch.py
     owner: stable
   - path: polylogue/daemon/process_start.py
@@ -2190,7 +2190,7 @@ files:
     target: polylogue/maintenance/raw_authority_reset.py
     owner: stable
   - path: polylogue/maintenance/rebuild_index.py
-    loc: 790
+    loc: 864
     target: polylogue/maintenance/rebuild_index.py
     owner: stable
   - path: polylogue/maintenance/registry.py
@@ -3193,6 +3193,10 @@ files:
   - path: polylogue/sources/assembly_gemini.py
     loc: 118
     target: polylogue/sources/assembly_gemini.py
+    owner: stable
+  - path: polylogue/sources/census_parse_stage.py
+    loc: 446
+    target: polylogue/sources/census_parse_stage.py
     owner: stable
   - path: polylogue/sources/cursor.py
     loc: 196
