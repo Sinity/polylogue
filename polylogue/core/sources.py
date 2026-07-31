@@ -125,7 +125,15 @@ _SOURCE_HERMES: Final[Source] = Source(
 )
 _SOURCE_ANTIGRAVITY: Final[Source] = Source(
     family="antigravity-session",
-    runtime_root="~/.antigravity",
+    # 2026-07-31 (polylogue-eo81): the runtime root is ~/.gemini/antigravity,
+    # NOT ~/.antigravity. The latter exists but holds only an `extensions`
+    # directory (4 KB, zero .pb files); the real data -- 345 MB including
+    # conversations/*.pb -- lives under ~/.gemini/. Because the declared root
+    # pointed at the empty path, #3441's conversations/ discovery could never
+    # fire, and the only antigravity rows the archive ever acquired were
+    # *.md.metadata.json sidecars reached by other means: 116 one-message
+    # sessions against 44 real conversations that were never ingested at all.
+    runtime_root="~/.gemini/antigravity",
     originating_lab="google",
 )
 _SOURCE_BEADS: Final[Source] = Source(
