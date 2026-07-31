@@ -604,10 +604,9 @@ Options:
   --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|message_type_backfill|session_timestamp_backfill|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+  --target [session_insights|message_type_backfill|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
                                   session_insights, message_type_backfill,
-                                  session_timestamp_backfill,
                                   orphaned_messages, empty_sessions,
                                   orphaned_attachments, orphaned_blobs, or
                                   superseded_raw_snapshots

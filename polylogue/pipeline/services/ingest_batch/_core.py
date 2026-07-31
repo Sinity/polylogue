@@ -60,6 +60,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     record_capture_gap_event,
     record_source_outage_events,
     session_has_parser_ingest_flag,
+    should_skip_stale_replace,
     stored_message_count,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -384,6 +385,42 @@ def _append_delta_payload(
     ) - len(delta_messages)
 
 
+def _incoming_write_regresses_attachment_coverage(
+    conn: sqlite3.Connection,
+    payload: SessionWritePayload,
+    session_to_write: ParsedSession,
+) -> bool:
+    """Return whether writing ``session_to_write`` would lose acquired attachments.
+
+    polylogue-ixry: two raw acquisitions of the same logical session can
+    carry byte-identical message content -- and therefore an identical
+    content-derived freshness timestamp -- while differing only in which
+    attachments were actually fetched. Drive re-acquisition backfills
+    attachment bytes into a *new* raw_id (`#3073`) without touching any
+    message timestamp, and never establishes revision lineage
+    (`predecessor_raw_id`/`logical_source_key`) the way the governed "live"
+    batch path does for tailed origins, so the two raw rows never form a
+    `raw_revision_heads` cohort either. Without this check, the freshness
+    comparison above ties and falls through to "whichever raw this batch
+    happens to (re)parse last wins" -- observed on the live archive to
+    silently revert a completed attachment fetch back to `unfetched` with no
+    signal (measured: 157/157 duplicate aistudio-drive source_paths landed
+    on the pre-fetch revision). This only ever blocks a regression: an
+    incoming write that ties or improves attachment coverage is unaffected.
+    """
+    incoming_acquired = sum(1 for attachment in session_to_write.attachments if attachment.inline_bytes is not None)
+    existing_acquired_row = conn.execute(
+        """
+        SELECT COUNT(*) FROM attachment_refs r
+        JOIN attachments a ON a.attachment_id = r.attachment_id
+        WHERE r.session_id = ? AND a.acquisition_status = 'acquired'
+        """,
+        (payload.session_id,),
+    ).fetchone()
+    existing_acquired = int(existing_acquired_row[0]) if existing_acquired_row is not None else 0
+    return incoming_acquired < existing_acquired
+
+
 def _write_session(
     conn: sqlite3.Connection,
     payload: SessionWritePayload,
@@ -544,7 +581,23 @@ def _write_session(
     ):
         existing_updated_at_ms = existing_row["updated_at_ms"]
         existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
-        if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
+        if should_skip_stale_replace(
+            incoming_freshness_ms=incoming_freshness_ms,
+            existing_updated_at_ms=existing_updated_at_int,
+        ):
+            counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
+            counts["skipped_attachments"] = payload.attachment_count
+            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+            return False, counts
+        if (
+            existing_updated_at_int is not None
+            and incoming_freshness_ms == existing_updated_at_int
+            and existing_raw_id
+            and payload.raw_id
+            and existing_raw_id != payload.raw_id
+            and _incoming_write_regresses_attachment_coverage(conn, payload, session_to_write)
+        ):
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count

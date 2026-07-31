@@ -1118,40 +1118,51 @@ def _repair_changed_session_fts(
 
 
 def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> None:
-    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
-    from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
+    """Record the real archive-wide ``messages_fts`` freshness state after a
+    targeted (session-scoped) repair.
 
-    readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
-    freshness_columns = (
-        {str(row[1]) for row in conn.execute("PRAGMA table_info(fts_freshness_state)").fetchall()}
-        if _table_exists(conn, "fts_freshness_state")
-        else set()
-    )
-    existing = (
-        conn.execute(
-            """
-            SELECT source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows
-            FROM fts_freshness_state
-            WHERE surface = 'messages_fts'
-            """,
-        ).fetchone()
-        if {"source_rows", "indexed_rows", "missing_rows", "excess_rows", "duplicate_rows"} <= freshness_columns
-        else None
-    )
-    counts = existing if existing is not None else (0, 0, 0, 0, 0)
+    A targeted repair only proves the sessions it touched are indexed -- it
+    says nothing about the rest of the archive. This used to call
+    ``message_fts_readiness_sync(conn, verify_total_rows=False)``, a cheap
+    boolean that is really just "has the FTS index ever been populated at
+    all AND does *any* indexable block exist" (``SELECT 1 ... LIMIT 1`` on
+    each side), not "every indexable block is indexed". Because that boolean
+    is true for almost any non-empty, previously-populated archive, every
+    targeted repair call unconditionally wrote ``state=ready,
+    missing_rows=0`` over the ledger's single global ``messages_fts`` row --
+    discarding whatever accurate ``missing_rows`` an exact snapshot had
+    previously recorded and asserting a global verdict a scoped repair never
+    measured. Surface-coherence audit 2026-07-31 caught this live: 12,659
+    blocks missing from the index while the ledger reported ``ready`` with
+    ``missing_rows=0``.
+
+    Fix: mirror ``threads_fts``, which only ever gets its freshness row from
+    an exact, archive-wide invariant snapshot (``fts_invariant_snapshot_sync``)
+    -- never a scoped/cheap approximation. Reuse that same snapshot here for
+    the messages surface; it runs the identical anti-join query the hourly
+    ``fts_orphan_audit`` sweep already accepts at that cadence
+    (``storage/fts/fts_lifecycle.py``'s ``_trigger_invariant_sync``), so its
+    cost is already an accepted class for this surface.
+    """
+    from polylogue.storage.fts.freshness import READY, STALE, record_fts_surface_state_sync
+    from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+
+    surface = fts_invariant_snapshot_sync(conn).messages
+    ready = bool(surface.ready)
     record_fts_surface_state_sync(
         conn,
         surface="messages_fts",
-        state=READY if bool(readiness["ready"]) else STALE,
-        source_rows=int(counts[0] or 0),
-        indexed_rows=int(counts[1] or 0),
-        missing_rows=0 if bool(readiness["ready"]) else int(counts[2] or 0),
-        excess_rows=0 if bool(readiness["ready"]) else int(counts[3] or 0),
-        duplicate_rows=0 if bool(readiness["ready"]) else int(counts[4] or 0),
+        state=READY if ready else STALE,
+        source_rows=int(surface.source_rows),
+        indexed_rows=int(surface.indexed_rows),
+        missing_rows=int(surface.missing_rows),
+        excess_rows=int(surface.excess_rows),
+        duplicate_rows=int(surface.duplicate_rows),
+        identity_mismatch_rows=int(surface.identity_mismatch_rows),
         detail=(
             "targeted changed-session repair complete"
-            if bool(readiness["ready"])
-            else "targeted changed-session repair left structural FTS readiness false"
+            if ready
+            else "targeted changed-session repair left an archive-wide FTS gap"
         ),
     )
 

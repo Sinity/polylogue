@@ -302,3 +302,97 @@ def test_apply_index_fast_forward_dispatches_unknown_kind_generically() -> None:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 44
     finally:
         conn.close()
+
+
+def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path) -> None:
+    """A pre-existing poisoned 'ready' row is downgraded, not rejected, by the v51 copy.
+
+    polylogue-rlvj: before this fix, ``_mark_message_fts_ready_after_targeted_repair``
+    could write ``state='ready'`` with ``source_rows != indexed_rows`` on the
+    single global ``messages_fts`` freshness row -- the live incident this PR
+    fixes measured a 12,659-row gap reported as ``ready``. Any archive that
+    ran the old code before upgrading carries that exact poisoned row. The
+    v51 declaration adds a CHECK enforcing the invariant the poisoned row
+    violates; a naive shared-column copy into the new schema would raise
+    ``sqlite3.IntegrityError`` and abort the whole fast-forward for those
+    archives.
+
+    ANTI-VACUITY: removing ``_REPLACE_TABLE_SANITIZERS``'s ``fts_freshness_state``
+    entry (or the ``sanitizer is not None`` guard in ``_apply_replace_table``)
+    makes this raise ``sqlite3.IntegrityError`` instead of completing --
+    verified by temporarily deleting the entry and re-running, then restoring
+    it.
+    """
+    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import _apply_replace_table
+    from polylogue.storage.sqlite.lifecycle import resolve_canonical_index_objects
+
+    # Resolved the same way the real executor does (sqlite_master.sql from a
+    # scratch connection executing the canonical DDL), not the raw triple-
+    # quoted constant -- the latter carries leading whitespace the
+    # replace-table regex does not tolerate.
+    canonical_sql = resolve_canonical_index_objects((("table", "fts_freshness_state"),))[
+        ("table", "fts_freshness_state")
+    ]
+
+    path = tmp_path / "scratch.db"
+    conn = sqlite3.connect(path)
+    try:
+        # Pre-v51 shape: no invariant CHECK, only the state-vocabulary CHECK.
+        conn.execute(
+            """
+            CREATE TABLE fts_freshness_state (
+                surface TEXT PRIMARY KEY,
+                state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'unknown')),
+                checked_at TEXT NOT NULL,
+                source_rows INTEGER NOT NULL DEFAULT 0,
+                indexed_rows INTEGER NOT NULL DEFAULT 0,
+                missing_rows INTEGER NOT NULL DEFAULT 0,
+                excess_rows INTEGER NOT NULL DEFAULT 0,
+                duplicate_rows INTEGER NOT NULL DEFAULT 0,
+                detail TEXT
+            ) STRICT
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fts_freshness_state (
+                surface, state, checked_at, source_rows, indexed_rows,
+                missing_rows, excess_rows, duplicate_rows, detail
+            ) VALUES (
+                'messages_fts', 'ready', '2026-07-31T00:00:00+00:00',
+                4970352, 4957693, 0, 0, 0, 'targeted changed-session repair complete'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO fts_freshness_state (
+                surface, state, checked_at, source_rows, indexed_rows,
+                missing_rows, excess_rows, duplicate_rows, detail
+            ) VALUES (
+                'threads_fts', 'stale', '2026-07-31T00:00:00+00:00',
+                15411, 15401, 10, 0, 0, 'exact invariant failed'
+            )
+            """
+        )
+        conn.commit()
+
+        _apply_replace_table(conn, "fts_freshness_state", canonical_sql)
+        conn.commit()
+
+        rows = {
+            str(row[0]): row
+            for row in conn.execute(
+                "SELECT surface, state, source_rows, indexed_rows, missing_rows FROM fts_freshness_state"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    # The poisoned row is downgraded to an honest 'stale' -- counts survive
+    # (nothing measured is lost) but the false 'ready' claim does not.
+    assert rows["messages_fts"][1] == "stale"
+    assert rows["messages_fts"][2:] == (4970352, 4957693, 0)
+    # An already-honest row is untouched.
+    assert rows["threads_fts"][1] == "stale"
+    assert rows["threads_fts"][2:] == (15411, 15401, 10)

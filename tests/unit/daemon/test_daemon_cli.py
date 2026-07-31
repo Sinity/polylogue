@@ -4308,7 +4308,7 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
     )
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(daemon_whale_raw_materialization=True, raw_authority_whale_payload_bytes=None),
+        lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None),
     )
     monkeypatch.setattr(
         "polylogue.product.raw_authority.whale_pass_candidate",
@@ -4358,7 +4358,7 @@ def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
 
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(daemon_whale_raw_materialization=True, raw_authority_whale_payload_bytes=None),
+        lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None),
     )
     monkeypatch.setattr(
         "polylogue.product.raw_authority.whale_pass_candidate",
@@ -4369,29 +4369,6 @@ def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
         pytest.fail("no candidate found -- must not touch the writer coordinator")
 
     monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", fail_coordinator)
-
-    attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
-
-    assert attempted is False
-
-
-def test_maybe_run_raw_materialization_whale_pass_respects_off_switch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``daemon_whale_raw_materialization=False`` must hold a whale
-    component fully offline-manual (the pre-polylogue-t93b behavior) --
-    neither the candidate lookup nor the writer coordinator run."""
-    from polylogue.daemon import cli as daemon_cli
-
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(daemon_whale_raw_materialization=False, raw_authority_whale_payload_bytes=None),
-    )
-
-    def fail_candidate_lookup(_config: object, **_kwargs: object) -> object:
-        pytest.fail("off switch must short-circuit before the candidate lookup")
-
-    monkeypatch.setattr("polylogue.product.raw_authority.whale_pass_candidate", fail_candidate_lookup)
 
     attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
 

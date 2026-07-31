@@ -501,6 +501,54 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # deliberately NOT executed by this declaration.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=51,
+        # polylogue-u6tl: delegation_facts.mapping_state and .result_status
+        # gain CHECK constraints GENERATED from their existing typed
+        # counterparts (DelegationMappingState / DelegationResultStatus in
+        # archive_tiers/archive.py) via the `literal_check` generator, which
+        # CLAUDE.md documents by name as the mechanism keeping typing.Literal
+        # types and their SQL CHECK lists in lockstep -- and which had zero
+        # call sites until now. No column is added and no existing value
+        # changes: this only tightens a CHECK the single writer
+        # (delegation_facts_insert_sql) already satisfied. Measured on the
+        # live archive before declaring: 0 rows outside either vocabulary, so
+        # a copy-forward rejects nothing. CONSTRAINT_ONLY per the v33/v36
+        # precedent (adding/widening a CHECK over unchanged values), NOT
+        # SEMANTIC_REPARSE -- no reparse is required for this to take effect.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v51-delegation-facts-check",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "delegation_facts"),),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
+        version=52,
+        # polylogue-rlvj: fts_freshness_state gains a table-level CHECK
+        # (state='ready' implies missing_rows=0 AND excess_rows=0 AND
+        # duplicate_rows=0 AND source_rows=indexed_rows) -- see index.py's
+        # v52 header comment for the live incident (a targeted repair's
+        # scoped verdict overwriting the global ledger row with a false
+        # 'ready'). No row's values need to change for archives that were
+        # never poisoned by the bug: every writer that already reaches
+        # state='ready' already writes balanced counters, so this is a pure
+        # constraint widening, the same v33/v36/v51 precedent. Archives that
+        # WERE poisoned by the bug carry a row that violates the new CHECK;
+        # the fast-forward executor's `_REPLACE_TABLE_SANITIZERS` entry
+        # downgrades that row to 'stale' before the copy runs instead of
+        # letting the migration abort.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v52-fts-freshness-check",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "fts_freshness_state"),),
+            ),
+        ),
+    ),
 )
 
 

@@ -359,10 +359,6 @@ class PolylogueConfig:
         return str(self._data.get("sinex_mode", "off")).strip().lower() or "off"
 
     @property
-    def log_level(self) -> str:
-        return str(self._data.get("log_level", "INFO"))
-
-    @property
     def force_plain(self) -> bool:
         return bool(self._data.get("force_plain"))
 
@@ -387,11 +383,6 @@ class PolylogueConfig:
     @property
     def schema_validation(self) -> str:
         return str(self._data.get("schema_validation", "advisory"))
-
-    @property
-    def slow_query_notice_seconds(self) -> float | None:
-        v = self._data.get("slow_query_notice_seconds")
-        return float(str(v)) if v is not None else None
 
     @property
     def api_host(self) -> str:
@@ -647,7 +638,7 @@ class PolylogueConfig:
         ordinary daemon fast-path blob limit is unaffected by this value --
         it only widens the envelope for a dedicated, single-component pass
         (stream-safe members only) run when the ordinary trickle conveyor
-        is otherwise quiescent. See ``daemon_whale_raw_materialization``.
+        is otherwise quiescent.
         """
         value = self._data.get("raw_authority_whale_payload_bytes")
         if value is None:
@@ -776,24 +767,6 @@ class PolylogueConfig:
         truthiness-coercing a typo into enabled.
         """
         return _require_bool_config_value(self._data, "mcp_maintenance_enabled")
-
-    @property
-    def daemon_whale_raw_materialization(self) -> bool:
-        """Escalation tier for whale-scale resource-blocked raw components (polylogue-t93b).
-
-        On by default: a raw-authority component permanently resource-blocked
-        at the ordinary daemon fast-path envelope converges through a
-        dedicated, bounded pass (single component, stream-safe members only,
-        commit-batched replay via ``raw_authority_commit_batch_size``) once
-        the ordinary trickle conveyor is otherwise quiescent -- a permanent
-        offline-only requirement is a policy bug per the automagic-invariants
-        doctrine (operator ruling, live witness codex:019f49d8, 6.33GB/788
-        raws with zero index presence). Set TOML
-        ``[daemon.raw_materialization] whale_convergence = false`` or
-        ``POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION=0`` to hold whale
-        components fully offline-manual instead.
-        """
-        return _require_bool_config_value(self._data, "daemon_whale_raw_materialization")
 
     @property
     def judgment_automation_enabled(self) -> bool:
@@ -1143,13 +1116,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Maximum accepted OTLP request body size.",
     ),
     ConfigInventoryEntry(
-        "log_level",
-        toml_path="logging.level",
-        owner_class="presentation-preference",
-        reload_behavior="startup-bound",
-        description="Python logging verbosity.",
-    ),
-    ConfigInventoryEntry(
         "force_plain",
         toml_path="logging.force_plain",
         env_var="POLYLOGUE_FORCE_PLAIN",
@@ -1188,14 +1154,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="deployment-policy",
         reload_behavior="per-invocation-client",
         description="Schema validation mode used by CLI/import surfaces.",
-    ),
-    ConfigInventoryEntry(
-        "slow_query_notice_seconds",
-        toml_path="ui.slow_query_notice_seconds",
-        env_var="POLYLOGUE_SLOW_QUERY_NOTICE_SECONDS",
-        owner_class="presentation-preference",
-        reload_behavior="per-invocation-client",
-        description="Threshold for slow-query user notices.",
     ),
     ConfigInventoryEntry(
         "notification_backend",
@@ -1582,21 +1540,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "daemon_whale_raw_materialization",
-        toml_path="daemon.raw_materialization.whale_convergence",
-        env_var="POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION",
-        owner_class="resource-policy",
-        reload_behavior="daemon-loop",
-        description=(
-            "Escalation tier (polylogue-t93b): on by default. Once the "
-            "ordinary trickle conveyor is quiescent, run a dedicated "
-            "bounded pass for one resource-blocked, stream-safe raw "
-            "authority component at a time instead of leaving it "
-            "permanently offline-manual. Non-stream-safe oversized "
-            "components remain blocked with a distinct typed reason."
-        ),
-    ),
-    ConfigInventoryEntry(
         "judgment_automation_enabled",
         toml_path="judgment_automation.enabled",
         env_var="POLYLOGUE_JUDGMENT_AUTOMATION_ENABLED",
@@ -1668,7 +1611,6 @@ _INT_CONFIG_KEYS = frozenset(
 _FLOAT_CONFIG_KEYS = frozenset(
     {
         "embedding_max_cost_usd",
-        "slow_query_notice_seconds",
         "watch_debounce_s",
         "daemon_parse_stage_warm_timeout_seconds",
         "live_watcher_parse_stage_warm_timeout_seconds",
@@ -1686,7 +1628,6 @@ _BOOL_CONFIG_KEYS = frozenset(
         "notification_email_use_tls",
         "notification_email_use_starttls",
         "observability_enabled",
-        "daemon_whale_raw_materialization",
         "mcp_write_enabled",
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
@@ -1837,13 +1778,11 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "embedding_max_cost_usd": 5.0,
         "voyage_api_key": None,
         "sinex_mode": "off",
-        "log_level": "INFO",
         "force_plain": False,
         "no_color": False,
         "theme": "",
         "debug_timing": False,
         "schema_validation": "advisory",
-        "slow_query_notice_seconds": None,
         "notification_backend": "log",
         "notification_webhook_url": None,
         "notification_webhook_secret": None,
@@ -1896,7 +1835,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "live_watcher_parse_stage_workers": None,
         "live_watcher_parse_stage_max_inflight_bytes": None,
         "live_watcher_parse_stage_warm_timeout_seconds": None,
-        "daemon_whale_raw_materialization": True,
         "mcp_write_enabled": False,
         "mcp_judge_enabled": False,
         "mcp_maintenance_enabled": False,
