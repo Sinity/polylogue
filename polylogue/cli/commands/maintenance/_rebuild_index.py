@@ -364,6 +364,17 @@ def _rebuild_index_selection_plan(
     show_default="resolved via load_polylogue_config().daemon_url (site/user TOML -> POLYLOGUE_DAEMON_URL -> built-in default)",
     help="Daemon HTTP base URL used with --daemon.",
 )
+@click.option(
+    "--shard-count",
+    type=int,
+    default=1,
+    show_default=True,
+    help=(
+        "polylogue-pzxm: replay this pass's selected raw ids across N owned-inactive "
+        "generations built in parallel, merged before promotion. 1 keeps the unchanged "
+        "single-writer path; unsupported with --daemon."
+    ),
+)
 def rebuild_index_command(
     only_missing: bool,
     raw_ids: tuple[str, ...],
@@ -378,6 +389,7 @@ def rebuild_index_command(
     no_promote: bool,
     use_daemon: bool,
     daemon_url: str,
+    shard_count: int,
 ) -> None:
     """Inspect or execute an authority-safe source-to-index rebuild.
 
@@ -397,6 +409,12 @@ def rebuild_index_command(
         raise click.BadParameter("plan limit must be positive", param_hint="--plan-limit")
     if use_daemon and plan_only:
         raise click.UsageError("--daemon executes a rebuild; --plan is always a local read-only preview")
+    if shard_count <= 0:
+        raise click.BadParameter("shard count must be positive", param_hint="--shard-count")
+    if use_daemon and shard_count > 1:
+        raise click.UsageError("--shard-count is a local-execution option; unsupported with --daemon")
+    if shard_count > 1 and pass_deadline_seconds is not None:
+        raise click.UsageError("--shard-count does not yet honor --pass-deadline-seconds; use one or the other")
     if raw_batch_size <= 0:
         raise click.BadParameter("raw batch size must be positive", param_hint="--raw-batch-size")
     if pass_byte_budget_mb is not None and pass_byte_budget_mb <= 0:
@@ -514,6 +532,7 @@ def rebuild_index_command(
                 raw_batch_size=raw_batch_size,
                 pass_byte_budget_mb=pass_byte_budget_mb,
                 pass_deadline_seconds=pass_deadline_seconds,
+                shard_count=shard_count,
             )
         )
     except (RuntimeError, ValueError) as exc:

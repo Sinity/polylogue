@@ -422,6 +422,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'stable evidence-ref id for citation; 2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md) Table 3.'
+- path: polylogue/maintenance/sharded_rebuild.py
+  function: '<module>.shard_raw_ids'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: identifier
+  note: 'polylogue-pzxm: deterministic bucket assignment for a revision-cohort key (which shard a raw id lands in), never compared for drift -- consumer is list index modulo shard_count.'
 - path: polylogue/material_protocol/v1/encode.py
   function: '<module>._content_digest'
   call: hash_bytes

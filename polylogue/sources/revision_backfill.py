@@ -269,6 +269,34 @@ class RawParsePrefetchCache:
             self._inflight_bytes -= entry.payload_bytes
             return entry.sessions, entry.payload_bytes, entry.revision_kind
 
+    def peek_logical_keys(self) -> dict[str, str]:
+        """Non-destructive ``raw_id -> "{origin}:{provider_session_id}"`` map.
+
+        polylogue-pzxm: the sharded from-empty rebuild
+        (``maintenance/sharded_rebuild.py``) partitions raw ids by revision-
+        cohort BEFORE any shard consumes this cache with ``pop``, using the
+        exact same logical-key derivation ``_parse_retained_raws`` uses when
+        it writes ``membership_candidates``/``provisional_full_raw_ids``
+        (``f"{session.source_name.value}:{session.provider_session_id}"``),
+        so a byte-growth chain member or an ambiguous-identity pair never
+        gets scheduled onto two different shards, each of which would see
+        only a partial candidate set and reach a wrong (or crashing)
+        classification. Unlike ``pop``, this never removes an entry or
+        touches budget accounting -- reading it does not consume the cache
+        for whichever shard's own replay pops these raw ids afterwards.
+        Sessions with more than one parsed logical unit (bundle raws) are
+        skipped: sharding falls back to that raw id's own ``source_path`` for
+        those, matching pre-classification behavior for any raw this cache
+        does not cover.
+        """
+        with self._lock:
+            keys: dict[str, str] = {}
+            for raw_id, entry in self._entries.items():
+                if len(entry.sessions) == 1:
+                    session = entry.sessions[0]
+                    keys[raw_id] = f"{session.source_name.value}:{session.provider_session_id}"
+            return keys
+
     def content_len(self) -> int:
         """Number of distinct content-cache entries currently resident."""
         with self._lock:
