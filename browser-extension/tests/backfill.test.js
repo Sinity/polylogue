@@ -967,6 +967,60 @@ describe("provider adapter contracts", () => {
     expect(byId["call-1"].blocks[0].tool_id).toBe(byId["result-1"].blocks[0].tool_id);
   });
 
+  it("does not misclassify a thoughts-only ChatGPT turn as no_turns", async () => {
+    // chatGptText() used to return "" for a `thoughts` content node (its
+    // payload lives under content.thoughts, not parts/text/result), which
+    // silently dropped the turn from capture.session.turns -- a
+    // reasoning-only conversation would then look like zero turns and get
+    // skipped entirely (coordinator.js's `if (!capture.session?.turns?.length)`
+    // no_turns check), even though raw_provider_payload.mapping (the
+    // archival record) had real content all along.
+    const native = {
+      id: "gpt-reasoning-only",
+      title: "Reasoning only",
+      mapping: {
+        reasoning: {
+          parent: null,
+          message: {
+            id: "reasoning-1",
+            author: { role: "assistant" },
+            content: {
+              content_type: "thoughts",
+              thoughts: [{ summary: "Weighing options", content: "First I considered X, then Y." }],
+            },
+            create_time: 1,
+          },
+        },
+      },
+    };
+    const adapter = new ChatGptBackfillAdapter(vi.fn());
+    const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-reasoning-only", title: "Reasoning only" }, {});
+
+    expect(capture.session.turns).toHaveLength(1);
+    expect(capture.session.turns[0].text).toBe("First I considered X, then Y.");
+    expect(capture.session.turns[0].blocks).toEqual([{ type: "thinking", text: "First I considered X, then Y.", metadata: { content_type: "thoughts" } }]);
+  });
+
+  it("does not misclassify a thinking-only Claude turn as no_turns", async () => {
+    const body = {
+      uuid: "claude-reasoning-only",
+      name: "Reasoning only",
+      chat_messages: [
+        {
+          uuid: "message-1",
+          sender: "assistant",
+          content: [{ type: "thinking", thinking: "Considering the tradeoffs before answering." }],
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    };
+    const adapter = new ClaudeBackfillAdapter(vi.fn(), "org-1");
+    const capture = await adapter.normalizeCapture(response(body), { native_id: "claude-reasoning-only", title: "Reasoning only" }, {});
+
+    expect(capture.session.turns).toHaveLength(1);
+    expect(capture.session.turns[0].text).toBe("Considering the tradeoffs before answering.");
+  });
+
   it("classifies a recipient-addressed JSON tool call as a tool_use block", async () => {
     const native = {
       id: "gpt-tool",

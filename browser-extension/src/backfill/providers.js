@@ -50,6 +50,22 @@ function chatGptText(content) {
   }
   if (typeof content?.text === "string" && content.text) return content.text;
   if (typeof content?.result === "string" && content.result) return content.result;
+  // A "thoughts" (reasoning) node keeps its payload as an array of
+  // {summary, content} entries rather than parts/text/result. Without this,
+  // a turn whose ONLY content is a thoughts node produces an empty text ->
+  // the caller's `if (!text) return []` in normalizeCapture drops the turn
+  // silently, which can misclassify a genuine (if reasoning-only) exchange
+  // as `no_turns` and skip the whole conversation. This session-summary
+  // text is a dedup/no_turns signal, not the archival record (the fixed
+  // full-fidelity raw_provider_payload.mapping is), but it should not lie.
+  if (Array.isArray(content?.thoughts)) {
+    const thoughts = content.thoughts.flatMap((thought) => {
+      if (typeof thought?.content === "string" && thought.content) return [thought.content];
+      if (typeof thought?.summary === "string" && thought.summary) return [thought.summary];
+      return [];
+    });
+    if (thoughts.length) return thoughts.join("\n");
+  }
   return "";
 }
 
@@ -104,6 +120,14 @@ function claudeText(message) {
   return message.content.flatMap((part) => {
     if (typeof part === "string") return [part];
     if (part && typeof part === "object" && typeof part.text === "string") return [part.text];
+    // Claude's extended-thinking content blocks carry their payload under
+    // `thinking`, not `text`. Without this, a turn whose ONLY content is a
+    // thinking block yields an empty summary text and is dropped by
+    // normalizeCapture's `if (!text) return []` -- same class of gap as the
+    // ChatGPT `thoughts` fix above, for the same reason (this session-
+    // summary text is a dedup/no_turns signal; the archival record is the
+    // unmodified rawPayload body, already full-fidelity for Claude).
+    if (part && typeof part === "object" && typeof part.thinking === "string") return [part.thinking];
     return [];
   }).filter(Boolean).join("\n");
 }
