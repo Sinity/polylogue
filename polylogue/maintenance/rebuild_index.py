@@ -24,6 +24,7 @@ from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLoca
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_REBUILD_SQL, TRIGRAM_REBUILD_DELETE_ALL_SQL
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
+from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from polylogue.storage.table_existence import table_exists
 
@@ -74,6 +75,29 @@ def _should_refresh_generation_planner_statistics(
     )
 
 
+def _open_bulk_build_maintenance_connection(index_path: Path, *, timeout: int) -> sqlite3.Connection:
+    """Open a terminal-stage maintenance connection with the bulk-build profile.
+
+    The terminal repopulate/clear stages act on the same owned INACTIVE
+    generation the replay just bulk-wrote: never read until promoted, and
+    discarded wholesale if the pass raises. That is exactly the licence
+    ``BULK_BUILD_WRITE_CONNECTION_PROFILE`` documents (``journal_mode=MEMORY``,
+    ``synchronous=OFF``, large cache/mmap) -- previously these connections ran
+    with SQLite's stock defaults (rollback journal on disk, ``synchronous=FULL``,
+    ~2 MiB cache), which made the archive-wide FTS/trigram/action-pair
+    repopulate pay a full journal round-trip and fsync per committed batch at
+    full-table scale.
+    """
+    conn = sqlite3.connect(index_path, timeout=timeout)
+    try:
+        for statement in BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS:
+            conn.execute(statement)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def _clear_bulk_build_derived_stores(index_path: Path) -> None:
     """Idempotently empty ``messages_fts``/``blocks_command_trigram``.
 
@@ -92,7 +116,7 @@ def _clear_bulk_build_derived_stores(index_path: Path) -> None:
     live incident this bead responds to; an empty one is orders of magnitude
     faster), so this is cheap even when it turns out to be a no-op.
     """
-    with contextlib.closing(sqlite3.connect(index_path, timeout=60)) as conn:
+    with contextlib.closing(_open_bulk_build_maintenance_connection(index_path, timeout=60)) as conn:
         conn.execute("PRAGMA busy_timeout = 60000")
         if table_exists(conn, "messages_fts"):
             conn.execute(FTS_REBUILD_SQL)
@@ -115,7 +139,7 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> dict[str, float]:
     through the ``actions`` view, which reads ``action_pairs``).
     """
     timings_s: dict[str, float] = {}
-    with contextlib.closing(sqlite3.connect(index_path, timeout=600)) as conn:
+    with contextlib.closing(_open_bulk_build_maintenance_connection(index_path, timeout=600)) as conn:
         conn.execute("PRAGMA busy_timeout = 600000")
         started_at = time.perf_counter()
         rebuild_fts_index_sync(conn, resume_from_empty_message_index=True)
@@ -148,7 +172,7 @@ def _refresh_generation_planner_statistics(index_path: Path) -> None:
     Failures are non-fatal: stale stats degrade speed, never correctness.
     """
     try:
-        with contextlib.closing(sqlite3.connect(index_path, timeout=60)) as conn:
+        with contextlib.closing(_open_bulk_build_maintenance_connection(index_path, timeout=60)) as conn:
             conn.execute(f"PRAGMA analysis_limit = {_PLANNER_STATS_ANALYSIS_LIMIT}")
             for statement in _PLANNER_STATS_ANALYZE_STATEMENTS:
                 conn.execute(statement)
