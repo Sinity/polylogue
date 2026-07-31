@@ -27,9 +27,13 @@ from typing import Any, TypeAlias
 
 import pytest
 
-from polylogue.core.enums import TitleSource
+from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.parsers.claude import looks_like_ai, parse_ai
-from polylogue.sources.parsers.claude.ai_parser import CLAUDE_DESIGN_CHAT_INGEST_FLAG, CLAUDE_TEMPORARY_CHAT_INGEST_FLAG
+from polylogue.sources.parsers.claude.ai_parser import (
+    CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG,
+    CLAUDE_TEMPORARY_CHAT_INGEST_FLAG,
+    looks_like_claude_memories,
+)
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import (
     parse_payload_roundtrip,
@@ -119,50 +123,60 @@ def _payload(
     return payload
 
 
-def test_claude_design_chat_shape_is_parsed_as_session() -> None:
+def test_claude_design_chat_shape_is_not_claimed_by_the_ai_detector() -> None:
+    """Claude Design chats are a distinct Origin/Provider (bd polylogue-tbun,
+    see test_parsers_claude_design.py) -- ``looks_like_ai``/``parse_ai`` must
+    not claim the design-chat shape (``messages`` + ``project``, no
+    ``chat_messages``)."""
     payload = {
         "uuid": "design-1",
         "title": "Design system",
         "project": {"uuid": "project-1", "name": "Polylogue"},
-        "created_at": "2026-06-01T00:00:00Z",
-        "updated_at": "2026-06-01T00:01:00Z",
-        "messages": [
-            {
-                "uuid": "m1",
-                "role": "user",
-                "content": {
-                    "role": "user",
-                    "content": "Create a design system.",
-                    "attachments": [
-                        {
-                            "id": "att-1",
-                            "name": "brief.md",
-                            "type": "text/markdown",
-                            "content": "# brief",
-                        }
-                    ],
-                    "timestamp": "2026-06-01T00:00:01Z",
-                },
-            }
-        ],
+        "messages": [{"uuid": "m1", "role": "user", "content": {"role": "user", "content": "hi"}}],
     }
 
-    assert looks_like_ai(payload)
-    session = parse_ai(payload, "fallback")
+    assert not looks_like_ai(payload)
 
-    assert session.provider_session_id == "design-1"
-    assert session.title == "Design system"
-    assert session.title_source == TitleSource.ORIGIN
-    assert session.title_ref == "claude-ai-design-title:design-1"
-    assert session.title_confidence == 1.0
-    assert [message.text for message in session.messages] == ["Create a design system."]
-    design_constructs = session.messages[0].blocks[0].web_constructs
-    assert len(design_constructs) == 1
-    assert design_constructs[0].construct_type.value == "canvas"
-    assert design_constructs[0].provider_key == "claude_design_chat"
-    assert design_constructs[0].title == "Polylogue"
-    assert session.attachments[0].provider_attachment_id == "att-1"
-    assert CLAUDE_DESIGN_CHAT_INGEST_FLAG in session.ingest_flags
+
+def test_claude_memories_shape_is_detected_and_dispatched_from_parse_ai() -> None:
+    """bd polylogue-zng9: memories.json (account_uuid + conversations_memory/
+    project_memories, no message list at all) is a distinct shape dispatched
+    from inside ``parse_ai`` -- see ai_parser.py's ``parse_ai`` docstring for
+    why this stays under Provider.CLAUDE_AI rather than a new provider."""
+    payload = {
+        "account_uuid": "acct-1",
+        "conversations_memory": "Sinity works on Polylogue and Sinex.",
+        "project_memories": {
+            "proj-b": "Project B memory.",
+            "proj-a": "Project A memory.",
+        },
+    }
+    assert looks_like_claude_memories(payload)
+    assert not looks_like_ai(payload)
+
+    session = parse_ai(payload, "fallback")
+    assert session.source_name is Provider.CLAUDE_AI
+    assert session.provider_session_id == "account-memory:acct-1"
+    assert session.title_source is TitleSource.HEURISTIC
+    assert CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG in session.ingest_flags
+
+    assert [message.provider_message_id for message in session.messages] == [
+        "conversations",
+        "project:proj-a",
+        "project:proj-b",
+    ]
+    assert all(message.material_origin is MaterialOrigin.GENERATED_CONTEXT_PACK for message in session.messages)
+    assert session.messages[0].text == "Sinity works on Polylogue and Sinex."
+    assert session.messages[1].text == "Project A memory."
+    assert session.active_leaf_message_provider_id == "project:proj-b"
+    assert session.messages[-1].is_active_leaf is True
+
+
+def test_claude_memories_reimport_is_idempotent_on_account_id() -> None:
+    payload = {"account_uuid": "acct-1", "conversations_memory": "v1"}
+    first = parse_ai(payload, "fallback-a")
+    second = parse_ai(payload, "fallback-b")
+    assert first.provider_session_id == second.provider_session_id == "account-memory:acct-1"
 
 
 def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
