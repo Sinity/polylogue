@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from polylogue.core.refs import ObjectRef
 from polylogue.insights.session_commit import (
     SOURCE_HEURISTIC,
@@ -38,6 +40,13 @@ from polylogue.insights.session_commit import (
     extract_referenced_files,
     score_file_overlap,
     typed_refs_from_session_refs,
+)
+
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-l9su trailer-priority tests create a real git commit via subprocess "
+    "(git records its own wall-clock author/commit time) and derive the session scan "
+    "window around that same real now() so the commit falls inside it; a frozen clock "
+    "would not match the real commit's git-recorded timestamp."
 )
 
 
@@ -494,6 +503,48 @@ class TestTrailerTakesPriorityOverHeuristics:
         assert edges[0].detection_method == "file_overlap"
         assert edges[0].disagreement_note is None
 
+    def test_foreign_trailer_present_but_no_own_bridge_ids_is_not_a_disagreement(self, tmp_path: Path) -> None:
+        """polylogue-2vor finding 3: when this session has no
+        bridge_session_ids of its own, there is no typed identity to
+        compare a commit's Claude-Session trailer against -- a trailer
+        naming *some other* session is the expected case for any commit
+        that isn't this session's, not evidence of misattribution. Unlike
+        ``test_no_bridge_session_ids_falls_back_to_heuristics_unflagged``
+        above (whose commit carries no trailer at all), this commit DOES
+        carry a foreign trailer, which is exactly the shape that used to
+        false-positive."""
+        _init_git_repo(tmp_path)
+        other_token = "01OtherSessionToken0000000"
+        sha = _commit(
+            tmp_path,
+            "src/main.py",
+            f"fix: ship it\n\nClaude-Session: https://claude.ai/code/session_{other_token}\n",
+        )
+        now = datetime.now(timezone.utc)
+
+        messages = [
+            {
+                "id": "m1",
+                "text": "editing src/main.py",
+                "content_blocks": [{"type": "tool_use", "name": "Edit", "affected_paths": ["src/main.py"]}],
+            }
+        ]
+
+        edges = detect_session_commits(
+            session_id="claude-code-session:own-session",
+            messages=messages,
+            session_created_at=now - timedelta(minutes=5),
+            session_updated_at=now,
+            repo_path=str(tmp_path),
+            bridge_session_ids=None,  # this session asserts no bridge identity of its own
+        )
+
+        assert len(edges) == 1
+        edge = edges[0]
+        assert edge.commit_sha == sha
+        assert edge.detection_method == "file_overlap"
+        assert edge.disagreement_note is None
+
 
 class TestTypedRefsPreferredOverRegex:
     """polylogue-l9su AC2/AC4: typed session_refs-derived GitHubRefs are
@@ -535,6 +586,30 @@ class TestTypedRefsPreferredOverRegex:
         pr_disagreement = next(d for d in result.disagreements if d.kind == "pr_ref")
         assert "42" in pr_disagreement.heuristic_values
 
+    def test_disagreement_recorded_for_same_number_different_repo(self) -> None:
+        """polylogue-2vor finding 2: comparing PR/issue identity by bare
+        number alone means acme/product#42 and other/repo#42 compare
+        equal, silently swallowing a real disagreement across
+        differently-named repos. Typed evidence names Sinity/polylogue#42;
+        the message text names a *different* repo's #42 -- that must still
+        surface as a disagreement even though the numbers match."""
+        messages = [{"id": "m1", "text": "https://github.com/other/repo/pull/42", "content_blocks": []}]
+        typed_pr = GitHubRef(owner="Sinity", repo="polylogue", number=42, kind="pr", url="https://x/pull/42")
+
+        result = build_correlation_result(
+            session_id="s",
+            messages=messages,
+            repo_path="/nonexistent/path",
+            typed_pr_refs=[typed_pr],
+        )
+
+        assert [r.number for r in result.pr_refs] == [42]  # typed still wins
+        pr_disagreements = [d for d in result.disagreements if d.kind == "pr_ref"]
+        assert len(pr_disagreements) == 1, (
+            "other/repo#42 must not be silently treated as corroborating Sinity/polylogue#42"
+        )
+        assert "42" in pr_disagreements[0].heuristic_values
+
 
 class TestTypedRefsFromSessionRefs:
     def test_converts_pull_request_kind(self) -> None:
@@ -563,6 +638,45 @@ class TestTypedRefsFromSessionRefs:
         pr_refs, issue_refs = typed_refs_from_session_refs([_FakeRef()])
         assert pr_refs == []
         assert issue_refs == []
+
+    def test_missing_number_with_non_github_url_is_skipped_not_pr_zero(self) -> None:
+        """polylogue-2vor finding 1: Codex Cloud's
+        chatgpt_codex_sidecar._pull_request_ref() stores
+        external_pull_request_id in ``url`` and leaves ``repo``/``number``
+        unset. Coercing that to number=0 fabricates a bogus "PR #0" that,
+        because typed evidence is authoritative over the regex fallback,
+        would silently suppress a correctly-parsed regex result. The row
+        must be skipped instead of appearing as PR #0."""
+
+        class _FakeRef:
+            kind = "pull_request"
+            repo = None
+            number = None
+            url = "task_e_68abcdef"  # opaque Codex Cloud id, not a github.com URL
+
+        pr_refs, issue_refs = typed_refs_from_session_refs([_FakeRef()])
+        assert pr_refs == []
+        assert issue_refs == []
+        assert all(ref.number != 0 for ref in pr_refs)
+
+    def test_missing_number_is_parsed_from_github_url(self) -> None:
+        """When the row lacks a typed number but ``url`` is a genuine
+        github.com PR/issue URL, recover the number (and owner/repo, if
+        not already set) from the URL rather than skipping it."""
+
+        class _FakeRef:
+            kind = "pull_request"
+            repo = None
+            number = None
+            url = "https://github.com/Sinity/polylogue/pull/3265"
+
+        pr_refs, issue_refs = typed_refs_from_session_refs([_FakeRef()])
+        assert issue_refs == []
+        assert len(pr_refs) == 1
+        assert pr_refs[0].number == 3265
+        assert pr_refs[0].owner == "Sinity"
+        assert pr_refs[0].repo == "polylogue"
+        assert pr_refs[0].source == SOURCE_TYPED
 
 
 class TestBridgeSessionIdsFromEvents:

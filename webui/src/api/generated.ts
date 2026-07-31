@@ -398,6 +398,9 @@ export type QueryUnitAggregateRowPayload = {
   readonly count: number;
   readonly group_by?: string | null;
   readonly group_key?: string | null;
+  readonly metrics?: ({
+  readonly [key: string]: number | null;
+}) | null;
   readonly unit: "message" | "action" | "block" | "assertion" | "file" | "run" | "observed-event" | "context-snapshot" | "delegation";
 };
 

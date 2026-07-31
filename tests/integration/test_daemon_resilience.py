@@ -33,7 +33,15 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.slow, pytest.mark.integration]
+pytestmark = [
+    pytest.mark.uses_real_clock(
+        "Daemon resilience integration tests (#1735) measure real elapsed wall-clock for "
+        "process lifecycle events (SIGKILL delivery, subprocess startup, concurrency timing). "
+        "frozen_clock cannot substitute for real time when waiting on OS process state."
+    ),
+    pytest.mark.slow,
+    pytest.mark.integration,
+]
 
 # ---------------------------------------------------------------------------
 # Session file writer (matches test_daemon_convergence_evidence.py)

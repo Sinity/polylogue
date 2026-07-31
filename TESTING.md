@@ -332,13 +332,26 @@ For a single moment-in-time anchor without patching (e.g. when only
 constructing an opaque metadata timestamp), use `fixed_now()` instead of
 `datetime.now(UTC)`.
 
-The `devtools verify-test-clock-hygiene` lint runs in the default verify
-gate. It rejects any new direct call to `datetime.now`, `datetime.utcnow`,
-`time.time`, or `time.monotonic` from a test file outside the explicit
-allowlist in `docs/plans/test-clock-allowlist.yaml`. Tests that genuinely
-need the host clock (timing benchmarks, fuzz harnesses, the
-`frozen_clock` self-tests) add their path to the allowlist with a
-one-line rationale; everything else migrates to the fixture.
+Direct host-clock reads from test code are not merely linted — they are
+unreachable. `tests/infra/clock_guard.py` installs an autouse fixture on
+every test that patches `time.time` / `time.monotonic` / `time.monotonic_ns`
+/ `time.time_ns` (frame-checked, so production code under test still reads
+the real clock) and, for a guarded test module's own `datetime` symbol,
+swaps it for a subclass whose `.now()` / `.utcnow()` raise. Reaching for the
+host clock directly from a test fails immediately with a `RuntimeError`
+pointing back at this section — there is no separate lint to remember to run.
+
+Tests that genuinely need the real clock (timing benchmarks, fuzz harnesses,
+tests that wait on real OS thread/process state) opt out explicitly, next to
+the code that needs it, instead of via an external registry:
+
+```python
+pytestmark = pytest.mark.uses_real_clock("timing benchmark measures real latency")
+```
+
+`tests/infra/` and `conftest.py` files are exempt (they are the harness).
+Tests that request the `frozen_clock` fixture are also exempt from the guard
+— `frozen_clock` manages the clock itself.
 
 ## Demo and Visual Behavior Checks
 

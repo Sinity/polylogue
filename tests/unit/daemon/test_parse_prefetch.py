@@ -30,6 +30,10 @@ from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMess
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
+pytestmark = pytest.mark.uses_real_clock(
+    "DaemonParseStage.warm() timeout test measures real elapsed wall-clock against a genuinely hung worker thread to prove the wait is bounded, not merely reordered; frozen_clock cannot substitute for a real ThreadPoolExecutor future's wait timeout."
+)
+
 
 def _codex_payload(native_id: str, text: str) -> bytes:
     return (

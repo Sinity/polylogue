@@ -20,9 +20,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
@@ -33,24 +30,10 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.daemon.web_auth import WebCredentialRegistry
+from tests.infra.daemon_http_harness import MockDaemonServer, capture_json_response, make_daemon_handler
 
 if TYPE_CHECKING:
-    from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
-
-
-class _MockServer:
-    auth_token = ""
-    api_host = "127.0.0.1"
-    archive_query_executor = ThreadPoolExecutor(max_workers=1)
-    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test
-
-
-class _MockHeaders:
-    def __init__(self, headers: dict[str, str] | None = None) -> None:
-        self._headers = headers or {}
-
-    def get(self, key: str, default: str | None = None) -> str | None:
-        return self._headers.get(key, default)
+    from polylogue.daemon.http import DaemonAPIHandler
 
 
 def _make_handler(
@@ -59,30 +42,9 @@ def _make_handler(
     *,
     body: bytes = b"",
     extra_headers: dict[str, str] | None = None,
+    server: object | None = None,
 ) -> DaemonAPIHandler:
-    from polylogue.daemon.http import DaemonAPIHandler
-
-    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    handler.server = cast("DaemonAPIHTTPServer", _MockServer())
-    handler.client_address = ("127.0.0.1", 12345)
-    handler.path = path
-    handler.command = method
-    handler.requestline = f"{method} {path} HTTP/1.1"
-    handler.request_version = "HTTP/1.1"
-    handler.protocol_version = "HTTP/1.1"
-    headers: dict[str, str] = {"Content-Length": str(len(body))}
-    if extra_headers:
-        headers.update(extra_headers)
-    handler.headers = cast("Message", _MockHeaders(headers))
-    handler.rfile = BytesIO(body)
-    handler.wfile = BytesIO()
-    return handler
-
-
-def _capture_json(handler: DaemonAPIHandler) -> MagicMock:
-    send_json = MagicMock()
-    handler._send_json = send_json  # type: ignore[method-assign]
-    return send_json
+    return make_daemon_handler(method, path, body=body, extra_headers=extra_headers, server=server)
 
 
 def _complete_healthy_frontier() -> JSONDocument:
@@ -142,7 +104,7 @@ class TestEventsPollFallback:
 
     def test_poll_with_no_events_returns_empty_envelope(self, empty_events_db: Path) -> None:
         handler = _make_handler("GET", "/api/events?poll=1&since=0")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
 
         send_json.assert_called_once()
@@ -158,7 +120,7 @@ class TestEventsPollFallback:
         emit_daemon_event("ingest", operation_id="op-2", payload={"path": "/tmp/x"})
 
         handler = _make_handler("GET", "/api/events?poll=1&since=0")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
 
         status, payload = send_json.call_args.args
@@ -174,7 +136,7 @@ class TestEventsPollFallback:
         emit_daemon_event("noise", payload={"n": 2})
 
         handler = _make_handler("GET", "/api/events?poll=1&since=0&kinds=ingestion_batch,ingest")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
 
         payload = send_json.call_args.args[1]
@@ -186,12 +148,12 @@ class TestEventsPollFallback:
 
         emit_daemon_event("ingestion_batch", payload={})
         handler = _make_handler("GET", "/api/events?poll=1&since=0")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
         first_id = send_json.call_args.args[1]["events"][0]["id"]
 
         handler = _make_handler("GET", f"/api/events?poll=1&since={first_id}")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
         assert send_json.call_args.args[1] == {"events": [], "last_event_id": first_id}
 
@@ -225,7 +187,7 @@ class TestEventsSSEStream:
 
         # Last-Event-ID set to the first event's id should suppress it.
         handler_first = _make_handler("GET", "/api/events?poll=1&since=0")
-        send_json_first = _capture_json(handler_first)
+        send_json_first = capture_json_response(handler_first)
         handler_first.do_GET()
         first_id = send_json_first.call_args.args[1]["events"][0]["id"]
 
@@ -551,7 +513,7 @@ class TestGranularEventKinds:
             "GET",
             "/api/events?poll=1&since=0&kinds=message.appended,session.updated",
         )
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
         kinds = {e["kind"] for e in send_json.call_args.args[1]["events"]}
         assert kinds == {"message.appended", "session.updated"}
@@ -661,7 +623,7 @@ class TestBackpressureCoalescing:
             emit_message_appended(session_id="c", appended_count=1)
 
         handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=5")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
         payload = send_json.call_args.args[1]
         assert payload["coalesced"] is True
@@ -682,7 +644,7 @@ class TestBackpressureCoalescing:
             emit_message_appended(session_id="c", appended_count=1)
 
         handler = _make_handler("GET", "/api/events?poll=1&since=0&coalesce=10")
-        send_json = _capture_json(handler)
+        send_json = capture_json_response(handler)
         handler.do_GET()
         payload = send_json.call_args.args[1]
         assert payload.get("coalesced") is None
@@ -712,18 +674,10 @@ class TestAccessTokenQueryRejected:
         empty_events_db: Path,
         credential_param: str,
     ) -> None:
-        handler = _make_handler("GET", f"/api/events?poll=1&since=0&{credential_param}=secret")
-        handler.server = cast(
-            "DaemonAPIHTTPServer",
-            type(
-                "_Srv",
-                (),
-                {
-                    "auth_token": "secret",
-                    "api_host": "127.0.0.1",
-                    "web_credentials": WebCredentialRegistry(),
-                },
-            )(),
+        handler = _make_handler(
+            "GET",
+            f"/api/events?poll=1&since=0&{credential_param}=secret",
+            server=MockDaemonServer(auth_token="secret"),
         )
         send_error = MagicMock()
         handler._send_error = send_error  # type: ignore[method-assign]
@@ -735,14 +689,10 @@ class TestAccessTokenQueryRejected:
         )
 
     def test_access_token_in_query_string_is_rejected_on_non_sse_routes(self, empty_events_db: Path) -> None:
-        handler = _make_handler("GET", "/api/status?access_token=secret")
-        handler.server = cast(
-            "DaemonAPIHTTPServer",
-            type(
-                "_Srv",
-                (),
-                {"auth_token": "secret", "api_host": "127.0.0.1"},
-            )(),
+        handler = _make_handler(
+            "GET",
+            "/api/status?access_token=secret",
+            server=MockDaemonServer(auth_token="secret"),
         )
         send_error = MagicMock()
         handler._send_error = send_error  # type: ignore[method-assign]
@@ -765,14 +715,7 @@ class TestAccessTokenQueryRejected:
                 "Sec-Fetch-Site": "same-origin",
                 "X-Polylogue-Web-Client": "1",
             },
-        )
-        handler.server = cast(
-            "DaemonAPIHTTPServer",
-            type(
-                "_Srv",
-                (),
-                {"auth_token": "secret", "api_host": "127.0.0.1", "web_credentials": registry},
-            )(),
+            server=MockDaemonServer(auth_token="secret", web_credentials=registry),
         )
         status_handler = MagicMock()
         handler._handle_status = status_handler  # type: ignore[method-assign]

@@ -25,7 +25,14 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.live_ingest import ingest_session
 
-pytestmark = [pytest.mark.slow, pytest.mark.integration]
+pytestmark = [
+    pytest.mark.uses_real_clock(
+        "Ingest pipeline correctness tests (#1736) use time.monotonic for real process "
+        "wait/retry timing that cannot be satisfied by a frozen clock."
+    ),
+    pytest.mark.slow,
+    pytest.mark.integration,
+]
 
 
 # ── helpers ─────────────────────────────────────────────────────────────

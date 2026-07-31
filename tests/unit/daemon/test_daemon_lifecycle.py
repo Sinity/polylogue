@@ -27,6 +27,10 @@ from polylogue.daemon.lifecycle import (
 )
 from polylogue.daemon.status import _check_daemon_liveness, format_daemon_status_lines
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Lifecycle signal-forensics test holds a real SQLite write lock and measures that the terminating handler respects its bounded busy timeout."
+)
+
 
 def _bind_ops_db(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     monkeypatch.setattr(lifecycle_module, "archive_root", lambda: tmp_path)

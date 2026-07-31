@@ -27,6 +27,10 @@ from polylogue.schemas.packages import SchemaResolution
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import RawSessionRecord
 
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-da1 format-drift sentinel ingest tests build RawSessionRecord fixtures via the same helper as test_resilience.py; acquired_at/file_mtime are opaque now() metadata with no production timing comparison."
+)
+
 
 def _make_raw_record(raw_id: str, provider: str, content: bytes, path: str = "/exports/test.json") -> RawSessionRecord:
     from polylogue.storage.blob_store import get_blob_store

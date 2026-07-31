@@ -27,11 +27,13 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
     QueryUnitSource,
+    WithUnitWindow,
     parse_unit_source_expression,
     split_with_projection_clause,
 )
 from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
+from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
     QuerySpecError,
     SessionQuerySpec,
@@ -206,8 +208,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     unit_source_query = raw_query
     with_units: tuple[str, ...] = ()
     with_unit_fields: dict[str, tuple[str, ...]] = {}
+    with_unit_windows: dict[str, WithUnitWindow] = {}
     if unit_source_query and not (unit_source_query.startswith("{") or unit_source_query.startswith("[")):
-        unit_source_query, with_units, with_unit_fields = split_with_projection_clause(unit_source_query)
+        unit_source_query, with_units, with_unit_fields, with_unit_windows = split_with_projection_clause(
+            unit_source_query
+        )
     unit_source = (
         parse_unit_source_expression(unit_source_query)
         if unit_source_query and not _optional_str(params.get("similar_text"))
@@ -224,6 +229,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
         with_unit_fields = compiled_spec.with_unit_fields
+        with_unit_windows = compiled_spec.with_unit_windows
     env.record_timing("compile", compile_started_at)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
@@ -319,6 +325,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
         query=query,
         limit=limit,
         offset=page_offset,
@@ -654,6 +661,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         typo_hint=typo_hint,
                         with_units=with_units,
                         with_unit_fields=with_unit_fields,
+                        with_unit_windows=with_unit_windows,
                         diagnostics=(
                             _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why")))
                             if not page_hits
@@ -778,6 +786,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 typo_hint=typo_hint,
                 with_units=with_units,
                 with_unit_fields=with_unit_fields,
+                with_unit_windows=with_unit_windows,
                 diagnostics=(
                     _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why"))) if not page_hits else None
                 ),
@@ -845,6 +854,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             archive=archive,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
+            with_unit_windows=with_unit_windows,
             lineage_seed_session_id=lineage_seed_session_id,
         )
 
@@ -1034,6 +1044,7 @@ def _try_emit_daemon_session_page(
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
+    with_unit_windows: Mapping[str, WithUnitWindow],
     query: str,
     limit: int,
     offset: int,
@@ -1068,6 +1079,7 @@ def _try_emit_daemon_session_page(
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
         tags_to_add=tags_to_add,
         metadata_to_set=metadata_to_set,
         delete_matched=delete_matched,
@@ -1210,6 +1222,7 @@ def _daemon_session_page_supported(
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
+    with_unit_windows: Mapping[str, WithUnitWindow],
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
     delete_matched: bool,
@@ -1222,7 +1235,7 @@ def _daemon_session_page_supported(
     similar_session_id: str | None,
     retrieval_lane: str,
 ) -> bool:
-    if unit_source is not None or with_units or with_unit_fields:
+    if unit_source is not None or with_units or with_unit_fields or with_unit_windows:
         return False
     if any(params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest", "open_result")):
         return False
@@ -2130,6 +2143,7 @@ def _inject_attached_units(
     archive: ArchiveStore | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> None:
     """Attach ``with <units>`` projection rows to each rendered row payload.
 
@@ -2140,7 +2154,9 @@ def _inject_attached_units(
 
     if not with_units or archive is None or not items:
         return
-    attached = fetch_attached_units(archive, session_ids, with_units, unit_fields=with_unit_fields)
+    attached = fetch_attached_units(
+        archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
+    )
     for item, session_id in zip(items, session_ids, strict=False):
         item["attached_units"] = {unit: list(by_session.get(session_id, ())) for unit, by_session in attached.items()}
 
@@ -2158,6 +2174,7 @@ def _emit_list(
     archive: ArchiveStore | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     lineage_seed_session_id: str | None = None,
 ) -> None:
     lineage_edges: dict[str, tuple[str | None, tuple[str, ...]]] = {}
@@ -2195,6 +2212,7 @@ def _emit_list(
         archive=archive,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
     )
     envelope: dict[str, object] = {
         "mode": "list",
@@ -2253,6 +2271,7 @@ def _emit_search(
     typo_hint: str | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     diagnostics: QueryMissDiagnosticsPayload | None = None,
 ) -> None:
     items = [
@@ -2269,6 +2288,7 @@ def _emit_search(
         archive=archive,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
     )
     envelope: dict[str, object] = {
         "mode": "search",
@@ -2503,26 +2523,19 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
     raise SystemExit(2)
 
 
-def _snippet(value: object, *, max_chars: int = 96) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= max_chars:
-        return text
-    return f"{text[: max_chars - 3]}..."
-
-
 def _message_query_line(item: dict[str, object]) -> str:
-    return f"{item['message_id']} [{item['role']}] {_snippet(item.get('text'))}"
+    return f"{item['message_id']} [{item['role']}] {bound_display_text(item.get('text'))}"
 
 
 def _action_query_line(item: dict[str, object]) -> str:
     action = item.get("semantic_type") or item.get("tool_name") or "action"
     detail = item.get("tool_path") or item.get("tool_command") or item.get("output_text") or ""
-    return f"{item['tool_use_block_id']} [{action}] {_snippet(detail)}"
+    return f"{item['tool_use_block_id']} [{action}] {bound_display_text(detail)}"
 
 
 def _block_query_line(item: dict[str, object]) -> str:
     detail = item.get("text") or item.get("tool_path") or item.get("tool_command") or ""
-    return f"{item['block_id']} [{item['block_type']}] {_snippet(detail)}"
+    return f"{item['block_id']} [{item['block_type']}] {bound_display_text(detail)}"
 
 
 def _file_query_line(item: dict[str, object]) -> str:
@@ -2530,12 +2543,12 @@ def _file_query_line(item: dict[str, object]) -> str:
     first_ref = item.get("first_tool_use_block_id") or item.get("first_message_id") or item.get("session_id")
     if first_ref:
         detail = f"{detail} first={first_ref}"
-    return f"{item['path']} [{item['origin']}] {_snippet(detail)}"
+    return f"{item['path']} [{item['origin']}] {bound_display_text(detail)}"
 
 
 def _assertion_query_line(item: dict[str, object]) -> str:
     detail = item.get("body_text") or item.get("key") or item.get("value") or item.get("target_ref") or ""
-    return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {_snippet(detail)}"
+    return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {bound_display_text(detail)}"
 
 
 def _aggregate_query_line(item: dict[str, object]) -> str:
@@ -2547,22 +2560,22 @@ def _aggregate_query_line(item: dict[str, object]) -> str:
 def _run_query_line(item: dict[str, object]) -> str:
     detail_parts = [str(part) for part in (item.get("agent_ref"), item.get("title")) if part]
     detail = " ".join(detail_parts) or item.get("run_ref") or ""
-    return f"{item['run_ref']} [{item['role']}/{item['status']}] {_snippet(detail)}"
+    return f"{item['run_ref']} [{item['role']}/{item['status']}] {bound_display_text(detail)}"
 
 
 def _observed_event_query_line(item: dict[str, object]) -> str:
     detail = item.get("summary") or item.get("subject_ref") or item.get("event_ref") or ""
-    return f"{item['event_ref']} [{item['kind']}/{item['delivery_state']}] {_snippet(detail)}"
+    return f"{item['event_ref']} [{item['kind']}/{item['delivery_state']}] {bound_display_text(detail)}"
 
 
 def _context_snapshot_query_line(item: dict[str, object]) -> str:
     detail = item.get("metadata") or item.get("segment_refs") or item.get("evidence_refs") or ""
-    return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {_snippet(detail)}"
+    return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {bound_display_text(detail)}"
 
 
 def _delegation_query_line(item: dict[str, object]) -> str:
     detail = item.get("instruction_preview") or item.get("artifact_preview") or item.get("child_session_id") or ""
-    return f"{item['delegation_ref']} [{item['mapping_state']}/{item['result_status']}] {_snippet(detail)}"
+    return f"{item['delegation_ref']} [{item['mapping_state']}/{item['result_status']}] {bound_display_text(detail)}"
 
 
 _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
@@ -2627,7 +2640,7 @@ def _summary_payload(
             SessionListRowPayload(
                 id=summary.session_id,
                 origin=summary.origin,
-                title=_snippet(summary.title or summary.session_id, max_chars=96),
+                title=bound_display_text(summary.title or summary.session_id, max_chars=96),
                 target_ref=TargetRefPayload.session(summary.session_id),
                 anchor=reader_anchor("session", summary.session_id),
                 created_at=summary.created_at,
@@ -2659,7 +2672,7 @@ def _hit_payload(
                 session=SessionSummaryPayload(
                     id=summary.session_id,
                     origin=summary.origin,
-                    title=_snippet(summary.title or summary.session_id, max_chars=96),
+                    title=bound_display_text(summary.title or summary.session_id, max_chars=96),
                     message_count=summary.message_count,
                     target_ref=TargetRefPayload.session(summary.session_id),
                     anchor=reader_anchor("session", summary.session_id),
@@ -2672,7 +2685,7 @@ def _hit_payload(
                     anchor=reader_anchor("message", hit.message_id),
                     actions=reader_message_actions(),
                     message_id=hit.message_id,
-                    snippet=_snippet(hit.snippet, max_chars=320),
+                    snippet=bound_display_text(hit.snippet, max_chars=320),
                     score=None,
                     score_kind=None,
                 ),
@@ -2728,15 +2741,9 @@ def _session_text(envelope: ArchiveSessionEnvelope) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _ellipsize(value: str, max_width: int) -> str:
-    if max_width <= 3:
-        return value[:max_width]
-    return (value[: max_width - 3] + "...") if len(value) > max_width else value
-
-
 def _summary_line(item: dict[str, object]) -> str:
     session_id = str(item["id"])
-    title = _snippet(item.get("title") or session_id, max_chars=50)
+    title = bound_display_text(item.get("title") or session_id, max_chars=50)
     date = str(item.get("updated_at") or item.get("created_at") or "unknown")[:10]
     origin = str(item["origin"])
     message_count = item.get("message_count") or 0
@@ -2759,8 +2766,8 @@ def _hit_line(item: dict[str, object]) -> str:
     match = item.get("match")
     if not isinstance(session, dict) or not isinstance(match, dict):
         return str(item)
-    title = _snippet(session.get("title") or session.get("id"), max_chars=96)
-    snippet = _snippet(match.get("snippet"), max_chars=320)
+    title = bound_display_text(session.get("title") or session.get("id"), max_chars=96)
+    snippet = bound_display_text(match.get("snippet"), max_chars=320)
     line = f"{match['rank']}. {session['origin']}  {title}  {snippet}"
     return line + _attached_units_suffix(item)
 

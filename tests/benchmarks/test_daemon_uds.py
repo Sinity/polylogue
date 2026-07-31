@@ -26,6 +26,10 @@ import pytest
 from tests.benchmarks.conftest import _seed_realistic_db
 from tests.benchmarks.helpers import BenchmarkFixture
 
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-20d.1 daemon UDS benchmark fixture polls a real background-thread HTTP server's readiness with a bounded wall-clock deadline; frozen_clock cannot substitute for waiting on real socket/thread startup."
+)
+
 
 @pytest.fixture(scope="session")
 def bench_daemon_uds_archive_root(tmp_path_factory: pytest.TempPathFactory) -> Path:

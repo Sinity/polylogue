@@ -168,6 +168,52 @@ class MCPContextDeliveryPayload(SurfacePayloadModel):
         )
 
 
+class MCPContextDeliverySummaryPayload(SurfacePayloadModel):
+    """One bounded context-delivery receipt summary, without the full image.
+
+    ``list_context_deliveries`` returns these instead of
+    :class:`MCPContextDeliveryPayload` so listing receipts never discloses
+    delivered content -- only a caller who already holds the exact
+    ``snapshot_ref``/``recipient_ref`` pair can fetch the full image through
+    the ``get`` path.
+    """
+
+    snapshot_ref: str
+    recipient_ref: str
+    run_ref: str | None = None
+    boundary: str
+    inheritance_mode: str
+    context_image_sha256: str
+    segment_refs: tuple[str, ...]
+    assertion_refs: tuple[str, ...]
+    caveats: tuple[str, ...]
+    delivered_by_ref: str
+    delivered_at_ms: int
+
+    @classmethod
+    def from_envelope(cls, envelope: ArchiveContextDeliveryEnvelope) -> MCPContextDeliverySummaryPayload:
+        return cls(
+            snapshot_ref=envelope.snapshot_ref,
+            recipient_ref=envelope.recipient_ref,
+            run_ref=envelope.run_ref,
+            boundary=envelope.boundary,
+            inheritance_mode=envelope.inheritance_mode,
+            context_image_sha256=envelope.context_image_sha256,
+            segment_refs=envelope.segment_refs,
+            assertion_refs=envelope.assertion_refs,
+            caveats=envelope.caveats,
+            delivered_by_ref=envelope.delivered_by_ref,
+            delivered_at_ms=envelope.delivered_at_ms,
+        )
+
+
+class MCPContextDeliveryListPayload(SurfacePayloadModel):
+    """Bounded list of context-delivery receipt summaries."""
+
+    items: tuple[MCPContextDeliverySummaryPayload, ...]
+    total: int
+
+
 class MCPFencedCodeBlock(TypedDict):
     language: str
     code: str
@@ -1000,7 +1046,9 @@ def _readiness_components(
 
 __all__ = [
     "MCPArchiveStatsPayload",
+    "MCPContextDeliveryListPayload",
     "MCPContextDeliveryPayload",
+    "MCPContextDeliverySummaryPayload",
     "MCPContextImagePayload",
     "MCPSessionDetailPayload",
     "MCPSessionNeighborCandidateListPayload",

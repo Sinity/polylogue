@@ -21,6 +21,10 @@ from polylogue.insights.tool_usage import ToolUsageInsightQuery
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder
 
+pytestmark = pytest.mark.uses_real_clock(
+    "analyze latency tests construct route-observation timestamps relative to real now() to exercise the --since-hours lookback window, which the production latency_command computes from the real wall clock by design."
+)
+
 
 def _env() -> AppEnv:
     ui = MagicMock()

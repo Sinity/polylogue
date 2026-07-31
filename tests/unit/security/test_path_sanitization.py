@@ -17,6 +17,10 @@ import pytest
 from polylogue.core.security import sanitize_path
 from polylogue.sources.token_store import FileTokenStore
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Path-sanitization timing guards assert no quadratic blow-up on real input lengths."
+)
+
 # =============================================================================
 # sanitize_path: traversal prevention (3796914)
 # =============================================================================

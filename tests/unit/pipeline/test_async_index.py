@@ -15,6 +15,10 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import make_message, make_session, save_current_archive_records
 
+pytestmark = pytest.mark.uses_real_clock(
+    "RawSessionRecord.acquired_at uses now() as an opaque ISO field; storage does not compare it to production now()."
+)
+
 
 class TestAsyncEnsureIndex:
     """Tests for ensure_index."""

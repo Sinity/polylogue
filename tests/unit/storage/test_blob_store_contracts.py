@@ -41,6 +41,10 @@ import pytest
 from polylogue.storage.blob_gc import run_blob_gc
 from polylogue.storage.blob_store import BlobStore
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."
+)
+
 # ---------------------------------------------------------------------------
 # Helpers (kept local; deliberately minimal — these tests are about the
 # blob-store contract, not the wider storage runtime)

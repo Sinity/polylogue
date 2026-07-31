@@ -41,7 +41,12 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 from polylogue.surfaces.payloads import decode_search_cursor
 from tests.infra.builders import make_conv, make_msg
 
-pytestmark = pytest.mark.query_routing
+pytestmark = [
+    pytest.mark.uses_real_clock(
+        "Single ad-hoc datetime.now() used to label a captured row; not compared to a production timestamp."
+    ),
+    pytest.mark.query_routing,
+]
 SearchWorkspace = dict[str, Path]
 
 

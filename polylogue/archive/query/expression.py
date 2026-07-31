@@ -417,16 +417,37 @@ class QueryUnitSort:
 
 
 QueryUnitPipelineStageKind = Literal[
-    "session_scope", "sort", "limit", "offset", "group", "count", "transform", "terminal"
+    "session_scope", "sort", "limit", "offset", "group", "count", "agg", "transform", "terminal"
 ]
 
 #: Closed vocabulary of terminal actions that a query-unit pipeline can end in.
 #: Each action name must have a registered executor in
 #: :data:`polylogue.archive.query.unit_results.TERMINAL_ACTION_EXECUTORS`.
 #: ``rows`` returns the resolved unit rows; ``count`` returns the aggregate
-#: ``group by ... | count`` rollup. Future actions (read/analyze/bundle/
-#: postmortem) register their unit-level executors here as they land (#2006).
-QueryUnitTerminalAction = Literal["rows", "count"]
+#: ``group by ... | count`` rollup; ``agg`` returns the named-metric
+#: ``group by ... | agg count, avg:FIELD, ...`` rollup (polylogue-fnm.1).
+#: Future actions (read/analyze/bundle/postmortem) register their unit-level
+#: executors here as they land (#2006).
+QueryUnitTerminalAction = Literal["rows", "count", "agg"]
+
+#: Closed vocabulary of reducer functions an ``| agg ...`` metric spec may
+#: name. ``count`` is field-less; every other function reduces a declared
+#: :attr:`~polylogue.archive.query.metadata.QueryUnitDescriptor.aggregate_metric_fields`
+#: entry. Percentiles are ``pNN`` for ``NN`` in ``1..99`` and are matched
+#: separately via :func:`percentile_rank` since the vocabulary is unbounded.
+AggregateMetricFunction = Literal["count", "sum", "avg", "min", "max"]
+AGGREGATE_METRIC_FUNCTIONS: frozenset[str] = frozenset({"count", "sum", "avg", "min", "max"})
+
+
+def percentile_rank(fn: str) -> int | None:
+    """Return the percentile ``1..99`` named by ``fn`` (e.g. ``p90`` -> 90), or ``None``."""
+
+    if len(fn) < 2 or fn[0] != "p" or not fn[1:].isdigit():
+        return None
+    rank = int(fn[1:])
+    return rank if 1 <= rank <= 99 else None
+
+
 SESSION_SOURCE_UNIT: Literal["sessions"] = "sessions"
 SessionTerminalAction = Literal["read", "analyze", "select", "mark", "delete", "continue"]
 SESSION_TERMINAL_ACTIONS: frozenset[SessionTerminalAction] = frozenset(
@@ -521,6 +542,41 @@ class QueryUnitCountStage:
 
 
 @dataclass(frozen=True)
+class QueryUnitAggMetric:
+    """One named reducer in an ``| agg ...`` pipeline stage (polylogue-fnm.1).
+
+    ``fn`` is ``count`` (field-less) or one of ``sum``/``avg``/``min``/``max``/
+    ``pNN`` reducing ``field``. ``label`` is the stable output column name:
+    ``count`` for the count metric, otherwise ``f"{fn}_{field}"``.
+    """
+
+    fn: str
+    field: str | None
+    label: str
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"fn": self.fn, "label": self.label}
+        if self.field is not None:
+            payload["field"] = self.field
+        return payload
+
+
+@dataclass(frozen=True)
+class QueryUnitAggStage:
+    """Named-metric aggregation stage in a terminal query-unit pipeline (polylogue-fnm.1).
+
+    Unlike :class:`QueryUnitCountStage` (a single unnamed count), this stage
+    carries an ordered list of named metrics computed per preceding group
+    (or over the whole matched row set when no ``group by`` precedes it).
+    """
+
+    metrics: tuple[QueryUnitAggMetric, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "agg", "metrics": [metric.to_payload() for metric in self.metrics]}
+
+
+@dataclass(frozen=True)
 class QueryUnitTransformStage:
     """Named row-shaping transform stage in a terminal query-unit pipeline.
 
@@ -569,6 +625,7 @@ QueryUnitPipelineStage = (
     | QueryUnitOffsetStage
     | QueryUnitGroupStage
     | QueryUnitCountStage
+    | QueryUnitAggStage
     | QueryUnitTransformStage
     | QueryUnitTerminalStage
 )
@@ -587,6 +644,7 @@ class QueryUnitPipeline:
     sort: QueryUnitSort | None = None
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
+    agg_metrics: tuple[QueryUnitAggMetric, ...] | None = None
     terminal: QueryUnitTerminalStage = QueryUnitTerminalStage(action="rows")
 
     def to_payload(self) -> dict[str, object]:
@@ -613,6 +671,8 @@ class QueryUnitPipeline:
             result["group_by"] = self.group_by
         if self.aggregate is not None:
             result["aggregate"] = self.aggregate
+        if self.agg_metrics is not None:
+            result["agg_metrics"] = [metric.to_payload() for metric in self.agg_metrics]
         if self.limit is not None:
             result["limit"] = self.limit
         if self.offset is not None:
@@ -667,13 +727,20 @@ class QueryUnitSource:
     sort: QueryUnitSort | None = None
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
+    agg_metrics: tuple[QueryUnitAggMetric, ...] | None = None
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
 
     @property
     def pipeline(self) -> QueryUnitPipeline:
         """Return the typed executable pipeline for this terminal source."""
 
-        terminal_action: QueryUnitTerminalAction = "count" if self.aggregate == "count" else "rows"
+        terminal_action: QueryUnitTerminalAction
+        if self.agg_metrics is not None:
+            terminal_action = "agg"
+        elif self.aggregate == "count":
+            terminal_action = "count"
+        else:
+            terminal_action = "rows"
         return QueryUnitPipeline(
             source_unit=self.unit,
             predicate=self.predicate,
@@ -684,6 +751,7 @@ class QueryUnitSource:
             sort=self.sort,
             group_by=self.group_by,
             aggregate=self.aggregate,
+            agg_metrics=self.agg_metrics,
             terminal=QueryUnitTerminalStage(action=terminal_action),
         )
 
@@ -1931,10 +1999,10 @@ def _split_projection_items(tail: str) -> tuple[str, ...]:
     start = 0
     depth = 0
     for idx, char in enumerate(tail):
-        if char == "(":
+        if char in "([":
             depth += 1
             continue
-        if char == ")":
+        if char in ")]":
             depth = max(0, depth - 1)
             continue
         if char == "," and depth == 0:
@@ -1956,31 +2024,122 @@ def _split_projection_items(tail: str) -> tuple[str, ...]:
     return tuple(items)
 
 
-def _parse_projection_item(item: str) -> tuple[str, tuple[str, ...]]:
-    match = re.fullmatch(r"(?P<unit>[A-Za-z0-9_.-]+)(?:\((?P<fields>[^()]*)\))?", item)
+#: Bracket clause keys that select a per-session row window instead of a
+#: predicate. ``first``/``last`` take the first/last *n* rows of a session's
+#: already time-ascending attached-row fetch (polylogue-fnm.2).
+_WITH_UNIT_WINDOW_KEYS = frozenset({"first", "last"})
+
+
+@dataclass(frozen=True)
+class WithUnitWindow:
+    """Bracket predicate/window on a ``with <unit>[...]`` projection item.
+
+    ``predicates`` are simple equality filters (``field`` -> ``value``,
+    case-sensitive on the stored payload field) applied to attached rows
+    after fetch. ``window`` is an optional ``("first" | "last", n)`` trim
+    applied per session, after predicates, preserving the existing
+    time-ascending fetch order (polylogue-fnm.2).
+    """
+
+    predicates: tuple[tuple[str, str], ...] = ()
+    window: tuple[Literal["first", "last"], int] | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        if self.predicates:
+            payload["predicates"] = dict(self.predicates)
+        if self.window is not None:
+            payload["window"] = {"kind": self.window[0], "n": self.window[1]}
+        return payload
+
+
+def _parse_with_unit_bracket(unit: str, raw: str) -> WithUnitWindow:
+    clauses = tuple(clause.strip() for clause in raw.split(","))
+    if any(not clause for clause in clauses):
+        raise ExpressionCompileError(
+            f"with {unit}[...] bracket must be a comma-separated list of field:value predicates "
+            "and/or a first:N or last:N window",
+            field=None,
+        )
+    predicates: list[tuple[str, str]] = []
+    window: tuple[Literal["first", "last"], int] | None = None
+    descriptor = query_unit_descriptor(unit)
+    bracket_field_map = {} if descriptor is None else descriptor.attached_bracket_fields
+    known_fields = frozenset(bracket_field_map)
+    for clause in clauses:
+        key_raw, sep, value = clause.partition(":")
+        if not sep:
+            raise ExpressionCompileError(
+                f"with {unit}[{clause}] is not a valid bracket clause; use field:value or first:N/last:N",
+                field=None,
+            )
+        key = key_raw.strip().lower()
+        value = value.strip()
+        if key in _WITH_UNIT_WINDOW_KEYS:
+            if window is not None:
+                raise ExpressionCompileError(
+                    f"with {unit}[...] bracket can only carry one first:N or last:N window", field=None
+                )
+            try:
+                count = int(value)
+            except ValueError as exc:
+                raise ExpressionCompileError(
+                    f"with {unit}[{key}:{value}] window size must be a positive integer", field=None
+                ) from exc
+            if count <= 0:
+                raise ExpressionCompileError(
+                    f"with {unit}[{key}:{value}] window size must be a positive integer", field=None
+                )
+            window = (cast(Literal["first", "last"], key), count)
+            continue
+        if key not in known_fields:
+            supported = ", ".join(sorted(known_fields))
+            raise ExpressionCompileError(
+                f"with {unit}[{key}:...] is not a supported bracket field for {unit} rows; "
+                f"supported fields: {supported}; window keys: first, last",
+                field=None,
+            )
+        if not value:
+            raise ExpressionCompileError(f"with {unit}[{key}:...] requires a value", field=None)
+        predicates.append((key, value))
+    return WithUnitWindow(predicates=tuple(predicates), window=window)
+
+
+def _parse_projection_item(item: str) -> tuple[str, tuple[str, ...], WithUnitWindow | None]:
+    match = re.fullmatch(
+        r"(?P<unit>[A-Za-z0-9_.-]+)(?:\((?P<fields>[^()]*)\))?(?:\[(?P<bracket>[^\[\]]*)\])?",
+        item,
+    )
     if match is None:
         raise ExpressionCompileError(
-            f"invalid with clause item {item!r}; use unit or unit(field, field)",
+            f"invalid with clause item {item!r}; use unit, unit(field, field), or unit[field:value, last:N]",
             field=None,
         )
+    unit_token = match.group("unit")
     raw_fields = match.group("fields")
+    raw_bracket = match.group("bracket")
     if raw_fields is None:
-        return match.group("unit"), ()
-    fields = tuple(field.strip() for field in raw_fields.split(","))
-    if any(not field for field in fields):
-        raise ExpressionCompileError(
-            f"with {match.group('unit')} field selection must be a comma-separated list of payload fields",
-            field=None,
-        )
-    return match.group("unit"), fields
+        fields: tuple[str, ...] = ()
+    else:
+        fields = tuple(field.strip() for field in raw_fields.split(","))
+        if any(not field for field in fields):
+            raise ExpressionCompileError(
+                f"with {unit_token} field selection must be a comma-separated list of payload fields",
+                field=None,
+            )
+    window_spec = None if raw_bracket is None else _parse_with_unit_bracket(unit_token, raw_bracket)
+    return unit_token, fields, window_spec
 
 
-def _canonicalize_with_projection(tail: str) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]]]:
+def _canonicalize_with_projection(
+    tail: str,
+) -> tuple[tuple[str, ...], dict[str, tuple[str, ...]], dict[str, WithUnitWindow]]:
     """Validate and canonicalize the ``with`` clause unit list.
 
     ``tail`` is the text after the ``with`` keyword (for example
-    ``"assertions"`` or ``"messages(message_id,text), actions(tool_name)"``).
-    Every token must resolve to a known query unit and be wired for projection; otherwise an
+    ``"assertions"`` or ``"messages(message_id,text), actions(tool_name)"`` or
+    ``"messages[role:user, last:20]"``). Every token must resolve to a known
+    query unit and be wired for projection; otherwise an
     :class:`ExpressionCompileError` is raised so an unknown or unsupported unit
     never silently no-ops.
     """
@@ -1988,8 +2147,9 @@ def _canonicalize_with_projection(tail: str) -> tuple[tuple[str, ...], dict[str,
     canonical: list[str] = []
     seen: set[str] = set()
     field_map: dict[str, tuple[str, ...]] = {}
+    window_map: dict[str, WithUnitWindow] = {}
     for item in _split_projection_items(tail):
-        token, fields = _parse_projection_item(item)
+        token, fields, window_spec = _parse_projection_item(item)
         descriptor = query_unit_descriptor(token)
         if descriptor is None:
             supported = ", ".join(sorted(WITH_PROJECTION_SUPPORTED_UNITS))
@@ -2015,16 +2175,28 @@ def _canonicalize_with_projection(tail: str) -> tuple[tuple[str, ...], dict[str,
                 field_map[descriptor.unit] = merged
             else:
                 field_map[descriptor.unit] = fields
-    return tuple(canonical), field_map
+        if window_spec is not None:
+            if descriptor.unit in window_map:
+                raise ExpressionCompileError(
+                    f"with {descriptor.unit}[...] bracket given more than once in the same clause; "
+                    "combine predicates/window into a single bracket",
+                    field=None,
+                )
+            window_map[descriptor.unit] = window_spec
+    return tuple(canonical), field_map, window_map
 
 
-def _split_with_projection_clause(expression: str) -> tuple[str, tuple[str, ...], dict[str, tuple[str, ...]]]:
+def _split_with_projection_clause(
+    expression: str,
+) -> tuple[str, tuple[str, ...], dict[str, tuple[str, ...]], dict[str, WithUnitWindow]]:
     """Split a trailing ``with <unit>[, <unit>]`` projection clause.
 
-    Returns ``(head, units, fields)`` where ``head`` is the selection
+    Returns ``(head, units, fields, windows)`` where ``head`` is the selection
     expression with the clause removed, ``units`` are canonical query-unit
-    names, and ``fields`` maps units to payload-field allowlists. When no
-    top-level ``with`` keyword is present, returns ``(expression, (), {})``.
+    names, ``fields`` maps units to payload-field allowlists, and ``windows``
+    maps units to a :class:`WithUnitWindow` bracket predicate/trim
+    (polylogue-fnm.2). When no top-level ``with`` keyword is present, returns
+    ``(expression, (), {}, {})``.
 
     The split happens outside the Lark grammar — mirroring
     :func:`_split_pipeline_stages` — so quoting and nesting are honored and a
@@ -2033,24 +2205,24 @@ def _split_with_projection_clause(expression: str) -> tuple[str, tuple[str, ...]
 
     positions = _iter_top_level_with_positions(expression)
     if not positions:
-        return expression, (), {}
+        return expression, (), {}, {}
     split_at = positions[-1]
     tail = expression[split_at + 4 :].strip()
     if not tail:
         # A bare trailing ``with`` is not a projection clause; leave it intact.
-        return expression, (), {}
-    units, fields = _canonicalize_with_projection(tail)
+        return expression, (), {}, {}
+    units, fields, windows = _canonicalize_with_projection(tail)
     head = expression[:split_at].strip()
     if not head:
         raise ExpressionCompileError(
             "with clause requires a selection expression before it (for example: repo:polylogue with assertions)",
             field=None,
         )
-    return head, units, fields
+    return head, units, fields, windows
 
 
 def _split_with_clause(expression: str) -> tuple[str, tuple[str, ...]]:
-    head, units, _fields = _split_with_projection_clause(expression)
+    head, units, _fields, _windows = _split_with_projection_clause(expression)
     return head, units
 
 
@@ -2189,6 +2361,71 @@ def _validate_aggregate_group_field(unit: QueryUnitName, field: str) -> None:
         )
 
 
+def _validate_aggregate_metric_field(unit: QueryUnitName, fn: str, field: str) -> None:
+    descriptor = query_unit_descriptor(unit)
+    supported_fields = frozenset(descriptor.aggregate_metric_fields) if descriptor is not None else frozenset()
+    if field not in supported_fields:
+        supported = ", ".join(sorted(supported_fields))
+        if not supported:
+            raise ExpressionCompileError(
+                f"pipeline `agg {fn}:{field}` is not supported for {unit} rows; "
+                f"{unit} has no numeric metric fields, only `agg count` is available",
+                field="agg",
+            )
+        raise ExpressionCompileError(
+            f"pipeline `agg {fn}:{field}` is not supported for {unit} rows; supported metric fields: {supported}",
+            field="agg",
+        )
+
+
+def _parse_agg_metric(unit: QueryUnitName, raw: str) -> QueryUnitAggMetric:
+    spec = raw.strip()
+    if not spec:
+        raise ExpressionCompileError("pipeline `agg` stage requires a metric after every comma", field="agg")
+    if ":" not in spec:
+        if spec.lower() != "count":
+            raise ExpressionCompileError(
+                f"unsupported `agg` metric {spec!r}; expected `count` or `FN:FIELD` "
+                "(FN is one of sum, avg, min, max, or a percentile pNN, e.g. p90)",
+                field="agg",
+            )
+        return QueryUnitAggMetric(fn="count", field=None, label="count")
+    fn_raw, _, field = spec.partition(":")
+    fn = fn_raw.strip().lower()
+    field = field.strip()
+    if not field:
+        raise ExpressionCompileError(f"pipeline `agg {fn}:` requires a field name", field="agg")
+    is_percentile = percentile_rank(fn) is not None
+    if fn not in AGGREGATE_METRIC_FUNCTIONS and not is_percentile:
+        raise ExpressionCompileError(
+            f"unsupported `agg` function {fn_raw.strip()!r}; supported functions are "
+            "count, sum, avg, min, max, and percentiles p1..p99",
+            field="agg",
+        )
+    if fn == "count":
+        raise ExpressionCompileError("pipeline `agg count` does not take a field; use plain `count`", field="agg")
+    _validate_aggregate_metric_field(unit, fn, field)
+    return QueryUnitAggMetric(fn=fn, field=field, label=f"{fn}_{field}")
+
+
+def _parse_agg_stage(unit: QueryUnitName, stage: str) -> tuple[QueryUnitAggMetric, ...] | None:
+    normalized = " ".join(stage.split())
+    if not normalized.lower().startswith("agg "):
+        return None
+    raw_metrics = normalized[len("agg ") :].strip()
+    if not raw_metrics:
+        raise ExpressionCompileError("pipeline `agg` stage requires at least one metric", field="agg")
+    metrics = tuple(_parse_agg_metric(unit, part) for part in raw_metrics.split(","))
+    labels = [metric.label for metric in metrics]
+    if len(labels) != len(set(labels)):
+        raise ExpressionCompileError(
+            f"pipeline `agg` stage has duplicate metrics: "
+            f"{', '.join(sorted({label for label in labels if labels.count(label) > 1}))}",
+            field="agg",
+        )
+    return metrics
+
+
 def _query_unit_lowerer_kind(unit: QueryUnitName) -> QueryUnitLowererKind:
     descriptor = query_unit_descriptor(unit)
     if descriptor is None or not descriptor.terminal_supported:
@@ -2234,7 +2471,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     sort = _parse_sort_stage(stage)
     if sort is not None:
         if sort.field == "time":
-            if source.aggregate is not None:
+            if source.aggregate is not None or source.agg_metrics is not None:
                 raise ExpressionCompileError(
                     "pipeline `sort by time` must appear before aggregate stages", field="sort"
                 )
@@ -2247,17 +2484,25 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                     field="sort",
                 )
             _ensure_sql_row_pipeline_lowerer(source.unit, stage="sort by time")
-        elif source.aggregate != "count":
-            raise ExpressionCompileError(
-                "pipeline `sort by count` and `sort by key` require an aggregate `count` stage",
-                field="sort",
-            )
-        elif source.limit is not None or source.offset is not None:
-            raise ExpressionCompileError(
-                "pipeline aggregate `sort by` must appear before `limit` and `offset`",
-                field="sort",
-            )
-        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage=f"sort by {sort.field}")
+        else:
+            if sort.field == "count" and source.aggregate != "count":
+                raise ExpressionCompileError(
+                    "pipeline `sort by count` requires an aggregate `count` stage; "
+                    "an `agg` stage has no single unnamed count to sort by -- "
+                    "use `sort by key` to order by group instead",
+                    field="sort",
+                )
+            if sort.field == "key" and source.aggregate != "count" and source.agg_metrics is None:
+                raise ExpressionCompileError(
+                    "pipeline `sort by key` requires an aggregate `count` or `agg` stage",
+                    field="sort",
+                )
+            if source.limit is not None or source.offset is not None:
+                raise ExpressionCompileError(
+                    "pipeline aggregate `sort by` must appear before `limit` and `offset`",
+                    field="sort",
+                )
+            _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage=f"sort by {sort.field}")
         return replace(
             source,
             sort=sort,
@@ -2300,6 +2545,24 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 QueryUnitCountStage(),
             ),
         )
+    agg_metrics = _parse_agg_stage(source.unit, stage)
+    if agg_metrics is not None:
+        if source.aggregate is not None or source.agg_metrics is not None:
+            raise ExpressionCompileError("pipeline `agg` cannot follow `count` or another `agg` stage", field="agg")
+        if source.sort is not None:
+            raise ExpressionCompileError("pipeline `sort by time` cannot feed aggregate stages", field="agg")
+        if source.limit is not None or source.offset is not None:
+            raise ExpressionCompileError("pipeline `agg` must appear before `limit` and `offset`", field="agg")
+        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="agg")
+        _ensure_aggregate_lowerer_supported(source.unit, stage="agg")
+        return replace(
+            source,
+            agg_metrics=agg_metrics,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitAggStage(agg_metrics),
+            ),
+        )
     limit = _parse_non_negative_int_stage(stage, "limit")
     if limit is not None:
         if limit == 0:
@@ -2324,7 +2587,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         )
     raise ExpressionCompileError(
         f"unsupported pipeline stage {stage!r}; supported terminal stages are "
-        "`sort by time|count|key [asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`",
+        "`sort by time|count|key [asc|desc]`, `group by FIELD`, `count`, "
+        "`agg count|FN:FIELD[,...]`, `limit N`, and `offset N`",
         field=None,
     )
 
@@ -2355,16 +2619,16 @@ def _parse_plain_unit_source_expression(expression: str) -> QueryUnitSource | No
 #: it is matched by exact equality instead. Used only to *recognize* that a
 #: stage has the shape of a terminal pipeline action -- never to validate its
 #: contents, so this never raises.
-_PIPELINE_STAGE_KEYWORD_PREFIXES: tuple[str, ...] = ("sort by ", "group by ", "limit ", "offset ")
+_PIPELINE_STAGE_KEYWORD_PREFIXES: tuple[str, ...] = ("sort by ", "group by ", "limit ", "offset ", "agg ")
 
 
 def _pipeline_stage_keyword(stage: str) -> str | None:
     """Return the terminal pipeline stage keyword ``stage`` looks like, if any.
 
     Distinguishes "this stage has the shape of `count`/`group by`/`sort by`/
-    `limit`/`offset` but was misapplied" from "this stage is unrecognized
-    entirely", so callers can raise a specific, actionable error instead of a
-    generic one for the former.
+    `limit`/`offset`/`agg` but was misapplied" from "this stage is
+    unrecognized entirely", so callers can raise a specific, actionable error
+    instead of a generic one for the former.
     """
 
     normalized = " ".join(stage.split()).lower()
@@ -2417,6 +2681,7 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
             sort=terminal_source.sort,
             group_by=terminal_source.group_by,
             aggregate=terminal_source.aggregate,
+            agg_metrics=terminal_source.agg_metrics,
             pipeline_stages=(
                 QueryUnitSessionScopeStage(session_predicate),
                 *terminal_source.pipeline_stages,
@@ -2562,7 +2827,7 @@ def parse_expression_ast(expression: str) -> QueryExpressionAST:
     if not expression:
         return QueryExpressionAST(())
     if not (expression.startswith("{") or expression.startswith("[")):
-        expression, _with_units, _with_unit_fields = _split_with_projection_clause(expression)
+        expression, _with_units, _with_unit_fields, _with_unit_windows = _split_with_projection_clause(expression)
         if not expression:
             return QueryExpressionAST(())
     reference_pipeline = parse_reference_query_pipeline(expression)
@@ -2704,6 +2969,8 @@ def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, .
     legs = {f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
     if source.aggregate is not None:
         legs.add(f"terminal-{source.unit}-{source.aggregate}-aggregate")
+    if source.agg_metrics is not None:
+        legs.add(f"terminal-{source.unit}-agg-aggregate")
     if _query_unit_uses_runtime_transform(source.unit):
         legs.add("runtime-transform")
     else:
@@ -2744,6 +3011,8 @@ def _ast_payload(
             unit_payload["group_by"] = unit_source.group_by
         if unit_source.aggregate is not None:
             unit_payload["aggregate"] = unit_source.aggregate
+        if unit_source.agg_metrics is not None:
+            unit_payload["agg_metrics"] = [metric.to_payload() for metric in unit_source.agg_metrics]
         if unit_source.pipeline_stages:
             unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
         unit_payload["pipeline"] = unit_source.pipeline.to_payload()
@@ -3395,7 +3664,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
 
     # Split a trailing ``with <units>`` projection clause off the selection
     # expression before parsing it (outside the Lark grammar, like ``|`` stages).
-    expression, with_units, with_unit_fields = _split_with_projection_clause(expression)
+    expression, with_units, with_unit_fields, with_unit_windows = _split_with_projection_clause(expression)
 
     reference_pipeline = parse_reference_query_pipeline(expression)
     if reference_pipeline is not None:
@@ -3413,6 +3682,7 @@ def compile_expression(expression: str) -> SessionQuerySpec:
             boolean_predicate=residual_predicate,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
+            with_unit_windows=with_unit_windows,
         )
     tokens = list(ast.clauses)
 
@@ -3442,7 +3712,9 @@ def compile_expression(expression: str) -> SessionQuerySpec:
         acc.apply_token(tok)
     spec = acc.to_spec()
     if with_units:
-        spec = replace(spec, with_units=with_units, with_unit_fields=with_unit_fields)
+        spec = replace(
+            spec, with_units=with_units, with_unit_fields=with_unit_fields, with_unit_windows=with_unit_windows
+        )
     return spec
 
 
@@ -3496,6 +3768,7 @@ def compile_expression_into(expression: str, base: SessionQuerySpec) -> SessionQ
         boolean_predicate=boolean_predicate,
         with_units=base.with_units + tuple(u for u in expr_spec.with_units if u not in base.with_units),
         with_unit_fields={**base.with_unit_fields, **expr_spec.with_unit_fields},
+        with_unit_windows={**base.with_unit_windows, **expr_spec.with_unit_windows},
     )
 
 
@@ -3559,6 +3832,9 @@ __all__ = [
     "ReferenceQueryPipeline",
     "ResolvedRefOperand",
     "QueryUnitPipeline",
+    "QueryUnitAggMetric",
+    "QueryUnitAggStage",
+    "percentile_rank",
     "QueryUnitCountStage",
     "QueryUnitGroupStage",
     "QueryUnitLimitStage",
@@ -3582,6 +3858,7 @@ __all__ = [
     "split_with_clause",
     "split_with_projection_clause",
     "WITH_PROJECTION_SUPPORTED_UNITS",
+    "WithUnitWindow",
     "structural_query_fields",
     "structural_query_units",
     "UnsupportedSessionTerminalActionError",

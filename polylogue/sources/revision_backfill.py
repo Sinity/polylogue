@@ -1170,6 +1170,7 @@ _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
     {
         Provider.CHATGPT,
         Provider.CLAUDE_AI,
+        Provider.CLAUDE_DESIGN,
         Provider.CLAUDE_CODE,
         Provider.CODEX,
         Provider.GEMINI,

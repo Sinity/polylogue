@@ -110,6 +110,57 @@ def test_content_blocks_from_segments_classifies_code_and_tool_blocks() -> None:
     assert blocks[5].media_type == "application/pdf"
 
 
+def test_tool_result_web_search_knowledge_items_become_search_result_constructs() -> None:
+    """polylogue-zocm GAP 2: web_search tool_result content carries retrieved
+    ``{type: knowledge, ...}`` entries the provider read but did not
+    necessarily cite in the answer text -- distinct from the answer-text
+    ``citations`` anchors ``_citation_construct`` (claude/common.py) projects
+    as CONTENT_REFERENCE. These become SEARCH_RESULT constructs so "sources
+    read" stays queryable separately from "sources cited" (anonymized from a
+    real Claude AI export's web_search tool_result).
+    """
+    blocks = content_blocks_from_segments(
+        [
+            {
+                "type": "tool_result",
+                "tool_use_id": "tool-1",
+                "name": "web_search",
+                "is_error": False,
+                "content": [
+                    {
+                        "type": "knowledge",
+                        "title": "Example support article",
+                        "url": "https://example.test/support/answer",
+                        "metadata": {
+                            "type": "webpage_metadata",
+                            "site_domain": "example.test",
+                            "site_name": "Example",
+                            "favicon_url": "https://example.test/favicon.ico",
+                        },
+                        "is_missing": False,
+                        "text": "Retrieved page body text.",
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert len(blocks) == 1
+    tool_result = blocks[0]
+    assert tool_result.type == "tool_result"
+    # No plain-text content in this segment -- text stays None, the retrieved
+    # payload lives on the construct instead.
+    assert tool_result.text is None
+    assert len(tool_result.web_constructs) == 1
+    construct = tool_result.web_constructs[0]
+    assert construct.construct_type.value == "search_result"
+    assert construct.provider_key == "web_search_knowledge"
+    assert construct.title == "Example support article"
+    assert construct.url == "https://example.test/support/answer"
+    assert construct.text == "Retrieved page body text."
+    assert construct.group_title == "Example"
+
+
 def test_content_blocks_from_segments_skips_empty_tool_use_shells() -> None:
     """Empty tool_use shells should not survive into stored content blocks."""
     blocks = content_blocks_from_segments(

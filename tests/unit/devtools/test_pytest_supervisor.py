@@ -31,6 +31,10 @@ from devtools.pytest_supervisor import (
 from devtools.verify import PYTEST_CONTAINMENT_PATH, PYTEST_REPORT_PATH, ROOT, _run
 from devtools.verify_runs import VerifyRun
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Process-containment regressions poll real PIDs and cgroups across SIGKILL delivery; a frozen clock cannot advance kernel process state."
+)
+
 
 def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> None:
     deadline = time.monotonic() + timeout_s

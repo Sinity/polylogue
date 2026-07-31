@@ -7,6 +7,9 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.query.search_hits import (
     DEFAULT_SEARCH_SNIPPET_MAX_CHARS,
+    DEFAULT_TITLE_MAX_CHARS,
+    bound_display_text,
+    bound_display_title,
     bound_search_snippet,
     build_search_snippet,
     search_hit_surface,
@@ -64,6 +67,31 @@ def test_bound_search_snippet_never_returns_full_payload() -> None:
     assert len(bounded) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS
     assert bounded.endswith("...")
     assert "\n" not in bounded
+
+
+def test_bound_display_text_normalizes_and_truncates() -> None:
+    """polylogue-x7d: the row-projection budget primitive shared by CLI
+    list/search/select surfaces and the SessionListRowPayload/
+    SessionSearchHitPayload models."""
+    assert bound_display_text("hello", max_chars=10) == "hello"
+    assert bound_display_text("hello world", max_chars=8) == "hello..."
+    assert bound_display_text("hello", max_chars=3) == "hel"
+    assert bound_display_text("hello", max_chars=5) == "hello"
+    assert bound_display_text(None) == ""
+    assert bound_display_text("multi\nline\ntitle") == "multi line title"
+
+
+def test_bound_display_title_falls_back_and_bounds_to_default_budget() -> None:
+    giant = "needle\n" + "trailing content " * 100
+
+    assert bound_display_title(None, "fallback-id") == "fallback-id"
+    assert bound_display_title("", "fallback-id") == "fallback-id"
+
+    bounded = bound_display_title(giant)
+
+    assert "\n" not in bounded
+    assert len(bounded) <= DEFAULT_TITLE_MAX_CHARS
+    assert bounded.endswith("...")
 
 
 def test_search_hit_from_session_preserves_match_evidence() -> None:

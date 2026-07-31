@@ -322,7 +322,7 @@ DELEGATION_COLUMNS = (
     "inheritance",
     "evidence_refs",
 )
-AGGREGATE_COLUMNS = ("unit", "group_by", "group_key", "count")
+AGGREGATE_COLUMNS = ("unit", "group_by", "group_key", "count", "metrics")
 RECURSIVE_COLUMNS = ("session_id", "parent_refs", "child_refs", "continuation")
 
 
@@ -1287,7 +1287,7 @@ QUERY_DISCOVERY_NEGATIVE_EXAMPLES: tuple[QueryDiscoveryNegativeExample, ...] = (
         diagnostic_class="ExpressionCompileError",
         diagnostic=(
             "unsupported pipeline stage 'group role'; supported terminal stages are `sort by time|count|key "
-            "[asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`"
+            "[asc|desc]`, `group by FIELD`, `count`, `agg count|FN:FIELD[,...]`, `limit N`, and `offset N`"
         ),
         corrected_form="messages where role:assistant | group by role | count",
     ),
