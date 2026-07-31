@@ -11,55 +11,19 @@ that it behaves correctly).
 
 from __future__ import annotations
 
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from email.message import Message
 from http import HTTPStatus
-from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from typing import TYPE_CHECKING
 
+from tests.infra.daemon_http_harness import capture_json_response, make_daemon_handler
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 if TYPE_CHECKING:
-    from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
-
-
-class _MockServer:
-    auth_token = ""
-    api_host = "127.0.0.1"
-    archive_query_executor = ThreadPoolExecutor(max_workers=1)
-    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test
-
-
-class _MockHeaders:
-    def __init__(self, headers: dict[str, str] | None = None) -> None:
-        self._headers = headers or {}
-
-    def get(self, key: str, default: str | None = None) -> str | None:
-        return self._headers.get(key, default)
+    from polylogue.daemon.http import DaemonAPIHandler
 
 
 def _make_handler(path: str = "/api/provider-usage") -> DaemonAPIHandler:
-    from polylogue.daemon.http import DaemonAPIHandler
-
-    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    handler.server = cast("DaemonAPIHTTPServer", _MockServer())
-    handler.client_address = ("127.0.0.1", 12345)
-    handler.path = path
-    handler.command = "GET"
-    handler.requestline = f"GET {path} HTTP/1.1"
-    handler.headers = cast("Message[str, str]", _MockHeaders({"Content-Length": "0"}))
-    handler.rfile = BytesIO(b"")
-    handler.wfile = BytesIO()
-    return handler
-
-
-def _capture_json(handler: DaemonAPIHandler) -> MagicMock:
-    send_json = MagicMock()
-    handler._send_json = send_json  # type: ignore[method-assign]
-    return send_json
+    return make_daemon_handler("GET", path)
 
 
 def test_returns_200_with_empty_origins_when_archive_has_no_sessions(workspace_env: dict[str, Path]) -> None:
@@ -67,7 +31,7 @@ def test_returns_200_with_empty_origins_when_archive_has_no_sessions(workspace_e
     initialized, session-free archive, the endpoint must return a
     structured 200, not crash with the AttributeError this bead fixed."""
     handler = _make_handler()
-    send_json = _capture_json(handler)
+    send_json = capture_json_response(handler)
 
     handler.do_GET()
 
@@ -84,7 +48,7 @@ def test_returns_200_with_origin_usage_for_seeded_session(workspace_env: dict[st
     ).add_message(role="assistant", text="hi").save()
 
     handler = _make_handler()
-    send_json = _capture_json(handler)
+    send_json = capture_json_response(handler)
 
     handler.do_GET()
 
@@ -103,7 +67,7 @@ def test_default_detail_is_headline_not_full(workspace_env: dict[str, Path]) -> 
     path — headline is fast (SQL-side rollups only) and the MCP tool's
     detail="full" default is deliberately NOT mirrored here."""
     handler = _make_handler()
-    send_json = _capture_json(handler)
+    send_json = capture_json_response(handler)
 
     handler.do_GET()
 
@@ -114,7 +78,7 @@ def test_default_detail_is_headline_not_full(workspace_env: dict[str, Path]) -> 
 
 def test_respects_detail_and_limit_query_params(workspace_env: dict[str, Path]) -> None:
     handler = _make_handler("/api/provider-usage?detail=headline&limit=5")
-    send_json = _capture_json(handler)
+    send_json = capture_json_response(handler)
 
     handler.do_GET()
 

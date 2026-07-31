@@ -67,6 +67,7 @@ from typing import Final
 CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
     "chatgpt",
     "claude-ai",
+    "claude-design",
     "claude-code",
     "codex",
     "gemini",
@@ -82,6 +83,7 @@ CORE_RUNTIME_PROVIDERS: Final[tuple[str, ...]] = (
 CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
     "chatgpt",
     "claude-ai",
+    "claude-design",
     "claude-code",
     "codex",
     "gemini",

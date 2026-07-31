@@ -84,19 +84,21 @@ def format_session(
         return _conv_to_markdown(conv)
 
 
-def _conv_to_dict(conv: Session, fields: str | None) -> JSONDocument:
+def _conv_to_dict(conv: Session, fields: str | None, *, bound_title: bool = True) -> JSONDocument:
     """Convert session to summary dict (message count, not content).
 
     Used for list-mode output where loading all message text is unnecessary.
-    For full-content output, use _conv_to_json() instead.
+    For full-content output, use _conv_to_json() instead -- which calls this
+    with ``bound_title=False`` since a full single-session read must stay
+    lossless (polylogue-x7d PR #3420 follow-up).
     """
     selected = {field.strip() for field in fields.split(",")} if fields else None
-    return SessionListRowPayload.from_session(conv).selected(selected)
+    return SessionListRowPayload.from_session(conv, bound_title=bound_title).selected(selected)
 
 
 def _conv_to_json(conv: Session, fields: str | None) -> str:
     """Convert a single session to full JSON with message content."""
-    data = _conv_to_dict(conv, fields)
+    data = _conv_to_dict(conv, fields, bound_title=False)
     if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
         detail_payload = SessionDetailPayload.from_session(conv)
         data["messages"] = [
@@ -117,7 +119,7 @@ def _conv_to_yaml(conv: Session, fields: str | None) -> str:
     """
     import yaml
 
-    data = _conv_to_dict(conv, fields)
+    data = _conv_to_dict(conv, fields, bound_title=False)
     if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
         detail_payload = SessionDetailPayload.from_session(conv)
         data["messages"] = [

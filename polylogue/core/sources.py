@@ -93,6 +93,11 @@ _SOURCE_CLAUDE_AI: Final[Source] = Source(
     runtime_root=None,  # delivered via Anthropic data export ZIPs
     originating_lab="anthropic",
 )
+_SOURCE_CLAUDE_DESIGN: Final[Source] = Source(
+    family="claude-design-session",
+    runtime_root=None,  # delivered via Anthropic data export ZIPs (design_chats/*.json)
+    originating_lab="anthropic",
+)
 _SOURCE_CLAUDE_CODE: Final[Source] = Source(
     family="claude-code-session",
     runtime_root="~/.claude/projects",
@@ -149,6 +154,7 @@ _SOURCE_UNKNOWN: Final[Source] = Source(
 _PROVIDER_TO_SOURCE: Final[dict[Provider, Source]] = {
     Provider.CHATGPT: _SOURCE_CHATGPT,
     Provider.CLAUDE_AI: _SOURCE_CLAUDE_AI,
+    Provider.CLAUDE_DESIGN: _SOURCE_CLAUDE_DESIGN,
     Provider.CLAUDE_CODE: _SOURCE_CLAUDE_CODE,
     Provider.CODEX: _SOURCE_CODEX,
     Provider.GEMINI: _SOURCE_GEMINI,
@@ -227,6 +233,7 @@ def source_for_family(family: SourceFamily) -> Source | None:
 _PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
     Provider.CHATGPT: Origin.CHATGPT_EXPORT,
     Provider.CLAUDE_AI: Origin.CLAUDE_AI_EXPORT,
+    Provider.CLAUDE_DESIGN: Origin.CLAUDE_DESIGN_SESSION,
     Provider.CLAUDE_CODE: Origin.CLAUDE_CODE_SESSION,
     Provider.CODEX: Origin.CODEX_SESSION,
     Provider.GEMINI: Origin.AISTUDIO_DRIVE,
@@ -246,6 +253,7 @@ _PROVIDER_TO_ORIGIN: Final[dict[Provider, Origin]] = {
 _ORIGIN_TO_LAB: Final[dict[Origin, Lab]] = {
     Origin.CLAUDE_CODE_SESSION: "anthropic",
     Origin.CLAUDE_AI_EXPORT: "anthropic",
+    Origin.CLAUDE_DESIGN_SESSION: "anthropic",
     Origin.CHATGPT_EXPORT: "openai",
     Origin.CODEX_SESSION: "openai",
     Origin.GEMINI_CLI_SESSION: "google",
@@ -301,6 +309,7 @@ _ORIGIN_TO_PROVIDER: Final[dict[Origin, Provider]] = {
     Origin.GROK_EXPORT: Provider.GROK,
     Origin.CHATGPT_EXPORT: Provider.CHATGPT,
     Origin.CLAUDE_AI_EXPORT: Provider.CLAUDE_AI,
+    Origin.CLAUDE_DESIGN_SESSION: Provider.CLAUDE_DESIGN,
     Origin.AISTUDIO_DRIVE: Provider.GEMINI,
     Origin.UNKNOWN_EXPORT: Provider.UNKNOWN,
 }

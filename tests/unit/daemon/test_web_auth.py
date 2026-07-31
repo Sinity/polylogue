@@ -20,11 +20,8 @@ from polylogue.daemon.web_auth import (
     read_web_credential_cookie,
     same_origin_from_headers,
 )
-from tests.unit.daemon.test_daemon_http_security import (
-    _capture_responses,
-    _make_handler,
-    _MockServer,
-)
+from tests.infra.daemon_http_harness import MockDaemonServer, capture_responses
+from tests.unit.daemon.test_daemon_http_security import _make_handler
 
 
 def _cookie_pair(set_cookie: str) -> tuple[str, str]:
@@ -97,7 +94,7 @@ def test_registry_bounds_rotation_records_and_preserves_recent_lifecycle_state()
 
 
 def test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route() -> None:
-    server = _MockServer()
+    server = MockDaemonServer(auth_token="secret")
     origin = "http://127.0.0.1:8766"
     bootstrap = _make_handler(
         "POST",
@@ -107,7 +104,7 @@ def test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route() -> No
         web_client=True,
         server=server,
     )
-    send_error, _ = _capture_responses(bootstrap)
+    send_error, _ = capture_responses(bootstrap)
     send_cookie_json = MagicMock()
     bootstrap._send_json_with_cookie = send_cookie_json  # type: ignore[method-assign]
     bootstrap.do_POST()
@@ -154,7 +151,7 @@ def test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route() -> No
     ],
 )
 def test_web_credential_cannot_execute_archive_control_routes(path: str, handler_name: str) -> None:
-    server = _MockServer()
+    server = MockDaemonServer(auth_token="secret")
     origin = "http://127.0.0.1:8766"
     issued = server.web_credentials.issue(origin)
     handler = _make_handler(
@@ -169,7 +166,7 @@ def test_web_credential_cannot_execute_archive_control_routes(path: str, handler
     )
     route_handler = MagicMock()
     setattr(handler, handler_name, route_handler)
-    send_error, _ = _capture_responses(handler)
+    send_error, _ = capture_responses(handler)
 
     handler.do_POST()
 
@@ -185,7 +182,7 @@ def test_bootstrap_rejects_wrong_origin_without_minting_cookie() -> None:
         host="127.0.0.1:8766",
         web_client=True,
     )
-    send_error, send_json = _capture_responses(handler)
+    send_error, send_json = capture_responses(handler)
     handler.do_POST()
 
     send_error.assert_called_once()
@@ -204,7 +201,7 @@ def test_bootstrap_host_rejection_uses_typed_wrong_origin_contract() -> None:
         host="evil.example.com",
         web_client=True,
     )
-    send_error, _ = _capture_responses(handler)
+    send_error, _ = capture_responses(handler)
 
     handler.do_POST()
 
@@ -215,7 +212,7 @@ def test_bootstrap_host_rejection_uses_typed_wrong_origin_contract() -> None:
 
 
 def test_non_loopback_bootstrap_rejection_uses_typed_wrong_origin_contract() -> None:
-    server = _MockServer()
+    server = MockDaemonServer(auth_token="secret")
     server.api_host = "archive.internal"
     handler = _make_handler(
         "POST",
@@ -225,7 +222,7 @@ def test_non_loopback_bootstrap_rejection_uses_typed_wrong_origin_contract() -> 
         web_client=True,
         server=server,
     )
-    send_error, _ = _capture_responses(handler)
+    send_error, _ = capture_responses(handler)
 
     handler.do_POST()
 
@@ -238,7 +235,7 @@ def test_non_loopback_bootstrap_rejection_uses_typed_wrong_origin_contract() -> 
 def test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke() -> None:
     origin = "http://127.0.0.1:8766"
     malformed_cookie = f'{WEB_CREDENTIAL_COOKIE}="\N{LATIN SMALL LETTER E WITH ACUTE}"'
-    server = _MockServer()
+    server = MockDaemonServer(auth_token="secret")
 
     bootstrap = _make_handler(
         "POST",
@@ -249,7 +246,7 @@ def test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke() -> None:
         web_client=True,
         server=server,
     )
-    bootstrap_error, _ = _capture_responses(bootstrap)
+    bootstrap_error, _ = capture_responses(bootstrap)
     bootstrap_cookie_json = MagicMock()
     bootstrap._send_json_with_cookie = bootstrap_cookie_json  # type: ignore[method-assign]
     bootstrap.do_POST()
@@ -265,7 +262,7 @@ def test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke() -> None:
         web_client=True,
         server=server,
     )
-    reader_error, _ = _capture_responses(reader)
+    reader_error, _ = capture_responses(reader)
     reader.do_GET()
     assert reader_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_invalid")
 
@@ -279,7 +276,7 @@ def test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke() -> None:
         web_client=True,
         server=server,
     )
-    revoke_error, _ = _capture_responses(revoke)
+    revoke_error, _ = capture_responses(revoke)
     revoke.do_DELETE()
     assert revoke_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_invalid")
 
@@ -292,7 +289,7 @@ def test_browser_missing_credential_has_explicit_recoverable_state() -> None:
         fetch_site="same-origin",
         web_client=True,
     )
-    send_error, _ = _capture_responses(handler)
+    send_error, _ = capture_responses(handler)
     handler.do_GET()
 
     assert send_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_missing")

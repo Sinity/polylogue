@@ -1,11 +1,26 @@
-"""Claude AI session parser helpers."""
+"""Claude AI session parser helpers.
+
+Three distinct wire shapes live under the ``claude-ai`` acquisition family:
+
+- ordinary claude.ai conversation exports (``chat_messages``) -- ``parse_ai``.
+- Claude Design agentic chats (``design_chats/*.json``, bd polylogue-tbun) --
+  a genuinely different product/backend (camelCase ``contentBlocks``/
+  ``authorAccountUuid``/``turnChanges``, ``content`` is a dict not a list).
+  Admitted as its own ``Origin.CLAUDE_DESIGN_SESSION`` / ``Provider.CLAUDE_DESIGN``
+  rather than folded into claude.ai -- see ``parse_design``.
+- the account-level ``memories.json`` GDPR sidecar (bd polylogue-zng9), which
+  carries no session identity at all (no ``chat_messages``/``messages`` key) --
+  represented as a synthetic ``generated_context_pack`` session under the
+  existing claude.ai origin -- see ``parse_memories``.
+"""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource
+from polylogue.logging import get_logger
 
 from ..base import (
     ParsedAttachment,
@@ -13,7 +28,6 @@ from ..base import (
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
-    ParsedWebConstruct,
     attachment_from_meta,
 )
 from .common import (
@@ -26,29 +40,51 @@ from .common import (
     normalize_timestamp,
 )
 
-CLAUDE_DESIGN_CHAT_INGEST_FLAG = "capture:claude-design-chat"
 CLAUDE_TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
+CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG = "capture:claude-account-memory"
+
+logger = get_logger(__name__)
 
 
 def looks_like_ai(payload: object) -> bool:
-    return isinstance(payload, dict) and (
-        isinstance(payload.get("chat_messages"), list) or _looks_like_design_chat(payload)
-    )
+    return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
 
 
-def _looks_like_design_chat(payload: object) -> bool:
+def looks_like_claude_design(payload: object) -> bool:
+    """Detect the Claude Design chat shape (bd polylogue-tbun, measured).
+
+    Distinguishing signature vs a claude.ai conversation export: a Design
+    document carries ``messages`` (not ``chat_messages``) plus a ``project``
+    key identifying which Design project owns the chat. Message content
+    inside is a camelCase dict (``contentBlocks``/``authorAccountUuid``/
+    ``turnChanges``), never claude.ai's list-of-segments shape.
+    """
     return (
         isinstance(payload, dict)
         and isinstance(payload.get("messages"), list)
-        and ("project" in payload or "design_chats" in str(payload.get("source_path", "")))
+        and "project" in payload
         and not isinstance(payload.get("chat_messages"), list)
     )
 
 
-def _session_ingest_flags(payload: Mapping[str, object], *, design_chat: bool = False) -> list[str]:
+def looks_like_claude_memories(payload: object) -> bool:
+    """Detect the claude.ai account-memory export shape (bd polylogue-zng9).
+
+    ``memories.json`` in a GDPR export batch is a top-level JSON array with
+    one record per account, each carrying ``account_uuid`` plus
+    ``conversations_memory`` and/or ``project_memories`` -- no session
+    identity, no message list. Distinctive enough (account_uuid combined with
+    either memory field) that no other admitted shape collides with it.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("account_uuid"), str):
+        return False
+    return "conversations_memory" in payload or "project_memories" in payload
+
+
+def _session_ingest_flags(payload: Mapping[str, object]) -> list[str]:
     flags: list[str] = []
-    if design_chat:
-        flags.append(CLAUDE_DESIGN_CHAT_INGEST_FLAG)
     if payload.get("is_temporary") is True:
         flags.append(CLAUDE_TEMPORARY_CHAT_INGEST_FLAG)
     return flags
@@ -56,29 +92,6 @@ def _session_ingest_flags(payload: Mapping[str, object], *, design_chat: bool = 
 
 def _session_kind(payload: Mapping[str, object]) -> SessionKind:
     return SessionKind.TEMPORARY if payload.get("is_temporary") is True else SessionKind.STANDARD
-
-
-def _design_content_payload(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        return {}
-    nested = value.get("content")
-    if isinstance(nested, Mapping):
-        return nested
-    return value
-
-
-def _design_project_title(value: object) -> str | None:
-    if isinstance(value, Mapping):
-        name = value.get("name")
-        return str(name) if name is not None else None
-    return str(value) if value is not None else None
-
-
-def _design_project_id(value: object) -> str | None:
-    if isinstance(value, Mapping):
-        project_id = value.get("uuid") or value.get("id")
-        return str(project_id) if project_id is not None else None
-    return None
 
 
 def _resolve_claude_ai_title(
@@ -96,59 +109,314 @@ def _resolve_claude_ai_title(
     return str(resolved_session_id), TitleSource.UNKNOWN, None, None
 
 
-def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
-    messages: list[ParsedMessage] = []
-    attachments = []
-    raw_messages = payload.get("messages")
-    design_messages = raw_messages if isinstance(raw_messages, list) else []
-    for position, raw_message in enumerate(design_messages):
-        if not isinstance(raw_message, Mapping):
-            continue
-        content_payload = _design_content_payload(raw_message.get("content"))
-        text = content_payload.get("content") or content_payload.get("text") or raw_message.get("text")
-        if not isinstance(text, str) or not text:
-            continue
-        message_id = (
-            raw_message.get("uuid") or content_payload.get("id") or raw_message.get("id") or f"design-{position}"
+# ---------------------------------------------------------------------------
+# Claude Design (bd polylogue-tbun)
+# ---------------------------------------------------------------------------
+
+#: contentBlocks types this parser recognizes. Anything else is dropped with
+#: a warning rather than guessed -- the corpus is 11 chats and the product is
+#: still moving (bd polylogue-tbun scope note).
+_DESIGN_KNOWN_BLOCK_TYPES = frozenset({"text", "thinking", "tool_call", "error", "user_interjection"})
+
+
+def _design_attachment_from_meta(meta: object, message_id: str, index: int) -> ParsedAttachment | None:
+    """Adapt a Design attachment record onto the shared attachment builder.
+
+    Design attachments carry inline text under ``content`` (not the shared
+    builder's ``extracted_content`` key) and use ``type`` for a coarse
+    taxonomy (file/skill/text/image/folder) rather than a MIME type. ``skill``
+    and ``folder`` have no equivalent in any other provider's attachment
+    shape -- ``ParsedAttachment.attachment_kind`` is an open string field
+    (see its docstring), so tagging them needs no schema change.
+    """
+    if not isinstance(meta, Mapping):
+        return None
+    shimmed: dict[str, object] = dict(meta)
+    content = shimmed.get("content")
+    if isinstance(content, str) and "extracted_content" not in shimmed:
+        shimmed["extracted_content"] = content
+    attachment = attachment_from_meta(shimmed, message_id, index)
+    if attachment is None:
+        return None
+    attachment_type = meta.get("type")
+    if attachment_type in ("skill", "folder"):
+        attachment = attachment.model_copy(update={"attachment_kind": attachment_type})
+    return attachment
+
+
+def _design_tool_call_blocks(tool_call: Mapping[str, object]) -> list[ParsedContentBlock]:
+    """toolCall -> TOOL_USE (+TOOL_RESULT when output is present).
+
+    id/name/input/output share the ``toolu_*`` id space with the Claude API
+    (bd polylogue-tbun), so ``tool_id`` joins cleanly across providers.
+    """
+    tool_id = tool_call.get("id")
+    tool_id_str = str(tool_id) if isinstance(tool_id, str) and tool_id else None
+    tool_name = tool_call.get("name")
+    metadata: dict[str, object] = {}
+    if tool_call.get("serverSide") is True:
+        metadata["server_side"] = True
+    tool_call_type = tool_call.get("type")
+    if isinstance(tool_call_type, str) and tool_call_type:
+        metadata["tool_call_type"] = tool_call_type
+    tool_input = tool_call.get("input")
+    blocks = [
+        ParsedContentBlock(
+            type=BlockType.TOOL_USE,
+            tool_name=str(tool_name) if isinstance(tool_name, str) and tool_name else None,
+            tool_id=tool_id_str,
+            tool_input=tool_input if isinstance(tool_input, Mapping) else None,
+            metadata=metadata or None,
         )
-        raw_role = raw_message.get("role") or content_payload.get("role")
+    ]
+    output = tool_call.get("output")
+    if output is not None:
+        blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=tool_id_str, text=str(output)))
+    return blocks
+
+
+def _design_assistant_messages(
+    raw_message: Mapping[str, object],
+    content_payload: Mapping[str, object],
+    *,
+    start_position: int,
+    resolved_session_id: str,
+) -> tuple[list[ParsedMessage], ParsedSessionEvent | None, int]:
+    """Parse one assistant turn's ``contentBlocks`` into ParsedMessage(s).
+
+    ``user_interjection`` (a user message nested inside the assistant turn)
+    is NOT flattened into an ordinary same-position user message -- that
+    would destroy the interruption semantics and physical ordering (bd
+    polylogue-tbun AC4). Instead the turn's blocks are split at the
+    interjection boundary into separate ParsedMessage segments with
+    incrementing positions, so the interjection lands as a real ``role=user``
+    message physically between the two half-turns.
+    """
+    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or f"design-{start_position}")
+    raw_blocks_value = content_payload.get("contentBlocks")
+    raw_blocks = raw_blocks_value if isinstance(raw_blocks_value, list) else []
+    has_interjection = any(
+        isinstance(block, Mapping)
+        and block.get("type") == "user_interjection"
+        and isinstance(block.get("message"), Mapping)
+        for block in raw_blocks
+    )
+    timestamp = content_payload.get("timestamp")
+    timestamp_str = str(timestamp) if isinstance(timestamp, str) and timestamp else None
+    turn_input_tokens = content_payload.get("turnInputTokens")
+
+    messages: list[ParsedMessage] = []
+    position = start_position
+    current_blocks: list[ParsedContentBlock] = []
+    segment_index = 0
+    # turn-level facts (turnInputTokens) are attributed to the FIRST emitted
+    # segment of the turn -- an arbitrary but documented single anchor point,
+    # since the count describes the whole turn, not any one segment.
+    first_segment_emitted = False
+
+    def flush() -> None:
+        nonlocal current_blocks, segment_index, position, first_segment_emitted
+        if not current_blocks:
+            return
+        provider_message_id = f"{message_uuid}#{segment_index}" if has_interjection else message_uuid
+        text_parts = [
+            block.text for block in current_blocks if block.type is BlockType.TEXT and not block.is_error and block.text
+        ]
+        input_tokens = 0
+        if not first_segment_emitted and isinstance(turn_input_tokens, int):
+            input_tokens = turn_input_tokens
+        first_segment_emitted = True
         messages.append(
             ParsedMessage(
-                provider_message_id=str(message_id),
-                role=Role.normalize(str(raw_role or "unknown")),
-                text=text,
-                timestamp=str(content_payload.get("timestamp") or raw_message.get("created_at"))
-                if content_payload.get("timestamp") or raw_message.get("created_at")
-                else None,
-                blocks=[
-                    ParsedContentBlock(
-                        type=BlockType.TEXT,
-                        text=text,
-                        web_constructs=[
-                            ParsedWebConstruct(
-                                construct_type=WebConstructType.CANVAS,
-                                provider_key="claude_design_chat",
-                                title=_design_project_title(payload.get("project")),
-                                source_id=(
-                                    str(content_payload.get("id"))
-                                    if content_payload.get("id") is not None
-                                    else _design_project_id(payload.get("project"))
-                                ),
-                            )
-                        ],
-                    )
-                ],
+                provider_message_id=provider_message_id,
+                role=Role.ASSISTANT,
+                text="\n".join(text_parts) if text_parts else None,
+                timestamp=timestamp_str,
+                blocks=list(current_blocks),
                 position=position,
                 variant_index=0,
                 is_active_path=True,
+                input_tokens=input_tokens,
             )
         )
-        raw_attachments = content_payload.get("attachments")
-        design_attachments = raw_attachments if isinstance(raw_attachments, list) else []
-        for att_idx, meta in enumerate(design_attachments, start=1):
-            attachment = attachment_from_meta(meta, str(message_id), att_idx)
-            if attachment:
-                attachments.append(attachment)
+        position += 1
+        segment_index += 1
+        current_blocks = []
+
+    for raw_block in raw_blocks:
+        if not isinstance(raw_block, Mapping):
+            continue
+        block_type = raw_block.get("type")
+        if block_type not in _DESIGN_KNOWN_BLOCK_TYPES:
+            logger.warning(
+                "claude-design %s: unrecognized contentBlocks type %r, dropping block",
+                resolved_session_id,
+                block_type,
+            )
+            continue
+        if block_type == "text":
+            text = raw_block.get("text")
+            if isinstance(text, str) and text:
+                current_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
+        elif block_type == "thinking":
+            text = raw_block.get("text")
+            if isinstance(text, str) and text:
+                current_blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=text))
+        elif block_type == "tool_call":
+            tool_call = raw_block.get("toolCall")
+            if isinstance(tool_call, Mapping):
+                current_blocks.extend(_design_tool_call_blocks(tool_call))
+        elif block_type == "error":
+            # The model refused to respond -- first-class error content (bd
+            # polylogue-tbun), not silently dropped. No dedicated ERROR
+            # BlockType exists; TEXT + is_error mirrors the established
+            # unrecognized-block-shape-to-text mapping in drive_support_blocks.py.
+            message_text = raw_block.get("message")
+            current_blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TEXT,
+                    text=str(message_text) if message_text is not None else "",
+                    is_error=True,
+                    metadata={"kind": "model_refusal"},
+                )
+            )
+        elif block_type == "user_interjection":
+            interjection_message = raw_block.get("message")
+            if not isinstance(interjection_message, Mapping):
+                logger.warning(
+                    "claude-design %s: user_interjection block with no nested message, dropping",
+                    resolved_session_id,
+                )
+                continue
+            flush()
+            interjection_id = str(interjection_message.get("id") or f"{message_uuid}-interjection-{position}")
+            interjection_text = interjection_message.get("content")
+            interjection_timestamp = interjection_message.get("timestamp")
+            messages.append(
+                ParsedMessage(
+                    provider_message_id=interjection_id,
+                    role=Role.normalize(str(interjection_message.get("role") or "user")),
+                    text=str(interjection_text) if isinstance(interjection_text, str) and interjection_text else None,
+                    timestamp=str(interjection_timestamp) if isinstance(interjection_timestamp, str) else None,
+                    position=position,
+                    is_active_path=True,
+                )
+            )
+            position += 1
+    flush()
+
+    turn_changes = content_payload.get("turnChanges")
+    session_event: ParsedSessionEvent | None = None
+    if isinstance(turn_changes, Mapping) and messages:
+        # Per-turn materialized filesystem diff -- nothing else in the
+        # archive records what a turn changed on disk (bd polylogue-tbun).
+        # Modeled as a session_event (payload_json), the same mechanism this
+        # module already uses for claude_ai_conversation_summary/
+        # claude_ai_web_tool_evidence -- turn-scoped structured evidence is
+        # exactly what session_events already models; no new construct type
+        # or table is needed.
+        session_event = ParsedSessionEvent(
+            event_type="claude_design_turn_changes",
+            timestamp=timestamp_str,
+            payload={
+                "created": turn_changes.get("created") if isinstance(turn_changes.get("created"), list) else [],
+                "edited": turn_changes.get("edited") if isinstance(turn_changes.get("edited"), list) else [],
+                "deleted": turn_changes.get("deleted") if isinstance(turn_changes.get("deleted"), list) else [],
+                "moved": turn_changes.get("moved") if isinstance(turn_changes.get("moved"), list) else [],
+            },
+            source_message_provider_id=messages[0].provider_message_id,
+        )
+
+    return messages, session_event, position
+
+
+def _design_user_message(
+    raw_message: Mapping[str, object],
+    content_payload: Mapping[str, object],
+    *,
+    position: int,
+) -> tuple[ParsedMessage, list[ParsedAttachment], ParsedSessionEvent | None]:
+    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or f"design-{position}")
+    text = content_payload.get("content")
+    timestamp = content_payload.get("timestamp")
+    author_name = content_payload.get("authorName")
+    author_account_uuid = content_payload.get("authorAccountUuid")
+
+    attachments: list[ParsedAttachment] = []
+    raw_attachments = content_payload.get("attachments")
+    for index, meta in enumerate(raw_attachments if isinstance(raw_attachments, list) else [], start=1):
+        attachment = _design_attachment_from_meta(meta, message_uuid, index)
+        if attachment is not None:
+            attachments.append(attachment)
+
+    sender_name = str(author_name) if isinstance(author_name, str) and author_name else None
+    timestamp_str = str(timestamp) if isinstance(timestamp, str) and timestamp else None
+    message = ParsedMessage(
+        provider_message_id=message_uuid,
+        role=Role.USER,
+        text=str(text) if isinstance(text, str) and text else None,
+        timestamp=timestamp_str,
+        sender_name=sender_name,
+        position=position,
+        is_active_path=True,
+    )
+
+    session_event: ParsedSessionEvent | None = None
+    if isinstance(author_account_uuid, str) and author_account_uuid:
+        # Named multi-account authorship -- absent from ordinary claude.ai
+        # exports (bd polylogue-tbun). sender_name alone loses the account
+        # uuid, the actual disambiguator across accounts.
+        session_event = ParsedSessionEvent(
+            event_type="claude_design_message_author",
+            timestamp=timestamp_str,
+            payload={"author_account_uuid": author_account_uuid, "author_name": sender_name},
+            source_message_provider_id=message_uuid,
+        )
+
+    return message, attachments, session_event
+
+
+def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
+    resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
+    raw_messages = payload.get("messages")
+    design_messages = raw_messages if isinstance(raw_messages, list) else []
+
+    messages: list[ParsedMessage] = []
+    attachments: list[ParsedAttachment] = []
+    session_events: list[ParsedSessionEvent] = []
+    position = 0
+    for raw_message in design_messages:
+        if not isinstance(raw_message, Mapping):
+            continue
+        content_payload = raw_message.get("content")
+        if not isinstance(content_payload, Mapping):
+            logger.warning("claude-design %s: message with non-dict content, dropping", resolved_session_id)
+            continue
+        role = raw_message.get("role") or content_payload.get("role")
+        if role == "user":
+            message, message_attachments, author_event = _design_user_message(
+                raw_message, content_payload, position=position
+            )
+            messages.append(message)
+            attachments.extend(message_attachments)
+            if author_event is not None:
+                session_events.append(author_event)
+            position += 1
+        elif role == "assistant":
+            segment_messages, turn_event, position = _design_assistant_messages(
+                raw_message,
+                content_payload,
+                start_position=position,
+                resolved_session_id=resolved_session_id,
+            )
+            messages.extend(segment_messages)
+            if turn_event is not None:
+                session_events.append(turn_event)
+        else:
+            logger.warning(
+                "claude-design %s: unrecognized message role %r, dropping message", resolved_session_id, role
+            )
+
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
         messages = [
@@ -157,12 +425,12 @@ def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> Parse
             )
             for message in messages
         ]
-    resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
+
     title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
-        payload, resolved_session_id, ref_prefix="claude-ai-design-title"
+        payload, resolved_session_id, ref_prefix="claude-design-title"
     )
     return ParsedSession(
-        source_name=Provider.CLAUDE_AI,
+        source_name=Provider.CLAUDE_DESIGN,
         provider_session_id=resolved_session_id,
         title=str(title),
         title_source=title_source,
@@ -174,8 +442,85 @@ def _parse_design_chat(payload: Mapping[str, object], fallback_id: str) -> Parse
         messages=messages,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         attachments=attachments,
-        ingest_flags=_session_ingest_flags(payload, design_chat=True),
+        session_events=session_events,
     )
+
+
+# ---------------------------------------------------------------------------
+# claude.ai account memory (bd polylogue-zng9)
+# ---------------------------------------------------------------------------
+
+
+def parse_memories(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
+    """Parse one account's ``memories.json`` record into a synthetic session.
+
+    ``memories.json`` carries no session identity (no message list, no
+    conversation uuid) -- it is Claude's own standing summary of the user
+    across every conversation, refreshed on each export. Represented as a
+    session-scoped construct rather than a durable ``user.db`` assertion:
+    it is provider-reported evidence re-derived on every export (like any
+    other raw session content), not a user-authored annotation, so it
+    belongs in the same rebuildable tier as everything else this parser
+    produces. ``provider_session_id`` is deterministic
+    (``account-memory:<account_uuid>``) so re-import updates the same
+    session in place -- idempotent via the existing content-hash mechanism,
+    the same as every other origin.
+    """
+    account_uuid = str(payload.get("account_uuid") or fallback_id)
+    messages: list[ParsedMessage] = []
+    position = 0
+
+    conversations_memory = payload.get("conversations_memory")
+    if isinstance(conversations_memory, str) and conversations_memory.strip():
+        messages.append(
+            ParsedMessage(
+                provider_message_id="conversations",
+                role=Role.SYSTEM,
+                text=conversations_memory,
+                material_origin=MaterialOrigin.GENERATED_CONTEXT_PACK,
+                position=position,
+                is_active_path=True,
+            )
+        )
+        position += 1
+
+    project_memories = payload.get("project_memories")
+    if isinstance(project_memories, Mapping):
+        for project_uuid in sorted(str(key) for key in project_memories):
+            memory_text = project_memories.get(project_uuid)
+            if not isinstance(memory_text, str) or not memory_text.strip():
+                continue
+            messages.append(
+                ParsedMessage(
+                    provider_message_id=f"project:{project_uuid}",
+                    role=Role.SYSTEM,
+                    text=memory_text,
+                    material_origin=MaterialOrigin.GENERATED_CONTEXT_PACK,
+                    position=position,
+                    is_active_path=True,
+                )
+            )
+            position += 1
+
+    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    if active_leaf_message_provider_id is not None:
+        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
+
+    return ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id=f"account-memory:{account_uuid}",
+        title="Claude AI account memory",
+        title_source=TitleSource.HEURISTIC,
+        session_kind=SessionKind.STANDARD,
+        messages=messages,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+        ingest_flags=[CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG],
+    )
+
+
+# ---------------------------------------------------------------------------
+# claude.ai conversation export
+# ---------------------------------------------------------------------------
 
 
 def _session_timestamp(payload: Mapping[str, object], *keys: str) -> str | None:
@@ -225,8 +570,13 @@ def _merge_session_attachments(
 
 
 def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
-    if _looks_like_design_chat(payload):
-        return _parse_design_chat(payload, fallback_id)
+    # memories.json records arrive tagged Provider.CLAUDE_AI too (bd
+    # polylogue-zng9 deliberately reuses the existing claude.ai bundle
+    # plumbing rather than adding a second Provider) -- dispatch internally
+    # on shape, the same pattern this module used for Claude Design chats
+    # before they were split into their own Origin/Provider.
+    if looks_like_claude_memories(payload):
+        return parse_memories(payload, fallback_id)
 
     raw_messages = payload.get("chat_messages")
     chat_messages = raw_messages if isinstance(raw_messages, list) else []
@@ -311,8 +661,12 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
 
 
 __all__ = [
-    "CLAUDE_DESIGN_CHAT_INGEST_FLAG",
+    "CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG",
     "CLAUDE_TEMPORARY_CHAT_INGEST_FLAG",
     "looks_like_ai",
+    "looks_like_claude_design",
+    "looks_like_claude_memories",
     "parse_ai",
+    "parse_design",
+    "parse_memories",
 ]
