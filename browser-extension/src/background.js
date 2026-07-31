@@ -289,9 +289,10 @@ async function backfillCoordinator() {
         // CaptureJob checkpoint.
         await restoreBackfillCheckpointFromReceiver(store, instanceId);
       }
+      const adapters = providerAdapters(providerPageFetch, { requirePageContext: true });
       return new BackfillCoordinator({
         store,
-        adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
+        adapters,
         receiver: (envelope, serialized) => postJson(
           "/v1/browser-captures",
           envelope,
@@ -314,16 +315,37 @@ async function backfillCoordinator() {
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
           return result;
         },
-        captureOverride: async ({ provider, nativeId, response }) => {
+        captureOverride: async ({ provider, nativeId, response, item, attribution }) => {
           if (provider !== "chatgpt") return null;
           const nativePayload = await response.json();
+          const nativePayloadBytes = new TextEncoder().encode(JSON.stringify(nativePayload)).length;
+          if (nativePayloadBytes > MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES) {
+            // Oversized: the content-script exact-capture path would either
+            // re-fetch this same huge conversation itself (its own native-
+            // fetch fallback, independent of this bridge) and return it in
+            // the chrome.tabs.sendMessage RESPONSE -- crossing this second
+            // IPC channel's size ceiling in the other direction -- or, for a
+            // pinned conversation id, skip its DOM fallback entirely and
+            // fail outright. adapters.chatgpt.normalizeCapture() builds a
+            // full-fidelity capture entirely in this process, no
+            // chrome.tabs.sendMessage involved at all.
+            return adapters.chatgpt.normalizeCapture(response, item, attribution);
+          }
           const captured = await captureProviderConversation(
             provider,
             nativeId,
             "backfill_exact_capture",
             { deferReceiver: true, nativePayload },
           );
-          return captured.envelope;
+          if (captured.envelope?.session?.turns?.length) return captured.envelope;
+          // The exact-capture path's own content-script normalizer doesn't
+          // (yet) read every content_type the bridge now preserves (e.g.
+          // `thoughts` reasoning nodes) -- rather than let that permanently
+          // no_turns-skip (and endlessly retry) a conversation the adapter
+          // path can already capture in full fidelity, fall back to it. The
+          // exact-capture DOM/live-generation enrichment is only lost for
+          // conversations it would have found nothing for anyway.
+          return adapters.chatgpt.normalizeCapture(response, item, attribution);
         },
         alarms: chrome.alarms,
         instanceId,
@@ -1671,6 +1693,75 @@ function scriptingResultTooLarge(error) {
   return /(?:result|response|message|script).{0,100}(?:too large|exceed(?:s|ed)?|maximum).{0,100}(?:size|limit|length)/.test(message);
 }
 
+// The maximum number of chunk round-trips a single chunked ChatGPT
+// conversation fetch will make, mirroring page_transport.js's
+// maxChatGptChunks -- a defensive ceiling against a malformed/adversarial
+// totalChunks value from the page context, not a fidelity limit (a real
+// conversation chunk count is bounded by its own byte size divided by the
+// bridge's per-chunk packing target).
+const MAX_PROVIDER_PAGE_CHUNKS = 64;
+
+// chrome.tabs.sendMessage (used by captureProviderConversation below to hand
+// the reassembled conversation to the content script as `nativePayload`, and
+// to receive the resulting envelope back) is a second, independent Chrome
+// extension IPC channel with its own size ceiling -- distinct from, but the
+// same order of magnitude as, chrome.scripting.executeScript's ~32 MiB
+// structured-clone result limit that page_transport.js's chunking budget is
+// built around. Before the chunking fix, `nativePayload` was implicitly
+// capped at the old single-shot bridge's ~24 MiB projection limit; removing
+// that ceiling from the bridge itself must not silently remove it from this
+// second channel too.
+const MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES = 24 * 1024 * 1024;
+
+async function runProviderPageScript(transport, request) {
+  const executions = await withTimeout(
+    chrome.scripting.executeScript({
+      target: { tabId: transport.tab.id },
+      world: "MAIN",
+      func: executeProviderPageRequest,
+      args: [request],
+    }),
+    BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+    "backfill_page_request",
+  );
+  return executions?.[0]?.result;
+}
+
+// Reassembles a chunked ChatGPT conversation projection (see
+// page_transport.js's buildChatGptChunks/compactChatGptConversation) by
+// re-invoking the MAIN-world bridge once per remaining chunk and merging
+// each chunk's node-aligned `mapping` slice into one full-fidelity mapping.
+// Each individual scripting-result call stays under the bridge's per-call
+// byte cap; the reassembled conversation here in the extension process has
+// no such cap, so overall fidelity never depends on conversation size.
+async function reassembleChunkedChatGptConversation(transport, request, firstResult) {
+  const firstBody = JSON.parse(firstResult.response.body);
+  if (!firstBody.chunked) return firstResult;
+  const totalChunks = Number(firstBody.totalChunks);
+  if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > MAX_PROVIDER_PAGE_CHUNKS) {
+    throw new Error(`backfill_bridge_projection_too_many_chunks:total_chunks=${firstBody.totalChunks}`);
+  }
+  const mapping = { ...firstBody.mapping };
+  for (let chunkIndex = 1; chunkIndex < totalChunks; chunkIndex += 1) {
+    const chunkResult = await runProviderPageScript(transport, { ...request, params: { ...request.params, chunkIndex } });
+    if (!chunkResult?.ok) throw new Error(String(chunkResult?.error || "backfill_page_request_failed"));
+    const chunkBody = JSON.parse(chunkResult.response.body);
+    if (chunkBody.totalChunks !== totalChunks) {
+      throw new Error(`backfill_bridge_chunk_manifest_mismatch:expected_total=${totalChunks};observed_total=${chunkBody.totalChunks}`);
+    }
+    Object.assign(mapping, chunkBody.mapping);
+  }
+  const header = { ...firstBody };
+  delete header.chunked;
+  delete header.chunkIndex;
+  delete header.totalChunks;
+  delete header.mapping;
+  return {
+    ok: true,
+    response: { ...firstResult.response, body: JSON.stringify({ ...header, mapping }) },
+  };
+}
+
 async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
   const request = providerRequestFromUrl(url);
@@ -1679,17 +1770,10 @@ async function providerPageFetch(url, options = {}) {
     const transport = await providerTab(request.provider);
     let result;
     try {
-      const executions = await withTimeout(
-        chrome.scripting.executeScript({
-          target: { tabId: transport.tab.id },
-          world: "MAIN",
-          func: executeProviderPageRequest,
-          args: [request],
-        }),
-        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-        "backfill_page_request",
-      );
-      result = executions?.[0]?.result;
+      result = await runProviderPageScript(transport, request);
+      if (result?.ok && request.operation === "conversation" && result.response?.ok) {
+        result = await reassembleChunkedChatGptConversation(transport, request, result);
+      }
     } catch (error) {
       if (transport.owned) {
         await chrome.tabs.remove(transport.tab.id).catch(() => undefined);

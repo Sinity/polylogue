@@ -367,10 +367,15 @@ describe("background backfill coordinator", () => {
     expect(receiver).toHaveBeenCalledTimes(1);
   });
 
-  it("consumes the bounded ChatGPT bridge projection as an honest compact capture", async () => {
+  it("consumes the bounded ChatGPT bridge projection as an honest full-fidelity capture", async () => {
+    // The bridge (page_transport.js) no longer emits a lossy "compact"
+    // projection at all -- every ChatGPT capture that reaches the receiver
+    // is native_full, because content/metadata field-dropping was replaced
+    // with chunking (see page_transport.test.js). captureFidelity here is
+    // no longer a function of the wire tag; it is unconditionally native_full.
     const adapter = new ChatGptBackfillAdapter();
     const capture = await adapter.normalizeCapture(response({
-      polylogue_bridge_projection: "chatgpt-native-compact-v1",
+      polylogue_bridge_projection: "chatgpt-native-bridge-v1",
       id: "compact-one",
       title: "Compact one",
       create_time: 1710000000,
@@ -391,21 +396,21 @@ describe("background backfill coordinator", () => {
     }), { native_id: "compact-one", title: "Compact one", updated_at: "2026-07-01T00:00:00Z" }, { job_id: "job", queue_id: "queue", instance_id: "worker" });
 
     expect(capture).toMatchObject({
-      raw_provider_payload: { polylogue_bridge_projection: "chatgpt-native-compact-v1" },
-      provider_meta: { capture_fidelity: "native_compact" },
-      session: { provider_meta: { capture_fidelity: "native_compact" }, turns: [{ text: "retained text" }] },
+      raw_provider_payload: { polylogue_bridge_projection: "chatgpt-native-bridge-v1" },
+      provider_meta: { capture_fidelity: "native_full" },
+      session: { provider_meta: { capture_fidelity: "native_full" }, turns: [{ text: "retained text" }] },
     });
   });
 
-  it("preserves compact-capture fidelity after the receiver acknowledges it", async () => {
+  it("reports native_full capture fidelity after the receiver acknowledges a chunk-eligible ChatGPT bridge projection", async () => {
     const adapter = new FixtureAdapter(["compact-one"]);
-    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-compact-v1" })];
+    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-bridge-v1" })];
     const h = harness({ adapter });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
 
-    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_compact" }]);
+    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_full" }]);
   });
 
   it("submits the exact capture override through the ordinary receiver path", async () => {
@@ -960,6 +965,60 @@ describe("provider adapter contracts", () => {
     // The tool_use block's own tool_id equals the tool_result block's
     // tool_id: constructed pairing, not reconstructed from prose.
     expect(byId["call-1"].blocks[0].tool_id).toBe(byId["result-1"].blocks[0].tool_id);
+  });
+
+  it("does not misclassify a thoughts-only ChatGPT turn as no_turns", async () => {
+    // chatGptText() used to return "" for a `thoughts` content node (its
+    // payload lives under content.thoughts, not parts/text/result), which
+    // silently dropped the turn from capture.session.turns -- a
+    // reasoning-only conversation would then look like zero turns and get
+    // skipped entirely (coordinator.js's `if (!capture.session?.turns?.length)`
+    // no_turns check), even though raw_provider_payload.mapping (the
+    // archival record) had real content all along.
+    const native = {
+      id: "gpt-reasoning-only",
+      title: "Reasoning only",
+      mapping: {
+        reasoning: {
+          parent: null,
+          message: {
+            id: "reasoning-1",
+            author: { role: "assistant" },
+            content: {
+              content_type: "thoughts",
+              thoughts: [{ summary: "Weighing options", content: "First I considered X, then Y." }],
+            },
+            create_time: 1,
+          },
+        },
+      },
+    };
+    const adapter = new ChatGptBackfillAdapter(vi.fn());
+    const capture = await adapter.normalizeCapture(response(native), { native_id: "gpt-reasoning-only", title: "Reasoning only" }, {});
+
+    expect(capture.session.turns).toHaveLength(1);
+    expect(capture.session.turns[0].text).toBe("First I considered X, then Y.");
+    expect(capture.session.turns[0].blocks).toEqual([{ type: "thinking", text: "First I considered X, then Y.", metadata: { content_type: "thoughts" } }]);
+  });
+
+  it("does not misclassify a thinking-only Claude turn as no_turns", async () => {
+    const body = {
+      uuid: "claude-reasoning-only",
+      name: "Reasoning only",
+      chat_messages: [
+        {
+          uuid: "message-1",
+          sender: "assistant",
+          content: [{ type: "thinking", thinking: "Considering the tradeoffs before answering." }],
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+    };
+    const adapter = new ClaudeBackfillAdapter(vi.fn(), "org-1");
+    const capture = await adapter.normalizeCapture(response(body), { native_id: "claude-reasoning-only", title: "Reasoning only" }, {});
+
+    expect(capture.session.turns).toHaveLength(1);
+    expect(capture.session.turns[0].text).toBe("Considering the tradeoffs before answering.");
   });
 
   it("classifies a recipient-addressed JSON tool call as a tool_use block", async () => {
