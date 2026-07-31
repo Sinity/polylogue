@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -25,6 +25,11 @@ def _session() -> SimpleNamespace:
     )
 
 
+def _mock_subprocess_failure(**kwargs: object) -> MagicMock:
+    """Simulate a ``cwd`` with no local git checkout (``git`` exits non-zero)."""
+    return MagicMock(returncode=1, stdout="", stderr="")
+
+
 def test_compose_context_preamble_emits_preamble() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
@@ -35,14 +40,42 @@ def test_compose_context_preamble_emits_preamble() -> None:
         return_value=[SimpleNamespace(session_id="rel-1", title="Related", terminal_state="open")]
     )
 
-    preamble = json.loads(compose_context_preamble(env, session_id="target", related_limit=3))
+    with patch("subprocess.run", side_effect=_mock_subprocess_failure):
+        preamble = json.loads(compose_context_preamble(env, session_id="target", related_limit=3))
 
     assert preamble["preamble_version"] == "1.0"
     assert preamble["session_lineage"]["logical_session_root"] == "root-1"
     assert preamble["session_lineage"]["parent_session_id"] == "parent-1"
     assert preamble["recent_related_sessions"][0]["session_id"] == "rel-1"
+    # No local git checkout at the composing cwd: falls back to the session's
+    # own recorded repo/branch metadata.
     assert preamble["project_state"]["repo"] == "https://github.com/Sinity/polylogue"
     assert preamble["project_state"]["branch"] == "master"
+
+
+def test_compose_context_preamble_git_enrichment_overrides_branch() -> None:
+    """When the composing cwd is inside a live git checkout, its current
+    branch + recent commits enrich the preamble project state (the same
+    enrichment the MCP ``context(intent="resume")`` route applies) —
+    superseding the session's possibly-stale recorded branch."""
+    env = MagicMock()
+    env.polylogue.get_session = AsyncMock(return_value=_session())
+    env.polylogue.get_session_topology = AsyncMock(return_value=None)
+    env.polylogue.find_resume_candidates = AsyncMock(return_value=[])
+
+    def _git_side_effect(args: list[str], **kwargs: object) -> MagicMock:
+        if "rev-parse" in args:
+            return MagicMock(returncode=0, stdout="feature/live-branch\n", stderr="")
+        if "log" in args:
+            return MagicMock(returncode=0, stdout="abc1234 feat: something\n", stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="")
+
+    with patch("subprocess.run", side_effect=_git_side_effect):
+        preamble = json.loads(compose_context_preamble(env, session_id="target", related_limit=3))
+
+    assert preamble["project_state"]["repo"] == "https://github.com/Sinity/polylogue"
+    assert preamble["project_state"]["branch"] == "feature/live-branch"
+    assert preamble["project_state"]["recent_commits"] == ["abc1234 feat: something"]
 
 
 def test_compose_context_preamble_includes_injectable_assertion_claims() -> None:
