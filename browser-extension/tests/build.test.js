@@ -115,7 +115,21 @@ describe("build.mjs full archive emission", () => {
     execFileSync("python3", ["-c", "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])", archive, unpacked]);
     let messageListener;
     let alarmListener;
-    let stored = { receiverBaseUrl: "http://127.0.0.1:8765", receiverAuthToken: "token" };
+    // The backfill exact-capture path (requirePairedTrustedReceiver,
+    // fix(extension): require pairing before provider capture #2983) needs a
+    // real receiver pairing, not just a configured base URL + token -- a
+    // manually-configured-but-never-paired receiver is a distinct state from
+    // the one this fixture exercises. Seed it the same way
+    // background.test.js's successful-capture fixtures do.
+    let stored = {
+      receiverBaseUrl: "http://127.0.0.1:8765",
+      receiverAuthToken: "token",
+      polylogueReceiverPairing: {
+        state: "online",
+        receiver_id: "packaged-receiver",
+        api_schema: "polylogue-browser-capture/v1",
+      },
+    };
     let sessionStored = {};
     const pageRequests = [];
     const pageFetchCalls = [];
@@ -142,7 +156,15 @@ describe("build.mjs full archive emission", () => {
         return new Response(JSON.stringify({ id: "fixture-1", mapping: { one: { message: { id: "m1", author: { role: "user" }, content: { parts: ["fixture"] } } } } }), { headers: { "Content-Type": "application/json" } });
       }),
     };
-    const ownedTabs = [];
+    // Passive/automatic backfill work is observe-only: it must find an
+    // already-open, operator-owned provider tab via chrome.tabs.query and
+    // never call chrome.tabs.create itself (fix(extension): avoid automatic
+    // provider transport tabs, #2974; background.test.js's "never creates a
+    // transport tab when passive backfill has no provider page" pins this).
+    // Seed one open ChatGPT tab up front so this fixture models that real
+    // precondition instead of a permanently empty tab list, and make
+    // chrome.tabs.query reflect it dynamically like background.test.js does.
+    const ownedTabs = [{ id: 42, url: "https://chatgpt.com/", active: true, status: "complete" }];
     const tabs = {
       create: vi.fn(async ({ url, active }) => {
         const tab = { id: 77, url, active, status: "complete" };
@@ -152,7 +174,7 @@ describe("build.mjs full archive emission", () => {
       get: vi.fn(async (tabId) => ownedTabs.find((tab) => tab.id === tabId)),
       update: vi.fn(),
       remove: vi.fn(),
-      query: vi.fn(async () => []),
+      query: vi.fn(async () => ownedTabs),
       sendMessage: vi.fn(async (_tabId, message) => {
         if (message.type !== "polylogue.capturePage") return undefined;
         return {
@@ -212,6 +234,12 @@ describe("build.mjs full archive emission", () => {
       let body;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
         return { ok: true, status: 200, headers: { get: (name) => name === "X-Request-ID" ? "packaged-capability" : null }, json: async () => ({ durable_ack_fields: ["receiver_request_id", "content_hash"] }) };
+      }
+      if (String(url).endsWith("/v1/status")) {
+        // requirePairedTrustedReceiver's health probe (ensureTrustedReceiver ->
+        // checkReceiverHealth -> GET /v1/status), matching the seeded
+        // polylogueReceiverPairing identity above.
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ok: true, receiver_id: "packaged-receiver", api_schema: "polylogue-browser-capture/v1" }) };
       }
       if (String(url).includes("/v1/backfill-checkpoint")) {
         // Best-effort ledger-checkpoint mirror/restore traffic (polylogue-06zm)
@@ -291,14 +319,16 @@ describe("build.mjs full archive emission", () => {
     const recovered = await send({ type: "polylogue.backfill.status" });
     expect(recovered.jobs[0].progress.complete).toBe(1);
     expect(pageRequests.filter((message) => message.operation === "conversation")).toHaveLength(1);
-    expect(tabs.create).toHaveBeenCalledWith({ url: "https://chatgpt.com/", active: false });
+    // The whole run rides the pre-seeded operator tab; passive backfill must
+    // never materialize its own transport tab or foreground-activate it.
+    expect(tabs.create).not.toHaveBeenCalled();
     expect(tabs.update).not.toHaveBeenCalled();
     expect(pageRequests.filter((message) => message.operation !== "identity").map((message) => message.operation))
       .toEqual(["inventory", "inventory", "inventory", "inventory", "conversation"]);
     expect(pageFetchCalls.filter((call) => call.url.pathname === "/api/auth/session").length).toBeGreaterThanOrEqual(5);
     expect(JSON.stringify(pageRequests)).not.toContain(pageToken);
     expect(JSON.stringify(pageRequests)).not.toContain(pageAccount);
-    expect(tabs.sendMessage).toHaveBeenCalledWith(77, expect.objectContaining({
+    expect(tabs.sendMessage).toHaveBeenCalledWith(42, expect.objectContaining({
       type: "polylogue.capturePage",
       reason: "backfill_exact_capture",
       providerSessionId: "fixture-1",
