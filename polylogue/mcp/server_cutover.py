@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.mcp.declarations.adapter import register_declared_handler
-from polylogue.mcp.payloads import MCPArchiveStatsPayload, MCPRootPayload, session_topology_payload
+from polylogue.mcp.payloads import (
+    MCPArchiveStatsPayload,
+    MCPContextDeliveryListPayload,
+    MCPContextDeliveryPayload,
+    MCPContextDeliverySummaryPayload,
+    MCPRootPayload,
+    session_topology_payload,
+)
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -933,6 +940,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         recent_files: tuple[str, ...] = (),
         session_id: str | None = None,
         limit: int = 5,
+        recipient_ref: str | None = None,
+        assertion_ref: str | None = None,
     ) -> str:
         """Compile a policy-gated bounded context image with receipts.
 
@@ -941,8 +950,19 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         provenance-gated assertion guidance) instead of the default
         seed-query/seed-ref context image. ``limit`` bounds the number of
         ranked resume candidates for that intent only.
+
+        Passing ``result_ref`` (a ``context-snapshot:<hash>`` ref) together
+        with ``recipient_ref`` resolves one durable context-delivery
+        receipt -- the exact image, digest, and evidence recorded when that
+        delivery crossed a boundary via ``write(operation='deliver_context')``
+        -- instead of compiling a new image. The receipt is returned only
+        when ``recipient_ref`` matches the recorded recipient; otherwise this
+        is a typed not-found, never a leaked receipt for the wrong recipient.
+        Passing ``recipient_ref`` alone (no ``result_ref``) lists bounded
+        delivery-receipt summaries for that recipient, optionally narrowed by
+        ``assertion_ref``; summaries never include the full delivered
+        content -- fetch the exact ``result_ref`` for disclosure.
         """
-        del result_ref
 
         async def run() -> str:
             if intent == "resume":
@@ -953,6 +973,33 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     cwd=cwd,
                     recent_files=recent_files,
                     related_limit=hooks.clamp_limit(limit),
+                )
+            if result_ref is not None:
+                if recipient_ref is None:
+                    return hooks.error_json(
+                        "context(result_ref=...) requires recipient_ref to resolve a delivery receipt",
+                        code="invalid_argument",
+                        tool="context",
+                    )
+                receipt = await hooks.get_polylogue().get_context_delivery(result_ref, recipient_ref=recipient_ref)
+                if receipt is None:
+                    return hooks.error_json(
+                        "no context-delivery receipt found for that result_ref/recipient_ref pair",
+                        code="not_found",
+                        tool="context",
+                    )
+                return hooks.json_payload(MCPContextDeliveryPayload.from_envelope(receipt))
+            if recipient_ref is not None:
+                receipts = await hooks.get_polylogue().list_context_deliveries(
+                    recipient_ref=recipient_ref,
+                    assertion_ref=assertion_ref,
+                    limit=hooks.clamp_limit(limit),
+                )
+                return hooks.json_payload(
+                    MCPContextDeliveryListPayload(
+                        items=tuple(MCPContextDeliverySummaryPayload.from_envelope(item) for item in receipts),
+                        total=len(receipts),
+                    )
                 )
             payload = await hooks.get_polylogue().context_image_payload(
                 query=query,
@@ -1750,6 +1797,41 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 exclude_none=True,
             )
 
+        if operation == "deliver_context":
+            recipient_ref = _require_field(hooks, fields, "recipient_ref", operation=operation)
+            delivered_by_ref = _require_field(hooks, fields, "delivered_by_ref", operation=operation)
+            boundary = _require_field(hooks, fields, "boundary", operation=operation)
+            query_field = _field(fields, "query")
+            run_ref_field = _field(fields, "run_ref")
+            inheritance_mode_field = _field(fields, "inheritance_mode")
+            max_tokens_field = _field(fields, "max_tokens")
+            max_sessions_field = _field(fields, "max_sessions")
+            include_messages_field = _field(fields, "include_messages")
+            include_assertions_field = _field(fields, "include_assertions")
+            redact_paths_field = _field(fields, "redact_paths")
+            try:
+                envelope = await poly.compile_and_record_context(
+                    recipient_ref=recipient_ref,
+                    delivered_by_ref=delivered_by_ref,
+                    boundary=boundary,
+                    query=query_field if isinstance(query_field, str) else None,
+                    seed_session_id=session_id,
+                    max_tokens=int(max_tokens_field) if isinstance(max_tokens_field, int | float) else None,
+                    max_sessions=int(max_sessions_field) if isinstance(max_sessions_field, int | float) else 5,
+                    include_messages=(bool(include_messages_field) if include_messages_field is not None else True),
+                    include_assertions=(
+                        bool(include_assertions_field) if include_assertions_field is not None else True
+                    ),
+                    redact_paths=bool(redact_paths_field) if redact_paths_field is not None else True,
+                    run_ref=run_ref_field if isinstance(run_ref_field, str) else None,
+                    inheritance_mode=(
+                        inheritance_mode_field if isinstance(inheritance_mode_field, str) else "explicit"
+                    ),
+                )
+            except ValueError as exc:
+                return hooks.error_json(str(exc), code="invalid_context_delivery", tool="write")
+            return hooks.json_payload(MCPContextDeliveryPayload.from_envelope(envelope))
+
         return hooks.error_json(f"unknown write operation: {operation!r}", code="invalid_argument")
     except _WriteFieldError as exc:
         return exc.payload
@@ -2018,6 +2100,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                 "delete_workspace",
                 "record_correction",
                 "clear_corrections",
+                "deliver_context",
             ],
             session_id: str | None = None,
             session_ids: list[str] | None = None,
@@ -2035,6 +2118,14 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             operation-specific value beyond those (see each operation's
             retired single-purpose tool for the exact field names, e.g.
             ``fields={"mark_type": "star"}`` for ``add_mark``).
+            ``deliver_context`` compiles a bounded context image and records
+            its exact durable delivery receipt; requires
+            ``fields={"recipient_ref": ..., "delivered_by_ref": ...,
+            "boundary": ...}`` (``query``/``run_ref``/``max_tokens``/etc. are
+            optional compilation inputs in ``fields``, ``session_id`` seeds
+            the compiled session). Replaying an identical request is
+            idempotent; drift in the delivered identity is rejected. Fetch
+            the receipt back through ``context(result_ref=..., recipient_ref=...)``.
 
             Destructive operations require ``confirm=True`` and fail closed
             without it: ``delete_session``, ``remove_tag``, ``remove_mark``,

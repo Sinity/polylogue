@@ -752,6 +752,7 @@ Prompts: `cost_of`.
 - `grok-export` — Grok conversation exports.
 - `chatgpt-export` — ChatGPT web/data exports.
 - `claude-ai-export` — Claude web/data exports.
+- `claude-design-session` — Claude Design agentic chat sessions.
 - `aistudio-drive` — Google AI Studio or Drive/Takeout conversation exports.
 - `unknown-export` — Imported material whose provider/source could not be classified reliably.
 

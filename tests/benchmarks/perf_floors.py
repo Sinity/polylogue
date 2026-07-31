@@ -47,6 +47,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-196x nightly perf-floors runner stamps its measurement report with the real wall-clock generation time (machine fingerprint metadata for the committed floors artifact); a frozen clock would misdate every real nightly run."
+)
+
 REPORT_VERSION = 1
 DEFAULT_FLOORS_PATH = Path(__file__).parent / "floors.json"
 DEFAULT_TOLERANCE_PCT = 35.0

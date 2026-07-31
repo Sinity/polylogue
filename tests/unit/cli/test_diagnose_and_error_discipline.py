@@ -30,6 +30,8 @@ from polylogue.cli.parser_diagnostics import (
     looks_like_subcommand_typo,
 )
 
+pytestmark = pytest.mark.uses_real_clock("Measures real subprocess startup latency for the diagnose CLI surface.")
+
 
 @pytest.fixture
 def runner() -> CliRunner:

@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6954
+    loc: 6820
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -184,7 +184,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/support.py
-    loc: 173
+    loc: 197
     target: polylogue/archive/artifact_taxonomy/support.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -827,7 +827,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 215
+    loc: 213
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -865,10 +865,6 @@ files:
   - path: polylogue/cli/commands/check.py
     loc: 116
     target: polylogue/cli/commands/check.py
-    owner: stable
-  - path: polylogue/cli/commands/compare.py
-    loc: 207
-    target: polylogue/cli/commands/compare.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
     loc: 107
@@ -1035,7 +1031,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2415
+    loc: 2467
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1539,7 +1535,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2867
+    loc: 2869
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1559,7 +1555,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 2028
+    loc: 2040
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
@@ -1610,12 +1606,16 @@ files:
     loc: 168
     target: polylogue/daemon/fts_identity_convergence.py
     owner: stable
+  - path: polylogue/daemon/fts_orphan_audit.py
+    loc: 197
+    target: polylogue/daemon/fts_orphan_audit.py
+    owner: stable
   - path: polylogue/daemon/fts_startup.py
     loc: 472
     target: polylogue/daemon/fts_startup.py
     owner: stable
   - path: polylogue/daemon/fts_status.py
-    loc: 530
+    loc: 524
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
@@ -2024,10 +2024,6 @@ files:
     loc: 143
     target: polylogue/insights/measurement/ratio.py
     owner: stable
-  - path: polylogue/insights/measurement/registered_metrics.py
-    loc: 57
-    target: polylogue/insights/measurement/registered_metrics.py
-    owner: stable
   - path: polylogue/insights/measurement/registration.py
     loc: 107
     target: polylogue/insights/measurement/registration.py
@@ -2310,11 +2306,11 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_cutover.py
-    loc: 2217
+    loc: 2049
     target: polylogue/mcp/server_cutover.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
-    loc: 564
+    loc: 563
     target: polylogue/mcp/server_prompts.py
     owner: stable
   - path: polylogue/mcp/server_resources.py
@@ -3396,7 +3392,7 @@ files:
     target: polylogue/sources/parsers/claude/ai_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_detection.py
-    loc: 36
+    loc: 59
     target: polylogue/sources/parsers/claude/code_detection.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_parser.py
@@ -3528,7 +3524,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 1769
+    loc: 1821
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3713,7 +3709,7 @@ files:
     target: polylogue/storage/fts/freshness.py
     owner: stable
   - path: polylogue/storage/fts/fts_lifecycle.py
-    loc: 1209
+    loc: 1221
     target: polylogue/storage/fts/fts_lifecycle.py
     owner: stable
   - path: polylogue/storage/fts/pl_fold.py
@@ -4033,7 +4029,7 @@ files:
     target: polylogue/storage/search/query_support.py
     owner: stable
   - path: polylogue/storage/search/runtime.py
-    loc: 218
+    loc: 216
     target: polylogue/storage/search/runtime.py
     owner: stable
   - path: polylogue/storage/search_providers/__init__.py
@@ -4212,7 +4208,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 2608
+    loc: 2539
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
@@ -4446,7 +4442,7 @@ files:
     owner: stable
     cross_cut: { layer: read }
   - path: polylogue/storage/sqlite/queries/sessions_search.py
-    loc: 141
+    loc: 139
     target: polylogue/storage/sqlite/queries/sessions_search.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/sessions_writes.py

@@ -53,6 +53,10 @@ from tests.infra.strategies import (
     validation_case_strategy,
 )
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Resilience harness sets acquired_at to now() as opaque metadata; no production timing comparison."
+)
+
 SessionJson = dict[str, JSONValue]
 
 

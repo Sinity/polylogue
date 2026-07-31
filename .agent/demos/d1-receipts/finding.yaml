@@ -1,0 +1,6 @@
+archive_cursor: "live-archive:/realm/db/polylogue (read-only, file:...?mode=ro)"
+measure_version: demo-packet-v2
+commit_sha: 59744a30bf461a587cc679ee62a432e8cd2cf82a
+sample_frame_predicate: "session_refs WHERE kind='pull_request' AND repo='Sinity/polylogue' AND ref_number=3282, resolving to claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc"
+run_date: "2026-07-31"
+claim: "session_refs typed pull_request evidence resolves a real merged PR to its authoring/dispatch session, and specific PR-body verification sentences can be checked against that session's own recorded blocks -- with unsupported claims marked as such, not silently believed"

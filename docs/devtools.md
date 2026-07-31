@@ -188,7 +188,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
 | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
-| `devtools verify test-clock-hygiene` | Verify test files use the frozen_clock fixture instead of reading the host wall clock (#1300). |
 | `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
 | `devtools verify topology` | Verify the realized polylogue tree against the topology projection. |
 

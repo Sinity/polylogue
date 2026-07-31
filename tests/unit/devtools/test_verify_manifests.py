@@ -3,10 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from pytest import MonkeyPatch
 
 from devtools import verify_manifests
 from devtools.verify_ci_workflows import WorkflowFacts, WorkflowInventory
+
+pytestmark = pytest.mark.uses_real_clock(
+    "Manifest-suppression expiry checks intentionally read the host date to validate the live policy decision."
+)
 
 
 def test_coverage_gap_manifest_records_require_closure_path(tmp_path: Path) -> None:

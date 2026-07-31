@@ -358,6 +358,51 @@ def make_embed_stage(db_path: Path, *, defer: Callable[[], bool] | None = None) 
 
 # ── Stage: Claude Workflow evidence ──────────────────────────────
 
+_CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT = 20
+
+
+def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> None:
+    """Persist the materialization summary so a readiness surface can read it.
+
+    ``materialize_claude_workflow_archive`` returns a fresh
+    ``ClaudeWorkflowMaterializationSummary`` every convergence pass; without
+    this it was logged once and discarded. Recorded into the disposable
+    ``ops.db`` tier via the existing generic ``daemon_stage_events`` table (no
+    schema change) so ``polylogue doctor`` / archive readiness can report the
+    current gap count instead of only a log line.
+    """
+    gaps = tuple(getattr(summary, "gaps", ()))
+    payload: dict[str, object] = {
+        "run_count": getattr(summary, "run_count", 0),
+        "call_count": getattr(summary, "call_count", 0),
+        "attempt_count": getattr(summary, "attempt_count", 0),
+        "linked_session_count": getattr(summary, "linked_session_count", 0),
+        "unresolved_call_count": getattr(summary, "unresolved_call_count", 0),
+        "gap_count": len(gaps),
+        "gaps": list(gaps[:_CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT]),
+    }
+    status = "gaps" if gaps else "clean"
+    try:
+        from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+        from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+
+        ops_db = archive_root / "ops.db"
+        ops_db.parent.mkdir(parents=True, exist_ok=True)
+        with open_daemon_connection(ops_db, timeout=30.0) as conn:
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            record_daemon_stage_event(
+                conn,
+                stage=CLAUDE_WORKFLOW_STAGE_NAME,
+                status=status,
+                observed_at_ms=int(time.time() * 1000),
+                payload=payload,
+            )
+    except Exception:
+        logger.warning("claude-workflow: failed to record materialization stage event", exc_info=True)
+
 
 def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
     """Rebuild Claude Workflow graphs after any admitted family member changes."""
@@ -398,6 +443,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
                 summary.attempt_count,
                 len(summary.gaps),
             )
+            _record_claude_workflow_stage_event(archive_root(), summary)
             return True
         except Exception:
             logger.warning("claude-workflow: materialization failed", exc_info=True)

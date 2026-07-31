@@ -21,6 +21,10 @@ from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_provider_export
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Schema validator timestamp parsing uses a real now to assert lenient ISO parsing."
+)
+
 if TYPE_CHECKING:
     from polylogue.config import Source
 

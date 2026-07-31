@@ -148,6 +148,7 @@ convergence stages.
 |----------|-------------|--------|
 | ChatGPT | `mapping` dict with message graph | `sources/parsers/chatgpt.py` |
 | Claude web | `chat_messages` list | `sources/parsers/claude/ai_parser.py` |
+| Claude Design | `messages` + `project` keys, no `chat_messages` (camelCase `contentBlocks` wire shape) | `sources/parsers/claude/ai_parser.py` |
 | Claude Code | `parentUuid`/`sessionId` in record array | `sources/parsers/claude/code_parser.py` (code path) |
 | Codex | Session envelope structure | `sources/parsers/codex.py` |
 | Gemini | `chunkedPrompt.chunks` structure | `sources/parsers/drive.py` |

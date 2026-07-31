@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from hypothesis import given, settings
 
 from polylogue.core.timestamps import parse_timestamp
@@ -31,6 +32,8 @@ from tests.infra.large_batches import (
     write_jsonl_with_bad_utf8,
 )
 from tests.infra.strategies import malformed_json_strategy
+
+pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at is opaque metadata.")
 
 TimestampInput = str | int | float | None
 

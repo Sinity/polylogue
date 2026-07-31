@@ -12,7 +12,21 @@ reproduces exactly that silent-loss bug.
 from __future__ import annotations
 
 from polylogue.core.enums import TitleSource
+from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude import parse_code
+
+# polylogue-pbuh AC5: every parse now also emits one bounded
+# ``claude_parse_coverage`` event per session (seen/persisted counts by
+# record type). It is orthogonal to the specific-record-type behavior each
+# test below pins, so the assertions here look through it rather than
+# hard-coding it into every expected event list -- see
+# ``test_parse_coverage_event_reports_seen_and_persisted_counts`` for the
+# dedicated coverage-event test.
+_COVERAGE_EVENT_TYPE = "claude_parse_coverage"
+
+
+def _typed_events(session: ParsedSession) -> list[ParsedSessionEvent]:
+    return [e for e in session.session_events if e.event_type != _COVERAGE_EVENT_TYPE]
 
 
 def test_ai_title_wins_session_title_over_uuid_fallback() -> None:
@@ -75,7 +89,7 @@ def test_agent_name_persists_as_typed_event() -> None:
         [{"type": "agent-name", "sessionId": "sess-agent", "agentName": "orchestration-docs-6np"}],
         "sess-agent",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         ("claude_agent_name", {"agent_name": "orchestration-docs-6np", "summary": "orchestration-docs-6np"})
     ]
@@ -132,7 +146,7 @@ def test_pr_link_persists_typed_pr_fields() -> None:
         ],
         "sess-pr",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
             "claude_pr_link",
@@ -158,7 +172,7 @@ def test_bridge_session_persists_cross_session_link() -> None:
         ],
         "sess-bridge",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
             "claude_bridge_session",
@@ -192,7 +206,7 @@ def test_file_history_snapshot_persists_tracked_file_count() -> None:
         ],
         "sess-fhs",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
             "claude_file_history_snapshot",
@@ -217,7 +231,7 @@ def test_permission_mode_persists_operational_signal() -> None:
         [{"type": "permission-mode", "sessionId": "sess-perm", "permissionMode": "bypassPermissions"}],
         "sess-perm",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         ("claude_permission_mode", {"permission_mode": "bypassPermissions", "summary": "bypassPermissions"})
     ]
@@ -228,7 +242,7 @@ def test_last_prompt_persists_resume_continuity_signal() -> None:
         [{"type": "last-prompt", "sessionId": "sess-lp", "lastPrompt": "hello world."}],
         "sess-lp",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [("claude_last_prompt", {"last_prompt": "hello world.", "summary": "hello world."})]
 
 
@@ -254,7 +268,7 @@ def test_queue_operation_enqueue_persists_content_dequeue_does_not() -> None:
         ],
         "sess-queue",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
             "claude_queue_operation",
@@ -282,7 +296,7 @@ def test_attachment_file_subtype_gets_its_own_event_type() -> None:
         ],
         "sess-att",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
             "claude_attachment_file",
@@ -309,7 +323,7 @@ def test_attachment_hook_subtypes_share_one_event_type() -> None:
         ],
         "sess-hook",
     )
-    event_types = [e.event_type for e in parsed.session_events]
+    event_types = [e.event_type for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert event_types == ["claude_hook_event", "claude_hook_event"]
 
 
@@ -328,7 +342,7 @@ def test_attachment_queued_command_reuses_queue_operation_event_type() -> None:
         ],
         "sess-queue",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_queue_operation",
@@ -358,7 +372,7 @@ def test_attachment_transient_subtype_emits_no_event() -> None:
         ],
         "sess-transient",
     )
-    assert parsed.session_events == []
+    assert [e for e in parsed.session_events if e.event_type != "claude_parse_coverage"] == []
 
 
 def test_attachment_unrecognized_subtype_fails_loud() -> None:
@@ -375,7 +389,7 @@ def test_attachment_unrecognized_subtype_fails_loud() -> None:
         ],
         "sess-unknown",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_attachment_unclassified",
@@ -401,7 +415,7 @@ def test_attachment_deferred_tools_delta_drops_body_text_keeps_names() -> None:
         ],
         "sess-delta",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_capability_delta",
@@ -430,7 +444,7 @@ def test_attachment_skill_listing_extracts_names_not_full_text() -> None:
         ],
         "sess-skills",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_capability_snapshot",
@@ -467,7 +481,7 @@ def test_attachment_diagnostics_bounds_to_per_file_counts() -> None:
         ],
         "sess-diag",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in parsed.session_events if e.event_type != "claude_parse_coverage"]
     assert events == [
         (
             "claude_diagnostics",
@@ -549,7 +563,7 @@ def test_progress_bash_progress_and_hook_progress_stay_transient() -> None:
         },
     ]
     parsed = parse_code(records, "sess-bash")
-    assert parsed.session_events == []
+    assert _typed_events(parsed) == []
     assert parsed.messages == []
 
 
@@ -587,7 +601,7 @@ def test_file_history_delta_persists_tracking_path() -> None:
         ],
         "sess-delta",
     )
-    events = [(e.event_type, e.payload) for e in parsed.session_events]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
         (
             "claude_file_history_delta",
@@ -763,5 +777,55 @@ def test_init_and_mode_records_produce_no_events_or_messages() -> None:
         ],
         "sess-init",
     )
-    assert parsed.session_events == []
+    assert _typed_events(parsed) == []
     assert parsed.messages == []
+
+
+def test_parse_coverage_event_reports_seen_and_persisted_counts() -> None:
+    """polylogue-pbuh AC5: coverage is reported per type -- seen vs. actually
+    persisted -- so a future silently-dropped record type is visible in the
+    archive itself rather than requiring another corpus rg audit to notice.
+
+    ``permission-mode`` here always persists (its record always carries a
+    ``permissionMode`` string), while a ``bash_progress`` tick under
+    ``progress`` is seen but never persisted (see the classification comment
+    above ``_SKIPPED_SIDECAR_RECORD_TYPES``) -- pinning that seen and
+    persisted counts can genuinely diverge, not just mirror each other.
+    """
+    parsed = parse_code(
+        [
+            {"type": "permission-mode", "sessionId": "sess-cov", "permissionMode": "plan"},
+            {"type": "permission-mode", "sessionId": "sess-cov", "permissionMode": "acceptEdits"},
+            {
+                "type": "progress",
+                "sessionId": "sess-cov",
+                "toolUseID": "bash-progress-0",
+                "parentToolUseID": "toolu_bash_1",
+                "data": {"type": "bash_progress", "output": "", "elapsedTimeSeconds": 1},
+            },
+        ],
+        "sess-cov",
+    )
+    coverage_events = [e for e in parsed.session_events if e.event_type == _COVERAGE_EVENT_TYPE]
+    assert len(coverage_events) == 1
+    payload = coverage_events[0].payload
+    assert payload["sidecar_seen"] == {"permission-mode": 2, "progress": 1}
+    assert payload["sidecar_persisted"] == {"permission-mode": 2}
+    assert payload["empty_dropped_by_record_type"] == {}
+
+
+def test_parse_coverage_event_absent_when_only_ordinary_messages_parsed() -> None:
+    """A session with no sidecar/empty-drop activity gets no coverage event
+    at all -- keeps the common case from carrying a useless empty payload."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-plain",
+                "message": {"role": "user", "content": "plain session, nothing skipped"},
+            },
+        ],
+        "sess-plain",
+    )
+    assert [e for e in parsed.session_events if e.event_type == _COVERAGE_EVENT_TYPE] == []

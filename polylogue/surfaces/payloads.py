@@ -2829,6 +2829,13 @@ class QueryUnitAggregateRowPayload(SurfacePayloadModel):
     group_by: str | None = None
     group_key: str | None = None
     count: int
+    metrics: dict[str, float | int | None] | None = None
+    """Named ``| agg count, avg:FIELD, ...`` metric values (polylogue-fnm.1).
+
+    ``None`` for plain ``| group by ... | count`` rows (the legacy count-only
+    aggregate path); populated for rows produced by an ``| agg ...`` stage,
+    keyed by each metric's stable label (``count``, ``avg_word_count``, ...).
+    """
 
     @classmethod
     def from_row(cls, row: ArchiveQueryUnitAggregateRow) -> QueryUnitAggregateRowPayload:

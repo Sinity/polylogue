@@ -29,6 +29,10 @@ from polylogue.schemas.validation.requests import (
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.connection import open_connection
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Verification-report timestamps use real now to assert ordering across artifacts."
+)
+
 
 def _insert_raw_record(
     *,

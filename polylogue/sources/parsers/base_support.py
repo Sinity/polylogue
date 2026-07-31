@@ -51,6 +51,7 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
         elif seg_type == "tool_result":
             result_content = seg.get("content")
             result_text = None
+            knowledge_constructs: list[ParsedWebConstruct] = []
             if isinstance(result_content, str):
                 result_text = result_content
             elif isinstance(result_content, list):
@@ -60,6 +61,39 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                     if isinstance(block, dict) and block.get("type") == "text"
                 ]
                 result_text = "\n".join(part for part in text_parts if part) or None
+                # polylogue-zocm: web_search tool_result content also carries
+                # retrieved-source entries the provider read but did not
+                # necessarily cite in the answer text -- {type: knowledge,
+                # title, url, metadata: {site_domain, site_name,
+                # favicon_url}, text} (1,514 measured). Distinct from the
+                # answer-text `citations` anchors ``_citation_construct``
+                # (claude/common.py) projects as CONTENT_REFERENCE:
+                # SEARCH_RESULT here means "retrieved", not "cited", so
+                # "sources read" stays queryable separately from "sources
+                # cited" instead of being flattened together.
+                for rank, block in enumerate(result_content):
+                    if not isinstance(block, dict) or block.get("type") != "knowledge":
+                        continue
+                    knowledge_title = block.get("title")
+                    knowledge_url = block.get("url")
+                    knowledge_text = block.get("text")
+                    knowledge_metadata = block.get("metadata")
+                    site_name = (
+                        knowledge_metadata.get("site_name") or knowledge_metadata.get("site_domain")
+                        if isinstance(knowledge_metadata, dict)
+                        else None
+                    )
+                    knowledge_constructs.append(
+                        ParsedWebConstruct(
+                            construct_type=WebConstructType.SEARCH_RESULT,
+                            provider_key="web_search_knowledge",
+                            title=knowledge_title if isinstance(knowledge_title, str) else None,
+                            url=knowledge_url if isinstance(knowledge_url, str) else None,
+                            text=knowledge_text if isinstance(knowledge_text, str) else None,
+                            group_title=site_name if isinstance(site_name, str) else None,
+                            rank=rank,
+                        )
+                    )
             raw_is_error = seg.get("is_error")
             is_error = raw_is_error if isinstance(raw_is_error, bool) else None
             # polylogue-2qx.4 / polylogue-cuxz.8: this is the shared
@@ -77,6 +111,7 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
                     text=result_text,
                     is_error=is_error,
                     outcome_unknown_reason=outcome_unknown_reason,
+                    web_constructs=knowledge_constructs,
                 )
             )
         elif seg_type in ("image", "document"):

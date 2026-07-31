@@ -22,8 +22,14 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
+
 from polylogue.storage.blob_gc import MIN_AGE_S, run_blob_gc
 from polylogue.storage.blob_store import BlobStore
+
+pytestmark = pytest.mark.uses_real_clock(
+    "Same as test_blob_store_contracts: time.time() backdates file mtime for GC-eligibility, this time via the ops-doctor repair path (moved out of the removed test_blob_gc_concurrency.py, polylogue-v7e0)."
+)
 
 
 def _make_db(path: Path) -> sqlite3.Connection:

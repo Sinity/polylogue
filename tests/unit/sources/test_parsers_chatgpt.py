@@ -1808,3 +1808,309 @@ def test_inline_citation_marker_tokens_become_anchored_constructs() -> None:
     # Anchored in ORIGINAL-text coordinates, matching citation start_ix/end_ix.
     assert marker.start_index == marked.index("\ue200")
     assert marker.end_index == marked.index("\ue201") + 1
+
+
+# ---------------------------------------------------------------------------
+# polylogue-xofj \u2014 six April-era content types, anonymized real-node shapes
+# ---------------------------------------------------------------------------
+
+
+def test_computer_output_becomes_paired_tool_result() -> None:
+    """computer_output (8,192 measured) is a computer-use tool result.
+
+    Anonymized from a real node: ``computer.do`` tool author, a browser
+    state snapshot, and the same ``status``-derived terminal outcome
+    ``execution_output`` already uses.
+    """
+    nodes = [
+        _branch_node("u1", "user", "check the site", parent=None, children=["call"]),
+        {
+            "id": "call",
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant", "name": "computer"},
+                "content": {"content_type": "text", "parts": ["let me check"]},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool", "name": "computer.do"},
+                "content": {
+                    "content_type": "computer_output",
+                    "computer_id": "71",
+                    "screenshot": {
+                        "asset_pointer": "sediment://file_anon",
+                        "content_type": "image_asset_pointer",
+                        "width": 1024,
+                        "height": 768,
+                    },
+                    "state": {
+                        "type": "browser_state",
+                        "url": "https://example.test/page",
+                        "title": "Example Page",
+                    },
+                    "tether_id": 12345,
+                },
+                "status": "finished_successfully",
+                "create_time": None,
+            },
+            "parent": "call",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Computer use",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+    tool_result = next(b for b in out_msg.blocks if b.type == BlockType.TOOL_RESULT)
+    assert tool_result.tool_id == "call"
+    assert tool_result.is_error is False
+    assert tool_result.text is not None
+    assert "Example Page" in tool_result.text
+    assert "https://example.test/page" in tool_result.text
+
+
+@pytest.mark.parametrize(
+    "content_type,content_extra,expected_title",
+    [
+        (
+            "tether_quote",
+            {"domain": "notes.txt", "tether_id": None},
+            "notes.txt",
+        ),
+        (
+            "tether_browsing_display",
+            {"domain": None},
+            None,
+        ),
+        (
+            "sonic_webpage",
+            {"domain": "example.test", "ref_id": "turn0search1", "snippet": "a short summary"},
+            "example.test",
+        ),
+    ],
+)
+def test_retrieved_source_content_types_become_search_result_constructs(
+    content_type: str, content_extra: dict[str, object], expected_title: str | None
+) -> None:
+    """tether_quote/tether_browsing_display/sonic_webpage are retrieved-source
+    evidence, not free text -- they become SEARCH_RESULT web constructs on a
+    DOCUMENT block (polylogue-xofj/polylogue-zocm), not a bare TEXT block.
+    """
+    content: dict[str, object] = {"content_type": content_type, **content_extra}
+    if content_type == "tether_browsing_display":
+        content["result"] = "# [0\u2020Example\u2020example.test\u3011retrieved page body"
+    else:
+        content["text"] = "retrieved excerpt body"
+
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "tool", "name": "browser"},
+                "content": content,
+                "create_time": None,
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+    message = messages[0]
+    document_blocks = [b for b in message.blocks if b.type == BlockType.DOCUMENT]
+    assert document_blocks, f"expected a DOCUMENT block for {content_type}"
+    constructs = document_blocks[0].web_constructs
+    assert len(constructs) == 1
+    construct = constructs[0]
+    assert construct.construct_type.value == "search_result"
+    assert construct.provider_key == content_type
+    assert construct.title == expected_title
+    assert construct.text is not None
+
+
+def test_system_error_becomes_paired_error_tool_result() -> None:
+    """system_error (177 measured) is a structural failure marker -- the
+    content_type itself is the error signal, never guessed from prose, and
+    always ``is_error=True`` regardless of the enclosing message's own
+    ``status`` (polylogue-xofj).
+    """
+    nodes = [
+        _branch_node("u1", "user", "click the button", parent=None, children=["call"]),
+        {
+            "id": "call",
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant", "name": "browser"},
+                "content": {"content_type": "text", "parts": ["clicking"]},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool", "name": "browser"},
+                "content": {
+                    "content_type": "system_error",
+                    "name": "tool_error",
+                    "text": "Error when executing command `mclick(['1'])`",
+                },
+                # The error-*report* message itself was delivered fine --
+                # `status` here must NOT flip is_error to False.
+                "status": "finished_successfully",
+                "create_time": None,
+            },
+            "parent": "call",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Browsing error",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+    tool_result = next(b for b in out_msg.blocks if b.type == BlockType.TOOL_RESULT)
+    assert tool_result.tool_id == "call"
+    assert tool_result.is_error is True
+    assert tool_result.text == "Error when executing command `mclick(['1'])`"
+    assert tool_result.metadata is not None
+    assert tool_result.metadata["error_name"] == "tool_error"
+
+
+def test_citable_code_output_becomes_code_result_with_citation_anchor() -> None:
+    """citable_code_output (8 measured) is a connector-sourced retrieval
+    result -- a code/tool result whose text lives in ``output_str`` (not
+    ``text``/``result``) plus a citation anchor identifying the connector
+    document it was read from (polylogue-xofj).
+    """
+    nodes = [
+        _branch_node("u1", "user", "check my email", parent=None, children=["call"]),
+        {
+            "id": "call",
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant", "name": "api_tool"},
+                "content": {"content_type": "text", "parts": ["checking"]},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool", "name": "api_tool.call_tool"},
+                "content": {
+                    "content_type": "citable_code_output",
+                    "output_str": "L0: Subject: Example receipt",
+                    "metadata": {
+                        "connector_id": "connector_anon",
+                        "connector_source": "Gmail",
+                        "display_title": "Example receipt #1",
+                        "display_url": "https://mail.example.test/all/anon",
+                    },
+                    "tether_id": 665493930970187,
+                },
+                "status": "finished_successfully",
+                "create_time": None,
+            },
+            "parent": "call",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Connector read",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+    tool_result = next(b for b in out_msg.blocks if b.type == BlockType.TOOL_RESULT)
+    assert tool_result.tool_id == "call"
+    assert tool_result.is_error is False
+    assert tool_result.text == "L0: Subject: Example receipt"
+    assert len(tool_result.web_constructs) == 1
+    citation = tool_result.web_constructs[0]
+    assert citation.construct_type.value == "content_reference"
+    assert citation.title == "Example receipt #1"
+    assert citation.url == "https://mail.example.test/all/anon"
+    assert citation.source_id == "connector_anon"
+
+
+def test_content_reference_grouped_webpages_items_become_constructs() -> None:
+    """polylogue-zocm GAP 1: a ``grouped_webpages`` content_reference carries
+    no url of its own -- every URL lives in ``items[]``/``fallback_items[]``.
+    Anonymized from a real July-export node.
+    """
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "assistant"},
+                "content": {"content_type": "text", "parts": ["See sources."]},
+                "metadata": {
+                    "content_references": [
+                        {
+                            "type": "grouped_webpages",
+                            "alt": "([Example](https://example.test/a))",
+                            "items": [
+                                {
+                                    "title": "Example A",
+                                    "url": "https://example.test/a",
+                                    "attribution": "example.test",
+                                    "snippet": "primary source",
+                                }
+                            ],
+                            "fallback_items": [
+                                {
+                                    "title": "Example B",
+                                    "url": "https://example.test/b",
+                                    "snippet": "backup source",
+                                }
+                            ],
+                        }
+                    ]
+                },
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    constructs = [
+        c
+        for b in messages[0].blocks
+        for c in b.web_constructs
+        if (c.provider_key or "").startswith("content_references")
+    ]
+    # The bare group envelope carries no url/title/text of its own -- only
+    # the two nested entries should surface as constructs.
+    assert len(constructs) == 2
+    by_url = {c.url: c for c in constructs}
+    assert by_url["https://example.test/a"].title == "Example A"
+    assert by_url["https://example.test/a"].provider_key == "content_references.items"
+    assert by_url["https://example.test/a"].group_title == "([Example](https://example.test/a))"
+    assert by_url["https://example.test/b"].title == "Example B"
+    assert by_url["https://example.test/b"].provider_key == "content_references.fallback_items"
+    # Both nested entries share the same group_id -- they came from the same
+    # content_reference envelope.
+    assert by_url["https://example.test/a"].group_id == by_url["https://example.test/b"].group_id
+    for construct in constructs:
+        assert construct.construct_type.value == "content_reference"

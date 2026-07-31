@@ -16,6 +16,10 @@ import os
 import sys
 import time
 
+import pytest
+
+pytestmark = pytest.mark.uses_real_clock("Atheris fuzz harness measures real per-call latency for crash deadlines.")
+
 # Check if atheris is available
 try:
     import atheris

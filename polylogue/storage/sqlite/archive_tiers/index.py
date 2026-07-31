@@ -81,7 +81,27 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # (polylogue-aggz Invariant 1) -- putting mutable state there reproduces the
 # exact defect class polylogue-bu1i (acquisition state) and polylogue-nuec
 # (provider-remeasurement) were fixed for. See sessions table comment.
-INDEX_SCHEMA_VERSION = 47
+#
+# polylogue-lzh8: v48 declares -- retroactively, with no DDL change of its
+# own -- the semantic classification change 1e0246d77 (#3088, "admit Claude
+# Workflow artifacts through OriginSpec", merged 2026-07-18) already shipped
+# without a version bump. That commit changed origin_specs.py's artifact
+# rules so workflow_run_snapshot / workflow_journal / agent_sidecar_meta /
+# adopt_manifest paths correctly classify as parse_policy="fact"
+# (parse_as_session=False) instead of silently defaulting to a session, the
+# same v42/v44/v45/v46 "values depend on parser semantics" precedent -- a
+# shape-only fast-forward cannot un-classify already-materialized rows, so
+# there is nothing here for a clone-safe SQL delta to do. Measured live
+# impact at declaration time (index.db, 2026-07-31, read-only query): 5,193
+# zero-message claude-code-session rows total, of which 172 join to a
+# `workflows/` artifact family under the pre-fix classification (164
+# agent_sidecar_meta, 7 workflow_run_snapshot, 1 other), all acquired
+# 2026-07-14..07-26 -- entirely before the deployed daemon build contained
+# 1e0246d77 (sinnix's polylogue pin only advanced past it 2026-07-29). Like
+# every other SEMANTIC_REPARSE version here, resolving this requires
+# `polylogue ops reset --index && polylogued run`, which an agent must not
+# trigger against the operator's live archive without explicit scheduling.
+INDEX_SCHEMA_VERSION = 48
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

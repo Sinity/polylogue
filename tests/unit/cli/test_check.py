@@ -39,6 +39,10 @@ from tests.infra.json_contracts import (
 )
 from tests.infra.storage_records import DbFactory, SessionBuilder
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Constructs a wall-clock anchor for doctor envelope assertions; production envelope embeds the same now() within the same call."
+)
+
 WorkspacePaths = dict[str, Path]
 
 

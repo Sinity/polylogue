@@ -17,6 +17,10 @@ import pytest
 
 from polylogue.schemas.registry import SchemaRegistry
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Schema registry version comparison anchors on the real now to test ordering of generated artifacts."
+)
+
 
 @pytest.fixture
 def registry(tmp_path: Path) -> SchemaRegistry:

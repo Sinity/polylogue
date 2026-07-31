@@ -14,6 +14,8 @@ from tests.infra.frozen_clock import (
     freeze_clock,
 )
 
+pytestmark = pytest.mark.uses_real_clock("Verifies that the frozen_clock fixture actually pins time.time/datetime.now.")
+
 
 def test_clock_is_stable_until_advanced(frozen_clock: FrozenClock) -> None:
     """Reading the clock twice returns the same instant (no implicit advance)."""
