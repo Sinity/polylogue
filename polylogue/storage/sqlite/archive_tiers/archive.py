@@ -16,6 +16,7 @@ import math
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -278,6 +279,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
+    PreparedSessionRows,
     read_archive_session_envelope,
     read_archive_session_page,
     read_insight_materialization,
@@ -2200,6 +2202,7 @@ class ArchiveStore:
         bulk_build: bool = False,
         defer_fts: bool = False,
         skip_already_applied: bool = False,
+        prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         return apply_raw_revision_replay(
             self,
@@ -2213,6 +2216,7 @@ class ArchiveStore:
             bulk_build=bulk_build,
             defer_fts=defer_fts,
             skip_already_applied=skip_already_applied,
+            prepared_by_raw_id=prepared_by_raw_id,
         )
 
     def apply_raw_membership_classification(
