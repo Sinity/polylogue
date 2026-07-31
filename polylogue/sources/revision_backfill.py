@@ -1551,6 +1551,16 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     )
 
 
+#: Lever-A prefetch-buffer budget clamp (estimated tree bytes) -- same
+#: adaptive formula as ``_ParsedSessionSpill``'s hot decoded cache (physical
+#: RAM / 16 within these bounds), but deliberately its own pair of constants:
+#: tests shrink the spill's class constants to force the sqlite/reparse
+#: for_raw fallbacks WITHOUT also starving the prefetcher whose job is to
+#: hide exactly those fallbacks.
+_PREFETCH_BUFFER_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
+_PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
+
+
 class _ReplaySpillPrefetcher:
     """Decode upcoming replay cohorts' parsed sessions off the writer thread.
 
@@ -1622,8 +1632,8 @@ class _ReplaySpillPrefetcher:
             self._budget = max_buffered_tree_bytes
         else:
             physical = effective_physical_memory_bytes() or 0
-            floor = _ParsedSessionSpill._DECODED_CACHE_MIN_TREE_BYTES
-            ceiling = _ParsedSessionSpill._DECODED_CACHE_MAX_TREE_BYTES
+            floor = _PREFETCH_BUFFER_MIN_TREE_BYTES
+            ceiling = _PREFETCH_BUFFER_MAX_TREE_BYTES
             self._budget = max(floor, min(ceiling, physical // 16)) if physical else floor
         self._lock = threading.Lock()
         self._wakeup = threading.Condition(self._lock)
@@ -1637,8 +1647,14 @@ class _ReplaySpillPrefetcher:
         self._thread: threading.Thread | None = None
         # Stats are worker/writer-shared simple counters; merged into the
         # caller's stage-timings dict by ``close()`` on the writer thread.
+        # ``hits``/``reparse_hits`` count worker-side decodes (production,
+        # not necessarily consumption -- an entry the writer overtook is
+        # decoded but dropped); ``consumed`` counts writer-side pops that
+        # actually served a replay ``for_raw``, which is the number that
+        # proves the pipeline carried real work off the writer thread.
         self.hits = 0
         self.reparse_hits = 0
+        self.consumed = 0
         self.decode_seconds = 0.0
 
     def start_phase(self, ordered_keys: Sequence[str], extra_members: dict[str, set[str]]) -> None:
@@ -1683,6 +1699,7 @@ class _ReplaySpillPrefetcher:
                 return None
             sessions, payload_bytes, tree_bytes, from_reparse, _seq = entry
             self._buffered_tree_bytes -= tree_bytes
+            self.consumed += 1
             self._wakeup.notify_all()
             return sessions, payload_bytes, from_reparse
 
@@ -1714,6 +1731,7 @@ class _ReplaySpillPrefetcher:
         if self.hits or self.reparse_hits or self.decode_seconds:
             stats["spill_prefetch.hits"] = float(self.hits)
             stats["spill_prefetch.reparse_hits"] = float(self.reparse_hits)
+            stats["spill_prefetch.consumed"] = float(self.consumed)
             stats["spill_prefetch.decode_concurrent"] = self.decode_seconds
         return stats
 
