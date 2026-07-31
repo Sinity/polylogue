@@ -26,11 +26,18 @@
     }
     if (provider === "claude-ai") return null;
     if (provider === "grok") {
+      // grok.com's own conversation URLs are /c/<uuid> (verified live,
+      // 2026-07-31), matching the same convention ChatGPT/Claude use. The
+      // /chat/ and /grok/ segment guesses below predate that verification
+      // and are kept only as a defensive fallback for URL shapes this has
+      // not been checked against.
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
       const grokPathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
       if (grokPathId) return grokPathId;
       const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
       if (queryId) return queryId;
-      return `dom:${fnv1a(parsed.origin + parsed.pathname + parsed.search)}`;
+      return null;
     }
     const sessionToken = parts.at(-1) || parsed.pathname || parsed.hostname;
     return `${provider}:${sessionToken}:${fnv1a(parsed.origin + parsed.pathname)}`;
