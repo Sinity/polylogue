@@ -374,7 +374,7 @@ def write_parsed_session_to_archive(
 
     conn.execute("PRAGMA foreign_keys = ON")
     origin = origin_from_provider(session.source_name)
-    native_id = session.provider_session_id
+    native_id = _stored_session_native_id(session.provider_session_id)
     session_id = archive_session_id(origin.value, native_id)
     # This session's own rows are about to be rewritten; drop any stale memoized
     # own-signatures so the batch cache never serves pre-write rows for it.
@@ -2971,6 +2971,15 @@ def _write_session_link(
 ) -> None:
     if not session.parent_session_provider_id:
         return
+    # polylogue-lyr2: normalize the same way ``_stored_session_native_id``
+    # normalizes ``sessions.native_id`` -- the resolver below matches this
+    # column against ``sessions.native_id`` by exact string equality
+    # (``_resolve_outbound_session_links``), so a raw (unstripped) parent
+    # reference here would silently stop matching a parent whose own
+    # ``native_id`` was written through the stripping helper.
+    dst_native_id = _sqlite_text(session.parent_session_provider_id.strip())
+    if not dst_native_id:
+        return
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
     parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
     method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
@@ -2985,7 +2994,7 @@ def _write_session_link(
         (
             session_id,
             origin_from_provider(session.source_name).value,
-            _sqlite_text(session.parent_session_provider_id),
+            dst_native_id,
             link_type,
             branch_point_message_id,
             inheritance,
@@ -5734,6 +5743,31 @@ def _effective_message_native_id(message: ParsedMessage, duplicate_native_ids: f
     if native_id in duplicate_native_ids:
         return None
     return native_id
+
+
+def _stored_session_native_id(native_id: str) -> str:
+    """Return the exact value ``sessions.native_id`` stores for this session.
+
+    Single source of truth for session identity (mirrors the message-level
+    ab5bad1f FK-failure fix via ``_stored_message_native_id`` below, never
+    given a session-level sibling until polylogue-lyr2). ``_write_session``'s
+    INSERT bind and every call to ``core.identity_law.session_id`` (which the
+    generated ``sessions.session_id`` column reimplements in SQL as
+    ``origin || ':' || native_id``) MUST route through this helper, or the
+    two computations can diverge: a provider-native session id carrying
+    leading/trailing whitespace stores truthy verbatim in a raw INSERT bind
+    while ``identity_law.session_id``'s ``_required_text`` strips it --
+    producing two different spellings of what should be one row's identity.
+    Raises ``ValueError`` on an empty/whitespace-only native id, matching
+    ``identity_law._required_text``'s own emptiness check -- there is no
+    position/variant fallback at the session level the way there is for
+    messages, so an unidentifiable session must fail loudly rather than
+    silently write a self-mismatched row.
+    """
+    stripped = native_id.strip()
+    if not stripped:
+        raise ValueError("session native_id cannot be empty")
+    return stripped
 
 
 def _stored_message_native_id(message: ParsedMessage, duplicate_native_ids: frozenset[str]) -> str | None:
