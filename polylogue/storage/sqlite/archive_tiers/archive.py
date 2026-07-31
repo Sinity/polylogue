@@ -7217,22 +7217,7 @@ class ArchiveStore:
             f"""
             {prefix_sql}
             SELECT
-                a.session_id,
-                a.message_id,
-                s.origin,
-                s.title,
-                a.tool_use_block_id,
-                a.tool_result_block_id,
-                a.tool_name,
-                a.semantic_type,
-                {_action_command_expression("a")} AS tool_command,
-                a.tool_path,
-                m.occurred_at_ms,
-                a.output_text,
-                a.is_error,
-                a.exit_code,
-                a.followup_class,
-                a.followup_message_ref
+                {_ARCHIVE_ACTION_QUERY_SELECT_SQL}
             FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
@@ -7272,22 +7257,7 @@ class ArchiveStore:
             f"""
             {prefix_sql}
             SELECT
-                a.session_id,
-                a.message_id,
-                s.origin,
-                s.title,
-                a.tool_use_block_id,
-                a.tool_result_block_id,
-                a.tool_name,
-                a.semantic_type,
-                {_action_command_expression("a")} AS tool_command,
-                a.tool_path,
-                m.occurred_at_ms,
-                a.output_text,
-                a.is_error,
-                a.exit_code,
-                a.followup_class,
-                a.followup_message_ref
+                {_ARCHIVE_ACTION_QUERY_SELECT_SQL}
             FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
