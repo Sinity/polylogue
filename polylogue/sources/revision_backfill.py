@@ -34,7 +34,8 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Origin, Provider
+from polylogue.core.sources import provider_from_origin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import parallel_threads_effective
@@ -767,6 +768,7 @@ def backfill_historical_revision_evidence(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    pipeline_decode: bool | None = None,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -828,6 +830,18 @@ def backfill_historical_revision_evidence(
     what makes prefetching the census phase alone enough to also skip
     replay-phase reparsing for the same raws. ``None`` (every existing
     caller) reproduces the exact unmodified parse path.
+
+    ``pipeline_decode`` (Lever A, parse ∥ apply) engages a
+    :class:`_ReplaySpillPrefetcher` that decodes upcoming replay cohorts'
+    parsed sessions on ONE background thread while the single writer applies
+    the current cohort. ``None`` (the default) auto-resolves to
+    ``parallel_threads_effective()``: pipelining only under a genuinely
+    free-threaded interpreter, exactly like every other CPU-bound parse
+    thread here; ``False`` forces the exact serial decode path; ``True``
+    forces pipelining even under a GIL (tests only). All archive writes
+    remain on the calling thread in unchanged order regardless of the value
+    -- see the prefetcher's docstring for the equivalence argument and the
+    buffered-memory bound.
     """
     adoption_deferred = 0
     quarantined = 0
@@ -918,229 +932,272 @@ def backfill_historical_revision_evidence(
 
         replayed = 0
         byte_replayed_keys: set[str] = set()
-        for logical_key in sorted(logical_keys):
-            # polylogue-eqnv: the offline backfill/rebuild path is the one
-            # where a stale pre-fix parser identity can split one physical
-            # document's re-acquisitions across two logical_source_keys (see
-            # ArchiveStore.classify_raw_revision_cohort's docstring) -- opt
-            # into the source_path cross-key guard here. The live watcher
-            # (sources/live/batch.py) does NOT opt in: a watched path can be
-            # legitimately, atomically replaced with a different session's
-            # content, which must not be quarantined as "divergent evidence".
-            classify_started = time.perf_counter()
-            plan = archive.classify_raw_revision_cohort(
-                logical_key,
-                check_source_path_identity_split=True,
-                # Batched replay defers the classification's source.db
-                # authority updates into the same batch window as the replay
-                # writes (idempotent, re-derived on resume -- see
-                # classify_raw_revision_cohort's docstring).
-                manage_transaction=not replay_batched,
+        # Lever A (parse ∥ apply): decode upcoming cohorts' parsed sessions
+        # off the writer thread while the single writer applies the current
+        # cohort. Gated exactly like ``prepare_pool`` above -- GIL builds
+        # keep the byte-identical serial decode path. The auto default also
+        # requires enough cohorts to amortize the worker's setup (thread
+        # spawn, two read connections, a plan scan over raw_sessions/
+        # raw_session_memberships): the live raw-materialization path
+        # (storage/repair.py) replays ONE authority component per call,
+        # where a prefetcher could never get ahead of the writer anyway.
+        effective_pipeline_decode = (
+            pipeline_decode
+            if pipeline_decode is not None
+            else (
+                parallel_threads_effective()
+                and len(logical_keys) + len(membership_keys) >= _PIPELINE_DECODE_MIN_COHORTS
             )
-            stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
-                time.perf_counter() - classify_started
-            )
-            if not plan.accepted_raw_ids:
-                # Complete snapshots that are not a unique byte-prefix chain
-                # still carry semantic evidence. Move only that full-only
-                # cohort to membership governance and let parsed-content
-                # prefix rules decide it; append chains remain byte-governed.
-                for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+        )
+        decode_prefetcher: _ReplaySpillPrefetcher | None = None
+        if effective_pipeline_decode:
+            decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
+            spill.attach_prefetcher(decode_prefetcher)
+            decode_prefetcher.start_phase(sorted(logical_keys), provisional_full_raw_ids)
+        try:
+            for logical_key in sorted(logical_keys):
+                if decode_prefetcher is not None:
+                    decode_prefetcher.enter_key(logical_key)
+                # polylogue-eqnv: the offline backfill/rebuild path is the one
+                # where a stale pre-fix parser identity can split one physical
+                # document's re-acquisitions across two logical_source_keys (see
+                # ArchiveStore.classify_raw_revision_cohort's docstring) -- opt
+                # into the source_path cross-key guard here. The live watcher
+                # (sources/live/batch.py) does NOT opt in: a watched path can be
+                # legitimately, atomically replaced with a different session's
+                # content, which must not be quarantined as "divergent evidence".
+                classify_started = time.perf_counter()
+                plan = archive.classify_raw_revision_cohort(
+                    logical_key,
+                    check_source_path_identity_split=True,
+                    # Batched replay defers the classification's source.db
+                    # authority updates into the same batch window as the replay
+                    # writes (idempotent, re-derived on resume -- see
+                    # classify_raw_revision_cohort's docstring).
+                    manage_transaction=not replay_batched,
+                )
+                stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
+                    time.perf_counter() - classify_started
+                )
+                if not plan.accepted_raw_ids:
+                    # Complete snapshots that are not a unique byte-prefix chain
+                    # still carry semantic evidence. Move only that full-only
+                    # cohort to membership governance and let parsed-content
+                    # prefix rules decide it; append chains remain byte-governed.
+                    for raw_id in archive.convertible_full_revision_raw_ids(logical_key):
+                        spill_started = time.perf_counter()
+                        sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+                        stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                            time.perf_counter() - spill_started
+                        )
+                        if len(sessions) != 1:
+                            raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
+                        archive.replace_raw_membership_census(
+                            raw_id,
+                            sessions,
+                            parser_fingerprint="revision-membership-v1",
+                            censused_at_ms=0,
+                            detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+                            retire_full_revision_governance=True,
+                        )
+                        # polylogue-eqnv: bucket by the identity the retirement
+                        # reparse just recomputed (what actually lands in
+                        # raw_session_memberships.logical_source_key inside
+                        # replace_raw_membership_census), NOT the stale outer-
+                        # loop ``logical_key`` this raw was originally censused
+                        # under. Two same-document raws retired here from
+                        # DIFFERENT stale keys (e.g. one carrying a since-fixed
+                        # parser identity bug) re-derive the SAME fresh key on
+                        # reparse; bucketing by the stale key would keep them in
+                        # separate membership cohorts below and let each be
+                        # accepted as an independent membership singleton --
+                        # reproducing the exact fidelity-downgrade defect this
+                        # retirement path exists to prevent, one layer down.
+                        fresh_session = sessions[0]
+                        fresh_key = f"{fresh_session.source_name.value}:{fresh_session.provider_session_id}"
+                        membership_candidates.setdefault(fresh_key, set()).add(raw_id)
+                        membership_keys.add(fresh_key)
+                    membership_keys.add(logical_key)
+                    continue
+                parsed_by_raw_id: dict[str, ParsedSession] = {}
+                retained_bytes = 0
+                for raw_id in plan.accepted_raw_ids:
                     spill_started = time.perf_counter()
-                    sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+                    sessions, payload_bytes = spill.for_raw(archive, raw_id)
                     stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
                         time.perf_counter() - spill_started
                     )
                     if len(sessions) != 1:
-                        raise RuntimeError(f"full revision {raw_id} no longer parses to one session")
-                    archive.replace_raw_membership_census(
-                        raw_id,
-                        sessions,
-                        parser_fingerprint="revision-membership-v1",
-                        censused_at_ms=0,
-                        detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-                        retire_full_revision_governance=True,
-                    )
-                    # polylogue-eqnv: bucket by the identity the retirement
-                    # reparse just recomputed (what actually lands in
-                    # raw_session_memberships.logical_source_key inside
-                    # replace_raw_membership_census), NOT the stale outer-
-                    # loop ``logical_key`` this raw was originally censused
-                    # under. Two same-document raws retired here from
-                    # DIFFERENT stale keys (e.g. one carrying a since-fixed
-                    # parser identity bug) re-derive the SAME fresh key on
-                    # reparse; bucketing by the stale key would keep them in
-                    # separate membership cohorts below and let each be
-                    # accepted as an independent membership singleton --
-                    # reproducing the exact fidelity-downgrade defect this
-                    # retirement path exists to prevent, one layer down.
-                    fresh_session = sessions[0]
-                    fresh_key = f"{fresh_session.source_name.value}:{fresh_session.provider_session_id}"
-                    membership_candidates.setdefault(fresh_key, set()).add(raw_id)
-                    membership_keys.add(fresh_key)
-                membership_keys.add(logical_key)
-                continue
-            parsed_by_raw_id: dict[str, ParsedSession] = {}
-            retained_bytes = 0
-            for raw_id in plan.accepted_raw_ids:
-                spill_started = time.perf_counter()
-                sessions, payload_bytes = spill.for_raw(archive, raw_id)
-                stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
-                    time.perf_counter() - spill_started
-                )
-                if len(sessions) != 1:
-                    raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
-                parsed_by_raw_id[raw_id] = sessions[0]
-                retained_bytes += payload_bytes
-            if retention_observer is not None:
-                retention_observer(len(parsed_by_raw_id), retained_bytes)
-            # polylogue-fpid: kick off row-tuple construction for the chain's
-            # sole full-replace position (position 0 -- see apply_raw_
-            # revision_replay's docstring) on the background pool now, so it
-            # runs concurrently with the adoptability check below and this
-            # cohort's own apply_raw_revision_replay() preamble. A GIL build
-            # (prepare_pool is None) leaves prepared_by_raw_id empty and this
-            # write falls back to building rows inline, unchanged.
-            prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] = {}
-            if prepare_pool is not None:
-                position0_raw_id = plan.accepted_raw_ids[0]
-                prepared_by_raw_id[position0_raw_id] = prepare_pool.submit(
-                    prepare_session_rows, parsed_by_raw_id[position0_raw_id]
-                )
-            accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
-            adoptable_started = time.perf_counter()
-            adoptable = archive.raw_revision_replay_adoptable(accepted_sessions)
-            stage_timings["replay.adoptable_check"] = stage_timings.get("replay.adoptable_check", 0.0) + (
-                time.perf_counter() - adoptable_started
-            )
-            if not adoptable:
-                archive.defer_raw_revision_adoption(plan.logical_source_key, plan.accepted_raw_ids, accepted_sessions)
-                provisional_raw_ids = provisional_full_raw_ids.get(logical_key, set())
-                plan_raw_ids = {application.raw_id for application in plan.applications}
-                if plan_raw_ids and plan_raw_ids <= provisional_raw_ids:
-                    archive.release_provisional_full_revisions(sorted(plan_raw_ids))
-                adoption_deferred += len(plan.accepted_raw_ids)
-                # The submitted future is discarded unused here (this cohort
-                # was deferred, not written) -- harmless: its result is a
-                # pure, side-effect-free row-tuple build with no DB
-                # connection, so an unconsumed Future just gets garbage
-                # collected once the pool shuts down.
-                continue
-            try:
-                archive.apply_raw_revision_replay(
-                    plan,
-                    parsed_by_raw_id,
-                    acquired_at_ms=0,
-                    stage_timings_s=stage_timings,
-                    manage_transaction=not replay_batched,
-                    bulk_fts=bulk_fts,
-                    bulk_build=bulk_build,
-                    prepared_by_raw_id=prepared_by_raw_id or None,
-                )
-            except sqlite3.IntegrityError as exc:
-                raise sqlite3.IntegrityError(
-                    f"backfill_historical_revision_evidence: byte-proven replay failed for "
-                    f"logical_key={plan.logical_source_key!r}: {exc}"
-                ) from exc
-            replayed += 1
-            byte_replayed_keys.add(logical_key)
-            if replay_batched:
-                commit_replay_unit()
-
-        for logical_key in sorted(membership_keys):
-            if logical_key in byte_replayed_keys:
-                continue
-            member_sessions: dict[str, ParsedSession] = {}
-            revisions: list[MembershipRevision] = []
-            projections = {}
-            retained_bytes = 0
-            candidates_started = time.perf_counter()
-            candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
-            candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
-            stage_timings["membership.candidates"] = stage_timings.get("membership.candidates", 0.0) + (
-                time.perf_counter() - candidates_started
-            )
-            # Cohort absorption: candidate selection is page-dependent, so a
-            # head written by an EARLIER page's membership cohort for this key
-            # may not be in this page's candidate set -- membership replay
-            # would then refuse to retire an "unrelated" quarantined head and
-            # kill the walk. Absorb the current quarantined head raw into the
-            # cohort so the real prefix classifier ranks it against the new
-            # members instead of any scalar comparison. Chain-governed
-            # (non-quarantined) heads are deliberately NOT absorbed --
-            # apply_raw_membership_classification yields to those.
-            head_raw_id = archive.raw_revision_head_raw_id(logical_key)
-            if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
-                candidate_raw_ids.add(head_raw_id)
-            for raw_id in sorted(candidate_raw_ids):
-                spill_started = time.perf_counter()
-                sessions, payload_bytes = spill.for_raw(archive, raw_id)
-                stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
-                    time.perf_counter() - spill_started
-                )
-                for session in sessions:
-                    session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
-                    if session_logical_key != logical_key:
-                        continue
-                    projection_started = time.perf_counter()
-                    projection = session_revision_projection(session)
-                    stage_timings["membership.project"] = stage_timings.get("membership.project", 0.0) + (
-                        time.perf_counter() - projection_started
-                    )
-                    member_sessions[raw_id] = session
-                    projections[raw_id] = projection
-                    revisions.append(
-                        MembershipRevision(
-                            raw_id,
-                            projection,
-                            session.updated_at,
-                            browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
-                            provider_message_ids=frozenset(message.provider_message_id for message in session.messages),
-                            provider_attachment_ids=frozenset(
-                                attachment.provider_attachment_id for attachment in session.attachments
-                            ),
-                        )
-                    )
+                        raise RuntimeError(f"classified raw revision {raw_id} no longer parses to one session")
+                    parsed_by_raw_id[raw_id] = sessions[0]
                     retained_bytes += payload_bytes
-            if retention_observer is not None:
-                retention_observer(len(member_sessions), retained_bytes)
-            membership_classify_started = time.perf_counter()
-            classification = classify_membership_revisions(revisions)
-            stage_timings["membership.classify"] = stage_timings.get("membership.classify", 0.0) + (
-                time.perf_counter() - membership_classify_started
-            )
-            if classification.ambiguous_raw_ids:
-                quarantined += len(classification.ambiguous_raw_ids)
-            accepted_sessions = [member_sessions[raw_id] for raw_id in classification.accepted_raw_ids]
-            if accepted_sessions and not archive.raw_revision_replay_adoptable(accepted_sessions):
-                archive.defer_raw_revision_adoption(
-                    logical_key,
-                    classification.accepted_raw_ids,
-                    accepted_sessions,
+                if retention_observer is not None:
+                    retention_observer(len(parsed_by_raw_id), retained_bytes)
+                # polylogue-fpid: kick off row-tuple construction for the chain's
+                # sole full-replace position (position 0 -- see apply_raw_
+                # revision_replay's docstring) on the background pool now, so it
+                # runs concurrently with the adoptability check below and this
+                # cohort's own apply_raw_revision_replay() preamble. A GIL build
+                # (prepare_pool is None) leaves prepared_by_raw_id empty and this
+                # write falls back to building rows inline, unchanged.
+                prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] = {}
+                if prepare_pool is not None:
+                    position0_raw_id = plan.accepted_raw_ids[0]
+                    prepared_by_raw_id[position0_raw_id] = prepare_pool.submit(
+                        prepare_session_rows, parsed_by_raw_id[position0_raw_id]
+                    )
+                accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
+                adoptable_started = time.perf_counter()
+                adoptable = archive.raw_revision_replay_adoptable(accepted_sessions)
+                stage_timings["replay.adoptable_check"] = stage_timings.get("replay.adoptable_check", 0.0) + (
+                    time.perf_counter() - adoptable_started
                 )
-                adoption_deferred += len(classification.accepted_raw_ids)
-                continue
-            try:
-                archive.apply_raw_membership_classification(
-                    logical_key,
-                    classification,
-                    member_sessions,
-                    projections,
-                    acquired_at_ms=0,
-                    stage_timings_s=stage_timings,
-                    manage_transaction=not replay_batched,
-                    bulk_fts=bulk_fts,
-                    bulk_build=bulk_build,
-                )
-            except sqlite3.IntegrityError as exc:
-                raise sqlite3.IntegrityError(
-                    f"backfill_historical_revision_evidence: membership replay failed for "
-                    f"logical_key={logical_key!r}: {exc}"
-                ) from exc
-            if classification.accepted_raw_ids:
+                if not adoptable:
+                    archive.defer_raw_revision_adoption(
+                        plan.logical_source_key, plan.accepted_raw_ids, accepted_sessions
+                    )
+                    provisional_raw_ids = provisional_full_raw_ids.get(logical_key, set())
+                    plan_raw_ids = {application.raw_id for application in plan.applications}
+                    if plan_raw_ids and plan_raw_ids <= provisional_raw_ids:
+                        archive.release_provisional_full_revisions(sorted(plan_raw_ids))
+                    adoption_deferred += len(plan.accepted_raw_ids)
+                    # The submitted future is discarded unused here (this cohort
+                    # was deferred, not written) -- harmless: its result is a
+                    # pure, side-effect-free row-tuple build with no DB
+                    # connection, so an unconsumed Future just gets garbage
+                    # collected once the pool shuts down.
+                    continue
+                try:
+                    archive.apply_raw_revision_replay(
+                        plan,
+                        parsed_by_raw_id,
+                        acquired_at_ms=0,
+                        stage_timings_s=stage_timings,
+                        manage_transaction=not replay_batched,
+                        bulk_fts=bulk_fts,
+                        bulk_build=bulk_build,
+                        prepared_by_raw_id=prepared_by_raw_id or None,
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise sqlite3.IntegrityError(
+                        f"backfill_historical_revision_evidence: byte-proven replay failed for "
+                        f"logical_key={plan.logical_source_key!r}: {exc}"
+                    ) from exc
                 replayed += 1
-            if replay_batched:
-                commit_replay_unit()
+                byte_replayed_keys.add(logical_key)
+                if replay_batched:
+                    commit_replay_unit()
+
+            if decode_prefetcher is not None:
+                # Second phase: the final membership key set (including
+                # retirement-added keys) is only known now. Retirement
+                # bindings may still sit uncommitted in the open replay
+                # batch, so the in-memory candidates map rides along.
+                decode_prefetcher.start_phase(
+                    [key for key in sorted(membership_keys) if key not in byte_replayed_keys],
+                    membership_candidates,
+                )
+            for logical_key in sorted(membership_keys):
+                if logical_key in byte_replayed_keys:
+                    continue
+                if decode_prefetcher is not None:
+                    decode_prefetcher.enter_key(logical_key)
+                member_sessions: dict[str, ParsedSession] = {}
+                revisions: list[MembershipRevision] = []
+                projections = {}
+                retained_bytes = 0
+                candidates_started = time.perf_counter()
+                candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
+                candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
+                stage_timings["membership.candidates"] = stage_timings.get("membership.candidates", 0.0) + (
+                    time.perf_counter() - candidates_started
+                )
+                # Cohort absorption: candidate selection is page-dependent, so a
+                # head written by an EARLIER page's membership cohort for this key
+                # may not be in this page's candidate set -- membership replay
+                # would then refuse to retire an "unrelated" quarantined head and
+                # kill the walk. Absorb the current quarantined head raw into the
+                # cohort so the real prefix classifier ranks it against the new
+                # members instead of any scalar comparison. Chain-governed
+                # (non-quarantined) heads are deliberately NOT absorbed --
+                # apply_raw_membership_classification yields to those.
+                head_raw_id = archive.raw_revision_head_raw_id(logical_key)
+                if head_raw_id is not None and archive._raw_revision_authority(head_raw_id) == "quarantined":
+                    candidate_raw_ids.add(head_raw_id)
+                for raw_id in sorted(candidate_raw_ids):
+                    spill_started = time.perf_counter()
+                    sessions, payload_bytes = spill.for_raw(archive, raw_id)
+                    stage_timings["spill_load"] = stage_timings.get("spill_load", 0.0) + (
+                        time.perf_counter() - spill_started
+                    )
+                    for session in sessions:
+                        session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
+                        if session_logical_key != logical_key:
+                            continue
+                        projection_started = time.perf_counter()
+                        projection = session_revision_projection(session)
+                        stage_timings["membership.project"] = stage_timings.get("membership.project", 0.0) + (
+                            time.perf_counter() - projection_started
+                        )
+                        member_sessions[raw_id] = session
+                        projections[raw_id] = projection
+                        revisions.append(
+                            MembershipRevision(
+                                raw_id,
+                                projection,
+                                session.updated_at,
+                                browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
+                                provider_message_ids=frozenset(
+                                    message.provider_message_id for message in session.messages
+                                ),
+                                provider_attachment_ids=frozenset(
+                                    attachment.provider_attachment_id for attachment in session.attachments
+                                ),
+                            )
+                        )
+                        retained_bytes += payload_bytes
+                if retention_observer is not None:
+                    retention_observer(len(member_sessions), retained_bytes)
+                membership_classify_started = time.perf_counter()
+                classification = classify_membership_revisions(revisions)
+                stage_timings["membership.classify"] = stage_timings.get("membership.classify", 0.0) + (
+                    time.perf_counter() - membership_classify_started
+                )
+                if classification.ambiguous_raw_ids:
+                    quarantined += len(classification.ambiguous_raw_ids)
+                accepted_sessions = [member_sessions[raw_id] for raw_id in classification.accepted_raw_ids]
+                if accepted_sessions and not archive.raw_revision_replay_adoptable(accepted_sessions):
+                    archive.defer_raw_revision_adoption(
+                        logical_key,
+                        classification.accepted_raw_ids,
+                        accepted_sessions,
+                    )
+                    adoption_deferred += len(classification.accepted_raw_ids)
+                    continue
+                try:
+                    archive.apply_raw_membership_classification(
+                        logical_key,
+                        classification,
+                        member_sessions,
+                        projections,
+                        acquired_at_ms=0,
+                        stage_timings_s=stage_timings,
+                        manage_transaction=not replay_batched,
+                        bulk_fts=bulk_fts,
+                        bulk_build=bulk_build,
+                    )
+                except sqlite3.IntegrityError as exc:
+                    raise sqlite3.IntegrityError(
+                        f"backfill_historical_revision_evidence: membership replay failed for "
+                        f"logical_key={logical_key!r}: {exc}"
+                    ) from exc
+                if classification.accepted_raw_ids:
+                    replayed += 1
+                if replay_batched:
+                    commit_replay_unit()
+        finally:
+            if decode_prefetcher is not None:
+                stage_timings.update(decode_prefetcher.close())
         if replay_batched:
             archive.commit()
         if stage_timings:
@@ -1506,6 +1563,366 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     )
 
 
+#: Lever-A prefetch-buffer budget clamp (estimated tree bytes) -- same
+#: adaptive formula as ``_ParsedSessionSpill``'s hot decoded cache (physical
+#: RAM / 16 within these bounds), but deliberately its own pair of constants:
+#: tests shrink the spill's class constants to force the sqlite/reparse
+#: for_raw fallbacks WITHOUT also starving the prefetcher whose job is to
+#: hide exactly those fallbacks.
+_PREFETCH_BUFFER_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
+_PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
+
+#: Minimum replay cohort count for the AUTO ``pipeline_decode`` default to
+#: engage. Below this, the worker's fixed setup cost (thread spawn, two read
+#: connections, a raw_sessions/raw_session_memberships plan scan) cannot be
+#: repaid -- most notably the live raw-materialization path
+#: (``storage/repair.py``), which replays exactly one authority component
+#: per ``backfill_historical_revision_evidence`` call. Explicit
+#: ``pipeline_decode=True``/``False`` bypasses this floor entirely.
+_PIPELINE_DECODE_MIN_COHORTS: Final[int] = 8
+
+
+class _ReplaySpillPrefetcher:
+    """Decode upcoming replay cohorts' parsed sessions off the writer thread.
+
+    polylogue Lever A (parse ∥ apply): on the real full-rebuild receipt,
+    ``spill_load`` -- the replay loop's inline ``_ParsedSessionSpill.for_raw``
+    decode (pickle.loads from the sqlite spill, or a full reparse from raw
+    blob bytes once the bounded spill has evicted/refused an entry) -- was
+    2,830s of strictly SERIAL work interleaved with the single SQLite
+    writer's own apply work, i.e. ``parse_s + apply_s == total`` exactly.
+    This class moves that decode onto ONE background thread that walks the
+    same logical-key order the writer consumes, so the writer's
+    ``for_raw()`` becomes a buffer pop for every raw the prefetcher reached
+    first.
+
+    Correctness model -- a miss is always safe, mirroring
+    :class:`RawParsePrefetchCache`:
+
+    * The prefetcher performs **zero archive writes**. Every index/source
+      write stays on the calling (writer) thread in unchanged order, so a
+      pipelined and a sequential run produce byte-identical archive state.
+    * Decode sources are exactly the two ``for_raw()`` fallbacks, executed
+      off-thread with thread-private handles: a second read connection to
+      the disposable spill sqlite (same file, same rows, same
+      ``pickle.loads``) and :func:`census_parse_worker` (the same pure
+      blob->ParsedSession function the parallel census dispatches; its
+      sequential-vs-parallel equivalence is already pinned by
+      ``test_thread_parse_matches_sequential_archive_state``).
+    * An empty, late, failed, or budget-refused prefetch degrades to the
+      exact unmodified inline decode path -- never a different outcome. A
+      decode error is deliberately NOT buffered so the writer's own inline
+      decode raises the identical exception at the identical point.
+
+    Memory bound: buffered decoded trees are accounted in ESTIMATED TREE
+    BYTES (``estimate_parsed_tree_bytes``, same currency as the spill's hot
+    cache) against an adaptive budget of physical RAM / 16 clamped to
+    [256 MiB, 2 GiB] (identical formula to
+    ``_ParsedSessionSpill._decoded_budget``). The worker blocks before
+    decoding the next item whenever the buffer is at budget, so peak
+    residency is ``budget + one in-flight tree``; items whose raw payload
+    alone exceeds ``budget // 4`` are never prefetched at all (they decode
+    inline, exactly as today), which caps the in-flight tree. Entries the
+    writer skipped (deferred cohorts, retirement) are dropped -- and their
+    budget released -- when the writer enters the next logical key.
+
+    Threading contract: only engaged on a genuinely free-threaded
+    interpreter (``parallel_threads_effective``), matching every other
+    CPU-bound parse thread in this module -- polylogue-7mtf measured GIL
+    parse threads starving the writer instead of helping. The worker reads
+    ``_ParsedSessionSpill._decoded``/``_whales`` dicts concurrently with
+    writer mutation (per-op-atomic dict access; a stale read only causes a
+    harmless duplicate decode) and opens its own ``mode=ro`` source.db
+    connection (WAL -- snapshot reads never block the writer) plus its own
+    spill-file connection (``busy_timeout`` bridges the journal-less spill's
+    short exclusive write windows).
+    """
+
+    def __init__(
+        self,
+        spill: _ParsedSessionSpill,
+        *,
+        archive_root: Path,
+        max_buffered_tree_bytes: int | None = None,
+    ) -> None:
+        self._spill = spill
+        self._archive_root = archive_root
+        self._source_db_path = archive_root / "source.db"
+        self._blob_root = archive_root / "blob"
+        if max_buffered_tree_bytes is not None:
+            self._budget = max_buffered_tree_bytes
+        else:
+            physical = effective_physical_memory_bytes() or 0
+            floor = _PREFETCH_BUFFER_MIN_TREE_BYTES
+            ceiling = _PREFETCH_BUFFER_MAX_TREE_BYTES
+            self._budget = max(floor, min(ceiling, physical // 16)) if physical else floor
+        self._lock = threading.Lock()
+        self._wakeup = threading.Condition(self._lock)
+        #: raw_id -> (sessions, payload_bytes, tree_bytes, from_reparse, seq)
+        self._buffer: dict[str, tuple[list[ParsedSession], int, int, bool, int]] = {}
+        self._buffered_tree_bytes = 0
+        self._key_start_seq: dict[str, int] = {}
+        self._writer_floor_seq = 0
+        self._generation = 0
+        self._closed = False
+        self._thread: threading.Thread | None = None
+        # Stats are worker/writer-shared simple counters; merged into the
+        # caller's stage-timings dict by ``close()`` on the writer thread.
+        # ``hits``/``reparse_hits`` count worker-side decodes (production,
+        # not necessarily consumption -- an entry the writer overtook is
+        # decoded but dropped); ``consumed`` counts writer-side pops that
+        # actually served a replay ``for_raw``, which is the number that
+        # proves the pipeline carried real work off the writer thread.
+        self.hits = 0
+        self.reparse_hits = 0
+        self.consumed = 0
+        self.decode_seconds = 0.0
+
+    def start_phase(self, ordered_keys: Sequence[str], extra_members: dict[str, set[str]]) -> None:
+        """Begin prefetching one replay phase's cohorts, in writer order.
+
+        Called on the writer thread. ``ordered_keys`` is the exact iteration
+        order of the writer's upcoming loop; ``extra_members`` supplements
+        the durable key->raw_ids mapping with in-memory census knowledge
+        (``provisional_full_raw_ids`` / ``membership_candidates``) so raws
+        whose durable binding sits in an uncommitted batch window are still
+        reachable. Any previous phase's worker is stopped and its unconsumed
+        buffer dropped first.
+        """
+        previous = self._thread
+        with self._wakeup:
+            self._generation += 1
+            generation = self._generation
+            self._drop_buffer_locked()
+            self._key_start_seq = {}
+            self._writer_floor_seq = 0
+            self._wakeup.notify_all()
+        if previous is not None:
+            previous.join()
+        if self._closed:
+            return
+        keys = tuple(ordered_keys)
+        members_snapshot = {key: frozenset(raw_ids) for key, raw_ids in extra_members.items()}
+        worker = threading.Thread(
+            target=self._run,
+            args=(generation, keys, members_snapshot),
+            name="replay-spill-prefetch",
+            daemon=True,
+        )
+        self._thread = worker
+        worker.start()
+
+    def pop(self, raw_id: str) -> tuple[list[ParsedSession], int, bool] | None:
+        """Consume one prefetched decode, releasing its budget share."""
+        with self._wakeup:
+            entry = self._buffer.pop(raw_id, None)
+            if entry is None:
+                return None
+            sessions, payload_bytes, tree_bytes, from_reparse, _seq = entry
+            self._buffered_tree_bytes -= tree_bytes
+            self.consumed += 1
+            self._wakeup.notify_all()
+            return sessions, payload_bytes, from_reparse
+
+    def enter_key(self, logical_key: str) -> None:
+        """Writer progress signal: drop buffered entries from earlier keys."""
+        with self._wakeup:
+            floor = self._key_start_seq.get(logical_key)
+            if floor is None:
+                return
+            self._writer_floor_seq = max(self._writer_floor_seq, floor)
+            stale = [raw_id for raw_id, entry in self._buffer.items() if entry[4] < floor]
+            for raw_id in stale:
+                _sessions, _payload, tree_bytes, _from_reparse, _seq = self._buffer.pop(raw_id)
+                self._buffered_tree_bytes -= tree_bytes
+            if stale:
+                self._wakeup.notify_all()
+
+    def close(self) -> dict[str, float]:
+        """Stop the worker, drop the buffer, and return merge-able stats."""
+        with self._wakeup:
+            self._closed = True
+            self._generation += 1
+            self._drop_buffer_locked()
+            self._wakeup.notify_all()
+        if self._thread is not None:
+            self._thread.join()
+            self._thread = None
+        stats: dict[str, float] = {}
+        if self.hits or self.reparse_hits or self.decode_seconds:
+            stats["spill_prefetch.hits"] = float(self.hits)
+            stats["spill_prefetch.reparse_hits"] = float(self.reparse_hits)
+            stats["spill_prefetch.consumed"] = float(self.consumed)
+            stats["spill_prefetch.decode_concurrent"] = self.decode_seconds
+        return stats
+
+    def _drop_buffer_locked(self) -> None:
+        self._buffer.clear()
+        self._buffered_tree_bytes = 0
+
+    def _run(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
+        try:
+            self._run_inner(generation, keys, extra_members)
+        except Exception:
+            # A prefetch failure must never take down the replay: the writer
+            # keeps decoding inline, identical to prefetching never having
+            # been enabled.
+            _LOGGER.warning("replay spill prefetch worker failed; falling back to inline decode", exc_info=True)
+
+    def _run_inner(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
+        if not keys:
+            return
+        # NOTE: ``with sqlite3.connect(...)`` would only manage a
+        # transaction, not the connection lifetime -- close explicitly.
+        source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
+        try:
+            plan, descriptors = self._build_plan(source_conn, keys, extra_members)
+        finally:
+            source_conn.close()
+        if not plan:
+            return
+        spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
+        try:
+            spill_conn.execute("PRAGMA busy_timeout = 30000")
+            for seq, raw_id in plan:
+                if self._wait_for_budget(generation, seq) is False:
+                    return
+                with self._lock:
+                    if seq < self._writer_floor_seq or raw_id in self._buffer:
+                        # Already passed by the writer (decoding it now would
+                        # be pure waste) or already buffered.
+                        continue
+                if raw_id in self._spill._decoded or raw_id in self._spill._whales:
+                    continue
+                decoded = self._decode(spill_conn, raw_id, descriptors)
+                if decoded is None:
+                    continue
+                sessions, payload_bytes, from_reparse = decoded
+                tree_bytes = estimate_parsed_tree_bytes(sessions)
+                with self._wakeup:
+                    if self._generation != generation or self._closed:
+                        return
+                    if seq < self._writer_floor_seq:
+                        # The writer already moved past this key while we
+                        # were decoding; buffering it would only pin budget.
+                        continue
+                    self._buffer[raw_id] = (sessions, payload_bytes, tree_bytes, from_reparse, seq)
+                    self._buffered_tree_bytes += tree_bytes
+        finally:
+            spill_conn.close()
+
+    def _wait_for_budget(self, generation: int, seq: int) -> bool:
+        """Block until buffer headroom exists; False means phase over."""
+        with self._wakeup:
+            while True:
+                if self._generation != generation or self._closed:
+                    return False
+                if not self._buffer or self._buffered_tree_bytes < self._budget:
+                    return True
+                if seq < self._writer_floor_seq:
+                    # Writer overtook this position while we were parked;
+                    # skip ahead rather than decode already-passed work.
+                    return True
+                self._wakeup.wait(timeout=1.0)
+
+    def _build_plan(
+        self,
+        source_conn: sqlite3.Connection,
+        keys: tuple[str, ...],
+        extra_members: dict[str, frozenset[str]],
+    ) -> tuple[list[tuple[int, str]], dict[str, tuple[Provider, str, str, int]]]:
+        """Resolve (seq, raw_id) decode order plus per-raw parse descriptors.
+
+        Durable membership comes from source.db on this thread's own
+        read-only connection (both mappings are committed before replay
+        begins; retirement-phase additions living in an open batch window
+        are covered by ``extra_members`` instead). Descriptors mirror
+        ``raw_revision_descriptor``'s SELECT exactly, minus the writer-side
+        connection affinity.
+        """
+        wanted = set(keys)
+        members: dict[str, list[str]] = {key: [] for key in keys}
+        for table in ("raw_sessions", "raw_session_memberships"):
+            for row in source_conn.execute(
+                f"SELECT logical_source_key, raw_id FROM {table} WHERE logical_source_key IS NOT NULL"
+            ):
+                key = str(row[0])
+                if key in wanted:
+                    members[key].append(str(row[1]))
+        for key, extra in extra_members.items():
+            if key in wanted:
+                members[key].extend(extra)
+        plan: list[tuple[int, str]] = []
+        key_start_seq: dict[str, int] = {}
+        seen: set[str] = set()
+        seq = 0
+        for key in keys:
+            key_start_seq[key] = seq
+            for raw_id in sorted(set(members[key])):
+                if raw_id in seen:
+                    continue
+                seen.add(raw_id)
+                plan.append((seq, raw_id))
+                seq += 1
+            # A key with no members still advances nothing; its start seq
+            # equals the next key's, which is exactly what enter_key needs.
+        with self._lock:
+            self._key_start_seq = key_start_seq
+        descriptors: dict[str, tuple[Provider, str, str, int]] = {}
+        planned = [raw_id for _seq, raw_id in plan]
+        for start in range(0, len(planned), 500):
+            chunk = planned[start : start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for row in source_conn.execute(
+                "SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, blob_size "
+                f"FROM raw_sessions WHERE raw_id IN ({placeholders})",
+                chunk,
+            ):
+                provider = provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2])
+                descriptors[str(row[0])] = (provider, str(row[3]), str(row[4]), int(row[5]))
+        return plan, descriptors
+
+    def _decode(
+        self,
+        spill_conn: sqlite3.Connection,
+        raw_id: str,
+        descriptors: dict[str, tuple[Provider, str, str, int]],
+    ) -> tuple[list[ParsedSession], int, bool] | None:
+        started = time.perf_counter()
+        rows = spill_conn.execute(
+            "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
+        ).fetchall()
+        if rows:
+            sessions = [cast(ParsedSession, pickle.loads(bytes(row[0]))) for row in rows]
+            self.hits += 1
+            self.decode_seconds += time.perf_counter() - started
+            return sessions, int(rows[0][1]), False
+        descriptor = descriptors.get(raw_id)
+        if descriptor is None:
+            return None
+        provider, blob_hash, source_path, payload_bytes = descriptor
+        if payload_bytes > self._budget // 4:
+            # Oversized decode: leave it to the writer's inline path so one
+            # in-flight tree can never balloon far past the buffer budget.
+            return None
+        _same_raw_id, sessions_or_none, error = census_parse_worker(
+            raw_id,
+            provider.value,
+            blob_hash,
+            source_path,
+            is_stream_record_provider(source_path, str(provider)),
+            str(self._blob_root),
+            str(self._source_db_path),
+        )
+        if error is not None or sessions_or_none is None:
+            # Do not buffer failures: the writer's inline decode raises the
+            # identical error at the identical point in the identical order.
+            return None
+        self.reparse_hits += 1
+        self.decode_seconds += time.perf_counter() - started
+        return sessions_or_none, payload_bytes, True
+
+
 class _ParsedSessionSpill:
     """Bounded parsed-session cache; durable raw bytes remain the replay source.
 
@@ -1572,6 +1989,12 @@ class _ParsedSessionSpill:
         self.conn.execute("PRAGMA journal_mode=OFF")
         self.conn.execute("PRAGMA synchronous=OFF")
         self.conn.execute("PRAGMA temp_store=MEMORY")
+        # Lever A: a ``_ReplaySpillPrefetcher`` reads this same file on its
+        # own connection while replay may still write here (for_raw fallback
+        # adds, whale-eviction spills). With no journal, both sides rely on
+        # plain file locking; a busy_timeout on each connection bridges the
+        # other side's short exclusive windows instead of failing instantly.
+        self.conn.execute("PRAGMA busy_timeout = 30000")
         self.conn.execute(
             """
             CREATE TABLE parsed_sessions (
@@ -1608,6 +2031,14 @@ class _ParsedSessionSpill:
             if physical
             else self._decoded_budget
         )
+        #: Optional Lever-A decode prefetcher (attached by
+        #: ``backfill_historical_revision_evidence`` when pipelined decode is
+        #: engaged). ``for_raw`` consults it AFTER the free RAM tiers and
+        #: BEFORE the sqlite/reparse fallbacks it exists to hide.
+        self._prefetcher: _ReplaySpillPrefetcher | None = None
+
+    def attach_prefetcher(self, prefetcher: _ReplaySpillPrefetcher) -> None:
+        self._prefetcher = prefetcher
 
     def __enter__(self) -> _ParsedSessionSpill:
         return self
@@ -1713,6 +2144,19 @@ class _ParsedSessionSpill:
         whale = self._whales.get(raw_id)
         if whale is not None:
             return whale[0], whale[1]
+        if self._prefetcher is not None:
+            prefetched = self._prefetcher.pop(raw_id)
+            if prefetched is not None:
+                sessions, payload_bytes, from_reparse = prefetched
+                if from_reparse:
+                    # Mirror the inline reparse fallback below exactly: a
+                    # freshly reparsed raw is (re)admitted to the cache tiers
+                    # so a later ``for_raw`` for the same raw hits RAM/sqlite
+                    # instead of reparsing a third time. sqlite-sourced
+                    # prefetch entries skip this -- their spill row is still
+                    # present, identical to the inline sqlite-hit path.
+                    self.add(raw_id, sessions, payload_bytes=payload_bytes)
+                return sessions, payload_bytes
         rows = self.conn.execute(
             "SELECT parsed, payload_bytes FROM parsed_sessions WHERE raw_id = ? ORDER BY logical_key", (raw_id,)
         ).fetchall()

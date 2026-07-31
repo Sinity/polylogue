@@ -2262,3 +2262,155 @@ def test_backfill_replays_whale_bearing_page_byte_identical_to_content(
         for raw_id in [*small_raw_ids, whale_raw_id]:
             message_count = conn.execute("SELECT message_count FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()
             assert message_count == (1,)
+
+
+def _pipeline_equivalence_corpus(root: Path) -> None:
+    """Mixed corpus exercising BOTH replay phases: independent single-session
+    raws (byte-proven cohorts) plus a multi-session bundle (membership
+    cohorts), so the pipelined decode is proven over each ``for_raw`` call
+    site in ``backfill_historical_revision_evidence``."""
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        for index in range(10):
+            payload = _bundle(_chatgpt_session(f"pipe-{index}", f"hello {index}", f"world {index}"))
+            archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=payload,
+                source_path=f"pipe-{index}.json",
+                acquired_at_ms=index,
+            )
+        bundle = _bundle(
+            _chatgpt_session("pipe-shared-a", "alpha", "beta"),
+            _chatgpt_session("pipe-shared-b", "gamma", "delta"),
+        )
+        archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=bundle,
+            source_path="pipe-bundle.json",
+            acquired_at_ms=100,
+        )
+
+
+def _index_content_manifest(root: Path) -> dict[str, list[tuple[object, ...]]]:
+    """Full ordered row dump of the content tables the replay writes --
+    the same equivalence currency as PR #3469's MANIFESTS IDENTICAL proof."""
+    order_column = {
+        "sessions": "session_id",
+        "messages": "message_id",
+        "blocks": "block_id",
+        "session_links": "src_session_id, dst_origin, dst_native_id, link_type",
+    }
+    with sqlite3.connect(root / "index.db") as conn:
+        return {
+            table: conn.execute(f"SELECT * FROM {table} ORDER BY {order}").fetchall()
+            for table, order in order_column.items()
+        }
+
+
+def _give_prefetch_worker_a_head_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make prefetch consumption deterministic for anti-vacuity assertions.
+
+    Production makes no ordering promise between the decode worker and the
+    writer -- an overtaken entry is simply dropped. Tests that assert
+    ``spill_prefetch.consumed > 0`` must therefore pin the race: wrap
+    ``start_phase`` so the (writer-thread) caller does not start its loop
+    until the worker has buffered a couple of entries or finished its plan.
+    """
+    original_start_phase = revision_backfill._ReplaySpillPrefetcher.start_phase
+
+    def start_phase_with_head_start(
+        self: revision_backfill._ReplaySpillPrefetcher,
+        ordered_keys: object,
+        extra_members: object,
+    ) -> None:
+        original_start_phase(self, ordered_keys, extra_members)  # type: ignore[arg-type]
+        worker = self._thread
+        for _ in range(1000):  # bounded ~10s; normally exits in milliseconds
+            with self._lock:
+                if len(self._buffer) >= 2:
+                    break
+            if worker is None or not worker.is_alive():
+                break
+            time.sleep(0.01)
+
+    monkeypatch.setattr(revision_backfill._ReplaySpillPrefetcher, "start_phase", start_phase_with_head_start)
+
+
+@pytest.mark.parametrize(
+    "spill_payload_cap",
+    [1, 512 * 1024 * 1024],
+    ids=["reparse-fallback-lane", "sqlite-spill-lane"],
+)
+def test_pipelined_decode_matches_serial_archive_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spill_payload_cap: int
+) -> None:
+    """Lever A equivalence proof: ``pipeline_decode=True`` (background
+    ``_ReplaySpillPrefetcher`` decode) must produce byte-identical archive
+    state to the forced-serial path, over BOTH decode fallbacks the
+    prefetcher hides. The spill's RAM tiers are shrunk to 1 byte so every
+    replay ``for_raw`` misses RAM and takes the parametrized lane:
+    ``spill_payload_cap=1`` refuses the sqlite spill too (every decode is a
+    reparse from durable raw bytes -- the real full-rebuild's dominant
+    shape), while the 512 MiB cap admits everything to the sqlite spill
+    (every decode is a pickle.loads).
+
+    Anti-vacuity: the pipelined run must report at least one CONSUMED
+    prefetch entry (``spill_prefetch.consumed`` -- a writer-side pop that
+    actually served a replay ``for_raw``), proving the buffer carried real
+    work rather than every pop missing into the unchanged inline path. The
+    writer can legitimately outrun the one background decoder on a tiny
+    corpus (a decoded-but-never-consumed entry is dropped, harmlessly), so
+    the race is made deterministic here: ``start_phase`` is wrapped to give
+    the decode worker a head start before the writer's loop begins.
+    """
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
+    _give_prefetch_worker_a_head_start(monkeypatch)
+
+    serial_root = tmp_path / "serial"
+    pipelined_root = tmp_path / "pipelined"
+    for root in (serial_root, pipelined_root):
+        _pipeline_equivalence_corpus(root)
+
+    serial_result = backfill_historical_revision_evidence(
+        serial_root, max_cached_payload_bytes=spill_payload_cap, pipeline_decode=False
+    )
+    pipelined_result = backfill_historical_revision_evidence(
+        pipelined_root, max_cached_payload_bytes=spill_payload_cap, pipeline_decode=True
+    )
+
+    assert serial_result == pipelined_result
+    assert _index_content_manifest(serial_root) == _index_content_manifest(pipelined_root)
+
+    assert pipelined_result.stage_timings_s.get("spill_prefetch.consumed", 0.0) > 0
+    assert "spill_prefetch.hits" not in serial_result.stage_timings_s
+    assert "spill_prefetch.consumed" not in serial_result.stage_timings_s
+
+
+def test_pipelined_decode_respects_batched_replay_commits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The rebuild caller combines pipelined decode with batched replay
+    commits (polylogue-amg1/oikv) -- the prefetcher's own read-only
+    source.db connection must coexist with the writer's long batch windows
+    (WAL snapshot reads), and the final state must still match the serial
+    per-cohort-commit ground truth."""
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
+
+    serial_root = tmp_path / "serial"
+    pipelined_root = tmp_path / "pipelined"
+    for root in (serial_root, pipelined_root):
+        _pipeline_equivalence_corpus(root)
+
+    serial_result = backfill_historical_revision_evidence(serial_root, pipeline_decode=False)
+    pipelined_result = backfill_historical_revision_evidence(
+        pipelined_root,
+        max_cached_payload_bytes=1,
+        commit_batch_size=200,
+        replay_commit_batch_size=200,
+        pipeline_decode=True,
+    )
+
+    assert serial_result == pipelined_result
+    assert _index_content_manifest(serial_root) == _index_content_manifest(pipelined_root)
