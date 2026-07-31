@@ -91,6 +91,18 @@ class ParsedContentBlock(BaseModel):
     tool_input: Mapping[str, object] | None = None
     media_type: str | None = None
     metadata: dict[str, object] | None = None
+    # polylogue-vf9x: provider-issued cryptographic attestation for a THINKING
+    # block (Claude's extended-thinking `signature`; Gemini's
+    # `thoughtSignatures` are the same construct under a different name).
+    # Since roughly 2026-06 Anthropic ships thinking blocks with an EMPTY
+    # `thinking` body plus this signature only -- text is genuinely absent
+    # from the wire, not merely unparsed. Recorded so the fact that the model
+    # reasoned survives even when no text does; deliberately excluded from
+    # `_block_content_hash`/lineage prefix signatures (write.py) because the
+    # provider re-signs on every replay, so including it would break
+    # citation-anchor and fork-prefix matching for otherwise-identical
+    # replayed content.
+    signature: str | None = None
     # Structured tool-result outcome (keystone): captured from the source's
     # own outcome fields (Claude toolUseResult.is_error, command exit codes)
     # so in-session outcomes are readable instead of regex-guessed from text.

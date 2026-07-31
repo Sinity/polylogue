@@ -129,6 +129,7 @@ def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
         tool_result_is_error=_row_int(row, "tool_result_is_error"),
         tool_result_exit_code=_row_int(row, "tool_result_exit_code"),
         tool_result_outcome_unknown_reason=_row_text(row, "tool_result_outcome_unknown_reason"),
+        signature=_row_text(row, "signature"),
     )
 
 

@@ -129,7 +129,36 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #
 # Both depend on parser/pricing semantics to populate/repair existing rows --
 # SEMANTIC_REPARSE, matching the v42/v44/v45/v46/v47/v48 precedent above.
-INDEX_SCHEMA_VERSION = 49
+#
+# polylogue-vf9x: v50 adds blocks.signature (nullable TEXT) and fixes two
+# independent reasoning/thinking-content-loss defects found via a full-corpus
+# audit:
+#   - Claude Code (base_support.py `content_blocks_from_segments`): since
+#     roughly 2026-06 the wire ships THINKING segments with an empty
+#     `thinking` body and a `signature` only. An `if text:` guard dropped the
+#     whole block, silently zeroing `thinking_count` archive-wide for every
+#     2026-06+ session -- a false "reasoning declined" signal, not a real
+#     absence. The block is now always recorded (text=NULL when the wire
+#     carries none, signature captured when present).
+#   - Codex (codex.py): standalone `reasoning` response_item records were
+#     read only by the generic session_event compactor, which has no
+#     `reasoning`-specific branch -- summary/content were never read at all
+#     (not merely char-counted), so 100% of Codex reasoning text was
+#     discarded and unreachable from FTS/search. `reasoning` records are now
+#     materialized as a THINKING-block message (summary text -- the ~24%
+#     recoverable case -- or content text when present; text=NULL when only
+#     encrypted_content survives).
+# Both are pure parser-semantics changes over the same already-declared
+# `blocks.block_type='thinking'` vocabulary plus one additive nullable
+# column -- the v42/v44/v45/v46/v48/v49 "values depend on parser semantics,
+# no clone-safe SQL delta" precedent. `signature` is deliberately excluded
+# from `_block_content_hash` and the lineage prefix signature (write.py)
+# because providers re-sign on every replay; including it would break
+# citation-anchor and fork-prefix matching for otherwise-identical replayed
+# content. Resolving existing rows (recovering historical thinking/reasoning
+# content) requires `polylogue ops reset --index && polylogued run` --
+# deliberately NOT executed by this declaration.
+INDEX_SCHEMA_VERSION = 50
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -436,6 +465,17 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- an unknown reason".
     tool_result_outcome_unknown_reason TEXT
         CHECK ({nullable_check("tool_result_outcome_unknown_reason", ToolResultUnknownReason)}),
+    -- polylogue-vf9x (v49): provider-issued cryptographic attestation for a
+    -- THINKING block (Claude's extended-thinking `signature`; Gemini's
+    -- `thoughtSignatures` are the same construct). Populated whenever the
+    -- wire carries one -- notably including the empty-body thinking blocks
+    -- Claude Code has shipped since ~2026-06, where this is the only
+    -- surviving evidence besides the block's existence. Deliberately
+    -- excluded from content_hash below and from the lineage prefix
+    -- signature (write.py): providers re-sign on every replay, so including
+    -- it would break fork-prefix/citation-anchor matching for otherwise-
+    -- identical replayed content.
+    signature       TEXT,
     -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
     -- (type, text, tool_name, canonical tool_input, semantic/media/language,
     -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/

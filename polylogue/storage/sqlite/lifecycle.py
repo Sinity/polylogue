@@ -478,6 +478,29 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # `polylogue ops reset --index && polylogued run`.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=50,
+        # polylogue-vf9x: adds blocks.signature (nullable TEXT) and fixes two
+        # independent reasoning/thinking-content-loss defects (see index.py's
+        # v50 header comment for the full writeup):
+        #   - Claude Code: an `if text:` guard in base_support.py's
+        #     `content_blocks_from_segments` dropped every THINKING segment
+        #     whose wire body is empty-string-plus-signature-only -- the
+        #     shape Claude has shipped since ~2026-06 -- silently zeroing
+        #     `thinking_count` for every affected session.
+        #   - Codex: standalone `reasoning` response_item records were read
+        #     only by the generic session_event compactor (no
+        #     `reasoning`-specific branch existed), so summary/content text
+        #     was never read into any surface at all.
+        # Both changes require re-parsing already-acquired raw evidence to
+        # recover the previously-dropped/discarded text, so this is the same
+        # v42/v44/v45/v46/v48/v49 "values depend on parser semantics" shape --
+        # not a free clone-safe fast-forward, even though `signature` is a
+        # real additive column. `polylogue ops reset --index && polylogued
+        # run` is required to recover historical thinking/reasoning content;
+        # deliberately NOT executed by this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
