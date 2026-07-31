@@ -65,11 +65,15 @@ sequence-step      ::= action-field-clause ("AND" action-field-clause)*
 action-field-clause ::= "action:" value | "tool:" value | "command:" value
                       | "path:" value | "output:" value | "text:" value
 pipeline-stage     ::= "sort" "by" "time" ["asc" | "desc"]
-                     | "group" "by" field
+                     | "group" "by" field ["," field]*
                      | "count"
+                     | "agg" agg-metric ["," agg-metric]*
                      | "sort" "by" ("count" | "key") ["asc" | "desc"]
                      | "limit" integer
                      | "offset" integer
+
+agg-metric         ::= "count"
+                     | ("sum" | "avg" | "min" | "max" | "p" digit+) ":" field
 ```
 
 <!-- BEGIN GENERATED: query-discovery -->
@@ -146,10 +150,45 @@ session Boolean lowerers against the terminal row's owning session. Semantic
 vector predicates still reject in a session pipeline stage until terminal row
 queries have explicit ranked-result semantics. Terminal pipeline stages
 currently support `sort by time [asc|desc]`,
-`group by FIELD | count`, aggregate `sort by count|key [asc|desc]`, `limit N`,
+`group by FIELD[,FIELD...] | count`, `group by FIELD[,FIELD...] | agg METRIC[,METRIC...]`,
+aggregate `sort by count|key [asc|desc]`, `limit N`,
 and `offset N` for SQL-backed terminal rows (`messages`, `actions`, `blocks`,
 `files`, `assertions`). Query-string limits narrow the surface limit instead of expanding
 caller/API caps, and query-string offsets are added to the caller offset.
+
+### Named aggregate metrics (`| agg ...`)
+
+`| agg ...` extends the `count`-only aggregate rollup with named,
+per-group reducer metrics (polylogue-fnm.1). It follows an optional
+`group by` stage (or reduces the whole matched row set with no `group by`)
+and precedes `limit`/`offset`:
+
+```bash
+polylogue --format json 'messages where session.repo:polylogue | group by role | agg count, avg:word_count, p90:word_count'
+polylogue --format json 'actions where session.repo:polylogue | group by tool | agg count, avg:is_error, sum:is_error'
+```
+
+Each metric is `count` (field-less) or `FN:FIELD`, where `FN` is `sum`,
+`avg`, `min`, `max`, or a nearest-rank percentile `pNN` (`p1`..`p99`), and
+`FIELD` is one of the unit's declared numeric metric fields (`message`:
+`word_count`; `action`: `is_error`, `exit_code`). An unsupported function or
+field raises a typed error naming the unit, the metric, and the supported
+field set. Metric labels are stable output keys: `count` for the count
+metric, otherwise `f"{fn}_{field}"` (e.g. `avg_word_count`).
+
+`avg`/`sum`/`min`/`max`/percentile reducers are **not** pushed down to SQL
+today — the `count`-only aggregate lowerer (`ArchiveStore.query_unit_counts`)
+computes exact grouped counts directly in SQL, but named-metric reduction
+fetches up to 50,000 predicate-matching rows through the unit's existing
+row query and reduces them in Python. The pipeline result payload reports
+this explicitly: `result.exact` is `true` when every matching row was
+fetched (the aggregate is exact), or `false` plus `result.sampled_rows` when
+the match set was larger than the cap (the aggregate is a bounded sample of
+the first 50,000 rows in time order, not the full population). Narrow the
+query with session/time/repo filters before trusting an `agg` result on a
+large archive; a `count`-only `| group by ... | count` stage stays exact at
+any scale because it is fully SQL-pushed.
+
 `runs`, `observed-events`, `context-snapshots`, and `delegations` are SQL-backed terminal rows
 over source-derived archive relations (polylogue-dab): main runs,
 `session_started` events, tool-finished events, and session-start context

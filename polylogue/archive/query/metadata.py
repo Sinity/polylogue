@@ -35,6 +35,10 @@ class QueryUnitDescriptor:
     cli_plain_renderer: str | None = None
     time_sort_supported: bool = True
     aggregate_group_fields: tuple[str, ...] = ()
+    #: Numeric fields a ``| agg ...`` pipeline stage may reduce with
+    #: sum/avg/min/max/percentile functions, in addition to the always-legal
+    #: field-less ``count`` metric. Empty means only ``count`` is available.
+    aggregate_metric_fields: tuple[str, ...] = ()
     fields: tuple[StructuralQueryFieldInfo, ...] = ()
     description: str = ""
     example: str = ""
@@ -805,6 +809,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_messages",
         cli_plain_renderer="message",
         aggregate_group_fields=("role", "type", "session.origin", "session.repo"),
+        aggregate_metric_fields=("word_count",),
         fields=_unit_info("message").fields,
         description=_unit_info("message").description,
         example=_unit_info("message").example,
@@ -828,6 +833,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
             "session.origin",
             "session.repo",
         ),
+        aggregate_metric_fields=("is_error", "exit_code"),
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
         example=_unit_info("action").example,
@@ -1321,6 +1327,20 @@ def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStage
                     source_unit=descriptor.unit,
                     lowerer_kind=descriptor.lowerer_kind,
                 ),
+            )
+        )
+    if descriptor.aggregate_metric_fields:
+        example_field = descriptor.aggregate_metric_fields[0]
+        stages.append(
+            QueryPipelineStageInfo(
+                value="agg",
+                insert=f"agg count, avg:{example_field}",
+                description=(
+                    "Reduce each preceding group with named metrics: `count`, or "
+                    f"`sum|avg|min|max|pNN:FIELD` over {', '.join(descriptor.aggregate_metric_fields)}."
+                ),
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
             )
         )
     stages.extend(

@@ -417,16 +417,37 @@ class QueryUnitSort:
 
 
 QueryUnitPipelineStageKind = Literal[
-    "session_scope", "sort", "limit", "offset", "group", "count", "transform", "terminal"
+    "session_scope", "sort", "limit", "offset", "group", "count", "agg", "transform", "terminal"
 ]
 
 #: Closed vocabulary of terminal actions that a query-unit pipeline can end in.
 #: Each action name must have a registered executor in
 #: :data:`polylogue.archive.query.unit_results.TERMINAL_ACTION_EXECUTORS`.
 #: ``rows`` returns the resolved unit rows; ``count`` returns the aggregate
-#: ``group by ... | count`` rollup. Future actions (read/analyze/bundle/
-#: postmortem) register their unit-level executors here as they land (#2006).
-QueryUnitTerminalAction = Literal["rows", "count"]
+#: ``group by ... | count`` rollup; ``agg`` returns the named-metric
+#: ``group by ... | agg count, avg:FIELD, ...`` rollup (polylogue-fnm.1).
+#: Future actions (read/analyze/bundle/postmortem) register their unit-level
+#: executors here as they land (#2006).
+QueryUnitTerminalAction = Literal["rows", "count", "agg"]
+
+#: Closed vocabulary of reducer functions an ``| agg ...`` metric spec may
+#: name. ``count`` is field-less; every other function reduces a declared
+#: :attr:`~polylogue.archive.query.metadata.QueryUnitDescriptor.aggregate_metric_fields`
+#: entry. Percentiles are ``pNN`` for ``NN`` in ``1..99`` and are matched
+#: separately via :func:`percentile_rank` since the vocabulary is unbounded.
+AggregateMetricFunction = Literal["count", "sum", "avg", "min", "max"]
+AGGREGATE_METRIC_FUNCTIONS: frozenset[str] = frozenset({"count", "sum", "avg", "min", "max"})
+
+
+def percentile_rank(fn: str) -> int | None:
+    """Return the percentile ``1..99`` named by ``fn`` (e.g. ``p90`` -> 90), or ``None``."""
+
+    if len(fn) < 2 or fn[0] != "p" or not fn[1:].isdigit():
+        return None
+    rank = int(fn[1:])
+    return rank if 1 <= rank <= 99 else None
+
+
 SESSION_SOURCE_UNIT: Literal["sessions"] = "sessions"
 SessionTerminalAction = Literal["read", "analyze", "select", "mark", "delete", "continue"]
 SESSION_TERMINAL_ACTIONS: frozenset[SessionTerminalAction] = frozenset(
@@ -521,6 +542,41 @@ class QueryUnitCountStage:
 
 
 @dataclass(frozen=True)
+class QueryUnitAggMetric:
+    """One named reducer in an ``| agg ...`` pipeline stage (polylogue-fnm.1).
+
+    ``fn`` is ``count`` (field-less) or one of ``sum``/``avg``/``min``/``max``/
+    ``pNN`` reducing ``field``. ``label`` is the stable output column name:
+    ``count`` for the count metric, otherwise ``f"{fn}_{field}"``.
+    """
+
+    fn: str
+    field: str | None
+    label: str
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {"fn": self.fn, "label": self.label}
+        if self.field is not None:
+            payload["field"] = self.field
+        return payload
+
+
+@dataclass(frozen=True)
+class QueryUnitAggStage:
+    """Named-metric aggregation stage in a terminal query-unit pipeline (polylogue-fnm.1).
+
+    Unlike :class:`QueryUnitCountStage` (a single unnamed count), this stage
+    carries an ordered list of named metrics computed per preceding group
+    (or over the whole matched row set when no ``group by`` precedes it).
+    """
+
+    metrics: tuple[QueryUnitAggMetric, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {"kind": "agg", "metrics": [metric.to_payload() for metric in self.metrics]}
+
+
+@dataclass(frozen=True)
 class QueryUnitTransformStage:
     """Named row-shaping transform stage in a terminal query-unit pipeline.
 
@@ -569,6 +625,7 @@ QueryUnitPipelineStage = (
     | QueryUnitOffsetStage
     | QueryUnitGroupStage
     | QueryUnitCountStage
+    | QueryUnitAggStage
     | QueryUnitTransformStage
     | QueryUnitTerminalStage
 )
@@ -587,6 +644,7 @@ class QueryUnitPipeline:
     sort: QueryUnitSort | None = None
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
+    agg_metrics: tuple[QueryUnitAggMetric, ...] | None = None
     terminal: QueryUnitTerminalStage = QueryUnitTerminalStage(action="rows")
 
     def to_payload(self) -> dict[str, object]:
@@ -613,6 +671,8 @@ class QueryUnitPipeline:
             result["group_by"] = self.group_by
         if self.aggregate is not None:
             result["aggregate"] = self.aggregate
+        if self.agg_metrics is not None:
+            result["agg_metrics"] = [metric.to_payload() for metric in self.agg_metrics]
         if self.limit is not None:
             result["limit"] = self.limit
         if self.offset is not None:
@@ -667,13 +727,20 @@ class QueryUnitSource:
     sort: QueryUnitSort | None = None
     group_by: str | None = None
     aggregate: Literal["count"] | None = None
+    agg_metrics: tuple[QueryUnitAggMetric, ...] | None = None
     pipeline_stages: tuple[QueryUnitPipelineStage, ...] = ()
 
     @property
     def pipeline(self) -> QueryUnitPipeline:
         """Return the typed executable pipeline for this terminal source."""
 
-        terminal_action: QueryUnitTerminalAction = "count" if self.aggregate == "count" else "rows"
+        terminal_action: QueryUnitTerminalAction
+        if self.agg_metrics is not None:
+            terminal_action = "agg"
+        elif self.aggregate == "count":
+            terminal_action = "count"
+        else:
+            terminal_action = "rows"
         return QueryUnitPipeline(
             source_unit=self.unit,
             predicate=self.predicate,
@@ -684,6 +751,7 @@ class QueryUnitSource:
             sort=self.sort,
             group_by=self.group_by,
             aggregate=self.aggregate,
+            agg_metrics=self.agg_metrics,
             terminal=QueryUnitTerminalStage(action=terminal_action),
         )
 
@@ -2189,6 +2257,71 @@ def _validate_aggregate_group_field(unit: QueryUnitName, field: str) -> None:
         )
 
 
+def _validate_aggregate_metric_field(unit: QueryUnitName, fn: str, field: str) -> None:
+    descriptor = query_unit_descriptor(unit)
+    supported_fields = frozenset(descriptor.aggregate_metric_fields) if descriptor is not None else frozenset()
+    if field not in supported_fields:
+        supported = ", ".join(sorted(supported_fields))
+        if not supported:
+            raise ExpressionCompileError(
+                f"pipeline `agg {fn}:{field}` is not supported for {unit} rows; "
+                f"{unit} has no numeric metric fields, only `agg count` is available",
+                field="agg",
+            )
+        raise ExpressionCompileError(
+            f"pipeline `agg {fn}:{field}` is not supported for {unit} rows; supported metric fields: {supported}",
+            field="agg",
+        )
+
+
+def _parse_agg_metric(unit: QueryUnitName, raw: str) -> QueryUnitAggMetric:
+    spec = raw.strip()
+    if not spec:
+        raise ExpressionCompileError("pipeline `agg` stage requires a metric after every comma", field="agg")
+    if ":" not in spec:
+        if spec.lower() != "count":
+            raise ExpressionCompileError(
+                f"unsupported `agg` metric {spec!r}; expected `count` or `FN:FIELD` "
+                "(FN is one of sum, avg, min, max, or a percentile pNN, e.g. p90)",
+                field="agg",
+            )
+        return QueryUnitAggMetric(fn="count", field=None, label="count")
+    fn_raw, _, field = spec.partition(":")
+    fn = fn_raw.strip().lower()
+    field = field.strip()
+    if not field:
+        raise ExpressionCompileError(f"pipeline `agg {fn}:` requires a field name", field="agg")
+    is_percentile = percentile_rank(fn) is not None
+    if fn not in AGGREGATE_METRIC_FUNCTIONS and not is_percentile:
+        raise ExpressionCompileError(
+            f"unsupported `agg` function {fn_raw.strip()!r}; supported functions are "
+            "count, sum, avg, min, max, and percentiles p1..p99",
+            field="agg",
+        )
+    if fn == "count":
+        raise ExpressionCompileError("pipeline `agg count` does not take a field; use plain `count`", field="agg")
+    _validate_aggregate_metric_field(unit, fn, field)
+    return QueryUnitAggMetric(fn=fn, field=field, label=f"{fn}_{field}")
+
+
+def _parse_agg_stage(unit: QueryUnitName, stage: str) -> tuple[QueryUnitAggMetric, ...] | None:
+    normalized = " ".join(stage.split())
+    if not normalized.lower().startswith("agg "):
+        return None
+    raw_metrics = normalized[len("agg ") :].strip()
+    if not raw_metrics:
+        raise ExpressionCompileError("pipeline `agg` stage requires at least one metric", field="agg")
+    metrics = tuple(_parse_agg_metric(unit, part) for part in raw_metrics.split(","))
+    labels = [metric.label for metric in metrics]
+    if len(labels) != len(set(labels)):
+        raise ExpressionCompileError(
+            f"pipeline `agg` stage has duplicate metrics: "
+            f"{', '.join(sorted({label for label in labels if labels.count(label) > 1}))}",
+            field="agg",
+        )
+    return metrics
+
+
 def _query_unit_lowerer_kind(unit: QueryUnitName) -> QueryUnitLowererKind:
     descriptor = query_unit_descriptor(unit)
     if descriptor is None or not descriptor.terminal_supported:
@@ -2234,7 +2367,7 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
     sort = _parse_sort_stage(stage)
     if sort is not None:
         if sort.field == "time":
-            if source.aggregate is not None:
+            if source.aggregate is not None or source.agg_metrics is not None:
                 raise ExpressionCompileError(
                     "pipeline `sort by time` must appear before aggregate stages", field="sort"
                 )
@@ -2247,17 +2380,25 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                     field="sort",
                 )
             _ensure_sql_row_pipeline_lowerer(source.unit, stage="sort by time")
-        elif source.aggregate != "count":
-            raise ExpressionCompileError(
-                "pipeline `sort by count` and `sort by key` require an aggregate `count` stage",
-                field="sort",
-            )
-        elif source.limit is not None or source.offset is not None:
-            raise ExpressionCompileError(
-                "pipeline aggregate `sort by` must appear before `limit` and `offset`",
-                field="sort",
-            )
-        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage=f"sort by {sort.field}")
+        else:
+            if sort.field == "count" and source.aggregate != "count":
+                raise ExpressionCompileError(
+                    "pipeline `sort by count` requires an aggregate `count` stage; "
+                    "an `agg` stage has no single unnamed count to sort by -- "
+                    "use `sort by key` to order by group instead",
+                    field="sort",
+                )
+            if sort.field == "key" and source.aggregate != "count" and source.agg_metrics is None:
+                raise ExpressionCompileError(
+                    "pipeline `sort by key` requires an aggregate `count` or `agg` stage",
+                    field="sort",
+                )
+            if source.limit is not None or source.offset is not None:
+                raise ExpressionCompileError(
+                    "pipeline aggregate `sort by` must appear before `limit` and `offset`",
+                    field="sort",
+                )
+            _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage=f"sort by {sort.field}")
         return replace(
             source,
             sort=sort,
@@ -2300,6 +2441,24 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
                 QueryUnitCountStage(),
             ),
         )
+    agg_metrics = _parse_agg_stage(source.unit, stage)
+    if agg_metrics is not None:
+        if source.aggregate is not None or source.agg_metrics is not None:
+            raise ExpressionCompileError("pipeline `agg` cannot follow `count` or another `agg` stage", field="agg")
+        if source.sort is not None:
+            raise ExpressionCompileError("pipeline `sort by time` cannot feed aggregate stages", field="agg")
+        if source.limit is not None or source.offset is not None:
+            raise ExpressionCompileError("pipeline `agg` must appear before `limit` and `offset`", field="agg")
+        _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="agg")
+        _ensure_aggregate_lowerer_supported(source.unit, stage="agg")
+        return replace(
+            source,
+            agg_metrics=agg_metrics,
+            pipeline_stages=(
+                *source.pipeline_stages,
+                QueryUnitAggStage(agg_metrics),
+            ),
+        )
     limit = _parse_non_negative_int_stage(stage, "limit")
     if limit is not None:
         if limit == 0:
@@ -2324,7 +2483,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         )
     raise ExpressionCompileError(
         f"unsupported pipeline stage {stage!r}; supported terminal stages are "
-        "`sort by time|count|key [asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`",
+        "`sort by time|count|key [asc|desc]`, `group by FIELD`, `count`, "
+        "`agg count|FN:FIELD[,...]`, `limit N`, and `offset N`",
         field=None,
     )
 
@@ -2355,16 +2515,16 @@ def _parse_plain_unit_source_expression(expression: str) -> QueryUnitSource | No
 #: it is matched by exact equality instead. Used only to *recognize* that a
 #: stage has the shape of a terminal pipeline action -- never to validate its
 #: contents, so this never raises.
-_PIPELINE_STAGE_KEYWORD_PREFIXES: tuple[str, ...] = ("sort by ", "group by ", "limit ", "offset ")
+_PIPELINE_STAGE_KEYWORD_PREFIXES: tuple[str, ...] = ("sort by ", "group by ", "limit ", "offset ", "agg ")
 
 
 def _pipeline_stage_keyword(stage: str) -> str | None:
     """Return the terminal pipeline stage keyword ``stage`` looks like, if any.
 
     Distinguishes "this stage has the shape of `count`/`group by`/`sort by`/
-    `limit`/`offset` but was misapplied" from "this stage is unrecognized
-    entirely", so callers can raise a specific, actionable error instead of a
-    generic one for the former.
+    `limit`/`offset`/`agg` but was misapplied" from "this stage is
+    unrecognized entirely", so callers can raise a specific, actionable error
+    instead of a generic one for the former.
     """
 
     normalized = " ".join(stage.split()).lower()
@@ -2417,6 +2577,7 @@ def _parse_pipeline_unit_source(expression: str) -> QueryUnitSource | None:
             sort=terminal_source.sort,
             group_by=terminal_source.group_by,
             aggregate=terminal_source.aggregate,
+            agg_metrics=terminal_source.agg_metrics,
             pipeline_stages=(
                 QueryUnitSessionScopeStage(session_predicate),
                 *terminal_source.pipeline_stages,
@@ -2704,6 +2865,8 @@ def _explain_unit_source_execution_legs(source: QueryUnitSource) -> tuple[str, .
     legs = {f"terminal-{source.unit}-rows", *_predicate_execution_legs(source.predicate)}
     if source.aggregate is not None:
         legs.add(f"terminal-{source.unit}-{source.aggregate}-aggregate")
+    if source.agg_metrics is not None:
+        legs.add(f"terminal-{source.unit}-agg-aggregate")
     if _query_unit_uses_runtime_transform(source.unit):
         legs.add("runtime-transform")
     else:
@@ -2744,6 +2907,8 @@ def _ast_payload(
             unit_payload["group_by"] = unit_source.group_by
         if unit_source.aggregate is not None:
             unit_payload["aggregate"] = unit_source.aggregate
+        if unit_source.agg_metrics is not None:
+            unit_payload["agg_metrics"] = [metric.to_payload() for metric in unit_source.agg_metrics]
         if unit_source.pipeline_stages:
             unit_payload["pipeline_stages"] = [stage.to_payload() for stage in unit_source.pipeline_stages]
         unit_payload["pipeline"] = unit_source.pipeline.to_payload()
@@ -3559,6 +3724,9 @@ __all__ = [
     "ReferenceQueryPipeline",
     "ResolvedRefOperand",
     "QueryUnitPipeline",
+    "QueryUnitAggMetric",
+    "QueryUnitAggStage",
+    "percentile_rank",
     "QueryUnitCountStage",
     "QueryUnitGroupStage",
     "QueryUnitLimitStage",
