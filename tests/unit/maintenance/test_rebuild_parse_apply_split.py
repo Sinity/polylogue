@@ -27,12 +27,14 @@ components are not independently fabricatable from this test's assertions.
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
 
 from polylogue.config import Config
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+from polylogue.sources import revision_backfill
 from polylogue.sources.census_parse_stage import CensusParseStage
 from polylogue.sources.revision_backfill import split_parse_and_apply_seconds
 from tests.infra.revision_backfill_benchmark import build_independent_raw_corpus
@@ -157,3 +159,86 @@ def test_rebuild_index_from_source_sync_warms_prefetch_cache_when_caller_omits_o
     # Every raw the census phase went on to process was offered to the warmer
     # first -- the exact set this pass selected, not a subset/superset.
     assert set(warmed_raw_id_batches[0]) == set(raw_ids)
+
+
+def _give_replay_spill_prefetcher_a_head_start(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deterministic race pin, mirroring ``test_revision_backfill.py``'s
+    identically-named helper: production makes no ordering promise between
+    the background decode worker and the writer, so a tiny corpus can let
+    the writer finish before the worker buffers anything, making
+    ``spill_prefetch.consumed`` a coin flip. Give the worker a bounded head
+    start before the writer's own replay loop begins."""
+    original_start_phase = revision_backfill._ReplaySpillPrefetcher.start_phase
+
+    def start_phase_with_head_start(
+        self: revision_backfill._ReplaySpillPrefetcher,
+        ordered_keys: object,
+        extra_members: object,
+    ) -> None:
+        original_start_phase(self, ordered_keys, extra_members)  # type: ignore[arg-type]
+        worker = self._thread
+        for _ in range(1000):  # bounded ~10s; normally exits in milliseconds
+            with self._lock:
+                if len(self._buffer) >= 2:
+                    break
+            if worker is None or not worker.is_alive():
+                break
+            time.sleep(0.01)
+
+    monkeypatch.setattr(revision_backfill._ReplaySpillPrefetcher, "start_phase", start_phase_with_head_start)
+
+
+def test_rebuild_index_from_source_sync_auto_engages_pipelined_decode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-2cuv: BOTH production rebuild routes -- the offline CLI
+    (``polylogue ops maintenance rebuild-index``) and the daemon bulk-rebuild
+    loop (``daemon/bulk_rebuild.py::run_daemon_bulk_rebuild_pass``) -- drive
+    this exact ``rebuild_index_from_source_sync`` entry point (the daemon via
+    its own write coordinator, unmodified). Both therefore inherit the SAME
+    ``pipeline_decode`` auto-engagement inside ``backfill_historical_revision_
+    evidence`` (Lever A / PR #3478's ``_ReplaySpillPrefetcher``) with zero
+    per-route wiring -- there is no separate knob either route could forget
+    to set.
+
+    Anti-vacuity: this drives the real production entry point with a corpus
+    sized at/above ``_PIPELINE_DECODE_MIN_COHORTS`` (independent raws, so
+    every raw is its own logical cohort) and shrinks the spill's RAM cache
+    tiers to 1 byte so every replay ``for_raw`` misses RAM and must go
+    through the prefetcher-or-inline decode fork. If pipeline_decode were
+    hardcoded ``False`` somewhere between ``rebuild_index_from_source_sync``
+    and ``backfill_historical_revision_evidence`` (e.g. a parameter dropped
+    while threading a future kwarg), ``spill_prefetch.consumed`` would never
+    appear in the stage timings and this assertion would fail -- proving the
+    auto-engagement path is actually reached from the production route, not
+    only from the lower-level unit tests that call
+    ``backfill_historical_revision_evidence`` directly.
+    """
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
+    monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
+    _give_replay_spill_prefetcher_a_head_start(monkeypatch)
+
+    root = tmp_path / "archive"
+    cohort_count = revision_backfill._PIPELINE_DECODE_MIN_COHORTS + 4
+    raw_ids = build_independent_raw_corpus(root, raw_count=cohort_count, avg_payload_bytes=20_000)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            promote=True,
+            raw_batch_size=500,  # single page: whole corpus fits in one pass
+        )
+    )
+
+    assert receipt.status == "replayed"
+    stage_timings_s = receipt.replay["stage_timings_s"]
+    assert isinstance(stage_timings_s, dict)
+    assert stage_timings_s.get("spill_prefetch.consumed", 0.0) > 0, (
+        "rebuild_index_from_source_sync did not auto-engage the background "
+        "replay-spill prefetcher (Lever A) for a cohort count above "
+        "_PIPELINE_DECODE_MIN_COHORTS -- census+spill_load decode is no "
+        "longer proven to overlap the writer's apply work on this route"
+    )
+    assert receipt.selected_raw_count == len(raw_ids)
