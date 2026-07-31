@@ -2227,6 +2227,47 @@ describe("background receiver diagnostics", () => {
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("accepts a temporary chat's freshness hint even though its real ephemeral id differs from the URL sentinel", async () => {
+    // background.js's conversationIdForUrl returns TEMPORARY_CHAT_SENTINEL
+    // for a ChatGPT temporary-chat URL (there is no /c/<id> to read), but
+    // chatgpt.js's freshness hints always carry the conversation's true
+    // ephemeral id (read from the intercepted native payload). Before this
+    // fix, the sender-identity check compared the sentinel against that real
+    // id, found a mismatch, and threw -- rejecting every freshness hint a
+    // temporary chat ever sent after its first capture, so later turns were
+    // never re-captured (P1 finding on PR #3411's Codex review).
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const response = await sendRuntimeMessage(
+      {
+        type: "polylogue.captureFreshnessHint",
+        provider: "chatgpt",
+        provider_session_id: "temp-conv-ephemeral-42",
+        reason: "generation_completed",
+        delay_ms: 0,
+      },
+      { tab: { id: 42, url: "https://chatgpt.com/?temporary-chat=true" } },
+    );
+
+    expect(response.ok).toBe(true);
+    expect(stored.polylogueCaptureFreshnessQueue.entries["chatgpt:temp-conv-ephemeral-42"]).toBeDefined();
+  });
+
+  it("still rejects a freshness hint whose id does not match an ordinary (non-temporary) tab's own URL", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    const response = await sendRuntimeMessage(
+      {
+        type: "polylogue.captureFreshnessHint",
+        provider: "chatgpt",
+        provider_session_id: "some-other-conversation",
+        reason: "generation_completed",
+        delay_ms: 0,
+      },
+      { tab: { id: 42, url: "https://chatgpt.com/c/conv-actually-open" } },
+    );
+
+    expect(response).toMatchObject({ ok: false, error: "freshness_hint_sender_identity_mismatch" });
+  });
+
   it("does not fetch a missing conversation while automatic capture is paused", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-paused", title: "ChatGPT" }];
     await sendRuntimeMessage({
