@@ -72,6 +72,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         pending_drafts=_json_object_list(
             _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
         ),
+        reported_cost_usd=_row_float(row, "reported_cost_usd"),
     )
 
 

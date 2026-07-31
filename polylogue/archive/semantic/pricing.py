@@ -660,7 +660,7 @@ def _exact_estimate(
         basis=basis,
         usage=effective_usage,
         components=(CostComponentPayload(name="provider_reported_total", usd=total_usd),),
-        provenance=("archive_provider_reported_cost",),
+        provenance=("archive_session_reported_cost",),
     )
 
 
@@ -791,8 +791,56 @@ def estimate_message_cost(
 
 
 def _session_level_estimate(session: Session) -> CostEstimatePayload | None:
-    del session
-    return None
+    """Return the session's exact provider-reported cost, when the origin supplies one.
+
+    ``session.reported_cost_usd`` (``sessions.reported_cost_usd``, v49) is the
+    origin's own verbatim dollar total -- currently populated for
+    claude-code-session (``costUSD``) and hermes-session (``state.db``).
+    ``None`` means the origin never reports a session-level total, not a
+    measured zero; a genuine ``$0.00`` reported total is preserved (it flows
+    through as ``0.0``, same as any other reported value).
+
+    Token usage and the dominant model are read from ``session.messages`` for
+    the parallel catalog comparison ``_exact_estimate`` builds -- this is
+    supplementary evidence, not the token-total authority (that role belongs
+    to ``session_model_usage``, read by ``compute_session_cost`` via its
+    ``model_usage`` parameter; this function is not on that path).
+    """
+
+    if session.reported_cost_usd is None:
+        return None
+
+    origin = session.origin.value
+    # message_model_name()/message_tokens() are deliberate stubs for hydrated
+    # messages (#1256) -- per-message model/token identity for a hydrated
+    # ``Session`` lives on the ``Message`` row's own columns, not that
+    # provider-meta helper pair. estimate_message_cost() already carries the
+    # exact same-column fallback (and the harmonized-message path, for
+    # sources that populate it), so per-message harvesting here reuses it
+    # rather than duplicating that fallback logic.
+    model_counts: Counter[str] = Counter()
+    usage = CostUsagePayload()
+    for message in session.messages:
+        message_estimate = estimate_message_cost(message, origin=origin, session_id=str(session.id))
+        if message_estimate.model_name:
+            model_counts[message_estimate.model_name] += 1
+        message_usage = message_estimate.usage
+        usage = CostUsagePayload(
+            input_tokens=usage.input_tokens + message_usage.input_tokens,
+            output_tokens=usage.output_tokens + message_usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens + message_usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens + message_usage.cache_write_tokens,
+            total_tokens=usage.total_tokens + message_usage.total_tokens,
+        )
+    dominant_model = model_counts.most_common(1)[0][0] if model_counts else None
+
+    return _exact_estimate(
+        origin=session.origin.value,
+        total_usd=session.reported_cost_usd,
+        session_id=str(session.id),
+        model_name=dominant_model,
+        usage=usage,
+    )
 
 
 def _dominant_model(estimates: Iterable[CostEstimatePayload]) -> tuple[str | None, str | None]:

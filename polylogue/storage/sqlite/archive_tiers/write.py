@@ -170,6 +170,8 @@ class ArchiveSessionEnvelope:
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
+    # polylogue-gt1z (v49): exact provider-reported session cost total.
+    reported_cost_usd: float | None = None
     orphan_attachments: tuple[ArchiveAttachmentRow, ...] = ()
     # 4ts.6: whether ``messages`` is the FULL logical transcript, or a
     # silently truncated one -- a prefix-sharing child composition can drop
@@ -532,13 +534,13 @@ def write_parsed_session_to_archive(
                     title, session_kind, title_source, title_ref, title_confidence,
                     display_name, run_settings_json, pending_drafts_json,
                     git_branch, git_repository_url, commit_hash,
-                    instructions_text, reported_duration_ms, provider_project_ref,
+                    instructions_text, reported_duration_ms, reported_cost_usd, provider_project_ref,
                     message_count, word_count, tool_use_count, thinking_count,
                     paste_count, user_message_count, authored_user_message_count,
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     branch_type = excluded.branch_type,
@@ -562,6 +564,7 @@ def write_parsed_session_to_archive(
                     provider_project_ref = excluded.provider_project_ref,
                     instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
                     reported_duration_ms = excluded.reported_duration_ms,
+                    reported_cost_usd = excluded.reported_cost_usd,
                     content_hash = excluded.content_hash,
                     created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
                     updated_at_ms = CASE
@@ -588,6 +591,7 @@ def write_parsed_session_to_archive(
                     _sqlite_text(session.git_commit_hash),
                     _sqlite_text(session.instructions_text),
                     session.reported_duration_ms,
+                    session.reported_cost_usd,
                     _sqlite_text(session.provider_project_ref),
                     session_counts["message_count"],
                     session_counts["word_count"],
@@ -1143,7 +1147,8 @@ def read_archive_session_envelope(
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
                title_source, title_ref, title_confidence, instructions_text,
-               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
+               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref,
+               reported_cost_usd
         FROM sessions
         WHERE session_id = ?
         """,
@@ -1335,6 +1340,7 @@ def read_archive_session_envelope(
         git_branch=session["git_branch"],
         git_repository_url=session["git_repository_url"],
         provider_project_ref=session["provider_project_ref"],
+        reported_cost_usd=session["reported_cost_usd"],
         orphan_attachments=tuple(attachments_by_message.get(None, ())),
     )
 
@@ -1519,7 +1525,8 @@ def read_archive_session_page(
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
                title_source, title_ref, title_confidence, instructions_text,
-               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref
+               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref,
+               reported_cost_usd
         FROM sessions
         WHERE session_id = ?
         """,
@@ -1593,6 +1600,7 @@ def read_archive_session_page(
         git_branch=session["git_branch"],
         git_repository_url=session["git_repository_url"],
         provider_project_ref=session["provider_project_ref"],
+        reported_cost_usd=session["reported_cost_usd"],
         orphan_attachments=orphan_attachments,
         total_message_count=total_message_count,
     )
@@ -4045,7 +4053,7 @@ def _provider_usage_has_cumulative_total(conn: sqlite3.Connection, session_id: s
 
 
 def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *, keep_model: str) -> None:
-    """Zero origin-reported token rollups for all models except ``keep_model``.
+    """Zero stale cumulative-rollup token totals for all models except ``keep_model``.
 
     The Codex cumulative total is session-global, so exactly one rollup row
     should carry it. When an append window's latest cumulative is attributed to
@@ -4053,6 +4061,19 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     holds a (now-subsumed) cumulative; left in place it would be summed back in
     on read. This resets those stale token counts to zero while keeping the
     model row itself (#2472).
+
+    Scoped to models with no genuine per-message token evidence (``NOT
+    EXISTS`` in ``messages``): a row's tokens can only have come from the
+    (now-stale) provider-usage-event cumulative mechanism this function is
+    cleaning up after, never from ``_aggregate_message_tokens_into_model_usage``.
+    Before polylogue-shnc this was scoped by ``cost_provenance =
+    'origin_reported'``, which worked only because that label was, at the
+    time, written exclusively by the cumulative-rollup path; it no longer
+    discriminates cleanly once provider-usage-token rollups are catalog-priced
+    onto the same ``'priced'`` label real per-message pricing uses (see
+    ``_price_provider_usage_tokens``), so this checks the real per-message
+    evidence directly instead of a provenance string that used to be a proxy
+    for it.
     """
     conn.execute(
         """
@@ -4063,13 +4084,67 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
             cache_write_tokens = 0,
             cost_usd = NULL,
             priced_with = NULL,
-            priced_at_ms = NULL
+            priced_at_ms = NULL,
+            cost_provenance = NULL
         WHERE session_id = ?
           AND model_name != ?
-          AND cost_provenance = 'origin_reported'
+          AND NOT EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.session_id = session_model_usage.session_id
+                AND m.model_name = session_model_usage.model_name
+                AND (
+                    COALESCE(m.input_tokens, 0) != 0
+                    OR COALESCE(m.output_tokens, 0) != 0
+                    OR COALESCE(m.cache_read_tokens, 0) != 0
+                    OR COALESCE(m.cache_write_tokens, 0) != 0
+                )
+          )
         """,
         (session_id, keep_model),
     )
+
+
+def _price_provider_usage_tokens(
+    conn: sqlite3.Connection,
+    model_name: str,
+    *,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int,
+    cache_write_tokens: int,
+) -> tuple[str | None, float | None, str | None, int | None]:
+    """Catalog-price disjoint-lane token totals for a provider-usage rollup row.
+
+    Returns ``(cost_provenance, cost_usd, priced_with, priced_at_ms)``. Mirrors
+    ``_aggregate_message_tokens_into_model_usage``'s pricing (same catalog,
+    same "no fabrication" contract): a catalog hit with billable tokens > 0
+    yields ``'priced'`` plus a real ``cost_usd``/``priced_with``; anything
+    else -- unknown model, no catalog entry, zero billable tokens -- yields
+    ``cost_provenance = None`` (no claim), never a 'priced'/'origin_reported'
+    label with a NULL cost (polylogue-shnc: 5,016 rows previously asserted
+    ``cost_provenance = 'priced'`` with NULL cost and NULL catalog).
+
+    ``cost_provenance`` is deliberately NOT ``'origin_reported'`` here: that
+    label is reserved for a genuine provider-reported DOLLAR total
+    (``sessions.reported_cost_usd``, polylogue-gt1z) -- these rows carry
+    provider-reported TOKEN counts priced against the catalog, which is a
+    different evidentiary claim. Conflating the two previously made
+    ``list_cost_rollup_insights`` read a catalog estimate as if OpenAI itself
+    had reported that dollar figure (``archive.py``'s
+    ``provider_reported_usd=... if provenance in {"exact","origin_reported"}``).
+    """
+    import time
+
+    from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
+    from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
+
+    normalized = _normalize_model(model_name)
+    billable = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+    if normalized not in PRICING or billable <= 0:
+        return None, None, None, None
+    active_catalog_id = seed_price_catalog(conn)
+    cost_usd = estimate_cost(input_tokens, output_tokens, model_name, cache_read_tokens, cache_write_tokens)
+    return "priced", cost_usd, active_catalog_id, int(time.time() * 1000)
 
 
 def _upsert_provider_usage_model_rollup(
@@ -4082,30 +4157,46 @@ def _upsert_provider_usage_model_rollup(
     cache_read_tokens: int,
     cache_write_tokens: int,
 ) -> None:
+    input_tokens = max(int(input_tokens), 0)
+    output_tokens = max(int(output_tokens), 0)
+    cache_read_tokens = max(int(cache_read_tokens), 0)
+    cache_write_tokens = max(int(cache_write_tokens), 0)
+    cost_provenance, cost_usd, priced_with, priced_at_ms = _price_provider_usage_tokens(
+        conn,
+        model_name,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+    )
     conn.execute(
         """
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_provenance
-        ) VALUES (?, ?, ?, ?, ?, ?, 'origin_reported')
+            cost_provenance, cost_usd, priced_with, priced_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens       = excluded.input_tokens,
             output_tokens      = excluded.output_tokens,
             cache_read_tokens  = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
             cost_provenance    = excluded.cost_provenance,
-            cost_usd           = NULL,
-            priced_with        = NULL,
-            priced_at_ms       = NULL
+            cost_usd           = excluded.cost_usd,
+            priced_with        = excluded.priced_with,
+            priced_at_ms       = excluded.priced_at_ms
         """,
         (
             session_id,
             model_name,
-            max(int(input_tokens), 0),
-            max(int(output_tokens), 0),
-            max(int(cache_read_tokens), 0),
-            max(int(cache_write_tokens), 0),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            cost_provenance,
+            cost_usd,
+            priced_with,
+            priced_at_ms,
         ),
     )
 
@@ -4120,30 +4211,58 @@ def _increment_provider_usage_model_rollup(
     cache_read_tokens: int,
     cache_write_tokens: int,
 ) -> None:
+    input_tokens = max(int(input_tokens), 0)
+    output_tokens = max(int(output_tokens), 0)
+    cache_read_tokens = max(int(cache_read_tokens), 0)
+    cache_write_tokens = max(int(cache_write_tokens), 0)
+    existing = conn.execute(
+        """
+        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM session_model_usage
+        WHERE session_id = ? AND model_name = ?
+        """,
+        (session_id, model_name),
+    ).fetchone()
+    total_input = int((existing[0] if existing else 0) or 0) + input_tokens
+    total_output = int((existing[1] if existing else 0) or 0) + output_tokens
+    total_cache_read = int((existing[2] if existing else 0) or 0) + cache_read_tokens
+    total_cache_write = int((existing[3] if existing else 0) or 0) + cache_write_tokens
+    cost_provenance, cost_usd, priced_with, priced_at_ms = _price_provider_usage_tokens(
+        conn,
+        model_name,
+        input_tokens=total_input,
+        output_tokens=total_output,
+        cache_read_tokens=total_cache_read,
+        cache_write_tokens=total_cache_write,
+    )
     conn.execute(
         """
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_provenance
-        ) VALUES (?, ?, ?, ?, ?, ?, 'origin_reported')
+            cost_provenance, cost_usd, priced_with, priced_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
-            input_tokens       = COALESCE(session_model_usage.input_tokens, 0) + excluded.input_tokens,
-            output_tokens      = COALESCE(session_model_usage.output_tokens, 0) + excluded.output_tokens,
-            cache_read_tokens  = COALESCE(session_model_usage.cache_read_tokens, 0) + excluded.cache_read_tokens,
-            cache_write_tokens = COALESCE(session_model_usage.cache_write_tokens, 0) + excluded.cache_write_tokens,
+            input_tokens       = excluded.input_tokens,
+            output_tokens      = excluded.output_tokens,
+            cache_read_tokens  = excluded.cache_read_tokens,
+            cache_write_tokens = excluded.cache_write_tokens,
             cost_provenance    = excluded.cost_provenance,
-            cost_usd           = NULL,
-            priced_with        = NULL,
-            priced_at_ms       = NULL
+            cost_usd           = excluded.cost_usd,
+            priced_with        = excluded.priced_with,
+            priced_at_ms       = excluded.priced_at_ms
         """,
         (
             session_id,
             model_name,
-            max(int(input_tokens), 0),
-            max(int(output_tokens), 0),
-            max(int(cache_read_tokens), 0),
-            max(int(cache_write_tokens), 0),
+            total_input,
+            total_output,
+            total_cache_read,
+            total_cache_write,
+            cost_provenance,
+            cost_usd,
+            priced_with,
+            priced_at_ms,
         ),
     )
 
@@ -4172,23 +4291,34 @@ def _seed_session_model_usage_rows(
     Formerly also wrote ``session.reported_cost_usd`` into a
     ``session_reported_costs`` table; that write path was removed
     (polylogue-v2mg) as a zero-consumer table -- nothing ever read it back.
-    ``session.reported_cost_usd`` itself remains a legitimate parsed-domain
-    field (see e.g. ``sinex/material_adapter.py``); only the dead DB mirror
-    was dropped.
+    ``session.reported_cost_usd`` is instead written onto ``sessions.
+    reported_cost_usd`` by the main session INSERT above (polylogue-gt1z,
+    v49) -- a session-level column, not a per-model one, matching the shape
+    of the value (one exact dollar total per session, not per model). That
+    column is what feeds ``_session_level_estimate``'s real ``status ==
+    "exact"`` cost path; nothing here writes it a second time.
     """
     model_names = {model_name.strip() for model_name in session.models_used if model_name.strip()}
     model_names.update(message.model_name.strip() for message in session.messages if message.model_name)
+    # NULL, not 'origin_reported': this is a skeleton placeholder for a
+    # session's declared model before any pricing pass has run (typically
+    # overwritten within this same call by _aggregate_message_tokens_into_
+    # model_usage below, or later by a provider-usage-event rollup). It makes
+    # no cost claim yet, so it must not carry a provenance string that
+    # asserts one -- 'origin_reported' now means a genuine provider-reported
+    # dollar figure (polylogue-shnc/polylogue-gt1z), which this row does not
+    # have.
     model_usage_sql = (
         """
         INSERT OR REPLACE INTO session_model_usage (
             session_id, model_name, cost_provenance
-        ) VALUES (?, ?, 'origin_reported')
+        ) VALUES (?, ?, NULL)
         """
         if replace_existing_model_rows
         else """
         INSERT INTO session_model_usage (
             session_id, model_name, cost_provenance
-        ) VALUES (?, ?, 'origin_reported')
+        ) VALUES (?, ?, NULL)
         ON CONFLICT(session_id, model_name) DO NOTHING
         """
     )
@@ -4207,11 +4337,24 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     the full message set regardless of append ordering.
 
     Models with no messages carrying token data keep DEFAULT 0 token counts.
-    Models with no catalog price entry get cost_usd = NULL / priced_with = NULL
-    (no fabrication).
+    Models with no catalog price entry, or zero billable tokens, get
+    cost_provenance = NULL / cost_usd = NULL / priced_with = NULL together --
+    never 'priced' with a NULL cost (polylogue-shnc: that self-contradiction
+    was live on 5,016 rows).
 
     Empty or NULL model_name values in the messages table are excluded from
     aggregation (the model is unknown so pricing is impossible).
+
+    The UPSERT only overwrites an existing row when the new message-walked
+    token total is >= what is already stored (monotonic-safe), so a
+    provider-usage-event cumulative rollup (``_upsert_provider_usage_model_
+    rollup``/``_increment_provider_usage_model_rollup``, typically far larger
+    for Codex since messages rarely carry its per-message usage) is never
+    clobbered by a smaller/zero message-walk result on a later unrelated
+    write. Before polylogue-shnc this was scoped by ``cost_provenance =
+    'origin_reported'``, which stopped discriminating once provider-usage
+    rollups started sharing the 'priced' label with real message-derived
+    pricing (see ``_price_provider_usage_tokens``).
     """
     import time
 
@@ -4264,10 +4407,17 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
             cost_usd: float | None = estimate_cost(sum_input, sum_output, model_name, sum_cache_read, sum_cache_write)
             priced_with: str | None = active_catalog_id
             row_priced_at: int | None = priced_at_ms
+            row_provenance: str | None = "priced"
         else:
+            # polylogue-shnc: no catalog price (or no billable tokens) means no
+            # claim at all -- NOT 'priced' with a NULL cost_usd/priced_with,
+            # which is the exact self-contradiction the forensic audit found on
+            # 5,016 live rows (cost_provenance='priced' with no cost and no
+            # catalog).
             cost_usd = None
             priced_with = None
             row_priced_at = None
+            row_provenance = None
 
         # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
         # For models that somehow landed in messages but not in models_used/
@@ -4282,7 +4432,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 message_count,
                 priced_with, priced_at_ms, cost_usd,
                 cost_provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'priced')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, model_name) DO UPDATE SET
                 input_tokens       = excluded.input_tokens,
                 output_tokens      = excluded.output_tokens,
@@ -4293,15 +4443,12 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 priced_at_ms       = excluded.priced_at_ms,
                 cost_usd           = excluded.cost_usd,
                 cost_provenance    = excluded.cost_provenance
-            WHERE NOT (
-                session_model_usage.cost_provenance = 'origin_reported'
-                AND (
-                    COALESCE(session_model_usage.input_tokens, 0) != 0
-                    OR COALESCE(session_model_usage.output_tokens, 0) != 0
-                    OR COALESCE(session_model_usage.cache_read_tokens, 0) != 0
-                    OR COALESCE(session_model_usage.cache_write_tokens, 0) != 0
-                )
-            )
+            WHERE (
+                COALESCE(session_model_usage.input_tokens, 0)
+                + COALESCE(session_model_usage.output_tokens, 0)
+                + COALESCE(session_model_usage.cache_read_tokens, 0)
+                + COALESCE(session_model_usage.cache_write_tokens, 0)
+            ) <= (excluded.input_tokens + excluded.output_tokens + excluded.cache_read_tokens + excluded.cache_write_tokens)
             """,
             (
                 session_id,
@@ -4314,6 +4461,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 priced_with,
                 row_priced_at,
                 cost_usd,
+                row_provenance,
             ),
         )
 
@@ -5404,11 +5552,30 @@ def _reextract_provider_usage_tail_db(
         """,
         (child_session_id,),
     )
+    # Clear rows populated by the (now stale) provider-usage-event rollup
+    # before re-deriving them below, scoped the same way
+    # _clear_stale_cumulative_rollups is (polylogue-shnc): a model with no
+    # genuine per-message token evidence can only hold provider-usage-rollup
+    # tokens, never real message-derived pricing, so it is always safe to
+    # clear and re-derive. Before polylogue-shnc this was scoped by
+    # ``cost_provenance = 'origin_reported'``, which stopped discriminating
+    # once provider-usage rollups started sharing the 'priced' label with
+    # real message-derived pricing.
     conn.execute(
         """
         DELETE FROM session_model_usage
         WHERE session_id = ?
-          AND cost_provenance = 'origin_reported'
+          AND NOT EXISTS (
+              SELECT 1 FROM messages m
+              WHERE m.session_id = session_model_usage.session_id
+                AND m.model_name = session_model_usage.model_name
+                AND (
+                    COALESCE(m.input_tokens, 0) != 0
+                    OR COALESCE(m.output_tokens, 0) != 0
+                    OR COALESCE(m.cache_read_tokens, 0) != 0
+                    OR COALESCE(m.cache_write_tokens, 0) != 0
+                )
+          )
         """,
         (child_session_id,),
     )

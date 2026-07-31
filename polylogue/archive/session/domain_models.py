@@ -115,6 +115,11 @@ class Session(SessionRuntimeMixin, BaseModel):
     # name → JSON-ready row payloads. Empty unless the query carried a
     # ``with`` clause (#2492).
     attached_units: dict[str, tuple[dict[str, object], ...]] = Field(default_factory=dict)
+    # polylogue-gt1z: exact provider-reported session cost total (sessions.
+    # reported_cost_usd, v49), when the origin's export carries one. None
+    # means the origin never reports a session-level total, not a measured
+    # zero. Feeds `_session_level_estimate`'s ``status == "exact"`` path.
+    reported_cost_usd: float | None = None
 
     @field_validator("origin", mode="before")
     @classmethod
