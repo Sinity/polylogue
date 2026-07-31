@@ -92,7 +92,7 @@ def test_runtime_root_present_for_local_session_sources() -> None:
         Provider.CODEX: "~/.codex/sessions",
         Provider.GEMINI_CLI: "~/.gemini/tmp",
         Provider.HERMES: "~/.hermes",
-        Provider.ANTIGRAVITY: "~/.antigravity",
+        Provider.ANTIGRAVITY: "~/.gemini/antigravity",
     }
     for provider, expected_root in expectations.items():
         assert provider_to_source(provider).runtime_root == expected_root
