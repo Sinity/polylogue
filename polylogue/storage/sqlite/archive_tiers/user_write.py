@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import PurePosixPath, PureWindowsPath
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from polylogue.core.assertions import (
     AssertionContextPolicy,
@@ -584,6 +584,22 @@ class FindingAssertion:
     evaluation_ref: str | None = None
     frame_ref: str | None = None
     public_claim: PublicClaimDeclaration | None = None
+    controls: Sequence[Mapping[str, JSONValue]] = ()
+    """Paired negative controls (rxdo.9.7, mechanism G). Each entry mirrors
+    :class:`~polylogue.insights.judgment.controls.NegativeControl`'s fields
+    (``control_kind``, ``query_ref``, ``result_ref``, ``matching_variables``,
+    ``expected_null``, ``confounds_checked``) plus ``observed_null_held``
+    (bool) -- the detector/analyst runs the control comparison and declares
+    both the control and its observed outcome together at write time; no
+    execution engine reruns it at read time. Rejected (unmatched/confounded)
+    controls fail the whole finding write closed rather than being silently
+    dropped or stored unvalidated -- see :func:`_finding_value`."""
+    control_frame_variables: Sequence[str] = ()
+    """Frame variables the finding's claim varies over -- required for
+    :func:`~polylogue.insights.judgment.controls.validate_control` to check
+    that a declared matched-shape control isolates the right mechanism, or
+    that an ``unrelated_cohort`` control declares every frame variable as a
+    checked confound."""
 
 
 def upsert_suppression(
@@ -1590,7 +1606,54 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
         value["frame_ref"] = _validate_finding_ref(finding.frame_ref, field="frame_ref")
     if finding.public_claim is not None:
         value["public_claim"] = _public_claim_value(finding.public_claim)
+    if finding.controls:
+        value["controls"] = _finding_controls_value(finding)
     return value
+
+
+def _finding_controls_value(finding: FindingAssertion) -> list[dict[str, object]]:
+    """Validate declared negative controls, failing the write closed on any rejection.
+
+    Reuses :func:`~polylogue.insights.judgment.controls.validate_control`
+    (rxdo.9.7, mechanism G) -- a control is stored only if it isolates the
+    challenged mechanism (matched-shape) or declares every frame variable a
+    checked confound (``unrelated_cohort``); a deliberately divergent
+    baseline never silently passes as a control.
+    """
+    from polylogue.insights.judgment.controls import NegativeControl, validate_control
+
+    frame_variables = tuple(finding.control_frame_variables)
+    validated: list[dict[str, object]] = []
+    for raw in finding.controls:
+        try:
+            control = NegativeControl(
+                control_kind=cast(Any, raw["control_kind"]),
+                query_ref=_validate_finding_ref(cast(str, raw["query_ref"]), field="controls.query_ref"),
+                result_ref=_validate_finding_ref(cast(str, raw["result_ref"]), field="controls.result_ref"),
+                matching_variables=tuple(cast(Sequence[str], raw.get("matching_variables", ()))),
+                expected_null=cast(str, raw["expected_null"]),
+                confounds_checked=tuple(cast(Sequence[str], raw.get("confounds_checked", ()))),
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError(f"malformed finding control: {exc}") from exc
+        outcome = validate_control(control, claim_frame_variables=frame_variables)
+        if not outcome.accepted:
+            raise ValueError(f"finding control rejected: {outcome.reason}")
+        observed_null_held = raw.get("observed_null_held")
+        if not isinstance(observed_null_held, bool):
+            raise ValueError("finding control requires a boolean observed_null_held")
+        validated.append(
+            {
+                "control_kind": control.control_kind,
+                "query_ref": control.query_ref,
+                "result_ref": control.result_ref,
+                "matching_variables": list(control.matching_variables),
+                "expected_null": control.expected_null,
+                "confounds_checked": list(control.confounds_checked),
+                "observed_null_held": observed_null_held,
+            }
+        )
+    return validated
 
 
 def upsert_findings_as_assertions(
@@ -1626,6 +1689,12 @@ def upsert_findings_as_assertions(
             public_refs = public_claim.get("public_evidence_refs")
             if isinstance(public_refs, list):
                 evidence_refs.extend(str(ref) for ref in public_refs)
+        controls_value = value.get("controls")
+        if isinstance(controls_value, list):
+            for control_entry in controls_value:
+                if isinstance(control_entry, dict):
+                    evidence_refs.append(str(control_entry["query_ref"]))
+                    evidence_refs.append(str(control_entry["result_ref"]))
         evidence_refs = sorted(set(evidence_refs))
         detector_ref = _validate_finding_ref(finding.detector_ref, field="detector_ref")
         assertion_id = assertion_id_for_finding(

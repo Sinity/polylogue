@@ -201,6 +201,7 @@ Commands:
   Other commands:
     agent        Install executable agent guidance.
     annotations  Import typed annotation batches.
+    compare      Blind pairwise comparative judgment and calibration.
 ```
 
 ## Analyze Verb

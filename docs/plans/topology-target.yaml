@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 6820
+    loc: 6954
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -827,7 +827,7 @@ files:
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
-    loc: 213
+    loc: 215
     target: polylogue/cli/click_command_registration.py
     owner: stable
   - path: polylogue/cli/click_option_groups.py
@@ -865,6 +865,10 @@ files:
   - path: polylogue/cli/commands/check.py
     loc: 116
     target: polylogue/cli/commands/check.py
+    owner: stable
+  - path: polylogue/cli/commands/compare.py
+    loc: 207
+    target: polylogue/cli/commands/compare.py
     owner: stable
   - path: polylogue/cli/commands/completions.py
     loc: 107
@@ -4208,7 +4212,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_overlay.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/user_write.py
-    loc: 2539
+    loc: 2608
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
