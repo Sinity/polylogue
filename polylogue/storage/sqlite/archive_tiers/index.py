@@ -134,7 +134,36 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # Both depend on parser/pricing semantics to populate/repair existing rows --
 # SEMANTIC_REPARSE, matching the v42/v44/v45/v46/v47/v48 precedent above.
 #
-# polylogue-u6tl: v50 wires delegation_facts.mapping_state/result_status onto
+# polylogue-vf9x: v50 adds blocks.signature (nullable TEXT) and fixes two
+# independent reasoning/thinking-content-loss defects found via a full-corpus
+# audit:
+#   - Claude Code (base_support.py `content_blocks_from_segments`): since
+#     roughly 2026-06 the wire ships THINKING segments with an empty
+#     `thinking` body and a `signature` only. An `if text:` guard dropped the
+#     whole block, silently zeroing `thinking_count` archive-wide for every
+#     2026-06+ session -- a false "reasoning declined" signal, not a real
+#     absence. The block is now always recorded (text=NULL when the wire
+#     carries none, signature captured when present).
+#   - Codex (codex.py): standalone `reasoning` response_item records were
+#     read only by the generic session_event compactor, which has no
+#     `reasoning`-specific branch -- summary/content were never read at all
+#     (not merely char-counted), so 100% of Codex reasoning text was
+#     discarded and unreachable from FTS/search. `reasoning` records are now
+#     materialized as a THINKING-block message (summary text -- the ~24%
+#     recoverable case -- or content text when present; text=NULL when only
+#     encrypted_content survives).
+# Both are pure parser-semantics changes over the same already-declared
+# `blocks.block_type='thinking'` vocabulary plus one additive nullable
+# column -- the v42/v44/v45/v46/v48/v49 "values depend on parser semantics,
+# no clone-safe SQL delta" precedent. `signature` is deliberately excluded
+# from `_block_content_hash` and the lineage prefix signature (write.py)
+# because providers re-sign on every replay; including it would break
+# citation-anchor and fork-prefix matching for otherwise-identical replayed
+# content. Resolving existing rows (recovering historical thinking/reasoning
+# content) requires `polylogue ops reset --index && polylogued run` --
+# deliberately NOT executed by this declaration.
+#
+# polylogue-u6tl: v51 wires delegation_facts.mapping_state/result_status onto
 # the `literal_check` generator (storage/sqlite/archive_tiers/common.py),
 # which previously had zero call sites despite CLAUDE.md documenting it by
 # name as the mechanism that keeps `typing.Literal` types and their SQL CHECK
@@ -148,7 +177,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # the 3-value vocabulary) -- a copy-forward rejects nothing. CONSTRAINT_ONLY,
 # matching the v33/v36 precedent (widening/adding a CHECK over unchanged
 # values), not SEMANTIC_REPARSE.
-INDEX_SCHEMA_VERSION = 50
+INDEX_SCHEMA_VERSION = 51
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

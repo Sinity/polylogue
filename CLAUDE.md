@@ -35,8 +35,16 @@ Package sizes (rough): `storage/` (largest), `daemon/`, `cli/`, `archive/`,
 | `polylogue/daemon/cli.py` | Daemon runner (`polylogued run`) |
 
 **Working rule:** new semantics go into the substrate (`storage`/`insights`) or
-product layer first, then surfaces adapt. Surfaces may not import substrate
-internals directly (`docs/plans/layering.yaml` enforces this).
+product layer first, then surfaces adapt. New surface code should not import
+substrate (`storage`/`pipeline`/`sources`) internals directly — route through
+`insights`/`operations`/`api` instead. `docs/plans/layering.yaml` enforces
+this as a **ratchet, not a clean boundary**: `cli`/`mcp`/`api`/`daemon` each
+carry a large pre-existing baseline of direct substrate imports
+(`docs/plans/layering-surface-baseline.json`, 311 entries as of
+polylogue-2ciy) that `devtools verify layering` exempts, but any import not
+already in that baseline fails the (required, CI-gated) check. The genuinely
+clean, zero-exception direction is the reverse one: `storage`/`pipeline`/
+`sources` must not import surface adapters, enforced with no baseline at all.
 
 ---
 
@@ -389,12 +397,23 @@ isolated XDG paths + archive root.
   (`tests/infra/clock_guard.py`) makes direct `datetime.now`/`time.time` reads
   from test code raise immediately — there is no allowlist; genuine
   exceptions opt out inline via `@pytest.mark.uses_real_clock("reason")`.
-- Pytest temp DBs default to `/realm/tmp/polylogue-pytest` (not `/dev/shm`).
-  `seeded_db`/`corpus_seeded_db` build a shared DB once under a `.build.done`
-  guard — a SIGKILL mid-build leaves a partial DB + set guard →
-  `no such table: sessions`; fix with
-  `rm -rf /realm/tmp/polylogue-pytest/pytest-polylogue-seeded-*` (and legacy
-  `/dev/shm/pytest-polylogue-seeded-*`). Never `pkill` polylogue pytest without
+- Pytest temp DBs pick ONE basetemp root via
+  `devtools.verify_runs.resolve_pytest_basetemp_root` (shared by
+  `tests/conftest.py` and the `devtools test`/`verify` preflight): `/dev/shm`
+  tmpfs by default when it has ≥1 GiB free (`POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB`
+  to override), else `/realm/tmp/polylogue-pytest` (NVMe), else `/tmp/polylogue-pytest`
+  only when `/realm/tmp` genuinely isn't mounted (cloud sandbox). If nothing
+  clears the headroom requirement the run refuses immediately with every
+  candidate's free space named, instead of an unrelated command crashing on
+  `OSError: [Errno 28]` later (2026-07-30 incident: `.claude/settings.json`'s
+  cloud `POLYLOGUE_PYTEST_BASETEMP_ROOT=/tmp/polylogue-pytest` leaked onto the
+  workstation, where `/tmp` is a small tmpfs shared by every concurrent agent
+  lane — that env value is now stripped before candidate selection whenever
+  `/realm/tmp` is mounted). `seeded_db`/`corpus_seeded_db` build a shared DB
+  once under a `.build.done` guard — a SIGKILL mid-build leaves a partial DB +
+  set guard → `no such table: sessions`; fix with
+  `rm -rf /dev/shm/pytest-polylogue-seeded-*` (and legacy
+  `/realm/tmp/polylogue-pytest/pytest-polylogue-seeded-*`). Never `pkill` polylogue pytest without
   clearing this.
 - Verify-run artifacts land under `.cache/verify/`
   (`current-pytest-{progress,selection,summary}.json`, `-output.log`).

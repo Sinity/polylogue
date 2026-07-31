@@ -2,7 +2,7 @@
 
 Defines the single source of truth for:
   - messages table structure (29 writable columns + 1 GENERATED message_id)
-  - blocks table structure (14 writable columns + 1 GENERATED block_id)
+  - blocks table structure (16 writable columns + 1 GENERATED block_id)
   - Other key tables (sessions, session_events, etc.)
 
 Each spec drives INSERT/SELECT generation and typed row extraction.
@@ -84,7 +84,8 @@ def _make_blocks_spec() -> TableColumnSpec:
     The blocks table structure (from schema):
       session_id, message_id, position, block_type, text, tool_name, tool_id,
       tool_input, semantic_type, media_type, language, tool_result_is_error,
-      tool_result_exit_code, content_hash
+      tool_result_exit_code, tool_result_outcome_unknown_reason, signature,
+      content_hash
 
     GENERATED (not writable):
       block_id, tool_command, tool_path, search_text, tool_detail_text
@@ -105,6 +106,7 @@ def _make_blocks_spec() -> TableColumnSpec:
         ColumnSpec("tool_result_is_error", "INTEGER"),
         ColumnSpec("tool_result_exit_code", "INTEGER"),
         ColumnSpec("tool_result_outcome_unknown_reason", "TEXT"),
+        ColumnSpec("signature", "TEXT"),
         ColumnSpec("content_hash", "BLOB"),
         ColumnSpec("tool_command", "TEXT", is_generated=True),
         ColumnSpec("tool_path", "TEXT", is_generated=True),

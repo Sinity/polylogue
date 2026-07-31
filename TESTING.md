@@ -86,15 +86,46 @@ an unbounded wait. The signal method is the repository default so timeout
 failures retain the responsible node and Python stacks in ordinary pytest
 output.
 
-Managed pytest temp databases default to a unique `/dev/shm/pytest-polylogue-*`
-run root because measured SQLite fsync traffic made the disk-backed lane more
-than 20 times slower. One shared adaptive budget is enforced across all xdist
-workers (512 MiB to 2 GiB). `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` is an explicit
-operator override. Per-run
-`pytest-polylogue-*` basetemps are removed at normal pytest shutdown, and
-pytest startup sweeps stale per-run dirs from both the configured root and
-legacy `/dev/shm`; shared `pytest-polylogue-seeded-*` caches are kept because
-they are small and reused.
+Managed pytest temp databases pick their basetemp root through **one**
+resolution order, shared by `tests/conftest.py` (direct `pytest` runs) and the
+`devtools test`/`devtools verify` preflight
+(`devtools.verify_runs.resolve_pytest_basetemp_root`) — there is no second,
+independent placement policy that can silently disagree with this one:
+
+1. `POLYLOGUE_PYTEST_BASETEMP_ROOT=/path` — an explicit operator override,
+   still headroom-checked (see below), never silently downgraded.
+2. `/dev/shm` (tmpfs) — the default, because measured SQLite fsync traffic
+   made the disk-backed lane more than 20 times slower — used when it clears
+   the free-space requirement.
+3. `/realm/tmp/polylogue-pytest` (NVMe scratch) — used when `/dev/shm` lacks
+   headroom but `/realm/tmp` is mounted and has room.
+4. `/tmp/polylogue-pytest` — reachable **only** when `/realm/tmp` is not
+   mounted at all (a genuine cloud sandbox, where `.claude/settings.json`
+   sets this as `POLYLOGUE_PYTEST_BASETEMP_ROOT`). On a workstation with
+   `/realm` mounted, that same cloud-sandbox env value is stripped before
+   candidate selection runs, so it can never leak in as an accidental
+   low-space `/tmp` placement — `/tmp` on a workstation is typically a small
+   tmpfs shared by every concurrent agent lane, not scratch space.
+
+Before committing to a root, each candidate is checked against a free-space
+requirement (`POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB`, default 1024 MiB). If
+every reachable candidate is starved, the run refuses immediately — before
+pytest starts collecting — naming every candidate checked, its free space,
+and the requirement, instead of silently placing a basetemp somewhere that
+fills up mid-run and surfaces as a bare `OSError: [Errno 28]` in an unrelated
+command later.
+
+One shared adaptive tmpfs budget is enforced across all xdist workers (512
+MiB to 2 GiB) once a tmpfs root is chosen. Per-run `pytest-polylogue-*`
+basetemps are removed at normal pytest shutdown, and pytest startup sweeps
+stale per-run dirs from every known root (`/dev/shm`, `/realm/tmp/polylogue-pytest`,
+`/tmp/polylogue-pytest`, plus any explicit configured root) — never based on
+age alone: each managed basetemp carries an owner-pid marker, and a
+directory whose owner process is still alive is never removed regardless of
+age; an owner that cannot be confirmed dead (no marker) gets a multi-hour
+grace period rather than the normal ~30-minute one. Shared
+`pytest-polylogue-*-seeded-*` caches are never touched by the sweep — they
+are shared, reused, and built once behind their own `.build.done` guard.
 
 Managed verification refuses to start below 1 GiB available memory instead of
 falling back to the pathological disk lane. Passing-test roots are reclaimed at

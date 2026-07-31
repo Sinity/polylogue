@@ -33,8 +33,24 @@ def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
         seg_type = seg.get("type", "text")
         if seg_type == "thinking":
             text = seg.get("thinking") or seg.get("text") or ""
-            if text:
-                blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=text))
+            signature = seg.get("signature")
+            # polylogue-vf9x: since roughly 2026-06 the wire ships thinking
+            # blocks with an empty `thinking` body and only a `signature` --
+            # the reasoning genuinely occurred but its text is not on the
+            # wire (verified against raw ~/.claude/projects JSONL: Feb-2026
+            # sessions carry non-empty text, Jul-2026 sessions are 100%
+            # empty-body/signature-only). Previously this `if text:` guard
+            # dropped the block outright, silently zeroing thinking_count
+            # and making the archive look like reasoning stopped -- record
+            # the block regardless so the fact that the model reasoned here
+            # (and the signature, for provenance) survives even without text.
+            blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.THINKING,
+                    text=text or None,
+                    signature=signature if isinstance(signature, str) and signature else None,
+                )
+            )
         elif seg_type == "tool_use":
             tool_name = seg.get("name")
             tool_id = seg.get("id")

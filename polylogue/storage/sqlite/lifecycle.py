@@ -480,21 +480,46 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
     ),
     IndexDeltaDeclaration(
         version=50,
+        # polylogue-vf9x: adds blocks.signature (nullable TEXT) and fixes two
+        # independent reasoning/thinking-content-loss defects (see index.py's
+        # v50 header comment for the full writeup):
+        #   - Claude Code: an `if text:` guard in base_support.py's
+        #     `content_blocks_from_segments` dropped every THINKING segment
+        #     whose wire body is empty-string-plus-signature-only -- the
+        #     shape Claude has shipped since ~2026-06 -- silently zeroing
+        #     `thinking_count` for every affected session.
+        #   - Codex: standalone `reasoning` response_item records were read
+        #     only by the generic session_event compactor (no
+        #     `reasoning`-specific branch existed), so summary/content text
+        #     was never read into any surface at all.
+        # Both changes require re-parsing already-acquired raw evidence to
+        # recover the previously-dropped/discarded text, so this is the same
+        # v42/v44/v45/v46/v48/v49 "values depend on parser semantics" shape --
+        # not a free clone-safe fast-forward, even though `signature` is a
+        # real additive column. `polylogue ops reset --index && polylogued
+        # run` is required to recover historical thinking/reasoning content;
+        # deliberately NOT executed by this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=51,
         # polylogue-u6tl: delegation_facts.mapping_state and .result_status
-        # gain CHECK constraints generated from their existing typed
-        # counterparts (DelegationMappingState / DelegationResultStatus,
-        # archive_tiers/archive.py) via the literal_check generator -- see
-        # index.py's v50 header comment for the measured live-impact count
-        # (0 rows outside either vocabulary). No column is added, no existing
-        # value changes; this only tightens the CHECK an already-correct
-        # single writer (delegation_facts_insert_sql) already satisfied.
-        # Matches the v33/v36 CONSTRAINT_ONLY precedent, not v42/44/45/46/
-        # 47/48/49's SEMANTIC_REPARSE (those all depended on parser/pricing
-        # semantics to populate or repair rows; this does not).
+        # gain CHECK constraints GENERATED from their existing typed
+        # counterparts (DelegationMappingState / DelegationResultStatus in
+        # archive_tiers/archive.py) via the `literal_check` generator, which
+        # CLAUDE.md documents by name as the mechanism keeping typing.Literal
+        # types and their SQL CHECK lists in lockstep -- and which had zero
+        # call sites until now. No column is added and no existing value
+        # changes: this only tightens a CHECK the single writer
+        # (delegation_facts_insert_sql) already satisfied. Measured on the
+        # live archive before declaring: 0 rows outside either vocabulary, so
+        # a copy-forward rejects nothing. CONSTRAINT_ONLY per the v33/v36
+        # precedent (adding/widening a CHECK over unchanged values), NOT
+        # SEMANTIC_REPARSE -- no reparse is required for this to take effect.
         classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
         operations=(
             FastForwardOperation(
-                name="v50-delegation-facts-checks",
+                name="v51-delegation-facts-check",
                 kind=FastForwardOperationKind.REPLACE_TABLE,
                 objects=(("table", "delegation_facts"),),
             ),

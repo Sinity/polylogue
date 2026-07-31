@@ -34,6 +34,11 @@ jobs:
       # An index schema bump merged without its lifecycle.py delta declaration
       # downgrades every live generation to a full raw replay (polylogue-9rw0).
       - run: uv run devtools lab policy schema-versioning
+      # Surface-to-substrate import ratchet (polylogue-2ciy): the baseline in
+      # docs/plans/layering-surface-baseline.json is a fixed inventory of
+      # pre-existing violations, exempted so this can be a required check
+      # without a mass migration; anything not already in it fails here.
+      - run: uv run devtools verify layering
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 

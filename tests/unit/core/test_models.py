@@ -367,6 +367,7 @@ class TestMessageFromRecord:
                 "media_type": None,
                 "metadata": {"path": "/workspace/polylogue/README.md"},
                 "semantic_type": "file_read",
+                "signature": None,
             }
         ]
 

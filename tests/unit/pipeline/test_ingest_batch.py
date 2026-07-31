@@ -912,6 +912,156 @@ def test_write_session_force_write_replaces_older_freshness(tmp_path: Path) -> N
         assert message["occurred_at_ms"] == 1777636700000
 
 
+def test_write_session_freshness_tie_keeps_acquired_attachment(tmp_path: Path) -> None:
+    """polylogue-ixry: a same-timestamp re-acquisition must not regress attachments.
+
+    Reproduces the aistudio-drive live-fetch race found on the live archive:
+    two raw acquisitions of the same conversation share message content and
+    an identical content-derived `updated_at` (attachment fetch injects bytes
+    into the raw JSON without touching any message timestamp), but only one
+    of the two raw revisions carries the attachment's fetched bytes. Without
+    the tie-break, whichever raw is written second wins outright -- which on
+    the live archive was, 157/157 times, the revision that lost the fetched
+    bytes.
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        fetched = _session_data(
+            "aistudio-drive:tie",
+            content_hash="hash-fetched",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "aistudio-drive:tie",
+                    role="user",
+                    text="same content",
+                    content_hash="msg-hash-tie",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"real drive bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "aistudio-drive:tie", "msg-1")],
+            raw_id="raw-fetched",
+            provider=Provider.DRIVE,
+            created_at="2026-07-18T17:46:10Z",
+            updated_at="2026-07-18T17:46:10Z",
+        )
+        changed, counts = _write_session(conn, fetched, blob_publisher=publisher)
+        assert changed is True
+        assert counts["attachments"] == 1
+        conn.commit()
+
+        status_after_fetch = conn.execute(
+            """
+            SELECT a.acquisition_status FROM attachment_refs r
+            JOIN attachments a ON a.attachment_id = r.attachment_id
+            WHERE r.session_id = ?
+            """,
+            ("aistudio-drive:tie",),
+        ).fetchone()
+        assert status_after_fetch["acquisition_status"] == "acquired"
+
+        unfetched_revision = _session_data(
+            "aistudio-drive:tie",
+            content_hash="hash-unfetched",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "aistudio-drive:tie",
+                    role="user",
+                    text="same content",
+                    content_hash="msg-hash-tie",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=None)],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "aistudio-drive:tie", "msg-1")],
+            raw_id="raw-prefetch",
+            provider=Provider.DRIVE,
+            created_at="2026-07-18T17:46:10Z",
+            updated_at="2026-07-18T17:46:10Z",
+        )
+        skipped, skipped_counts = _write_session(conn, unfetched_revision)
+        conn.commit()
+
+        assert skipped is False
+        assert skipped_counts["skipped_sessions"] == 1
+        row = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("aistudio-drive:tie",),
+        ).fetchone()
+        assert row["raw_id"] == "raw-fetched"
+        status_row = conn.execute(
+            """
+            SELECT a.acquisition_status FROM attachment_refs r
+            JOIN attachments a ON a.attachment_id = r.attachment_id
+            WHERE r.session_id = ?
+            """,
+            ("aistudio-drive:tie",),
+        ).fetchone()
+        assert status_row["acquisition_status"] == "acquired"
+
+
+def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Path) -> None:
+    """The tie-break only blocks regressions -- ties/improvements still write."""
+    with open_connection(tmp_path / "index.db") as conn:
+        unfetched = _session_data(
+            "aistudio-drive:improve",
+            content_hash="hash-unfetched",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "aistudio-drive:improve",
+                    role="user",
+                    text="same content",
+                    content_hash="msg-hash-improve",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=None)],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "aistudio-drive:improve", "msg-1")],
+            raw_id="raw-prefetch",
+            provider=Provider.DRIVE,
+            created_at="2026-07-18T17:46:10Z",
+            updated_at="2026-07-18T17:46:10Z",
+        )
+        changed, _ = _write_session(conn, unfetched)
+        assert changed is True
+        conn.commit()
+
+        publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        fetched = _session_data(
+            "aistudio-drive:improve",
+            content_hash="hash-fetched",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "aistudio-drive:improve",
+                    role="user",
+                    text="same content",
+                    content_hash="msg-hash-improve",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"real drive bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "aistudio-drive:improve", "msg-1")],
+            raw_id="raw-fetched",
+            provider=Provider.DRIVE,
+            created_at="2026-07-18T17:46:10Z",
+            updated_at="2026-07-18T17:46:10Z",
+        )
+        changed, counts = _write_session(conn, fetched, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed is True
+        assert counts["attachments"] == 1
+        row = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            ("aistudio-drive:improve",),
+        ).fetchone()
+        assert row["raw_id"] == "raw-fetched"
+
+
 def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: Path) -> None:
     """Parser-owned auto-tags still converge when the content hash is unchanged."""
     with open_connection(tmp_path / "index.db") as conn:

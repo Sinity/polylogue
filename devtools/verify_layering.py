@@ -111,6 +111,39 @@ def _load_rules(rules_path: Path) -> list[dict[str, object]]:
     return []
 
 
+def _load_baseline(baseline_path: Path) -> set[tuple[str, str, str]]:
+    """Load a known-violations ratchet baseline.
+
+    The baseline is a checked-in, exact inventory of (target, file, import)
+    triples that already violate a rule's ``disallow`` list on the day the
+    rule was turned from description-only to enforced. Entries here are
+    pre-approved debt, never re-approved automatically: a baselined entry
+    stops being exempt the moment its exact triple disappears (the import
+    moved or was removed) and a *different* triple in the same file is not
+    covered by it. New violations that are not byte-for-byte in this file
+    fail the gate -- the count can only shrink, never grow, without an
+    explicit edit to this file (and that edit is the thing code review
+    looks at).
+    """
+    if not baseline_path.exists():
+        return set()
+    import json
+
+    with open(baseline_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    entries: set[tuple[str, str, str]] = set()
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            target = item.get("target")
+            file_rel = item.get("file")
+            imp = item.get("import")
+            if isinstance(target, str) and isinstance(file_rel, str) and isinstance(imp, str):
+                entries.add((target, file_rel, imp))
+    return entries
+
+
 def _collect_imports(package_dir: Path, *, repo_root: Path) -> dict[str, set[str]]:
     imports: dict[str, set[str]] = {}
     for py_file in package_dir.rglob("*.py"):
@@ -673,6 +706,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = _load_manifest(rules_path)
     rules = _load_rules(rules_path)
     violations: list[dict[str, object]] = []
+    baselined: list[dict[str, object]] = []
 
     for rule in rules:
         target = str(rule["target"])
@@ -688,10 +722,14 @@ def main(argv: list[str] | None = None) -> int:
             af = allow_block.get("from")
             if isinstance(af, list):
                 allow_from = [str(x) for x in af]
+        baseline_entries: set[tuple[str, str, str]] = set()
         if isinstance(disallow_block, dict):
             df = disallow_block.get("from")
             if isinstance(df, list):
                 disallow_from = [str(x) for x in df]
+            baseline_ref = disallow_block.get("baseline")
+            if isinstance(baseline_ref, str):
+                baseline_entries = _load_baseline(repo_root / baseline_ref)
 
         imports = _collect_imports(target_dir, repo_root=repo_root)
         for file_rel, file_imports in imports.items():
@@ -700,15 +738,17 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 for disallowed in disallow_from:
                     if _package_matches(str(disallowed), imp):
-                        violations.append(
-                            {
-                                "target": target,
-                                "file": file_rel,
-                                "import": imp,
-                                "rule": "disallow",
-                                "disallowed_package": disallowed,
-                            }
-                        )
+                        entry: dict[str, object] = {
+                            "target": target,
+                            "file": file_rel,
+                            "import": imp,
+                            "rule": "disallow",
+                            "disallowed_package": disallowed,
+                        }
+                        if (target, file_rel, imp) in baseline_entries:
+                            baselined.append(entry)
+                        else:
+                            violations.append(entry)
                         break
                 else:
                     if allow_from and not any(_package_matches(str(allowed), imp) for allowed in allow_from):
@@ -724,13 +764,43 @@ def main(argv: list[str] | None = None) -> int:
 
     violations.extend(_collect_writer_module_violations(repo_root, _writer_module_policy(manifest)))
 
+    baseline_refs: set[str] = set()
+    for rule in rules:
+        disallow_block = rule.get("disallow") or {}
+        if not isinstance(disallow_block, dict):
+            continue
+        baseline_ref = disallow_block.get("baseline")
+        if isinstance(baseline_ref, str):
+            baseline_refs.add(baseline_ref)
+
+    observed = {(item["target"], item["file"], item["import"]) for item in baselined}
+    stale_baseline_count = 0
+    for baseline_ref in baseline_refs:
+        stale_baseline_count += len(_load_baseline(repo_root / baseline_ref) - observed)
+
     if args.json:
-        print(dumps({"violations": violations, "count": len(violations)}))
+        print(
+            dumps(
+                {
+                    "violations": violations,
+                    "count": len(violations),
+                    "baselined_count": len(baselined),
+                    "stale_baseline_count": stale_baseline_count,
+                }
+            )
+        )
     else:
         for violation in violations:
             print(_format_violation(violation))
         if not violations:
             print("  No layering violations found.")
+        if baselined:
+            print(f"  ({len(baselined)} pre-existing baselined violation(s) exempted -- see disallow.baseline)")
+        if stale_baseline_count:
+            print(
+                f"  {stale_baseline_count} baseline entr(y/ies) no longer reproduce -- prune them from the "
+                "baseline file to ratchet the count down"
+            )
 
     return 1 if violations else 0
 

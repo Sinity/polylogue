@@ -1,0 +1,1557 @@
+[
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/__init__.py",
+    "import": "polylogue.storage.embeddings.materialization"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/__init__.py",
+    "import": "polylogue.storage.repository"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/__init__.py",
+    "import": "polylogue.storage.sqlite.async_sqlite"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.sources.import_explain"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.sources.parsers.hermes_lifecycle"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.insights.session.rebuild"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.insights.session.records"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.insights.session.runtime"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.query_models"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.repository"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.runtime"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.search.models"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.search.query_builders"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.search_providers"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.context_delivery_write"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.async_sqlite"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.finding_provenance"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.queries.message_query_reads"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.usage"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/embeddings.py",
+    "import": "polylogue.storage.embeddings.preflight"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/embeddings.py",
+    "import": "polylogue.storage.embeddings.status_payload"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/embeddings.py",
+    "import": "polylogue.storage.sqlite.async_sqlite"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/ingest.py",
+    "import": "polylogue.pipeline.services.archive_ingest"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/ingest.py",
+    "import": "polylogue.pipeline.services.parsing_models"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/ingest.py",
+    "import": "polylogue.storage.repository"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/ingest.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/ingest.py",
+    "import": "polylogue.storage.sqlite.async_sqlite"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/insights.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/sync/insights.py",
+    "import": "polylogue.storage.insights.session.runtime"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/sync/sessions.py",
+    "import": "polylogue.storage.runtime"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/sync/sessions.py",
+    "import": "polylogue.storage.search"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/sync/sessions.py",
+    "import": "polylogue.storage.sqlite.queries.message_query_reads"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/archive_query.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/archive_query.py",
+    "import": "polylogue.storage.search_providers"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/archive_query.py",
+    "import": "polylogue.storage.search_providers.sqlite_vec_support"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/archive_query.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/archive_query.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.index"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/archive_query.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/click_app.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/click_app.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.index"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/auth.py",
+    "import": "polylogue.sources.drive.auth"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/diagnostics.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.embeddings.identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.embeddings.materialization"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.embeddings.preflight"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.search_providers"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.search_providers.sqlite_vec_support"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.embedding_write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/embed.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/excise.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/excise.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/facets.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.index"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/import_command.py",
+    "import": "polylogue.sources.import_explain"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/import_command.py",
+    "import": "polylogue.sources.parsers"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/import_command.py",
+    "import": "polylogue.sources.sqlite_snapshot"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/judge.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_archive_plan.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive_init"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_archive_plan.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive_plan"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_archive_read.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_assertion_export.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_backup_plan.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_backup_plan.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_blob_gc.py",
+    "import": "polylogue.storage.blob_gc"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_blob_integrity.py",
+    "import": "polylogue.storage.blob_integrity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_blob_publications.py",
+    "import": "polylogue.storage.blob_publication"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_embeddings.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_embeddings.py",
+    "import": "polylogue.storage.embeddings.reconcile"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_embeddings_rescue.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_embeddings_rescue.py",
+    "import": "polylogue.storage.embeddings.rescue"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
+    "import": "polylogue.storage.sqlite.migration_runner"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_rebuild_index.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/paths.py",
+    "import": "polylogue.storage"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/paths.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/paths.py",
+    "import": "polylogue.storage.archive_readiness"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/paths.py",
+    "import": "polylogue.storage.sqlite.archive_tiers"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/paths.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/reset.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.archive_readiness"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.embeddings.status_payload"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.repair"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.sqlite.archive_tiers"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_audit"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status_diagnostics.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.index"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status_diagnostics.py",
+    "import": "polylogue.storage.sqlite.schema_bootstrap"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/tutorial.py",
+    "import": "polylogue.storage.table_existence"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/convergence_feedback.py",
+    "import": "polylogue.storage.archive_readiness"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/query.py",
+    "import": "polylogue.storage.search_providers"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/query_output.py",
+    "import": "polylogue.storage.runtime"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/read_views/chronicle.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/read_views/chronicle.py",
+    "import": "polylogue.storage.sqlite.async_sqlite"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/read_views/standard.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/read_views/streaming_markdown.py",
+    "import": "polylogue.storage.table_existence"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/select.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_maintenance.py",
+    "import": "polylogue.storage.repair"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_models.py",
+    "import": "polylogue.storage.artifacts.views"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_models.py",
+    "import": "polylogue.storage.repair"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_models.py",
+    "import": "polylogue.storage.runtime"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_support.py",
+    "import": "polylogue.storage.sqlite.connection"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_workflow.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_workflow.py",
+    "import": "polylogue.storage.blob_integrity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/check_workflow.py",
+    "import": "polylogue.storage.repair"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/embed_runtime.py",
+    "import": "polylogue.storage.embeddings.materialization"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/embed_stats.py",
+    "import": "polylogue.storage.embeddings.status_payload"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/formatting.py",
+    "import": "polylogue.pipeline.run_activity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/formatting.py",
+    "import": "polylogue.storage.cursor_state"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/formatting.py",
+    "import": "polylogue.storage.run_state"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/helper_summary.py",
+    "import": "polylogue.storage.embeddings"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/types.py",
+    "import": "polylogue.storage.repository"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shared/types.py",
+    "import": "polylogue.storage.sqlite.async_sqlite"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shell_completion_values.py",
+    "import": "polylogue.sources.origin_specs"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shell_completion_values.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/shell_completion_values.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/verb_cardinality.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/backup.py",
+    "import": "polylogue.storage.backup_attestation"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/backup.py",
+    "import": "polylogue.storage.blob_integrity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/backup.py",
+    "import": "polylogue.storage.blob_publication"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/backup.py",
+    "import": "polylogue.storage.blob_store"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/blob_gc_periodic.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/blob_gc_periodic.py",
+    "import": "polylogue.storage.blob_gc"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/blob_integrity_alerts.py",
+    "import": "polylogue.storage.blob_integrity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/bulk_rebuild.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/bulk_rebuild.py",
+    "import": "polylogue.storage.index_generation"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/catchup_status.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.pipeline.services.ingest_batch"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.pipeline.services.parsing"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.hooks"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.live"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.live.batch"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.live.cursor"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.live.watcher"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.revision_backfill"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.blob_integrity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.blob_publication"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.fts.freshness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.sqlite.maintenance"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.storage.sqlite.wal_checkpoint"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_debt_alert.py",
+    "import": "polylogue.sources.live.watcher"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_debt_status.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.sources.origin_specs"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.archive_readiness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.embeddings.identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.embeddings.materialization"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.fts.dangling_repair"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.fts.freshness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.fts.sql"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.insights.session.rebuild"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.insights.session.runtime"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.insights.session.status"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.runtime"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.runtime.store_constants"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.search_providers"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.search_providers.sqlite_vec_runtime"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.search_providers.sqlite_vec_support"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.source_sessions"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.sqlite.connection"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.sqlite.sqlite_vec_extension"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.table_existence"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_standing_queries.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_standing_queries.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_standing_queries.py",
+    "import": "polylogue.storage.sqlite.query_objects"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cursor_lag_baseline.py",
+    "import": "polylogue.sources.live._lag_sample_ddl"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cursor_lag_baseline.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cursor_lag_baseline.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cursor_lag_baseline.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cursor_lag_baseline.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cursor_lag_status.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.embeddings.identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.embeddings.materialization"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.embeddings.reconcile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.search_providers"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.search_providers.sqlite_vec_support"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_readiness.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_readiness.py",
+    "import": "polylogue.storage.embeddings.status_payload"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/events.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/events.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/events.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_automerge.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_identity_convergence.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_identity_convergence.py",
+    "import": "polylogue.storage.fts.drift_sampling"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_identity_convergence.py",
+    "import": "polylogue.storage.fts.freshness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_identity_convergence.py",
+    "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_identity_convergence.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_orphan_audit.py",
+    "import": "polylogue.sources.live.cursor"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_orphan_audit.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_orphan_audit.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_orphan_audit.py",
+    "import": "polylogue.storage.table_existence"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.sources.live.cursor"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.fts.dangling_repair"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.fts.drift_sampling"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.fts.freshness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_status.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_status.py",
+    "import": "polylogue.storage.fts.freshness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_status.py",
+    "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_status.py",
+    "import": "polylogue.storage.fts.sql"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_status.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/health.py",
+    "import": "polylogue.sources.live.watcher"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/health.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/health.py",
+    "import": "polylogue.storage.blob_integrity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/health.py",
+    "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/health.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/health.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/healthz.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.sources.import_preflight"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.sources.live.watcher"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.insights.session.profiles"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.index"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/http.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/judgment_automation.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/judgment_automation.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/judgment_automation.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lifecycle.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lifecycle.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lifecycle.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lifecycle.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lineage_startup.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lineage_startup.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/lineage_startup.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.archive_layout"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.archive_readiness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.embeddings.materialization"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.embeddings.progress"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.table_existence"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/otlp_receiver.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/otlp_receiver.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/otlp_receiver.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/parse_prefetch.py",
+    "import": "polylogue.pipeline.parsed_tree_size"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/parse_prefetch.py",
+    "import": "polylogue.sources"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/parse_prefetch.py",
+    "import": "polylogue.sources.dispatch"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/parse_prefetch.py",
+    "import": "polylogue.sources.revision_backfill"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/parse_prefetch.py",
+    "import": "polylogue.storage.repair"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/provenance.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/provenance.py",
+    "import": "polylogue.storage.blob_store"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/similarity.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/similarity.py",
+    "import": "polylogue.storage.sqlite.sqlite_vec_extension"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.sources.live"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.sources.live.watcher"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.archive_readiness"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.blob_publication"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.raw_retention"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.repair"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.sqlite.archive_tiers"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.types"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/status_snapshot.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/archive_support.py",
+    "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/archive_support.py",
+    "import": "polylogue.storage.search.query_support"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/archive_support.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/archive_support.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/payloads.py",
+    "import": "polylogue.storage.runtime"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/payloads.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/payloads.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.context_delivery_write"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/payloads.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_cutover.py",
+    "import": "polylogue.storage.embeddings.status_payload"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_cutover.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_prompts.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_prompts.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.write"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_resources.py",
+    "import": "polylogue.storage.raw_authority"
+  },
+  {
+    "target": "polylogue/mcp",
+    "file": "polylogue/mcp/server_resources.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  }
+]
