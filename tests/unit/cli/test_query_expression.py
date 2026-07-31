@@ -6078,6 +6078,7 @@ class TestFieldRegistry:
             QueryFieldPredicate(field="assistant_words", values=("500",), op=">="),
         ),
         "lane": ("lane:dialogue", "retrieval_lane", "dialogue"),
+        "root": ("root:true", "root", True),
         "lineage": (
             "lineage:id:chatgpt-export:ext-root",
             "boolean_predicate",

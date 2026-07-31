@@ -12,7 +12,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Origin, SemanticBlockType, SessionKind
 from polylogue.core.hashing import hash_text
-from polylogue.core.json import json_document
+from polylogue.core.json import json_document, json_document_list
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionEventId, SessionId
@@ -58,6 +58,12 @@ class SessionRecord(BaseModel):
     # verbatim (aistudio-drive runSettings). None when the read path didn't
     # select the column or the provider carries none.
     run_settings: JSONObject | None = None
+    # polylogue-o4j2 (v47): non-blank chunkedPrompt.pendingInputs entries
+    # (unsent AI Studio textbox drafts), stored verbatim. Deliberately a
+    # plain session-row field, outside session_revision_projection's
+    # comparison axes -- see sessions.pending_drafts_json / drive.py's
+    # _pending_drafts docstring for why a draft cannot be a session_event.
+    pending_drafts: list[JSONObject] | None = None
 
     @field_validator("origin", mode="before")
     @classmethod
@@ -82,6 +88,14 @@ class SessionRecord(BaseModel):
     @classmethod
     def coerce_json_document(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)
+
+    @field_validator("pending_drafts", mode="before")
+    @classmethod
+    def coerce_pending_drafts(cls, value: object) -> list[JSONObject] | None:
+        if value is None:
+            return None
+        documents = json_document_list(value)
+        return [dict(document) for document in documents] or None
 
     @field_validator("created_at", "updated_at", mode="before")
     @classmethod
