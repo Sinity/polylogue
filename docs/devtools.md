@@ -216,6 +216,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
+| `devtools workspace beads-state-report` | Self-contained HTML state-of-the-backlog report over the whole bead population. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
 | `devtools workspace degraded-archive-proof` | Build a degraded archive self-healing proof artifact. |

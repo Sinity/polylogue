@@ -1649,6 +1649,31 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace mandate-continuity-replay --archive-root /path/to/authorized/archive --keep-archive",
         ),
     ),
+    CommandSpec(
+        "workspace beads-state-report",
+        "workspace",
+        "Self-contained HTML state-of-the-backlog report over the whole bead population.",
+        "devtools.beads_state_report",
+        use_when=(
+            "Answer 'what shape is the backlog in?' across the whole bead population -- open "
+            "AND closed -- rather than the ready frontier. Computes status x priority x type, "
+            "epic/program trees with open-vs-closed fill, the blocks-graph topology "
+            "(ready/blocked/top blockers/cycles/densest cluster), creation and closure per day "
+            "with velocity, graph-health review queues (dangling refs, id-vs-edge hierarchy "
+            "disagreement, open parents whose children all closed, duplicate titles), subsystem "
+            "concentration by both area label and keyword, and the hand-verified "
+            "VERIFICATION(...) verdict subset. Answers a different question than "
+            "`workspace bead-cluster` (execution-frontier footprint clustering) and "
+            "`workspace delivery-gate-status` (per-gate progress): this is population shape and "
+            "graph hygiene, not the next batch to dispatch. Use --fresh, since bd mutations do "
+            "not immediately re-export."
+        ),
+        examples=(
+            "devtools workspace beads-state-report --fresh",
+            "devtools workspace beads-state-report --out /tmp/beads-state.html",
+            "devtools workspace beads-state-report --json",
+        ),
+    ),
 )
 
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
