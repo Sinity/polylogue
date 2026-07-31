@@ -158,7 +158,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
         "register_cutover_read_tools",
         None,
         MCPVerb.CONTEXT,
-        ("context-snapshot",),
+        ("context-snapshot", "context-delivery"),
         MCPResultSemantics.BOUNDED_CONTEXT,
         "polylogue.mcp.server_cutover.context:inspect.signature",
         ("intent",),
