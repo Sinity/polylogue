@@ -249,6 +249,105 @@ def test_tool_result_missing_is_error_gets_not_reported_reason() -> None:
     assert result_blocks[0].outcome_unknown_reason == "not_reported"
 
 
+def test_request_id_lands_on_message_usage_event() -> None:
+    """The top-level ``requestId`` (Anthropic API request id, 1,171 sampled
+    occurrences per polylogue-cgfy) must reach the ``message_usage`` session
+    event as ``request_id``.
+
+    Deleting the ``record=item`` wiring at the ``message_usage`` append site
+    (or the ``requestId`` extraction inside ``_message_usage_event_payload``)
+    makes this key absent from every event.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-request-id",
+                "requestId": "req_011CPuYvnLASUV8W7nChG4jH",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                },
+            },
+        ],
+        "sess-request-id",
+    )
+    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0].payload["request_id"] == "req_011CPuYvnLASUV8W7nChG4jH"
+
+
+def test_request_id_absent_omits_the_key() -> None:
+    """Anti-vacuity: no ``requestId`` on the record must not fabricate one."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-no-request-id",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                },
+            },
+        ],
+        "sess-no-request-id",
+    )
+    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
+    assert len(usage_events) == 1
+    assert "request_id" not in usage_events[0].payload
+
+
+def test_thinking_metadata_max_tokens_lands_on_message_usage_event() -> None:
+    """``thinkingMetadata.maxThinkingTokens`` (extended-thinking budget) must
+    reach the ``message_usage`` event as ``max_thinking_tokens``.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-thinking-metadata",
+                "thinkingMetadata": {"maxThinkingTokens": 31999},
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                },
+            },
+        ],
+        "sess-thinking-metadata",
+    )
+    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0].payload["max_thinking_tokens"] == 31999
+
+
+def test_thinking_metadata_absent_omits_the_key() -> None:
+    """Anti-vacuity: no ``thinkingMetadata`` on the record must not fabricate one."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-no-thinking-metadata",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                },
+            },
+        ],
+        "sess-no-thinking-metadata",
+    )
+    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
+    assert len(usage_events) == 1
+    assert "max_thinking_tokens" not in usage_events[0].payload
+
+
 def test_background_task_start_ack_gets_distrusted_reason() -> None:
     """The backgrounded-task start acknowledgement's ``is_error=false`` is
     positively distrusted (it only confirms the task started), not merely

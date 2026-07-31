@@ -655,6 +655,7 @@ def _message_usage_event_payload(
     model_name: str | None,
     model_effort: str | None,
     message: Mapping[str, object] | None = None,
+    record: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     last_usage: dict[str, int] = {
         "input_tokens": _safe_int(usage.get("input_tokens")),
@@ -735,6 +736,26 @@ def _message_usage_event_payload(
                 reason_type = cache_miss_reason.get("type")
                 if isinstance(reason_type, str) and reason_type:
                     payload["cache_miss_reason"] = reason_type
+    if record is not None:
+        # requestId is the Anthropic API request identifier for this specific
+        # call -- a real correlation key for cross-referencing a message
+        # against provider-side support/billing records, distinct from any
+        # id already captured (uuid is Claude Code's own record id, tool_id
+        # is per tool-call). parser-diff triage (2026-07-29 / cgfy) found it
+        # unread despite 1,171 occurrences in the sample corpus.
+        request_id = record.get("requestId")
+        if isinstance(request_id, str) and request_id:
+            payload["request_id"] = request_id
+        # thinkingMetadata.maxThinkingTokens is the extended-thinking token
+        # budget Claude Code configured for this turn -- a real reasoning-
+        # effort signal distinct from the actual token counts already in
+        # last_token_usage. Low corpus frequency (34 in the cgfy sample) but
+        # unambiguous and cheap to carry once this payload is already built.
+        thinking_metadata = record.get("thinkingMetadata")
+        if isinstance(thinking_metadata, dict):
+            max_thinking_tokens = thinking_metadata.get("maxThinkingTokens")
+            if isinstance(max_thinking_tokens, int) and not isinstance(max_thinking_tokens, bool):
+                payload["max_thinking_tokens"] = max_thinking_tokens
     return payload
 
 
@@ -1624,6 +1645,7 @@ def _parse_code_records(
                         model_name=msg_model,
                         model_effort=msg_effort,
                         message=message_payload,
+                        record=item,
                     ),
                 )
             )
