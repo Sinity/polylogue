@@ -270,7 +270,7 @@ class TestPolylogueReadSurfaces:
 
         result = await archive.get_messages_paginated(native_id, message_role=(Role.USER,), limit=5)
 
-        messages, total = result
+        messages, total, _completeness = result
         assert total == 1
         assert len(messages) == 1
         assert str(messages[0].role) == "user"
@@ -283,7 +283,9 @@ class TestPolylogueReadSurfaces:
 
         # A valid message_type filter resolves directly; both seeded messages
         # are plain messages, so the default "message" type returns both.
-        typed_messages, typed_total = await archive.get_messages_paginated(native_id, message_type="message")
+        typed_messages, typed_total, _typed_completeness = await archive.get_messages_paginated(
+            native_id, message_type="message"
+        )
         assert typed_total == 2
         assert len(typed_messages) == 2
 

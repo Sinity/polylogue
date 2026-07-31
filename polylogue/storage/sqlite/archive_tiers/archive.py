@@ -392,6 +392,10 @@ class ArchiveSessionSummary:
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
+    # See ``Session.display_name`` / ``SessionSummary.display_name``
+    # (polylogue-cgfy): a provider-assigned name (e.g. Claude Code's slug)
+    # distinct from the (possibly derived) title.
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3755,6 +3759,7 @@ class ArchiveStore:
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
                    s.title_source, s.title_ref, s.title_confidence, s.git_branch, s.git_repository_url, s.provider_project_ref,
+                   s.display_name,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -6114,6 +6119,7 @@ class ArchiveStore:
                    s.tool_message_count, s.user_word_count, s.authored_user_word_count,
                    s.assistant_word_count,
                    s.title_source, s.title_ref, s.title_confidence, s.git_branch, s.git_repository_url, s.provider_project_ref,
+                   s.display_name,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -8373,14 +8379,32 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     # idempotent on rebuild instead of freezing a stale message count.
     has_real_title = bool(raw_title and raw_title.strip()) and raw_title_source in {"origin", "heuristic", "user"}
     provider_title = raw_title if has_real_title else None
+    try:
+        raw_display_name = row["display_name"]
+    except IndexError:
+        # Not every caller's SELECT projects display_name; treat absence as
+        # unknown rather than raising (matching parent_id's guard below).
+        display_name: str | None = None
+    else:
+        display_name = str(raw_display_name).strip() or None if raw_display_name is not None else None
     if provider_title is not None:
         title = provider_title
         title_source = raw_title_source
+    elif display_name:
+        # polylogue-cgfy: a provider-assigned display name (Claude Code's
+        # slug, e.g. "greedy-squishing-hamming") is real origin evidence --
+        # prefer it over the derived structural label below. This is the fix
+        # for subagent rows rendering as "<uuid-prefix>:agent-<suffix>"
+        # instead of a human-readable name when no title sidecar evidence
+        # exists for that specific session.
+        title = display_name
+        title_source = "origin"
     else:
-        # No provider-supplied title (or a blank/synthetic one): fall back to
-        # the structural label (polylogue-cijx.4 decision 3) rather than
-        # exposing a bare/blank title to CLI/MCP/API surfaces. This is a
-        # read-time projection only -- never written back to sessions.title.
+        # No provider-supplied title or display name (or a blank/synthetic
+        # one): fall back to the structural label (polylogue-cijx.4
+        # decision 3) rather than exposing a bare/blank title to CLI/MCP/API
+        # surfaces. This is a read-time projection only -- never written
+        # back to sessions.title.
         title = session_structural_label_for_session(
             conn,
             session_id,
@@ -8430,6 +8454,7 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
         git_branch=str(row["git_branch"]) if row["git_branch"] is not None else None,
         git_repository_url=str(row["git_repository_url"]) if row["git_repository_url"] is not None else None,
         provider_project_ref=(str(row["provider_project_ref"]) if row["provider_project_ref"] is not None else None),
+        display_name=display_name,
     )
 
 

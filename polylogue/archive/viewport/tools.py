@@ -96,32 +96,40 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
         return ToolCategory.SHELL
     if name_lower in ("killshell",):
         return ToolCategory.SHELL
-    if name_lower in ("task", "subagent", "spawn_agent"):
+    if name_lower in ("task", "subagent", "spawn_agent", "agent"):
+        # polylogue-1vpm.7: "Agent" is the Claude Agent SDK's dispatch tool --
+        # the direct successor to Claude Code's "Task" tool, used to spawn a
+        # subagent with the exact same shape (tool_input carries a "prompt"
+        # field the child's own first transcript turn reproduces verbatim).
+        # It used to fall into the generic ToolCategory.AGENT bucket below
+        # (alongside askuserquestion/skill/batch/todo*, which are NOT
+        # delegation), so delegation_facts_source's
+        # `WHERE a.semantic_type = 'subagent'` silently found zero dispatch
+        # actions for every session using this tool -- the join-key fix in
+        # the same bead had nothing to join for these sessions. Measured
+        # live: session claude-code-session:38baa1de-...  (~20 subagents)
+        # had 24 "Agent" tool_use actions and 0 "subagent"-classified ones
+        # before this fix.
         return ToolCategory.SUBAGENT
-    if (
-        name_lower == "agent"
-        or name_lower.startswith(("todo", "task"))
-        or name_lower
-        in (
-            "askuserquestion",
-            "enterplanmode",
-            "exitplanmode",
-            "skill",
-            "batch",
-            "update_plan",
-            "write_stdin",
-            "send_input",
-            "wait",
-            "wait_agent",
-            "close_agent",
-            "initial_instructions",
-            "activate_project",
-            "get_current_config",
-            "get_goal",
-            "update_goal",
-            "mcp__sequential-thinking__sequentialthinking",
-            "mcp__cclsp__restart_server",
-        )
+    if name_lower.startswith(("todo", "task")) or name_lower in (
+        "askuserquestion",
+        "enterplanmode",
+        "exitplanmode",
+        "skill",
+        "batch",
+        "update_plan",
+        "write_stdin",
+        "send_input",
+        "wait",
+        "wait_agent",
+        "close_agent",
+        "initial_instructions",
+        "activate_project",
+        "get_current_config",
+        "get_goal",
+        "update_goal",
+        "mcp__sequential-thinking__sequentialthinking",
+        "mcp__cclsp__restart_server",
     ):
         return ToolCategory.AGENT
     if "tabs_context" in name_lower:

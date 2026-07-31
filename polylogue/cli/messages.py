@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import cast
 
 import click
@@ -41,14 +42,14 @@ def run_messages(
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             effective_limit = limit
             try:
-                messages, total = await api.get_messages_paginated(
+                messages, total, completeness = await api.get_messages_paginated(
                     session_id,
                     limit=effective_limit,
                     offset=offset,
                 )
                 if full and offset + len(messages) < total:
                     full_limit = max(total - offset, 0)
-                    messages, total = await api.get_messages_paginated(
+                    messages, total, completeness = await api.get_messages_paginated(
                         session_id,
                         limit=full_limit,
                         offset=offset,
@@ -82,6 +83,8 @@ def run_messages(
                         total=total,
                         limit=effective_limit,
                         offset=offset,
+                        lineage_complete=completeness.complete,
+                        lineage_truncation_reason=completeness.truncation_reason,
                     ),
                     exclude_none=True,
                 )
@@ -107,6 +110,18 @@ def run_messages(
                 # session row rather than hydrating a whole lineage family.
                 session = await api.get_session(session_id)
                 lineage = lineage_descriptor_from_session(session) if session is not None else None
+                # polylogue-ppkj: lineage_descriptor_from_session hard-codes
+                # lineage_complete=None (the DB-backed Session domain model
+                # carries no such field). Overlay the real read-time signal
+                # from get_messages_paginated so the markdown render can flag
+                # a truncated composed transcript instead of rendering a
+                # short conversation with no indication.
+                if lineage is not None:
+                    lineage = dataclasses.replace(
+                        lineage,
+                        lineage_complete=completeness.complete,
+                        lineage_truncation_reason=completeness.truncation_reason,
+                    )
                 transcript = build_semantic_transcript(
                     messages,
                     session_id=session_id,
@@ -266,4 +281,102 @@ def run_session_events(
     run_coroutine_sync(_run())
 
 
-__all__ = ["run_hooks", "run_messages", "run_raw", "run_session_events"]
+def run_session_file_edits(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    output_format: str = "json",
+) -> None:
+    """Execute the file-edits verb.
+
+    Renders captured Claude Code Edit/Write/MultiEdit tool-call evidence
+    (polylogue-nua7/polylogue-cgfy): structured unified diffs
+    (``structured_patch``), pre-edit file content (``original_file``), and
+    old/new string pairs -- persisted on every ingest into the dedicated
+    ``file_edits`` table but, before this view, unreachable from any
+    surface. This is the "what did this session change" evidence a report
+    needs instead of re-deriving edits from tool-call prose.
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            edits = await api.get_file_edits(session_id)
+
+            if edits is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            payload = {
+                "session_id": session_id,
+                "total": len(edits),
+                "file_edits": edits,
+            }
+
+            if output_format == "json":
+                import json as _json
+
+                # Machine output uses raw stdout so Rich markup never rewrites
+                # JSON bytes and read-view delivery can capture file/clipboard
+                # targets consistently.
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(payload))
+
+    run_coroutine_sync(_run())
+
+
+def run_session_agent_policies(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    output_format: str = "json",
+) -> None:
+    """Execute the agent-policies verb.
+
+    Renders sandbox/approval/network policy facts (polylogue-nua7) -- the
+    writer diverts Codex ``agent_policy`` events out of ``session_events``
+    into the dedicated ``session_agent_policies`` table for zero-loss
+    re-derivation, but before this view nothing above the storage layer
+    could read them back.
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            policies = await api.get_agent_policies(session_id)
+
+            if policies is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            payload = {
+                "session_id": session_id,
+                "total": len(policies),
+                "agent_policies": policies,
+            }
+
+            if output_format == "json":
+                import json as _json
+
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(payload))
+
+    run_coroutine_sync(_run())
+
+
+__all__ = [
+    "run_hooks",
+    "run_messages",
+    "run_raw",
+    "run_session_agent_policies",
+    "run_session_events",
+    "run_session_file_edits",
+]

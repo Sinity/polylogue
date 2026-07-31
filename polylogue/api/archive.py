@@ -55,6 +55,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
+from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -1978,6 +1979,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
         attachments=[_archive_attachment_to_domain(att) for att in session.orphan_attachments],
+        reported_cost_usd=session.reported_cost_usd,
     )
 
 
@@ -1995,6 +1997,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
         provider_project_ref=summary.provider_project_ref,
+        display_name=summary.display_name,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -5256,10 +5259,14 @@ class PolylogueArchiveMixin:
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[list[Message], int, LineageCompleteness]:
         """Return paginated ``Message`` objects for a session.
 
-        Raises ``SessionNotFoundError`` if the session does not exist.
+        Raises ``SessionNotFoundError`` if the session does not exist. The
+        third element reports whether the composed transcript is the full
+        logical transcript or was silently truncated by a dangling lineage
+        branch point / depth-limited composition (polylogue-ppkj) -- the same
+        read-time signal the MCP surface already carries.
         """
         if material_origin:
             session = await self.get_session(session_id, content_projection=content_projection)
@@ -5275,10 +5282,11 @@ class PolylogueArchiveMixin:
                     material_origin=material_origin,
                 )
             ]
-            return messages[offset : offset + limit], len(messages)
+            completeness = await self.repository.get_lineage_completeness(session_id)
+            return messages[offset : offset + limit], len(messages), completeness
 
         resolved_session_id = await self.repository.resolve_id(session_id) or session_id
-        messages, total = await self.repository.get_messages_paginated(
+        messages, total, completeness = await self.repository.get_messages_paginated(
             resolved_session_id,
             message_role=message_role,
             message_type=message_type,
@@ -5289,7 +5297,7 @@ class PolylogueArchiveMixin:
             raise SessionNotFoundError(session_id)
         if content_projection is not None and content_projection.filters_content():
             messages = project_message_content(messages, content_projection)
-        return messages, total
+        return messages, total, completeness
 
     def iter_messages(
         self,
@@ -5445,6 +5453,76 @@ class PolylogueArchiveMixin:
                 "payload": event.payload,
             }
             for event in events
+        ]
+
+    async def get_file_edits(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return file-edit tool-call evidence (structuredPatch/originalFile/...) for one session.
+
+        polylogue-nua7: the writer materializes ``ParsedFileEdit`` evidence
+        (Claude Code Edit/Write/MultiEdit tool calls -- structured unified
+        diffs, pre-edit file content, old/new string pairs) into the
+        dedicated ``file_edits`` index table on every ingest
+        (``storage/repository/archive/sessions.py::get_file_edits``), but
+        before this reader nothing above the storage layer could reach it.
+        This is the read surface: what a "what did this session change"
+        report needs instead of re-deriving edits from tool-call prose.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but made no captured edits).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        edits = await self.repository.get_file_edits(resolved_id)
+        return [
+            {
+                "tool_use_block_id": edit.tool_use_block_id,
+                "message_id": str(edit.message_id),
+                "file_path": edit.file_path,
+                "structured_patch": edit.structured_patch,
+                "original_file": edit.original_file,
+                "old_string": edit.old_string,
+                "new_string": edit.new_string,
+                "replace_all": edit.replace_all,
+                "user_modified": edit.user_modified,
+                "observed_at_ms": edit.observed_at_ms,
+            }
+            for edit in edits
+        ]
+
+    async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return sandbox/approval/network policy facts recorded for one session.
+
+        polylogue-nua7: the writer diverts Codex ``agent_policy`` events out
+        of ``session_events`` into the dedicated ``session_agent_policies``
+        table (fully re-derivable, zero evidence loss -- see
+        ``archive_tiers/write.py:_SESSION_EVENTS_REDUNDANT_TYPES``), but
+        before this reader nothing above the storage layer could reach it
+        back. This is the read surface.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but reported no agent-policy
+        facts -- expected for non-Codex origins).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        policies = await self.repository.get_agent_policies(resolved_id)
+        return [
+            {
+                "policy_id": policy.policy_id,
+                "position": policy.position,
+                "approval_policy": policy.approval_policy,
+                "sandbox_policy": policy.sandbox_policy,
+                "network_policy": policy.network_policy,
+                "observed_at_ms": policy.observed_at_ms,
+                "source_message_id": policy.source_message_id,
+            }
+            for policy in policies
         ]
 
     async def query_sessions(
@@ -5777,7 +5855,27 @@ class PolylogueArchiveMixin:
             typed_issue_refs=typed_issue_refs,
             bridge_session_ids=bridge_session_ids,
         )
-        return cast(JSONDocument, correlation_result_to_payload(result))
+        payload = correlation_result_to_payload(result)
+        # polylogue-cijx.3 AC3: session_commits was a write-only table (the
+        # parser-reported repo checkout HEAD at session capture, distinct
+        # from the on-demand commit-authorship correlation above). Surface
+        # it here, clearly separated from `commits` (which is
+        # detect_session_commits' scored/heuristic list) rather than merged
+        # into it.
+        checkout_commits = await self.repository.get_session_commits(session_id)
+        payload["checkout_commits"] = [
+            {
+                "commit_sha": record.commit_sha,
+                "short_sha": record.commit_sha[:8],
+                "repo_id": record.repo_id,
+                "detection_type": record.detection_type,
+                "method": record.method,
+                "confidence": record.confidence,
+                "evidence": record.evidence,
+            }
+            for record in checkout_commits
+        ]
+        return cast(JSONDocument, payload)
 
     async def get_session_tree(self, session_id: str) -> list[Session]:
         """Return the full session tree (parent + children) for a session."""

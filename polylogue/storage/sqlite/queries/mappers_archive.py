@@ -28,6 +28,7 @@ from polylogue.storage.runtime import (
     FileEditRecord,
     MessageRecord,
     RawSessionRecord,
+    SessionCommitRecord,
     SessionRecord,
     SessionRefRecord,
 )
@@ -72,6 +73,7 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         pending_drafts=_json_object_list(
             _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
         ),
+        reported_cost_usd=_row_float(row, "reported_cost_usd"),
     )
 
 
@@ -162,6 +164,19 @@ def _row_to_session_ref(row: sqlite3.Row) -> SessionRefRecord:
         number=_row_int(row, "ref_number"),
         url=row["url"],
         observed_at_ms=_row_int(row, "observed_at_ms"),
+    )
+
+
+def _row_to_session_commit(row: sqlite3.Row) -> SessionCommitRecord:
+    return SessionCommitRecord(
+        session_id=SessionId(row["session_id"]),
+        commit_sha=row["commit_sha"],
+        repo_id=_row_text(row, "repo_id"),
+        detection_type=row["detection_type"],
+        method=_row_text(row, "method"),
+        confidence=float(row["confidence"]),
+        evidence=row["evidence_json"],
+        created_at_ms=int(row["created_at_ms"]),
     )
 
 

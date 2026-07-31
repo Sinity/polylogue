@@ -17,7 +17,15 @@ from polylogue.storage.hydrators import (
 )
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.runtime import AttachmentRecord, FileEditRecord, MessageRecord, SessionRecord, SessionRefRecord
+from polylogue.storage.runtime import (
+    AttachmentRecord,
+    FileEditRecord,
+    LineageCompleteness,
+    MessageRecord,
+    SessionCommitRecord,
+    SessionRecord,
+    SessionRefRecord,
+)
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 
 if TYPE_CHECKING:
@@ -155,6 +163,10 @@ class RepositoryArchiveSessionMixin:
     ) -> dict[str, list[SessionRefRecord]]:
         return await self.queries.get_session_refs_batch(session_ids)
 
+    async def get_session_commits(self, session_id: str) -> list[SessionCommitRecord]:
+        """Read checkout-HEAD commit evidence (polylogue-cijx.3) for a session."""
+        return await self.queries.get_session_commits(session_id)
+
     async def get_messages_paginated(
         self,
         session_id: str,
@@ -163,10 +175,10 @@ class RepositoryArchiveSessionMixin:
         message_type: MessageTypeName | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[list[Message], int, LineageCompleteness]:
         conv_record = await self.queries.get_session(session_id)
         origin = conv_record.origin if conv_record else None
-        records, total = await self.queries.get_messages_paginated(
+        records, total, completeness = await self.queries.get_messages_paginated(
             session_id,
             message_role=message_role,
             message_type=message_type,
@@ -174,7 +186,18 @@ class RepositoryArchiveSessionMixin:
             offset=offset,
         )
         messages = [message_from_record(r, attachments=[], origin=origin) for r in records]
-        return messages, total
+        return messages, total, completeness
+
+    async def get_lineage_completeness(self, session_id: str) -> LineageCompleteness:
+        """Report whether ``session_id``'s composed transcript is the full
+        logical transcript or was silently truncated (polylogue-ppkj).
+
+        Cheap standalone probe for callers (e.g. a material-origin-filtered
+        read) that need the same read-time completeness signal
+        ``get_messages_paginated`` reports but build their message list a
+        different way and so cannot thread it through that call.
+        """
+        return await self.queries.get_lineage_completeness(session_id)
 
     async def get_sessions_batch(self, ids: list[str]) -> list[SessionRecord]:
         return await self.queries.get_sessions_batch(ids)

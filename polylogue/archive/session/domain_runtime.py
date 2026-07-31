@@ -41,6 +41,7 @@ class SessionRuntimeMixin:
     metadata: dict[str, object]
     parent_id: SessionId | None
     branch_type: BranchType | None
+    display_name: str | None
 
     if TYPE_CHECKING:
 
@@ -73,6 +74,12 @@ class SessionRuntimeMixin:
             return user_title
         if self.title:
             return self.title
+        # polylogue-cgfy: provider-assigned display name (e.g. Claude Code's
+        # slug, "greedy-squishing-hamming") beats the raw id truncation --
+        # the fix for subagent rows showing "<uuid-prefix>" instead of a
+        # human-readable name when no title-worthy sidecar evidence exists.
+        if self.display_name:
+            return self.display_name
         return self.id[:8]
 
     @property

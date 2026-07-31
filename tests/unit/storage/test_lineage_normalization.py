@@ -268,7 +268,7 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
         "input_tokens": 50,
         "output_tokens": 15,
         "cache_read_tokens": 10,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
     events = conn.execute(
         """
@@ -1222,7 +1222,7 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
         "input_tokens": 50,
         "output_tokens": 15,
         "cache_read_tokens": 10,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
     provenance_rows = conn.execute(
         """
@@ -1551,12 +1551,14 @@ def test_fork_composes_on_paginated_batch_and_iter(tmp_path: Path) -> None:
             conn.row_factory = aiosqlite.Row
 
             # Paginated: total is the composed length; pages slice the composed list.
-            page1, total = await get_messages_paginated(conn, child_id, limit=2, offset=0)
+            page1, total, completeness1 = await get_messages_paginated(conn, child_id, limit=2, offset=0)
             assert total == 4
             assert [r.text for r in page1] == full[:2]
-            page2, total2 = await get_messages_paginated(conn, child_id, limit=2, offset=2)
+            assert completeness1.complete is True
+            page2, total2, completeness2 = await get_messages_paginated(conn, child_id, limit=2, offset=2)
             assert total2 == 4
             assert [r.text for r in page2] == full[2:]
+            assert completeness2.complete is True
 
             # Batch: the child's entry carries the composed transcript.
             result, all_messages = await get_messages_batch(conn, [child_id])
@@ -1850,6 +1852,26 @@ def test_sync_and_async_report_incomplete_on_dangling_branch_point(tmp_path: Pat
     assert texts == ["child diverges"]
     assert completeness.complete is False
     assert completeness.truncation_reason == "dangling_branch_point"
+
+    # polylogue-ppkj: the actual `polylogue read` / HTTP messages surface
+    # goes through get_messages_paginated, not get_messages_with_lineage_
+    # completeness directly -- prove the signal survives that call too,
+    # instead of being dropped by the plain get_messages() wrapper it used
+    # to route through for composed (prefix-sharing) sessions.
+    async def _run_paginated() -> tuple[list[str | None], int, LineageCompleteness]:
+        reader = await aiosqlite.connect(db)
+        try:
+            reader.row_factory = aiosqlite.Row
+            records, total, page_completeness = await get_messages_paginated(reader, child_id, limit=50, offset=0)
+            return [r.text for r in records], total, page_completeness
+        finally:
+            await reader.close()
+
+    page_texts, page_total, page_completeness = asyncio.run(_run_paginated())
+    assert page_texts == ["child diverges"]
+    assert page_total == 1
+    assert page_completeness.complete is False
+    assert page_completeness.truncation_reason == "dangling_branch_point"
 
 
 def test_sync_report_incomplete_at_depth_limit(tmp_path: Path) -> None:

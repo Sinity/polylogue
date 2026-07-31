@@ -465,6 +465,19 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # the explicit operator-facing instruction.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=49,
+        # polylogue-gt1z + polylogue-shnc, batched (see index.py's v49 header
+        # comment for the full rationale): sessions.reported_cost_usd (exact
+        # provider-reported session cost total) plus two new
+        # session_model_usage CHECK constraints enforcing the
+        # 'priced'/'origin_reported' provenance invariant. Values/repairs
+        # depend on parser and pricing semantics, so a shape-only
+        # copy-forward would leave every row NULL/still-violating -- the same
+        # v42/v44/v45/v46/v47/v48 precedent. SEMANTIC_REPARSE routes through
+        # `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

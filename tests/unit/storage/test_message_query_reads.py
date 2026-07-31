@@ -144,7 +144,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         ]
         assert authored_last == []
 
-        paginated, total = await get_messages_paginated(
+        paginated, total, paginated_completeness = await get_messages_paginated(
             conn,
             current_session_id,
             message_type="summary",
@@ -153,8 +153,9 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         )
         assert total == 2
         assert [message.message_id for message in paginated] == [f"{current_session_id}:msg-summary"]
+        assert paginated_completeness.complete is True
 
-        paginated_with_offset, offset_total = await get_messages_paginated(
+        paginated_with_offset, offset_total, _offset_completeness = await get_messages_paginated(
             conn,
             current_session_id,
             message_type="summary",
@@ -164,7 +165,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         assert offset_total == 2
         assert [message.message_id for message in paginated_with_offset] == [f"{current_session_id}:msg-summary-2"]
 
-        tool_messages, tool_total = await get_messages_paginated(
+        tool_messages, tool_total, _tool_completeness = await get_messages_paginated(
             conn,
             current_session_id,
             message_type="tool_result",
@@ -174,7 +175,7 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
         assert tool_total == 1
         assert [message.message_id for message in tool_messages] == [f"{current_session_id}:msg-tool"]
 
-        user_messages, user_total = await get_messages_paginated(
+        user_messages, user_total, _user_completeness = await get_messages_paginated(
             conn,
             current_session_id,
             message_type="message",

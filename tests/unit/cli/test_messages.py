@@ -14,6 +14,7 @@ from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.storage.runtime import LineageCompleteness
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -35,6 +36,7 @@ class _FakeApi:
         paginate_messages: bool = False,
         session_origin: str = "codex-session",
         topology: object | None = None,
+        lineage_completeness: LineageCompleteness | None = None,
     ) -> None:
         self.messages_result = messages_result
         self.raw_result = raw_result
@@ -43,6 +45,7 @@ class _FakeApi:
         self.paginate_messages = paginate_messages
         self.session_origin = session_origin
         self.topology = topology
+        self.lineage_completeness = lineage_completeness or LineageCompleteness()
         self.messages_kwargs: dict[str, object] = {}
         self.messages_calls: list[dict[str, object]] = []
         self.raw_kwargs: dict[str, object] = {}
@@ -89,7 +92,9 @@ class _FakeApi:
     ) -> None:
         return None
 
-    async def get_messages_paginated(self, session_id: str, **kwargs: object) -> tuple[list[object], int] | None:
+    async def get_messages_paginated(
+        self, session_id: str, **kwargs: object
+    ) -> tuple[list[object], int, LineageCompleteness]:
         self.messages_kwargs = {"session_id": session_id, **kwargs}
         self.messages_calls.append(self.messages_kwargs)
         if self.messages_result is None:
@@ -106,7 +111,7 @@ class _FakeApi:
             limit = limit_value
             msgs = msgs[offset : offset + limit]
         objs = self._message_objects(msgs) if msgs else []
-        return objs, total
+        return objs, total, self.lineage_completeness
 
     async def iter_messages(
         self,
@@ -213,6 +218,44 @@ def test_run_messages_emits_json_and_passes_pagination(tmp_path: Path, capsys: p
     assert api.messages_kwargs["session_id"] == "conv-1"
     assert api.messages_kwargs["limit"] == 5
     assert api.messages_kwargs["offset"] == 2
+
+
+def test_run_messages_json_surfaces_truncated_lineage(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """polylogue-ppkj: a dangling branch point must not silently render a
+    partial transcript as if it were the whole conversation -- the JSON
+    output must carry the lineage_complete/lineage_truncation_reason signal
+    `get_messages_paginated` now reports (fails against the pre-fix code,
+    which unpacked a 2-tuple and never threaded a completeness signal at
+    all)."""
+    env = _env()
+    api = _FakeApi(
+        messages_result=(
+            [{"id": "cx", "role": "user", "message_type": "message", "text": "child diverges"}],
+            1,
+        ),
+        lineage_completeness=LineageCompleteness(complete=False, truncation_reason="dangling_branch_point"),
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["lineage_complete"] is False
+    assert payload["lineage_truncation_reason"] == "dangling_branch_point"
+
+
+def test_run_messages_json_lineage_complete_by_default(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    env = _env()
+    api = _FakeApi(
+        messages_result=([{"id": "m1", "role": "user", "message_type": "message", "text": "hi"}], 1),
+    )
+
+    with patch("polylogue.api.Polylogue.open", return_value=api):
+        run_messages(env, _request(tmp_path), session_id="conv-1", output_format="json")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["lineage_complete"] is True
+    assert "lineage_truncation_reason" not in payload
 
 
 def test_run_messages_full_rereads_with_total_limit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

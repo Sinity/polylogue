@@ -376,11 +376,16 @@ async def get_messages_paginated(
     message_type: MessageTypeName | None = None,
     limit: int = 50,
     offset: int = 0,
-) -> tuple[list[MessageRecord], int]:
+) -> tuple[list[MessageRecord], int, LineageCompleteness]:
     """Return paginated messages for a session with optional filters.
 
-    Returns (messages, total_count) where total_count is the unfiltered
-    count of messages matching the SQL-level filters (before limit/offset).
+    Returns ``(messages, total_count, lineage_completeness)`` where
+    ``total_count`` is the unfiltered count of messages matching the SQL-level
+    filters (before limit/offset), and ``lineage_completeness`` reports
+    whether ``messages`` is a page of the FULL composed transcript or was
+    silently truncated (dangling branch point / depth limit -- polylogue-ppkj).
+    A non-lineage session (the ``else`` branch below) can never be truncated
+    this way, so it always reports ``LineageCompleteness()`` (complete=True).
     """
     session_id = await _resolve_session_id(conn, session_id)
 
@@ -388,13 +393,18 @@ async def get_messages_paginated(
     # own ``messages`` rows returns a truncated transcript. Compose the full
     # lineage view, filter in Python, and slice it for offset/limit (#2470).
     # ``total`` is the filtered composed length so page math stays consistent.
+    # Uses ``get_messages_with_lineage_completeness`` directly (not the
+    # signal-dropping ``get_messages`` wrapper) so pagination -- the actual
+    # `polylogue read` / HTTP messages surface -- can report truncation
+    # instead of silently rendering a short transcript as if it were whole.
     if await _prefix_sharing_edge(conn, session_id) is not None:
+        composed_full, completeness = await get_messages_with_lineage_completeness(conn, session_id)
         composed = _filter_composed(
-            await get_messages(conn, session_id),
+            composed_full,
             message_role=message_role,
             message_type=message_type,
         )
-        return composed[offset : offset + limit], len(composed)
+        return composed[offset : offset + limit], len(composed), completeness
 
     query = f"""
         SELECT {_MESSAGE_RECORD_SELECT}
@@ -431,7 +441,20 @@ async def get_messages_paginated(
     rows = await cursor.fetchall()
     messages = [_row_to_message(row) for row in rows]
 
-    return messages, total
+    return messages, total, LineageCompleteness()
+
+
+async def get_lineage_completeness(conn: aiosqlite.Connection, session_id: str) -> LineageCompleteness:
+    """Standalone probe for the read-time lineage-completeness signal.
+
+    For callers that need to know whether ``session_id``'s composed
+    transcript is truncated but build their own message list a different way
+    (e.g. a material-origin-filtered read going through the full ``Session``
+    domain object) and so cannot receive the signal from
+    ``get_messages_paginated`` directly.
+    """
+    _messages, completeness = await get_messages_with_lineage_completeness(conn, session_id)
+    return completeness
 
 
 async def get_message_edge_windows(
@@ -643,4 +666,11 @@ async def iter_messages(
             break
 
 
-__all__ = ["get_messages", "get_messages_batch", "get_messages_paginated", "iter_messages"]
+__all__ = [
+    "get_lineage_completeness",
+    "get_messages",
+    "get_messages_batch",
+    "get_messages_paginated",
+    "get_messages_with_lineage_completeness",
+    "iter_messages",
+]

@@ -14,7 +14,9 @@ from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,
     FileEditRecord,
+    LineageCompleteness,
     MessageRecord,
+    SessionCommitRecord,
     SessionEventRecord,
     SessionRecord,
     SessionRefRecord,
@@ -25,6 +27,7 @@ from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import file_edits as file_edits_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import session_agent_policies as session_agent_policies_q
+from polylogue.storage.sqlite.queries import session_commits as session_commits_q
 from polylogue.storage.sqlite.queries import session_events as session_events_q
 from polylogue.storage.sqlite.queries import session_links as session_links_q
 from polylogue.storage.sqlite.queries import session_refs as session_refs_q
@@ -163,9 +166,9 @@ class SQLiteQueryStoreArchiveMixin:
         message_type: MessageTypeName | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[MessageRecord], int]:
+    ) -> tuple[list[MessageRecord], int, LineageCompleteness]:
         async with self._connection_factory() as conn:
-            messages, total = await messages_q.get_messages_paginated(
+            messages, total, completeness = await messages_q.get_messages_paginated(
                 conn,
                 session_id,
                 message_role=message_role,
@@ -174,12 +177,16 @@ class SQLiteQueryStoreArchiveMixin:
                 offset=offset,
             )
         if not messages:
-            return [], total
+            return [], total, completeness
         blocks_by_message = await self.get_blocks([message.message_id for message in messages])
         for message in messages:
             message.blocks = blocks_by_message.get(message.message_id, [])
             _hydrate_message_text_from_blocks(message)
-        return messages, total
+        return messages, total, completeness
+
+    async def get_lineage_completeness(self, session_id: str) -> LineageCompleteness:
+        async with self._connection_factory() as conn:
+            return await messages_q.get_lineage_completeness(conn, session_id)
 
     async def get_message_edge_windows(
         self,
@@ -292,6 +299,10 @@ class SQLiteQueryStoreArchiveMixin:
     ) -> dict[str, list[SessionRefRecord]]:
         async with self._connection_factory() as conn:
             return await session_refs_q.get_session_refs_batch(conn, session_ids)
+
+    async def get_session_commits(self, session_id: str) -> list[SessionCommitRecord]:
+        async with self._connection_factory() as conn:
+            return await session_commits_q.get_session_commits(conn, session_id)
 
     async def iter_messages(
         self,
