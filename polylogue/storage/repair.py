@@ -6591,7 +6591,18 @@ def repair_raw_materialization(
         return _internal_derived_repair_result(
             "raw_materialization",
             repaired_count=0,
-            success=False,
+            # polylogue-f57q: a dry-run PREVIEW that reaches this branch has
+            # validly identified an executable plan -- it is a phase-honest
+            # SUCCESS (the preview completed), never a failure. `repaired_count`
+            # (always 0 here, correctly) already carries the "nothing was
+            # mutated" fact; conflating "no mutation" with "failed" collided
+            # with devtools/scale_regression_probe.py's contract, which the
+            # previous dry-run + `success=False` shape made impossible to
+            # satisfy honestly. This mirrors the same convention the
+            # "no candidate_raw_ids" branch above and the census-pending
+            # short-circuit below already use: success answers "did the
+            # requested phase complete validly", not "was anything applied".
+            success=True,
             detail=detail,
             metrics=metrics,
             plan_outcomes=plan_outcomes,
