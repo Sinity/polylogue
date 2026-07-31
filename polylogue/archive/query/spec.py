@@ -28,6 +28,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.models import Session, SessionSummary
+    from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.config import Config
     from polylogue.core.protocols import VectorProvider
 
@@ -524,6 +525,11 @@ class SessionQuerySpec:
     #: same post-selection projection. Empty/missing means the unit's default
     #: payload is emitted.
     with_unit_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Bracket predicate/window per unit (the DSL ``with unit[field:value,
+    #: last:N]`` clause), keyed by the same canonical unit as ``with_units``
+    #: (polylogue-fnm.2). Applied to the fetched attached rows, not pushed
+    #: down to SQL.
+    with_unit_windows: dict[str, WithUnitWindow] = field(default_factory=dict)
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> SessionQuerySpec:
@@ -626,6 +632,7 @@ class SessionQuerySpec:
             query_plan=self.to_plan(vector_provider=vector_provider),
             with_units=self.with_units,
             with_unit_fields=self.with_unit_fields,
+            with_unit_windows=self.with_unit_windows,
         )
 
 

@@ -13,6 +13,7 @@ does not push down.
 from __future__ import annotations
 
 import builtins
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, TypedDict, TypeVar
 
 from polylogue.archive.message.messages import MessageCollection
@@ -31,6 +32,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from polylogue.archive.message.models import Message
+    from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.archive.query.plan import SessionQueryPlan
     from polylogue.archive.query.predicate import QueryPredicate
     from polylogue.config import Config
@@ -404,6 +406,7 @@ def _attach_units_to_domain(
     archive: ArchiveStore,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[_AttachableT]:
     """Attach ``with <units>`` projection rows onto domain models (#2492).
 
@@ -416,7 +419,9 @@ def _attach_units_to_domain(
     from polylogue.archive.query.attached_units import fetch_attached_units
 
     session_ids = [item.id for item in items]
-    attached = fetch_attached_units(archive, session_ids, with_units, unit_fields=with_unit_fields)
+    attached = fetch_attached_units(
+        archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
+    )
     updated: builtins.list[_AttachableT] = []
     for item in items:
         per_session = {unit: tuple(by_session.get(item.id, ())) for unit, by_session in attached.items()}
@@ -432,6 +437,7 @@ async def list_summaries_archive(
     default_limit: int = 50,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[SessionSummary]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
 
@@ -448,6 +454,7 @@ async def list_summaries_archive(
             archive,
             with_units,
             with_unit_fields,
+            with_unit_windows,
         )
         return summaries
 
@@ -474,6 +481,7 @@ async def list_archive(
     default_limit: int = 50,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> builtins.list[Session]:
     rank_first = bool(plan.fts_terms and plan.sort is None)
 
@@ -490,6 +498,7 @@ async def list_archive(
             archive,
             with_units,
             with_unit_fields,
+            with_unit_windows,
         )
         return sessions
 
