@@ -103,7 +103,7 @@ jobs:
           command: ~/.local/bin/uv build
       - run:
           name: Verify distribution
-          command: ~/.local/bin/uv run devtools release verify-distribution --work-dir /tmp/dist-verify || echo "verify-distribution unavailable; artifacts stored"
+          command: ~/.local/bin/uv run devtools release verify-distribution --work-dir /tmp/dist-verify
       - store_artifacts:
           path: dist
           destination: dist
