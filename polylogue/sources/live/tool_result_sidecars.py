@@ -23,27 +23,40 @@ are always skipped here, never counted as debt.
 
 **Session-scoped join (polylogue debt-audit, 2026-07-30).** Claude Code
 subagents (``Task`` tool invocations) get their own JSONL transcript at
-``<session>/subagents/agent-*.jsonl``, but every subagent shares the SAME
+``<session>/subagents/agent-*.jsonl`` -- and, separately, an
+``agent-*.meta.json`` metadata companion (``AGENT_SIDECAR_META``, ingested as
+its own lightweight quasi-session) -- but every one of them shares the SAME
 session-level ``tool-results/`` directory as the parent (see
 ``resolve_tool_results_dir``). A single-transcript join only has that one
 transcript's own ``tool_use_id``\\s in scope, so when it enumerates the full
 shared directory it misclassifies every sibling-owned file as
 ``no_owning_tool_result_block`` -- multiplying false debt once per sibling
-transcript that doesn't own the file. Measured against the live archive: a
-naive per-transcript join reported 556,871 debt events, but only 14,209 are
-physically distinct ``(session, filename)`` pairs (a ~39x inflation -- most of
-the reported ~72GB of "lost" bytes was the same handful of files re-counted
-under every sibling subagent's session_id). Verified on 3 sampled
-multi-subagent sessions (172, 73, and 49 physical sidecar files
-respectively): 100% resolved once sibling transcripts were joined into a
-session-wide index -- the "debt" was a join-scope bug, not lost content.
-``join_tool_result_sidecars_session_scoped`` (and the streaming accumulator's
-``join_session_scoped``) fix this: a subagent transcript never originates
-debt for a directory it doesn't own (it only ever matches its own ids,
-silently skipping files it doesn't recognize -- the true owner's own pass
-will match them), and the root/parent transcript classifies debt against a
-session-wide union index built from every sibling ``.jsonl`` transcript on
-disk, so each physical file is judged, and reported as debt at most, once.
+transcript that doesn't own the file (the ``.meta.json`` companion owns
+*nothing*, so it multiplied it by a full extra false-debt copy of the
+directory on top of the ``.jsonl`` fanout).
+
+The unit of "debt" is the physical file, not the event: the same file
+re-observed by every non-owning sibling is one piece of missing evidence, not
+N. Measured against the live archive, per-event counting reported 556,871
+debt events; per-file (matching sidecar basenames against files actually
+present under a live ``~/.claude/projects`` corpus) only ~12,000 are
+genuinely distinct, and every one of them is still on disk -- none of the
+"~72GB of lost bytes" the event count implied was ever lost, it was ~1.4GB of
+real content re-counted roughly 46x by transcript fanout. That reconciles
+with this module's original file-counted docstring claim of a 1-5% debt rate
+(the two numbers were never in conflict -- they counted different
+denominators). Verified on 3 sampled multi-subagent sessions (172, 73, and 49
+physical sidecar files respectively): 100% resolved once sibling transcripts
+were joined into a session-wide index -- the "debt" was a join-scope bug, not
+lost content. ``join_tool_result_sidecars_session_scoped`` (and the streaming
+accumulator's ``join_session_scoped``) fix this: a non-root transcript
+(subagent ``.jsonl`` or ``.meta.json`` companion, anything under
+``subagents/``) never originates debt for a directory it doesn't own -- it
+only ever matches its own ids, silently skipping files it doesn't recognize
+so the true owner's own pass can match them -- and the root/parent transcript
+classifies debt against a session-wide union index built from every sibling
+transcript on disk, so each physical file is judged, and reported as debt at
+most, once.
 
 **Acquisition-time instrumentation.** Every ``SidecarMatch``/``SidecarDebt``
 now carries the sidecar *file's own mtime* (``file_mtime_ms``) -- the

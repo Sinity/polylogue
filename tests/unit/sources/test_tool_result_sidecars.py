@@ -274,3 +274,28 @@ def test_session_scoped_join_resolves_sibling_owned_file_without_duplicating_deb
     parent_debt_filenames = {debt.filename for debt in parent_result.debt}
     assert parent_debt_filenames == {"orphan999.txt"}
     assert subagent_result.debt == ()
+
+
+def test_session_scoped_join_never_emits_debt_for_subagent_meta_companion_files(tmp_path: Path) -> None:
+    """A ``subagents/agent-*.meta.json`` companion path must never originate debt either.
+
+    Discovered live: Claude Code's ``agent-*.meta.json`` subagent metadata
+    sidecar (a distinct capture surface, ``artifact_taxonomy.AGENT_SIDECAR_META``)
+    also gets ingested as its own quasi-session, using the SAME shared
+    ``tool-results/`` directory as its ``.jsonl`` sibling -- and, before this
+    fix, would independently re-enumerate and re-report the whole directory as
+    debt a second time per subagent, on top of the ``.jsonl`` fanout. It lives
+    under ``subagents/`` exactly like an ``agent-*.jsonl`` transcript, so the
+    same root/non-root path-shape check that fixes the ``.jsonl`` fanout
+    covers it for free: it carries no ``tool_result`` blocks of its own, so it
+    matches nothing and -- the property this test locks in -- reports no debt.
+    """
+    session_dir = tmp_path / "project" / "sess-1"
+    meta_path = session_dir / "subagents" / "agent-a.meta.json"
+    tool_results_dir = session_dir / "tool-results"
+    _write_sidecar(tool_results_dir, "toolu_OWNED_ELSEWHERE.txt", "owned by a sibling, not this meta file")
+
+    result = join_tool_result_sidecars_session_scoped([], tool_results_dir, meta_path)
+
+    assert result.matched == ()
+    assert result.debt == ()
