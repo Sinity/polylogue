@@ -1363,24 +1363,19 @@ def test_provider_usage_model_switch_on_reingest_does_not_double_count(tmp_path:
     )
 
 
-def test_provider_usage_model_vanishing_on_reingest_preserves_message_with_zero_usage_rollup(
-    tmp_path: Path,
-) -> None:
-    """polylogue-geop changed this test's outcome intentionally.
+def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_path: Path) -> None:
+    """A message's model can vanish between full re-ingests (e.g. corrected
+    message-boundary re-parsing). The old model's session_model_usage row
+    must not survive as an orphaned, stale contributor to per-model sums.
 
-    Previously a message whose native id no longer appeared in a full
-    re-ingest was treated as superseded and purged along with its
-    session_model_usage rollup. Since polylogue-geop, a full re-ingest is a
-    field-path UNION against what is already archived (measured: newer
-    provider exports are not supersets of older ones -- a message missing
-    from the newer acquisition is not proof it was corrected away, only
-    that this acquisition didn't observe it), so message m1 is reinjected
-    rather than deleted. Its session_model_usage skeleton row is seeded from
-    the reinjected message's model_name, but session_events (the token_count
-    usage evidence) are NOT unioned -- that tier is out of this change's
-    scope (see polylogue-geop follow-up) -- so the reinjected model
-    legitimately rolls up to zero usage rather than carrying stale, summed
-    tokens forward."""
+    polylogue-geop note: this is a SAME-ACQUISITION re-parse (neither write
+    passes a ``raw_id``, so ``_union_with_existing_rows`` has no positive
+    evidence of a different acquisition and falls back to plain replace) --
+    the corrected re-parse must be able to retract m1's stale attribution.
+    Contrast with ``test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them``,
+    which passes two DIFFERENT ``raw_id``s and asserts the opposite: a
+    genuinely different acquisition must never delete what a prior one
+    supplied."""
     conn = _connect(tmp_path / "index.db")
 
     def _usage_event(model: str, *, input_tokens: int, cached: int, output: int) -> ParsedSessionEvent:
@@ -1433,20 +1428,7 @@ def test_provider_usage_model_vanishing_on_reingest_preserves_message_with_zero_
         (session_id,),
     ).fetchall()
     per_model = {row["model_name"]: (row["input_tokens"], row["output_tokens"]) for row in rows}
-    # gpt-5-codex-mini's message (m1) was reinjected by the field-path union
-    # (polylogue-geop) instead of deleted, so its skeleton rollup row still
-    # exists; it carries zero tokens because session_events weren't unioned.
-    assert per_model == {"gpt-5-codex": (50, 10), "gpt-5-codex-mini": (0, 0)}, (
-        f"reinjected message's model rollup should be a zero-usage skeleton, not stale or absent: {per_model}"
-    )
-
-    surviving_native_ids = {
-        row["native_id"]
-        for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
-    }
-    assert surviving_native_ids == {"m1", "m2"}, (
-        f"field-path union must reinject the message a newer acquisition dropped: {surviving_native_ids}"
-    )
+    assert per_model == {"gpt-5-codex": (50, 10)}, f"stale vanished-model rollup survived: {per_model}"
 
 
 def test_provider_usage_disjoint_lanes_subtracts_cached_and_does_not_re_add_reasoning() -> None:
@@ -4295,6 +4277,16 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
     already-archived session must never delete a message, a block, or a
     field within a block's ``tool_input`` that a prior, richer acquisition
     supplied -- it must union, not replace.
+
+    The two writes pass DIFFERENT ``raw_id``s (distinct content-addressed
+    acquisitions -- the April and July export blobs are genuinely different
+    bytes), which is what makes this the union path rather than a
+    same-acquisition replace: see ``_union_with_existing_rows``'s docstring
+    and contrast with
+    ``test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup``,
+    which passes no ``raw_id`` at all (unknown provenance, falls back to
+    replace) and asserts the opposite -- a corrected re-parse retracting a
+    stale attribution.
     """
     conn = _connect(tmp_path / "index.db")
     try:
@@ -4337,7 +4329,7 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
                 ),
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, rich)
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-2026-04-export")
 
         # The July-shaped re-export: message m1's citation record survives but
         # loses several keys one level deeper; message m2-tool is entirely
@@ -4368,7 +4360,7 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
                 ),
             ],
         )
-        write_parsed_session_to_archive(conn, poorer)
+        write_parsed_session_to_archive(conn, poorer, raw_id="raw-2026-07-export")
 
         message_rows = conn.execute(
             "SELECT native_id FROM messages WHERE session_id = ? ORDER BY native_id",
@@ -4408,5 +4400,62 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
             (session_id,),
         ).fetchone()
         assert tool_block_row["text"] == "tool output"
+    finally:
+        conn.close()
+
+
+def test_reingest_with_same_raw_id_replaces_instead_of_unioning(tmp_path: Path) -> None:
+    """polylogue-geop: the SAME raw acquisition re-parsed must be able to
+    retract a message the previous parse produced -- explicitly exercises
+    the ``existing_raw_id == raw_id`` branch of ``_union_with_existing_rows``
+    (not just the "no raw_id supplied" fallback that
+    ``test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup``
+    covers). A `reprocess` re-run (parse-only, no re-acquire) always carries
+    forward the identical content-addressed ``raw_id`` its original ingest
+    used, so this is the real-world shape of a parser bugfix re-run."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        first_parse = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="reparse-same-raw-id",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mis-split first half")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mis-split second half")],
+                ),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, first_parse, raw_id="raw-unchanged-file")
+
+        # A parser bugfix re-parses the SAME bytes (same raw_id) and decides
+        # m1/m2 were one message wrongly split in two -- the corrected parse
+        # must be able to retract the wrong boundary, not have it unioned
+        # back in.
+        corrected_parse = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="reparse-same-raw-id",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1-corrected",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="correctly joined message")],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, corrected_parse, raw_id="raw-unchanged-file")
+
+        native_ids = {
+            row["native_id"]
+            for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
+        }
+        assert native_ids == {"m1-corrected"}, (
+            f"same-raw_id re-parse must replace, not union -- retracted messages resurfaced: {native_ids}"
+        )
     finally:
         conn.close()

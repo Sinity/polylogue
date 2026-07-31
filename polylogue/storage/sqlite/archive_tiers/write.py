@@ -510,6 +510,20 @@ def write_parsed_session_to_archive(
                     "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
                     (FTS_BULK_SESSION_WRITE_GUARD,),
                 )
+            # polylogue-geop: capture whichever raw acquisition is CURRENTLY
+            # stored before the upsert below overwrites sessions.raw_id with
+            # this write's own value -- _union_with_existing_rows needs the
+            # PRIOR raw_id to tell "same acquisition re-parsed" (replace)
+            # from "different acquisition" (union) apart. Reading it after
+            # the upsert would always see this write's own raw_id and could
+            # never observe a difference.
+            existing_session_raw_id: str | None = None
+            if not merge_append:
+                existing_raw_id_row = conn.execute(
+                    "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if existing_raw_id_row is not None:
+                    existing_session_raw_id = existing_raw_id_row[0]
             t0 = time.perf_counter()
             conn.execute(
                 """
@@ -627,6 +641,9 @@ def write_parsed_session_to_archive(
                     session,
                     messages,
                     duplicate_native_ids=duplicate_message_native_ids,
+                    raw_id=raw_id,
+                    existing_raw_id=existing_session_raw_id,
+                    force_replace=force_replace,
                     stage_timings_s=stage_timings_s,
                     stage_timing_prefix=stage_timing_prefix,
                     bulk_build=bulk_build,
@@ -2174,6 +2191,10 @@ def _union_with_existing_rows(
     session_id: str,
     message_rows: list[tuple[object, ...]],
     block_rows: list[tuple[object, ...]],
+    *,
+    raw_id: str | None,
+    existing_raw_id: str | None,
+    force_replace: bool = False,
 ) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
     """Field-path union coalesce of a fresh full-replace against what is stored.
 
@@ -2187,6 +2208,40 @@ def _union_with_existing_rows(
     them, then returns the merged row tuples for ``_write_messages``/
     ``_write_blocks`` to insert in place of the plain freshly-built rows.
 
+    THIS ONLY APPLIES ACROSS TWO DIFFERENT ACQUISITIONS, never within one.
+    A full-session replace has two structurally different causes that this
+    function must not conflate:
+
+      - Two DIFFERENT acquisitions of the same logical session (a second
+        export download, a later browser capture) are independent partial
+        observations of one underlying reality -- neither is authoritative,
+        so they union. This is the measured chatgpt case above.
+      - A RE-PARSE of the SAME acquisition (unchanged raw bytes, a parser
+        bugfix or corrected message-boundary logic) is not a second
+        observation -- it is a better reading of the same evidence, and
+        must be able to REPLACE a value the old parse got wrong. Unioning
+        here would make every historical mis-parse immortal and defeat the
+        entire point of a `reprocess` re-run.
+
+    ``raw_id`` is the discriminator: it is content-addressed (SHA-256 of the
+    acquired bytes, `polylogue/pipeline/services/acquisition_records.py`),
+    so the SAME raw file re-parsed via `reprocess` (parse-only, no
+    re-acquire) always carries the identical `raw_id` its original ingest
+    did, while a genuinely different acquisition (different export
+    generation, different capture) gets a different one. When both the
+    incoming `raw_id` and the session's currently-stored `sessions.raw_id`
+    are known and equal, this is a same-acquisition re-parse: return the
+    rows unchanged (ordinary replace, exactly as before this change) with no
+    field union and no reinjection. Union only fires when both are known and
+    differ -- proven different acquisitions. When either side is unknown
+    (`None` -- e.g. a caller that writes directly via `ArchiveStore.
+    write_parsed()`, used by demo seeding and unit tests, never threads a
+    raw_id through), there is no positive evidence of a different
+    acquisition, so this also falls back to plain replace rather than
+    guessing; approximating "unknown" as "different" would let a corrected
+    re-parse's retraction be silently defeated by union whenever a caller
+    doesn't happen to supply provenance.
+
     Only messages carrying a stable provider ``native_id`` participate --
     a message with no native id has no cross-acquisition identity to union
     against (its archive identity is a position/variant fallback that is
@@ -2194,6 +2249,19 @@ def _union_with_existing_rows(
     the prior whole-row-replace behavior unchanged, exactly as before this
     change.
     """
+    # ``existing_raw_id`` must be captured by the CALLER before its own
+    # sessions upsert overwrites ``sessions.raw_id`` -- by the time this
+    # function runs, a fresh re-query here would always see this write's own
+    # value and could never detect a difference. See
+    # ``_replace_full_session_messages_and_blocks``'s docstring.
+    if force_replace or raw_id is None or existing_raw_id is None or existing_raw_id == raw_id:
+        # Same acquisition re-parsed, provenance unknown on either side, or
+        # the caller already made its own authoritative precedence call
+        # (force_replace): ordinary replace, no union -- a corrected
+        # re-parse (or a caller-decided supersession) must be able to
+        # retract content the old parse wrongly produced.
+        return message_rows, block_rows
+
     m_spec = archive_tiers_specs.MESSAGES_SPEC
     b_spec = archive_tiers_specs.BLOCKS_SPEC
     m_cols = [col.name for col in m_spec.writable_columns if col.extract_placeholder == "?"]
@@ -2379,6 +2447,9 @@ def _replace_full_session_messages_and_blocks(
     messages: list[ParsedMessage],
     *,
     duplicate_native_ids: frozenset[str],
+    raw_id: str | None = None,
+    existing_raw_id: str | None = None,
+    force_replace: bool = False,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     bulk_build: bool = False,
@@ -2403,6 +2474,22 @@ def _replace_full_session_messages_and_blocks(
     of the precomputed tuples; only the ``executemany`` against SQLite still
     runs on this (writer) thread. ``None`` (the default) reproduces the exact
     prior behavior byte-for-byte.
+
+    ``raw_id`` (polylogue-geop) identifies which raw acquisition this write's
+    ``messages`` were parsed from; ``existing_raw_id`` is whatever
+    ``sessions.raw_id`` held for this session BEFORE this write's caller
+    upserted its own value over it (the caller must capture this ahead of
+    that upsert -- by the time this function runs, the row already reflects
+    the new write). See ``_union_with_existing_rows`` for how the two are
+    compared to discriminate "different acquisition, union" from "same
+    acquisition re-parsed, replace".
+
+    ``force_replace`` also disables the union outright: it is the caller's
+    OWN authoritative precedence decision (e.g. `ingest_precedence.
+    browser_capture_precedence()` deciding a fuller native capture supersedes
+    a weaker DOM-fallback one) that this write must win wholesale, not merge
+    with -- unioning against a session the caller has explicitly ruled
+    inferior would silently partially undo that decision.
     """
 
     def add_timing(name: str, started_at: float) -> None:
@@ -2429,6 +2516,9 @@ def _replace_full_session_messages_and_blocks(
         list(prepared.block_rows)
         if prepared is not None
         else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
+        raw_id=raw_id,
+        existing_raw_id=existing_raw_id,
+        force_replace=force_replace,
     )
     add_timing("field_path_union", t0)
     t0 = time.perf_counter()
