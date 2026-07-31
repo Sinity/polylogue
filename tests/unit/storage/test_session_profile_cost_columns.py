@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -91,7 +92,7 @@ def _cost_columns(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
         (session_id,),
     ).fetchone()
     assert row is not None, f"no session_profiles row for {session_id}"
-    return row
+    return cast(sqlite3.Row, row)
 
 
 class TestSessionProfileCostColumnsPopulated:
