@@ -212,6 +212,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools demo real-slice-screen` | Read-only extraction + privacy screening of a candidate real-archive session slice. |
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
 | `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
+| `devtools workspace backlog-calibration` | Measured lead-time/discovery/staleness distributions over the bead corpus. |
 | `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
