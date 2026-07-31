@@ -107,7 +107,22 @@ def _time_raiser(name: str, real: Any) -> Any:
     return _wrapped
 
 
-class _RaisingDateTime(datetime):
+class _DelegatingInstanceCheck(type):
+    """Metaclass making ``isinstance(x, GuardedDateTime)`` behave like
+    ``isinstance(x, datetime)``.
+
+    The guard replaces a test module's ``datetime`` *symbol* with a raising
+    subclass; without this delegation, ``isinstance(production_datetime,
+    datetime)`` inside a guarded module is a subclass check against real
+    ``datetime`` instances and always fails — the guard exists to block
+    clock reads, not to change type identity.
+    """
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        return isinstance(instance, datetime)
+
+
+class _RaisingDateTime(datetime, metaclass=_DelegatingInstanceCheck):
     """``datetime`` subclass whose clock reads always raise.
 
     Installed into a guarded test module's ``datetime`` symbol so
