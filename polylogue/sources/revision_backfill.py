@@ -1751,8 +1751,13 @@ class _ReplaySpillPrefetcher:
     def _run_inner(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
         if not keys:
             return
-        with sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0) as source_conn:
+        # NOTE: ``with sqlite3.connect(...)`` would only manage a
+        # transaction, not the connection lifetime -- close explicitly.
+        source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
+        try:
             plan, descriptors = self._build_plan(source_conn, keys, extra_members)
+        finally:
+            source_conn.close()
         if not plan:
             return
         spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
@@ -1761,11 +1766,13 @@ class _ReplaySpillPrefetcher:
             for seq, raw_id in plan:
                 if self._wait_for_budget(generation, seq) is False:
                     return
+                with self._lock:
+                    if seq < self._writer_floor_seq or raw_id in self._buffer:
+                        # Already passed by the writer (decoding it now would
+                        # be pure waste) or already buffered.
+                        continue
                 if raw_id in self._spill._decoded or raw_id in self._spill._whales:
                     continue
-                with self._lock:
-                    if raw_id in self._buffer:
-                        continue
                 decoded = self._decode(spill_conn, raw_id, descriptors)
                 if decoded is None:
                     continue
