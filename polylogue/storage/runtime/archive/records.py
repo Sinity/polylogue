@@ -137,6 +137,11 @@ class BlockRecord(BaseModel):
     # (see core.enums.ToolResultUnknownReason). NULL means either the
     # outcome IS known, or this read path did not select the column.
     tool_result_outcome_unknown_reason: str | None = None
+    # polylogue-vf9x (v49): provider-issued cryptographic attestation for a
+    # THINKING block (Claude's extended-thinking signature; Gemini's
+    # thoughtSignatures are the same construct). NULL when the wire carried
+    # none, or this read path did not select the column.
+    signature: str | None = None
 
     @field_validator("type", mode="before")
     @classmethod

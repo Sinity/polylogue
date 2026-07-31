@@ -32,7 +32,8 @@ async def get_blocks(
             semantic_type,
             tool_result_is_error,
             tool_result_exit_code,
-            tool_result_outcome_unknown_reason
+            tool_result_outcome_unknown_reason,
+            signature
         FROM blocks
         WHERE message_id IN ({placeholders})
         ORDER BY message_id, position

@@ -432,6 +432,87 @@ class TestMessageParsing:
         result = parse(payload, "fallback")
         assert len(result.messages) == 1
 
+    def test_reasoning_summary_text_becomes_thinking_block(self) -> None:
+        """polylogue-vf9x: real wire shape (anonymized from an operator rollout).
+
+        Codex ships a standalone ``reasoning`` response_item with a
+        human-readable ``summary`` (a list of ``summary_text`` parts) and an
+        essentially-always-null ``content``, with the full trace only
+        recoverable as ciphertext in ``encrypted_content``. Previously this
+        record was read only by the generic session_event compactor -- which
+        has no reasoning-specific branch -- so the summary text was silently
+        discarded and never reached FTS/search.
+        """
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "**Preparing to analyze git changes**"}],
+                    "content": None,
+                    "encrypted_content": "gAAAAABozSvL2wVUn4Ixsm34" * 4,
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+
+        thinking_messages = [m for m in result.messages if m.message_type is MessageType.THINKING]
+        assert len(thinking_messages) == 1
+        message = thinking_messages[0]
+        assert message.role == Role.ASSISTANT
+        assert message.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+        assert message.text == "**Preparing to analyze git changes**"
+        assert len(message.blocks) == 1
+        assert message.blocks[0].type == BlockType.THINKING
+        assert message.blocks[0].text == "**Preparing to analyze git changes**"
+
+    def test_reasoning_with_only_encrypted_content_still_recorded(self) -> None:
+        """No recoverable text (summary absent, content null) -- the block
+        still exists with text=None so the FACT that reasoning occurred
+        survives, matching the empty-body Claude Code thinking fix.
+        """
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": None,
+                    "encrypted_content": "gAAAAABozSvL2wVUn4Ixsm34" * 4,
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+
+        thinking_messages = [m for m in result.messages if m.message_type is MessageType.THINKING]
+        assert len(thinking_messages) == 1
+        message = thinking_messages[0]
+        assert message.text is None
+        assert len(message.blocks) == 1
+        assert message.blocks[0].type == BlockType.THINKING
+        assert message.blocks[0].text is None
+
+    def test_reasoning_content_text_used_when_present(self) -> None:
+        """`content` (the full trace) is read too, when the wire carries it
+        as plain text rather than encrypted ciphertext."""
+        payload = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "short summary"}],
+                    "content": [{"type": "reasoning_text", "text": "the full reasoning trace"}],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+
+        thinking_messages = [m for m in result.messages if m.message_type is MessageType.THINKING]
+        assert len(thinking_messages) == 1
+        message = thinking_messages[0]
+        block_texts = [b.text for b in message.blocks]
+        assert block_texts == ["short summary", "the full reasoning trace"]
+
     def test_multiple_content_blocks(self) -> None:
         payload = [
             {

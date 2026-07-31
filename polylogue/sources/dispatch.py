@@ -482,14 +482,14 @@ def _join_claude_code_sidecars(payloads: PayloadSequence, source_path: str | Non
     if source_path is None:
         return None
     from polylogue.sources.live.tool_result_sidecars import (
-        join_tool_result_sidecars,
+        join_tool_result_sidecars_session_scoped,
         resolve_tool_results_dir,
     )
 
     tool_results_dir = resolve_tool_results_dir(source_path)
     if tool_results_dir is None:
         return None
-    return join_tool_result_sidecars(payloads, tool_results_dir)
+    return join_tool_result_sidecars_session_scoped(payloads, tool_results_dir, source_path)
 
 
 def _claude_code_grouped_record_specs(
@@ -671,7 +671,8 @@ def _claude_code_stream_sessions(
             record_index_start=record_index_start,
             seen_record_uuids=seen_record_uuids,
         )
-        return apply_tool_result_sidecars(session, accumulator.join(tool_results_dir))
+        assert source_path is not None  # tool_results_dir is only set when source_path is
+        return apply_tool_result_sidecars(session, accumulator.join_session_scoped(tool_results_dir, source_path))
 
     while True:
         try:

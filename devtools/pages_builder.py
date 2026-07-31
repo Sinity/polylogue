@@ -33,6 +33,22 @@ class BrokenSiteLink:
     target: str
 
 
+def _write_page_file(out_path: Path, content: str, *, page_path: str) -> None:
+    """Write a rendered page, naming the page and destination on failure.
+
+    A bare ``OSError`` from deep inside a template-render loop (e.g. ENOSPC
+    on a full basetemp/output volume) gives no clue which of dozens of pages
+    it happened on; wrap it with that context instead.
+    """
+    try:
+        out_path.write_text(content)
+    except OSError as exc:
+        raise OSError(
+            f"failed writing rendered page {page_path!r} to {out_path} ({exc.strerror or exc}): "
+            "check free space at that path's filesystem"
+        ) from exc
+
+
 def _default_config_path() -> Path:
     return ROOT / "docs" / "site" / "pages.toml"
 
@@ -294,17 +310,29 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
     source_to_page = _source_to_page_map(config.pages)
     page_paths = {page.path for page in config.pages}
 
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
+    try:
+        if output_dir.exists():
+            shutil.rmtree(output_dir)
+        output_dir.mkdir(parents=True)
+    except OSError as exc:
+        raise OSError(
+            f"failed preparing site output dir {output_dir} ({exc.strerror or exc}): "
+            "check free space at that path's filesystem"
+        ) from exc
 
     for page in config.pages:
         out_path = output_dir / page.path.lstrip("/")
-        if out_path.suffix != ".html":
-            out_path.mkdir(parents=True, exist_ok=True)
-            out_path = out_path / "index.html"
-        else:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if out_path.suffix != ".html":
+                out_path.mkdir(parents=True, exist_ok=True)
+                out_path = out_path / "index.html"
+            else:
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OSError(
+                f"failed creating output directory for page {page.path!r} at {out_path} "
+                f"({exc.strerror or exc}): check free space at that path's filesystem"
+            ) from exc
 
         content_html = ""
         if page.source:
@@ -348,7 +376,7 @@ def build_site(config_path: Path | None = None, output_dir: Path | None = None) 
 
         template = env.get_template(page.template)
         html: str = template.render(**template_data)
-        out_path.write_text(html)
+        _write_page_file(out_path, html, page_path=page.path)
 
     issues_source = ROOT / ".beads" / "issues.jsonl"
     board_dir = output_dir / "beads"

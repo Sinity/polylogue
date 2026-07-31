@@ -1891,6 +1891,7 @@ def _build_block_rows(
             is_error = getattr(block, "is_error", None)
             exit_code = getattr(block, "exit_code", None)
             outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
+            signature = getattr(block, "signature", None)
             # Tuple built in order defined by spec.writable_columns
             rows.append(
                 (
@@ -1908,6 +1909,7 @@ def _build_block_rows(
                     _sqlite_bool(is_error),
                     exit_code,
                     outcome_unknown_reason,
+                    _sqlite_text(signature),
                     _block_content_hash(
                         block_type=block_type.value,
                         text=block.text,
@@ -1946,7 +1948,7 @@ def _write_blocks(
     """Write block rows using table-driven column specification.
 
     The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
-      - writable_columns: the ordered list of columns to INSERT (14 total)
+      - writable_columns: the ordered list of columns to INSERT (16 total)
       - The column names and placeholders are generated from the spec
       - The tuple order is derived from the spec's writable_columns order
 

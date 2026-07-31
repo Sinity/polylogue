@@ -8,6 +8,8 @@ never-truncated mirror of content already fully present inline.
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
 
 from polylogue.core.enums import BlockType
@@ -15,6 +17,8 @@ from polylogue.sources.live.tool_result_sidecars import (
     SidecarDebt,
     SidecarMatch,
     join_tool_result_sidecars,
+    join_tool_result_sidecars_session_scoped,
+    resolve_sibling_transcript_paths,
 )
 from polylogue.sources.parsers.claude.code_parser import apply_tool_result_sidecars, parse_code
 
@@ -172,3 +176,126 @@ def test_sidecar_dataclasses_are_frozen() -> None:
     debt = SidecarDebt(filename="orphan.txt", byte_size=1, reason="no_owning_tool_result_block")
     assert match.tool_use_id == "toolu_X"
     assert debt.reason == "no_owning_tool_result_block"
+
+
+def test_apply_tool_result_sidecars_sets_event_timestamp_from_file_mtime(tmp_path: Path) -> None:
+    """occurred_at_ms must come from the sidecar file's own mtime, not stay NULL.
+
+    Before this fix ``ParsedSessionEvent.timestamp`` was never set for sidecar
+    events, so every ``claude_tool_result_sidecar`` event landed with
+    ``occurred_at_ms IS NULL`` in the archive -- with no timestamp at all,
+    nobody could tell a closed historical debt cohort from one still actively
+    accruing. Setting a specific, verifiable mtime and asserting the derived
+    ISO timestamp round-trips to it is the load-bearing check here.
+    """
+    tool_results_dir = tmp_path / "tool-results"
+    _write_sidecar(tool_results_dir, "toolu_AAA.txt", "small full text")
+    _write_sidecar(tool_results_dir, "orphan123.txt", "no owning tool_result block references this file")
+
+    fixed_epoch_s = 1719878400  # 2024-07-02T00:00:00Z, arbitrary but exact
+    os.utime(tool_results_dir / "toolu_AAA.txt", (fixed_epoch_s, fixed_epoch_s))
+    os.utime(tool_results_dir / "orphan123.txt", (fixed_epoch_s, fixed_epoch_s))
+
+    payload = [_record("m-aaa", "toolu_AAA", "small full text")]
+    join_result = join_tool_result_sidecars(payload, tool_results_dir)
+    acquired = parse_code(payload, "fallback-sidecar", tool_result_sidecars=join_result)
+
+    sidecar_events = [event for event in acquired.session_events if event.event_type == "claude_tool_result_sidecar"]
+    assert len(sidecar_events) == 2
+    for event in sidecar_events:
+        assert event.timestamp is not None
+        assert event.timestamp.startswith("2024-07-02T00:00:00")
+
+
+def _write_transcript(path: Path, records: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
+def test_resolve_sibling_transcript_paths_finds_parent_and_subagents(tmp_path: Path) -> None:
+    project_dir = tmp_path / "project"
+    session_dir = project_dir / "sess-1"
+    parent_path = project_dir / "sess-1.jsonl"
+    subagent_a = session_dir / "subagents" / "agent-a.jsonl"
+    subagent_b = session_dir / "subagents" / "agent-b.jsonl"
+    _write_transcript(parent_path, [{"type": "summary"}])
+    _write_transcript(subagent_a, [{"type": "summary"}])
+    _write_transcript(subagent_b, [{"type": "summary"}])
+
+    from_root = resolve_sibling_transcript_paths(parent_path)
+    assert set(from_root) == {subagent_a, subagent_b}
+
+    from_subagent_a = resolve_sibling_transcript_paths(subagent_a)
+    assert set(from_subagent_a) == {parent_path, subagent_b}
+
+
+def test_session_scoped_join_resolves_sibling_owned_file_without_duplicating_debt(tmp_path: Path) -> None:
+    """The scope bug this fixes: a naive per-transcript join over-counts debt by the subagent fanout.
+
+    ``toolu_SUBAGENT`` is a tool call issued *by* the subagent -- its
+    tool_result block, and therefore its owning index entry, lives only in
+    the subagent's own transcript, never the parent's. A single-transcript
+    join of the parent against the shared tool-results dir would misclassify
+    that file as ``no_owning_tool_result_block`` even though it's genuinely
+    owned (verified against 3 live multi-subagent sessions, see the module
+    docstring). The session-scoped join must resolve it via the union index,
+    attribute the match to the subagent (the transcript whose own payload
+    actually owns the id), and emit nothing at all from the parent's pass for
+    that file -- not a duplicate debt entry, not a duplicate match.
+    """
+    project_dir = tmp_path / "project"
+    session_dir = project_dir / "sess-1"
+    parent_path = project_dir / "sess-1.jsonl"
+    subagent_path = session_dir / "subagents" / "agent-a.jsonl"
+    tool_results_dir = session_dir / "tool-results"
+
+    _write_sidecar(tool_results_dir, "toolu_PARENT.txt", "owned by the parent transcript")
+    _write_sidecar(tool_results_dir, "toolu_SUBAGENT.txt", "owned by the subagent transcript")
+    _write_sidecar(tool_results_dir, "orphan999.txt", "owned by nobody, anywhere in the session")
+
+    parent_payload = [_record("m-parent", "toolu_PARENT", "owned by the parent transcript")]
+    subagent_payload = [_record("m-sub", "toolu_SUBAGENT", "owned by the subagent transcript")]
+    _write_transcript(parent_path, parent_payload)
+    _write_transcript(subagent_path, subagent_payload)
+
+    parent_result = join_tool_result_sidecars_session_scoped(parent_payload, tool_results_dir, parent_path)
+    subagent_result = join_tool_result_sidecars_session_scoped(subagent_payload, tool_results_dir, subagent_path)
+
+    parent_matched_ids = {match.tool_use_id for match in parent_result.matched}
+    subagent_matched_ids = {match.tool_use_id for match in subagent_result.matched}
+
+    # Each transcript matches only what it owns -- no duplicate match for the
+    # sibling's file, no misattributed match either.
+    assert parent_matched_ids == {"toolu_PARENT"}
+    assert subagent_matched_ids == {"toolu_SUBAGENT"}
+
+    # The parent's pass is the sole source of debt for the shared directory;
+    # the subagent's pass never reports debt for files it doesn't own.
+    parent_debt_filenames = {debt.filename for debt in parent_result.debt}
+    assert parent_debt_filenames == {"orphan999.txt"}
+    assert subagent_result.debt == ()
+
+
+def test_session_scoped_join_never_emits_debt_for_subagent_meta_companion_files(tmp_path: Path) -> None:
+    """A ``subagents/agent-*.meta.json`` companion path must never originate debt either.
+
+    Discovered live: Claude Code's ``agent-*.meta.json`` subagent metadata
+    sidecar (a distinct capture surface, ``artifact_taxonomy.AGENT_SIDECAR_META``)
+    also gets ingested as its own quasi-session, using the SAME shared
+    ``tool-results/`` directory as its ``.jsonl`` sibling -- and, before this
+    fix, would independently re-enumerate and re-report the whole directory as
+    debt a second time per subagent, on top of the ``.jsonl`` fanout. It lives
+    under ``subagents/`` exactly like an ``agent-*.jsonl`` transcript, so the
+    same root/non-root path-shape check that fixes the ``.jsonl`` fanout
+    covers it for free: it carries no ``tool_result`` blocks of its own, so it
+    matches nothing and -- the property this test locks in -- reports no debt.
+    """
+    session_dir = tmp_path / "project" / "sess-1"
+    meta_path = session_dir / "subagents" / "agent-a.meta.json"
+    tool_results_dir = session_dir / "tool-results"
+    _write_sidecar(tool_results_dir, "toolu_OWNED_ELSEWHERE.txt", "owned by a sibling, not this meta file")
+
+    result = join_tool_result_sidecars_session_scoped([], tool_results_dir, meta_path)
+
+    assert result.matched == ()
+    assert result.debt == ()

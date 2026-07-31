@@ -110,6 +110,41 @@ def test_content_blocks_from_segments_classifies_code_and_tool_blocks() -> None:
     assert blocks[5].media_type == "application/pdf"
 
 
+def test_content_blocks_from_segments_keeps_empty_body_thinking_with_signature() -> None:
+    """polylogue-vf9x: since ~2026-06 Claude ships THINKING segments with an
+    empty ``thinking`` body and a ``signature`` only (real wire shape,
+    verified against raw ~/.claude/projects JSONL). Previously an
+    ``if text:`` guard dropped the block entirely, silently zeroing
+    ``thinking_count`` and making the archive look like reasoning stopped.
+    The block must still be recorded -- text=None, signature preserved --
+    so the fact that the model reasoned here survives.
+    """
+    blocks = content_blocks_from_segments(
+        [
+            {
+                "type": "thinking",
+                "thinking": "",
+                "signature": "CAIStwIKhwEIEBgCKkAJIkle5IARlxfdMsvM8IvhleRSuJ61Xvgm",
+            },
+        ]
+    )
+
+    assert len(blocks) == 1
+    assert blocks[0].type == "thinking"
+    assert blocks[0].text is None
+    assert blocks[0].signature == "CAIStwIKhwEIEBgCKkAJIkle5IARlxfdMsvM8IvhleRSuJ61Xvgm"
+
+
+def test_content_blocks_from_segments_keeps_thinking_with_neither_text_nor_signature() -> None:
+    """Degenerate wire shape (no signature either) still preserves the block."""
+    blocks = content_blocks_from_segments([{"type": "thinking", "thinking": ""}])
+
+    assert len(blocks) == 1
+    assert blocks[0].type == "thinking"
+    assert blocks[0].text is None
+    assert blocks[0].signature is None
+
+
 def test_tool_result_web_search_knowledge_items_become_search_result_constructs() -> None:
     """polylogue-zocm GAP 2: web_search tool_result content carries retrieved
     ``{type: knowledge, ...}`` entries the provider read but did not
