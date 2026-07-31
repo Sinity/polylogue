@@ -11,7 +11,6 @@ entirely (polylogue-cgfy). Follows the same shape as
 
 from __future__ import annotations
 
-import sqlite3
 from collections import defaultdict
 from collections.abc import Sequence
 
@@ -21,30 +20,14 @@ from polylogue.storage.runtime import FileEditRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_file_edit
 
 __all__ = [
-    "get_file_edit",
     "get_file_edits_for_session",
     "get_file_edits_for_session_batch",
-    "sync_get_file_edits_for_session",
 ]
 
 _SELECT_COLUMNS = (
     "tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
     "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms"
 )
-
-
-async def get_file_edit(
-    conn: aiosqlite.Connection,
-    tool_use_block_id: str,
-) -> FileEditRecord | None:
-    """Return the file-edit row for one tool_use block, or ``None``."""
-    row = await (
-        await conn.execute(
-            f"SELECT {_SELECT_COLUMNS} FROM file_edits WHERE tool_use_block_id = ?",
-            (tool_use_block_id,),
-        )
-    ).fetchone()
-    return _row_to_file_edit(row) if row is not None else None
 
 
 async def get_file_edits_for_session(
@@ -92,18 +75,3 @@ async def get_file_edits_for_session_batch(
         record = _row_to_file_edit(row)
         result[str(record.session_id)].append(record)
     return dict(result)
-
-
-def sync_get_file_edits_for_session(conn: sqlite3.Connection, session_id: str) -> list[FileEditRecord]:
-    """Sync sibling of :func:`get_file_edits_for_session`."""
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        f"""
-        SELECT {_SELECT_COLUMNS}
-        FROM file_edits
-        WHERE session_id = ?
-        ORDER BY message_id, tool_use_block_id
-        """,
-        (session_id,),
-    ).fetchall()
-    return [_row_to_file_edit(row) for row in rows]

@@ -1996,6 +1996,7 @@ def _archive_summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary
         git_branch=summary.git_branch,
         git_repository_url=summary.git_repository_url,
         provider_project_ref=summary.provider_project_ref,
+        display_name=summary.display_name,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
     )
@@ -5451,6 +5452,76 @@ class PolylogueArchiveMixin:
                 "payload": event.payload,
             }
             for event in events
+        ]
+
+    async def get_file_edits(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return file-edit tool-call evidence (structuredPatch/originalFile/...) for one session.
+
+        polylogue-nua7: the writer materializes ``ParsedFileEdit`` evidence
+        (Claude Code Edit/Write/MultiEdit tool calls -- structured unified
+        diffs, pre-edit file content, old/new string pairs) into the
+        dedicated ``file_edits`` index table on every ingest
+        (``storage/repository/archive/sessions.py::get_file_edits``), but
+        before this reader nothing above the storage layer could reach it.
+        This is the read surface: what a "what did this session change"
+        report needs instead of re-deriving edits from tool-call prose.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but made no captured edits).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        edits = await self.repository.get_file_edits(resolved_id)
+        return [
+            {
+                "tool_use_block_id": edit.tool_use_block_id,
+                "message_id": str(edit.message_id),
+                "file_path": edit.file_path,
+                "structured_patch": edit.structured_patch,
+                "original_file": edit.original_file,
+                "old_string": edit.old_string,
+                "new_string": edit.new_string,
+                "replace_all": edit.replace_all,
+                "user_modified": edit.user_modified,
+                "observed_at_ms": edit.observed_at_ms,
+            }
+            for edit in edits
+        ]
+
+    async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return sandbox/approval/network policy facts recorded for one session.
+
+        polylogue-nua7: the writer diverts Codex ``agent_policy`` events out
+        of ``session_events`` into the dedicated ``session_agent_policies``
+        table (fully re-derivable, zero evidence loss -- see
+        ``archive_tiers/write.py:_SESSION_EVENTS_REDUNDANT_TYPES``), but
+        before this reader nothing above the storage layer could reach it
+        back. This is the read surface.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but reported no agent-policy
+        facts -- expected for non-Codex origins).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        policies = await self.repository.get_agent_policies(resolved_id)
+        return [
+            {
+                "policy_id": policy.policy_id,
+                "position": policy.position,
+                "approval_policy": policy.approval_policy,
+                "sandbox_policy": policy.sandbox_policy,
+                "network_policy": policy.network_policy,
+                "observed_at_ms": policy.observed_at_ms,
+                "source_message_id": policy.source_message_id,
+            }
+            for policy in policies
         ]
 
     async def query_sessions(

@@ -281,4 +281,102 @@ def run_session_events(
     run_coroutine_sync(_run())
 
 
-__all__ = ["run_hooks", "run_messages", "run_raw", "run_session_events"]
+def run_session_file_edits(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    output_format: str = "json",
+) -> None:
+    """Execute the file-edits verb.
+
+    Renders captured Claude Code Edit/Write/MultiEdit tool-call evidence
+    (polylogue-nua7/polylogue-cgfy): structured unified diffs
+    (``structured_patch``), pre-edit file content (``original_file``), and
+    old/new string pairs -- persisted on every ingest into the dedicated
+    ``file_edits`` table but, before this view, unreachable from any
+    surface. This is the "what did this session change" evidence a report
+    needs instead of re-deriving edits from tool-call prose.
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            edits = await api.get_file_edits(session_id)
+
+            if edits is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            payload = {
+                "session_id": session_id,
+                "total": len(edits),
+                "file_edits": edits,
+            }
+
+            if output_format == "json":
+                import json as _json
+
+                # Machine output uses raw stdout so Rich markup never rewrites
+                # JSON bytes and read-view delivery can capture file/clipboard
+                # targets consistently.
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(payload))
+
+    run_coroutine_sync(_run())
+
+
+def run_session_agent_policies(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    output_format: str = "json",
+) -> None:
+    """Execute the agent-policies verb.
+
+    Renders sandbox/approval/network policy facts (polylogue-nua7) -- the
+    writer diverts Codex ``agent_policy`` events out of ``session_events``
+    into the dedicated ``session_agent_policies`` table for zero-loss
+    re-derivation, but before this view nothing above the storage layer
+    could read them back.
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            policies = await api.get_agent_policies(session_id)
+
+            if policies is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            payload = {
+                "session_id": session_id,
+                "total": len(policies),
+                "agent_policies": policies,
+            }
+
+            if output_format == "json":
+                import json as _json
+
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(payload))
+
+    run_coroutine_sync(_run())
+
+
+__all__ = [
+    "run_hooks",
+    "run_messages",
+    "run_raw",
+    "run_session_agent_policies",
+    "run_session_events",
+    "run_session_file_edits",
+]
