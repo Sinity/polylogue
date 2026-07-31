@@ -280,8 +280,10 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
         "root",
         default=None,
         help=(
-            "Only top-level sessions (--root) or only subagent/branch children "
-            "(--no-root). Unset (default) selects both, unfiltered by structure."
+            "Only top-level sessions (--root, the implicit default when unset) "
+            "or only subagent/branch children (--no-root). Session counts "
+            "count top-level sessions unless --no-root or root:false is used "
+            "(polylogue-j8u2)."
         ),
     ),
 )

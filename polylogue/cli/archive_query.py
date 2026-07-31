@@ -40,6 +40,8 @@ from polylogue.archive.query.spec import (
     normalize_action_sequence,
     normalize_action_terms,
     parse_query_date,
+    resolve_default_root_filter,
+    session_count_unit_label,
 )
 from polylogue.archive.query.transaction import archive_read_context
 from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
@@ -316,7 +318,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         "since_ms": since_ms,
         "until_ms": until_ms,
         "since_session_id": since_session_id,
-        "root": compiled_spec.root,
+        "root": resolve_default_root_filter(compiled_spec.root, boolean_predicate=compiled_spec.boolean_predicate),
     }
     if compiled_spec.boolean_predicate is not None:
         filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
@@ -663,6 +665,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         output_format=output_format,
                         origin=origin,
                         fields=fields,
+                        root=filter_kwargs["root"],
                         typo_hint=typo_hint,
                         with_units=with_units,
                         with_unit_fields=with_unit_fields,
@@ -790,6 +793,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 output_format=output_format,
                 origin=origin,
                 fields=fields,
+                root=filter_kwargs["root"],
                 typo_hint=typo_hint,
                 with_units=with_units,
                 with_unit_fields=with_unit_fields,
@@ -858,6 +862,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             output_format=output_format,
             origin=origin,
             fields=fields,
+            root=filter_kwargs["root"],
             archive=archive,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
@@ -1533,11 +1538,13 @@ def _emit_daemon_list_payload(
     ]
     total = _object_int(payload.get("total") or len(items))
     next_offset = offset + limit if total > offset + limit else None
+    total_unit = payload.get("total_unit")
     envelope: dict[str, object] = {
         "mode": "list",
         "origin": origin,
         "items": items,
         "total": total,
+        "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
         "limit": limit,
         "offset": offset,
         "next_offset": next_offset,
@@ -1561,6 +1568,7 @@ def _emit_daemon_search_payload(
     _emit_degraded_daemon_search_payload(payload, query=query, output_format=output_format, fields=fields)
     hits = [dict(item) for item in cast(list[object], payload.get("hits") or []) if isinstance(item, Mapping)]
     total = _object_int(payload.get("total") or len(hits))
+    total_unit = payload.get("total_unit")
     envelope: dict[str, object] = {
         "mode": "search",
         "origin": origin,
@@ -1568,6 +1576,7 @@ def _emit_daemon_search_payload(
         "retrieval_lane": str(payload.get("retrieval_lane") or "dialogue"),
         "items": hits,
         "total": total,
+        "total_unit": total_unit if isinstance(total_unit, str) else session_count_unit_label(True),
         "limit": limit,
         "offset": offset,
         "next_offset": None,
@@ -2178,6 +2187,7 @@ def _emit_list(
     output_format: str,
     origin: str | None,
     fields: str | None,
+    root: bool | None = True,
     archive: ArchiveStore | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
@@ -2226,6 +2236,7 @@ def _emit_list(
         "origin": origin,
         "items": items,
         "total": total,
+        "total_unit": session_count_unit_label(root),
         "limit": limit,
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,
@@ -2275,6 +2286,7 @@ def _emit_search(
     output_format: str,
     origin: str | None,
     fields: str | None,
+    root: bool | None = True,
     typo_hint: str | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
@@ -2304,6 +2316,7 @@ def _emit_search(
         "retrieval_lane": retrieval_lane,
         "items": items,
         "total": total,
+        "total_unit": session_count_unit_label(root),
         "limit": limit,
         "offset": offset,
         "next_offset": offset + limit if next_cursor is not None else None,

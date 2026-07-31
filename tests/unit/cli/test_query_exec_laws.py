@@ -3209,7 +3209,16 @@ class TestSearchQueryContracts:
     """Matrix coverage for search filters and output formats."""
 
     def test_bounded_pages_report_indexed_total(self, search_workspace: SearchWorkspace) -> None:
-        """A bounded page keeps the exact match count separate from page size."""
+        """A bounded page keeps the exact match count separate from page size.
+
+        polylogue-j8u2: ``run-hit`` (root) and ``run-hit-subagent`` (its
+        subagent child) both match "query" text. The default result unit is
+        the top-level session, so the indexed total for the unqualified query
+        is the root-only count (1), not the raw structural match count (2) --
+        the SQL ``root`` pushdown must agree with the page, not just the
+        page's own length (that would pass even if the total ignored root
+        filtering entirely).
+        """
         from polylogue.cli import cli
 
         del search_workspace
@@ -3218,7 +3227,31 @@ class TestSearchQueryContracts:
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert len(payload["items"]) == 1
-        assert payload["total"] == 2
+        assert payload["total"] == 1
+        assert payload["total_unit"] == "top-level sessions"
+
+    def test_no_root_flag_recovers_the_subagent_child_and_honest_total(self, search_workspace: SearchWorkspace) -> None:
+        """``--no-root`` is the explicit projection back onto subagent/branch children.
+
+        Companion to ``test_bounded_pages_report_indexed_total``: the same
+        "query" text also matches ``run-hit-subagent``, the child of
+        ``run-hit``. Root filtering must be a real SQL predicate, not a
+        post-fetch slice of an already-limited page, so a bounded ``--limit 1``
+        page still reports the honest structurally-filtered total (1).
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        result = CliRunner().invoke(
+            cli, ["--plain", "--no-daemon", "find", "query", "--no-root", "-f", "json", "--limit", "1"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert len(payload["items"]) == 1
+        assert payload["items"][0]["session"]["id"] == "codex-session:ext-run-hit-subagent"
+        assert payload["total"] == 1
+        assert payload["total_unit"] == "subagent/branch child sessions"
 
     def test_zero_hit_search_names_the_zeroing_predicate_by_default(self, search_workspace: SearchWorkspace) -> None:
         """Default (no --why): diagnostics still attribute which predicate zeroed the set (#jnj.12).

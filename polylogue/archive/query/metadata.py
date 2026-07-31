@@ -150,8 +150,9 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
     "root": {
         "description": (
             "Filter by top-level-vs-child session structure. root:true keeps only "
-            "top-level sessions; root:false keeps only subagent/branch children. "
-            "Unset (default) selects both."
+            "top-level sessions (also the implicit default for a param-driven query "
+            "with root unset); root:false keeps only subagent/branch children -- the "
+            "explicit projection for citing delegation fan-out (polylogue-j8u2)."
         ),
         "spec_field": "root",
         "negatable": "no",
