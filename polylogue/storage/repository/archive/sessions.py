@@ -22,6 +22,7 @@ from polylogue.storage.runtime import (
     FileEditRecord,
     LineageCompleteness,
     MessageRecord,
+    SessionCommitRecord,
     SessionRecord,
     SessionRefRecord,
 )
@@ -161,6 +162,10 @@ class RepositoryArchiveSessionMixin:
         session_ids: list[str],
     ) -> dict[str, list[SessionRefRecord]]:
         return await self.queries.get_session_refs_batch(session_ids)
+
+    async def get_session_commits(self, session_id: str) -> list[SessionCommitRecord]:
+        """Read checkout-HEAD commit evidence (polylogue-cijx.3) for a session."""
+        return await self.queries.get_session_commits(session_id)
 
     async def get_messages_paginated(
         self,

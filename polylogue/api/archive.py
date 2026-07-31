@@ -5783,7 +5783,27 @@ class PolylogueArchiveMixin:
             typed_issue_refs=typed_issue_refs,
             bridge_session_ids=bridge_session_ids,
         )
-        return cast(JSONDocument, correlation_result_to_payload(result))
+        payload = correlation_result_to_payload(result)
+        # polylogue-cijx.3 AC3: session_commits was a write-only table (the
+        # parser-reported repo checkout HEAD at session capture, distinct
+        # from the on-demand commit-authorship correlation above). Surface
+        # it here, clearly separated from `commits` (which is
+        # detect_session_commits' scored/heuristic list) rather than merged
+        # into it.
+        checkout_commits = await self.repository.get_session_commits(session_id)
+        payload["checkout_commits"] = [
+            {
+                "commit_sha": record.commit_sha,
+                "short_sha": record.commit_sha[:8],
+                "repo_id": record.repo_id,
+                "detection_type": record.detection_type,
+                "method": record.method,
+                "confidence": record.confidence,
+                "evidence": record.evidence,
+            }
+            for record in checkout_commits
+        ]
+        return cast(JSONDocument, payload)
 
     async def get_session_tree(self, session_id: str) -> list[Session]:
         """Return the full session tree (parent + children) for a session."""

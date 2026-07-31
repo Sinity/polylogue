@@ -16,6 +16,7 @@ from polylogue.storage.runtime import (
     FileEditRecord,
     LineageCompleteness,
     MessageRecord,
+    SessionCommitRecord,
     SessionEventRecord,
     SessionRecord,
     SessionRefRecord,
@@ -26,6 +27,7 @@ from polylogue.storage.sqlite.queries import attachments as attachments_q
 from polylogue.storage.sqlite.queries import file_edits as file_edits_q
 from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import session_agent_policies as session_agent_policies_q
+from polylogue.storage.sqlite.queries import session_commits as session_commits_q
 from polylogue.storage.sqlite.queries import session_events as session_events_q
 from polylogue.storage.sqlite.queries import session_links as session_links_q
 from polylogue.storage.sqlite.queries import session_refs as session_refs_q
@@ -297,6 +299,10 @@ class SQLiteQueryStoreArchiveMixin:
     ) -> dict[str, list[SessionRefRecord]]:
         async with self._connection_factory() as conn:
             return await session_refs_q.get_session_refs_batch(conn, session_ids)
+
+    async def get_session_commits(self, session_id: str) -> list[SessionCommitRecord]:
+        async with self._connection_factory() as conn:
+            return await session_commits_q.get_session_commits(conn, session_id)
 
     async def iter_messages(
         self,
