@@ -549,6 +549,20 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=53,
+        # polylogue-jc4q: changes how a Claude Code resume/fork/usage-limit
+        # boundary carryover derives its identity (sources/dispatch.py,
+        # sources/parsers/claude/code_parser.py) -- see
+        # INDEX_SCHEMA_VERSION's v53 comment (archive_tiers/index.py) for the
+        # full writeup. This changes `sessions.native_id` (generated from
+        # `provider_session_id`) and `session_links` lineage edges for
+        # already-acquired raw evidence, so it requires re-parsing, not a
+        # clone-safe fast-forward. SEMANTIC_REPARSE routes through `polylogue
+        # ops reset --index && polylogued run`, deliberately NOT executed by
+        # this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

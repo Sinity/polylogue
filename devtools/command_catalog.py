@@ -584,6 +584,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace backlog-calibration",
+        "workspace",
+        "Measured lead-time/discovery/staleness distributions over the bead corpus.",
+        "devtools.backlog_calibration",
+        use_when=(
+            "Re-fit the numbers a backlog-execution plan rests on instead of guessing them: "
+            "closed-bead lead-time percentiles split by priority/type/epic-membership/dependency "
+            "degree, a censoring-honest survival view (closed-only medians are survivorship-"
+            "biased), close-reason classification measuring how much of the backlog closes with "
+            "no implementation (already-satisfied/obsolete/duplicate), and created-vs-closed "
+            "discovery dynamics (does the backlog drain?). Optionally calibrates PR open->merge "
+            "latency by size from a gh dump. Answers a different question than "
+            "`workspace beads-state-report` (population shape and graph hygiene, point-in-time) "
+            "and `workspace bead-cluster` (what to batch next): this is duration *models* over "
+            "history, meant to be re-run as the corpus grows so plans stop quoting stale guesses."
+        ),
+        examples=(
+            "devtools workspace backlog-calibration",
+            "devtools workspace backlog-calibration --input beads.jsonl --json",
+            "devtools workspace backlog-calibration --prs prs.json",
+        ),
+    ),
+    CommandSpec(
         "workspace bead-batch-show",
         "workspace",
         "Batch-show beads: id, status, prio, title, desc head, deps, notes tail.",
@@ -1647,6 +1670,31 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace mandate-continuity-replay",
             "devtools workspace mandate-continuity-replay --output .cache/mandate-continuity-replay.json",
             "devtools workspace mandate-continuity-replay --archive-root /path/to/authorized/archive --keep-archive",
+        ),
+    ),
+    CommandSpec(
+        "workspace beads-state-report",
+        "workspace",
+        "Self-contained HTML state-of-the-backlog report over the whole bead population.",
+        "devtools.beads_state_report",
+        use_when=(
+            "Answer 'what shape is the backlog in?' across the whole bead population -- open "
+            "AND closed -- rather than the ready frontier. Computes status x priority x type, "
+            "epic/program trees with open-vs-closed fill, the blocks-graph topology "
+            "(ready/blocked/top blockers/cycles/densest cluster), creation and closure per day "
+            "with velocity, graph-health review queues (dangling refs, id-vs-edge hierarchy "
+            "disagreement, open parents whose children all closed, duplicate titles), subsystem "
+            "concentration by both area label and keyword, and the hand-verified "
+            "VERIFICATION(...) verdict subset. Answers a different question than "
+            "`workspace bead-cluster` (execution-frontier footprint clustering) and "
+            "`workspace delivery-gate-status` (per-gate progress): this is population shape and "
+            "graph hygiene, not the next batch to dispatch. Use --fresh, since bd mutations do "
+            "not immediately re-export."
+        ),
+        examples=(
+            "devtools workspace beads-state-report --fresh",
+            "devtools workspace beads-state-report --out /tmp/beads-state.html",
+            "devtools workspace beads-state-report --json",
         ),
     ),
 )

@@ -1276,6 +1276,7 @@ def _parse_code_records(
     *,
     record_index_start: int = 0,
     seen_record_uuids: set[str] | None = None,
+    trust_fallback_id: bool = False,
 ) -> ParsedSession:
     """Parse Claude Code JSONL payloads into a canonical session model.
 
@@ -1283,6 +1284,18 @@ def _parse_code_records(
     continuation state used when one provider-native session is split by
     interleaved JSONL rows. They preserve eager-path fallback identifiers and
     first-record-wins UUID semantics without retaining raw records.
+
+    ``trust_fallback_id`` (bd polylogue-jc4q): dispatch.py's Claude Code
+    grouping (``_claude_code_grouped_record_specs`` /
+    ``_claude_code_stream_sessions``) sets this when ``fallback_id`` is a
+    composite it has already anchored to THIS file's own identity for a
+    resume/fork/usage-limit boundary carryover fragment -- a run of records
+    stamped with an ANCESTOR session's id even though it is not that
+    ancestor's own content. Ordinary calls leave it ``False`` and keep the
+    long-standing default of trusting the record's own ``sessionId`` --
+    correct whenever ``fallback_id`` is just a caller-supplied label rather
+    than a proven identity (the overwhelmingly common case, including most
+    test call sites).
     """
     messages: list[ParsedMessage] = []
     created_at: str | None = None
@@ -1712,6 +1725,17 @@ def _parse_code_records(
     if is_agent and session_id:
         composed_session_id = f"{session_id}:{fallback_id}"
         parent_session_id = session_id
+    elif trust_fallback_id and session_id and session_id != fallback_id:
+        # bd polylogue-jc4q: dispatch.py has already proven this run is a
+        # resume/fork/usage-limit boundary carryover from an ancestor and
+        # anchored ``fallback_id`` to this file's own identity accordingly.
+        # Trusting the in-record ``sessionId`` (the ancestor's own id)
+        # instead would collide this fragment's revision membership onto
+        # the ancestor's own `logical_source_key` -- the ancestor id is
+        # recorded as ``parent_session_id`` for lineage (``session_links``)
+        # instead.
+        composed_session_id = fallback_id
+        parent_session_id = session_id
     else:
         composed_session_id = session_id or fallback_id
 
@@ -1965,8 +1989,9 @@ def parse_code(
     fallback_id: str,
     *,
     tool_result_sidecars: SidecarJoinResult | None = None,
+    trust_fallback_id: bool = False,
 ) -> ParsedSession:
-    session = _parse_code_records(payload, fallback_id)
+    session = _parse_code_records(payload, fallback_id, trust_fallback_id=trust_fallback_id)
     if tool_result_sidecars is not None:
         session = apply_tool_result_sidecars(session, tool_result_sidecars)
     return session
@@ -2041,12 +2066,14 @@ def parse_code_stream(
     record_index_start: int = 0,
     seen_record_uuids: set[str] | None = None,
     tool_result_sidecars: SidecarJoinResult | None = None,
+    trust_fallback_id: bool = False,
 ) -> ParsedSession:
     session = _parse_code_records(
         records,
         fallback_id,
         record_index_start=record_index_start,
         seen_record_uuids=seen_record_uuids,
+        trust_fallback_id=trust_fallback_id,
     )
     if tool_result_sidecars is not None:
         session = apply_tool_result_sidecars(session, tool_result_sidecars)

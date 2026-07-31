@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
@@ -2474,6 +2475,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
+    try:
+        polylogue_import_path = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+    except CheckoutImportMismatchError as exc:
+        sys.stderr.write(f"verify: {exc}\n")
+        return 125
+    sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
+
     if args.history:
         _print_history()
         return 0
@@ -2508,7 +2516,12 @@ def main(argv: list[str] | None = None) -> int:
 
     head = _git_head()
     t0 = time.monotonic()
-    verify_run = VerifyRun(tier=tier, argv=list(sys.argv[1:] if argv is None else argv), git_head=head)
+    verify_run = VerifyRun(
+        tier=tier,
+        argv=list(sys.argv[1:] if argv is None else argv),
+        git_head=head,
+        polylogue_import_path=str(polylogue_import_path),
+    )
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False
     prepared_seed_attempt: dict[str, Any] | None = None

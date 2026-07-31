@@ -30,7 +30,29 @@ from hypothesis.database import DirectoryBasedExampleDatabase
 # multi-GiB RAM-backed basetemps resident until reboot.
 # ---------------------------------------------------------------------------
 from devtools import verify_runs
+from devtools.checkout_guard import (
+    CheckoutImportMismatchError,
+    assert_polylogue_matches_checkout,
+    resolved_polylogue_path,
+)
 from devtools.verify_runs import PytestResourceError, resolve_pytest_basetemp_root
+
+# Resolve (but don't yet raise on) the polylogue-vs-checkout mismatch check
+# before the first `from polylogue...` import below: a shared/editable venv's
+# `.pth` entry can point at a different checkout than the one this pytest
+# process is actually running from (e.g. a linked git worktree reusing the
+# main checkout's `.venv`), and whichever tree `import polylogue` resolves to
+# here is the one every test in this run uses (sys.modules caches by name).
+# The actual `pytest.UsageError` is raised from `pytest_configure` below —
+# matching the existing basetemp-preflight precedent in this file — so pytest
+# reports a clean usage error instead of a raw conftest-import traceback.
+_TESTS_REPO_ROOT = Path(__file__).resolve().parents[1]
+try:
+    assert_polylogue_matches_checkout(_TESTS_REPO_ROOT, context="pytest (tests/conftest.py)")
+    _CHECKOUT_GUARD_ERROR: CheckoutImportMismatchError | None = None
+except CheckoutImportMismatchError as _checkout_exc:
+    _CHECKOUT_GUARD_ERROR = _checkout_exc
+
 from polylogue.archive.models import Session
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.runtime import RawSessionRecord
@@ -58,6 +80,13 @@ if TYPE_CHECKING:
 
 def pytest_configure(config: pytest.Config) -> None:
     """Register custom markers and choose the managed test temp root."""
+    if _CHECKOUT_GUARD_ERROR is not None:
+        # Refuse before collection: every test in this run would otherwise
+        # exercise a `polylogue` package from a different checkout than the
+        # one this pytest process was invoked against (see
+        # devtools/checkout_guard.py for the full hazard writeup).
+        raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
+    sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
     config.addinivalue_line("markers", "scale(level): parametric scale marker (small/medium/large/stretch)")
     # Tiered scale markers (issue #1183); definitions also live in
     # pyproject.toml `markers` so xfail_strict + filterwarnings agree.
