@@ -935,8 +935,20 @@ def backfill_historical_revision_evidence(
         # Lever A (parse ∥ apply): decode upcoming cohorts' parsed sessions
         # off the writer thread while the single writer applies the current
         # cohort. Gated exactly like ``prepare_pool`` above -- GIL builds
-        # keep the byte-identical serial decode path.
-        effective_pipeline_decode = pipeline_decode if pipeline_decode is not None else parallel_threads_effective()
+        # keep the byte-identical serial decode path. The auto default also
+        # requires enough cohorts to amortize the worker's setup (thread
+        # spawn, two read connections, a plan scan over raw_sessions/
+        # raw_session_memberships): the live raw-materialization path
+        # (storage/repair.py) replays ONE authority component per call,
+        # where a prefetcher could never get ahead of the writer anyway.
+        effective_pipeline_decode = (
+            pipeline_decode
+            if pipeline_decode is not None
+            else (
+                parallel_threads_effective()
+                and len(logical_keys) + len(membership_keys) >= _PIPELINE_DECODE_MIN_COHORTS
+            )
+        )
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
             decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
@@ -1559,6 +1571,15 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
 #: hide exactly those fallbacks.
 _PREFETCH_BUFFER_MIN_TREE_BYTES: Final[int] = 256 * 1024 * 1024
 _PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
+
+#: Minimum replay cohort count for the AUTO ``pipeline_decode`` default to
+#: engage. Below this, the worker's fixed setup cost (thread spawn, two read
+#: connections, a raw_sessions/raw_session_memberships plan scan) cannot be
+#: repaid -- most notably the live raw-materialization path
+#: (``storage/repair.py``), which replays exactly one authority component
+#: per ``backfill_historical_revision_evidence`` call. Explicit
+#: ``pipeline_decode=True``/``False`` bypasses this floor entirely.
+_PIPELINE_DECODE_MIN_COHORTS: Final[int] = 8
 
 
 class _ReplaySpillPrefetcher:
