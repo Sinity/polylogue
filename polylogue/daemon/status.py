@@ -69,12 +69,12 @@ from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
     active_rebuild_index_attempts,
+    probe_archive_tier,
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.repair import raw_materialization_replay_backlog
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -643,39 +643,36 @@ def _archive_tier_status(
     name: Literal["source", "index", "embeddings", "user", "ops"],
     path: Path,
 ) -> ArchiveTierStatus:
-    wal_path = Path(f"{path}-wal")
-    tier = ArchiveTier(name)
-    expected_user_version = ARCHIVE_VERSION_BY_TIER[tier]
-    if not path.exists():
-        return ArchiveTierStatus(name=name, path=str(path), expected_user_version=expected_user_version)
-    user_version: int | None = None
+    # Existence/size/``PRAGMA user_version`` facts come from the shared
+    # ``probe_archive_tier`` (polylogue-703 -- ONE status assembly): this
+    # function used to reimplement the same PRAGMA read independently of the
+    # CLI's direct-fallback status, which is how a bare CLI status and a
+    # daemon-backed status could disagree in production (2026-07-03). Only
+    # ``table_count`` (a daemon-status-only fact, not needed by the CLI
+    # fallback) is still computed here.
+    probe = probe_archive_tier(ArchiveTier(name), path)
+    if not probe.exists:
+        return ArchiveTierStatus(name=name, path=probe.path, expected_user_version=probe.expected_user_version)
     table_count = 0
-    version_status: Literal["ok", "missing", "mismatch", "invalid"] = "invalid"
     try:
         conn = open_readonly_connection(path)
         try:
-            user_version = _row_int(conn.execute("PRAGMA user_version").fetchone()[0])
-            version_status = "ok" if user_version == expected_user_version else "mismatch"
             table_count = _row_int(
                 conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'").fetchone()[0]
             )
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        # version_status already defaults to "invalid" above and stays that
-        # way here, so this branch does carry a signal — but the exception
-        # itself was previously discarded. Log it so operators can tell a
-        # read failure from a genuinely corrupt/unversioned tier.
-        logger.warning("archive tier status query failed for %s (%s): %s", path, name, exc, exc_info=True)
+        logger.warning("archive tier table-count query failed for %s (%s): %s", path, name, exc, exc_info=True)
     return ArchiveTierStatus(
         name=name,
-        path=str(path),
+        path=probe.path,
         exists=True,
-        size_bytes=path.stat().st_size,
-        wal_size_bytes=wal_path.stat().st_size if wal_path.exists() else 0,
-        user_version=user_version,
-        expected_user_version=expected_user_version,
-        version_status=version_status,
+        size_bytes=probe.size_bytes,
+        wal_size_bytes=probe.wal_size_bytes,
+        user_version=probe.user_version,
+        expected_user_version=probe.expected_user_version,
+        version_status=probe.version_status,
         table_count=table_count,
     )
 

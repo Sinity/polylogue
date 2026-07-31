@@ -15,6 +15,7 @@ debugging landmarks. For the conceptual system shape, see
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
+| A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()` and `cli/commands/status.py:_archive_one_tier_status()` |
 
 ## Hot Files
 

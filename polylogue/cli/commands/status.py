@@ -26,7 +26,6 @@ from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.archive_readiness import archive_readiness_status as _archive_readiness_status
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 logger = get_logger(__name__)
@@ -635,35 +634,39 @@ def _archive_tier_status(root: Path) -> dict[str, dict[str, Any]]:
 
 
 def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
-    expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM[tier]]
+    """Coarse per-tier existence/size/version facts come from the shared
+    ``probe_archive_tier`` (polylogue-703 -- ONE status assembly): this used
+    to reimplement its own ``PRAGMA user_version`` probe independently of
+    ``polylogue.daemon.status``, which is how a bare CLI status and a
+    daemon-backed status could disagree in production (2026-07-03). Only
+    ``table_counts`` (row-level detail with no daemon equivalent, used by
+    ``--full``/diagnostics) is still computed locally here, on top of the
+    shared probe's facts.
+    """
+    from polylogue.storage.archive_readiness import probe_archive_tier
+
+    probe = probe_archive_tier(_ARCHIVE_TIER_ENUM[tier], path)
     status: dict[str, Any] = {
-        "path": str(path),
-        "exists": path.exists(),
-        "size_bytes": path.stat().st_size if path.exists() else None,
-        "expected_user_version": expected_version,
-        "user_version": None,
-        "version_status": "missing",
+        "path": probe.path,
+        "exists": probe.exists,
+        "size_bytes": probe.size_bytes if probe.exists else None,
+        "expected_user_version": probe.expected_user_version,
+        "user_version": probe.user_version,
+        "version_status": probe.version_status,
         "table_counts": {},
     }
-    if not path.exists():
+    if not probe.exists:
         return status
 
     try:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
-            row = conn.execute("PRAGMA user_version").fetchone()
-            user_version = int(row[0] or 0) if row is not None else 0
-            status["user_version"] = user_version
-            status["version_status"] = "ok" if user_version == expected_version else "mismatch"
-            counts, precision = _archive_table_counts(
-                conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=path.stat().st_size
-            )
+            counts, precision = _archive_table_counts(conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=probe.size_bytes)
             status["table_counts"] = counts
             status["table_count_precision"] = precision
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        status["version_status"] = "error"
         status["error"] = str(exc)
     return status
 
