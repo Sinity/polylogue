@@ -118,6 +118,7 @@ from polylogue.sources.parsers import codex_state, hermes_state, hermes_verifica
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.sources.source_acquisition_components import (
+    _DETECTION_PREFIX_SIZE,
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
 )
@@ -2528,7 +2529,23 @@ class LiveBatchProcessor:
         )
         try:
             with zipfile.ZipFile(path) as zf:
-                for info in validator.filter_entries(zf.infolist()):
+                entries = list(validator.filter_entries(zf.infolist()))
+                # A GDPR/Takeout export ZIP dropped into a provider-agnostic
+                # inbox (``fallback_provider is Provider.UNKNOWN``) still has
+                # a real dominant provider -- it just isn't visible from any
+                # *one* member in isolation. Establish it once from whichever
+                # member detects cleanly (typically ``conversations.json``)
+                # and seed every member's detection with it, rather than
+                # each low-signal sibling (``user.json``,
+                # ``message_feedback.json``, ``shared_conversations.json``,
+                # attachment ``file_*.json`` blobs, ...) independently
+                # falling back to ``Provider.UNKNOWN`` -> ``unknown-export``
+                # (polylogue-hs3y). A source that already resolved a
+                # provider (a per-provider watched directory) is left alone.
+                zip_provider_hint = fallback_provider
+                if fallback_provider is Provider.UNKNOWN:
+                    zip_provider_hint = self._sniff_zip_provider(zf, entries) or fallback_provider
+                for info in entries:
                     if info.file_size == 0:
                         continue
                     for raw_data in iter_zip_entry_raw_data(
@@ -2538,7 +2555,7 @@ class LiveBatchProcessor:
                             zip_path=path,
                             entry=info,
                             file_mtime=file_mtime,
-                            provider_hint=fallback_provider,
+                            provider_hint=zip_provider_hint,
                             blob_store=blob_store,
                         ),
                     ):
@@ -2572,6 +2589,42 @@ class LiveBatchProcessor:
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
         return records, total_bytes
+
+    @staticmethod
+    def _sniff_zip_provider(
+        zf: zipfile.ZipFile,
+        entries: list[zipfile.ZipInfo],
+    ) -> Provider | None:
+        """Detect a ZIP's dominant provider from whichever member detects cleanly.
+
+        Reads only a small prefix (``_DETECTION_PREFIX_SIZE``, matching the
+        equivalent whole-file detection budget in
+        ``source_acquisition_components.read_plain_source_file``) of each
+        JSON/JSONL member in order until one yields a positive, non-unknown
+        ``detect_provider`` result. Returns ``None`` if no member detects
+        (e.g. a genuinely mixed or non-conversation ZIP), leaving the caller
+        to keep the original ``Provider.UNKNOWN`` fallback.
+        """
+        for info in entries:
+            name_lower = info.filename.lower()
+            if not name_lower.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
+                continue
+            try:
+                with zf.open(info.filename) as handle:
+                    prefix = handle.read(_DETECTION_PREFIX_SIZE)
+            except (zipfile.BadZipFile, OSError):
+                continue
+            if not prefix:
+                continue
+            detected = _detect_provider_from_raw_bytes(
+                prefix,
+                info.filename,
+                Provider.UNKNOWN,
+                truncated_tail_ok=True,
+            )
+            if detected is not Provider.UNKNOWN:
+                return detected
+        return None
 
     def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
         st_size = int(getattr(stat, "st_size", 0))
