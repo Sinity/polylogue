@@ -105,6 +105,9 @@ class SessionProfileDocument(TypedDict):
     per_model_cost_json: str
     primary_model_name: str | None
     primary_model_family: str | None
+    cost_usd: float | None
+    cost_credits: float | None
+    priced_with: str | None
 
 
 class ThreadMemberEvidenceDocument(TypedDict):
