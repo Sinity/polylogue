@@ -27,7 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 )
 
 _FIXTURE_ROOT = Path(__file__).parents[2] / "fixtures" / "claude-code"
-_FAMILY_FIXTURE = _FIXTURE_ROOT / "normalization-family.jsonl"
+_FAMILY_FIXTURE = _FIXTURE_ROOT / "claude-normalization-main.jsonl"
 _AGENT_FIXTURE = _FIXTURE_ROOT / "normalization-agent.jsonl"
 _PARENT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-parent.jsonl"
 _ACOMPACT_FIXTURE = _FIXTURE_ROOT / "normalization-lineage-acompact.jsonl"
@@ -105,8 +105,8 @@ def test_family_fixture_detector_and_streaming_paths_preserve_one_normalized_ide
         is Provider.CODEX
     )
     assert detect_provider(records) is Provider.CLAUDE_CODE
-    eager = parse_payload(Provider.CLAUDE_CODE, records, "normalization-family")
-    streamed = parse_stream_payload(Provider.CLAUDE_CODE, iter(records), "normalization-family")
+    eager = parse_payload(Provider.CLAUDE_CODE, records, "claude-normalization-main")
+    streamed = parse_stream_payload(Provider.CLAUDE_CODE, iter(records), "claude-normalization-main")
 
     assert [session.model_dump(mode="json") for session in streamed] == [
         session.model_dump(mode="json") for session in eager

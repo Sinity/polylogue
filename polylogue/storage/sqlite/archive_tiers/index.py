@@ -201,7 +201,26 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # fixed) -- the fast-forward executor's `_REPLACE_TABLE_SANITIZERS` entry
 # downgrades any such row to 'stale' before the copy runs rather than
 # aborting the migration.
-INDEX_SCHEMA_VERSION = 52
+#
+# polylogue-jc4q: v53 changes how Claude Code identity is derived for a
+# resume/fork/usage-limit boundary carryover -- a run of records physically
+# stamped with an ANCESTOR session's sessionId even though it is not that
+# ancestor's own content (sources/dispatch.py's
+# `_claude_code_grouped_record_specs` / `_claude_code_stream_sessions`, plus
+# `sources/parsers/claude/code_parser.py`'s `trust_fallback_id`). Before this
+# version, such a carryover composed its `provider_session_id` from the bare
+# ancestor id, so every fork/resume/quirk descendant of one ancestor collided
+# on that ancestor's own `logical_source_key` -- measured live: only 56/185
+# (30.3%) of claude-code-session ambiguous revision cohorts resolved cleanly,
+# far below chatgpt-export/claude-ai-export (>90%) after the sibling
+# polylogue-aggz containment fix. This changes `sessions.native_id` (a
+# generated identity column) for every affected raw acquisition and the
+# `parent_session_id`/`session_links` lineage edges recorded for it --
+# SEMANTIC_REPARSE, not a free fast-forward: only re-parsing already-acquired
+# raw evidence recovers the corrected identity split. `polylogue ops reset
+# --index && polylogued run` is required; deliberately NOT executed by this
+# declaration.
+INDEX_SCHEMA_VERSION = 53
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
