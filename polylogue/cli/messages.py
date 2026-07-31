@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import cast
 
 import click
@@ -41,14 +42,14 @@ def run_messages(
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             effective_limit = limit
             try:
-                messages, total = await api.get_messages_paginated(
+                messages, total, completeness = await api.get_messages_paginated(
                     session_id,
                     limit=effective_limit,
                     offset=offset,
                 )
                 if full and offset + len(messages) < total:
                     full_limit = max(total - offset, 0)
-                    messages, total = await api.get_messages_paginated(
+                    messages, total, completeness = await api.get_messages_paginated(
                         session_id,
                         limit=full_limit,
                         offset=offset,
@@ -82,6 +83,8 @@ def run_messages(
                         total=total,
                         limit=effective_limit,
                         offset=offset,
+                        lineage_complete=completeness.complete,
+                        lineage_truncation_reason=completeness.truncation_reason,
                     ),
                     exclude_none=True,
                 )
@@ -107,6 +110,18 @@ def run_messages(
                 # session row rather than hydrating a whole lineage family.
                 session = await api.get_session(session_id)
                 lineage = lineage_descriptor_from_session(session) if session is not None else None
+                # polylogue-ppkj: lineage_descriptor_from_session hard-codes
+                # lineage_complete=None (the DB-backed Session domain model
+                # carries no such field). Overlay the real read-time signal
+                # from get_messages_paginated so the markdown render can flag
+                # a truncated composed transcript instead of rendering a
+                # short conversation with no indication.
+                if lineage is not None:
+                    lineage = dataclasses.replace(
+                        lineage,
+                        lineage_complete=completeness.complete,
+                        lineage_truncation_reason=completeness.truncation_reason,
+                    )
                 transcript = build_semantic_transcript(
                     messages,
                     session_id=session_id,

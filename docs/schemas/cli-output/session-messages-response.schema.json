@@ -344,6 +344,23 @@
       "title": "Limit",
       "type": "integer"
     },
+    "lineage_complete": {
+      "default": true,
+      "title": "Lineage Complete",
+      "type": "boolean"
+    },
+    "lineage_truncation_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lineage Truncation Reason"
+    },
     "messages": {
       "items": {
         "$ref": "#/$defs/SessionMessageRowPayload"

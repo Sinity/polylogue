@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from dataclasses import replace as dataclasses_replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -4632,7 +4633,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
-        messages, total = await poly.get_messages_paginated(
+        messages, total, completeness = await poly.get_messages_paginated(
             conv_id,
             limit=limit,
             offset=offset,
@@ -4640,11 +4641,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         session_id = str(conv_id)
         session = await poly.get_session(conv_id)
         source_messages = session.messages.to_list() if session is not None else messages
+        # polylogue-ppkj: lineage_descriptor_from_session hard-codes
+        # lineage_complete=None (the DB-backed Session domain model carries
+        # no such field). Overlay the real read-time signal from
+        # get_messages_paginated so this JSON response -- and the semantic
+        # card placement built from it -- can flag a truncated composed
+        # transcript instead of serving a partial one with no indication.
+        lineage = lineage_descriptor_from_session(session) if session is not None else None
+        if lineage is not None:
+            lineage = dataclasses_replace(
+                lineage,
+                lineage_complete=completeness.complete,
+                lineage_truncation_reason=completeness.truncation_reason,
+            )
         placement = semantic_card_placement_for_messages(
             source_messages,
             session_id=session_id,
             provider_family=session.origin if session is not None else None,
-            lineage=lineage_descriptor_from_session(session) if session is not None else None,
+            lineage=lineage,
         )
         return {
             "messages": [
@@ -4680,6 +4694,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "total": total,
             "limit": limit,
             "offset": offset,
+            "lineage_complete": completeness.complete,
+            "lineage_truncation_reason": completeness.truncation_reason,
         }
 
     def _do_archive_get_messages(
@@ -4710,7 +4726,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
             except KeyError:
-                return {"messages": [], "total": 0, "limit": limit, "offset": offset}
+                return {
+                    "messages": [],
+                    "total": 0,
+                    "limit": limit,
+                    "offset": offset,
+                    "lineage_complete": True,
+                    "lineage_truncation_reason": None,
+                }
         page = list(envelope.messages)
         total = envelope.total_message_count if envelope.total_message_count is not None else len(page)
         placement = self._archive_semantic_card_placement(envelope)
@@ -4729,6 +4752,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "total": total,
             "limit": limit,
             "offset": offset,
+            # polylogue-ppkj: the envelope already carries the read-time
+            # completeness signal (read_session_page/read_archive_session_envelope
+            # compute it); it was just never included in the response body.
+            "lineage_complete": envelope.lineage_complete,
+            "lineage_truncation_reason": envelope.lineage_truncation_reason,
         }
 
     # ------------------------------------------------------------------

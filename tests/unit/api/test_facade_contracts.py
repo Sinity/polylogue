@@ -1834,7 +1834,7 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
             )
         )
     try:
-        messages, total = await archive.get_messages_paginated(
+        messages, total, _completeness = await archive.get_messages_paginated(
             session_id,
             content_projection=ContentProjectionSpec.prose_only(),
         )
@@ -1880,7 +1880,7 @@ async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tm
             )
         )
     try:
-        messages, total = await archive.get_messages_paginated(session_id, limit=10)
+        messages, total, _completeness = await archive.get_messages_paginated(session_id, limit=10)
     finally:
         await archive.close()
 
@@ -1920,11 +1920,11 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
             )
         )
     try:
-        role_messages, role_total = await archive.get_messages_paginated(
+        role_messages, role_total, _role_completeness = await archive.get_messages_paginated(
             session_id,
             message_role=(Role.USER,),
         )
-        authored_messages, authored_total = await archive.get_messages_paginated(
+        authored_messages, authored_total, authored_completeness = await archive.get_messages_paginated(
             session_id,
             material_origin=(MaterialOrigin.HUMAN_AUTHORED,),
         )
@@ -1935,6 +1935,60 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
     assert [str(message.id).rsplit(":", 1)[-1] for message in role_messages] == ["protocol-user", "authored-user"]
     assert authored_total == 1
     assert str(authored_messages[0].id).endswith(":authored-user")
+    # polylogue-ppkj: the material_origin branch computes completeness via a
+    # dedicated probe (repository.get_lineage_completeness) rather than
+    # silently claiming complete=True -- this session has no lineage, so it
+    # is trivially complete, but the probe must actually run.
+    assert authored_completeness.complete is True
+
+
+async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Path) -> None:
+    """polylogue-cijx.3 AC3: session_commits (the parser-reported repo
+    checkout HEAD at session capture, written by write_parsed_session_to_archive
+    whenever ParsedSession.git_commit_hash is set) was a write-only table --
+    zero readers anywhere. session_correlation_payload (the HTTP
+    GET /api/sessions/:id/correlate surface, daemon/http.py) must now surface
+    it as `checkout_commits`, distinct from the on-demand `commits` list."""
+
+    archive = _archive(tmp_path)
+    with ArchiveStore(tmp_path) as archive_db:
+        session_id = archive_db.write_parsed(
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="checkout-commit-session",
+                title="Checkout commit session",
+                created_at="2026-05-28T20:26:40Z",
+                updated_at="2026-05-28T20:26:40Z",
+                git_repository_url="https://github.com/example/repo",
+                git_commit_hash="deadbeefcafe0001",
+                git_branch="main",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hello",
+                    )
+                ],
+            )
+        )
+    try:
+        # No github_api toggle on this facade method -- it never shells to
+        # `gh`, only `git log` against repo_path, which fails harmlessly
+        # against the nonexistent repo path in this fixture.
+        payload = await archive.session_correlation_payload(session_id)
+    finally:
+        await archive.close()
+
+    assert payload is not None
+    checkout_commits = cast("list[dict[str, object]]", payload["checkout_commits"])
+    assert len(checkout_commits) == 1
+    assert checkout_commits[0]["commit_sha"] == "deadbeefcafe0001"
+    assert checkout_commits[0]["detection_type"] == "explicit_ref"
+    assert checkout_commits[0]["method"] == "parser-git-meta"
+    assert checkout_commits[0]["confidence"] == 1.0
+    # Distinct from the on-demand heuristic `commits` list.
+    assert "commits" in payload
+    assert checkout_commits != payload["commits"]
 
 
 # ---------------------------------------------------------------------------
@@ -3696,7 +3750,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             origin="codex-session",
             limit=3,
         )
-        paged_messages, total_messages = await archive.get_messages_paginated(
+        paged_messages, total_messages, _paged_completeness = await archive.get_messages_paginated(
             "codex-session:api-v1",
             message_role=(Role.USER,),
             message_type="tool_use",
