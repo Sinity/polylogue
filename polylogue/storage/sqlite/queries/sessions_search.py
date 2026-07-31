@@ -6,8 +6,6 @@ import aiosqlite
 
 from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
 
-_MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
-
 
 async def search_session_hits(
     conn: aiosqlite.Connection,
@@ -21,7 +19,7 @@ async def search_session_hits(
     # paths may use bounded structural probes, but retrieval is a hard
     # correctness boundary.
     readiness = await message_fts_search_readiness_async(conn)
-    check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
+    check_fts_readiness(readiness)
 
     from polylogue.storage.search import build_ranked_session_search_query
 
@@ -52,7 +50,7 @@ async def search_session_evidence_hits(
     # See search_session_hits: retrieval is allowed only against an
     # exactly fresh message FTS surface.
     readiness = await message_fts_search_readiness_async(conn)
-    check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
+    check_fts_readiness(readiness)
 
     query_spec = build_ranked_session_search_query(
         query=query,
@@ -107,7 +105,7 @@ async def search_action_session_hits(
     from polylogue.storage.search import build_ranked_action_search_query
 
     readiness = await message_fts_search_readiness_async(conn)
-    check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
+    check_fts_readiness(readiness)
 
     query_spec = build_ranked_action_search_query(
         query=query,
