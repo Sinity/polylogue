@@ -2172,6 +2172,37 @@ def _resolved_runtime_path(value: str | Path | None, *, bootstrap: _BootstrapPat
     return _expand_bootstrap_path(value, home=bootstrap.home, cwd=bootstrap.cwd)
 
 
+def resolve_archive_root(
+    *,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Resolve the archive root using the same layered precedence as the rest
+    of this module: built-in XDG default, site ``polylogue.toml``, user
+    ``polylogue.toml``, then ``POLYLOGUE_ARCHIVE_ROOT`` (low to high).
+
+    Exists so :mod:`polylogue.paths` -- deliberately stdlib-only, with no
+    top-level dependency on this module to avoid an import cycle (this module
+    itself imports :mod:`polylogue.paths` for shared constants) -- can honour
+    ``polylogue.toml``'s ``[archive] root`` instead of silently ignoring it
+    (polylogue-4ma3). ``paths.archive_root()`` only reaches this function via
+    a lazy, function-local import when ``POLYLOGUE_ARCHIVE_ROOT`` is unset, so
+    a process that never touches config-file resolution never pays for it.
+
+    Deliberately not cached: re-reads the environment and any config files on
+    every call, exactly like :func:`load_polylogue_config` and the rest of
+    ``paths._roots``'s XDG accessors, so a test that monkeypatches
+    ``POLYLOGUE_ARCHIVE_ROOT`` (or the XDG/``POLYLOGUE_CONFIG``/
+    ``POLYLOGUE_SITE_CONFIG`` variables that select which config files are
+    read) observes the change on its very next call with no cache to
+    invalidate.
+    """
+    bootstrap = _snapshot_bootstrap(environment=environment, cwd=cwd, home=home)
+    settings = load_polylogue_config(_bootstrap=bootstrap)
+    return _resolved_runtime_path(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
+
+
 def resolve_runtime_config(
     *,
     config_path: Path | None = None,
@@ -2849,4 +2880,5 @@ __all__ = [
     "load_polylogue_config",
     "redact_config_mapping",
     "redact_secret_value",
+    "resolve_archive_root",
 ]
