@@ -20,7 +20,6 @@ from devtools import (
     render_public_claims,
     render_quality_reference,
     render_query_discovery,
-    render_topology_status,
     render_webui_client,
     render_webui_design_system,
 )
@@ -277,14 +276,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         command=control_plane_argv("render mcp-tool-index"),
         main=render_mcp_tool_index.main,
         inputs=("devtools/render_mcp_tool_index.py", "polylogue/mcp/declarations/registry.py"),
-    ),
-    GeneratedSurface(
-        name="topology-status",
-        label="Topology status",
-        description="Render docs/topology-status.md from the topology projection and realized tree.",
-        command=control_plane_argv("render topology-status"),
-        main=render_topology_status.main,
-        inputs=("devtools/render_topology_status.py", "docs/plans/topology-target.yaml"),
     ),
     GeneratedSurface(
         name="pages",

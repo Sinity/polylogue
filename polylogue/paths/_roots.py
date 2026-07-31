@@ -131,8 +131,36 @@ def browser_capture_pairing_state_path() -> Path:
 
 
 def archive_root() -> Path:
-    """Archive root (overridable via POLYLOGUE_ARCHIVE_ROOT)."""
-    return _xdg_path("POLYLOGUE_ARCHIVE_ROOT", data_home())
+    """Archive root.
+
+    Precedence (highest first): the ``POLYLOGUE_ARCHIVE_ROOT`` environment
+    variable, then ``[archive] root`` in ``polylogue.toml`` (site then user
+    config layer, same as :func:`polylogue.config.load_polylogue_config`),
+    then the XDG data-home default. Two archive roots must never exist
+    simultaneously and silently -- a process without the env var used to
+    fall straight through to the XDG default even when a config file named a
+    different root, splitting writes (hooks, browser-capture spool, inbox)
+    across two disjoint directories that nothing reconciled (polylogue-4ma3).
+
+    This module is intentionally stdlib-only, and :mod:`polylogue.config`
+    itself imports from here (``GEMINI_DRIVE_FOLDER``), so a top-level
+    import of ``polylogue.config`` would create an import cycle. The env-var
+    fast path below never touches ``polylogue.config`` at all; the config
+    lookup is a *lazy*, function-local import that only runs once the env
+    var is absent, by which point both modules are already fully loaded.
+    Nothing here is cached, so a test that monkeypatches
+    ``POLYLOGUE_ARCHIVE_ROOT`` (or the config-selecting env vars) between
+    calls sees the change immediately -- this must never regress, since many
+    tests rely on a per-test ``POLYLOGUE_ARCHIVE_ROOT`` to isolate scratch
+    archives from each other and from the real one.
+    """
+    raw = os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+
+    from ..config import resolve_archive_root  # lazy: avoid paths<->config import cycle
+
+    return resolve_archive_root()
 
 
 def render_root() -> Path:

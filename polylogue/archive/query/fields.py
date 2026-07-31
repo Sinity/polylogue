@@ -734,8 +734,11 @@ QUERY_FIELD_DESCRIPTORS: tuple[QueryFieldDescriptor, ...] = (
     ),
     QueryFieldDescriptor(
         name="root",
+        spec_attr="root",
         plan_attr="root",
+        spec_active=_not_none,
         plan_active=_not_none,
+        spec_description=lambda value: "root" if value is True else "not root",
         plan_description=lambda value: "root" if value is True else "not root",
         requires_post_filter=True,
         blocks_sql_count=True,

@@ -1399,7 +1399,7 @@ QUERY_DISCOVERY_NEGATIVE_EXAMPLES: tuple[QueryDiscoveryNegativeExample, ...] = (
         diagnostic=(
             "unknown query field 'text'; recognized fields: action, assistant_messages, assistant_words, "
             "authored_user_messages, authored_user_words, contains, cwd, duration_ms, has, id, lane, lineage, "
-            "messages, near, origin, paste_messages, path, project, repo, session, since, system_messages, tag, "
+            "messages, near, origin, paste_messages, path, project, repo, root, session, since, system_messages, tag, "
             "thinking_messages, title, tool, tool_messages, tool_use_messages, until, user_messages, user_words, words"
         ),
         field="text",

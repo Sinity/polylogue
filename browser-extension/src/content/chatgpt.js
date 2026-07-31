@@ -9,7 +9,6 @@
   const MESSAGE_CONTAINER_SELECTOR = '[data-testid^="conversation-turn-"], article, [data-message-author-role]';
   let messageLayer = null;
 
-  const domAdapterName = "chatgpt-dom-v1";
   const nativeAdapterName = "chatgpt-native-v1";
   const nativeCaptureMessage = "polylogue.chatgpt.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.chatgpt.nativeFetchRequest";
@@ -40,6 +39,23 @@
     const parts = parsed.pathname.split("/").filter(Boolean);
     const marker = parts.indexOf("c");
     return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
+  }
+
+  // A ChatGPT temporary chat never navigates to /c/<id> -- the visible URL
+  // stays at /?temporary-chat=true for the whole session -- but the page
+  // still fetches /backend-api/conversation/<ephemeral-id> to render it, and
+  // that fetch is intercepted the same as any other (chatgpt_bridge.js's
+  // window.fetch override matches on path shape only). Zero temporary chats
+  // had ever landed in the archive before this because every id-matching
+  // step downstream (parseNativeCapture, fetchNativePayloadOnDemand) treated
+  // "no id in the URL" as "no conversation on this page", discarding a
+  // capture that had already been intercepted correctly.
+  function isTemporaryChatUrl(url = window.location.href) {
+    try {
+      return new URL(url).searchParams.get("temporary-chat") === "true";
+    } catch {
+      return false;
+    }
   }
 
   function queueFreshnessHint(
@@ -237,94 +253,6 @@
     pending.resolve({ capture: data.capture || null, error: data.error || null });
   });
 
-  function roleFromNode(node, index) {
-    const testId = node.getAttribute("data-testid") || "";
-    if (testId.includes("user")) return "user";
-    if (testId.includes("assistant")) return "assistant";
-    const labelled = node.getAttribute("aria-label") || "";
-    if (/you|user/i.test(labelled)) return "user";
-    if (/chatgpt|assistant/i.test(labelled)) return "assistant";
-    return index % 2 === 0 ? "user" : "assistant";
-  }
-
-  function attachmentNameFromNode(node) {
-    const label = node.getAttribute("aria-label") || "";
-    const download = node.getAttribute("download") || "";
-    const alt = node.getAttribute("alt") || "";
-    const text = window.polylogueCapture.visibleText(node);
-    const href = node.getAttribute("href") || node.getAttribute("src") || "";
-    const basename = href.split(/[/?#]/).filter(Boolean).at(-1) || "";
-    const candidates = [label, download, alt, text, basename]
-      .map((value) => String(value || "").trim())
-      .filter(Boolean);
-    const extensionPattern =
-      "zip|tar|tgz|gz|bz2|xz|7z|rar|md|txt|pdf|doc|docx|json|jsonl|csv|tsv|py|js|ts|tsx|jsx|rs|go|java|c|cc|cpp|h|hpp|png|jpe?g|gif|webp|svg|mp3|mp4|wav|webm";
-    const filePattern = new RegExp(`(?:^|\\s)([^\\s@/]+\\.(?:${extensionPattern}))(?:\\s|$)`, "i");
-    for (const candidate of candidates) {
-      const fileNameMatch = candidate.match(filePattern);
-      if (fileNameMatch) return fileNameMatch[1].trim();
-    }
-    return null;
-  }
-
-  function collectAttachments(node, turnIndex) {
-    const selector = [
-      '[role="group"][aria-label]',
-      "a[download]",
-      "a[href][aria-label]",
-      "img[alt]",
-      "img[src]"
-    ].join(",");
-    const seen = new Set();
-    const attachments = [];
-    for (const candidate of node.querySelectorAll(selector)) {
-      const name = attachmentNameFromNode(candidate);
-      if (!name) continue;
-      const rawHref = candidate.getAttribute("href") || candidate.getAttribute("src") || null;
-      const url = rawHref && /^https?:\/\//i.test(rawHref) ? rawHref : null;
-      const key = `${name}\n${url || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      attachments.push({
-        provider_attachment_id: `dom:${window.polylogueCapture.fnv1a(`${turnIndex}:${key}`)}`,
-        name,
-        url,
-        provider_meta: {
-          dom_selector_index: turnIndex,
-          dom_label: candidate.getAttribute("aria-label") || null,
-          dom_text: window.polylogueCapture.visibleText(candidate) || null,
-          capture_source: "chatgpt_dom_attachment"
-        }
-      });
-    }
-    return attachments;
-  }
-
-  async function collectTurns() {
-    const nodes = [
-      ...document.querySelectorAll('[data-testid^="conversation-turn-"], article, [data-message-author-role]')
-    ];
-    const turns = [];
-    for (const [index, node] of nodes.entries()) {
-      const explicitRole = node.getAttribute("data-message-author-role");
-      const role = explicitRole || roleFromNode(node, index);
-      const text = window.polylogueCapture.visibleText(node);
-      const domAttachments = collectAttachments(node, index);
-      // chatgpt-dom-v1 has no backend-api mapping to resolve file/sandbox ids
-      // from (polylogue-83u.3) — the DOM itself is the only evidence of an
-      // attachment. When a chip's own href/src is already a concrete https
-      // URL (rendered by the page, e.g. an inline image), fetch it through
-      // the SAME authenticated page-bridge mechanism the native adapter uses
-      // for sandbox/file assets (see acquireAssets/requestAssetFromPage), not
-      // a new one. No resolvable URL stays honestly byte_count=0.
-      const attachments = domAttachments.length ? await acquireDomAttachmentBytes(domAttachments) : domAttachments;
-      if (text || attachments.length) {
-        turns.push({ role, text, attachments, provider_meta: { selector_index: index } });
-      }
-    }
-    return turns;
-  }
-
   function extractContentText(content) {
     const parts = content && content.parts;
     if (Array.isArray(parts)) {
@@ -452,14 +380,28 @@
 
   function parseNativeCapture(capture, expectedConversationId = conversationIdFromUrl()) {
     if (!capture || !capture.ok || typeof capture.body !== "string") return null;
-    if (!expectedConversationId || !String(capture.url || "").includes(`/conversation/${expectedConversationId}`)) {
-      return null;
+    if (expectedConversationId) {
+      if (!String(capture.url || "").includes(`/conversation/${expectedConversationId}`)) return null;
+      try {
+        const payload = JSON.parse(capture.body);
+        if (!payload || typeof payload !== "object" || !payload.mapping) return null;
+        const payloadConversationId = payload.conversation_id || payload.id;
+        if (payloadConversationId && String(payloadConversationId) !== expectedConversationId) return null;
+        return payload;
+      } catch {
+        return null;
+      }
     }
+    // No URL-derived id to match against. The only legitimate case is a
+    // temporary chat (see isTemporaryChatUrl) -- accept the intercepted
+    // capture only if this page is a temporary chat AND the payload itself
+    // agrees it is temporary, so an unrelated stale capture from a prior
+    // page on this tab can never be misattributed.
+    if (!isTemporaryChatUrl()) return null;
     try {
       const payload = JSON.parse(capture.body);
       if (!payload || typeof payload !== "object" || !payload.mapping) return null;
-      const payloadConversationId = payload.conversation_id || payload.id;
-      if (payloadConversationId && String(payloadConversationId) !== expectedConversationId) return null;
+      if (payload.is_temporary !== true) return null;
       return payload;
     } catch {
       return null;
@@ -566,8 +508,37 @@
     }
   }
 
+  const freshConversationWaitTimeoutMs = 6000;
+  const freshConversationWaitIntervalMs = 300;
+
+  // ChatGPT does not update the URL to /c/<id> until the backend accepts the
+  // first turn of a brand-new conversation. A capture triggered in that
+  // narrow window (in-page save button, DOM-mutation freshness observer) has
+  // no id to fetch by yet and no intercepted response either -- this was the
+  // only case where DOM scraping ever produced real captures (2026-07-17:
+  // every chatgpt-dom-v1 capture landed inside one such window, and every
+  // one was a degraded 3-turn shadow of a conversation the native path
+  // picked up moments later with the full turn history). Wait for the SPA
+  // router to publish the id instead of falling back to a DOM scrape.
+  async function waitForConversationId(timeoutMs = freshConversationWaitTimeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    let id = conversationIdFromUrl();
+    while (!id && Date.now() < deadline) {
+      await new Promise((resolve) => window.setTimeout(resolve, freshConversationWaitIntervalMs));
+      id = conversationIdFromUrl();
+    }
+    return id;
+  }
+
   async function fetchNativePayloadOnDemand(requestedConversationId = null) {
-    const conversationId = requestedConversationId || conversationIdFromUrl();
+    let conversationId = requestedConversationId || conversationIdFromUrl();
+    // A temporary chat never gets a /c/<id> URL, so waiting for one would
+    // just burn the whole timeout for nothing -- fall straight through to
+    // the already-intercepted-capture path (latestNativePayload, called by
+    // capture() right after this returns null) instead.
+    if (!conversationId && !requestedConversationId && !isTemporaryChatUrl()) {
+      conversationId = await waitForConversationId();
+    }
     if (!conversationId) return null;
     if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return null;
     const pageResult = await requestNativeCaptureFromPage(conversationId);
@@ -655,76 +626,6 @@
     });
     window.postMessage({ type: assetFetchRequestMessage, requestId, request }, window.location.origin);
     return responsePromise;
-  }
-
-  // chatgpt-dom-v1 attachment byte acquisition (polylogue-83u.3): the DOM
-  // scrape only ever recorded the chip name (byte_count=0) because there is
-  // no backend-api mapping in this degraded capture mode to resolve a
-  // file/sandbox id from. Any chip whose own href/src the page already
-  // rendered as a concrete https URL is fetched through the bridge's "url"
-  // asset kind — the same authenticated page-bridge fetch+hash mechanism
-  // acquireAssets uses for the native adapter's sandbox/file assets, just
-  // skipping the metadata round trip since the URL is already in hand.
-  // Bounded by the same per-file/total-byte/time/failure budgets so a
-  // degraded capture with many broken image chips cannot stall or balloon.
-  async function acquireDomAttachmentBytes(attachments) {
-    const startedAt = Date.now();
-    let totalBytes = 0;
-    let consecutiveFailures = 0;
-    const acquired = [];
-    for (const attachment of attachments) {
-      if (
-        !attachment.url
-        || totalBytes >= assetMaxBytesTotal
-        || Date.now() - startedAt >= assetTotalTimeBudgetMs
-        || consecutiveFailures >= assetConsecutiveFailureLimit
-      ) {
-        acquired.push(attachment);
-        continue;
-      }
-      const request = {
-        kind: "url",
-        url: attachment.url,
-        name: attachment.name,
-        maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes)
-      };
-      const result = await requestAssetFromPage(request);
-      const status = typeof result.status === "string" ? result.status : "request_failed";
-      const contentSha256 = result.asset && result.asset.sha256;
-      const acquiredIsValid =
-        status === "acquired" &&
-        result.asset &&
-        result.asset.base64 &&
-        typeof contentSha256 === "string" &&
-        /^[0-9a-f]{64}$/.test(contentSha256);
-      if (acquiredIsValid) {
-        totalBytes += result.asset.size_bytes || 0;
-        consecutiveFailures = 0;
-        acquired.push({
-          ...attachment,
-          mime_type: result.asset.mime_type || attachment.mime_type || null,
-          size_bytes: result.asset.size_bytes || null,
-          inline_base64: result.asset.base64,
-          provider_meta: {
-            ...attachment.provider_meta,
-            asset_kind: "url",
-            content_sha256: contentSha256
-          }
-        });
-      } else {
-        consecutiveFailures += 1;
-        acquired.push({
-          ...attachment,
-          provider_meta: {
-            ...attachment.provider_meta,
-            asset_kind: "url",
-            asset_fetch_status: status,
-            asset_fetch_detail: result.detail || null
-          }
-        });
-      }
-    }
-    return acquired;
   }
 
   function sandboxPathsFromText(text) {
@@ -1017,7 +918,7 @@
       return byId;
     }, new Map());
     const normalizedGenerationObservations = [...generationObservations.values()].slice(-64);
-    const envelope = nativePayload
+    const finalEnvelope = nativePayload
       ? buildNativeEnvelope(
         nativePayload,
         assetAcquisition,
@@ -1025,22 +926,13 @@
         normalizedGenerationObservations,
       )
       : null;
-    const fallbackEnvelope = async () => {
-      const turns = await collectTurns();
-      if (!turns.length) return null;
-      return window.polylogueCapture.buildEnvelope({
-        provider: "chatgpt",
-        adapterName: domAdapterName,
-        turns,
-        providerMeta: {
-          capture_fidelity: "dom_degraded",
-          native_attempts: nativeAttemptDiagnostics.slice(-6),
-          generation_observations: normalizedGenerationObservations,
-        }
-      });
-    };
-    const finalEnvelope = envelope || (requestedConversationId ? null : await fallbackEnvelope());
-    if (!finalEnvelope) return { ok: false, error: "no_turns" };
+    if (!finalEnvelope) {
+      return {
+        ok: false,
+        error: "native_capture_unavailable",
+        native_attempts: nativeAttemptDiagnostics.slice(-6),
+      };
+    }
     if (deferReceiver) return { ok: true, envelope: finalEnvelope, deferred: true };
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
     if (!captureResult?.ok) {

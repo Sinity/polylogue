@@ -209,21 +209,22 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
     return payload
 
 
-#: The one field of a message hash payload that answers *which message is
-#: this*, as opposed to *what does it currently say*. A provider's own
-#: message id is stable across re-exports even when the export's array
-#: ordering is not (polylogue-c429).
-_MESSAGE_IDENTITY_FIELDS = ("id",)
+def message_identity_hash(*, id: str) -> bytes:
+    """The sole constructor of a message's comparison identity (polylogue-aggz).
 
+    A provider's own message id is stable across re-exports even when the
+    export's array ordering is not (polylogue-c429) -- it is the only
+    content field that answers *which message is this*, as opposed to *what
+    does it currently say*.
 
-def _message_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
-    """Project the order-independent identity of one message payload.
-
-    Reads the already-normalized value out of ``_message_hash_payload`` rather
-    than re-deriving it, mirroring ``_attachment_identity_payload``'s single
-    normalization site.
+    This is a fixed keyword-only signature, not a dict projected by a list
+    of field names: passing ``role``/``text``/``timestamp``/anything else is
+    a ``TypeError`` at the call boundary, not a value that has to be
+    remembered and stripped. Extending what a message's comparison identity
+    covers requires editing this signature -- an explicit, reviewable
+    decision, never a side effect of a parser gaining a new field.
     """
-    return {field: payload[field] for field in _MESSAGE_IDENTITY_FIELDS}
+    return bytes.fromhex(hash_payload({"id": id}))
 
 
 #: Fields of an attachment hash payload that answer *which attachment is
@@ -248,7 +249,19 @@ def _message_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONVa
 #: genuinely distinct attachments that share one message/name/media-type and
 #: carry no bytes on either side of a comparison are indistinguishable by any
 #: signal this projection can offer.
-_ATTACHMENT_IDENTITY_FIELDS = ("message_id", "name", "mime_type")
+
+
+def attachment_identity_hash(*, message_id: JSONValue, name: JSONValue, mime_type: JSONValue) -> bytes:
+    """The sole constructor of an attachment's comparison identity (polylogue-aggz).
+
+    Fixed to (anchoring message, name, media type) -- content-derived and
+    never the provider's own attachment id (polylogue-d8al, polylogue-hith)
+    or acquisition state such as ``size_bytes``/inline bytes
+    (polylogue-bu1i). Those fields are not parameters here; passing them
+    (e.g. spreading a full attachment payload dict as ``**kwargs``) is a
+    ``TypeError``, not a value this function has to remember to strip.
+    """
+    return bytes.fromhex(hash_payload({"message_id": message_id, "name": name, "mime_type": mime_type}))
 
 
 def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValue]:
@@ -263,16 +276,6 @@ def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValu
     if attachment.inline_bytes is not None:
         payload["inline_content_hash"] = hash_bytes(attachment.inline_bytes)
     return payload
-
-
-def _attachment_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
-    """Project the acquisition-independent identity of one attachment payload.
-
-    Reads the already-normalized values out of ``_attachment_hash_payload``
-    rather than re-deriving them, so there is exactly one normalization site and
-    identity can never drift from the content hash it is paired with.
-    """
-    return {field: payload[field] for field in _ATTACHMENT_IDENTITY_FIELDS}
 
 
 #: `generation_lifecycle` payload keys that are provider-reported measurement,
@@ -372,12 +375,29 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
 #: depends on what else happens to be in the set. Still content-derived
 #: (each block's own content, including any content-intrinsic field such as
 #: ``block_index``, already differs), never the array position.
-_EVENT_BASE_IDENTITY_FIELDS = ("event_type", "source_message_provider_id")
+def event_base_identity_hash(*, event_type: JSONValue, source_message_provider_id: JSONValue) -> bytes:
+    """The sole constructor of an event's position-independent base identity.
+
+    Anchoring message plus event type only -- content-derived, never the
+    array index and never provider-reported measurement (polylogue-nuec),
+    which is not a parameter here. Fixed keyword-only signature: passing a
+    whole event content payload as ``**kwargs`` (which also carries
+    ``timestamp``/``payload``) is a ``TypeError``.
+    """
+    return bytes.fromhex(
+        hash_payload({"event_type": event_type, "source_message_provider_id": source_message_provider_id})
+    )
 
 
-def _event_base_identity_payload(payload: dict[str, JSONValue]) -> dict[str, JSONValue]:
-    """Project the position-independent base correlation key of one event payload."""
-    return {field: payload[field] for field in _EVENT_BASE_IDENTITY_FIELDS}
+def event_canonical_identity_hash(*, base_identity: bytes, content_hash: bytes) -> bytes:
+    """Fold an event's base identity with its own content hash.
+
+    Used only when a base identity (event type + anchoring message) may be
+    shared by more than one event within one revision (e.g. multiple
+    ``chatgpt_block_metadata`` events on the same message, one per block) --
+    still content-derived, never the array index (polylogue-aggz).
+    """
+    return bytes.fromhex(hash_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
 
 
 def _session_hash_payload(
@@ -510,14 +530,18 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     message_contents: set[tuple[bytes, bytes]] = set()
     message_hashes: list[bytes] = []
     for payload in messages_payload:
-        identity = bytes.fromhex(hash_payload(_message_identity_payload(payload)))
+        message_native_id = payload["id"]
+        assert isinstance(message_native_id, str)  # built as str above, never anything else
+        identity = message_identity_hash(id=message_native_id)
         content = bytes.fromhex(hash_payload(payload))
         message_contents.add((identity, content))
         message_hashes.append(content)
     attachment_identities: set[bytes] = set()
     attachment_contents: set[tuple[bytes, bytes]] = set()
     for payload in attachments_payload:
-        identity = bytes.fromhex(hash_payload(_attachment_identity_payload(payload)))
+        identity = attachment_identity_hash(
+            message_id=payload["message_id"], name=payload["name"], mime_type=payload["mime_type"]
+        )
         inline_content_hash = payload.get("inline_content_hash")
         attachment_identities.add(identity)
         if isinstance(inline_content_hash, str):
@@ -528,7 +552,12 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     for payload, event in zip(session_events_payload, convo.session_events, strict=True):
         event_hashes.append(bytes.fromhex(hash_payload(payload)))
         content_payload = _event_content_payload(event)
-        event_base_identities.append(bytes.fromhex(hash_payload(_event_base_identity_payload(content_payload))))
+        event_base_identities.append(
+            event_base_identity_hash(
+                event_type=content_payload["event_type"],
+                source_message_provider_id=content_payload["source_message_provider_id"],
+            )
+        )
         event_content_hashes.append(bytes.fromhex(hash_payload(content_payload)))
     event_contents: set[tuple[bytes, bytes]] = set()
     for base_identity, content_hash in zip(event_base_identities, event_content_hashes, strict=True):
@@ -549,9 +578,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         # content-intrinsic block_index), and true duplicates (same base
         # identity, same content, whether or not any sibling exists)
         # correctly collapse to one set entry either way.
-        canonical_identity = bytes.fromhex(
-            hash_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()})
-        )
+        canonical_identity = event_canonical_identity_hash(base_identity=base_identity, content_hash=content_hash)
         event_contents.add((canonical_identity, content_hash))
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),

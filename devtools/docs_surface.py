@@ -452,7 +452,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "Generated map from semantic cards to tools.",
         "archive",
     ),
-    _entry("Topology Status", "topology-status.md", "Generated module-topology status dashboard.", "archive"),
 )
 
 REPO_GUIDE_ENTRIES: tuple[DocsEntry, ...] = (

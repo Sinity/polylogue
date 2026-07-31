@@ -507,103 +507,105 @@ describe("ChatGPT bridge direct-URL asset kind (polylogue-83u.3, chatgpt-dom-v1 
   });
 });
 
-describe("chatgpt-dom-v1 fallback capture attachment byte acquisition (polylogue-83u.3)", () => {
-  // Deterministic capture smoke: forces the native backend-api read to fail
-  // (both the page-bridge attempt and chatgpt.js's own content-script fetch
-  // hit the same failing endpoint), so `capture()` falls through to the
-  // chatgpt-dom-v1 DOM adapter. Before this change, a DOM-scraped attachment
-  // only ever recorded its chip name with byte_count=0 -- there was no fetch
-  // attempt at all. Proves a captured attachment now carries real bytes.
-  function domFallbackAdapter({ domUrl, domBytes }) {
-    const calls = [];
-    const fetch = vi.fn(async (input) => {
-      const url = new URL(String(input), "https://chatgpt.com");
-      calls.push(url.href);
-      if (url.pathname === "/api/auth/session") return jsonResponse({});
-      if (url.pathname === "/backend-api/conversation/conversation-1") {
-        return jsonResponse({ detail: "not_found" }, 404);
-      }
-      if (url.href === domUrl) return byteResponse(domBytes);
-      throw new Error(`unexpected synthetic request in DOM-fallback fixture: ${url.href}`);
-    });
-    return { calls, fetch };
-  }
+describe("ChatGPT native coverage that replaced chatgpt-dom-v1", () => {
+  it("captures a temporary chat from its intercepted native fetch despite no /c/<id> URL", async () => {
+    // A temporary chat never navigates to /c/<id> -- the visible URL stays
+    // at /?temporary-chat=true for the whole session -- but the page still
+    // fetches /backend-api/conversation/<ephemeral-id> to render it, and
+    // window.fetch is intercepted the same way for any conversation path.
+    // Before this fix every id-matching step (parseNativeCapture,
+    // fetchNativePayloadOnDemand, and background.js's own
+    // conversationIdForUrl gate) treated "no id in the URL" as "no
+    // conversation on this page", so zero temporary chats ever landed.
+    const ephemeralId = "temp-conv-ephemeral-1";
+    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true" });
 
-  it("acquires a DOM-scraped attachment's bytes with a real blob-addressable SHA-256", async () => {
-    const domUrl = "https://files.example.test/dom/deliverable.png";
-    const domBytes = new TextEncoder().encode("chatgpt-dom-v1 fallback attachment bytes\n");
-    const expectedDomSha256 = createHash("sha256").update(domBytes).digest("hex");
-    const adapter = domFallbackAdapter({ domUrl, domBytes });
-    const harness = installFullCapture(adapter, {
-      beforeInstall(document) {
-        const turn = document.createElement("article");
-        turn.setAttribute("data-message-author-role", "assistant");
-        turn.textContent = "Here is the file you asked for.";
-        const image = document.createElement("img");
-        image.setAttribute("src", domUrl);
-        image.setAttribute("alt", "deliverable.png");
-        turn.appendChild(image);
-        document.body.appendChild(turn);
+    // Simulate what chatgpt_bridge.js's window.fetch override posts when it
+    // intercepts the page's own render fetch -- that interception matches
+    // on path shape alone and does not care what the visible URL is.
+    harness.dom.window.dispatchEvent(
+      new harness.dom.window.MessageEvent("message", {
+        source: harness.dom.window,
+        origin: harness.dom.window.location.origin,
+        data: {
+          type: "polylogue.chatgpt.nativeCapture",
+          capture: {
+            ok: true,
+            status: 200,
+            contentType: "application/json",
+            url: `https://chatgpt.com/backend-api/conversation/${ephemeralId}`,
+            body: JSON.stringify({
+              id: ephemeralId,
+              conversation_id: ephemeralId,
+              is_temporary: true,
+              title: "Temporary chat",
+              mapping: {
+                node: {
+                  id: "node",
+                  parent: null,
+                  message: { id: "message", author: { role: "assistant" }, content: { content_type: "text", parts: ["hello"] } },
+                },
+              },
+            }),
+          },
+        },
+      }),
+    );
+
+    const result = await harness.sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(result).toMatchObject({
+      ok: true,
+      envelope: {
+        session: {
+          provider_session_id: ephemeralId,
+          session_kind: "temporary",
+          turns: [{ text: "hello" }],
+        },
       },
     });
-
-    const result = await harness.sendRuntimeMessage({
-      type: "polylogue.capturePage",
-      reason: "message_layer_save",
-    });
-
-    expect(result.ok).toBe(true);
-    expect(result.envelope.provenance.adapter_name).toBe("chatgpt-dom-v1");
-    expect(result.envelope.provenance.capture_mode).toBe("snapshot");
-    const [turn] = result.envelope.session.turns;
-    const [attachment] = turn.attachments;
-    expect(attachment).toMatchObject({
-      name: "deliverable.png",
-      size_bytes: domBytes.byteLength,
-      inline_base64: Buffer.from(domBytes).toString("base64"),
-      provider_meta: { content_sha256: expectedDomSha256, asset_kind: "url" },
-    });
-    // The declared SHA-256 is the true hash of the delivered bytes -- the
-    // exact invariant the archive-side blob store re-derives and persists as
-    // acquisition_status='acquired' (polylogue/storage/sqlite/archive_tiers/write.py).
-    expect(createHash("sha256").update(Buffer.from(attachment.inline_base64, "base64")).digest("hex")).toBe(
-      expectedDomSha256,
-    );
-    expect(adapter.calls).toContain(domUrl);
   });
 
-  it("leaves a DOM-scraped attachment honestly byte_count=0 when its chip has no fetchable URL", async () => {
-    // A sandbox-output chip: the DOM only ever exposes the file name (via
-    // aria-label), never a real href/src -- this is the genuinely-unfetchable
-    // shape (byte_count=0 stays honest) distinct from the DOM-rendered <img>
-    // case above, which the fetch above proves is now reachable.
-    const adapter = domFallbackAdapter({ domUrl: "https://unused.example.test/none.png", domBytes: new Uint8Array() });
-    const harness = installFullCapture(adapter, {
-      beforeInstall(document) {
-        const turn = document.createElement("article");
-        turn.setAttribute("data-message-author-role", "assistant");
-        turn.textContent = "Here is the file you asked for.";
-        const chip = document.createElement("div");
-        chip.setAttribute("role", "group");
-        chip.setAttribute("aria-label", "report.pdf");
-        turn.appendChild(chip);
-        document.body.appendChild(turn);
-      },
+  it("waits for a brand-new conversation's URL instead of giving up immediately", async () => {
+    // 2026-07-17: every chatgpt-dom-v1 capture that ever fired for real
+    // landed inside one narrow window where a capture was triggered before
+    // ChatGPT's SPA router had published /c/<id> for a just-created
+    // conversation -- there was no id to fetch by yet. Native must now wait
+    // for the id instead of falling back to a DOM scrape (removed).
+    const freshId = "fresh-conversation-1";
+    const fetch = vi.fn(async (input, options = {}) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/api/auth/session") return jsonResponse({ accessToken: bearerToken, account: { id: chatGptAccountId } });
+      if (url.pathname === `/backend-api/conversation/${freshId}`) {
+        if (authorizationHeader(options) !== `Bearer ${bearerToken}`) return jsonResponse({ detail: "Unauthorized" }, 401);
+        return jsonResponse({
+          id: freshId,
+          conversation_id: freshId,
+          mapping: {
+            node: {
+              id: "node",
+              parent: null,
+              message: { id: "message", author: { role: "user" }, content: { content_type: "text", parts: ["first turn"] } },
+            },
+          },
+        });
+      }
+      throw new Error(`unexpected synthetic request: ${url.pathname}`);
     });
+    const harness = installFullCapture({ fetch }, { url: "https://chatgpt.com/" });
 
-    const result = await harness.sendRuntimeMessage({
-      type: "polylogue.capturePage",
-      reason: "message_layer_save",
+    const resultPromise = harness.sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+    // The SPA router publishes the id a little after the first turn is
+    // sent -- well inside the wait budget, but after at least one poll tick.
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 400));
+    harness.dom.reconfigure({ url: `https://chatgpt.com/c/${freshId}` });
+
+    const result = await resultPromise;
+
+    expect(result).toMatchObject({
+      ok: true,
+      envelope: { session: { provider_session_id: freshId, turns: [{ text: "first turn" }] } },
     });
-
-    expect(result.ok).toBe(true);
-    const [turn] = result.envelope.session.turns;
-    const [attachment] = turn.attachments;
-    expect(attachment.name).toBe("report.pdf");
-    expect(attachment.url).toBeNull();
-    expect(attachment.inline_base64).toBeUndefined();
-    expect(attachment.size_bytes).toBeUndefined();
-    expect(adapter.calls).not.toContain("https://unused.example.test/none.png");
   });
 });
 

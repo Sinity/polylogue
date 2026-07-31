@@ -71,7 +71,37 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # A bump without a declaration is a policy violation, not a free rebuild:
 # `devtools lab policy schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
-INDEX_SCHEMA_VERSION = 46
+#
+# polylogue-o4j2: v47 adds sessions.pending_drafts_json -- aistudio-drive's
+# chunkedPrompt.pendingInputs non-blank entries (unsent textbox drafts, 7/397
+# real sessions with draft text on the live archive). Landed as a session-row
+# field rather than a session_event on purpose: a draft is mutable CURRENT
+# state (edited in place, gone entirely once submitted), and session_events
+# participate in session_revision_projection's append-only comparison axes
+# (polylogue-aggz Invariant 1) -- putting mutable state there reproduces the
+# exact defect class polylogue-bu1i (acquisition state) and polylogue-nuec
+# (provider-remeasurement) were fixed for. See sessions table comment.
+#
+# polylogue-lzh8: v48 declares -- retroactively, with no DDL change of its
+# own -- the semantic classification change 1e0246d77 (#3088, "admit Claude
+# Workflow artifacts through OriginSpec", merged 2026-07-18) already shipped
+# without a version bump. That commit changed origin_specs.py's artifact
+# rules so workflow_run_snapshot / workflow_journal / agent_sidecar_meta /
+# adopt_manifest paths correctly classify as parse_policy="fact"
+# (parse_as_session=False) instead of silently defaulting to a session, the
+# same v42/v44/v45/v46 "values depend on parser semantics" precedent -- a
+# shape-only fast-forward cannot un-classify already-materialized rows, so
+# there is nothing here for a clone-safe SQL delta to do. Measured live
+# impact at declaration time (index.db, 2026-07-31, read-only query): 5,193
+# zero-message claude-code-session rows total, of which 172 join to a
+# `workflows/` artifact family under the pre-fix classification (164
+# agent_sidecar_meta, 7 workflow_run_snapshot, 1 other), all acquired
+# 2026-07-14..07-26 -- entirely before the deployed daemon build contained
+# 1e0246d77 (sinnix's polylogue pin only advanced past it 2026-07-29). Like
+# every other SEMANTIC_REPARSE version here, resolving this requires
+# `polylogue ops reset --index && polylogued run`, which an agent must not
+# trigger against the operator's live archive without explicit scheduling.
+INDEX_SCHEMA_VERSION = 48
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -193,6 +223,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- into typed columns would couple this schema to one provider for no
     -- query benefit; nothing here is queried across origins today.
     run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)}),
+    -- polylogue-o4j2 (v47): non-blank chunkedPrompt.pendingInputs entries --
+    -- the operator's not-yet-submitted textbox draft(s) -- verbatim as a
+    -- JSON array of {{text, role, token_count}} objects. Deliberately a
+    -- session-row field, NOT a session_event: a draft is CURRENT mutable
+    -- UI state (edited in place, then disappears entirely on submit), not
+    -- an append-only historical fact, so it must stay outside
+    -- session_revision_projection's message/attachment/event comparison
+    -- axes (polylogue-aggz Invariant 1) -- exactly the shape polylogue-bu1i
+    -- and polylogue-nuec were fixed for, on a third axis (mutable session
+    -- state rather than acquisition state or provider-remeasurement).
+    pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)}),
     git_branch              TEXT,
     git_repository_url      TEXT,
     provider_project_ref    TEXT,

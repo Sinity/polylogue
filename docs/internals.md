@@ -80,9 +80,8 @@ Run `devtools render all` to update the generated catalog in
 
 **Adding any new module/file under `polylogue/`**: regenerate the topology
 projection or `verify topology` and `render all --check` will fail on the new
-path. Run `devtools render topology-projection && devtools render topology-status`
-and commit the updated `docs/plans/topology-target.yaml` and
-`docs/topology-status.md` alongside the code.
+path. Run `devtools render topology-projection` and commit the updated
+`docs/plans/topology-target.yaml` alongside the code.
 
 ## Schema Versioning Model
 

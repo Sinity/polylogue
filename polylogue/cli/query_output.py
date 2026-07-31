@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import click
 
-from polylogue.archive.query.search_hits import bound_search_snippet
+from polylogue.archive.query.search_hits import bound_display_title, bound_search_snippet
 from polylogue.cli.query_contracts import QueryDeliveryTarget, QueryOutputSpec
 from polylogue.cli.query_feedback import emit_no_results
 from polylogue.cli.query_output_contracts import QueryOutputDocument, StructuredRowsDocument
@@ -434,7 +434,7 @@ def format_summary_list(
                 str(summary.id),
                 _display_date(summary.display_date),
                 str(summary.origin),
-                _single_line(summary.display_title or ""),
+                bound_display_title(summary.display_title, str(summary.id)),
                 message_counts.get(str(summary.id), 0),
                 ",".join(summary.tags) if summary.tags else "",
                 summary.summary or "",
@@ -499,7 +499,7 @@ def format_search_hit_list(
                 str(hit.summary.id),
                 _display_date(hit.summary.display_date),
                 str(hit.summary.origin),
-                _single_line(hit.summary.display_title or ""),
+                bound_display_title(hit.summary.display_title, str(hit.summary.id)),
                 message_counts.get(hit.session_id, hit.summary.message_count or 0),
                 hit.rank,
                 hit.retrieval_lane,

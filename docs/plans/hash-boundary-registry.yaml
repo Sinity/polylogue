@@ -529,41 +529,41 @@ entries:
   call: hash_payload
   occurrence: 0
   classification: content-hash
-  note: 'feeds session_content_hash / revision projection (2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md), Table 1 row 1).'
+  note: 'per-message content hash (full, unstripped payload) -- feeds session_content_hash / revision projection (2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md), Table 1 row 1).'
 - path: polylogue/pipeline/ids.py
   function: '<module>.session_revision_projection'
   call: hash_payload
   occurrence: 1
   classification: content-hash
-  note: 'feeds session_content_hash / revision projection (2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md), Table 1 row 1).'
+  note: 'event_hashes -- feeds session_content_hash / revision projection, unstripped and order-preserving (polylogue-nuec).'
 - path: polylogue/pipeline/ids.py
   function: '<module>.session_revision_projection'
   call: hash_payload
   occurrence: 2
   classification: content-hash
-  note: 'feeds session_content_hash / revision projection (2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md), Table 1 row 1).'
-- path: polylogue/pipeline/ids.py
-  function: '<module>.session_revision_projection'
-  call: hash_payload
-  occurrence: 3
-  classification: content-hash
-  note: 'event_hashes -- feeds session_content_hash / revision projection, unstripped and order-preserving (polylogue-nuec).'
-- path: polylogue/pipeline/ids.py
-  function: '<module>.session_revision_projection'
-  call: hash_payload
-  occurrence: 4
-  classification: content-hash
-  note: 'event base identity (event type + anchoring message), content-derived and position-independent, feeding event_contents (polylogue-aggz, polylogue-nuec).'
-- path: polylogue/pipeline/ids.py
-  function: '<module>.session_revision_projection'
-  call: hash_payload
-  occurrence: 5
-  classification: content-hash
   note: 'per-event content hash (measurement excluded via _event_content_payload''s allowlist), feeding event_contents (polylogue-aggz, polylogue-nuec).'
 - path: polylogue/pipeline/ids.py
-  function: '<module>.session_revision_projection'
+  function: '<module>.message_identity_hash'
   call: hash_payload
-  occurrence: 6
+  occurrence: 0
+  classification: content-hash
+  note: 'the typed constructor for message comparison identity (polylogue-aggz) -- fixed keyword-only signature (id only) is the sole path into message identity, replacing a dict-key-list projection (polylogue-aggz constructor chokepoint).'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.attachment_identity_hash'
+  call: hash_payload
+  occurrence: 0
+  classification: content-hash
+  note: 'the typed constructor for attachment comparison identity (polylogue-aggz, polylogue-bu1i, polylogue-d8al, polylogue-hith) -- fixed keyword-only signature (message_id/name/mime_type only) is the sole path into attachment identity.'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.event_base_identity_hash'
+  call: hash_payload
+  occurrence: 0
+  classification: content-hash
+  note: 'the typed constructor for an event''s position-independent base identity (polylogue-aggz, polylogue-nuec) -- fixed keyword-only signature (event_type/source_message_provider_id only) is the sole path into event base identity.'
+- path: polylogue/pipeline/ids.py
+  function: '<module>.event_canonical_identity_hash'
+  call: hash_payload
+  occurrence: 0
   classification: content-hash
   note: 'canonical event identity fold (base identity + content) used only when the base identity is locally ambiguous within one revision -- still content-derived, never the array index (polylogue-aggz).'
 - path: polylogue/pipeline/ids.py
@@ -1076,12 +1076,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'synthetic block-id fallback; 2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md) Table 3.'
-- path: polylogue/storage/sqlite/archive_tiers/archive.py
+- path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
   function: '<module>._raw_revision_payload_digest_and_size'
   call: hashlib.sha256
   occurrence: 0
   classification: content-hash
-  note: 'raw revision content digest consumed by raw-authority/repair reconciliation.'
+  note: 'raw revision content digest consumed by raw-authority/repair reconciliation (moved from archive_tiers/archive.py, polylogue-1r9c governance extraction).'
 - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
   function: '<module>._catalog_hash'
   call: hashlib.sha256

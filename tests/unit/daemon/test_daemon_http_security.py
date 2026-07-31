@@ -19,12 +19,8 @@ same security coverage.
 from __future__ import annotations
 
 import json
-import threading
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
-from email.message import Message
 from http import HTTPStatus
-from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
@@ -34,7 +30,8 @@ import pytest
 from polylogue.core.loopback import is_loopback_host
 from polylogue.daemon.http import _check_auth_logic
 from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
-from polylogue.daemon.web_auth import WebCredentialRegistry, exact_origin_allowed
+from polylogue.daemon.web_auth import exact_origin_allowed
+from tests.infra.daemon_http_harness import MockDaemonServer, capture_responses, make_daemon_handler
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -201,24 +198,6 @@ class TestOriginAllowlist:
 # ---------------------------------------------------------------------------
 
 
-class _MockServer:
-    auth_token = "secret"
-    api_host = "127.0.0.1"
-    archive_query_executor = ThreadPoolExecutor(max_workers=1)
-    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test
-
-    def __init__(self) -> None:
-        self.web_credentials = WebCredentialRegistry()
-
-
-class _MockHeaders:
-    def __init__(self, headers: dict[str, str] | None = None) -> None:
-        self._headers = headers or {}
-
-    def get(self, key: str, default: str | None = None) -> str | None:
-        return self._headers.get(key, default)
-
-
 def _make_handler(
     method: str,
     path: str,
@@ -243,44 +222,24 @@ def _make_handler(
     permissive (see its docstring), so omitting it here is equivalent to a
     non-browser client and does not gate any of the auth/origin coverage
     below. Tests of the Host gate itself pass ``host`` explicitly.
+
+    This file's default server has a configured token (``"secret"``) —
+    unlike the shared harness's own open-by-default ``MockDaemonServer`` —
+    because this file's whole point is exercising the auth-required path.
     """
-    from polylogue.daemon.http import DaemonAPIHandler
-
-    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
-    handler.server = cast("DaemonAPIHTTPServer", server or _MockServer())
-    handler.client_address = ("127.0.0.1", 12345)
-    handler.path = path
-    handler.command = method
-    handler.requestline = f"{method} {path} HTTP/1.1"
-
-    headers: dict[str, str] = {"Content-Length": str(len(body))}
-    if auth_header:
-        headers["Authorization"] = auth_header
-    if origin:
-        headers["Origin"] = origin
-    if host:
-        headers["Host"] = host
-    if cookie:
-        headers["Cookie"] = cookie
-    if referer:
-        headers["Referer"] = referer
-    if fetch_site:
-        headers["Sec-Fetch-Site"] = fetch_site
-    if web_client:
-        headers["X-Polylogue-Web-Client"] = "1"
-    handler.headers = cast("Message[str, str]", _MockHeaders(headers))
-    handler.rfile = BytesIO(body)
-    handler.wfile = BytesIO()
-    return handler
-
-
-def _capture_responses(handler: DaemonAPIHandler) -> tuple[MagicMock, MagicMock]:
-    """Patch the response writers so we can assert what was sent."""
-    send_error = MagicMock()
-    send_json = MagicMock()
-    handler._send_error = send_error  # type: ignore[method-assign]
-    handler._send_json = send_json  # type: ignore[method-assign]
-    return send_error, send_json
+    return make_daemon_handler(
+        method,
+        path,
+        auth_header=auth_header,
+        origin=origin,
+        host=host,
+        cookie=cookie,
+        referer=referer,
+        fetch_site=fetch_site,
+        web_client=web_client,
+        body=body,
+        server=server or MockDaemonServer(auth_token="secret"),
+    )
 
 
 @pytest.mark.parametrize("path", ENDPOINTS_GET)
@@ -289,13 +248,13 @@ class TestGetEndpointAuthGate:
 
     def test_missing_token_returns_401(self, path: str) -> None:
         handler = _make_handler("GET", path)
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_GET()
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
     def test_invalid_token_returns_401(self, path: str) -> None:
         handler = _make_handler("GET", path, auth_header="Bearer wrong")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_GET()
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
@@ -311,20 +270,20 @@ class TestPostEndpointAuthAndOriginGate:
 
     def test_missing_token_returns_401(self, path: str) -> None:
         handler = _make_handler("POST", path)
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
     def test_invalid_token_returns_401(self, path: str) -> None:
         handler = _make_handler("POST", path, auth_header="Bearer wrong")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
     def test_valid_token_no_origin_passes_gates(self, path: str) -> None:
         """Auth + origin gates admit a curl/hook-style request (no Origin)."""
         handler = _make_handler("POST", path, auth_header="Bearer secret")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         with (
             patch.object(handler, "_handle_reset"),
             patch.object(handler, "_handle_ingest"),
@@ -348,7 +307,7 @@ class TestPostEndpointAuthAndOriginGate:
             origin="http://127.0.0.1:8766",
             host="127.0.0.1:8766",
         )
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         with (
             patch.object(handler, "_handle_reset"),
             patch.object(handler, "_handle_ingest"),
@@ -377,7 +336,7 @@ class TestPostEndpointAuthAndOriginGate:
             auth_header="Bearer secret",
             origin="https://evil.example.com",
         )
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "cross_origin_denied")
 
@@ -392,13 +351,13 @@ class TestDeleteEndpointAuthAndOriginGate:
 
     def test_missing_token_returns_401(self, path: str) -> None:
         handler = _make_handler("DELETE", path)
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_DELETE()
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
     def test_invalid_token_returns_401(self, path: str) -> None:
         handler = _make_handler("DELETE", path, auth_header="Bearer wrong")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_DELETE()
         send_error.assert_called_once_with(HTTPStatus.UNAUTHORIZED, "unauthorized")
 
@@ -410,14 +369,14 @@ class TestDeleteEndpointAuthAndOriginGate:
             auth_header="Bearer secret",
             origin="https://evil.example.com",
         )
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_DELETE()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "cross_origin_denied")
 
     def test_valid_token_no_origin_passes_gates(self, path: str) -> None:
         """Auth + origin gates admit a curl/hook-style request (no Origin)."""
         handler = _make_handler("DELETE", path, auth_header="Bearer secret")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
             handler.do_DELETE()
         for call in send_error.call_args_list:
@@ -435,7 +394,7 @@ class TestDeleteEndpointAuthAndOriginGate:
             origin="http://localhost:8766",
             host="localhost:8766",
         )
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         with patch("polylogue.daemon.user_state_http.dispatch_delete", return_value=True):
             handler.do_DELETE()
         for call in send_error.call_args_list:
@@ -499,13 +458,13 @@ class TestGetEndpointHostGate:
         independently of auth, closing the archive-read hole even when the
         daemon has no token set (the common local-dev default)."""
         handler = _make_handler("GET", path, host="evil.example.com")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_GET()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
     def test_loopback_host_reaches_the_auth_gate(self, path: str) -> None:
         handler = _make_handler("GET", path, host="127.0.0.1:8766")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_GET()
         # No token configured on the mock server -> passes straight through
         # to the route handler layer; the point here is that it is NOT
@@ -530,7 +489,7 @@ class TestBootstrapAndProbeRoutesHostGate:
 
     def test_foreign_host_returns_403(self, path: str) -> None:
         handler = _make_handler("GET", path, host="evil.example.com")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_GET()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
@@ -557,7 +516,7 @@ class TestBootstrapAndProbeRoutesHostGate:
 class TestPostEndpointHostGate:
     def test_foreign_host_returns_403_even_with_valid_token(self, path: str) -> None:
         handler = _make_handler("POST", path, auth_header="Bearer secret", host="evil.example.com")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
@@ -566,7 +525,7 @@ class TestPostEndpointHostGate:
 class TestDeleteEndpointHostGate:
     def test_foreign_host_returns_403_even_with_valid_token(self, path: str) -> None:
         handler = _make_handler("DELETE", path, auth_header="Bearer secret", host="evil.example.com")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_DELETE()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
@@ -613,7 +572,7 @@ class TestIngestEndpointInboxBoundary:
             }
         ).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -645,7 +604,7 @@ class TestIngestEndpointInboxBoundary:
 
         body = json.dumps({"path": str(staged)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -689,7 +648,7 @@ class TestIngestEndpointInboxBoundary:
 
         body = json.dumps({"path": str(staged)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -716,7 +675,7 @@ class TestIngestEndpointInboxBoundary:
 
         body = json.dumps({"path": str(outside)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -768,7 +727,7 @@ class TestIngestEndpointInboxBoundary:
 
         body = json.dumps({"path": traversal_path}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -817,7 +776,7 @@ class TestIngestEndpointInboxBoundary:
         # Client sends a dotdot path whose basename is "session.jsonl"
         body = json.dumps({"path": "../inbox/session.jsonl"}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -850,7 +809,7 @@ class TestIngestEndpointInboxBoundary:
 
         body = json.dumps({"path": "escape_link.jsonl"}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
-        send_error, send_json = _capture_responses(handler)
+        send_error, send_json = capture_responses(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -1008,7 +967,7 @@ class TestOptionsReturnsMethodNotAllowed:
     @pytest.mark.parametrize("path", ENDPOINTS_GET + ENDPOINTS_POST)
     def test_options_405(self, path: str) -> None:
         handler = _make_handler("OPTIONS", path)
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_OPTIONS()
         send_error.assert_called_once_with(HTTPStatus.METHOD_NOT_ALLOWED, "method_not_allowed")
 
@@ -1393,7 +1352,7 @@ class TestOtlpGating:
             lambda: SimpleNamespace(observability_enabled=True, otlp_max_body_bytes=8 * 1024 * 1024),
         )
         handler = _make_handler("POST", path, host="evil.example.com")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.FORBIDDEN, "host_not_allowed")
 
@@ -1406,7 +1365,7 @@ class TestOtlpGating:
             lambda: SimpleNamespace(observability_enabled=False, otlp_max_body_bytes=8 * 1024 * 1024),
         )
         handler = _make_handler("POST", path, origin="")
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
         handler.do_POST()
         send_error.assert_called_once_with(HTTPStatus.NOT_FOUND, "not_found")
 
@@ -1454,7 +1413,7 @@ class TestOtlpGating:
 
         handler = _make_handler("POST", path)
         handler.server = cast("DaemonAPIHTTPServer", RemoteMockServer())
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
 
         handler.do_POST()
 
@@ -1473,7 +1432,7 @@ class TestOtlpGating:
 
         big_body = b"x" * 4096  # 4 KiB > 1 KiB cap
         handler = _make_handler("POST", path, body=big_body)
-        send_error, _ = _capture_responses(handler)
+        send_error, _ = capture_responses(handler)
 
         handler.do_POST()
 

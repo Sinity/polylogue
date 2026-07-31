@@ -68,7 +68,7 @@ def _content_by_identity(contents: frozenset[tuple[bytes, bytes]]) -> dict[bytes
     Identity is not always injective: two acquired attachments on one
     message can share one identity (same ``message_id``/``name``/
     ``mime_type``, different bytes -- the accepted limit documented on
-    ``_ATTACHMENT_IDENTITY_FIELDS``, not a new one). Collapsing such a
+    ``attachment_identity_hash``, not a new one). Collapsing such a
     collision to a single arbitrary content hash (a plain ``dict``, last
     value wins) would let a real content conflict compare as equal instead.
     Grouping into a set per identity means a collision always degrades to

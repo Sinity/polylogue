@@ -451,6 +451,71 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         )
 
 
+def test_live_append_refuses_declared_non_session_artifact(tmp_path: Path) -> None:
+    """Regression for polylogue-xwkh: close the third chokepoint.
+
+    Live daemon ingest (``ingest_worker.py``) and rebuild replay
+    (``revision_backfill.py``'s ``_parse_one``/``_parse_stream``) both refuse
+    to session-parse an OriginSpec-declared "fact" artifact -- a workflow
+    journal, in this case -- via ``classify_artifact``/``artifact_rule_for_path``.
+    The live incremental-append path (this module) previously ran
+    ``parse_payload`` on every append unconditionally, with no such gate.
+
+    A record refused by the other two chokepoints (a
+    ``subagents/workflows/<run>/journal.jsonl`` path, which
+    ``origin_specs.py`` declares ``parse_policy="fact"``) must now also be
+    refused here: no session may ever be materialized for it, whichever path
+    admitted the growing file into append tracking (e.g. an ops.db cursor
+    reset that resynthesizes a cursor from a durable 'full' baseline in
+    source.db -- see ``batch.py``'s ``_resynthesize_cursor_from_source``).
+    """
+    initialize_active_archive_root(tmp_path)
+    full_payload = b'{"contentKey":"call-1","agentId":"agent-a"}\n'
+    path = tmp_path / "subagents" / "workflows" / "wf-54" / "journal.jsonl"
+    path.parent.mkdir(parents=True)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline_raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=full_payload,
+            source_path=str(path),
+            acquired_at_ms=1,
+        )
+        archive.bind_raw_revision(
+            baseline_raw_id,
+            RawRevisionEnvelope("claude-code:journal", RawRevisionKind.FULL, "full-revision", 1),
+        )
+
+    append_payload = b'{"contentKey":"call-2","agentId":"agent-b"}\n'
+    path.write_bytes(full_payload + append_payload)
+    stat = path.stat()
+    plan = _AppendPlan(
+        path=path,
+        source_name="claude-code",
+        start_offset=len(full_payload),
+        last_complete_newline=stat.st_size,
+        stat_size=stat.st_size,
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        payload=append_payload,
+        payload_hash="append-hash",
+        cursor_fingerprint="full-revision",
+        bytes_read=len(append_payload),
+    )
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    owner = SimpleNamespace(
+        _cursor=cursor,
+        _polylogue=SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path)),
+    )
+
+    result = ingest_append_plans(cast(Any, owner), [plan])
+
+    assert result.succeeded == []
+    assert result.failed == [plan]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
 def test_live_append_retains_cursor_identity_until_baseline_arrives(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

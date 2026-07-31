@@ -431,6 +431,7 @@ def test_async_execute_query_archive_lists_archive(
             until_ms: int | None,
             since_session_id: str | None,
             sample: bool,
+            root: bool | None = None,
         ) -> list[ArchiveSessionSummary]:
             assert limit == 3
             assert offset == 0
@@ -1564,6 +1565,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             since_ms: int | None,
             until_ms: int | None,
             since_session_id: str | None,
+            root: bool | None = None,
         ) -> list[ArchiveSessionSearchHit]:
             assert query == "needle"
             assert limit == 6

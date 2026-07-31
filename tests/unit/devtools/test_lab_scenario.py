@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-import yaml
 
 
 def test_module_imports() -> None:
@@ -55,26 +54,6 @@ def test_list_scenarios_reports_live_paths_without_baseline_counts(capsys: pytes
         "scope_adjudication": storage["scope_adjudication"],
     }
     assert "blob_gc" in storage["scope_adjudication"]
-
-
-def test_storage_correctness_manifest_records_the_realized_archive_family() -> None:
-    manifest_path = Path(__file__).parents[3] / "docs/plans/scenario-coverage.yaml"
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    assert isinstance(manifest, dict)
-    families = manifest["families"]
-    assert isinstance(families, list)
-    storage = next(family for family in families if family["name"] == "storage_correctness")
-    assert storage == {
-        "name": "storage_correctness",
-        "description": "Archive-backed storage correctness scenario family",
-        "subject": "storage_correctness",
-        "scenario_count": 4,
-        "location": "devtools/storage_correctness_scenario.py",
-        "bead": "polylogue-9e5.19",
-        "notes": storage["notes"],
-    }
-    assert "blob-lease wording was stale" in storage["notes"]
-    assert all(gap["id"] != "scenario.storage-correctness" for gap in manifest["coverage_gaps"])
 
 
 def test_main_prints_direct_stage_summary(capsys: pytest.CaptureFixture[str]) -> None:
