@@ -515,7 +515,11 @@ def _parse_plan_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
 ) -> list[ParsedSession]:
-    from polylogue.sources.dispatch import parse_payload, parse_stream_payload
+    from polylogue.sources.dispatch import (
+        parse_payload,
+        parse_stream_payload,
+        require_positive_conversational_evidence,
+    )
 
     fallback_id = _fallback_id(context.raw_record.source_path, context.raw_record.raw_id)
     if plan.mode == "stream":
@@ -538,13 +542,24 @@ def _parse_plan_sessions(
             )
             if valid_record_count == 0:
                 raise ValueError(f"no valid JSON records in {stream_name}")
-            return sessions
+            # polylogue-9ykn: a session requires positive conversational
+            # evidence -- applied here (the subprocess decode/parse worker's
+            # own chokepoint) so this ingest route can't create a
+            # zero-message session even though it never touches
+            # sources/live/batch.py's or revision_backfill.py's call sites.
+            return require_positive_conversational_evidence(
+                sessions, provider=plan.provider, source_path=context.raw_record.source_path
+            )
 
-    return parse_payload(
-        plan.provider,
-        plan.payload,
-        fallback_id,
-        schema_resolution=plan.schema_resolution,
+    return require_positive_conversational_evidence(
+        parse_payload(
+            plan.provider,
+            plan.payload,
+            fallback_id,
+            schema_resolution=plan.schema_resolution,
+            source_path=context.raw_record.source_path,
+        ),
+        provider=plan.provider,
         source_path=context.raw_record.source_path,
     )
 

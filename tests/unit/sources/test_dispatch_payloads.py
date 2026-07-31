@@ -16,6 +16,7 @@ from polylogue.sources.dispatch import (
     detect_provider,
     parse_payload,
     parse_stream_payload,
+    require_positive_conversational_evidence,
 )
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
@@ -718,3 +719,125 @@ def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yiel
     assert total_messages > 0, "long multi-session_meta Codex rollout must not parse to zero messages"
     # 20 turns * (user + assistant + function_call use/output + custom_tool_call use/output)
     assert total_messages == 20 * 6
+
+
+def test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """polylogue-9ykn regression: a Claude Code JSONL stream consisting
+    entirely of non-conversational envelope records (file-history-snapshot
+    here; the live archive also has this for progress/bridge-session/
+    custom-title/agent-name-only files, all measured 2026-07-31) must not
+    become a session -- it has zero messages, i.e. no positive
+    conversational evidence. This is the dominant real shape found behind
+    the 5,193 zero-message claude-code-session rows in the live archive
+    (228+ of the ~237 non-agent-meta, non-analysis-dir rows were exactly
+    this: a genuine per-session JSONL file whose only records were
+    file-history-snapshot checkpoints).
+
+    ``require_positive_conversational_evidence`` is applied (not by
+    ``parse_stream_payload`` itself, which stays pure routing -- see its
+    caller-facing docstring) by every real production write path:
+    ``sources/live/batch.py``'s full-ingest loop,
+    ``pipeline/services/ingest_worker.py``'s ``_parse_plan_sessions``,
+    ``sources/live/append_ingest.py``, and
+    ``sources/revision_backfill.py``'s ``_parse_stream``. This test pins the
+    filter function itself against the exact ``parse_stream_payload`` output
+    shape those callers see.
+
+    Mutation that fails this: removing the message-content check from
+    ``require_positive_conversational_evidence``, or changing it to keep
+    zero-message sessions.
+    """
+    payload = [
+        {
+            "type": "file-history-snapshot",
+            "messageId": "06a77336-517e-4a27-996c-27547731e76b",
+            "sessionId": "history-only-session",
+            "snapshot": {"messageId": "06a77336-517e-4a27-996c-27547731e76b", "trackedFileBackups": {}},
+        },
+        {
+            "type": "file-history-snapshot",
+            "messageId": "fc6f7a3a-f38e-4f7c-9943-63157eea12c6",
+            "sessionId": "history-only-session",
+            "snapshot": {"messageId": "fc6f7a3a-f38e-4f7c-9943-63157eea12c6", "trackedFileBackups": {}},
+        },
+    ]
+    source_path = "/home/user/.claude/projects/proj/history-only-session.jsonl"
+    parsed = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "history-only-session", source_path=source_path)
+    assert len(parsed) == 1
+    assert parsed[0].messages == []
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = require_positive_conversational_evidence(
+            parsed, provider=Provider.CLAUDE_CODE, source_path=source_path
+        )
+
+    assert sessions == []
+    assert any("polylogue-9ykn" in record.message and "no messages" in record.message for record in caplog.records)
+
+
+def test_require_positive_conversational_evidence_refuses_claude_ai_export_conversation_with_no_messages(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """polylogue-9ykn regression: a claude.ai export conversation with a real
+    title/timestamps but ``chat_messages: []`` (47 such rows measured live
+    2026-07-31) is content that legitimately exists in the export but is not
+    a conversation -- it must not become a session either.
+
+    Mutation that fails this: removing the message-content check from
+    ``require_positive_conversational_evidence``, or changing it to keep
+    zero-message sessions.
+    """
+    payload = {
+        "uuid": "ff9f9372-0ce1-40de-b890-0db7ab7d6917",
+        "name": "An empty conversation",
+        "summary": "",
+        "created_at": "2026-07-13T01:19:06.077895Z",
+        "updated_at": "2026-07-13T01:19:06.077895Z",
+        "chat_messages": [],
+    }
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "ff9f9372-0ce1-40de-b890-0db7ab7d6917")
+    assert len(parsed) == 1
+    assert parsed[0].messages == []
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = require_positive_conversational_evidence(
+            parsed, provider=Provider.CLAUDE_AI, source_path="claude-ai-export.zip:conversations.json"
+        )
+
+    assert sessions == []
+    assert any("polylogue-9ykn" in record.message and "no messages" in record.message for record in caplog.records)
+
+
+def test_parse_payload_generic_unrecognized_record_shape_manufactures_only_a_content_free_message(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """polylogue-9ykn AC(a) sibling finding: a dict with no known
+    provider-record marker at all (no ``mapping``/``messages``/
+    ``chat_messages``/envelope keys -- none of the shapes any real parser
+    recognizes; this is the sinex ``conversation_relationships.jsonl``
+    pointer-record shape from polylogue-6mpy/gvgi) is NOT declined by
+    ``parse_payload``'s Claude Code single-document lowering today: it
+    manufactures a one-message session whose sole message has an empty
+    ``text`` and no blocks -- structurally "has a message" but zero actual
+    conversational evidence. ``require_positive_conversational_evidence``
+    (checking message *content*, not just message *count*) is what actually
+    refuses it before any production write path can persist it.
+
+    Mutation that fails this: making the message-content check in
+    ``require_positive_conversational_evidence`` accept a message with empty
+    text and no blocks, or dropping the check back to a message-count test.
+    """
+    payload = {"conversation": "conv-1", "parent": "parent-1", "child": "child-1", "type": "user", "timestamp": "t"}
+
+    parsed = parse_payload(Provider.CLAUDE_CODE, payload, "fallback")
+    assert len(parsed) == 1
+    assert len(parsed[0].messages) == 1
+    assert not parsed[0].messages[0].text
+    assert not parsed[0].messages[0].blocks
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = require_positive_conversational_evidence(parsed, provider=Provider.CLAUDE_CODE, source_path=None)
+
+    assert sessions == []

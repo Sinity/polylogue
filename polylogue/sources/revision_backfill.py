@@ -40,7 +40,12 @@ from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
 from polylogue.pipeline.services.process_pool import parallel_threads_effective
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
+from polylogue.sources.dispatch import (
+    is_stream_record_provider,
+    parse_payload,
+    parse_stream_payload,
+    require_positive_conversational_evidence,
+)
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
@@ -2236,6 +2241,27 @@ def _parse_one(
     payload_path: Path | None = None,
     archive_root: Path | None = None,
 ) -> list[ParsedSession]:
+    # polylogue-9ykn: replay must apply the same positive-conversational-
+    # evidence gate the live ingest paths apply, on top of the path/shape
+    # gate above (``_is_declared_non_session_artifact``, polylogue-6mpy) --
+    # a source can pass that gate (its shape IS a recognized Claude Code
+    # JSONL file with no path rule) yet still parse to zero real messages
+    # (e.g. a file containing only file-history-snapshot records).
+    return require_positive_conversational_evidence(
+        _parse_one_raw(provider, payload, source_path, payload_path=payload_path, archive_root=archive_root),
+        provider=provider,
+        source_path=source_path,
+    )
+
+
+def _parse_one_raw(
+    provider: Provider,
+    payload: bytes,
+    source_path: str,
+    *,
+    payload_path: Path | None = None,
+    archive_root: Path | None = None,
+) -> list[ParsedSession]:
     source_name = Path(source_path).name
     fallback_id = Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):
@@ -2297,6 +2323,16 @@ def _sqlite_payload_path(
 
 
 def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
+    # polylogue-9ykn: see ``_parse_one``'s comment -- the same positive-
+    # conversational-evidence gate applies to the streaming replay path.
+    return require_positive_conversational_evidence(
+        _parse_stream_raw(provider, payload, source_path),
+        provider=provider,
+        source_path=source_path,
+    )
+
+
+def _parse_stream_raw(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
     if _is_declared_non_session_artifact(provider, source_path):
         return []
     source_name = Path(source_path).name
