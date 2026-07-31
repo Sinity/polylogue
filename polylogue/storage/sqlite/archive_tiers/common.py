@@ -6,12 +6,36 @@ from polylogue.core.enums import (
     PolylogueStrEnum,
     nullable_sql_check_in,
     sql_check_in,
+    sql_string_literal,
 )
 
 
 def check(column: str, enum_type: type[PolylogueStrEnum]) -> str:
     """Return a non-null enum CHECK expression."""
     return sql_check_in(column, enum_type)
+
+
+def literal_check(column: str, *values: str) -> str:
+    """Return a non-null ``column IN (...)`` expression for explicit literals.
+
+    Mirrors :func:`check`, but for closed vocabularies expressed as
+    ``typing.Literal`` aliases rather than ``PolylogueStrEnum`` types. Callers
+    expand the alias with ``typing.get_args`` at the call site so this helper
+    stays free of an ``insights`` import inside the storage substrate.
+
+    Restored: PR #3458 deleted this as an "uncalled generator", but
+    ``archive_tiers/index.py``'s ``delegation_facts`` DDL calls it twice
+    (``mapping_state``, ``result_status`` CHECK clauses) -- the deletion
+    broke the import chain for the whole ``archive_tiers`` package (and
+    therefore ``ArchiveStore``, the CLI, and every test) on ``master`` as of
+    5798b3dd1. The "zero call sites" audit was simply wrong; both call
+    sites are plain ``literal_check(...)`` calls, not aliased or generated.
+    Re-verify with a real grep before deleting again.
+    """
+    if not values:
+        raise ValueError("literal_check requires at least one value")
+    rendered = ", ".join(sql_string_literal(value) for value in values)
+    return f"{column} IN ({rendered})"
 
 
 def nullable_check(column: str, enum_type: type[PolylogueStrEnum]) -> str:
@@ -89,6 +113,7 @@ __all__ = [
     "json_array_check",
     "json_check",
     "json_object_check",
+    "literal_check",
     "nullable_check",
     "order_check",
 ]
