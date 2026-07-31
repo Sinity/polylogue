@@ -2,7 +2,7 @@
 
 Implements polylogue-2yax: reads bd ready (or a supplied JSON export), extracts
 file/package/resource footprints from each bead's design+notes+ac text, builds
-an overlap and dependency graph, and emits:
+a weighted overlap graph, and emits:
 
   - FRONTIER-READY   -- horizon:frontier, no blocking deps -> claim now
   - BLOCKED          -- has unmet hard dependencies
@@ -13,6 +13,40 @@ For frontier-ready beads it computes:
   - OVERLAPPING clusters  -> one branch/PR sweep (share context, single rewrite pass)
   - DISJOINT sets         -> safe to run as parallel lanes / separate worktrees
   - CONTENTION points     -> same migration tier/slot, same generated surface, same DB
+
+Clustering algorithm (polylogue-1ebm follow-up, fixing the degeneracy
+measured on the 2026-07-30 live backlog): the original clustering used
+unweighted connected-components over "any shared footprint token" --
+a small number of hub files/packages (e.g. docs/internals.md,
+polylogue/config.py) appear in 7-8 beads each, and any-shared-token
+transitivity chains those beads into one mega-cluster (measured: 165 beads
+in a single cluster, 93 true singletons). Hub tokens carry almost no
+information about whether two beads should share a branch.
+
+The fix is TF-IDF-flavored edge weighting instead of unweighted adjacency:
+
+  1. Compute document frequency ``df[token]`` for every overlap token
+     (exact file path or specific sub-package dir) across the population
+     of beads being clustered.
+  2. Pairwise edge weight between two beads = sum over their SHARED tokens
+     of ``log2(N / df[token])`` (rare, shared tokens score high; hub tokens
+     shared by many beads score near zero) plus ``0.5`` per shared
+     ``area:`` label.
+  3. Keep only edges with weight >= ``--min-similarity`` (default 3.0 --
+     roughly "one token shared by only ~1/8 of the population").
+  4. Sort edges by weight descending; greedy union-find merge, REFUSING
+     any merge that would grow a cluster past ``--max-cluster-size``
+     (default 6) -- this caps how far one strong edge can drag in
+     unrelated beads through transitive chaining.
+
+Measured on the live backlog (2026-07-30, 615-bead frontier), this produces
+40 multi-bead clusters covering 156 beads and 457 singletons -- coherent
+themes (a claude-ai-export parser-fidelity cluster, a CLI read/render-
+vocabulary cluster, a repair.py shipped-but-dead cluster) instead of one
+blob. The plain any-overlap graph (``_build_overlap_graph`` /
+``_connected_components``) is kept as a general-purpose utility (also used
+by ``devtools workspace lane-brief`` and other footprint tooling) but is no
+longer used to shape the FRONTIER-READY cluster output.
 
 Usage:
     # From repo root, using live bd output:
@@ -30,6 +64,9 @@ Usage:
     # Filter to a priority ceiling:
     devtools workspace bead-cluster --max-priority 1
 
+    # Tune the weighted-clustering thresholds:
+    devtools workspace bead-cluster --min-similarity 2.5 --max-cluster-size 8
+
     # Replay-validate against the 2026-07-13 migration-slot collision:
     devtools workspace bead-cluster --validate-roster
 
@@ -43,13 +80,15 @@ History: originally shipped 2026-07-16 as .agent/tools/bead-cluster.py
 invisible to `devtools --help` / `render devtools-reference` / the repo's
 catalog-completeness checks. PR #3188 (2026-07-20) classified the unregistered
 file as dead code ("no live references") and deleted it. polylogue-1ebm
-recovers it here, registered, so the analysis is discoverable again.
+recovers it here, registered, so the analysis is discoverable again. The
+mega-cluster degeneracy above was measured and fixed the same week.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
@@ -313,6 +352,160 @@ def _find_contention(beads: list[BeadDict], footprints: dict[str, Footprint]) ->
 
 
 # ---------------------------------------------------------------------------
+# Weighted clustering (fixes the any-overlap mega-cluster degeneracy)
+# ---------------------------------------------------------------------------
+
+DEFAULT_MIN_SIMILARITY = 3.0
+DEFAULT_MAX_CLUSTER_SIZE = 6
+
+
+def _document_frequencies(beads: list[BeadDict], footprints: dict[str, Footprint]) -> dict[str, int]:
+    """Count, over ``beads``, how many beads carry each overlap token."""
+    df: dict[str, int] = defaultdict(int)
+    for b in beads:
+        for key in footprints[b["id"]].overlap_keys():
+            df[key] += 1
+    return df
+
+
+def _pair_weight(
+    a_fp: Footprint,
+    b_fp: Footprint,
+    df: dict[str, int],
+    n_docs: int,
+) -> tuple[float, list[str]]:
+    """TF-IDF-flavored similarity between two beads' footprints.
+
+    Shared tokens that are rare across the population (low df) score high;
+    shared hub tokens (high df, e.g. a file touched by 8 beads) score near
+    zero -- this is what stops hub files from collapsing the whole frontier
+    into one component. Shared ``area:`` labels add a small flat bonus since
+    they are coarse-grained but still a real signal of thematic overlap.
+    """
+    shared = sorted(a_fp.overlap_keys() & b_fp.overlap_keys())
+    score = 0.0
+    for key in shared:
+        d = df.get(key, 1)
+        if d <= 0 or d >= n_docs:
+            continue
+        score += math.log2(n_docs / d)
+    shared_areas = set(a_fp.areas) & set(b_fp.areas)
+    score += 0.5 * len(shared_areas)
+    return score, shared
+
+
+class _UnionFind:
+    """Union-find with a live per-root size, so merges can be capped."""
+
+    def __init__(self, ids: list[str]) -> None:
+        self.parent: dict[str, str] = {i: i for i in ids}
+        self.size: dict[str, int] = dict.fromkeys(ids, 1)
+
+    def find(self, x: str) -> str:
+        root = x
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while self.parent[x] != root:
+            self.parent[x], x = root, self.parent[x]
+        return root
+
+    def union(self, a: str, b: str) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        # Attach the smaller root under the larger for shallower trees.
+        if self.size[ra] < self.size[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.size[ra] += self.size[rb]
+
+
+@dataclass
+class WeightedCluster:
+    beads: set[str] = field(default_factory=set)
+    score: float = 0.0
+    shared_files: list[str] = field(default_factory=list)
+
+
+def _weighted_clusters(
+    beads: list[BeadDict],
+    footprints: dict[str, Footprint],
+    *,
+    min_similarity: float = DEFAULT_MIN_SIMILARITY,
+    max_cluster_size: int = DEFAULT_MAX_CLUSTER_SIZE,
+) -> list[WeightedCluster]:
+    """Greedy weight-descending union-find clustering with a size cap.
+
+    Builds every pairwise edge with weight >= ``min_similarity``, sorts by
+    weight descending, and merges greedily -- refusing a merge that would
+    push the resulting cluster past ``max_cluster_size``. This bounds how
+    far a single strong edge can transitively drag in unrelated beads,
+    which is the exact failure mode of unweighted connected-components.
+    """
+    ids = [b["id"] for b in beads]
+    n_docs = len(ids)
+    if n_docs == 0:
+        return []
+
+    df = _document_frequencies(beads, footprints)
+
+    edges: list[tuple[float, str, str, list[str]]] = []
+    for i, a in enumerate(ids):
+        for b in ids[i + 1 :]:
+            weight, shared = _pair_weight(footprints[a], footprints[b], df, n_docs)
+            if weight >= min_similarity:
+                edges.append((weight, a, b, shared))
+    edges.sort(key=lambda e: e[0], reverse=True)
+
+    uf = _UnionFind(ids)
+    # Per-root accumulated score and shared-file evidence, used to render
+    # the merged cluster's headline stats.
+    root_score: dict[str, float] = defaultdict(float)
+    root_shared_files: dict[str, set[str]] = defaultdict(set)
+
+    for weight, a, b, shared in edges:
+        ra, rb = uf.find(a), uf.find(b)
+        if ra == rb:
+            continue
+        if uf.size[ra] + uf.size[rb] > max_cluster_size:
+            continue
+        uf.union(a, b)
+        new_root = uf.find(a)
+        old_root = rb if new_root == ra else ra
+        root_score[new_root] = max(root_score[new_root], root_score.get(old_root, 0.0), weight)
+        merged_files = {tok for tok in shared if tok in footprints[a].files or tok in footprints[b].files}
+        root_shared_files[new_root] = (
+            root_shared_files.get(old_root, set()) | root_shared_files.get(new_root, set()) | merged_files
+        )
+
+    groups: dict[str, set[str]] = defaultdict(set)
+    for bead_id in ids:
+        groups[uf.find(bead_id)].add(bead_id)
+
+    clusters: list[WeightedCluster] = []
+    for root, members in groups.items():
+        if len(members) > 1:
+            # Files appearing in more than one member of THIS cluster,
+            # regardless of whether they happened to be on the winning
+            # merge edge -- gives a fuller "what do these beads share" view.
+            file_counts: dict[str, int] = defaultdict(int)
+            for bead_id in members:
+                for f in footprints[bead_id].files:
+                    file_counts[f] += 1
+            shared_files = sorted(f for f, count in file_counts.items() if count > 1)
+        else:
+            shared_files = []
+        clusters.append(
+            WeightedCluster(
+                beads=members,
+                score=round(root_score.get(root, 0.0), 3),
+                shared_files=shared_files,
+            )
+        )
+    return clusters
+
+
+# ---------------------------------------------------------------------------
 # Output rendering
 # ---------------------------------------------------------------------------
 
@@ -324,7 +517,7 @@ def _short(s: str, n: int = 70) -> str:
 def _render_human(
     all_beads: list[BeadDict],
     footprints: dict[str, Footprint],
-    frontier_clusters: list[set[str]],
+    frontier_clusters: list[WeightedCluster],
     contention: list[dict[str, Any]],
     design_horizon: list[BeadDict],
     blocked: list[BeadDict],
@@ -344,15 +537,28 @@ def _render_human(
             print(f"  {b['id']:25s} P{b['priority']}  {_short(b['title'])}")
         print()
 
+    multi = sum(1 for c in frontier_clusters if len(c.beads) > 1)
+    solo = len(frontier_clusters) - multi
     # Frontier clusters
-    print(f"-- FRONTIER-READY CLUSTERS ({len(frontier_clusters)} clusters) ------------------------")
+    print(
+        f"-- FRONTIER-READY CLUSTERS ({len(frontier_clusters)} clusters: "
+        f"{multi} multi-bead, {solo} singleton) ------------------------"
+    )
     for i, cluster in enumerate(
-        sorted(frontier_clusters, key=lambda c: min(id_to_bead[bid].get("priority", 4) for bid in c))
+        sorted(
+            frontier_clusters,
+            key=lambda c: min(id_to_bead[bid].get("priority", 4) for bid in c.beads),
+        )
     ):
-        members = sorted(cluster, key=lambda bid: id_to_bead[bid].get("priority", 4))
+        members = sorted(cluster.beads, key=lambda bid: id_to_bead[bid].get("priority", 4))
         min_p = id_to_bead[members[0]].get("priority", 4)
-        shape = "SWEEP (overlapping)" if len(cluster) > 1 else "SOLO"
-        print(f"\n  Cluster {i + 1}  [{shape}]  min-P{min_p}")
+        shape = "SWEEP (overlapping)" if len(cluster.beads) > 1 else "SOLO"
+        print(f"\n  Cluster {i + 1}  [{shape}]  min-P{min_p}  score={cluster.score}")
+        if cluster.shared_files:
+            top_shared = ", ".join(cluster.shared_files[:6])
+            if len(cluster.shared_files) > 6:
+                top_shared += f" +{len(cluster.shared_files) - 6}"
+            print(f"    shared files: {top_shared}")
         for bid in members:
             b = id_to_bead[bid]
             fp = footprints[bid]
@@ -368,7 +574,7 @@ def _render_human(
             if fp.generated_surfaces:
                 print(f"      generated surfaces: {', '.join(fp.generated_surfaces)}")
         # Parallel hint
-        if len(cluster) > 1:
+        if len(cluster.beads) > 1:
             print("    -> Execute as one branch/PR sweep (shared file footprint)")
     print()
 
@@ -400,8 +606,8 @@ def _render_human(
         print()
 
     # Disjoint parallel-safe set across all clusters
-    solo_clusters = [c for c in frontier_clusters if len(c) == 1]
-    disjoint_frontier = [next(iter(c)) for c in solo_clusters]
+    solo_clusters = [c for c in frontier_clusters if len(c.beads) == 1]
+    disjoint_frontier = [next(iter(c.beads)) for c in solo_clusters]
     if len(disjoint_frontier) > 1:
         print(f"-- SAFE PARALLEL LANES ({len(disjoint_frontier)} solo beads, disjoint footprints) --")
         for bid in sorted(disjoint_frontier, key=lambda b: id_to_bead[b].get("priority", 4)):
@@ -415,7 +621,7 @@ def _render_human(
 def _render_json(
     all_beads: list[BeadDict],
     footprints: dict[str, Footprint],
-    frontier_clusters: list[set[str]],
+    frontier_clusters: list[WeightedCluster],
     contention: list[dict[str, Any]],
     design_horizon: list[BeadDict],
     blocked: list[BeadDict],
@@ -424,13 +630,15 @@ def _render_json(
     id_to_bead = {b["id"]: b for b in all_beads}
 
     clusters_out: list[dict[str, Any]] = []
-    for cluster in sorted(frontier_clusters, key=lambda c: min(id_to_bead[bid].get("priority", 4) for bid in c)):
-        members = sorted(cluster, key=lambda bid: id_to_bead[bid].get("priority", 4))
-        shape = "sweep" if len(cluster) > 1 else "solo"
+    for cluster in sorted(frontier_clusters, key=lambda c: min(id_to_bead[bid].get("priority", 4) for bid in c.beads)):
+        members = sorted(cluster.beads, key=lambda bid: id_to_bead[bid].get("priority", 4))
+        shape = "sweep" if len(cluster.beads) > 1 else "solo"
         clusters_out.append(
             {
                 "shape": shape,
                 "min_priority": min(id_to_bead[bid].get("priority", 4) for bid in members),
+                "score": cluster.score,
+                "shared_files": cluster.shared_files,
                 "beads": [
                     {
                         "id": bid,
@@ -556,6 +764,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--validate-roster", action="store_true", help="Replay-validate 2026-07-13 collision prediction"
     )
+    parser.add_argument(
+        "--min-similarity",
+        type=float,
+        default=DEFAULT_MIN_SIMILARITY,
+        metavar="F",
+        help=(
+            "Minimum TF-IDF-flavored pairwise edge weight to merge two beads into "
+            f"the same cluster (default: {DEFAULT_MIN_SIMILARITY})"
+        ),
+    )
+    parser.add_argument(
+        "--max-cluster-size",
+        type=int,
+        default=DEFAULT_MAX_CLUSTER_SIZE,
+        metavar="N",
+        help=f"Refuse a merge that would grow a cluster past this size (default: {DEFAULT_MAX_CLUSTER_SIZE})",
+    )
     args = parser.parse_args(argv)
 
     all_beads = _load_beads(args)
@@ -573,9 +798,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     in_progress = [b for b in all_beads if _classify(b) == "IN-PROGRESS"]
     design_horizon = [b for b in all_beads if _classify(b) == "DESIGN-HORIZON"]
 
-    # Overlap graph over frontier-ready beads only
-    adj = _build_overlap_graph(frontier_beads, footprints)
-    frontier_clusters = _connected_components([b["id"] for b in frontier_beads], adj)
+    # Weighted overlap clustering over frontier-ready beads only. See the
+    # module docstring for why this replaced unweighted connected-components.
+    frontier_clusters = _weighted_clusters(
+        frontier_beads,
+        footprints,
+        min_similarity=args.min_similarity,
+        max_cluster_size=args.max_cluster_size,
+    )
 
     # Contention (migration slots / generated surfaces) across ALL frontier beads
     contention = _find_contention(frontier_beads, footprints)

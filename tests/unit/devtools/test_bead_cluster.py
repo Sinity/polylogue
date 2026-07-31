@@ -275,24 +275,38 @@ def test_load_beads_exits_nonzero_on_bd_failure(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_main_json_output_clusters_overlapping_beads(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    # a and b share two exact file paths (df=2 among the 4-bead frontier
+    # population below), which is exactly enough weighted similarity
+    # (3 shared tokens * log2(4/2) == 3.0) to clear the default
+    # --min-similarity threshold and merge into one cluster. c and d are
+    # each in their own disjoint package with no shared tokens, so they
+    # stay singletons -- this is the mega-cluster-degeneracy regression
+    # check: a hub-token-style any-overlap graph would have mattered here,
+    # weighted clustering should not over-merge disjoint beads.
     beads = [
         _bead(
             "polylogue-a",
             priority=1,
             labels=["horizon:frontier"],
-            design="Touch polylogue/mcp/server.py.",
+            design="Touch polylogue/mcp/server.py and polylogue/mcp/dispatch.py.",
         ),
         _bead(
             "polylogue-b",
             priority=2,
             labels=["horizon:frontier"],
-            design="Touch polylogue/mcp/dispatch.py.",
+            design="Touch polylogue/mcp/server.py and polylogue/mcp/dispatch.py.",
         ),
         _bead(
             "polylogue-c",
             priority=1,
             labels=["horizon:frontier"],
             design="Touch polylogue/cli/click_app.py.",
+        ),
+        _bead(
+            "polylogue-d",
+            priority=1,
+            labels=["horizon:frontier"],
+            design="Touch polylogue/daemon/convergence.py.",
         ),
         _bead("polylogue-blocked", priority=1, dependency_count=1, labels=["horizon:frontier"]),
         _bead("polylogue-wip", status="in_progress"),
@@ -308,9 +322,39 @@ def test_main_json_output_clusters_overlapping_beads(tmp_path: Path, capsys: pyt
     cluster_ids = {frozenset(m["id"] for m in c["beads"]) for c in payload["frontier_clusters"]}
     assert frozenset({"polylogue-a", "polylogue-b"}) in cluster_ids
     assert frozenset({"polylogue-c"}) in cluster_ids
+    assert frozenset({"polylogue-d"}) in cluster_ids
+    merged = next(c for c in payload["frontier_clusters"] if len(c["beads"]) == 2)
+    assert merged["shape"] == "sweep"
+    assert merged["score"] >= bead_cluster.DEFAULT_MIN_SIMILARITY
+    assert "polylogue/mcp/server.py" in merged["shared_files"]
+    assert "polylogue/mcp/dispatch.py" in merged["shared_files"]
     assert [b["id"] for b in payload["blocked"]] == ["polylogue-blocked"]
     assert [b["id"] for b in payload["in_progress"]] == ["polylogue-wip"]
     assert payload["design_horizon_count"] == 1
+
+
+def test_weighted_clusters_refuses_merge_past_max_cluster_size() -> None:
+    # Five beads all sharing one exact file (df=5 within their own
+    # 5-bead population -> weight 0, since d>=n_docs is skipped) would
+    # not even form an edge; use a population where the shared token is
+    # rare enough to clear --min-similarity but --max-cluster-size caps
+    # the merge so a 3rd/4th/5th bead cannot be swept in.
+    file_ref = "polylogue/mcp/server.py"
+    shared_beads = [_bead(f"polylogue-{c}", labels=["horizon:frontier"], design=f"Touch {file_ref}.") for c in "abcde"]
+    # Filler beads (disjoint footprints) push df/N_docs down so the shared
+    # token's idf clears the default threshold.
+    filler = [
+        _bead(f"polylogue-f{i}", labels=["horizon:frontier"], design=f"Touch polylogue/core/mod{i}.py.")
+        for i in range(6)
+    ]
+    beads = shared_beads + filler
+    footprints = {b["id"]: bead_cluster._extract_footprint(b) for b in beads}
+    clusters = bead_cluster._weighted_clusters(beads, footprints, max_cluster_size=3)
+    sizes = sorted(len(c.beads) for c in clusters)
+    assert max(sizes) <= 3
+    # All five file_ref beads must still show up somewhere (no bead dropped).
+    covered = {bid for c in clusters for bid in c.beads}
+    assert {b["id"] for b in shared_beads} <= covered
 
 
 def test_main_human_output_renders_sections(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
