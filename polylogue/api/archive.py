@@ -129,7 +129,7 @@ if TYPE_CHECKING:
         ArchiveAssertionEnvelope,
     )
     from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
-    from polylogue.storage.usage import ProviderUsageReport
+    from polylogue.storage.usage import ProviderUsageReport, SessionUsageReconciliation
     from polylogue.surfaces.payloads import (
         ArchiveDebtListPayload,
         AssertionBulkJudgmentPayload,
@@ -4980,6 +4980,27 @@ class PolylogueArchiveMixin:
             page_size=limit,
             projection="provider-usage",
             workload_class="scan",
+        )
+
+    async def session_usage_reconciliation(self, session_id: str) -> SessionUsageReconciliation:
+        """Return the fast, session-scoped usage/cost reconciliation for one session.
+
+        Reads only ``session_id``-indexed rows (``session_model_usage``,
+        ``session_profiles`` PK lookup) instead of the archive-wide
+        ``provider_usage_report`` audit, so it stays cheap regardless of
+        archive size (polylogue-zumd).
+        """
+        from polylogue.storage.usage import session_usage_reconciliation_for_connection
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_usage_reconciliation",
+            arguments={"session_id": session_id},
+            work=lambda archive: session_usage_reconciliation_for_connection(
+                archive._conn,
+                session_id=session_id,
+            ),
+            projection="session-usage-reconciliation",
         )
 
     async def stats(self) -> ArchiveStats:

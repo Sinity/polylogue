@@ -2531,6 +2531,67 @@ def build_session_usage_reconciliation(
     )
 
 
+def session_usage_reconciliation_for_connection(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    observed_at: str | None = None,
+) -> SessionUsageReconciliation:
+    """Reconcile one session's usage/cost from indexed, session-scoped reads.
+
+    Unlike ``provider_usage_report_from_connection`` (an archive-wide audit
+    that groups every session by origin), this reads exactly the rows for
+    ``session_id``: ``session_model_usage`` via an indexed ``session_id IN
+    (...)`` lookup and the ``session_profiles`` row by primary key. It is the
+    fast single-session counterpart the CLI ``analyze usage`` verb needs
+    (polylogue-zumd class); the archive-wide audit report is unaffected.
+    """
+
+    from polylogue.storage.sqlite.queries.model_usage import sync_model_usage_batch
+
+    conn.row_factory = sqlite3.Row
+    report_observed_at = observed_at or datetime.now(UTC).isoformat()
+    model_usage_rows = sync_model_usage_batch(conn, [session_id]).get(session_id, [])
+
+    profile_total_input_tokens = 0
+    profile_total_output_tokens = 0
+    profile_total_cache_read_tokens = 0
+    profile_total_cache_write_tokens = 0
+    profile_cost_usd = 0.0
+    profile_cost_provenance = "unknown"
+    if _table_exists(conn, "session_profiles"):
+        profile_row = conn.execute(
+            "SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, "
+            "total_cache_write_tokens, total_cost_usd, cost_provenance "
+            "FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if profile_row is not None:
+            profile_total_input_tokens = _int(profile_row["total_input_tokens"])
+            profile_total_output_tokens = _int(profile_row["total_output_tokens"])
+            profile_total_cache_read_tokens = _int(profile_row["total_cache_read_tokens"])
+            profile_total_cache_write_tokens = _int(profile_row["total_cache_write_tokens"])
+            profile_cost_usd = float(profile_row["total_cost_usd"] or 0.0)
+            profile_cost_provenance = str(profile_row["cost_provenance"] or "unknown")
+
+    reconciled_model: str | None = None
+    if model_usage_rows:
+        reconciled_model = max(model_usage_rows, key=lambda row: row.output_tokens).model_name
+
+    return build_session_usage_reconciliation(
+        session_id,
+        observed_at=report_observed_at,
+        model_usage_rows=model_usage_rows,
+        profile_total_input_tokens=profile_total_input_tokens,
+        profile_total_output_tokens=profile_total_output_tokens,
+        profile_total_cache_read_tokens=profile_total_cache_read_tokens,
+        profile_total_cache_write_tokens=profile_total_cache_write_tokens,
+        profile_cost_usd=profile_cost_usd,
+        profile_cost_provenance=profile_cost_provenance,
+        reconciled_model=reconciled_model,
+    )
+
+
 __all__ = [
     "OriginUsageReport",
     "ProviderUsageCoverage",
@@ -2543,4 +2604,5 @@ __all__ = [
     "provider_usage_coverage_matrix",
     "provider_usage_report_for_archive_root",
     "provider_usage_report_from_connection",
+    "session_usage_reconciliation_for_connection",
 ]

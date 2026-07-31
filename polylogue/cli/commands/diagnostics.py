@@ -107,8 +107,23 @@ def pace_command(
     limit: int,
     threshold: int,
 ) -> None:
-    """Show inter-turn gap analysis for one or more sessions."""
+    """Show inter-turn gap analysis for one or more sessions.
+
+    A root filter such as ``--id`` or ``--latest`` scopes this to the
+    matched session even without a positional session id — previously the
+    root filter was silently ignored and this fell back to scanning the
+    most recently active sessions archive-wide (analyze-perf).
+    """
+    from polylogue.cli.shared.insight_command_contracts import find_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
+
     env: AppEnv = ctx.obj
+    if session_id is None and ctx.parent is not None:
+        # Only consult the root query context when one actually exists --
+        # a direct/standalone invocation (e.g. under test) has no parent,
+        # and falling back to this command's OWN params would risk reading
+        # a same-named local option as if it were the root filter.
+        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)))
     run_coroutine_sync(_pace(env, session_id, limit, threshold))
 
 
@@ -224,6 +239,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
 
 
 @click.command("usage")
+@click.argument("session_id", required=False)
 @click.option("--origin", help="Filter to one archive origin, such as codex-session or claude-code-session.")
 @click.option(
     "--limit",
@@ -258,6 +274,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
 @click.pass_context
 def usage_command(
     ctx: click.Context,
+    session_id: str | None,
     origin: str | None,
     sample_limit: int,
     detail: str,
@@ -269,15 +286,67 @@ def usage_command(
     model rollups are printed as separate evidence streams so cached tokens,
     reasoning tokens, zero-token events, missing models, multi-model sessions,
     source acquisition debt, and stale rollups stay visible.
+
+    A positional session id, or a root filter such as ``--id``/``--latest``,
+    scopes this to one session's reconciled usage/cost instead of the
+    archive-wide audit — the archive-wide form scans every session by origin
+    and is not bounded by archive size, so it can exceed the interactive
+    read deadline on a large archive (polylogue-zumd).
     """
     import json
 
+    from polylogue.cli.shared.insight_command_contracts import find_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
+
     env: AppEnv = ctx.obj
+    if session_id is None and ctx.parent is not None:
+        # Only consult the root query context when one actually exists --
+        # a direct/standalone invocation has no parent, and this command's
+        # own `--origin` audit filter must never be misread as the root
+        # query `--origin` session-narrowing filter.
+        session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx)))
+    if session_id is not None:
+        reconciliation = run_coroutine_sync(env.polylogue.session_usage_reconciliation(session_id))
+        if output_format == "json":
+            click.echo(json.dumps(reconciliation.to_dict(), indent=2))
+            return
+        _render_session_usage_reconciliation(env, reconciliation)
+        return
+
     report = run_coroutine_sync(env.polylogue.provider_usage_report(origin=origin, limit=sample_limit, detail=detail))
     if output_format == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
         return
     _render_usage_report(env, report)
+
+
+def _render_session_usage_reconciliation(env: AppEnv, reconciliation: object) -> None:
+    session_id = getattr(reconciliation, "session_id", "")
+    env.ui.console.print(f"[bold]Session usage reconciliation[/bold] ({session_id})")
+    tokens = getattr(reconciliation, "reconciled_tokens_evidence", None)
+    cost = getattr(reconciliation, "reconciled_cost_evidence", None)
+    env.ui.console.print(f"  reconciled tokens: {_evidence_value_line(tokens)}")
+    env.ui.console.print(f"  reconciled cost:   {_evidence_value_line(cost)}")
+    model_usage_evidence = getattr(reconciliation, "model_usage_tokens_evidence", None)
+    profile_evidence = getattr(reconciliation, "profile_tokens_evidence", None)
+    env.ui.console.print(f"  source: session_model_usage tokens: {_evidence_value_line(model_usage_evidence)}")
+    env.ui.console.print(f"  source: session_profiles tokens:    {_evidence_value_line(profile_evidence)}")
+
+
+def _evidence_value_line(evidence: object) -> str:
+    if evidence is None:
+        return "n/a"
+    value_state = getattr(evidence, "value_state", "unknown")
+    value = getattr(evidence, "value", None)
+    authorities = tuple(getattr(evidence, "measurement_authority", ()) or ())
+    if value_state != "known":
+        return f"{value_state}"
+    # Parentheses, not square brackets: this string is printed through Rich's
+    # console markup interpreter, which silently swallows unrecognized
+    # "[...]" spans as invalid style tags instead of raising or printing them
+    # literally -- square brackets here previously rendered as nothing.
+    authority_str = f" ({'/'.join(authorities)})" if authorities else ""
+    return f"{value}{authority_str}"
 
 
 def _render_usage_report(env: AppEnv, report: object) -> None:
@@ -493,8 +562,18 @@ def tools_command(
     limit: int,
     output_format: str,
 ) -> None:
-    """Show tool usage rollups from archive projections."""
+    """Show tool usage rollups from archive projections.
+
+    A root filter such as ``--id`` or ``--latest`` scopes rollups to the
+    matched session — previously the root filter was silently ignored and
+    every call unconditionally joined/materialized the whole archive
+    (polylogue-zumd).
+    """
+    from polylogue.cli.shared.insight_command_contracts import find_root_params
+    from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
+
     env: AppEnv = ctx.obj
+    session_id = resolve_session_id_from_root_params(dict(find_root_params(ctx))) if ctx.parent is not None else None
     run_coroutine_sync(
         _tools(
             env,
@@ -508,6 +587,7 @@ def tools_command(
             limit,
             output_format,
             compare_family=compare_family,
+            session_id=session_id,
         )
     )
 
@@ -524,6 +604,7 @@ async def _tools(
     limit: int,
     output_format: str = "text",
     compare_family: str | None = None,
+    session_id: str | None = None,
 ) -> None:
     from typing import cast
 
@@ -584,6 +665,7 @@ async def _tools(
                 tool=payload_tool,
                 mcp_server=payload_mcp_server,
                 action_kind=action_kind,
+                session_id=session_id,
                 detail_patterns=payload_detail_patterns,
                 days=days,
                 basis=payload_basis,
@@ -597,6 +679,7 @@ async def _tools(
         tool=tool,
         mcp_server=mcp_server,
         action_kind=action_kind,
+        session_id=session_id,
         since_ms=since_ms,
         limit=limit,
     )
@@ -610,12 +693,14 @@ async def _tools(
             origin=origin,
             mcp_server=mcp_family,
             action_kind=action_kind,
+            session_id=session_id,
             since_ms=since_ms,
             limit=limit,
         )
         action_query = ToolUsageInsightQuery(
             origin=origin,
             action_kind=action_kind,
+            session_id=session_id,
             since_ms=since_ms,
             limit=limit,
         )
@@ -626,6 +711,7 @@ async def _tools(
                 "origin": origin,
                 "family": family,
                 "action_kind": action_kind,
+                "session_id": session_id,
                 "since_ms": since_ms,
                 "limit": limit,
             },
