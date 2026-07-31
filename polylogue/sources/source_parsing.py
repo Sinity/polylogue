@@ -10,6 +10,7 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.json import loads
 from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
@@ -33,50 +34,158 @@ _decoders.logger = logger
 
 def iter_antigravity_language_server_sessions(
     source: Source,
-) -> Iterable[tuple[None, ParsedSession]]:
+    *,
+    capture_raw: bool = False,
+    blob_root: Path | None = None,
+    blob_store: BlobStore | None = None,
+) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Yield Antigravity language-server export sessions for a source.
 
-    No-op unless the source is Antigravity and exposes a ``sessions/``
-    directory. Kept sequential (it drives a local HTTP loopback subprocess) and
-    shared between the sequential iterator and the parallel ingest driver so the
+    Primary acquisition route for the real ``.pb`` conversation trajectories
+    under ``conversations/`` (polylogue-eo81): each is converted via the
+    local Antigravity language server's ``ConvertTrajectoryToMarkdown`` RPC,
+    which understands the protobuf wire format so this code never has to.
+    Kept sequential (it drives a local HTTP loopback subprocess) and shared
+    between the sequential iterator and the parallel ingest driver so the
     file-walk parallelization never touches this path.
+
+    When ``capture_raw`` is set, the underlying ``.pb`` bytes are also
+    snapshotted into the blob store per exported session (mirrors
+    ``hermes_state``'s sqlite snapshot pattern above), so ``source.db`` holds
+    real acquired bytes with a stable content hash for idempotent re-ingest,
+    not just an ephemeral export that re-runs unconditionally every pass.
+
+    Falls back to walking ``brain/**/*.md.metadata.json`` directly
+    (``_iter_antigravity_brain_metadata_fallback``) only when there is
+    nothing to export via the language server: no ``conversations/``
+    directory, no language server binary, or a connection failure before any
+    session was obtained. A mid-export *abort* (some sessions obtained, the
+    rest lost) is deliberately NOT fallback-eligible — that is real data
+    loss and must surface loudly rather than being silently backfilled with
+    degraded per-artifact fragments.
     """
     if not source.path:
         return
     provider_hint = Provider.from_string(source.name)
-    if provider_hint is not Provider.ANTIGRAVITY or not (source.path / "sessions").is_dir():
+    if provider_hint is not Provider.ANTIGRAVITY:
         return
-    try:
-        for session in antigravity.iter_language_server_exports(source.path):
-            yield (None, session)
-    except antigravity.AntigravityBinaryUnavailableError as exc:
-        # Benign: Antigravity is simply not installed. Fall back to the
-        # brain-artifact walk at INFO — this is not data loss.
-        logger.info(
-            "Antigravity language server unavailable for %s; using parseable artifacts: %s",
-            source.path,
-            exc,
-        )
-    except antigravity.AntigravityPartialExportError as exc:
-        # Mid-export failure: some sessions were obtained before the
-        # abort and the remainder is dropped. Surface obtained-vs-expected
-        # loudly instead of conflating it with a benign fallback.
-        logger.error(
-            "Antigravity language-server export of %s truncated mid-iteration: "
-            "obtained %d of %d sessions; %d lost before fallback: %s",
-            source.path,
-            exc.obtained,
-            exc.expected,
-            max(exc.expected - exc.obtained, 0),
-            exc,
-        )
-    except antigravity.AntigravityExportError as exc:
-        # Connection/protocol failure before any session was obtained.
-        logger.warning(
-            "Antigravity language-server export failed for %s; falling back to parseable artifacts: %s",
-            source.path,
-            exc,
-        )
+
+    conversations_dir = source.path / "conversations"
+    exported_any = False
+    should_fallback = not conversations_dir.is_dir()
+
+    if conversations_dir.is_dir():
+        try:
+            for session in antigravity.iter_language_server_exports(source.path):
+                exported_any = True
+                raw_data = _antigravity_raw_snapshot(
+                    source.path,
+                    session,
+                    capture_raw=capture_raw,
+                    blob_root=blob_root,
+                    blob_store=blob_store,
+                )
+                yield (raw_data, session)
+        except antigravity.AntigravityBinaryUnavailableError as exc:
+            # Benign: Antigravity is simply not installed. Fall back to the
+            # brain-artifact walk at INFO — this is not data loss.
+            logger.info(
+                "Antigravity language server unavailable for %s; using brain-metadata fallback: %s",
+                source.path,
+                exc,
+            )
+            should_fallback = True
+        except antigravity.AntigravityPartialExportError as exc:
+            # Mid-export failure: some sessions were obtained before the
+            # abort and the remainder is dropped. Surface obtained-vs-expected
+            # loudly instead of conflating it with a benign fallback.
+            logger.error(
+                "Antigravity language-server export of %s truncated mid-iteration: "
+                "obtained %d of %d sessions; %d lost — NOT backfilling with the "
+                "degraded metadata fallback: %s",
+                source.path,
+                exc.obtained,
+                exc.expected,
+                max(exc.expected - exc.obtained, 0),
+                exc,
+            )
+        except antigravity.AntigravityExportError as exc:
+            # Connection/protocol failure before any session was obtained.
+            logger.warning(
+                "Antigravity language-server export failed for %s; using brain-metadata fallback: %s",
+                source.path,
+                exc,
+            )
+            should_fallback = True
+
+    if not exported_any and should_fallback:
+        yield from _iter_antigravity_brain_metadata_fallback(source.path)
+
+
+def _antigravity_raw_snapshot(
+    root: Path,
+    session: ParsedSession,
+    *,
+    capture_raw: bool,
+    blob_root: Path | None,
+    blob_store: BlobStore | None,
+) -> RawSessionData | None:
+    """Snapshot the raw ``.pb`` bytes backing an exported session, if requested."""
+    if not capture_raw:
+        return None
+    pb_path = root / "conversations" / f"{session.provider_session_id}.pb"
+    if not pb_path.is_file():
+        return None
+    resolved_blob_root = blob_root
+    if resolved_blob_root is None:
+        from polylogue.paths import blob_store_root
+
+        resolved_blob_root = blob_store_root()
+    resolved_store = blob_store or BlobStore(resolved_blob_root)
+    blob_hash, blob_size = resolved_store.write_from_path(pb_path)
+    from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
+
+    receipt_id = publication_receipt_id(resolved_store, blob_hash)
+    flush_blob_publications(resolved_store)
+    return RawSessionData(
+        raw_bytes=b"",
+        source_path=str(pb_path),
+        source_index=None,
+        file_mtime=_cursor._get_file_mtime(pb_path),
+        provider_hint=Provider.ANTIGRAVITY,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+        blob_publication_receipt_id=receipt_id,
+    )
+
+
+def _iter_antigravity_brain_metadata_fallback(root: Path) -> Iterable[tuple[None, ParsedSession]]:
+    """Degraded fallback: parse per-artifact brain metadata directly.
+
+    Only reached when the language-server export route acquired nothing for
+    this source (see ``iter_antigravity_language_server_sessions``). Walks
+    ``brain/**/*.md.metadata.json`` directly rather than going through the
+    generic per-file walk, because that walk now classifies these paths as
+    non-session sidecars (``polylogue-eo81`` — they are noise once the real
+    conversation is available, so they must not be a session by default).
+    Each match still becomes a single-message session tagged
+    ``BRAIN_METADATA_FRAGMENT_FLAG`` so downstream consumers can rank/exclude
+    it, exactly as before this fix (GH #1764).
+    """
+    brain_dir = root / "brain"
+    if not brain_dir.is_dir():
+        return
+    for metadata_path in sorted(brain_dir.glob("*/*.metadata.json")):
+        try:
+            payload = loads(metadata_path.read_bytes())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        json_payload = {str(key): value for key, value in payload.items()}
+        if not antigravity.looks_like_brain_metadata(json_payload, metadata_path):
+            continue
+        yield (None, antigravity.parse_brain_metadata(json_payload, metadata_path, metadata_path.stem))
 
 
 def parse_one_source_path(
@@ -257,7 +366,12 @@ def iter_source_sessions_with_raw(
     if not source.path:
         return
 
-    yield from iter_antigravity_language_server_sessions(source)
+    yield from iter_antigravity_language_server_sessions(
+        source,
+        capture_raw=capture_raw,
+        blob_root=blob_root,
+        blob_store=blob_store,
+    )
 
     walk = _setup_source_walk(
         source,

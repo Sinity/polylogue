@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
+from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
@@ -910,9 +911,18 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
         encoding="utf-8",
     )
 
+    # Per-artifact brain metadata is a path-classified sidecar, never a
+    # primary session by default (polylogue-eo81): the generic walk must not
+    # fragment one file per artifact into noise sessions now that the real
+    # conversation is acquired via the language-server export route.
     classification = classify_artifact(payload, provider=Provider.ANTIGRAVITY, source_path=metadata)
-    assert classification.parse_as_session is True
+    assert classification.parse_as_session is False
+    assert classification.kind is ArtifactKind.AGENT_SIDECAR_META
 
+    # ``parse_brain_metadata`` itself remains usable directly -- it backs the
+    # explicit degraded fallback wired in
+    # ``source_parsing._iter_antigravity_brain_metadata_fallback`` for when
+    # the language server truly cannot be reached.
     [session] = parse_payload(
         Provider.ANTIGRAVITY,
         payload,
@@ -987,7 +997,7 @@ def test_antigravity_source_walk_prefers_language_server_exports(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "sessions").mkdir()
+    (tmp_path / "conversations").mkdir()
     exported = antigravity.parse_markdown_export(
         "### User Input\n\nhello\n\n### Planner Response\n\nhi",
         antigravity.AntigravitySessionSummary(cascade_id="cascade-1", title="Session"),
