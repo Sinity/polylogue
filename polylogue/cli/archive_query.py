@@ -32,6 +32,7 @@ from polylogue.archive.query.expression import (
 )
 from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
+from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
     QuerySpecError,
     SessionQuerySpec,
@@ -2503,26 +2504,19 @@ def _emit_unit_no_results(envelope: dict[str, object], *, unit: str, output_form
     raise SystemExit(2)
 
 
-def _snippet(value: object, *, max_chars: int = 96) -> str:
-    text = " ".join(str(value or "").split())
-    if len(text) <= max_chars:
-        return text
-    return f"{text[: max_chars - 3]}..."
-
-
 def _message_query_line(item: dict[str, object]) -> str:
-    return f"{item['message_id']} [{item['role']}] {_snippet(item.get('text'))}"
+    return f"{item['message_id']} [{item['role']}] {bound_display_text(item.get('text'))}"
 
 
 def _action_query_line(item: dict[str, object]) -> str:
     action = item.get("semantic_type") or item.get("tool_name") or "action"
     detail = item.get("tool_path") or item.get("tool_command") or item.get("output_text") or ""
-    return f"{item['tool_use_block_id']} [{action}] {_snippet(detail)}"
+    return f"{item['tool_use_block_id']} [{action}] {bound_display_text(detail)}"
 
 
 def _block_query_line(item: dict[str, object]) -> str:
     detail = item.get("text") or item.get("tool_path") or item.get("tool_command") or ""
-    return f"{item['block_id']} [{item['block_type']}] {_snippet(detail)}"
+    return f"{item['block_id']} [{item['block_type']}] {bound_display_text(detail)}"
 
 
 def _file_query_line(item: dict[str, object]) -> str:
@@ -2530,12 +2524,12 @@ def _file_query_line(item: dict[str, object]) -> str:
     first_ref = item.get("first_tool_use_block_id") or item.get("first_message_id") or item.get("session_id")
     if first_ref:
         detail = f"{detail} first={first_ref}"
-    return f"{item['path']} [{item['origin']}] {_snippet(detail)}"
+    return f"{item['path']} [{item['origin']}] {bound_display_text(detail)}"
 
 
 def _assertion_query_line(item: dict[str, object]) -> str:
     detail = item.get("body_text") or item.get("key") or item.get("value") or item.get("target_ref") or ""
-    return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {_snippet(detail)}"
+    return f"{item['assertion_id']} [{item['kind']}/{item['status']}] {bound_display_text(detail)}"
 
 
 def _aggregate_query_line(item: dict[str, object]) -> str:
@@ -2547,22 +2541,22 @@ def _aggregate_query_line(item: dict[str, object]) -> str:
 def _run_query_line(item: dict[str, object]) -> str:
     detail_parts = [str(part) for part in (item.get("agent_ref"), item.get("title")) if part]
     detail = " ".join(detail_parts) or item.get("run_ref") or ""
-    return f"{item['run_ref']} [{item['role']}/{item['status']}] {_snippet(detail)}"
+    return f"{item['run_ref']} [{item['role']}/{item['status']}] {bound_display_text(detail)}"
 
 
 def _observed_event_query_line(item: dict[str, object]) -> str:
     detail = item.get("summary") or item.get("subject_ref") or item.get("event_ref") or ""
-    return f"{item['event_ref']} [{item['kind']}/{item['delivery_state']}] {_snippet(detail)}"
+    return f"{item['event_ref']} [{item['kind']}/{item['delivery_state']}] {bound_display_text(detail)}"
 
 
 def _context_snapshot_query_line(item: dict[str, object]) -> str:
     detail = item.get("metadata") or item.get("segment_refs") or item.get("evidence_refs") or ""
-    return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {_snippet(detail)}"
+    return f"{item['snapshot_ref']} [{item['boundary']}/{item['inheritance_mode']}] {bound_display_text(detail)}"
 
 
 def _delegation_query_line(item: dict[str, object]) -> str:
     detail = item.get("instruction_preview") or item.get("artifact_preview") or item.get("child_session_id") or ""
-    return f"{item['delegation_ref']} [{item['mapping_state']}/{item['result_status']}] {_snippet(detail)}"
+    return f"{item['delegation_ref']} [{item['mapping_state']}/{item['result_status']}] {bound_display_text(detail)}"
 
 
 _QUERY_UNIT_TEXT_LINES: dict[str, _QueryUnitTextLine] = {
@@ -2627,7 +2621,7 @@ def _summary_payload(
             SessionListRowPayload(
                 id=summary.session_id,
                 origin=summary.origin,
-                title=_snippet(summary.title or summary.session_id, max_chars=96),
+                title=bound_display_text(summary.title or summary.session_id, max_chars=96),
                 target_ref=TargetRefPayload.session(summary.session_id),
                 anchor=reader_anchor("session", summary.session_id),
                 created_at=summary.created_at,
@@ -2659,7 +2653,7 @@ def _hit_payload(
                 session=SessionSummaryPayload(
                     id=summary.session_id,
                     origin=summary.origin,
-                    title=_snippet(summary.title or summary.session_id, max_chars=96),
+                    title=bound_display_text(summary.title or summary.session_id, max_chars=96),
                     message_count=summary.message_count,
                     target_ref=TargetRefPayload.session(summary.session_id),
                     anchor=reader_anchor("session", summary.session_id),
@@ -2672,7 +2666,7 @@ def _hit_payload(
                     anchor=reader_anchor("message", hit.message_id),
                     actions=reader_message_actions(),
                     message_id=hit.message_id,
-                    snippet=_snippet(hit.snippet, max_chars=320),
+                    snippet=bound_display_text(hit.snippet, max_chars=320),
                     score=None,
                     score_kind=None,
                 ),
@@ -2728,15 +2722,9 @@ def _session_text(envelope: ArchiveSessionEnvelope) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _ellipsize(value: str, max_width: int) -> str:
-    if max_width <= 3:
-        return value[:max_width]
-    return (value[: max_width - 3] + "...") if len(value) > max_width else value
-
-
 def _summary_line(item: dict[str, object]) -> str:
     session_id = str(item["id"])
-    title = _snippet(item.get("title") or session_id, max_chars=50)
+    title = bound_display_text(item.get("title") or session_id, max_chars=50)
     date = str(item.get("updated_at") or item.get("created_at") or "unknown")[:10]
     origin = str(item["origin"])
     message_count = item.get("message_count") or 0
@@ -2759,8 +2747,8 @@ def _hit_line(item: dict[str, object]) -> str:
     match = item.get("match")
     if not isinstance(session, dict) or not isinstance(match, dict):
         return str(item)
-    title = _snippet(session.get("title") or session.get("id"), max_chars=96)
-    snippet = _snippet(match.get("snippet"), max_chars=320)
+    title = bound_display_text(session.get("title") or session.get("id"), max_chars=96)
+    snippet = bound_display_text(match.get("snippet"), max_chars=320)
     line = f"{match['rank']}. {session['origin']}  {title}  {snippet}"
     return line + _attached_units_suffix(item)
 
