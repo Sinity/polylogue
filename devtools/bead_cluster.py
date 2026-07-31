@@ -39,11 +39,17 @@ The fix is TF-IDF-flavored edge weighting instead of unweighted adjacency:
      (default 6) -- this caps how far one strong edge can drag in
      unrelated beads through transitive chaining.
 
-Measured on the live backlog (2026-07-30, 615-bead frontier), this produces
-40 multi-bead clusters covering 156 beads and 457 singletons -- coherent
-themes (a claude-ai-export parser-fidelity cluster, a CLI read/render-
-vocabulary cluster, a repair.py shipped-but-dead cluster) instead of one
-blob. The plain any-overlap graph (``_build_overlap_graph`` /
+Measured on the 2026-07-31 backlog at merge time (PR #3462, ``--all-open
+--json``), this produced 33 multi-bead clusters covering 161 beads instead
+of one blob -- coherent themes (a claude-ai-export parser-fidelity cluster,
+a CLI read/render-vocabulary cluster, a repair.py shipped-but-dead cluster).
+An earlier draft of this docstring quoted a different, never-actually-
+measured "40 clusters / 156 beads / 457 singletons" split -- that number was
+aspirational and is corrected here. The backlog moves daily (beads close,
+new ones land), so an exact split is not durable; re-measure with
+``devtools workspace bead-cluster --all-open --json`` and count
+``frontier_clusters`` entries with ``len(beads) > 1`` rather than trusting a
+frozen number. The plain any-overlap graph (``_build_overlap_graph`` /
 ``_connected_components``) is kept as a general-purpose utility (also used
 by ``devtools workspace lane-brief`` and other footprint tooling) but is no
 longer used to shape the FRONTIER-READY cluster output.
