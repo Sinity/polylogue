@@ -517,10 +517,10 @@ def _execute_agg_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvel
     for key, group_rows in sorted(groups.items()):
         metrics: dict[str, float | int | None] = {}
         for metric in agg_metrics:
-            if metric.fn == "count":
+            if metric.fn == "count" or metric.field is None:
                 metrics[metric.label] = len(group_rows)
                 continue
-            attr = field_map.get(metric.field, metric.field) if metric.field else metric.field
+            attr = field_map.get(metric.field, metric.field)
             values = [float(v) for v in (getattr(row, attr, None) for row in group_rows) if v is not None]
             metrics[metric.label] = _reduce_agg_metric(metric, values)
         if not group_fields:
