@@ -434,15 +434,19 @@ function injectionPlanForUrl(url) {
         },
       ];
     }
-    if (
-      parsed.hostname === "grok.com" ||
-      parsed.hostname.endsWith(".grok.com") ||
-      parsed.hostname === "x.com" ||
-      parsed.hostname.endsWith(".x.com") ||
-      parsed.hostname === "twitter.com" ||
-      parsed.hostname.endsWith(".twitter.com")
-    ) {
-      return [{ files: ["src/common.js", "src/content/grok.js"] }];
+    if (parsed.hostname === "grok.com" || parsed.hostname.endsWith(".grok.com")) {
+      // grok.com now has a MAIN-world bridge (native REST capture,
+      // polylogue Grok native-capture upgrade 2026-07-31) mirroring
+      // chatgpt/claude above. x.com/twitter.com were dropped here: Grok's
+      // embedded surface on X is served through X's own API, not
+      // grok.com's /rest/app-chat/* REST surface this bridge calls, and
+      // this upgrade deleted the DOM-only capture path that used to be the
+      // (lossy) fallback for those origins. See manifest.json's matching
+      // content_scripts change and this repo's Grok-on-X follow-up bead.
+      return [
+        { files: ["src/content/grok_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/grok.js"] },
+      ];
     }
   } catch {
     return [];
@@ -2624,6 +2628,11 @@ function conversationIdForUrl(url) {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
     if (provider === "grok") {
+      // grok.com's own conversation URLs are /c/<uuid> (verified live,
+      // 2026-07-31, same convention as ChatGPT/Claude above). The /chat/
+      // and /grok/ segment guesses below predate that verification.
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
       const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
       if (pathId) return pathId;
       const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
