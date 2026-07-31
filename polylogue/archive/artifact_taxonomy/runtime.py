@@ -47,12 +47,70 @@ def _has_self_generated_artifact_dir_segment(normalized_path: str) -> bool:
     return any(part in _SELF_GENERATED_ARTIFACT_DIR_SEGMENTS for part in Path(inner).parts[:-1])
 
 
+def _self_generated_artifact_dir_classification(
+    source_path: str | Path | None,
+    *,
+    provider: str | Provider,
+) -> ArtifactClassification | None:
+    """Weak, content-blind path heuristic: refuse anything under an
+    ``analysis/`` directory segment.
+
+    Deliberately split out of ``classify_artifact_path`` (polylogue-6mpy):
+    this heuristic exists to catch self-generated side-output that never
+    carries genuine conversation evidence (e.g. a sinex
+    ``conversation_relationships.jsonl`` pointer index) when no content is
+    available to classify (pre-decode, path-only filtering routes such as
+    ``decoder_zip``/``source_walk`` skip-listing). But it is a *location*
+    guess, not conversation evidence, and a genuine Claude Code session
+    JSONL file can legitimately be re-homed or replayed from a path that
+    happens to include an ``analysis`` segment. ``classify_artifact`` (the
+    content-aware entry point) must let positive record content override
+    this heuristic rather than let it win unconditionally -- see its own
+    call site for the tie-break order.
+    """
+    provider_token = Provider.from_string(provider)
+    normalized = normalize_source_path(source_path)
+    if not normalized or not _has_self_generated_artifact_dir_segment(normalized):
+        return None
+    return ArtifactClassification(
+        provider=provider_token,
+        kind=ArtifactKind.METADATA_DOCUMENT,
+        parse_as_session=False,
+        schema_eligible=False,
+        default_priority=0,
+        reason="self-generated analysis artifact under an 'analysis/' directory "
+        "(agent side-output, not conversation content; mirrors source_walk _SKIP_DIRS)",
+    )
+
+
 def classify_artifact_path(
     source_path: str | Path | None,
     *,
     provider: str | Provider,
 ) -> ArtifactClassification | None:
-    """Classify obvious sidecars using only the source path."""
+    """Classify obvious sidecars using only the source path.
+
+    Path-only callers (pre-decode filtering: ``decoder_zip``, ``source_walk``
+    skip-listing, schema sampling) get the weak ``analysis/`` directory
+    heuristic first, same as always -- no content is available for them to
+    weigh against it. ``classify_artifact`` (content-aware) instead calls
+    ``_classify_artifact_path_strong`` directly and only falls back to the
+    weak heuristic when content classification finds no positive evidence;
+    see that function's call site.
+    """
+    if weak := _self_generated_artifact_dir_classification(source_path, provider=provider):
+        return weak
+    return _classify_artifact_path_strong(source_path, provider=provider)
+
+
+def _classify_artifact_path_strong(
+    source_path: str | Path | None,
+    *,
+    provider: str | Provider,
+) -> ArtifactClassification | None:
+    """Classify obvious sidecars by path, excluding the weak ``analysis/``
+    directory heuristic (split out so ``classify_artifact`` can let positive
+    record content override that one heuristic; polylogue-6mpy)."""
     provider_token = Provider.from_string(provider)
     normalized = normalize_source_path(source_path)
     if not normalized:
@@ -64,16 +122,6 @@ def classify_artifact_path(
     from polylogue.sources.origin_specs import artifact_rule_for_path
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
-    if _has_self_generated_artifact_dir_segment(normalized):
-        return ArtifactClassification(
-            provider=provider_token,
-            kind=ArtifactKind.METADATA_DOCUMENT,
-            parse_as_session=False,
-            schema_eligible=False,
-            default_priority=0,
-            reason="self-generated analysis artifact under an 'analysis/' directory "
-            "(agent side-output, not conversation content; mirrors source_walk _SKIP_DIRS)",
-        )
     if rule := artifact_rule_for_path(provider_token, normalized):
         return ArtifactClassification(
             provider=provider_token,
@@ -200,22 +248,41 @@ def classify_artifact(
         if marker_classification is not None:
             return marker_classification
 
-    explicit = classify_artifact_path(source_path, provider=provider_token)
+    # ``_classify_artifact_path_strong`` covers the definitive, content-blind
+    # path rules (OriginSpec artifact rules, known sidecar filenames, Hermes/
+    # Antigravity path markers) -- these always win regardless of content.
+    explicit = _classify_artifact_path_strong(source_path, provider=provider_token)
     if explicit is not None:
         return explicit
 
     if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
-        return _classify_list(payload, provider=provider_token, source_path=source_path)
-    if isinstance(payload, dict):
-        return _classify_dict(payload, provider=provider_token, source_path=source_path)
-    return ArtifactClassification(
-        provider=provider_token,
-        kind=ArtifactKind.UNKNOWN,
-        parse_as_session=False,
-        schema_eligible=False,
-        default_priority=0,
-        reason="non-object payload",
-    )
+        content_classification = _classify_list(payload, provider=provider_token, source_path=source_path)
+    elif isinstance(payload, dict):
+        content_classification = _classify_dict(payload, provider=provider_token, source_path=source_path)
+    else:
+        content_classification = ArtifactClassification(
+            provider=provider_token,
+            kind=ArtifactKind.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="non-object payload",
+        )
+
+    # polylogue-6mpy: positive conversational evidence in the record content
+    # (recognised session/record shape) outranks the weak, content-blind
+    # ``analysis/`` directory heuristic -- a genuine session record must not
+    # be refused merely because its replay/backfill path happens to route
+    # through a directory segment named "analysis". The heuristic still wins
+    # when content classification found no positive evidence at all, which
+    # is exactly the polylogue-9ykn direction: an unrecognised record stays
+    # refused, never defaults to a session.
+    if content_classification.parse_as_session:
+        return content_classification
+    weak = _self_generated_artifact_dir_classification(source_path, provider=provider_token)
+    if weak is not None:
+        return weak
+    return content_classification
 
 
 def _classify_list(

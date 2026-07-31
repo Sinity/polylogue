@@ -76,7 +76,7 @@ def _ingest_append_plans_archive(
 
     t0 = time.perf_counter()
     from polylogue.sources.decoders import _iter_json_stream
-    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
     from polylogue.sources.revision_backfill import (
         _is_declared_non_session_artifact,
         parse_retained_raw_sessions,
@@ -146,10 +146,14 @@ def _ingest_append_plans_archive(
                         failed.append(plan)
                         continue
                     t0 = time.perf_counter()
-                    sessions = parse_payload(
-                        provider,
-                        payloads,
-                        plan.path.stem,
+                    sessions = require_positive_conversational_evidence(
+                        parse_payload(
+                            provider,
+                            payloads,
+                            plan.path.stem,
+                            source_path=str(plan.path),
+                        ),
+                        provider=provider,
                         source_path=str(plan.path),
                     )
                     _add_timing(timings, "append.provider_parse", t0)
@@ -157,7 +161,9 @@ def _ingest_append_plans_archive(
                         archive.mark_raw_parse_failed(
                             raw_id,
                             provider=provider,
-                            error=ValueError("parsed raw payload produced no sessions"),
+                            error=ValueError(
+                                "parsed raw payload produced no sessions with positive conversational evidence"
+                            ),
                         )
                         failed.append(plan)
                         continue

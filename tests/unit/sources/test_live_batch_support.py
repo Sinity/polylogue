@@ -229,8 +229,18 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     that pre-filter would make on real content, so this test exercises the
     write stage's boundary check exactly as the race does. An empty payload
     has zero records, none complete and none incomplete, so it is trivially
-    at a record boundary; the real outcome is "parsed raw payload produced no
-    sessions", not a boundary error.
+    at a record boundary.
+
+    polylogue-9ykn superseded this test's original outcome: an empty
+    capture used to "cleanly materialize as a legitimately empty parsed
+    session" -- exactly the silent-inflation default that bead eliminates.
+    The correct outcome for a zero-record capture is now the same bounded,
+    recorded ``require_positive_conversational_evidence`` refusal any other
+    zero-message parse gets (``failed``, not ``succeeded``), NOT the
+    misleading truncation-boundary error the original fix targeted. Both
+    halves of the original claim still hold: no misleading truncation
+    error, and no crash/quarantine loop -- just an honest "no positive
+    conversational evidence" outcome instead of a phantom session.
     """
     root = tmp_path / "sessions"
     root.mkdir()
@@ -250,16 +260,16 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
 
     result = processor._ingest_full_paths_sync([path], source_name="codex")
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.failed == [path]
     parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
     assert parse_error != "captured JSONL payload ends before a complete record boundary"
-    # The Codex stream parser derives session identity from the filename
-    # even with zero records, so an empty capture now cleanly materializes
-    # as a (legitimately empty) parsed session instead of being quarantined
-    # under a misleading truncation error.
-    assert parse_error is None
-    assert parsed_at_ms is not None
+    # polylogue-9ykn: a zero-record capture carries no positive
+    # conversational evidence -- refused with a recorded, honest reason
+    # (never the misleading truncation-boundary error), not silently
+    # accepted as a phantom empty session.
+    assert isinstance(parse_error, str) and "no sessions with positive conversational evidence" in parse_error
+    assert parsed_at_ms is None
 
 
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
@@ -270,8 +280,22 @@ def test_full_ingest_heartbeats_small_file_groups_with_current_path(
     root.mkdir()
     first = root / "first.jsonl"
     second = root / "second.jsonl"
-    first.write_text('{"type":"session_meta","payload":{"id":"first"}}\n', encoding="utf-8")
-    second.write_text('{"type":"session_meta","payload":{"id":"second"}}\n', encoding="utf-8")
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused -- append one real message
+    # record so these fixtures keep testing heartbeat/byte-scan mechanics,
+    # not the now-refused empty shape.
+    first.write_text(
+        '{"type":"session_meta","payload":{"id":"first"}}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hello"}]}}\n',
+        encoding="utf-8",
+    )
+    second.write_text(
+        '{"type":"session_meta","payload":{"id":"second"}}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hello"}]}}\n',
+        encoding="utf-8",
+    )
     db_path = tmp_path / "archive.sqlite"
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))
     cursor = CursorStore(db_path)
@@ -317,7 +341,16 @@ def test_large_full_ingest_uses_archive(
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "large.jsonl"
-    source.write_text('{"type":"session_meta","payload":{"id":"large"}}\n', encoding="utf-8")
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused -- append one real message
+    # record so this fixture keeps testing full-ingest mechanics, not the
+    # now-refused empty shape.
+    source.write_text(
+        '{"type":"session_meta","payload":{"id":"large"}}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hello"}]}}\n',
+        encoding="utf-8",
+    )
     db_path = tmp_path / "archive.sqlite"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
@@ -344,7 +377,16 @@ def test_streaming_sized_full_ingest_uses_archive(
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "large.jsonl"
-    source.write_bytes(b'{"type":"session_meta","payload":{"id":"large"}}\n' + (b" " * (9 * 1024 * 1024)))
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused -- append one real message
+    # record (before the size padding) so this fixture keeps testing the
+    # streaming-vs-eager routing it is named for, not the now-refused empty
+    # shape.
+    source.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"large"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n' + (b" " * (9 * 1024 * 1024))
+    )
     db_path = tmp_path / "archive.sqlite"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
@@ -2148,7 +2190,14 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
     assert second.succeeded_file_count == 1
 
     processor._defer_full_cursor_retry(path, source_name="codex", stat=path.stat())
-    replacement = b'{"type":"session_meta","payload":{"id":"busy-replacement"}}\n'
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused -- append one real message
+    # record so the third ingest below still succeeds.
+    replacement = (
+        b'{"type":"session_meta","payload":{"id":"busy-replacement"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
     path.write_bytes(replacement)
 
     assert watcher._needs_work(path)
@@ -2264,8 +2313,22 @@ def test_archive_cursor_reconciliation_rejects_restored_mtime_rewrite(
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "archive-reconcile.jsonl"
-    payload_a = b'{"type":"session_meta","payload":{"id":"archive-reconcile-a"}}\n'
-    payload_b = b'{"type":"session_meta","payload":{"id":"archive-reconcile-b"}}\n'
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused -- append one real,
+    # equal-length message record to each payload so this fixture keeps
+    # testing the mtime-restore-reconciliation race, not the now-refused
+    # empty shape (the equal-length invariant below is load-bearing for the
+    # race itself, so both messages must stay identical length too).
+    payload_a = (
+        b'{"type":"session_meta","payload":{"id":"archive-reconcile-a"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+    payload_b = (
+        b'{"type":"session_meta","payload":{"id":"archive-reconcile-b"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
     assert len(payload_a) == len(payload_b)
     path.write_bytes(payload_a)
     index_db = tmp_path / "index.db"
@@ -3176,9 +3239,21 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
     path.write_bytes(payload)
     plan = _append_plan(path, payload, payload_hash="multi")
     owner = _append_owner(tmp_path)
+    # polylogue-9ykn: a message-less ParsedSession carries no positive
+    # conversational evidence and is refused before this test's own
+    # "more than one session" check ever runs -- give each session one real
+    # message so this fixture keeps testing the multi-session rejection.
     sessions = [
-        ParsedSession(source_name=Provider.CODEX, provider_session_id="multi-1", messages=[]),
-        ParsedSession(source_name=Provider.CODEX, provider_session_id="multi-2", messages=[]),
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="multi-1",
+            messages=[ParsedMessage(provider_message_id="multi-1-0", role=Role.USER, text="hello")],
+        ),
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="multi-2",
+            messages=[ParsedMessage(provider_message_id="multi-2-0", role=Role.USER, text="hello")],
+        ),
     ]
     monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", lambda *_args, **_kwargs: sessions)
     result = ingest_append_plans(cast(Any, owner), [plan])
@@ -3206,9 +3281,21 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
+    # polylogue-9ykn: a message-less ParsedSession carries no positive
+    # conversational evidence and is refused before this test's own
+    # injected-second-write-failure path ever runs -- give each session one
+    # real message so this fixture keeps testing that failure-handling path.
     sessions = [
-        ParsedSession(source_name=Provider.CODEX, provider_session_id="full-multi-1", messages=[]),
-        ParsedSession(source_name=Provider.CODEX, provider_session_id="full-multi-2", messages=[]),
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="full-multi-1",
+            messages=[ParsedMessage(provider_message_id="full-multi-1-0", role=Role.USER, text="hello")],
+        ),
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="full-multi-2",
+            messages=[ParsedMessage(provider_message_id="full-multi-2-0", role=Role.USER, text="hello")],
+        ),
     ]
     monkeypatch.setattr(
         "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
@@ -3327,7 +3414,17 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
-    sessions = [ParsedSession(source_name=Provider.CODEX, provider_session_id="normal-1", messages=[])]
+    # polylogue-9ykn: a message-less ParsedSession carries no positive
+    # conversational evidence and is refused before this test's own
+    # durably-excised-content skip path is exercised -- give it one real
+    # message so "normal.jsonl" still succeeds.
+    sessions = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="normal-1",
+            messages=[ParsedMessage(provider_message_id="normal-1-0", role=Role.USER, text="hello")],
+        )
+    ]
     monkeypatch.setattr(
         "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True),

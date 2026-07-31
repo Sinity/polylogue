@@ -56,6 +56,7 @@ from polylogue.sources.dispatch import (
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
+    require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
 from polylogue.sources.live.batch_observability import (
@@ -2076,6 +2077,15 @@ class LiveBatchProcessor:
                             fallback_id,
                             source_path=record.source_path,
                         )
+                    # polylogue-9ykn: a session requires positive
+                    # conversational evidence -- a parse that produced only
+                    # zero-message sessions is treated exactly like a parse
+                    # that produced none: a recorded, bounded
+                    # mark_raw_parse_failed outcome below, never a silently
+                    # written phantom session.
+                    sessions = require_positive_conversational_evidence(
+                        sessions, provider=provider, source_path=record.source_path
+                    )
                     record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
                         time.perf_counter() - t0
                     )
@@ -2083,7 +2093,9 @@ class LiveBatchProcessor:
                         archive.mark_raw_parse_failed(
                             source_raw_id,
                             provider=provider,
-                            error=ValueError("parsed raw payload produced no sessions"),
+                            error=ValueError(
+                                "parsed raw payload produced no sessions with positive conversational evidence"
+                            ),
                         )
                         continue
                     record_raw_id = source_raw_id

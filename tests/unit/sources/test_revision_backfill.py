@@ -296,7 +296,15 @@ def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     initialize_active_archive_root(tmp_path)
-    payload = b'{"type":"session_meta","payload":{"id":"streamed"}}\n'
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused (never becomes a session) --
+    # append one real message record so this fixture keeps testing what it
+    # means to test (stream-safe blob I/O), not the now-refused empty shape.
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"streamed"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -870,7 +878,15 @@ def test_historical_backfill_reparses_multi_gib_shaped_raw_instead_of_spilling_a
 ) -> None:
     """A cache miss reparses durable bytes rather than retaining a giant cohort tree."""
     initialize_active_archive_root(tmp_path)
-    payload = b'{"type":"session_meta","payload":{"id":"multi-gib-shaped"}}\n'
+    # polylogue-9ykn: a session_meta-only stream carries no positive
+    # conversational evidence and is refused -- append one real message
+    # record so this fixture keeps testing the cache/reparse mechanics it is
+    # named for, not the now-refused empty shape.
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"multi-gib-shaped"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
