@@ -322,6 +322,28 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
         super().__init__(f"{len(raw_ids)} raw revision(s) total {total_bytes} bytes exceed replay limit {limit_bytes}")
 
 
+class RebuildDeadlineExceededError(RuntimeError):
+    """Raised by an injected ``deadline_check`` callback to stop replay mid-page.
+
+    polylogue-uhgm: ``backfill_historical_revision_evidence``'s REPLAY phase
+    (the byte-cohort and membership-cohort loops below) calls an optional
+    caller-supplied ``deadline_check`` once at the top of every cohort
+    iteration -- i.e. *between* cohorts, never mid-cohort-apply. A cohort
+    already durably committed (or accepted into the currently open,
+    not-yet-committed replay batch) when this fires stands; the cohort about
+    to start does not begin. The caller (``maintenance/rebuild_index.py``)
+    catches this and checkpoints its resumable transaction WITHOUT advancing
+    the cursor, so the next pass re-derives from the exact same source-order
+    position -- safe by the existing content-hash idempotency invariant
+    (re-applying an already-committed cohort is a no-op upsert, never a
+    duplicate), matching the crash-recovery contract an open replay batch
+    already has (``test_backfill_resumes_after_replay_batch_crash_discards_
+    whole_batch_cleanly``). This closes the gap where a bounded pass's
+    deadline was previously observed only after the WHOLE requested page
+    replayed to completion.
+    """
+
+
 def _resource_blocked_parser_fingerprint(max_payload_bytes: int) -> str:
     """Return the durable admission identity for one bounded census envelope."""
     return f"{RAW_AUTHORITY_PARSER_FINGERPRINT}:resource-blocked:{max_payload_bytes}"
@@ -890,6 +912,7 @@ def backfill_historical_revision_evidence(
     bulk_build: bool = False,
     prefetch_cache: RawParsePrefetchCache | None = None,
     pipeline_decode: bool | None = None,
+    deadline_check: Callable[[], None] | None = None,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -963,6 +986,14 @@ def backfill_historical_revision_evidence(
     remain on the calling thread in unchanged order regardless of the value
     -- see the prefetcher's docstring for the equivalence argument and the
     buffered-memory bound.
+
+    ``deadline_check`` (polylogue-uhgm, default ``None``) is called with no
+    arguments at the top of every REPLAY-phase cohort iteration (both the
+    byte-cohort and membership-cohort loops), i.e. between cohorts rather
+    than only after this whole function returns. It is expected to raise
+    :class:`RebuildDeadlineExceededError` to interrupt; ``None`` (every caller
+    except the resumable offline rebuild pass) reproduces the exact
+    unmodified, uninterruptible replay path.
     """
     adoption_deferred = 0
     quarantined = 0
@@ -1087,6 +1118,8 @@ def backfill_historical_revision_evidence(
             decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
         try:
             for logical_key in ordered_logical_keys:
+                if deadline_check is not None:
+                    deadline_check()
                 if decode_prefetcher is not None:
                     decode_prefetcher.enter_key(logical_key)
                 # polylogue-eqnv: the offline backfill/rebuild path is the one
@@ -1231,6 +1264,8 @@ def backfill_historical_revision_evidence(
             for logical_key in sorted(membership_keys):
                 if logical_key in byte_replayed_keys:
                     continue
+                if deadline_check is not None:
+                    deadline_check()
                 if decode_prefetcher is not None:
                     decode_prefetcher.enter_key(logical_key)
                 member_sessions: dict[str, ParsedSession] = {}
@@ -2452,6 +2487,7 @@ def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> li
 __all__ = [
     "RawParsePrefetchCache",
     "RawRevisionReplayResourceBlockedError",
+    "RebuildDeadlineExceededError",
     "RevisionBackfillResult",
     "RevisionCensusResult",
     "backfill_historical_revision_evidence",

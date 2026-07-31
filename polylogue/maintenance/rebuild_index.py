@@ -309,6 +309,15 @@ class RebuildPassCost:
     parse_workers: int
     parse_s: float = 0.0
     apply_s: float = 0.0
+    #: polylogue-6mvg: wall-clock seconds this pass spent choosing WHICH raws
+    #: to replay -- the resumable path's ``next_raw_page`` keyset query, or
+    #: the one-shot path's ``select_rebuild_raw_ids`` (full-source/only-
+    #: missing/max-blob-mb scan plus size filter) -- before any census/parse/
+    #: apply work started. Previously invisible: a live full rebuild spent
+    #: ~86s of one CPU core on selection alone before the inactive generation
+    #: held a single session, with nothing durable recording where that time
+    #: went.
+    selection_s: float = 0.0
 
     @property
     def mib_per_s(self) -> float:
@@ -332,6 +341,7 @@ class RebuildPassCost:
     def to_dict(self) -> dict[str, object]:
         eta = self.eta_s
         return {
+            "selection_s": round(self.selection_s, 3),
             "replay_s": round(self.replay_s, 3),
             "parse_s": round(self.parse_s, 3),
             "apply_s": round(self.apply_s, 3),
@@ -550,6 +560,7 @@ async def _rebuild_index_from_source_owned(
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import verify_archive
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
+    from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
     from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
     from polylogue.storage.repair import repair_session_insights
@@ -613,12 +624,22 @@ async def _rebuild_index_from_source_owned(
                     status=transaction.status,
                     derived_stores_cleared=True,
                 )
+            # polylogue-6mvg: the pass's SELECTION phase -- which raws
+            # replay THIS pass -- previously had no durable timing at all. A
+            # live full rebuild spent ~86s of one CPU core on selection
+            # alone before the inactive generation held a single session,
+            # visible only as an unexplained gap between the pass starting
+            # and its first "backfill stage timings" log line.
+            selection_started_at = time.perf_counter()
             page = generation_store.next_raw_page(transaction, limit=request.raw_batch_size)
+            selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_ids = [raw_id for raw_id, _blob_hash_hex, _blob_size in page.rows]
             selected_raw_count = len(selected_raw_ids)
             skipped_by_blob_limit_count = 0
         else:
+            selection_started_at = time.perf_counter()
             raw_count, selected_raw_ids, skipped_by_blob_limit_count = select_rebuild_raw_ids(request)
+            selection_elapsed_s = time.perf_counter() - selection_started_at
             selected_raw_count = len(selected_raw_ids)
             generation = generation_store.create(source_snapshot=source_revision_snapshot(root))
         source_drifted = False
@@ -649,32 +670,137 @@ async def _rebuild_index_from_source_owned(
                     _warm_offline_prefetch_cache, warm_config, selected_raw_ids
                 )
             pass_started_at_s = time.perf_counter()
-            replay = await replay_source(
-                config,
-                raw_ids=selected_raw_ids,
-                raw_batch_size=request.raw_batch_size,
-                ingest_workers=None,
-                materialize=True,
-                progress_callback=None,
-                owned_inactive_generation=(generation.generation_id, generation.owner_id),
-                # polylogue-crd8: this is the offline rebuild path (an owned
-                # inactive generation, never the live daemon ingest path), so
-                # the guard-gated bulk FTS mode is safe to enable unconditionally
-                # here -- it collapses whale prefix-sharing lineage cascades'
-                # per-row messages_fts trigger storm into one bulk delete+insert
-                # per affected session.
-                bulk_fts=True,
-                # polylogue-v6i3: the broader bulk-generation-build lifecycle --
-                # every per-session messages_fts/blocks_command_trigram/
-                # action_pairs/delegation_facts refresh is skipped during this
-                # replay (safe for a full OR partial/diagnostic selection: a
-                # repopulate from `blocks` always matches whatever sessions
-                # actually got replayed into this generation); see
-                # _repopulate_bulk_build_derived_state, called below right
-                # before readiness.
-                bulk_build=True,
-                prefetch_cache=effective_prefetch_cache,
-            )
+
+            # polylogue-uhgm: the pass deadline used to be checked only AFTER
+            # this whole page's replay_source() call returned, so a page that
+            # expanded into a much larger authority cohort (or simply ran
+            # slow) could overshoot ``pass_deadline_ms`` by an entire page --
+            # live evidence: a 300s deadline, ~8-9 minute pages. This closure
+            # is threaded down to backfill_historical_revision_evidence's
+            # REPLAY-phase cohort loops (see RebuildDeadlineExceededError's
+            # docstring), which call it between cohorts. It is a no-op for
+            # every non-resumable selection (``transaction is None`` --
+            # raw_ids/--only-missing/--max-blob-mb runs never carry a
+            # pass_deadline_ms in the first place, see
+            # validate_rebuild_index_request).
+            def _check_pass_deadline() -> None:
+                if transaction is None or transaction.pass_deadline_ms is None:
+                    return
+                elapsed_ms = int(time.time() * 1000) - pass_started_at_ms
+                if elapsed_ms >= transaction.pass_deadline_ms:
+                    raise RebuildDeadlineExceededError(
+                        f"rebuild pass deadline ({transaction.pass_deadline_ms}ms) exceeded mid-replay "
+                        f"after {elapsed_ms}ms; stopping before the next cohort"
+                    )
+
+            try:
+                replay = await replay_source(
+                    config,
+                    raw_ids=selected_raw_ids,
+                    raw_batch_size=request.raw_batch_size,
+                    ingest_workers=None,
+                    materialize=True,
+                    progress_callback=None,
+                    owned_inactive_generation=(generation.generation_id, generation.owner_id),
+                    # polylogue-crd8: this is the offline rebuild path (an owned
+                    # inactive generation, never the live daemon ingest path), so
+                    # the guard-gated bulk FTS mode is safe to enable unconditionally
+                    # here -- it collapses whale prefix-sharing lineage cascades'
+                    # per-row messages_fts trigger storm into one bulk delete+insert
+                    # per affected session.
+                    bulk_fts=True,
+                    # polylogue-v6i3: the broader bulk-generation-build lifecycle --
+                    # every per-session messages_fts/blocks_command_trigram/
+                    # action_pairs/delegation_facts refresh is skipped during this
+                    # replay (safe for a full OR partial/diagnostic selection: a
+                    # repopulate from `blocks` always matches whatever sessions
+                    # actually got replayed into this generation); see
+                    # _repopulate_bulk_build_derived_state, called below right
+                    # before readiness.
+                    bulk_build=True,
+                    prefetch_cache=effective_prefetch_cache,
+                    deadline_check=_check_pass_deadline if transaction is not None else None,
+                )
+            except RebuildDeadlineExceededError as exc:
+                # Mid-page interrupt: at least one cohort was durably
+                # committed (or none, if the very first cohort tripped it),
+                # but never the whole requested page. Do NOT advance the
+                # transaction's cursor/processed counters -- leaving them at
+                # their pre-pass values means the next pass re-derives from
+                # exactly the same source-order position. Re-applying any
+                # cohort this pass DID commit is a safe idempotent no-op
+                # (content-hash upsert), so this can never duplicate or skip
+                # a raw/cohort; it can only redo bounded work.
+                assert transaction is not None  # deadline_check is only wired when transaction is not None
+                pass_elapsed_s = time.perf_counter() - pass_started_at_s
+                transaction = generation_store.checkpoint_transaction(
+                    transaction,
+                    status="deferred",
+                    error=str(exc),
+                )
+                from polylogue.pipeline.services.process_pool import (
+                    parallel_threads_effective,
+                    resolve_parse_worker_count,
+                )
+
+                pass_cost = RebuildPassCost(
+                    selection_s=selection_elapsed_s,
+                    replay_s=pass_elapsed_s,
+                    checkpoint_s=0.0,
+                    pass_s=time.perf_counter() - pass_started_at_s,
+                    raws=selected_raw_count,
+                    bytes_in=sum(row[2] for row in page.rows) if page is not None else 0,
+                    processed_raws=transaction.processed_raw_count,
+                    processed_bytes=transaction.processed_blob_bytes,
+                    total_raws=raw_count,
+                    total_bytes=total_source_blob_bytes(root),
+                    free_threaded=parallel_threads_effective(),
+                    parse_workers=resolve_parse_worker_count(),
+                )
+                logger.info(
+                    "rebuild_pass_cost",
+                    generation_id=generation.generation_id,
+                    deferred_reason="pass-deadline-mid-replay",
+                    **pass_cost.to_dict(),
+                )
+                pass_receipt = RebuildIndexReceipt(
+                    archive_root=str(root),
+                    raw_session_count=raw_count,
+                    selected_raw_count=selected_raw_count,
+                    skipped_by_blob_limit_count=0,
+                    status="deferred",
+                    materialized=False,
+                    materialization={},
+                    generation=cast(dict[str, object], asdict(generation)),
+                    readiness={},
+                    # Zero-shaped like a normal replay dict (not merely a bare
+                    # marker) so every existing consumer that indexes
+                    # replay-dict keys unconditionally (the daemon-mode CLI
+                    # text formatter, the daemon HTTP route's raw
+                    # ``receipt.to_dict()`` response) keeps working: this pass
+                    # made no *measured* progress by design (see the "do not
+                    # advance the cursor" comment above), so reporting zeros
+                    # here is accurate, not merely a placeholder shape.
+                    replay={
+                        "scanned_raw_count": 0,
+                        "classified_full_count": 0,
+                        "replayed_logical_source_count": 0,
+                        "quarantined_raw_count": 0,
+                        "adoption_deferred_raw_count": 0,
+                        "authority_selection_expanded": True,
+                        "scheduled_raw_count": len(selected_raw_ids),
+                        "raw_batch_size": request.raw_batch_size,
+                        "ingest_workers": None,
+                        "parse_s": 0.0,
+                        "apply_s": 0.0,
+                        "stage_timings_s": {},
+                        "deferred_reason": "pass-deadline-mid-replay",
+                    },
+                    transaction=cast(dict[str, object], asdict(transaction)),
+                    timings_s=cast(dict[str, float], pass_cost.to_dict()),
+                )
+                generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
+                return pass_receipt
             pass_elapsed_s = time.perf_counter() - pass_started_at_s
             processed_before = transaction.processed_raw_count if transaction is not None else None
             if selected_raw_ids and _should_refresh_generation_planner_statistics(
@@ -715,6 +841,7 @@ async def _rebuild_index_from_source_owned(
                     )
 
                     pass_cost = RebuildPassCost(
+                        selection_s=selection_elapsed_s,
                         replay_s=pass_elapsed_s,
                         checkpoint_s=0.0,
                         pass_s=time.perf_counter() - pass_started_at_s,
@@ -753,7 +880,14 @@ async def _rebuild_index_from_source_owned(
             # polylogue-o56w: terminal-stage costs used to survive only as log
             # lines; collect them here and persist them on the final receipt
             # so a full rebuild's cost breakdown is durable forensics.
-            terminal_timings_s: dict[str, float] = {}
+            #
+            # polylogue-6mvg: ``selection_s`` (this pass's raw-id/page
+            # selection cost, measured above before replay even started) is
+            # folded in here too -- extending the SAME receipt vocabulary
+            # the deferred/paused ``RebuildPassCost`` timings already use,
+            # not a parallel one, so every receipt shape (deferred, paused,
+            # replayed) carries the identical key for this phase.
+            terminal_timings_s: dict[str, float] = {"selection_s": selection_elapsed_s}
             terminal_started_at = time.perf_counter()
             insight_result = repair_session_insights(
                 config,
