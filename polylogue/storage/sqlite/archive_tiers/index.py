@@ -177,7 +177,31 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # the 3-value vocabulary) -- a copy-forward rejects nothing. CONSTRAINT_ONLY,
 # matching the v33/v36 precedent (widening/adding a CHECK over unchanged
 # values), not SEMANTIC_REPARSE.
-INDEX_SCHEMA_VERSION = 51
+# polylogue-rlvj: v52 adds a table-level CHECK to fts_freshness_state --
+# state='ready' now requires missing_rows=0 AND excess_rows=0 AND
+# duplicate_rows=0 AND source_rows=indexed_rows in the same row. Surface-
+# coherence audit 2026-07-31 found a live archive reporting messages_fts
+# ready=true / missing_rows=0 while an independent count showed 12,659
+# blocks missing from the index: a targeted (session-scoped) repair's
+# correct scoped verdict was being written into the single global freshness
+# row as an unconditional READY, discarding whatever accurate missing_rows
+# an earlier exact snapshot had recorded (daemon/convergence_stages.py's
+# `_mark_message_fts_ready_after_targeted_repair`, fixed in the same change
+# to always source its row from the real archive-wide invariant, never a
+# cheap existence check). The CHECK makes the specific contradiction that
+# incident exhibited unrepresentable going forward: any writer that tries to
+# assert `ready` alongside a nonzero counter now fails at the database layer
+# instead of silently lying to every reader of the ledger. Existing rows are
+# already consistent with this shape (every writer that reaches `state=ready`
+# already zeroes/aligns these counters -- audited across every
+# `record_fts_surface_state_sync`/`_async` call site for this change), so
+# this is a pure constraint widening: CONSTRAINT_ONLY, REPLACE_TABLE on
+# fts_freshness_state, no values change and no reparse. A pre-existing
+# archive can already carry a row that violates this (the very bug being
+# fixed) -- the fast-forward executor's `_REPLACE_TABLE_SANITIZERS` entry
+# downgrades any such row to 'stale' before the copy runs rather than
+# aborting the migration.
+INDEX_SCHEMA_VERSION = 52
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -200,7 +224,22 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
     missing_rows INTEGER NOT NULL DEFAULT 0,
     excess_rows INTEGER NOT NULL DEFAULT 0,
     duplicate_rows INTEGER NOT NULL DEFAULT 0,
-    detail TEXT
+    detail TEXT,
+    -- polylogue-rlvj (v52): a 'ready' verdict must be backed by an exact
+    -- count that actually balances -- a scoped/targeted repair's correct
+    -- answer to a narrower question must not be written here as a global
+    -- 'ready'. See INDEX_SCHEMA_VERSION's v52 comment above for the live
+    -- incident (messages_fts reported ready/missing_rows=0 while 12,659
+    -- blocks were unindexed).
+    CHECK (
+        state != 'ready'
+        OR (
+            missing_rows = 0
+            AND excess_rows = 0
+            AND duplicate_rows = 0
+            AND source_rows = indexed_rows
+        )
+    )
 ) STRICT;
 """
 
