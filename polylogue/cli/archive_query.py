@@ -60,7 +60,11 @@ from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveSessionSummary,
     ArchiveStore,
 )
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
+from polylogue.storage.sqlite.archive_tiers.write import (
+    ArchiveMessageRow,
+    ArchiveSessionEnvelope,
+    archive_message_display_text,
+)
 from polylogue.surfaces.payloads import (
     SEARCH_CURSOR_VERSION,
     InvalidSearchCursorError,
@@ -202,6 +206,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     raw_query = _query_text(request.query_terms, params)
     output_format = str(params.get("output_format") or "markdown")
     fields = _optional_str(params.get("fields"))
+    read_view = str(params.get("view") or "transcript")
     # Split a trailing ``with <units>`` projection clause off the FTS text so it
     # is not searched literally; the units drive the attached-unit projection.
     unit_source_query = raw_query
@@ -690,6 +695,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 envelope,
                 output_format=output_format,
                 fields=fields,
+                view=read_view,
             )
             return
         if query and not similar_text:
@@ -703,6 +709,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     envelope,
                     output_format=output_format,
                     fields=fields,
+                    view=read_view,
                 )
                 return
         if query or similar_text or similar_session_id:
@@ -2293,6 +2300,7 @@ def _emit_session(
     *,
     output_format: str,
     fields: str | None,
+    view: str = "transcript",
 ) -> None:
     payload = _session_payload(envelope)
     if output_format == "json":
@@ -2312,6 +2320,9 @@ def _emit_session(
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Full-session reads do not support --format {output_format}.")
+    if view == "summary":
+        click.echo(_session_summary_text(envelope))
+        return
     click.echo(_session_text(envelope))
 
 
@@ -2719,6 +2730,57 @@ def _session_text(envelope: ArchiveSessionEnvelope) -> str:
         text = "\n".join(block.text or "" for block in message.blocks if block.text)
         lines.append(text)
         lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _session_summary_text(envelope: ArchiveSessionEnvelope) -> str:
+    """Condensed session synopsis: counts, roles, tool usage, first/last excerpts.
+
+    Deliberately distinct from ``_session_text`` (the full transcript) --
+    ``read --view summary`` previously routed to the same renderer as
+    ``read --view transcript`` and produced byte-identical output for any
+    session (polylogue-zumd class: a surface claiming to do X silently did
+    the whole-transcript Y instead).
+    """
+    messages = envelope.messages
+    role_counts: dict[str, int] = {}
+    tool_use_message_count = 0
+    total_words = 0
+    for message in messages:
+        role_counts[message.role] = role_counts.get(message.role, 0) + 1
+        total_words += message.word_count
+        if message.has_tool_use:
+            tool_use_message_count += 1
+
+    lines = [
+        f"# {envelope.title or envelope.session_id}",
+        "",
+        f"`{envelope.session_id}`  ({envelope.origin})",
+        "",
+        f"- messages: {len(messages)}",
+    ]
+    for role in sorted(role_counts):
+        lines.append(f"  - {role}: {role_counts[role]}")
+    lines.append(f"- words (sum of per-message word_count): {total_words}")
+    lines.append(f"- messages with tool use: {tool_use_message_count}")
+    if envelope.created_at or envelope.updated_at:
+        lines.append(f"- created: {envelope.created_at or 'unknown'}  updated: {envelope.updated_at or 'unknown'}")
+
+    def _first_authored_text(candidates: Iterable[ArchiveMessageRow]) -> str:
+        for message in candidates:
+            if message.role not in ("user", "assistant"):
+                continue
+            text = archive_message_display_text(message.blocks)
+            if text.strip():
+                return text
+        return ""
+
+    first_text = _first_authored_text(messages)
+    last_text = _first_authored_text(reversed(messages))
+    if first_text:
+        lines += ["", "## First turn", "", bound_display_text(first_text, max_chars=500)]
+    if last_text and last_text != first_text:
+        lines += ["", "## Last turn", "", bound_display_text(last_text, max_chars=500)]
     return "\n".join(lines).rstrip()
 
 

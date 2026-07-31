@@ -139,6 +139,7 @@ READ_NULLARY_METHODS: frozenset[str] = frozenset(
         "list_usage_timeline_insights",
         "list_archive_debt_insights",
         "provider_usage_report",
+        "session_usage_reconciliation",
         "count_sessions",
         "rebuild_index",
         "get_index_status",

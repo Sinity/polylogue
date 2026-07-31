@@ -34,6 +34,8 @@ from polylogue.cli.archive_query import (
     _resolve_excluded_origins,
     _resolve_origins,
     _selected_fields,
+    _session_summary_text,
+    _session_text,
     _sort,
     _stats_by_line,
     _summary_line,
@@ -42,6 +44,7 @@ from polylogue.cli.archive_query import (
 )
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
 
 
 def test_emit_no_results_includes_convergence_warning(capsys: pytest.CaptureFixture[str]) -> None:
@@ -894,3 +897,89 @@ class TestEmitDeleteMachineModeNoPrompt:
         archive.delete_sessions.assert_not_called()
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "aborted"
+
+
+class TestSessionSummaryText:
+    """``read --view summary`` must render a condensed synopsis, not the full
+    transcript (#analyze-perf): previously ``summary`` and ``transcript``
+    both routed to the same renderer and produced byte-identical output for
+    any session.
+    """
+
+    @staticmethod
+    def _envelope() -> ArchiveSessionEnvelope:
+        messages = (
+            ArchiveMessageRow(
+                message_id="s1:1",
+                native_id="1",
+                role="user",
+                position=0,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=False,
+                blocks=(ArchiveBlockRow(block_id="s1:1:0", message_id="s1:1", block_type="text", text="hello there"),),
+                word_count=2,
+            ),
+            ArchiveMessageRow(
+                message_id="s1:2",
+                native_id="2",
+                role="assistant",
+                position=1,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=False,
+                blocks=(
+                    ArchiveBlockRow(block_id="s1:2:0", message_id="s1:2", block_type="text", text="using a tool now"),
+                ),
+                word_count=4,
+                has_tool_use=True,
+            ),
+            ArchiveMessageRow(
+                message_id="s1:3",
+                native_id="3",
+                role="assistant",
+                position=2,
+                variant_index=0,
+                is_active_path=True,
+                is_active_leaf=True,
+                blocks=(ArchiveBlockRow(block_id="s1:3:0", message_id="s1:3", block_type="text", text="all done"),),
+                word_count=2,
+            ),
+        )
+        return ArchiveSessionEnvelope(
+            session_id="claude-code-session:abc",
+            native_id="abc",
+            origin="claude-code-session",
+            title="Fix the thing",
+            active_leaf_message_id="s1:3",
+            messages=messages,
+        )
+
+    def test_summary_differs_from_transcript(self) -> None:
+        envelope = self._envelope()
+        summary = _session_summary_text(envelope)
+        transcript = _session_text(envelope)
+        assert summary != transcript
+        # The summary is a synopsis (counts + first/last excerpt), not a
+        # per-message transcript dump -- it must not contain every message's
+        # role header the way the transcript does.
+        assert transcript.count("## user") + transcript.count("## assistant") == 3
+        assert "## user\n" not in summary
+        assert "## assistant\n" not in summary
+
+    def test_summary_reports_counts_and_first_last_turn(self) -> None:
+        envelope = self._envelope()
+        summary = _session_summary_text(envelope)
+        assert "messages: 3" in summary
+        assert "user: 1" in summary
+        assert "assistant: 2" in summary
+        assert "messages with tool use: 1" in summary
+        assert "hello there" in summary  # first turn excerpt
+        assert "all done" in summary  # last turn excerpt
+
+    def test_transcript_still_renders_every_message(self) -> None:
+        envelope = self._envelope()
+        transcript = _session_text(envelope)
+        assert "hello there" in transcript
+        assert "using a tool now" in transcript
+        assert "all done" in transcript
