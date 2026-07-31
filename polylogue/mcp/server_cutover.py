@@ -30,7 +30,6 @@ if TYPE_CHECKING:
     from polylogue.maintenance.scope import MaintenanceScopeFilter
     from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
-    from polylogue.surfaces.payloads import ContextPreambleProjectState
 
 
 @dataclass(frozen=True)
@@ -585,44 +584,6 @@ async def _query_insight_projection(
         )
 
 
-def _git_project_state(cwd: str | None) -> ContextPreambleProjectState | None:
-    """Read branch + recent commits from a local git checkout, best-effort.
-
-    Never raises: a missing/non-git ``cwd`` must not break SessionStart
-    context injection.
-    """
-    import subprocess
-
-    from polylogue.surfaces.payloads import ContextPreambleProjectState
-
-    try:
-        branch: str | None = None
-        commits: list[str] = []
-        result = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=cwd or ".",
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip()
-        result2 = subprocess.run(
-            ["git", "log", "--oneline", "-5"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=cwd or ".",
-        )
-        if result2.returncode == 0:
-            commits = [line.strip() for line in result2.stdout.strip().split("\n") if line]
-        if branch or commits:
-            return ContextPreambleProjectState(branch=branch, recent_commits=commits)
-    except Exception:
-        pass
-    return None
-
-
 async def _resume_preamble(
     hooks: ServerCallbacks,
     *,
@@ -648,12 +609,6 @@ async def _resume_preamble(
     )
     if preamble is None:
         preamble = ContextPreamble(preamble_version="1.0", source_tool_calls={"context": "polylogue-mcp"})
-
-    project = _git_project_state(cwd)
-    if project is not None:
-        payload = preamble.model_dump(mode="json", exclude_none=True)
-        payload["project_state"] = project.model_dump(mode="json", exclude_none=True)
-        preamble = ContextPreamble.model_validate(payload)
     return hooks.json_payload(preamble, exclude_none=True)
 
 

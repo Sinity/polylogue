@@ -27,6 +27,42 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _git_project_state(cwd: str | None) -> ContextPreambleProjectState | None:
+    """Read branch + recent commits from a local git checkout, best-effort.
+
+    Never raises: a missing/non-git ``cwd`` must not break SessionStart
+    context injection (or CLI context composition run outside a repo).
+    """
+    import subprocess
+
+    try:
+        branch: str | None = None
+        commits: list[str] = []
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd or ".",
+        )
+        if result.returncode == 0:
+            branch = result.stdout.strip()
+        result2 = subprocess.run(
+            ["git", "log", "--oneline", "-5"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=cwd or ".",
+        )
+        if result2.returncode == 0:
+            commits = [line.strip() for line in result2.stdout.strip().split("\n") if line]
+        if branch or commits:
+            return ContextPreambleProjectState(branch=branch, recent_commits=commits)
+    except Exception:
+        pass
+    return None
+
+
 def _candidate_overlap_basis(candidate: object) -> ContextPreambleOverlapBasis | None:
     basis = getattr(candidate, "overlap_basis", None)
     model_dump = getattr(basis, "model_dump", None)
@@ -108,10 +144,13 @@ async def build_context_preamble_payload(
     project: ContextPreambleProjectState | None = None
     git_repo = getattr(conv, "git_repository_url", None) if conv is not None else None
     git_branch = getattr(conv, "git_branch", None) if conv is not None else None
-    if git_repo or git_branch:
+    local_git_state = _git_project_state(cwd)
+    if git_repo or git_branch or local_git_state is not None:
         project = ContextPreambleProjectState(
             repo=str(git_repo) if git_repo else None,
-            branch=str(git_branch) if git_branch else None,
+            branch=(local_git_state.branch if local_git_state and local_git_state.branch else None)
+            or (str(git_branch) if git_branch else None),
+            recent_commits=list(local_git_state.recent_commits) if local_git_state else [],
         )
 
     assertion_guidance: list[ContextPreambleAssertionGuidance] = []
