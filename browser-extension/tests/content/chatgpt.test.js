@@ -1,320 +1,254 @@
 /**
- * Tests for chatgpt.js content script id/URL parsing and the on-demand
- * native fetch contract.
+ * Tests for chatgpt.js's URL parsing, on-demand native fetch, and asset
+ * descriptor identification, driven through the REAL source (common.js +
+ * chatgpt_bridge.js + chatgpt.js loaded via vm.Script into a JSDOM window,
+ * the same technique tests/content/chatgpt_bridge.test.js and
+ * tests/content/grok.test.js already use) rather than hand-copied function
+ * bodies.
  *
- * These functions are extracted from src/content/chatgpt.js and must stay
- * in sync with the source. The DOM-scrape fallback (roleFromNode,
- * attachmentNameFromNode, collectAttachments, chatgpt-dom-v1) was removed
- * from the source entirely -- native capture now covers the one case that
- * ever made it fire for real (a brand-new conversation's URL not yet
- * published, see tests/content/chatgpt_bridge.test.js's "waits for a
- * brand-new conversation's URL" and "captures a temporary chat" cases,
- * which exercise the real source through the integration harness) -- so
- * the tests for those functions were deleted here rather than updated.
+ * This file used to keep local copies of conversationIdFromUrl,
+ * fetchNativePayloadOnDemand, collectAssetDescriptors, and
+ * sandboxPathsFromText that had to be manually kept in sync with the
+ * source. That divergence risk is exactly how src/common.js's buildEnvelope
+ * silently dropping every turn's `blocks` field (polylogue-ah21 regressed)
+ * went unnoticed for as long as it did in the sibling content-script test
+ * files -- a copy tests itself, not the production code. All coverage here
+ * now exercises window.polylogueCapture.capturePage (the one function the
+ * content script IIFE actually exposes) against the real IIFE bodies.
  */
 
-import { describe, it, expect } from "vitest";
+import { Buffer } from "node:buffer";
+import { webcrypto } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Script } from "node:vm";
 
-function conversationIdFromUrl(url) {
-  const parsed = new URL(url);
-  const parts = parsed.pathname.split("/").filter(Boolean);
-  const marker = parts.indexOf("c");
-  return marker >= 0 && parts[marker + 1] ? parts[marker + 1] : null;
+import { JSDOM } from "jsdom";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt_bridge.js"), "utf8");
+const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
+const contentSource = readFileSync(resolve(testDirectory, "../../src/content/chatgpt.js"), "utf8");
+const openDoms = [];
+
+function jsonResponse(body, status = 200) {
+  return new globalThis.Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
-async function fetchNativePayloadOnDemand(pageUrl, fetchImpl) {
-  const conversationId = conversationIdFromUrl(pageUrl);
-  if (!conversationId) return null;
-  try {
-    const response = await fetchImpl(
-      `/backend-api/conversation/${encodeURIComponent(conversationId)}`,
-      {
-        credentials: "include",
-        cache: "no-store",
-      },
-    );
-    const contentType = response.headers.get("content-type") || "";
-    if (!response.ok || !contentType.includes("application/json")) return null;
-    const payload = await response.clone().json();
-    if (!payload || typeof payload !== "object" || !payload.mapping) return null;
-    const payloadConversationId = payload.conversation_id || payload.id;
-    if (payloadConversationId && String(payloadConversationId) !== conversationId)
-      return null;
-    return payload;
-  } catch {
-    return null;
-  }
+function notFoundResponse() {
+  return new globalThis.Response(JSON.stringify({ detail: "not_found" }), { status: 404, headers: { "content-type": "application/json" } });
 }
 
-function makeFetchResponse(payload, options = {}) {
-  const {
-    ok = true,
-    contentType = "application/json",
-    throws = false,
-  } = options;
-  return {
-    ok,
-    headers: {
-      get(name) {
-        return name.toLowerCase() === "content-type" ? contentType : null;
+// Every request this fixture doesn't explicitly answer 404s immediately
+// rather than hanging -- asset acquisition then resolves each descriptor as
+// "missing"/"unauthorized" in milliseconds instead of burning its real
+// 9s-per-asset timeout, which is what makes it safe to assert on the exact
+// descriptor identity (kind/fileId/sandboxPath) these tests care about
+// without the suite becoming slow.
+function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch } = {}) {
+  const dom = new JSDOM("<!doctype html><title>ChatGPT fixture</title>", { url, runScripts: "outside-only" });
+  openDoms.push(dom);
+  const cryptoAdapter = {
+    subtle: {
+      digest(algorithm, data) {
+        return webcrypto.subtle.digest(algorithm, Buffer.from(new dom.window.Uint8Array(data)));
       },
-    },
-    clone() {
-      return {
-        async json() {
-          if (throws) throw new Error("bad json");
-          return payload;
-        },
-      };
     },
   };
+  Object.defineProperty(dom.window, "crypto", { configurable: true, value: cryptoAdapter });
+  Object.defineProperty(dom.window, "fetch", { configurable: true, value: fetch || (async () => notFoundResponse()) });
+  const runtimeListeners = [];
+  const chrome = {
+    runtime: {
+      id: "synthetic-extension-id",
+      getManifest: () => ({ version: "0.1.0" }),
+      onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
+      async sendMessage(message) {
+        if (message.type === "polylogue.capture") {
+          return { ok: true, provider: "chatgpt", provider_session_id: "conversation-1", receiver_request_id: "synthetic-request" };
+        }
+        if (message.type === "polylogue.archiveState") return { captured: true, state: "archived" };
+        return { ok: true };
+      },
+    },
+  };
+  Object.defineProperty(dom.window, "chrome", { configurable: true, value: chrome });
+  Object.defineProperty(dom.window, "postMessage", {
+    configurable: true,
+    value(data) {
+      dom.window.queueMicrotask(() => {
+        dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin, data }));
+      });
+    },
+  });
+  const context = dom.getInternalVMContext();
+  new Script(bridgeSource).runInContext(context);
+  new Script(commonSource).runInContext(context);
+  new Script(contentSource).runInContext(context);
+  function sendRuntimeMessage(message) {
+    return new Promise((resolve, reject) => {
+      const listener = runtimeListeners.find((candidate) => candidate(message, {}, resolve) === true);
+      if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
+    });
+  }
+  return { dom, sendRuntimeMessage };
 }
 
-describe("chatgpt conversationIdFromUrl", () => {
-  it("reads normal conversation routes", () => {
-    expect(conversationIdFromUrl("https://chatgpt.com/c/abc-123")).toBe(
-      "abc-123",
-    );
-  });
-
-  it("reads custom GPT conversation routes", () => {
-    expect(
-      conversationIdFromUrl("https://chatgpt.com/g/g-p-abc/c/conv-123"),
-    ).toBe("conv-123");
-  });
-
-  it("returns null outside conversation routes", () => {
-    expect(conversationIdFromUrl("https://chatgpt.com/g/g-p-abc")).toBe(null);
-  });
-
-  it("returns null for a temporary chat's own route (it never gets /c/<id>)", () => {
-    // src/content/chatgpt.js's isTemporaryChatUrl handles this case
-    // separately (see tests/content/chatgpt_bridge.test.js); this local
-    // conversationIdFromUrl copy stays a plain path parser.
-    expect(
-      conversationIdFromUrl("https://chatgpt.com/?temporary-chat=true"),
-    ).toBe(null);
-  });
+afterEach(() => {
+  for (const dom of openDoms.splice(0)) dom.window.close();
 });
 
-describe("chatgpt fetchNativePayloadOnDemand", () => {
-  it("fetches the current conversation JSON with credentials", async () => {
-    const payload = {
-      conversation_id: "conv-123",
-      title: "Native ChatGPT title",
-      mapping: { node: { message: { content: { parts: ["hello"] } } } },
-    };
+describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
+  it("fetches the current conversation JSON with credentials for an exact capture", async () => {
     const calls = [];
-    const fetchImpl = async (...args) => {
-      calls.push(args);
-      return makeFetchResponse(payload);
-    };
+    const fetch = vi.fn(async (input, options = {}) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      calls.push({ pathname: url.pathname, credentials: options.credentials, cache: options.cache });
+      if (url.pathname === "/backend-api/conversation/conv-123") {
+        return jsonResponse({ conversation_id: "conv-123", title: "Native ChatGPT title", mapping: { node: { id: "node", parent: null, message: { id: "m", author: { role: "user" }, content: { parts: ["hello"] } } } } });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/c/conv-123", fetch });
 
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", fetchImpl),
-    ).resolves.toEqual(payload);
-    expect(calls).toEqual([
-      [
-        "/backend-api/conversation/conv-123",
-        { credentials: "include", cache: "no-store" },
-      ],
-    ]);
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "completion_monitor", providerSessionId: "conv-123" });
+
+    expect(result).toMatchObject({ ok: true, envelope: { session: { provider_session_id: "conv-123", turns: [{ text: "hello" }] } } });
+    expect(calls.find((call) => call.pathname === "/backend-api/conversation/conv-123")).toMatchObject({ credentials: "include", cache: "no-store" });
   });
 
   it("supports custom GPT conversation routes", async () => {
-    const payload = { id: "conv-123", mapping: { node: {} } };
-    const calls = [];
-    const fetchImpl = async (...args) => {
-      calls.push(args);
-      return makeFetchResponse(payload);
-    };
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conv-123") {
+        return jsonResponse({ id: "conv-123", mapping: { node: { id: "node", parent: null, message: { id: "m", author: { role: "user" }, content: { parts: ["hi"] } } } } });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/g/g-p-abc/c/conv-123", fetch });
 
-    await expect(
-      fetchNativePayloadOnDemand(
-        "https://chatgpt.com/g/g-p-abc/c/conv-123",
-        fetchImpl,
-      ),
-    ).resolves.toEqual(payload);
-    expect(calls[0][0]).toBe("/backend-api/conversation/conv-123");
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "completion_monitor", providerSessionId: "conv-123" });
+
+    expect(result.ok).toBe(true);
+    expect(result.envelope.session.provider_session_id).toBe("conv-123");
   });
 
-  it("rejects mismatched, non-json, failed, malformed, and off-route payloads", async () => {
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
-        makeFetchResponse({ conversation_id: "other", mapping: {} }),
-      ),
-    ).resolves.toBe(null);
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
-        makeFetchResponse({ conversation_id: "conv-123", mapping: {} }, {
-          contentType: "text/html",
-        }),
-      ),
-    ).resolves.toBe(null);
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
-        makeFetchResponse({ conversation_id: "conv-123", mapping: {} }, {
-          ok: false,
-        }),
-      ),
-    ).resolves.toBe(null);
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
-        makeFetchResponse({ conversation_id: "conv-123" }),
-      ),
-    ).resolves.toBe(null);
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/c/conv-123", async () =>
-        makeFetchResponse(null, { throws: true }),
-      ),
-    ).resolves.toBe(null);
-    await expect(
-      fetchNativePayloadOnDemand("https://chatgpt.com/", async () =>
-        makeFetchResponse({ mapping: {} }),
-      ),
-    ).resolves.toBe(null);
+  it("returns native_capture_unavailable for a mismatched/off-route/malformed native payload", async () => {
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conv-123") {
+        // Mismatched conversation id in the payload body.
+        return jsonResponse({ conversation_id: "other", mapping: {} });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/c/conv-123", fetch });
+
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
   });
 });
 
-// ---------------------------------------------------------------------------
-// Extracted from src/content/chatgpt.js — keep in sync (asset acquisition)
-// ---------------------------------------------------------------------------
-
-const sandboxLinkPattern = /sandbox:(\/mnt\/data\/[^\s)\]"'>]+)/g;
-
-function sandboxPathsFromText(text) {
-  const paths = [];
-  for (const match of String(text).matchAll(sandboxLinkPattern)) {
-    const path = match[1].replace(/[.,;:!?*`]+$/, "");
-    if (path !== "/mnt/data/" && !paths.includes(path)) paths.push(path);
-  }
-  return paths;
-}
-
-function collectAssetDescriptors(payload) {
-  const mapping = payload && payload.mapping;
-  if (!mapping || typeof mapping !== "object") return [];
-  const descriptors = [];
-  const seen = new Set();
-  const add = (descriptor) => {
-    if (descriptor.provider_attachment_id && !seen.has(descriptor.provider_attachment_id)) {
-      seen.add(descriptor.provider_attachment_id);
-      descriptors.push(descriptor);
-    }
-  };
-  for (const [nodeId, node] of Object.entries(mapping)) {
-    const message = node && node.message;
-    if (!message) continue;
-    const messageId = String(message.id || node.id || nodeId);
-    const metadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
-    for (const attachment of Array.isArray(metadata.attachments) ? metadata.attachments : []) {
-      if (attachment && attachment.id) {
-        add({
-          kind: "file",
-          fileId: String(attachment.id),
-          provider_attachment_id: String(attachment.id),
-          message_provider_id: messageId,
-          name: attachment.name ? String(attachment.name) : null,
-          mime_type: attachment.mime_type ? String(attachment.mime_type) : null
+describe("chatgpt.js asset descriptor identification (through a real capture)", () => {
+  it("collects sandbox links, upload ids, and asset pointers with parser-matching ids", async () => {
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conversation-1") {
+        return jsonResponse({
+          id: "conversation-1",
+          conversation_id: "conversation-1",
+          mapping: {
+            n1: {
+              id: "n1",
+              parent: null,
+              message: {
+                id: "msg-a",
+                author: { role: "assistant" },
+                content: {
+                  content_type: "text",
+                  parts: ["Kit ready: [zip](sandbox:/mnt/data/kit.zip) and [sum](sandbox:/mnt/data/kit.zip.sha256). Again sandbox:/mnt/data/kit.zip."],
+                },
+                metadata: {},
+              },
+            },
+            n2: {
+              id: "n2",
+              parent: "n1",
+              message: {
+                id: "msg-b",
+                author: { role: "user" },
+                content: { content_type: "text", parts: ["please use sandbox:/mnt/data/ignored.zip"] },
+                metadata: { attachments: [{ id: "file-UP1", name: "input.csv", mime_type: "text/csv" }] },
+              },
+            },
+            n3: {
+              id: "n3",
+              parent: "n2",
+              message: {
+                id: "msg-c",
+                author: { role: "assistant" },
+                content: { content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-IMG9" }] },
+                metadata: {},
+              },
+            },
+          },
         });
       }
-    }
-    const content = message.content;
-    const parts = content && Array.isArray(content.parts) ? content.parts : [];
-    const role = message.author && message.author.role;
-    for (const part of parts) {
-      if (part && typeof part === "object" && typeof part.asset_pointer === "string" && part.asset_pointer) {
-        const pointer = part.asset_pointer;
-        const pointerPath = pointer.includes("://") ? pointer.split("://").at(-1) : pointer;
-        const fileIdMatch = pointerPath.match(/file[-_][A-Za-z0-9]+/);
-        if (fileIdMatch) {
-          add({
-            kind: "file",
-            fileId: fileIdMatch[0],
-            provider_attachment_id: pointer,
-            message_provider_id: messageId,
-            name: null,
-            mime_type: null
-          });
-        }
-      }
-      if (typeof part === "string" && role === "assistant") {
-        for (const path of sandboxPathsFromText(part)) {
-          add({
-            kind: "sandbox",
-            sandboxPath: path,
-            provider_attachment_id: `sandbox:${messageId}:${path}`,
-            message_provider_id: messageId,
-            name: path.replace(/\/+$/, "").split("/").at(-1) || null,
-            mime_type: null
-          });
-        }
-      }
-    }
-  }
-  return descriptors;
-}
+      // Every asset metadata/download round trip 404s -- this test cares
+      // about which descriptors were IDENTIFIED, not byte acquisition.
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/c/conversation-1", fetch });
 
-describe("asset descriptor collection", () => {
-  it("collects sandbox links, upload ids, and asset pointers with parser-matching ids", () => {
-    const payload = {
-      mapping: {
-        n1: {
-          id: "n1",
-          message: {
-            id: "msg-a",
-            author: { role: "assistant" },
-            content: {
-              parts: [
-                "Kit ready: [zip](sandbox:/mnt/data/kit.zip) and [sum](sandbox:/mnt/data/kit.zip.sha256). Again sandbox:/mnt/data/kit.zip."
-              ]
-            },
-            metadata: {}
-          }
-        },
-        n2: {
-          id: "n2",
-          message: {
-            id: "msg-b",
-            author: { role: "user" },
-            content: { parts: ["please use sandbox:/mnt/data/ignored.zip"] },
-            metadata: { attachments: [{ id: "file-UP1", name: "input.csv", mime_type: "text/csv" }] }
-          }
-        },
-        n3: {
-          id: "n3",
-          message: {
-            id: "msg-c",
-            author: { role: "assistant" },
-            content: {
-              parts: [{ content_type: "image_asset_pointer", asset_pointer: "file-service://file-IMG9" }]
-            },
-            metadata: {}
-          }
-        }
-      }
-    };
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
 
-    const descriptors = collectAssetDescriptors(payload);
-    const ids = descriptors.map((d) => d.provider_attachment_id);
-    expect(ids).toEqual([
+    expect(result.ok).toBe(true);
+    const acquisition = result.envelope.session.provider_meta.asset_acquisition;
+    const attemptedIds = [...acquisition.failed, ...acquisition.acquired_assets].map((entry) => entry.provider_attachment_id);
+    expect(attemptedIds).toEqual([
       "sandbox:msg-a:/mnt/data/kit.zip",
       "sandbox:msg-a:/mnt/data/kit.zip.sha256",
       "file-UP1",
-      "file-service://file-IMG9"
+      "file-service://file-IMG9",
     ]);
-    const sandbox = descriptors[0];
-    expect(sandbox.kind).toBe("sandbox");
-    expect(sandbox.sandboxPath).toBe("/mnt/data/kit.zip");
-    expect(sandbox.name).toBe("kit.zip");
-    const pointer = descriptors[3];
-    expect(pointer.kind).toBe("file");
-    expect(pointer.fileId).toBe("file-IMG9");
+    expect(acquisition.attempted).toBe(4);
+    // n2's sandbox link is on a user-authored turn, not assistant -- assets
+    // never manifest as user prose, so it must not be identified at all.
+    expect(attemptedIds).not.toContain("sandbox:msg-b:/mnt/data/ignored.zip");
   });
 
-  it("strips trailing punctuation and dedupes sandbox paths", () => {
-    expect(sandboxPathsFromText("see sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,")).toEqual([
-      "/mnt/data/a.md"
-    ]);
+  it("strips trailing punctuation and dedupes sandbox paths within one turn", async () => {
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conversation-1") {
+        return jsonResponse({
+          id: "conversation-1",
+          conversation_id: "conversation-1",
+          mapping: {
+            n1: {
+              id: "n1",
+              parent: null,
+              message: {
+                id: "msg-a",
+                author: { role: "assistant" },
+                content: { content_type: "text", parts: ["see sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,"] },
+                metadata: {},
+              },
+            },
+          },
+        });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/c/conversation-1", fetch });
+
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    const acquisition = result.envelope.session.provider_meta.asset_acquisition;
+    const attemptedIds = [...acquisition.failed, ...acquisition.acquired_assets].map((entry) => entry.provider_attachment_id);
+    expect(attemptedIds).toEqual(["sandbox:msg-a:/mnt/data/a.md"]);
   });
 });
