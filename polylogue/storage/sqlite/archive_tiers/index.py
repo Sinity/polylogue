@@ -484,6 +484,17 @@ CREATE TABLE IF NOT EXISTS blocks (
     -- an unknown reason".
     tool_result_outcome_unknown_reason TEXT
         CHECK ({nullable_check("tool_result_outcome_unknown_reason", ToolResultUnknownReason)}),
+    -- polylogue-vf9x (v49): provider-issued cryptographic attestation for a
+    -- THINKING block (Claude's extended-thinking `signature`; Gemini's
+    -- `thoughtSignatures` are the same construct). Populated whenever the
+    -- wire carries one -- notably including the empty-body thinking blocks
+    -- Claude Code has shipped since ~2026-06, where this is the only
+    -- surviving evidence besides the block's existence. Deliberately
+    -- excluded from content_hash below and from the lineage prefix
+    -- signature (write.py): providers re-sign on every replay, so including
+    -- it would break fork-prefix/citation-anchor matching for otherwise-
+    -- identical replayed content.
+    signature       TEXT,
     -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
     -- (type, text, tool_name, canonical tool_input, semantic/media/language,
     -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/
