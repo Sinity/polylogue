@@ -15,6 +15,7 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_ready,
 )
 from polylogue.storage.raw_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RawReplayPlan,
     RawReplayPlanOutcome,
     RawReplayPlanStatus,
@@ -265,7 +266,7 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
         archive.replace_raw_membership_census(
             raw_id,
             None,
-            parser_fingerprint="revision-membership-v1",
+            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
             censused_at_ms=0,
             detail=BYTE_AUTHORITY_CENSUS_DETAIL,
         )

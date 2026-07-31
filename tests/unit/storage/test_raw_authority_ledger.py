@@ -23,6 +23,7 @@ from polylogue.storage import repair as repair_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_authority import (
     AUTO_STALE_PLAN_RESOLUTION,
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RawReplayPlan,
     RawReplayPlanOutcome,
     RawReplayPlanStatus,
@@ -1260,8 +1261,99 @@ def test_stale_per_raw_parser_fingerprint_is_recensused_before_planning(tmp_path
                 "SELECT parser_fingerprint FROM raw_authority_parser_census WHERE raw_id = ?",
                 (raw_id,),
             ).fetchone()[0]
-            == "revision-membership-v1"
+            == RAW_AUTHORITY_PARSER_FINGERPRINT
         )
+
+
+def _seed_ambiguous_membership_component(
+    tmp_path: Path,
+    *,
+    native_id: str,
+    parser_fingerprint: str | None,
+) -> tuple[str, object]:
+    """Seed one raw whose membership decision is durably 'ambiguous'.
+
+    ``parser_fingerprint`` controls what (if anything) the per-raw
+    ``raw_authority_parser_census`` row records: the CURRENT fingerprint (the
+    ambiguous verdict should still be terminal), a fingerprint listed in
+    ``SUPERSEDED_MEMBERSHIP_FINGERPRINTS`` (the verdict is stale and must be
+    replayable), or ``None`` (no census row at all -- absent evidence must
+    stay conservative and remain terminal).
+    """
+    raw_id = _write_codex_raw(tmp_path, native_id=native_id, source_path=f"{native_id}.jsonl", acquired_at_ms=1)
+    logical_source_key = f"codex-session:{native_id}"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, decision, decided_at_ms
+            ) VALUES (?, ?, ?, ?, ?, 1, 'ambiguous', 1)
+            """,
+            (raw_id, logical_source_key, native_id, "rev-1", bytes(32)),
+        )
+        if parser_fingerprint is not None:
+            conn.execute(
+                """
+                INSERT INTO raw_authority_parser_census (
+                    raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms
+                ) VALUES (?, ?, 'complete', ?, 'test-seeded', 0)
+                """,
+                (raw_id, parser_fingerprint, json.dumps([logical_source_key])),
+            )
+        conn.commit()
+    (plan,) = build_raw_replay_plans(tmp_path, [(raw_id,)])
+    empty_remaining = repair_mod.RawMaterializationCandidates([], 0, 0)
+    (outcome,) = repair_mod._raw_replay_plan_outcomes(tmp_path, [plan], remaining=empty_remaining)
+    return raw_id, outcome
+
+
+def test_ambiguous_verdict_under_current_fingerprint_stays_terminal(tmp_path: Path) -> None:
+    """polylogue-9dxn: an 'ambiguous' decision recorded under the CURRENT
+    classifier fingerprint is still authoritative -- it must not be
+    replayed without new evidence.
+    """
+    initialize_active_archive_root(tmp_path)
+    _raw_id, outcome = _seed_ambiguous_membership_component(
+        tmp_path, native_id="current-ambiguous", parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT
+    )
+    assert outcome.status is RawReplayPlanStatus.TERMINAL
+    assert "ambiguous" in outcome.reason.lower()
+
+
+def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(tmp_path: Path) -> None:
+    """polylogue-9dxn: an 'ambiguous' decision recorded under a fingerprint
+    listed in SUPERSEDED_MEMBERSHIP_FINGERPRINTS is stale -- a corrected
+    classifier deserves a chance to re-derive it, so it must not be
+    terminal.
+
+    Anti-vacuity: this exercises the real production route
+    ``repair._raw_replay_plan_outcome`` (via the public
+    ``build_raw_replay_plans``/``_raw_replay_plan_outcomes`` pair used by
+    ``repair_raw_materialization``, the daemon's live raw-materialization
+    repair entrypoint). Reverting the fingerprint-gating clause added to the
+    terminal query in ``storage/repair.py`` (the ``LEFT JOIN
+    raw_authority_parser_census`` + ``NOT COALESCE(... IN (SELECT value FROM
+    json_each(?)) ...)`` guard) makes this test fail by re-classifying the
+    plan as TERMINAL.
+    """
+    initialize_active_archive_root(tmp_path)
+    superseded_fingerprint = next(iter(raw_authority_mod.SUPERSEDED_MEMBERSHIP_FINGERPRINTS))
+    _raw_id, outcome = _seed_ambiguous_membership_component(
+        tmp_path, native_id="superseded-ambiguous", parser_fingerprint=superseded_fingerprint
+    )
+    assert outcome.status is not RawReplayPlanStatus.TERMINAL
+
+
+def test_ambiguous_verdict_with_no_census_row_stays_terminal(tmp_path: Path) -> None:
+    """polylogue-9dxn: absent census evidence must default to conservative
+    (terminal), not to "assume the classifier fix already applies".
+    """
+    initialize_active_archive_root(tmp_path)
+    _raw_id, outcome = _seed_ambiguous_membership_component(
+        tmp_path, native_id="uncensused-ambiguous", parser_fingerprint=None
+    )
+    assert outcome.status is RawReplayPlanStatus.TERMINAL
 
 
 def test_repair_result_bounds_public_plan_outcomes() -> None:

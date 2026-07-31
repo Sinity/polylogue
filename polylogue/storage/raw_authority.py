@@ -24,7 +24,22 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 
-RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v1"
+RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v2"
+
+#: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
+#: whose classification semantics are known to have been superseded by a
+#: later, deliberately-corrected version of ``classify_membership_revisions``
+#: (polylogue-9dxn). A persisted ``ambiguous`` verdict recorded under one of
+#: these fingerprints is stale, not authoritative -- the terminal-decision
+#: check in ``storage/repair.py`` treats it as replayable instead of durable
+#: debt. A verdict recorded under the CURRENT fingerprint, or with no census
+#: row at all (never independently confirmed which parser produced it),
+#: stays terminal -- absent evidence must default to conservative, not to
+#: "assume it's fixed". This set only affects the *terminal* gate; the
+#: *quiescence* gate (``uncensused_historical_revision_raw_ids``) accepts any
+#: known fingerprint (current or superseded) so a bump does not force a full
+#: archive re-census -- see that function's docstring.
+SUPERSEDED_MEMBERSHIP_FINGERPRINTS = frozenset({"revision-membership-v1"})
 RAW_AUTHORITY_CENSUS_QUERY_PREFIX = "polylogue://raw-authority-census/"
 RAW_AUTHORITY_DETAIL_QUERY_PREFIX = "polylogue://raw-authority-detail/"
 RAW_AUTHORITY_DETAIL_CHUNK_CHARS = 16_384
@@ -2229,6 +2244,7 @@ __all__ = [
     "RAW_AUTHORITY_DETAIL_CHUNK_CHARS",
     "RAW_AUTHORITY_DETAIL_QUERY_PREFIX",
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
+    "SUPERSEDED_MEMBERSHIP_FINGERPRINTS",
     "RawAuthorityCensusReceipt",
     "RawAuthorityCensusResetCounts",
     "OrphanedIndexRevisionSeedCounts",

@@ -28,6 +28,7 @@ from polylogue.sources.revision_backfill import (
     census_historical_revision_evidence,
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -355,9 +356,10 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
             """
             SELECT status, COUNT(*)
             FROM raw_authority_parser_census
-            WHERE parser_fingerprint = 'revision-membership-v1'
+            WHERE parser_fingerprint = ?
             GROUP BY status ORDER BY status
-            """
+            """,
+            (RAW_AUTHORITY_PARSER_FINGERPRINT,),
         ).fetchall()
     assert parser_census == [("complete", 2), ("failed", 1)]
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -694,9 +696,9 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
                 """
                 INSERT INTO raw_authority_parser_census
                     (raw_id, parser_fingerprint, status, logical_keys_json, detail, censused_at_ms)
-                VALUES (?, 'revision-membership-v1', 'complete', ?, 'pre-seeded for test', 0)
+                VALUES (?, ?, 'complete', ?, 'pre-seeded for test', 0)
                 """,
-                (raw_id, json.dumps([key])),
+                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, json.dumps([key])),
             )
         conn.commit()
 

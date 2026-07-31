@@ -56,6 +56,7 @@ from polylogue.storage.message_type_backfill import (
 )
 from polylogue.storage.raw_authority import (
     RAW_REPLAY_NO_PROGRESS_REASON,
+    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     RawAuthorityCensusReceipt,
     RawReplayPlan,
     RawReplayPlanOutcome,
@@ -4429,15 +4430,36 @@ def _raw_replay_plan_outcome(
             "authority comparison produced a durable deferred decision",
             "resolve the recorded authority conflict before retry",
         )
+    # polylogue-9dxn: an 'ambiguous' decision recorded under a classifier
+    # fingerprint since superseded by a correction to
+    # ``classify_membership_revisions`` is stale, not authoritative -- it
+    # must be excluded from the terminal gate so the corrected classifier
+    # gets a chance to re-derive the verdict on replay. A raw with no
+    # ``raw_authority_parser_census`` row (fingerprint unknown) stays
+    # conservative and remains terminal, matching "absent evidence defaults
+    # to current". This gate applies ONLY to the ambiguous legs -- parse
+    # errors and failed membership census rows are unrelated to classifier
+    # semantics and stay unconditionally terminal.
+    superseded_json = json.dumps(sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS))
     terminal = conn.execute(
         f"""
             SELECT 1
-            FROM index_tier.raw_revision_applications
-            WHERE raw_id IN ({placeholders}) AND decision = 'ambiguous'
+            FROM index_tier.raw_revision_applications AS a
+            LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = a.raw_id
+            WHERE a.raw_id IN ({placeholders}) AND a.decision = 'ambiguous'
+              AND NOT COALESCE(
+                  c.parser_fingerprint IN (SELECT value FROM json_each(?)),
+                  0
+              )
             UNION ALL
             SELECT 1
-            FROM raw_session_memberships
-            WHERE raw_id IN ({placeholders}) AND decision = 'ambiguous'
+            FROM raw_session_memberships AS m
+            LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = m.raw_id
+            WHERE m.raw_id IN ({placeholders}) AND m.decision = 'ambiguous'
+              AND NOT COALESCE(
+                  c.parser_fingerprint IN (SELECT value FROM json_each(?)),
+                  0
+              )
             UNION ALL
             SELECT 1
             FROM raw_sessions
@@ -4450,7 +4472,15 @@ def _raw_replay_plan_outcome(
             WHERE raw_id IN ({placeholders}) AND status = 'failed'
             LIMIT 1
             """,
-        (*component, *component, *component, _TRANSIENT_LOCK_PARSE_ERROR, *component),
+        (
+            *component,
+            superseded_json,
+            *component,
+            superseded_json,
+            *component,
+            _TRANSIENT_LOCK_PARSE_ERROR,
+            *component,
+        ),
     ).fetchone()
     if terminal is not None:
         return RawReplayPlanOutcome(

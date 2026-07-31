@@ -45,6 +45,10 @@ from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
+from polylogue.storage.raw_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
+    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
@@ -320,7 +324,7 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
 
 def _resource_blocked_parser_fingerprint(max_payload_bytes: int) -> str:
     """Return the durable admission identity for one bounded census envelope."""
-    return f"revision-membership-v1:resource-blocked:{max_payload_bytes}"
+    return f"{RAW_AUTHORITY_PARSER_FINGERPRINT}:resource-blocked:{max_payload_bytes}"
 
 
 def uncensused_historical_revision_raw_ids(
@@ -331,10 +335,21 @@ def uncensused_historical_revision_raw_ids(
 ) -> tuple[str, ...]:
     """Return inputs whose current parser identity has not been persisted.
 
-    The dedicated receipt proves that the current parser actually observed
-    every relevant raw. Durable revision or membership rows alone may have
-    been produced by an older parser and therefore cannot establish current
-    quiescence.
+    The dedicated receipt proves that *some* parser version whose semantics
+    are still known to this codebase actually observed every relevant raw.
+    Durable revision or membership rows alone may have been produced by an
+    older parser and therefore cannot establish current quiescence.
+
+    This deliberately accepts any *known* fingerprint (the current one, or
+    one listed in ``SUPERSEDED_MEMBERSHIP_FINGERPRINTS``), not only the
+    current one (polylogue-9dxn): the census answers "was this raw ever
+    observed by a real parser?", which a fingerprint bump alone does not
+    change -- only ``classify_membership_revisions`` semantics changing (a
+    superseded fingerprint) can make a *verdict* stale, which is a separate
+    question the terminal-decision check in ``storage/repair.py`` answers.
+    Treating a bump as forcing full re-census here would mean every
+    fingerprint bump re-parses the entire archive just to re-confirm facts
+    that did not change.
     """
     if not raw_ids:
         return ()
@@ -342,6 +357,8 @@ def uncensused_historical_revision_raw_ids(
     resource_blocked_fingerprint = (
         _resource_blocked_parser_fingerprint(max_payload_bytes) if max_payload_bytes is not None else None
     )
+    known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
+    known_placeholders = ",".join("?" for _ in known_fingerprints)
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
         rows = conn.execute(
             f"""
@@ -350,7 +367,7 @@ def uncensused_historical_revision_raw_ids(
             LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
             WHERE r.raw_id IN ({placeholders})
               AND NOT COALESCE(
-                  c.parser_fingerprint = 'revision-membership-v1'
+                  c.parser_fingerprint IN ({known_placeholders})
                   AND c.status = 'complete',
                   0
               )
@@ -361,7 +378,7 @@ def uncensused_historical_revision_raw_ids(
               )
             ORDER BY r.raw_id
             """,
-            [*raw_ids, resource_blocked_fingerprint],
+            [*raw_ids, *known_fingerprints, resource_blocked_fingerprint],
         ).fetchall()
     return tuple(str(row[0]) for row in rows)
 
@@ -440,9 +457,9 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
             membership_census = conn.execute(
                 """
                 SELECT status, detail FROM raw_membership_census
-                WHERE raw_id = ? AND parser_fingerprint = 'revision-membership-v1'
+                WHERE raw_id = ? AND parser_fingerprint = ?
                 """,
-                (raw_id,),
+                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
             ).fetchone()
             membership_keys = [
                 str(row[0])
@@ -477,7 +494,7 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
                 INSERT INTO raw_authority_parser_census (
                     raw_id, parser_fingerprint, status, logical_keys_json,
                     detail, censused_at_ms
-                ) VALUES (?, 'revision-membership-v1', ?, ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, ?, 0)
                 ON CONFLICT(raw_id) DO UPDATE SET
                     parser_fingerprint = excluded.parser_fingerprint,
                     status = excluded.status,
@@ -485,7 +502,13 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
                     detail = excluded.detail,
                     censused_at_ms = excluded.censused_at_ms
                 """,
-                (raw_id, "complete" if complete else "failed", json.dumps(logical_keys), detail),
+                (
+                    raw_id,
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    "complete" if complete else "failed",
+                    json.dumps(logical_keys),
+                    detail,
+                ),
             )
 
 
@@ -554,7 +577,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 None,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail=BYTE_AUTHORITY_CENSUS_DETAIL,
                 manage_transaction=not batched,
@@ -567,7 +590,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 None,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail=str(outcome),
                 manage_transaction=not batched,
@@ -598,7 +621,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 sessions,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 manage_transaction=not batched,
             )
@@ -995,7 +1018,7 @@ def backfill_historical_revision_evidence(
                         archive.replace_raw_membership_census(
                             raw_id,
                             sessions,
-                            parser_fingerprint="revision-membership-v1",
+                            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                             censused_at_ms=0,
                             detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                             retire_full_revision_governance=True,
