@@ -12,7 +12,7 @@ export async function executeProviderPageRequest(request) {
   // the per-call bridge budget is split into ordered, node-aligned chunks
   // (never splitting a single node's JSON) and the caller re-invokes this
   // function once per chunk, reassembling the full mapping on the extension
-  // side. See chunkedChatGptProjection() below.
+  // side. See buildChatGptChunks() below.
   const compactChatGptSourceMaxBytes = 64 * 1024 * 1024;
   const compactChatGptBridgeMaxBytes = 24 * 1024 * 1024;
   // Target size when packing nodes into a chunk, well under the hard bridge
@@ -100,7 +100,7 @@ export async function executeProviderPageRequest(request) {
   // and content types not yet observed). Forwarding the object as-is keeps
   // every current and future content_type's payload without hand-modeling
   // each shape, and costs nothing extra: size is bounded by chunking
-  // (chunkedChatGptProjection), not by dropping fields.
+  // (buildChatGptChunks), not by dropping fields.
   function compactChatGptContent(content) {
     return content && typeof content === "object" ? content : {};
   }
