@@ -2011,6 +2011,99 @@ async def test_live_full_ingest_expands_inbox_zip_members(
 
 
 @pytest.mark.asyncio
+async def test_live_full_ingest_sniffs_zip_provider_for_non_session_siblings(
+    workspace_env: dict[str, Path],
+) -> None:
+    """polylogue-hs3y: a GDPR export ZIP's non-conversation siblings inherit the
+    ZIP's dominant provider instead of independently falling back to unknown.
+
+    A ChatGPT GDPR export ZIP legitimately ships several sibling files
+    alongside ``conversations.json`` -- ``message_feedback.json``,
+    ``shared_conversations.json``, ``user.json``, etc. -- none of which are
+    conversation-shaped on their own. When such a ZIP is dropped into a
+    provider-agnostic watched root (source name not itself a provider
+    token, so ``fallback_provider`` resolves to ``Provider.UNKNOWN``), each
+    ZIP member used to be provider-detected independently with a fresh
+    ``Provider.UNKNOWN`` seed: the real ``conversations.json`` detected
+    cleanly as ChatGPT, but its non-conversation siblings landed in
+    ``raw_sessions`` tagged ``origin='unknown-export'`` even though the ZIP
+    as a whole is unambiguously a ChatGPT export (this is what the live
+    archive's 25 ``unknown-export`` raw rows all turned out to be). Confirm
+    every member -- including the non-session sibling -- now carries the
+    ZIP's sniffed ``chatgpt-export`` origin.
+    """
+    root = workspace_env["data_root"] / "inbox"
+    root.mkdir(parents=True)
+    conversation = {
+        "id": "chatgpt-zip-sniff-1",
+        "conversation_id": "chatgpt-zip-sniff-1",
+        "title": "GDPR export sniff fixture",
+        "create_time": 1_704_067_200.0,
+        "current_node": "a1",
+        "mapping": {
+            "u1": {
+                "id": "u1",
+                "parent": None,
+                "children": ["a1"],
+                "message": {
+                    "id": "u1",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["hello from the export"]},
+                    "create_time": 1_704_067_200.0,
+                },
+            },
+            "a1": {
+                "id": "a1",
+                "parent": "u1",
+                "children": [],
+                "message": {
+                    "id": "a1",
+                    "author": {"role": "assistant"},
+                    "content": {"content_type": "text", "parts": ["hi there"]},
+                    "create_time": 1_704_067_201.0,
+                },
+            },
+        },
+    }
+    zip_path = root / "chatgpt-data-2026-04-23.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("conversations.json", json.dumps([conversation]))
+        zf.writestr("message_feedback.json", json.dumps([{"conversation_id": "chatgpt-zip-sniff-1", "rating": 1}]))
+
+    db_path = workspace_env["data_root"] / "inbox-zip-sniff-live.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    cursor = CursorStore(db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="inbox", root=root),),
+        cursor=cursor,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+
+    try:
+        metrics = await processor.ingest_files([zip_path], emit_event=False)
+
+        assert ("inbox", "chatgpt-export:chatgpt-zip-sniff-1") in metrics.new_sessions
+
+        session = await archive.get_session("chatgpt-export:chatgpt-zip-sniff-1")
+        assert session is not None
+
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+            rows = conn.execute(
+                "SELECT source_path, origin FROM raw_sessions WHERE source_path LIKE ?",
+                (f"{zip_path}:%",),
+            ).fetchall()
+        origins_by_member = {source_path.rsplit(":", 1)[-1]: origin for source_path, origin in rows}
+        assert origins_by_member.get("conversations.json") == "chatgpt-export"
+        assert origins_by_member.get("message_feedback.json") == "chatgpt-export", (
+            f"non-conversation ZIP sibling should inherit the sniffed ZIP provider, got {origins_by_member!r}"
+        )
+        assert "unknown-export" not in origins_by_member.values()
+    finally:
+        await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_live_full_ingest_detects_provider_when_source_name_is_not_provider(
     workspace_env: dict[str, Path],
 ) -> None:

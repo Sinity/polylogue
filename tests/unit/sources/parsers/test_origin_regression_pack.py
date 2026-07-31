@@ -1048,6 +1048,62 @@ def test_browser_capture_snapshot_dispatches_to_chatgpt_export_origin() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Gemini CLI JSONL checkpoint / Claude Code sessionId collision (polylogue-hs3y)
+# ---------------------------------------------------------------------------
+#
+# Gemini CLI's ``.jsonl`` chat-log checkpoint format opens with a
+# session-metadata *stub* record (no embedded ``messages`` list -- turns
+# arrive as later lines instead), shaped exactly like the live archive rows
+# recovered under ``~/.gemini/tmp/*/chats/*.jsonl``: real field names
+# (``sessionId``, ``projectHash``, ``startTime``, ``lastUpdated``, ``kind``),
+# synthetic values. Before the fix, this stub's bare ``sessionId`` key alone
+# satisfied ``claude.looks_like_code``'s ``_STRONG_SESSION_KEYS`` check,
+# misdetecting a freshly-opened Gemini CLI session as ``claude-code-session``.
+
+
+def _gemini_cli_jsonl_checkpoint_stream() -> list[dict[str, Any]]:
+    """A Gemini CLI ``.jsonl`` checkpoint: session-open stub + per-turn lines."""
+    return [
+        {
+            "sessionId": "gemini-cli-jsonl-reg-1",
+            "projectHash": "project-hash-jsonl-reg",
+            "startTime": "2026-04-26T07:13:41.172Z",
+            "lastUpdated": "2026-04-26T07:13:41.172Z",
+            "kind": "main",
+        },
+        {
+            "id": "turn-1",
+            "timestamp": "2026-04-26T07:13:51.467Z",
+            "type": "user",
+            "content": [{"text": "why is DEEPSEEK_API_KEY empty?"}],
+        },
+        {"$set": {"lastUpdated": "2026-04-26T07:13:51.467Z"}},
+    ]
+
+
+def test_gemini_cli_jsonl_checkpoint_stub_does_not_collide_with_claude_code() -> None:
+    """polylogue-hs3y: a Gemini CLI checkpoint stub must not detect as Claude Code.
+
+    Documents the collision this guards: the stub record alone WOULD satisfy
+    Claude Code's ``_STRONG_SESSION_KEYS`` bare-``sessionId`` rule if the
+    Gemini CLI structural detector didn't run first.
+    """
+    payload = _gemini_cli_jsonl_checkpoint_stream()
+    stub = payload[0]
+
+    assert claude_code_looks_like([stub]), (
+        "fixture no longer demonstrates the sessionId collision this regression guards"
+    )
+    assert looks_like_gemini_cli(stub)
+
+    detected = detect_provider(payload)
+    assert detected is Provider.GEMINI_CLI, (
+        f"expected Gemini CLI checkpoint stub to detect as GEMINI_CLI, got {detected!r}"
+    )
+    assert origin_from_provider(detected) is Origin.GEMINI_CLI_SESSION
+
+
+# ---------------------------------------------------------------------------
 # Antigravity degraded-flag regression (#1764)
 # ---------------------------------------------------------------------------
 # The brain-metadata fragmentation test extends the test in

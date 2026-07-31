@@ -241,7 +241,18 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
         # one-element sequence on the stream path. Preserve the established
         # Claude-Code-before-Codex sequence ordering while restoring this
         # stronger local-session discriminator ahead of weaker family shapes.
-        if len(payloads) == 1 and local_agent.looks_like_gemini_cli(first_record):
+        # Gemini CLI's ``.jsonl`` chat-log checkpoint format is a genuinely
+        # different multi-line shape: a session-open stub record (no
+        # ``messages`` key -- see ``local_agent.looks_like_gemini_cli``)
+        # followed by one JSON object per turn/event, so it reaches here as
+        # a many-element sequence whose bare ``sessionId`` field otherwise
+        # collides with Claude Code's own ``_STRONG_SESSION_KEYS`` (#3428
+        # sibling gap, polylogue-hs3y). Trust the stub shape at any sequence
+        # length; keep the ``messages``-embedded shape restricted to the
+        # single-document case above, unchanged.
+        if local_agent.looks_like_gemini_cli(first_record) and (
+            len(payloads) == 1 or not isinstance(first_record.get("messages"), list)
+        ):
             return Provider.GEMINI_CLI
         if browser_capture.looks_like(first_record):
             return _detect_provider_from_record(first_record)
