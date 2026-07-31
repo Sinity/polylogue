@@ -43,6 +43,42 @@ def _object_ref(ref: str) -> str:
     return f"{prefix}:{object_id}"
 
 
+async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, method: str | None) -> str:
+    """Project the current billing cycle for ``plan_name`` (``get`` tool, ``cost-outlook:`` refs).
+
+    Mirrors the CLI ``analyze --cost-outlook`` call shape
+    (``polylogue/cli/query_verbs.py``) so both surfaces share one
+    ``Polylogue.cost_outlook`` production route rather than redefining the
+    projection or its "no cycle window" degradation here.
+    """
+    from polylogue.cost.outlook import ProjectionMethod
+    from polylogue.cost.plans import PlanLookupError
+    from polylogue.insights.projection_contracts import cost_outlook_availability
+
+    if not plan_name.strip():
+        return hooks.error_json("cost-outlook ref requires a plan name", code="invalid_argument", tool="get")
+    try:
+        projection_method = ProjectionMethod(method) if method else ProjectionMethod.linear
+    except ValueError:
+        valid = ", ".join(item.value for item in ProjectionMethod)
+        return hooks.error_json(
+            f"unsupported cost-outlook projection {method!r}; expected one of: {valid}",
+            code="invalid_argument",
+            tool="get",
+        )
+    try:
+        outlook = await hooks.get_polylogue().cost_outlook(plan_name, method=projection_method)
+    except PlanLookupError as exc:
+        return hooks.error_json(str(exc), code="invalid_argument", tool="get")
+    if outlook is None:
+        availability = cost_outlook_availability(plan_name, ready=False, elapsed_s=0.0)
+        return hooks.json_payload(
+            MCPRootPayload(root={"outlook": None, "availability": availability.model_dump(mode="json")}),
+            exclude_none=True,
+        )
+    return hooks.json_payload(outlook, exclude_none=True)
+
+
 async def _query_sessions(
     hooks: ServerCallbacks,
     *,
@@ -674,11 +710,21 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``turn_context`` policy facts, Claude Code sidecar events, Hermes
         tool-availability spans, and similar provider evidence that rides the
         timeline rather than a dialogue message.
+
+        ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
+        for a configured subscription plan (the standalone ``cost_outlook``
+        MCP tool retired by the six-tool cutover, #3095/polylogue-t46.8, has
+        no replacement otherwise -- see polylogue-hg97). ``projection``
+        selects the projection method (``linear`` default, ``trailing-7d-mean``,
+        or ``eom-naive``).
         """
         normalized = _object_ref(ref)
         session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
+        plan_name = normalized.removeprefix("cost-outlook:") if normalized.startswith("cost-outlook:") else None
 
         async def run() -> str:
+            if plan_name is not None:
+                return await _cost_outlook_payload(hooks, plan_name=plan_name, method=projection)
             if projection == "events" and session_id is not None:
                 events = await hooks.get_polylogue().get_session_events(session_id)
                 if events is None:
