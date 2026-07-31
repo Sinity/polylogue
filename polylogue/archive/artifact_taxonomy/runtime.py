@@ -307,6 +307,27 @@ def _classify_dict(
     # cycle described below. List streams import the same pair locally.
     from polylogue.sources.parsers.hermes_spans import looks_like_atif_payload
 
+    if provider is Provider.CHATGPT:
+        from polylogue.sources.parsers.chatgpt_codex_sidecar import looks_like as looks_like_codex_task
+
+        if looks_like_codex_task(payload):
+            # bd polylogue-2m2e: codex.json Codex Cloud tasks delivered
+            # inside the ChatGPT export. None of the generic session-document
+            # heuristics below recognize this shape (no "mapping"/"messages"
+            # list), and it also fails looks_metadataish_dict (its "turns"
+            # list is not scalarish), so without this branch every task fell
+            # through to UNKNOWN/parse_as_session=False and was silently
+            # dropped before dispatch.py's chatgpt_codex_task lowering ever
+            # ran.
+            return ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.SESSION_DOCUMENT,
+                parse_as_session=True,
+                schema_eligible=True,
+                default_priority=100,
+                reason="ChatGPT export codex.json Codex Cloud task",
+            )
+
     if provider is Provider.BEADS and looks_like_beads_interaction(payload):
         return ArtifactClassification(
             provider=provider,
