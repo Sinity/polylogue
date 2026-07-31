@@ -29,7 +29,11 @@ from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.models import Message, Session, SessionSummary
-from polylogue.archive.query.search_hits import DEFAULT_SEARCH_SNIPPET_MAX_CHARS, SessionSearchHit
+from polylogue.archive.query.search_hits import (
+    DEFAULT_SEARCH_SNIPPET_MAX_CHARS,
+    DEFAULT_TITLE_MAX_CHARS,
+    SessionSearchHit,
+)
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.cli.query_contracts import describe_query_filters
 from polylogue.cli.query_output import (
@@ -549,6 +553,86 @@ class TestListFormatting:
             snippet = rendered.split("needle", maxsplit=1)[1]
         assert len(snippet) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS + 64
         assert "..." in snippet
+
+    @pytest.mark.parametrize("output_format", ["json", "ndjson", "yaml", "csv", "text"])
+    def test_format_summary_list_bounds_giant_titles_across_every_format(self, output_format: str) -> None:
+        """polylogue-x7d: a giant multiline title must not explode machine
+        output. Before the shared ``bound_display_title`` contract, only the
+        plain-text renderer bounded the title (~50 chars); ``json``/
+        ``ndjson``/``yaml``/``csv`` carried the full unbounded value because
+        each output path built its row independently.
+        """
+        giant_title = "needle\n" + "\n".join(f"line {index} of a runaway title" for index in range(200))
+        summary = SessionSummary(
+            id=SessionId("conv-giant-title"),
+            origin=Origin.CLAUDE_AI_EXPORT,
+            title=giant_title,
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+        )
+
+        rendered = format_summary_list([summary], output_format, None, message_counts={"conv-giant-title": 1})
+
+        assert "line 100 of a runaway title" not in rendered
+        assert "\n".join(f"line {index} of a runaway title" for index in range(50)) not in rendered
+        if output_format == "text":
+            # The interactive text renderer uses its own (narrower, terminal-
+            # width-aware) title budget via ``_display_title`` -- a separate,
+            # deliberately different concern from the fixed machine-payload
+            # budget this test targets. The shared-truncation assertion
+            # above (no runaway repeated content survives) is what matters
+            # here; exact-length parity is asserted for the machine formats.
+            return
+        if output_format == "json":
+            title = json.loads(rendered)["items"][0]["title"]
+        elif output_format == "ndjson":
+            title = json.loads(rendered.splitlines()[0])["title"]
+        elif output_format == "yaml":
+            title = yaml.safe_load(rendered)["items"][0]["title"]
+        else:
+            title = rendered.splitlines()[1].split(",")[3]
+        assert "\n" not in title
+        assert len(title) <= DEFAULT_TITLE_MAX_CHARS + 3
+        assert "..." in title
+
+    @pytest.mark.parametrize("output_format", ["json", "ndjson", "yaml", "csv", "text"])
+    def test_format_search_hit_list_bounds_giant_titles_across_every_format(self, output_format: str) -> None:
+        """polylogue-x7d: same giant-title bug, on the search-hit row path."""
+        giant_title = "needle\n" + "\n".join(f"line {index} of a runaway title" for index in range(200))
+        summary = SessionSummary(
+            id=SessionId("conv-giant-hit-title"),
+            origin=Origin.CLAUDE_AI_EXPORT,
+            title=giant_title,
+            created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
+        )
+        hit = SessionSearchHit(
+            summary=summary,
+            rank=1,
+            retrieval_lane="dialogue",
+            match_surface="message",
+            message_id="msg-giant-title",
+            snippet="[needle] in context",
+        )
+
+        rendered = format_search_hit_list([hit], output_format, None, message_counts={"conv-giant-hit-title": 1})
+
+        assert "line 100 of a runaway title" not in rendered
+        if output_format == "text":
+            # Same interactive-vs-machine budget split as the summary-list
+            # variant of this test; see the comment there.
+            return
+        if output_format == "json":
+            title = json.loads(rendered)["items"][0]["session"]["title"]
+        elif output_format == "ndjson":
+            title = json.loads(rendered.splitlines()[0])["session"]["title"]
+        elif output_format == "yaml":
+            title = yaml.safe_load(rendered)["items"][0]["session"]["title"]
+        else:
+            title = rendered.splitlines()[1].split(",")[3]
+        assert "\n" not in title
+        assert len(title) <= DEFAULT_TITLE_MAX_CHARS + 3
+        assert "..." in title
 
     def test_cli_list_json_envelope_matches_mcp_list_sessions_shape(self) -> None:
         """#1618: CLI ``--format json`` list output emits the same

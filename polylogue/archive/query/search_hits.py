@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config
 
 DEFAULT_SEARCH_SNIPPET_MAX_CHARS = 320
+DEFAULT_TITLE_MAX_CHARS = 96
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +85,14 @@ def build_search_snippet(text: str, query_terms: tuple[str, ...]) -> str:
     return snippet
 
 
+def _bound_normalized_text(normalized: str, *, max_chars: int) -> str:
+    if max_chars <= 3:
+        return normalized[:max_chars]
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[: max_chars - 3].rstrip()}..."
+
+
 def bound_search_snippet(
     snippet: str | None,
     *,
@@ -93,11 +102,28 @@ def bound_search_snippet(
     if snippet is None:
         return None
     normalized = " ".join(snippet.split())
-    if max_chars <= 3:
-        return normalized[:max_chars]
-    if len(normalized) <= max_chars:
-        return normalized
-    return f"{normalized[: max_chars - 3].rstrip()}..."
+    return _bound_normalized_text(normalized, max_chars=max_chars)
+
+
+def bound_display_text(value: object, *, max_chars: int = DEFAULT_TITLE_MAX_CHARS) -> str:
+    """Single-line-normalize and truncate arbitrary display text.
+
+    Shared row-projection budget primitive (polylogue-x7d): titles, short
+    text previews, and non-search-hit snippets across CLI/API/MCP row
+    surfaces all bound through this one truncation rule instead of each
+    surface carrying its own copy that can silently drift out of sync
+    (the original bug: ``format_summary_list``'s JSON title output was
+    completely unbounded while its plain-text sibling truncated to 50
+    chars — a giant title exploded machine-readable output even though
+    the interactive table stayed legible).
+    """
+    normalized = " ".join(str(value).split()) if value is not None else ""
+    return _bound_normalized_text(normalized, max_chars=max_chars)
+
+
+def bound_display_title(value: object, fallback: object = "", *, max_chars: int = DEFAULT_TITLE_MAX_CHARS) -> str:
+    """Bound a display title, falling back to ``fallback`` when empty."""
+    return bound_display_text(value or fallback, max_chars=max_chars)
 
 
 def search_hit_surface(retrieval_lane: str) -> str:
@@ -325,7 +351,10 @@ def _archive_summary_to_domain(summary: object) -> SessionSummary:
 
 __all__ = [
     "DEFAULT_SEARCH_SNIPPET_MAX_CHARS",
+    "DEFAULT_TITLE_MAX_CHARS",
     "SessionSearchHit",
+    "bound_display_text",
+    "bound_display_title",
     "bound_search_snippet",
     "build_search_snippet",
     "session_search_hit_from_session",

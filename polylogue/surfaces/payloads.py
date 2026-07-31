@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from typing_extensions import Self, TypedDict
 
+from polylogue.archive.query.search_hits import bound_display_title
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
@@ -897,7 +898,7 @@ class SessionSummaryPayload(SurfacePayloadModel):
         return cls(
             id=session_id,
             origin=summary.origin,
-            title=summary.display_title,
+            title=bound_display_title(summary.display_title, session_id),
             title_source=summary.title_source.value if summary.title_source else None,
             title_ref=summary.title_ref,
             title_confidence=summary.title_confidence,
@@ -980,7 +981,7 @@ class SessionListRowPayload(SurfacePayloadModel):
         return cls(
             id=session_id,
             origin=session.origin,
-            title=session.display_title,
+            title=bound_display_title(session.display_title, session_id),
             title_source=session.title_source.value if session.title_source else None,
             title_ref=session.title_ref,
             title_confidence=session.title_confidence,
@@ -1014,7 +1015,7 @@ class SessionListRowPayload(SurfacePayloadModel):
         return cls(
             id=session_id,
             origin=summary.origin,
-            title=summary.display_title,
+            title=bound_display_title(summary.display_title, session_id),
             title_source=summary.title_source.value if summary.title_source else None,
             title_ref=summary.title_ref,
             title_confidence=summary.title_confidence,
