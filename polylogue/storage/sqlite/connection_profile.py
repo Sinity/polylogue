@@ -39,6 +39,7 @@ class SQLiteConnectionProfile:
     wal_autocheckpoint_pages: int | None = None
     journal_size_limit_bytes: int | None = None
     query_only: bool = False
+    locking_mode: str | None = None
 
     @property
     def pragma_statements(self) -> tuple[str, ...]:
@@ -67,6 +68,12 @@ class SQLiteConnectionProfile:
             statements.append(f"PRAGMA journal_size_limit = {self.journal_size_limit_bytes}")
         if self.query_only:
             statements.append("PRAGMA query_only = ON")
+        if self.locking_mode is not None:
+            # Deliberately qualified to ``main``: an unqualified locking_mode
+            # pragma also applies to every attached database (and becomes the
+            # default for later ATTACHes), which would exclusively lock shared
+            # durable tiers (user.db/ops.db) out from under concurrent readers.
+            statements.append(f"PRAGMA main.locking_mode = {self.locking_mode}")
         return tuple(statements)
 
 
@@ -160,6 +167,12 @@ BULK_BUILD_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     foreign_keys=True,
     journal_mode="MEMORY",
     synchronous="OFF",
+    # An owned inactive generation has exactly one writer and zero readers
+    # until promoted, so per-transaction lock acquisition/release syscall
+    # churn is pure waste. EXCLUSIVE holds the file lock for the connection
+    # lifetime. The promote path closes this connection before the pointer
+    # swap, so the exclusive hold never outlives the build.
+    locking_mode="EXCLUSIVE",
 )
 
 READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
