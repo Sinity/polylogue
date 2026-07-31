@@ -286,6 +286,48 @@ describe("first-party provider page transport", () => {
     for (let index = 0; index < 4; index += 1) {
       expect(collected[`node-${index}`].message.content.parts[0]).toHaveLength(7 * 1024 * 1024);
     }
+
+    // The cache entry is freed the moment the last chunk is served, not
+    // held until its TTL lapses -- re-requesting the final chunk index now
+    // must be a cache miss (a completed transfer, re-requested, either
+    // refetches from scratch or fails loud; it must not silently succeed
+    // off a projection that should already be gone).
+    const afterCompletion = await executeProviderPageRequest({
+      provider: "chatgpt",
+      operation: "conversation",
+      params: { nativeId: "conversation-1", chunkIndex: body0.totalChunks - 1 },
+      maxResponseBytes: 32 * 1024 * 1024,
+    });
+    expect(afterCompletion).toEqual({ ok: false, error: "backfill_bridge_chunk_cache_miss" });
+  });
+
+  it("preserves each node's `children` ordering across the projection (branch_index depends on it)", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        mapping: {
+          root: { id: "root", parent: null, children: ["reply-b", "reply-a"], message: { id: "root-msg", author: { role: "user" }, content: { parts: ["question"] } } },
+          "reply-a": { id: "reply-a", parent: "root", children: [], message: { id: "reply-a-msg", author: { role: "assistant" }, content: { parts: ["first regeneration"] } } },
+          "reply-b": { id: "reply-b", parent: "root", children: [], message: { id: "reply-b-msg", author: { role: "assistant" }, content: { parts: ["second regeneration"] } } },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    const body = JSON.parse(result.response.body);
+    // The order here (reply-b before reply-a) is deliberately not sorted --
+    // polylogue.sources.parsers.chatgpt.extract_messages_from_mapping reads
+    // this exact array to compute branch_index (a sibling's position within
+    // it), so the projection must forward it byte-for-byte, not a
+    // recomputed or alphabetized version.
+    expect(body.mapping.root.children).toEqual(["reply-b", "reply-a"]);
+    expect(body.mapping["reply-a"].children).toEqual([]);
   });
 
   it("fails loud on a stale chunk request instead of silently reassembling a truncated conversation", async () => {
@@ -301,6 +343,52 @@ describe("first-party provider page transport", () => {
     const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "never-fetched-conversation", chunkIndex: 3 }, maxResponseBytes: 32 * 1024 * 1024 });
 
     expect(result).toEqual({ ok: false, error: "backfill_bridge_chunk_cache_miss" });
+  });
+
+  it("evicts an abandoned-midway chunk cache entry instead of holding it for the life of the tab", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      const mapping = {};
+      for (let index = 0; index < 4; index += 1) {
+        mapping[`node-${index}`] = { id: `node-${index}`, parent: null, message: { id: `message-${index}`, author: { role: "assistant" }, content: { parts: ["x".repeat(7 * 1024 * 1024)] } } };
+      }
+      return new Response(JSON.stringify({ id: "abandoned-conversation", mapping }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+    const nowSpy = vi.spyOn(Date, "now");
+    try {
+      let simulatedNowMs = Date.now();
+      nowSpy.mockImplementation(() => simulatedNowMs);
+
+      // Start a chunked fetch and stop after chunk 0 -- the caller crashed,
+      // cancelled, or the extension reloaded mid-reassembly. No later call
+      // ever asks for this nativeId again.
+      const chunk0 = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "abandoned-conversation" }, maxResponseBytes: 32 * 1024 * 1024 });
+      expect(JSON.parse(chunk0.response.body).chunked).toBe(true);
+
+      expect(globalThis.window.__polylogueChatGptChunkCache.has("abandoned-conversation")).toBe(true);
+
+      // Past the TTL, but nothing has touched the chunk cache yet.
+      simulatedNowMs += 6 * 60 * 1000;
+
+      // Any other bridge call (identity, inventory, an unrelated
+      // conversation) sweeps expired entries -- this is what must free the
+      // abandoned projection; there is no separate cleanup trigger. Note
+      // this deliberately never touches "abandoned-conversation" again --
+      // the lazy TTL check inside a same-nativeId lookup (already present
+      // before this fix) would also reject a later chunk request for it,
+      // which would pass even without a real sweep. The actual defect is
+      // that nothing frees the entry when the nativeId is NEVER revisited,
+      // so the proof has to be that the map entry itself is gone.
+      await executeProviderPageRequest({ provider: "chatgpt", operation: "identity", params: {} });
+
+      expect(globalThis.window.__polylogueChatGptChunkCache.has("abandoned-conversation")).toBe(false);
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("preserves completion and asset descriptors in the bounded ChatGPT projection", async () => {

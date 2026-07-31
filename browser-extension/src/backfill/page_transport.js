@@ -27,6 +27,19 @@ export async function executeProviderPageRequest(request) {
   const maxChatGptChunks = 64;
   window.__polylogueChatGptChunkCache = window.__polylogueChatGptChunkCache || new Map();
   const chunkCache = window.__polylogueChatGptChunkCache;
+  // The cache entry for a fully-served conversation is deleted right after
+  // its last chunk goes out (see compactChatGptConversation). This sweep is
+  // the other half: an operator tab can live for days, and a caller that
+  // starts pulling chunks then never finishes (crash, cancel, extension
+  // reload mid-reassembly) would otherwise leave tens of MiB of projected
+  // chunks parked in this page global indefinitely -- nothing else ever
+  // revisits an abandoned nativeId to trigger the TTL check inside
+  // compactChatGptConversation. Runs on every bridge call (identity checks
+  // happen far more often than conversation fetches), so an abandoned entry
+  // is swept within one TTL window of being abandoned, not forever.
+  for (const [cachedNativeId, cached] of chunkCache) {
+    if (Date.now() - cached.createdAtMs > chunkCacheTtlMs) chunkCache.delete(cachedNativeId);
+  }
   const originalFetch = window.fetch;
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const maxResponseBytes = Number.isInteger(request?.maxResponseBytes)
@@ -133,6 +146,16 @@ export async function executeProviderPageRequest(request) {
     return {
       id: typeof node.id === "string" ? node.id : null,
       parent: typeof node.parent === "string" ? node.parent : null,
+      // polylogue.sources.parsers.chatgpt.extract_messages_from_mapping
+      // derives branch_index EXCLUSIVELY from the parent node's `children`
+      // array position (a sibling's index within its parent's children,
+      // not anything computed from the child itself) -- dropping this
+      // field silently loses branch/variant ordering forever once this
+      // projection is the durable raw capture, the exact defect class this
+      // fix exists to eliminate, just one level up (node topology instead
+      // of message content). Preserved as an array of node-id strings,
+      // same shape the provider sends.
+      children: Array.isArray(node.children) ? node.children.filter((childId) => typeof childId === "string") : [],
       message: message && typeof message === "object"
         ? {
             ...message,
@@ -228,6 +251,14 @@ export async function executeProviderPageRequest(request) {
       totalChunks: projectedChunks.length,
       mapping: projectedChunks[chunkIndex],
     });
+    // The last chunk has now been built and is about to be returned to the
+    // caller: free the cached projection immediately rather than waiting
+    // for the TTL sweep above or a future call that may never come. Safe to
+    // do before the size check below -- if that check throws, the caller
+    // never got a successful last-chunk response and will restart the whole
+    // fetch from chunkIndex 0 on retry, which is correct (a partial/rejected
+    // last chunk is not a completed transfer either way).
+    if (chunkIndex === projectedChunks.length - 1) chunkCache.delete(nativeId);
     const bytes = new globalThis.TextEncoder().encode(projected).length;
     if (bytes > compactChatGptBridgeMaxBytes) {
       throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
