@@ -178,7 +178,7 @@ async def _capture_message_cases(
 ) -> list[JSONDocument]:
     payloads: list[JSONDocument] = []
     for session_id in session_ids:
-        messages, total = await poly.get_messages_paginated(session_id, limit=limit, offset=0)
+        messages, total, _completeness = await poly.get_messages_paginated(session_id, limit=limit, offset=0)
         payloads.append(
             require_json_document(
                 {

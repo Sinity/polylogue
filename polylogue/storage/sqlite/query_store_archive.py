@@ -14,6 +14,7 @@ from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,
     FileEditRecord,
+    LineageCompleteness,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -163,9 +164,9 @@ class SQLiteQueryStoreArchiveMixin:
         message_type: MessageTypeName | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[MessageRecord], int]:
+    ) -> tuple[list[MessageRecord], int, LineageCompleteness]:
         async with self._connection_factory() as conn:
-            messages, total = await messages_q.get_messages_paginated(
+            messages, total, completeness = await messages_q.get_messages_paginated(
                 conn,
                 session_id,
                 message_role=message_role,
@@ -174,12 +175,16 @@ class SQLiteQueryStoreArchiveMixin:
                 offset=offset,
             )
         if not messages:
-            return [], total
+            return [], total, completeness
         blocks_by_message = await self.get_blocks([message.message_id for message in messages])
         for message in messages:
             message.blocks = blocks_by_message.get(message.message_id, [])
             _hydrate_message_text_from_blocks(message)
-        return messages, total
+        return messages, total, completeness
+
+    async def get_lineage_completeness(self, session_id: str) -> LineageCompleteness:
+        async with self._connection_factory() as conn:
+            return await messages_q.get_lineage_completeness(conn, session_id)
 
     async def get_message_edge_windows(
         self,

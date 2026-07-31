@@ -3376,6 +3376,13 @@ class SessionMessagesResponsePayload(SurfacePayloadModel):
     total: int
     limit: int
     offset: int
+    # polylogue-ppkj: whether ``messages`` is a page of the full composed
+    # lineage transcript, or was silently truncated by a dangling branch
+    # point / depth-limited composition. Mirrors the MCP surface's
+    # ``lineage_complete``/``lineage_truncation_reason`` fields (the
+    # previously "safe" surface for this same signal).
+    lineage_complete: bool = True
+    lineage_truncation_reason: str | None = None
 
 
 ProjectionAvailabilityState = Literal["ready", "degraded", "unavailable"]

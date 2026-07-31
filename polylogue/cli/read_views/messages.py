@@ -112,7 +112,7 @@ def _write_messages_file(
     async def _run() -> None:
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             try:
-                _, total = await api.get_messages_paginated(session_id, limit=1, offset=0)
+                _, total, _completeness = await api.get_messages_paginated(session_id, limit=1, offset=0)
             except SessionNotFoundError:
                 env.ui.error(f"Session not found: {session_id}")
                 return

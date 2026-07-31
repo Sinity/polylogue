@@ -55,6 +55,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
+from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -5256,10 +5257,14 @@ class PolylogueArchiveMixin:
         limit: int = 50,
         offset: int = 0,
         content_projection: ContentProjectionSpec | None = None,
-    ) -> tuple[list[Message], int]:
+    ) -> tuple[list[Message], int, LineageCompleteness]:
         """Return paginated ``Message`` objects for a session.
 
-        Raises ``SessionNotFoundError`` if the session does not exist.
+        Raises ``SessionNotFoundError`` if the session does not exist. The
+        third element reports whether the composed transcript is the full
+        logical transcript or was silently truncated by a dangling lineage
+        branch point / depth-limited composition (polylogue-ppkj) -- the same
+        read-time signal the MCP surface already carries.
         """
         if material_origin:
             session = await self.get_session(session_id, content_projection=content_projection)
@@ -5275,10 +5280,11 @@ class PolylogueArchiveMixin:
                     material_origin=material_origin,
                 )
             ]
-            return messages[offset : offset + limit], len(messages)
+            completeness = await self.repository.get_lineage_completeness(session_id)
+            return messages[offset : offset + limit], len(messages), completeness
 
         resolved_session_id = await self.repository.resolve_id(session_id) or session_id
-        messages, total = await self.repository.get_messages_paginated(
+        messages, total, completeness = await self.repository.get_messages_paginated(
             resolved_session_id,
             message_role=message_role,
             message_type=message_type,
@@ -5289,7 +5295,7 @@ class PolylogueArchiveMixin:
             raise SessionNotFoundError(session_id)
         if content_projection is not None and content_projection.filters_content():
             messages = project_message_content(messages, content_projection)
-        return messages, total
+        return messages, total, completeness
 
     def iter_messages(
         self,

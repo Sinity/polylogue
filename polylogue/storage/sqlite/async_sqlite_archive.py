@@ -65,6 +65,7 @@ from polylogue.storage.insights.session.runtime import SessionInsightStatusSnaps
 from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,
+    LineageCompleteness,
     MessageRecord,
     SessionEventRecord,
     SessionRecord,
@@ -133,11 +134,13 @@ class SQLiteArchiveMixin:
         message_type: MessageTypeName | None = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> tuple[list[MessageRecord], int]:
+    ) -> tuple[list[MessageRecord], int, LineageCompleteness]:
         """Get paginated messages for a session with optional filters.
 
-        Returns (messages, total_count) where total_count is the count of
-        messages matching the filters before pagination.
+        Returns (messages, total_count, lineage_completeness) where
+        total_count is the count of messages matching the filters before
+        pagination, and lineage_completeness reports whether the composed
+        transcript was silently truncated (polylogue-ppkj).
         """
         return await self.queries.get_messages_paginated(
             session_id,

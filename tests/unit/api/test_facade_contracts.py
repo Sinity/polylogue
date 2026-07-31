@@ -1832,7 +1832,7 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
             )
         )
     try:
-        messages, total = await archive.get_messages_paginated(
+        messages, total, _completeness = await archive.get_messages_paginated(
             session_id,
             content_projection=ContentProjectionSpec.prose_only(),
         )
@@ -1878,7 +1878,7 @@ async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tm
             )
         )
     try:
-        messages, total = await archive.get_messages_paginated(session_id, limit=10)
+        messages, total, _completeness = await archive.get_messages_paginated(session_id, limit=10)
     finally:
         await archive.close()
 
@@ -1918,11 +1918,11 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
             )
         )
     try:
-        role_messages, role_total = await archive.get_messages_paginated(
+        role_messages, role_total, _role_completeness = await archive.get_messages_paginated(
             session_id,
             message_role=(Role.USER,),
         )
-        authored_messages, authored_total = await archive.get_messages_paginated(
+        authored_messages, authored_total, authored_completeness = await archive.get_messages_paginated(
             session_id,
             material_origin=(MaterialOrigin.HUMAN_AUTHORED,),
         )
@@ -1933,6 +1933,11 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
     assert [str(message.id).rsplit(":", 1)[-1] for message in role_messages] == ["protocol-user", "authored-user"]
     assert authored_total == 1
     assert str(authored_messages[0].id).endswith(":authored-user")
+    # polylogue-ppkj: the material_origin branch computes completeness via a
+    # dedicated probe (repository.get_lineage_completeness) rather than
+    # silently claiming complete=True -- this session has no lineage, so it
+    # is trivially complete, but the probe must actually run.
+    assert authored_completeness.complete is True
 
 
 # ---------------------------------------------------------------------------
@@ -3694,7 +3699,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             origin="codex-session",
             limit=3,
         )
-        paged_messages, total_messages = await archive.get_messages_paginated(
+        paged_messages, total_messages, _paged_completeness = await archive.get_messages_paginated(
             "codex-session:api-v1",
             message_role=(Role.USER,),
             message_type="tool_use",
