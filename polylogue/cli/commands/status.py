@@ -1308,9 +1308,17 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     # FTS
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):
-        pct = _safe_float(fts.get("coverage_pct"), default=100.0 if fts.get("messages_ready") else 0.0)
         fts_color = "green" if fts.get("messages_ready") else "yellow"
-        env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
+        raw_pct = fts.get("coverage_pct")
+        if raw_pct is None:
+            # An unmeasured coverage_pct must never be silently rendered as
+            # a fabricated percentage (polylogue-roax) -- say plainly that
+            # coverage is unknown rather than defaulting to 100%/0% based on
+            # the boolean readiness flag alone.
+            env.ui.console.print(f"  FTS: [{fts_color}]coverage unknown[/{fts_color}]")
+        else:
+            pct = _safe_float(raw_pct, default=0.0)
+            env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
     raw_frontier = status.get("raw_frontier_integrity")
     if isinstance(raw_frontier, dict):

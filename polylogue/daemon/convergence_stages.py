@@ -1466,36 +1466,48 @@ def repair_messages_fts_surface(db_path: Path) -> bool:
     try:
         conn = _open_archive_insight_write_connection(archive_db)
         try:
-            from polylogue.daemon.fts_status import BOUNDED_MESSAGE_FTS_REPAIR_DETAIL
             from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
             from polylogue.storage.fts.freshness import READY, record_fts_surface_state_sync
             from polylogue.storage.fts.fts_lifecycle import (
                 reconcile_message_fts_rows_once_sync,
             )
+            from polylogue.storage.fts.sql import FTS_INDEX_DOC_COUNT_SQL, FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
             configure_bounded_repair_connection(conn)
             inserted_total, deleted_total = reconcile_message_fts_rows_once_sync(conn)
+            # The exhaustive set-based insert/delete above (not a windowed
+            # partial pass -- the historical "bounded" naming refers only to
+            # avoiding the old repeated-join rowid-window loop) has just
+            # cleared every missing/excess row across the whole table, so the
+            # real post-repair cardinalities are two plain single-table
+            # COUNT(*) probes, not the anti-join missing/excess/identity-
+            # mismatch scan ``fts_invariant_snapshot_sync`` performs (that
+            # stays out of daemon convergence; see
+            # test_archive_fts_global_repair_does_not_run_full_exact_snapshot).
+            # Recording the true counts (polylogue-roax) instead of a
+            # fabricated 1/1 placeholder is what lets the status surface and
+            # the query-path fast readiness check trust this row without
+            # disagreeing with each other.
+            source_rows = int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone()[0] or 0)
+            indexed_rows = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
             record_fts_surface_state_sync(
                 conn,
                 surface="messages_fts",
                 state=READY,
-                # The bounded repair has just deleted excess shadow rows until
-                # none remain and inserted missing rows across every indexable
-                # block rowid window. Avoid turning daemon convergence into a
-                # full-surface diagnostic count on large live archives; status
-                # treats this detail as ready with exact cardinalities omitted.
-                source_rows=1,
-                indexed_rows=1,
+                source_rows=source_rows,
+                indexed_rows=indexed_rows,
                 missing_rows=0,
                 excess_rows=0,
                 duplicate_rows=0,
-                detail=BOUNDED_MESSAGE_FTS_REPAIR_DETAIL,
             )
             conn.commit()
             logger.info(
-                "fts: archive messages_fts surface repair marked ready inserted=%d deleted=%d exact_counts=false",
+                "fts: archive messages_fts surface repair marked ready inserted=%d deleted=%d "
+                "source_rows=%d indexed_rows=%d",
                 inserted_total,
                 deleted_total,
+                source_rows,
+                indexed_rows,
             )
             return True
         finally:
