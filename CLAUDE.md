@@ -35,8 +35,16 @@ Package sizes (rough): `storage/` (largest), `daemon/`, `cli/`, `archive/`,
 | `polylogue/daemon/cli.py` | Daemon runner (`polylogued run`) |
 
 **Working rule:** new semantics go into the substrate (`storage`/`insights`) or
-product layer first, then surfaces adapt. Surfaces may not import substrate
-internals directly (`docs/plans/layering.yaml` enforces this).
+product layer first, then surfaces adapt. New surface code should not import
+substrate (`storage`/`pipeline`/`sources`) internals directly — route through
+`insights`/`operations`/`api` instead. `docs/plans/layering.yaml` enforces
+this as a **ratchet, not a clean boundary**: `cli`/`mcp`/`api`/`daemon` each
+carry a large pre-existing baseline of direct substrate imports
+(`docs/plans/layering-surface-baseline.json`, 311 entries as of
+polylogue-2ciy) that `devtools verify layering` exempts, but any import not
+already in that baseline fails the (required, CI-gated) check. The genuinely
+clean, zero-exception direction is the reverse one: `storage`/`pipeline`/
+`sources` must not import surface adapters, enforced with no baseline at all.
 
 ---
 

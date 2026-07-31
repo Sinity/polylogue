@@ -150,13 +150,35 @@ writer_modules:
 
 rules:
   - target: polylogue/cli
-    description: "CLI surface adapter — imports substrate/insights as needed; no inward dependency is permitted."
+    description: >-
+      CLI surface adapter — should route through insights/operations/api
+      rather than substrate internals (polylogue-2ciy). 121 pre-existing
+      direct substrate imports are baselined (ratchet: new ones fail, the
+      baselined count may only shrink); insights/operations/api imports are
+      unrestricted.
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
+      baseline: docs/plans/layering-surface-baseline.json
 
   - target: polylogue/mcp
-    description: "MCP surface adapter — imports substrate/insights as needed; no inward dependency is permitted."
+    description: >-
+      MCP surface adapter — should route through insights/operations/api
+      rather than substrate internals (polylogue-2ciy). 9 pre-existing
+      direct substrate imports are baselined (ratchet: new ones fail);
+      insights/operations/api imports are unrestricted.
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
+      baseline: docs/plans/layering-surface-baseline.json
 
   - target: polylogue/api
-    description: "API surface — adapter boundary over substrate and insights."
+    description: >-
+      API surface — adapter boundary over substrate and insights. Already
+      the thinnest of the four surfaces conceptually, but still has 57
+      pre-existing direct substrate imports, baselined the same way
+      (polylogue-2ciy).
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
+      baseline: docs/plans/layering-surface-baseline.json
 
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
@@ -179,7 +201,17 @@ rules:
       from: [polylogue/daemon, polylogue/mcp, polylogue/ui]
 
   - target: polylogue/daemon
-    description: "Daemon convergence and HTTP/web-reader surface adapter."
+    description: >-
+      Daemon convergence and HTTP/web-reader surface adapter. This is the
+      one surface with a real, load-bearing reason to reach substrate
+      directly (convergence stages ARE the writer-adjacent orchestration
+      layer), so its baseline is by far the largest of the four (215
+      pre-existing direct substrate imports, polylogue-2ciy) — still
+      ratcheted (new ones fail), not exempted outright, so growth is
+      visible in review even where it may sometimes be legitimate.
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
+      baseline: docs/plans/layering-surface-baseline.json
 
   - target: polylogue/declarations
     description: >-
