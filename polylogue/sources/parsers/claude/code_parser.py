@@ -20,6 +20,7 @@ from polylogue.core.enums import (
     TitleSource,
     ToolResultUnknownReason,
 )
+from polylogue.core.timestamps import format_timestamp
 from polylogue.logging import get_logger
 from polylogue.pipeline.semantic_capture import detect_context_compaction, detect_micro_compaction
 from polylogue.sources.providers.claude_code_models import ClaudeCodeBackgroundTaskNotification
@@ -1865,6 +1866,12 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
     debt) is recorded as a bounded ``claude_tool_result_sidecar`` session
     event -- never the raw bytes, which live in the (already unbounded) block
     text field once replaced, not in this structured fact.
+
+    Each event's ``timestamp`` is set from the sidecar file's own mtime
+    (``SidecarMatch``/``SidecarDebt.file_mtime_ms``) so ``occurred_at_ms`` is
+    populated on write instead of permanently NULL -- the join has no better
+    time source (sidecar files carry no embedded timestamp, and for debt the
+    owning block is by definition unresolvable).
     """
     if not join_result.matched and not join_result.debt:
         return session
@@ -1893,6 +1900,7 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
         events.append(
             ParsedSessionEvent(
                 event_type="claude_tool_result_sidecar",
+                timestamp=_sidecar_event_timestamp(match.file_mtime_ms),
                 payload={
                     "acquisition_status": "matched",
                     "tool_use_id": match.tool_use_id,
@@ -1907,6 +1915,7 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
         events.append(
             ParsedSessionEvent(
                 event_type="claude_tool_result_sidecar",
+                timestamp=_sidecar_event_timestamp(debt.file_mtime_ms),
                 payload={
                     "acquisition_status": "debt",
                     "filename": debt.filename,
@@ -1916,6 +1925,13 @@ def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinR
             )
         )
     return session.model_copy(update={"messages": messages, "session_events": events})
+
+
+def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:
+    """Format a sidecar file's mtime (epoch ms) as the ISO timestamp for its session event."""
+    if file_mtime_ms is None:
+        return None
+    return format_timestamp(file_mtime_ms / 1000.0)
 
 
 def parse_code(
