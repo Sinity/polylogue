@@ -12,6 +12,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
+from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import (
     CodexAssemblySpec,
@@ -117,7 +118,11 @@ class TestGetAssemblySpec:
         spec = get_assembly_spec(Provider.GEMINI)
         assert isinstance(spec, GeminiAssemblySpec)
 
-    @pytest.mark.parametrize("provider", [Provider.CHATGPT, Provider.CLAUDE_AI, Provider.UNKNOWN])
+    def test_chatgpt_returns_spec(self) -> None:
+        spec = get_assembly_spec(Provider.CHATGPT)
+        assert isinstance(spec, ChatGPTAssemblySpec)
+
+    @pytest.mark.parametrize("provider", [Provider.CLAUDE_AI, Provider.UNKNOWN])
     def test_no_spec_for_other_providers(self, provider: Provider) -> None:
         assert get_assembly_spec(provider) is None
 

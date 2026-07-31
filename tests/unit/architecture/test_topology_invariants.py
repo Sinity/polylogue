@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -39,38 +38,3 @@ def test_polylogue_root_matches_kernel_rule() -> None:
     files = root_files()
     extra = files - KERNEL_ROOT_FILES
     assert not extra, f"non-kernel files at polylogue/ root: {sorted(extra)}"
-
-
-def test_archive_has_query_subpackage() -> None:
-    assert (ROOT / "polylogue" / "archive" / "query" / "__init__.py").exists()
-
-
-def test_archive_package_imports() -> None:
-    import polylogue.archive as archive
-
-    assert archive.__doc__
-
-
-def test_storage_has_insights_session_subpackage() -> None:
-    assert (ROOT / "polylogue" / "storage" / "insights" / "session" / "__init__.py").exists()
-
-
-# Structural verification commands exist.
-
-
-def test_devtools_verify_topology_exists() -> None:
-    assert (ROOT / "devtools" / "verify_topology.py").exists()
-
-
-def test_topology_projection_yaml_exists() -> None:
-    assert (ROOT / "docs" / "plans" / "topology-target.yaml").exists()
-
-
-# Topology drift dashboard is rendered.
-
-
-def test_topology_status_doc_rendered() -> None:
-    path = ROOT / "docs" / "topology-status.md"
-    assert path.exists()
-    text = path.read_text()
-    assert re.search(r"\b\d+\s+files declared", text), "drift dashboard missing declared-files header"

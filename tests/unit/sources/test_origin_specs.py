@@ -196,8 +196,13 @@ def test_origin_specs_declare_the_claude_and_codex_assembly_extension_hooks() ->
     assert by_origin[Origin.AISTUDIO_DRIVE].assembly_spec_path == (
         "polylogue/sources/assembly_gemini.py:GeminiAssemblySpec"
     )
+    # bd polylogue-0hwv / polylogue-dt5s: ChatGPT gained an assembly hook
+    # (asset-name/sandbox-file sidecar resolution) -- it is no longer in the
+    # "no assembly extension" cohort with Gemini CLI.
+    assert by_origin[Origin.CHATGPT_EXPORT].assembly_spec_path == (
+        "polylogue/sources/assembly_chatgpt.py:ChatGPTAssemblySpec"
+    )
     assert by_origin[Origin.GEMINI_CLI_SESSION].assembly_spec_path is None
-    assert by_origin[Origin.CHATGPT_EXPORT].assembly_spec_path is None
 
 
 def test_origin_specs_are_parity_checked_against_the_live_assembly_registry() -> None:

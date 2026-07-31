@@ -1,8 +1,9 @@
-"""Pydantic v2 models for all 16 YAML manifests under docs/plans/.
+"""Pydantic v2 models for the schema-validated YAML manifests under docs/plans/.
 
-Every manifest type from the topology projection to the oracle-quality taxonomy
-gets its own validated model.  Models use ``extra='forbid'`` so unknown fields
-are caught during validation rather than silently ignored.
+Only manifests with real downstream consumers (a check that reads their
+content to catch actual drift, not just self-referential shape validation)
+get a model here.  Models use ``extra='forbid'`` so unknown fields are caught
+during validation rather than silently ignored.
 """
 
 from __future__ import annotations
@@ -34,47 +35,6 @@ class TopologyManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     files: list[TopologyEntry]
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Lint-escalation manifest  (lint-escalation.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class LintRule(BaseModel):
-    """A single lint-escalation rule."""
-
-    model_config = ConfigDict(extra="forbid")
-    id: str
-    description: str
-    severity: str
-    sunset: str  # ISO-8601 date string
-
-    VALID_SEVERITIES: ClassVar[frozenset[str]] = frozenset({"soft", "hard"})
-
-    @field_validator("severity")
-    @classmethod
-    def _check_severity(cls, v: str) -> str:
-        if v not in cls.VALID_SEVERITIES:
-            raise ValueError(f"severity must be one of {sorted(cls.VALID_SEVERITIES)}, got {v!r}")
-        return v
-
-    @field_validator("sunset")
-    @classmethod
-    def _check_sunset(cls, v: str) -> str:
-        try:
-            date.fromisoformat(v)
-        except (ValueError, TypeError) as err:
-            raise ValueError(f"sunset is not a valid ISO date: {v!r}") from err
-        return v
-
-
-class LintEscalationManifest(BaseModel):
-    """Root of lint-escalation.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    rules: list[LintRule]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -337,107 +297,6 @@ class LayeringManifest(BaseModel):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Oracle-quality manifest  (oracle-quality.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class OracleEntry(BaseModel):
-    """A single oracle-quality taxonomy entry."""
-
-    model_config = ConfigDict(extra="forbid")
-    counts_as: str
-    independence: str
-    example: str
-    typical_use: str
-
-
-class OracleQualityManifest(BaseModel):
-    """Root of oracle-quality.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    oracles: dict[str, OracleEntry]
-
-
-# ──────────────────────────────────────────────────────────────────────
-# Evidence-freshness manifest  (evidence-freshness.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class FreshnessPolicy(BaseModel):
-    """A single evidence-freshness policy."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str
-    max_age_days: int
-    applies_to: list[str] = Field(default_factory=list)
-
-
-class StaleThreshold(BaseModel):
-    """Staleness thresholds per oracle type."""
-
-    model_config = ConfigDict(extra="forbid")
-    behavior_evidence_days: int = 14
-    smoke_evidence_days: int = 30
-    manual_review_evidence_days: int = 90
-
-
-class EvidenceFreshnessManifest(BaseModel):
-    """Root of evidence-freshness.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    freshness_policies: dict[str, FreshnessPolicy] = Field(default_factory=dict)
-    stale_threshold: StaleThreshold = Field(default_factory=StaleThreshold)
-
-
-# ──────────────────────────────────────────────────────────────────────
-# API-parity manifest  (api-parity.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class SurfaceEntry(BaseModel):
-    """A single surface entry in the API-parity manifest."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str
-    coverage: str
-    path: str
-    gaps: list[str] = Field(default_factory=list)
-
-
-class OperationEntry(BaseModel):
-    """A single operation entry tracking surface support."""
-
-    model_config = ConfigDict(extra="forbid")
-    name: str
-    cli: bool = False
-    mcp: bool = False
-    api: bool = False
-    sync: bool = False
-    notes: str | None = None
-
-
-class ParityCheckEntry(BaseModel):
-    """A single parity check definition."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str
-    status: str
-    path: str | None = None
-    owner: str | None = None
-
-
-class ApiParityManifest(BaseModel):
-    """Root of api-parity.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    description: str | None = None
-    surfaces: dict[str, SurfaceEntry] = Field(default_factory=dict)
-    operations: list[OperationEntry] = Field(default_factory=list)
-    parity_checks: dict[str, ParityCheckEntry] = Field(default_factory=dict)
-
-
 # ──────────────────────────────────────────────────────────────────────
 # Security-privacy-coverage manifest  (security-privacy-coverage.yaml)
 # ──────────────────────────────────────────────────────────────────────
@@ -652,13 +511,9 @@ class TestQualityCoverageManifest(BaseModel):
 # Maps YAML filename → Pydantic model class for structural validation.
 MANIFEST_MODELS: dict[str, type[BaseModel]] = {
     "topology-target.yaml": TopologyManifest,
-    "lint-escalation.yaml": LintEscalationManifest,
     "scenario-coverage.yaml": ScenarioCoverageManifest,
     "campaign-coverage.yaml": CampaignCoverageManifest,
     "layering.yaml": LayeringManifest,
-    "oracle-quality.yaml": OracleQualityManifest,
-    "evidence-freshness.yaml": EvidenceFreshnessManifest,
-    "api-parity.yaml": ApiParityManifest,
     "security-privacy-coverage.yaml": SecurityPrivacyManifest,
     "distribution-coverage.yaml": DistributionCoverageManifest,
     "docs-media-coverage.yaml": DocsMediaCoverageManifest,
@@ -711,7 +566,6 @@ def _format_pydantic_errors(path: str, exc: Exception) -> list[str]:
 
 
 __all__ = [
-    "ApiParityManifest",
     "BenchmarkCampaignEntry",
     "CampaignCoverageManifest",
     "CoverageGap",
@@ -720,9 +574,7 @@ __all__ = [
     "DistributionCoverageManifest",
     "DocMediaSurface",
     "DocsMediaCoverageManifest",
-    "EvidenceFreshnessManifest",
     "FlakyTest",
-    "FreshnessPolicy",
     "FuzzTool",
     "LayeringManifest",
     "LayeringRule",
@@ -730,21 +582,13 @@ __all__ = [
     "WriterModuleEntry",
     "WriterModulePolicy",
     "WriterModuleSurface",
-    "LintEscalationManifest",
-    "LintRule",
     "MANIFEST_MODELS",
     "MutationCampaignEntry",
-    "OperationEntry",
-    "OracleEntry",
-    "OracleQualityManifest",
-    "ParityCheckEntry",
     "PlatformCoverage",
     "ScenarioCoverageManifest",
     "ScenarioFamily",
     "SecurityControl",
     "SecurityPrivacyManifest",
-    "StaleThreshold",
-    "SurfaceEntry",
     "TestCount",
     "TestCoverage",
     "TestLocations",

@@ -21,6 +21,7 @@ from .parsers import (
     beads,
     browser_capture,
     chatgpt,
+    chatgpt_codex_sidecar,
     claude,
     codex,
     drive,
@@ -69,6 +70,7 @@ PayloadSequence: TypeAlias = list[JSONValue]
 LoweredPayloadMode: TypeAlias = Literal[
     "bundle_record",
     "browser_capture",
+    "chatgpt_codex_task",
     "chunked_prompt",
     "generic_messages",
     "grouped_records",
@@ -779,6 +781,20 @@ def _chatgpt_bundle_record_specs(
         record = _payload_record(item)
         if record is None:
             continue
+        # codex.json (bd polylogue-2m2e): Codex Cloud tasks delivered inside
+        # the ChatGPT export, a completely different shape from a conversation
+        # fragment (no "mapping" key). Checked first so these never fall
+        # through to the mapping-candidate/near-miss accounting below.
+        if chatgpt_codex_sidecar.looks_like(record):
+            matched.append(
+                LoweredPayloadSpec(
+                    provider=Provider.CHATGPT,
+                    fallback_id=f"{fallback_id}-{index}",
+                    mode="chatgpt_codex_task",
+                    payload=record,
+                )
+            )
+            continue
         if _looks_like_chatgpt_mapping_candidate(record):
             candidates += 1
         if not chatgpt.looks_like_fragment(record):
@@ -814,7 +830,27 @@ def _lower_bundle_payload(
             return _chatgpt_bundle_record_specs(payloads, fallback_id)
         return _bundle_record_specs(provider, payloads, fallback_id)
     record = _payload_record(shaped_payload)
-    return [_single_record_spec(provider, record, fallback_id)] if record is not None else []
+    if record is None:
+        return []
+    # codex.json (bd polylogue-2m2e): reached here when the file-level walk
+    # already unpacked the top-level array into one dict per item (the
+    # ordinary per-.json-file path -- see source_parsing.py/emitter.py), so
+    # this function sees a single task record rather than the whole list.
+    # Without this check the record fell straight into ``_single_record_spec``
+    # with provider=CHATGPT and no shape validation at all, and
+    # ``chatgpt.parse`` silently produced a zero-message session for it (no
+    # "mapping" key) that write_parsed_session_to_archive then dropped --
+    # "unparsed" with no visible error.
+    if provider is Provider.CHATGPT and chatgpt_codex_sidecar.looks_like(record):
+        return [
+            LoweredPayloadSpec(
+                provider=Provider.CHATGPT,
+                fallback_id=fallback_id,
+                mode="chatgpt_codex_task",
+                payload=record,
+            )
+        ]
+    return [_single_record_spec(provider, record, fallback_id)]
 
 
 def _lower_grouped_payload(
@@ -1098,13 +1134,37 @@ def _generic_messages_session(
     payload: PayloadRecord,
     fallback_id: str,
 ) -> ParsedSession | None:
+    """Parse the last-resort "unknown provider, but shaped like messages" bucket.
+
+    polylogue-b508: of every branch in ``_lower_payload_specs``, this is the
+    one with no provider-specific identity handling at all -- every other
+    branch routes to a parser (chatgpt/claude/codex/drive/...) that derives
+    identity from provider-native evidence. Here there is none, so the
+    payload itself must assert its own ``id``. Falling back to
+    ``fallback_id`` -- a filename stem or scratch value the *source
+    discovery walk* invented, never something the provider asserted -- is
+    exactly the "session identity derived from a filename stem" pathology
+    this bead exists to make unrepresentable: a JSON sidecar that merely
+    happens to contain a ``messages`` list must not become a session of its
+    own. Refuse to parse (return ``None``) rather than synthesize an
+    identity.
+    """
     messages_payload = _record_messages(payload)
     if messages_payload is None:
         return None
 
+    # A blank id is not an assertion. ``optional_string`` returns ``""`` for an
+    # empty value rather than ``None``, so an ``"id": ""`` or whitespace-only
+    # field would otherwise satisfy "the provider asserted an identity" and
+    # produce a session keyed on nothing -- the same pathology as a
+    # filename-stem identity, arriving through the guard meant to stop it.
+    asserted_id = optional_string(payload.get("id"))
+    session_id = asserted_id.strip() if asserted_id is not None else None
+    if not session_id:
+        return None
+
     messages = extract_messages_from_list(messages_payload)
     title = optional_string(payload.get("title")) or optional_string(payload.get("name")) or fallback_id
-    session_id = optional_string(payload.get("id")) or fallback_id
     created_at = optional_string(
         payload.get("created_at") or payload.get("create_time") or payload.get("created") or payload.get("createdAt")
     )
@@ -1129,6 +1189,10 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
+
+    if spec.mode == "chatgpt_codex_task":
+        record = _payload_record(spec.payload)
+        return [chatgpt_codex_sidecar.parse_codex_task(record, spec.fallback_id)] if record is not None else []
 
     if spec.provider is Provider.CHATGPT:
         record = _payload_record(spec.payload)

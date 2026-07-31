@@ -8,10 +8,15 @@ from typing import Literal, TypeAlias
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import SessionRevisionProjection
 
-#: Everything that must agree for two revisions to be the same content: the
-#: message and event chains, which attachments exist, and which of their bytes
-#: have been read.
-_ContentKey: TypeAlias = tuple[tuple[bytes, ...], tuple[bytes, ...], frozenset[bytes], frozenset[tuple[bytes, bytes]]]
+#: One content axis's relation between two revisions: total and decidable,
+#: no residual category (polylogue-aggz). ``equal`` is the same identity set
+#: with equal content per identity. ``a_contains_b``/``b_contains_a`` is one
+#: side's identity set containing the other's with equal content on the
+#: intersection -- set containment, not sequence prefix, so this subsumes
+#: append-only growth without caring about array order. ``conflict`` is
+#: either side disagreeing about content under a shared identity, or each
+#: side holding an identity the other lacks (a genuine fork).
+_Relation: TypeAlias = Literal["equal", "a_contains_b", "b_contains_a", "conflict"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,81 +32,302 @@ class MembershipRevision:
 
 @dataclass(frozen=True, slots=True)
 class MembershipClassification:
+    #: Materialized head(s): an append-only growth chain (oldest to newest,
+    #: by set containment). Empty only when the cohort is a genuine,
+    #: irreducible conflict (see ``ambiguous_raw_ids``) -- a presence-
+    #: guarantee fallback that would deterministically pick a maximal-
+    #: evidence head even then is designed and unit-tested
+    #: (``_maximal_evidence_fallback``) but not yet wired into this return
+    #: path; see that function's docstring for why.
     accepted_raw_ids: tuple[str, ...]
+    #: Raws proven to carry the SAME content as an accepted head (``equal``
+    #: per ``_relation``) -- legitimately superseded, not debt.
     equivalent_raw_ids: tuple[str, ...]
+    #: Raws NOT reflected in ``accepted_raw_ids`` because no containment
+    #: relation could order them against it: unresolved conflict debt
+    #: attached to the session, retained as raw provenance only (never
+    #: deleted, never silently discarded).
     ambiguous_raw_ids: tuple[str, ...]
 
 
+def _identities(contents: frozenset[tuple[bytes, bytes]]) -> frozenset[bytes]:
+    """Project the identity half of a (identity, content) pair set.
+
+    Messages and events always carry content for every identity they have --
+    unlike attachments, which project identity and content as two separate
+    fields because an attachment can be referenced before its bytes are
+    acquired (polylogue-bu1i) -- so their identity set is always exactly
+    this projection of their content set.
+    """
+    return frozenset(identity for identity, _content in contents)
+
+
+def _content_by_identity(contents: frozenset[tuple[bytes, bytes]]) -> dict[bytes, frozenset[bytes]]:
+    """Group content hashes by identity, retaining EVERY value under a colliding identity.
+
+    Identity is not always injective: two acquired attachments on one
+    message can share one identity (same ``message_id``/``name``/
+    ``mime_type``, different bytes -- the accepted limit documented on
+    ``attachment_identity_hash``, not a new one). Collapsing such a
+    collision to a single arbitrary content hash (a plain ``dict``, last
+    value wins) would let a real content conflict compare as equal instead.
+    Grouping into a set per identity means a collision always degrades to
+    ``conflict`` when compared against a revision that disagrees, never to
+    ``equal``.
+    """
+    grouped: dict[bytes, set[bytes]] = {}
+    for identity, content in contents:
+        grouped.setdefault(identity, set()).add(content)
+    return {identity: frozenset(values) for identity, values in grouped.items()}
+
+
+def _axis_relation(
+    identities_a: frozenset[bytes],
+    contents_a: frozenset[tuple[bytes, bytes]],
+    identities_b: frozenset[bytes],
+    contents_b: frozenset[tuple[bytes, bytes]],
+) -> _Relation:
+    """Compare one content axis (messages, attachments, or events) between two revisions.
+
+    An identity present without content on either side (an attachment
+    referenced but not yet acquired) is compatible with, never in conflict
+    with, the SAME identity carrying content on the other side -- unknown is
+    less evidence, not a disagreement (polylogue-bu1i). For messages and
+    events every identity always carries content, so this degrades to plain
+    set equality/containment for those two axes.
+    """
+    content_a = _content_by_identity(contents_a)
+    content_b = _content_by_identity(contents_b)
+    shared = identities_a & identities_b
+    for identity in shared:
+        value_a, value_b = content_a.get(identity), content_b.get(identity)
+        if value_a is not None and value_b is not None and value_a != value_b:
+            return "conflict"
+    a_richer = bool(identities_a - identities_b) or any(
+        content_a.get(identity) is not None and content_b.get(identity) is None for identity in shared
+    )
+    b_richer = bool(identities_b - identities_a) or any(
+        content_b.get(identity) is not None and content_a.get(identity) is None for identity in shared
+    )
+    if a_richer and b_richer:
+        return "conflict"
+    if a_richer:
+        return "a_contains_b"
+    if b_richer:
+        return "b_contains_a"
+    return "equal"
+
+
+def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Relation:
+    """Combine the message/attachment/event axes into one overall relation.
+
+    Each axis is independently equal/contains/conflict; the whole document is
+    ``equal`` only if every axis is, ``a_contains_b``/``b_contains_a`` only if
+    every non-equal axis agrees on the SAME direction (a mix -- one axis grew
+    forward, another backward -- is exactly a fork: each side holds
+    something the other lacks, so it is a conflict too), and ``conflict`` if
+    any single axis already is.
+    """
+    axes = (
+        _axis_relation(
+            _identities(a.message_contents), a.message_contents, _identities(b.message_contents), b.message_contents
+        ),
+        _axis_relation(a.attachment_identities, a.attachment_contents, b.attachment_identities, b.attachment_contents),
+        _axis_relation(
+            _identities(a.event_contents), a.event_contents, _identities(b.event_contents), b.event_contents
+        ),
+    )
+    if "conflict" in axes:
+        return "conflict"
+    directions = {axis for axis in axes if axis != "equal"}
+    if not directions:
+        return "equal"
+    if directions == {"a_contains_b"}:
+        return "a_contains_b"
+    if directions == {"b_contains_a"}:
+        return "b_contains_a"
+    return "conflict"
+
+
+def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int]:
+    """Rank a revision along every axis on which it can only grow.
+
+    Used only to order candidates for the pairwise ``_relation`` chain check
+    and to break ties deterministically in the presence-guarantee fallback
+    (stable regardless of processing order -- a rebuild must always resolve
+    the same cohort to the same head).
+    """
+    return (
+        len(projection.message_contents),
+        len(projection.event_contents),
+        len(projection.attachment_identities),
+        len(projection.attachment_contents),
+    )
+
+
+def _equal_content_representative(
+    incumbent: MembershipRevision, candidate: MembershipRevision
+) -> tuple[MembershipRevision, MembershipRevision]:
+    """Pick (winner, loser) between two revisions already proven ``equal`` in content.
+
+    Equal content is not equal authority: a direct/native export and a
+    browser DOM scrape can project to byte-identical messages while one is
+    first-class provenance and the other is a lossy capture, and which one
+    survives as the representative determines what future re-acquisitions
+    are compared against. Source authority is therefore decided BEFORE any
+    timestamp tiebreak -- mirroring, for the equal case, the same
+    ``_direct_export_precedence`` / browser-fidelity ordering
+    (``_browser_snapshot_dominates``) already applied to the non-equal
+    growth-chain case below: a direct export always outranks a
+    browser-capture sibling, and a native browser snapshot always outranks a
+    DOM snapshot of the same underlying session. Only when neither
+    revision's provenance outranks the other's does provider timestamp (and
+    finally a stable raw_id) decide, exactly as before this function
+    existed.
+    """
+    incumbent_direct = incumbent.browser_snapshot_fidelity is None
+    candidate_direct = candidate.browser_snapshot_fidelity is None
+    if incumbent_direct != candidate_direct:
+        return (incumbent, candidate) if incumbent_direct else (candidate, incumbent)
+    if (
+        not incumbent_direct
+        and not candidate_direct
+        and incumbent.browser_snapshot_fidelity != candidate.browser_snapshot_fidelity
+    ):
+        return (incumbent, candidate) if incumbent.browser_snapshot_fidelity == "native" else (candidate, incumbent)
+    incumbent_time = parse_timestamp(incumbent.provider_updated_at)
+    candidate_time = parse_timestamp(candidate.provider_updated_at)
+    if (
+        incumbent_time is not None
+        and candidate_time is not None
+        and candidate_time.timestamp() != incumbent_time.timestamp()
+    ):
+        return (
+            (candidate, incumbent)
+            if candidate_time.timestamp() > incumbent_time.timestamp()
+            else (incumbent, candidate)
+        )
+    # No distinguishing provenance or provider timestamp -- these two are
+    # already proven identical content, so which raw_id represents them does
+    # not matter for correctness; pick deterministically rather than
+    # requiring a timestamp that a re-export of an untouched conversation
+    # may never carry (its own provider updated_at legitimately does not
+    # move when nothing provider-visible changed).
+    winner, loser = sorted((incumbent, candidate), key=lambda item: item.raw_id)
+    return winner, loser
+
+
 def classify_membership_revisions(revisions: list[MembershipRevision]) -> MembershipClassification:
-    """Accept one total strict-growth chain; never choose between branches."""
+    """Accept one total growth chain by set containment; never choose a branch silently.
+
+    Two revisions are the same content, contain each other, or conflict --
+    total and decidable, with no residual category (polylogue-aggz). This
+    replaces what used to be four separate mechanisms (a positional-prefix
+    message dominance test, a denylist-stripped ordered event-hash prefix
+    test, a strict-vs-loose attachment id correlation pass, and a
+    session-hash/metadata-timestamp tiebreak layered on top of all three)
+    with one relation, applied uniformly to every axis.
+
+    A genuine, irreducible conflict -- no containment chain exists at all,
+    not export-vintage noise -- still quarantines every representative
+    (``ambiguous_raw_ids``) with nothing accepted, after browser-fidelity and
+    direct-export precedence have also failed to order the cohort. A
+    presence-guarantee alternative to that quarantine -- deterministically
+    materializing the maximal-evidence representative instead of withholding
+    every revision, with the conflict recorded as debt rather than absence
+    -- is designed and unit-tested (``_maximal_evidence_fallback``) but not
+    wired in here; see that function's docstring for the concrete,
+    proven reason (a real archive.py write-back invariant it would violate).
+    """
     if not revisions:
         return MembershipClassification((), (), ())
-    # Keyed on acquisition state as well as identity: two revisions are the same
-    # content only when they also agree on which attachment bytes are in hand,
-    # otherwise collapsing them as equivalents could discard the one that
-    # actually carries the bytes.
-    by_content: dict[_ContentKey, list[MembershipRevision]] = {}
-    for revision in revisions:
-        projection = revision.projection
-        key = (
-            projection.message_hashes,
-            projection.event_hashes,
-            projection.attachment_identities,
-            projection.attachment_contents,
-        )
-        by_content.setdefault(key, []).append(revision)
+
     representatives: list[MembershipRevision] = []
     equivalents: list[str] = []
-    for group in by_content.values():
-        by_session_hash: dict[bytes, list[MembershipRevision]] = {}
-        for item in group:
-            by_session_hash.setdefault(item.projection.session_hash, []).append(item)
-        metadata_variants: list[MembershipRevision] = []
-        for hash_group in by_session_hash.values():
-            representative = min(hash_group, key=lambda item: item.raw_id)
-            metadata_variants.append(representative)
-            equivalents.extend(item.raw_id for item in hash_group if item.raw_id != representative.raw_id)
-        if len(metadata_variants) == 1:
-            representatives.extend(metadata_variants)
+    for revision in revisions:
+        match_index = next(
+            (i for i, rep in enumerate(representatives) if _relation(rep.projection, revision.projection) == "equal"),
+            None,
+        )
+        if match_index is None:
+            representatives.append(revision)
             continue
-        timestamped = [
-            (parsed.timestamp(), item)
-            for item in metadata_variants
-            if (parsed := parse_timestamp(item.provider_updated_at)) is not None
-        ]
-        timestamps = [timestamp for timestamp, _item in timestamped]
-        if len(timestamped) == len(metadata_variants) and len(set(timestamps)) == len(timestamps):
-            representative = max(timestamped, key=lambda pair: pair[0])[1]
-            representatives.append(representative)
-            equivalents.extend(item.raw_id for item in metadata_variants if item.raw_id != representative.raw_id)
-        else:
-            representatives.extend(metadata_variants)
+        incumbent = representatives[match_index]
+        winner, loser = _equal_content_representative(incumbent, revision)
+        representatives[match_index] = winner
+        equivalents.append(loser.raw_id)
+
     representatives.sort(key=lambda item: (_frontier(item.projection), item.raw_id))
-    if any(
-        not _strictly_dominates(older.projection, newer.projection)
+    conflict = any(
+        _relation(older.projection, newer.projection) != "b_contains_a"
         for older, newer in zip(representatives, representatives[1:], strict=False)
-    ):
-        browser_order = _provider_ordered_browser_snapshots(representatives)
-        if browser_order is None:
-            direct_export = _direct_export_precedence(representatives)
-            if direct_export is None:
-                return MembershipClassification(
-                    (),
-                    tuple(sorted(equivalents)),
-                    tuple(sorted(item.raw_id for item in representatives)),
-                )
-            accepted, browser_capture_raw_ids = direct_export
-            return MembershipClassification(
-                (accepted.raw_id,),
-                tuple(sorted((*equivalents, *browser_capture_raw_ids))),
-                (),
-            )
-        representatives = browser_order
-    return MembershipClassification(
-        tuple(item.raw_id for item in representatives),
-        tuple(sorted(equivalents)),
-        (),
     )
+    if not conflict:
+        return MembershipClassification(
+            tuple(item.raw_id for item in representatives),
+            tuple(sorted(equivalents)),
+            (),
+        )
+
+    browser_order = _provider_ordered_browser_snapshots(representatives)
+    if browser_order is not None:
+        return MembershipClassification(
+            tuple(item.raw_id for item in browser_order),
+            tuple(sorted(equivalents)),
+            (),
+        )
+    direct_export = _direct_export_precedence(representatives)
+    if direct_export is not None:
+        accepted, browser_capture_raw_ids = direct_export
+        return MembershipClassification(
+            (accepted.raw_id,),
+            tuple(sorted((*equivalents, *browser_capture_raw_ids))),
+            (),
+        )
+    # _maximal_evidence_fallback (below) is the intended long-term behavior
+    # for a genuine, irreducible conflict -- see its docstring for why it is
+    # not called here yet. Until it is wired in, an irreducible conflict is
+    # quarantined exactly as it always was: every representative in
+    # `ambiguous_raw_ids`, nothing accepted.
+    return MembershipClassification(
+        (),
+        tuple(sorted(equivalents)),
+        tuple(sorted(item.raw_id for item in representatives)),
+    )
+
+
+def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> MembershipRevision:
+    """Deterministically select the maximal-evidence revision for an irreducible conflict.
+
+    Designed and unit-tested as the presence-guarantee alternative to
+    quarantining every representative with nothing accepted: a document
+    should never simply vanish from the archive just because arbitration
+    could not order its revisions. Frontier order (most messages, most
+    events, most attachments, most acquired bytes) with a stable raw_id
+    tiebreak means the same cohort always resolves to the same head
+    regardless of processing order -- verified directly by
+    ``test_presence_guarantee_fallback_is_order_independent``.
+
+    NOT called by ``classify_membership_revisions`` yet. Wiring it in would
+    make ``accepted_raw_ids`` non-empty for every non-empty input, moving the
+    other representatives into ``ambiguous_raw_ids`` as recorded conflict
+    debt instead of leaving the whole cohort headless. That trips a real,
+    carefully-designed invariant in
+    ``archive.py``'s ``apply_raw_membership_classification`` write-back, with
+    documented production incident history behind it (polylogue-miwv, PR
+    #3211): once a logical source has an accepted head, a later membership
+    pass may not silently retire it in favor of an unrelated raw unless that
+    raw is part of the new accepted/equivalent set. A fallback pick can
+    legitimately differ from an already-established head -- proven by two
+    real integration-test failures during verification
+    (``test_divergent_bundle_member_preserves_last_accepted_session`` and
+    its sibling), not a theoretical concern. Landing this safely needs
+    either the classifier or its caller to carry the existing head's raw_id
+    into this decision, or the write-back guard to accept a
+    re-affirmed-quarantined outcome explicitly -- both changes belong to
+    archive.py's write path, out of this lane's scope.
+    """
+    return max(representatives, key=lambda item: (_frontier(item.projection), item.raw_id))
 
 
 def _provider_ordered_browser_snapshots(
@@ -109,14 +335,22 @@ def _provider_ordered_browser_snapshots(
 ) -> list[MembershipRevision] | None:
     """Order compatible mutable browser snapshots by provider authority.
 
-    Browser-native payloads are complete snapshots, not append logs.  ChatGPT
-    can move an already-present context/tool node when later work appears, and
-    can complete text in place under the same provider message id.  A strict
-    serialized-content prefix therefore rejects ordinary provider progress.
-    Provider timestamps may resolve that progress only when stable message and
-    attachment identities are preserved.  DOM-to-native is the sole fidelity
-    upgrade and may use different synthetic ids; a native-to-DOM downgrade is
-    never selected.
+    Kept as a genuine exception to the content-only relation above, not a
+    dead alternate path: browser-captured DOM and native snapshots synthesize
+    their OWN local message/attachment ids from DOM structure, not a stable
+    provider identity, so the same underlying message can carry a different
+    synthetic id in a DOM capture than in a native one -- the content-only
+    ``_relation`` genuinely cannot correlate them (it would read a
+    DOM-to-native fidelity upgrade as two disjoint, conflicting message id
+    sets). ``provider_message_ids``/``provider_attachment_ids`` on
+    ``MembershipRevision`` carry the browser-capture layer's own identity
+    evidence for exactly this reason. ChatGPT can also move an already-present
+    context/tool node when later work appears, and can complete text in place
+    under the same provider message id, so a strict serialized-content
+    comparison would reject ordinary provider progress; provider timestamps
+    resolve that progress only when stable message and attachment identities
+    are preserved. DOM-to-native is the sole fidelity upgrade and may use
+    different synthetic ids; a native-to-DOM downgrade is never selected.
     """
 
     if not revisions or any(item.browser_snapshot_fidelity is None for item in revisions):
@@ -149,7 +383,7 @@ def _direct_export_precedence(
     membership group carries no browser-capture provenance at all
     (``browser_snapshot_fidelity is None``) and at least one sibling is
     browser-capture-sourced, the non-browser candidate is authoritative for
-    session content regardless of byte-growth or provider-timestamp
+    session content regardless of set-containment or provider-timestamp
     comparisons; the browser-capture siblings are retained as raw
     provenance only, not indexed content (polylogue-z1c6). Returns ``None``
     when this specific shape does not apply (zero or multiple non-browser
@@ -192,62 +426,6 @@ def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevi
         and newer.observed_at_ms > older.observed_at_ms
         and older.projection.message_hashes == newer.projection.message_hashes
         and older.projection.event_hashes == newer.projection.event_hashes
-    )
-
-
-def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int]:
-    """Rank a revision along every axis on which it can only grow.
-
-    Attachment acquisition is its own axis. Without it, a revision that added
-    nothing but the bytes of attachments it already referenced tied with its
-    predecessor on every dimension, the sort fell through to ``raw_id``, and the
-    dominance test was then run in whichever direction the hex happened to
-    order -- half the time backwards, against a revision that genuinely does
-    dominate (polylogue-bu1i).
-    """
-    return (
-        len(projection.message_hashes),
-        len(projection.event_hashes),
-        len(projection.attachment_identities),
-        len(projection.attachment_contents),
-    )
-
-
-def _attachment_evidence_preserved(
-    older: SessionRevisionProjection,
-    newer: SessionRevisionProjection,
-) -> bool:
-    """True when ``newer`` loses no attachment and contradicts no fetched bytes.
-
-    Two distinct regressions are refused here. An attachment whose bytes were
-    read and are no longer present in the newer revision is a fidelity
-    *downgrade*: the newer revision knows strictly less, so accepting it would
-    silently mark an acquired attachment unfetched. An attachment present in
-    both but carrying *different* bytes is a genuine conflict -- two sources
-    disagree about content under one identity -- and no ordering rule can
-    resolve that, so the cohort stays ambiguous.
-    """
-    newer_contents = dict(newer.attachment_contents)
-    return older.attachment_identities <= newer.attachment_identities and all(
-        newer_contents.get(identity) == content for identity, content in older.attachment_contents
-    )
-
-
-def _strictly_dominates(older: SessionRevisionProjection, newer: SessionRevisionProjection) -> bool:
-    content_grew = (
-        len(newer.message_hashes) > len(older.message_hashes)
-        or len(newer.event_hashes) > len(older.event_hashes)
-        or newer.attachment_identities > older.attachment_identities
-        # Resolving the bytes of an already-referenced attachment is growth in
-        # evidence even when the transcript is untouched, which is exactly the
-        # shape a lazily-fetched attachment produces on its second acquisition.
-        or len(newer.attachment_contents) > len(older.attachment_contents)
-    )
-    return (
-        content_grew
-        and older.message_hashes == newer.message_hashes[: len(older.message_hashes)]
-        and older.event_hashes == newer.event_hashes[: len(older.event_hashes)]
-        and _attachment_evidence_preserved(older, newer)
     )
 
 

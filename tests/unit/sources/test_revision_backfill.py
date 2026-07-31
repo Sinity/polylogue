@@ -28,6 +28,7 @@ from polylogue.sources.revision_backfill import (
     census_historical_revision_evidence,
 )
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -149,6 +150,120 @@ def test_parse_one_replays_single_session_state_db_bytes_via_temp_spill(tmp_path
     assert len(sessions) == 1
     assert sessions[0].messages
     assert sessions[0].messages[0].text == "hi"
+
+
+@pytest.mark.parametrize(
+    "source_path_suffix",
+    [
+        "subagents/agent-deadbeef.meta.json",
+        "workflows/wf-run-1.json",
+        "subagents/workflows/wf-run-1/journal.jsonl",
+        "jobs/session-a/adopt.json",
+    ],
+)
+def test_parse_one_refuses_declared_fact_artifacts(tmp_path: Path, source_path_suffix: str) -> None:
+    """Regression for polylogue-b508: OriginSpec-declared "fact" artifacts
+    (agent-*.meta.json sidecars, workflow run snapshots/journals, adopt
+    manifests) must never become a session through this replay engine, the
+    same way the live daemon's ingest path already refuses them.
+
+    Before this fix, ``_parse_one``/``_parse_stream`` had no OriginSpec
+    awareness at all: a full ``polylogue ops reset --index`` rebuild replayed
+    every retained raw -- including these declared-fact sidecars, which are
+    deliberately admitted as raw authority even though they are never meant
+    to be session-parsed -- straight through ``parse_payload``/
+    ``parse_stream_payload``, recreating the exact ``<agent>.meta`` phantom
+    session rows the live path already excludes. Verified against a real
+    fixture corpus: rebuilding an index from 9 real Claude Code files (4
+    agent-*.meta.json sidecars among them) produced 4 phantom sessions before
+    this fix and 0 after.
+    """
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "sess" / source_path_suffix
+    payload = json.dumps({"agentId": "agent-deadbeef", "transcriptPath": "agent-deadbeef.jsonl"}).encode("utf-8")
+
+    sessions = _parse_one(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert sessions == []
+
+
+def _relationship_index_jsonl_bytes(count: int = 8) -> bytes:
+    """Bytes shaped like the real sinex analysis artifact from polylogue-9ykn
+    (gvgi): a graph-edge index sitting under a watched Claude Code directory,
+    with no session/message envelope at all -- just conversation/parent/
+    child/type/timestamp keys, whose ``type`` happens to be a bare
+    "assistant"/"user" role word.
+    """
+    lines = [
+        json.dumps(
+            {
+                "conversation": f"conv-{index}",
+                "parent": f"parent-{index}",
+                "child": f"child-{index}",
+                "type": "assistant" if index % 2 else "user",
+                "timestamp": "2026-05-01T00:00:00.000Z",
+            }
+        )
+        for index in range(count)
+    ]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_parse_one_refuses_non_conversational_content_with_no_path_rule(tmp_path: Path) -> None:
+    """Regression for polylogue-9ykn: a record with no OriginSpec path rule
+    at all (so ``_is_declared_non_session_artifact``'s path check alone would
+    admit it) must still be refused when its CONTENT carries no positive
+    conversation evidence.
+
+    Before this fix, this replay chokepoint (``polylogue ops reset --index``
+    / ``devtools`` rebuild-index) only consulted ``artifact_rule_for_path`` --
+    a path-pattern allowlist -- so a file with no matching path pattern, like
+    a third-party analysis index sitting under
+    ``~/.claude/projects/<proj>/analysis/index/``, sailed through unchanged
+    on every rebuild even after the live daemon ingest path (which also
+    consults the richer content classifier, ``classify_artifact``) learned to
+    refuse it. The two "single chokepoints" disagreeing is exactly the
+    location-as-identity defect recurring at a second layer.
+    """
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "analysis" / "index" / "conversation_relationships.jsonl"
+    payload = _relationship_index_jsonl_bytes()
+
+    sessions = _parse_one(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert sessions == []
+
+
+def test_parse_stream_refuses_non_conversational_content_with_no_path_rule(tmp_path: Path) -> None:
+    """Streaming-path sibling of the test above (large multi-GiB JSONL never
+    materializes fully; the content-classification sample is bounded to the
+    first 64 records instead)."""
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "analysis" / "index" / "conversation_relationships.jsonl"
+    payload = BytesIO(_relationship_index_jsonl_bytes())
+
+    sessions = revision_backfill._parse_stream(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert sessions == []
+
+
+def test_parse_one_still_replays_real_claude_code_sessions_with_no_path_rule(tmp_path: Path) -> None:
+    """Guard against the regression-direction failure mode: the content gate
+    added for polylogue-9ykn must not start refusing genuine Claude Code
+    session records that (like most session JSONL files) carry no matching
+    OriginSpec path rule."""
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "analysis" / "index" / "sess-real.jsonl"
+    record = {
+        "uuid": "u1",
+        "parentUuid": None,
+        "sessionId": "sess-real",
+        "type": "user",
+        "message": {"role": "user", "content": "hello"},
+        "timestamp": "2026-05-01T00:00:00.000Z",
+    }
+    payload = (json.dumps(record) + "\n").encode("utf-8")
+
+    sessions = _parse_one(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert len(sessions) == 1
+    assert sessions[0].messages
 
 
 def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> None:
@@ -356,12 +471,20 @@ def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
             acquired_at_ms=1,
         )
 
-    original_mark = ArchiveStore.mark_raw_parse_succeeded
+    # polylogue-1r9c: mark_raw_parse_succeeded's real implementation moved to
+    # revision_governance.py, and apply_raw_revision_replay (also in that
+    # module) calls it as a direct module-internal function reference, not
+    # through `self.` dynamic dispatch -- so the spy must patch the
+    # revision_governance module attribute, not the ArchiveStore delegator
+    # method (which only intercepts *external* callers).
+    original_mark = archive_revision_governance.mark_raw_parse_succeeded
 
-    def crash_after_index_commit(self: ArchiveStore, raw_id: str, *, provider: Provider) -> None:
+    def crash_after_index_commit(
+        store: archive_revision_governance.RawRevisionGovernanceHost, raw_id: str, *, provider: Provider
+    ) -> None:
         raise RuntimeError("crash after index receipt")
 
-    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", crash_after_index_commit)
+    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", crash_after_index_commit)
     with pytest.raises(RuntimeError, match="crash after index receipt"):
         backfill_historical_revision_evidence(tmp_path)
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -369,7 +492,7 @@ def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
 
-    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", original_mark)
+    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", original_mark)
     resumed = backfill_historical_revision_evidence(tmp_path)
     assert resumed.replayed_logical_sources == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -402,18 +525,22 @@ def test_backfill_resumes_after_only_some_source_markers_commit(
             for index, payload in enumerate((baseline, newest), start=1)
         }
 
-    original_mark = ArchiveStore.mark_raw_parse_succeeded
+    # polylogue-1r9c: see the sibling test above -- patch the
+    # revision_governance module attribute, the actual internal call target.
+    original_mark = archive_revision_governance.mark_raw_parse_succeeded
     calls = 0
 
-    def crash_after_one_marker(self: ArchiveStore, raw_id: str, *, provider: Provider) -> None:
+    def crash_after_one_marker(
+        store: archive_revision_governance.RawRevisionGovernanceHost, raw_id: str, *, provider: Provider
+    ) -> None:
         nonlocal calls
         calls += 1
         if calls == 1:
-            original_mark(self, raw_id, provider=provider)
+            original_mark(store, raw_id, provider=provider)
             return
         raise RuntimeError("crash between source markers")
 
-    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", crash_after_one_marker)
+    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", crash_after_one_marker)
     with pytest.raises(RuntimeError, match="between source markers"):
         backfill_historical_revision_evidence(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -422,7 +549,7 @@ def test_backfill_resumes_after_only_some_source_markers_commit(
         accepted_before = conn.execute("SELECT raw_id, content_hash FROM sessions").fetchone()
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0] == 2
 
-    monkeypatch.setattr(ArchiveStore, "mark_raw_parse_succeeded", original_mark)
+    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", original_mark)
     backfill_historical_revision_evidence(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 2

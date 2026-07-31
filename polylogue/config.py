@@ -564,6 +564,24 @@ class PolylogueConfig:
         return ()
 
     @property
+    def beads_roots(self) -> tuple[str, ...]:
+        """Repository roots whose ``.beads/interactions.jsonl`` ledger is watched.
+
+        Opt-in and empty by default: unlike every other source, a Beads
+        ledger is repository-scoped, not home-relative, so there is no safe
+        default set of repositories to guess. Set ``sources.beads_roots`` in
+        ``polylogue.toml`` (or ``POLYLOGUE_BEADS_ROOTS``, comma-separated) to
+        the repository roots (not the ``.beads`` directories themselves)
+        whose issue-interaction history should be archived.
+        """
+        v = self._data.get("beads_roots")
+        if isinstance(v, (list, tuple)):
+            return tuple(str(item) for item in v)
+        if isinstance(v, str) and v.strip():
+            return tuple(s.strip() for s in v.split(",") if s.strip())
+        return ()
+
+    @property
     def hermes_root(self) -> str:
         """Optional layered override for the Hermes runtime root."""
         return str(self._data.get("hermes_root", ""))
@@ -1032,6 +1050,19 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="path-layout",
         reload_behavior="startup-bound",
         description="Additional source roots watched by the daemon.",
+    ),
+    ConfigInventoryEntry(
+        "beads_roots",
+        toml_path="sources.beads_roots",
+        env_var="POLYLOGUE_BEADS_ROOTS",
+        owner_class="path-layout",
+        reload_behavior="startup-bound",
+        description=(
+            "Repository roots (not .beads/ directories) whose append-only "
+            "interactions.jsonl ledger is watched and ingested as beads-issue "
+            "sessions. Opt-in; empty by default -- Beads ledgers are "
+            "repository-scoped, so there is no safe home-relative default."
+        ),
     ),
     ConfigInventoryEntry(
         "hermes_root",
@@ -1839,6 +1870,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_allow_remote": False,
         "browser_capture_allow_no_auth": False,
         "source_roots": (),
+        "beads_roots": (),
         "hermes_root": "",
         "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
         "drive_token_path": str(captured.state_home / "token.json"),
@@ -2132,6 +2164,7 @@ class ResolvedSourcePaths:
     inbox: Path
     hooks_pending: Path
     explicit: tuple[Path, ...]
+    beads: tuple[Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2170,6 +2203,37 @@ def _resolved_runtime_path(value: str | Path | None, *, bootstrap: _BootstrapPat
     if value is None or not str(value).strip():
         return fallback
     return _expand_bootstrap_path(value, home=bootstrap.home, cwd=bootstrap.cwd)
+
+
+def resolve_archive_root(
+    *,
+    environment: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Resolve the archive root using the same layered precedence as the rest
+    of this module: built-in XDG default, site ``polylogue.toml``, user
+    ``polylogue.toml``, then ``POLYLOGUE_ARCHIVE_ROOT`` (low to high).
+
+    Exists so :mod:`polylogue.paths` -- deliberately stdlib-only, with no
+    top-level dependency on this module to avoid an import cycle (this module
+    itself imports :mod:`polylogue.paths` for shared constants) -- can honour
+    ``polylogue.toml``'s ``[archive] root`` instead of silently ignoring it
+    (polylogue-4ma3). ``paths.archive_root()`` only reaches this function via
+    a lazy, function-local import when ``POLYLOGUE_ARCHIVE_ROOT`` is unset, so
+    a process that never touches config-file resolution never pays for it.
+
+    Deliberately not cached: re-reads the environment and any config files on
+    every call, exactly like :func:`load_polylogue_config` and the rest of
+    ``paths._roots``'s XDG accessors, so a test that monkeypatches
+    ``POLYLOGUE_ARCHIVE_ROOT`` (or the XDG/``POLYLOGUE_CONFIG``/
+    ``POLYLOGUE_SITE_CONFIG`` variables that select which config files are
+    read) observes the change on its very next call with no cache to
+    invalidate.
+    """
+    bootstrap = _snapshot_bootstrap(environment=environment, cwd=cwd, home=home)
+    settings = load_polylogue_config(_bootstrap=bootstrap)
+    return _resolved_runtime_path(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
 
 
 def resolve_runtime_config(
@@ -2234,6 +2298,9 @@ def resolve_runtime_config(
     explicit_roots = tuple(
         _resolved_runtime_path(value, bootstrap=bootstrap, fallback=bootstrap.cwd) for value in settings.source_roots
     )
+    beads_roots = tuple(
+        _resolved_runtime_path(value, bootstrap=bootstrap, fallback=bootstrap.cwd) for value in settings.beads_roots
+    )
     source_paths = ResolvedSourcePaths(
         claude_code=bootstrap.home / ".claude" / "projects",
         codex=bootstrap.home / ".codex" / "sessions",
@@ -2248,6 +2315,7 @@ def resolve_runtime_config(
         inbox=paths.inbox_root,
         hooks_pending=hook_sidecar / "pending",
         explicit=explicit_roots,
+        beads=beads_roots,
     )
     local_candidates = (
         ("claude-code", source_paths.claude_code),
@@ -2260,6 +2328,11 @@ def resolve_runtime_config(
         ("hooks", source_paths.hooks_pending),
     )
     sources = [Source(name=name, path=path) for name, path in local_candidates if path.exists()]
+    sources.extend(
+        Source(name=f"beads:{repository_root.name}", path=repository_root / ".beads" / "interactions.jsonl")
+        for repository_root in beads_roots
+        if (repository_root / ".beads" / "interactions.jsonl").exists()
+    )
     gemini_cache = drive_cache / "gemini"
     if gemini_cache.exists() or drive_credentials.exists() or drive_token.exists():
         sources.append(Source(name="aistudio", folder=GEMINI_DRIVE_FOLDER, path=gemini_cache))
@@ -2445,10 +2518,13 @@ def _config_diagnostic(
     return payload
 
 
+_MULTI_PATH_CONFIG_KEYS = frozenset({"source_roots", "beads_roots"})
+
+
 def _iter_path_config_values(key: str, value: object) -> list[str]:
     if value in (None, "", ()):
         return []
-    if key == "source_roots":
+    if key in _MULTI_PATH_CONFIG_KEYS:
         if isinstance(value, str):
             return [value]
         if isinstance(value, (tuple, list)):
@@ -2516,6 +2592,21 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
                         key=entry.key,
                         message=f"Configured source root does not exist: {raw_path}.",
                         next_action="Remove the stale source root or create/mount it before running the daemon.",
+                        cfg=resolved,
+                    )
+                )
+            if entry.key == "beads_roots" and not path.exists():
+                diagnostics.append(
+                    _config_diagnostic(
+                        code="configured_beads_root_missing",
+                        severity="warning",
+                        key=entry.key,
+                        message=f"Configured Beads repository root does not exist: {raw_path}.",
+                        next_action=(
+                            "Remove the stale beads root or point it at an existing repository checkout; "
+                            "the ledger itself (.beads/interactions.jsonl) may not exist yet -- only the "
+                            "repository root must."
+                        ),
                         cfg=resolved,
                     )
                 )
@@ -2849,4 +2940,5 @@ __all__ = [
     "load_polylogue_config",
     "redact_config_mapping",
     "redact_secret_value",
+    "resolve_archive_root",
 ]

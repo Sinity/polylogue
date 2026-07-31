@@ -71,7 +71,17 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # A bump without a declaration is a policy violation, not a free rebuild:
 # `devtools lab policy schema-versioning` fails, and the archive silently
 # falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
-INDEX_SCHEMA_VERSION = 46
+#
+# polylogue-o4j2: v47 adds sessions.pending_drafts_json -- aistudio-drive's
+# chunkedPrompt.pendingInputs non-blank entries (unsent textbox drafts, 7/397
+# real sessions with draft text on the live archive). Landed as a session-row
+# field rather than a session_event on purpose: a draft is mutable CURRENT
+# state (edited in place, gone entirely once submitted), and session_events
+# participate in session_revision_projection's append-only comparison axes
+# (polylogue-aggz Invariant 1) -- putting mutable state there reproduces the
+# exact defect class polylogue-bu1i (acquisition state) and polylogue-nuec
+# (provider-remeasurement) were fixed for. See sessions table comment.
+INDEX_SCHEMA_VERSION = 47
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -193,6 +203,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- into typed columns would couple this schema to one provider for no
     -- query benefit; nothing here is queried across origins today.
     run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)}),
+    -- polylogue-o4j2 (v47): non-blank chunkedPrompt.pendingInputs entries --
+    -- the operator's not-yet-submitted textbox draft(s) -- verbatim as a
+    -- JSON array of {{text, role, token_count}} objects. Deliberately a
+    -- session-row field, NOT a session_event: a draft is CURRENT mutable
+    -- UI state (edited in place, then disappears entirely on submit), not
+    -- an append-only historical fact, so it must stay outside
+    -- session_revision_projection's message/attachment/event comparison
+    -- axes (polylogue-aggz Invariant 1) -- exactly the shape polylogue-bu1i
+    -- and polylogue-nuec were fixed for, on a third axis (mutable session
+    -- state rather than acquisition state or provider-remeasurement).
+    pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)}),
     git_branch              TEXT,
     git_repository_url      TEXT,
     provider_project_ref    TEXT,

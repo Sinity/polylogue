@@ -75,9 +75,17 @@
     },
     {
       "matches": [
-        "https://grok.com/*",
-        "https://x.com/*",
-        "https://twitter.com/*"
+        "https://grok.com/*"
+      ],
+      "js": [
+        "src/content/grok_bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://grok.com/*"
       ],
       "js": [
         "src/common.js",

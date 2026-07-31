@@ -17,6 +17,7 @@ from polylogue.core.enums import Provider
 from .parsers.base import ParsedSession
 
 if TYPE_CHECKING:
+    from .parsers.chatgpt_sidecars import ChatGPTAssetIndex
     from .parsers.claude.history import HistoryEntry
     from .parsers.claude.index import SessionIndexEntry
     from .parsers.claude.orchestration import ClaudeOrchestrationArtifact, ClaudeOrchestrationCoverage
@@ -41,7 +42,14 @@ class _CodexSidecarData(TypedDict, total=False):
     state_titles: CodexHistoryTitles
 
 
-class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, total=False):
+class _ChatGPTSidecarData(TypedDict, total=False):
+    # bd polylogue-0hwv / polylogue-dt5s: the merged asset-name/sandbox-file
+    # resolver built once per source scan from conversation_asset_file_names.json
+    # + library_files.json. See sources/assembly_chatgpt.py.
+    chatgpt_asset_index: ChatGPTAssetIndex
+
+
+class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, total=False):
     pass
 
 
@@ -86,6 +94,10 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
         from .assembly_gemini import GeminiAssemblySpec
 
         return GeminiAssemblySpec()
+    if provider is Provider.CHATGPT:
+        from .assembly_chatgpt import ChatGPTAssemblySpec
+
+        return ChatGPTAssemblySpec()
     return None
 
 
@@ -96,6 +108,7 @@ __all__ = [
     "CodexThreadNames",
     "ProviderAssemblySpec",
     "SidecarData",
+    "_ChatGPTSidecarData",
     "_CodexSidecarData",
     "_ClaudeCodeSidecarData",
     "TitleResolution",

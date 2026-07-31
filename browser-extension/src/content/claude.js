@@ -9,7 +9,6 @@
   const MESSAGE_CONTAINER_SELECTOR = '[data-testid*="message"], [data-message-author-role], article';
   let messageLayer = null;
 
-  const domAdapterName = "claude-ai-dom-v1";
   const nativeAdapterName = "claude-ai-native-v1";
   const nativeCaptureMessage = "polylogue.claude.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
@@ -52,25 +51,6 @@
     nativeFetchResponses.delete(data.requestId);
     pending.resolve({ capture: data.capture || null, error: data.error || null });
   });
-
-  function roleFromNode(node, index) {
-    const role = node.getAttribute("data-message-author-role") || node.getAttribute("data-testid") || "";
-    if (/human|user/i.test(role)) return "user";
-    if (/assistant|claude/i.test(role)) return "assistant";
-    return index % 2 === 0 ? "user" : "assistant";
-  }
-
-  function collectTurns() {
-    const nodes = [
-      ...document.querySelectorAll('[data-testid*="message"], [data-message-author-role], article')
-    ];
-    return nodes
-      .map((node, index) => {
-        const text = window.polylogueCapture.visibleText(node);
-        return text ? { role: roleFromNode(node, index), text, provider_meta: { selector_index: index } } : null;
-      })
-      .filter(Boolean);
-  }
 
   function textFromMessage(message) {
     if (!message || typeof message !== "object") return "";
@@ -221,22 +201,10 @@
 
   async function capture(reason = null) {
     const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
-    const envelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
-    const fallbackEnvelope = () => {
-      const turns = collectTurns();
-      if (!turns.length) return null;
-      return window.polylogueCapture.buildEnvelope({
-        provider: "claude-ai",
-        adapterName: domAdapterName,
-        turns,
-        providerMeta: {
-          capture_fidelity: "dom_degraded",
-          native_attempts: nativeAttemptDiagnostics.slice(-6)
-        }
-      });
-    };
-    const finalEnvelope = envelope || fallbackEnvelope();
-    if (!finalEnvelope) return { ok: false, error: "no_turns" };
+    const finalEnvelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
+    if (!finalEnvelope) {
+      return { ok: false, error: "native_capture_unavailable", native_attempts: nativeAttemptDiagnostics.slice(-6) };
+    }
     const captureResult = await window.polylogueCapture.sendCapture(finalEnvelope, reason);
     if (!captureResult?.ok) {
       messageLayer?.reportOutcome({ ok: false, turnCount: finalEnvelope.session.turns.length });

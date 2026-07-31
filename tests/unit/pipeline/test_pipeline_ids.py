@@ -12,6 +12,10 @@ from polylogue.pipeline.ids import (
     _message_hash_payload,
     _normalize_for_hash,
     _session_hash_payload,
+    attachment_identity_hash,
+    event_base_identity_hash,
+    event_canonical_identity_hash,
+    message_identity_hash,
     session_content_hash,
     session_id,
     session_revision_projection,
@@ -214,8 +218,12 @@ def test_session_revision_projection_golden_hashes() -> None:
         "65a99313c3ed8b81e69ecc0b36f314b3bf7848bc10fcea11415ddb9b07188941",
         "8efbf7b5b70bef4d73ec3550fe97e6f4d456cd724550bc5621a36766fe7f1f8b",
     ]
+    # Content-derived identity (message_id, name, mime_type) -- no longer a
+    # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
+    # a provider id is not guaranteed present across export vintages, so it
+    # is excluded from identity rather than used when present.
     assert {h.hex() for h in projection.attachment_identities} == {
-        "c233d41c034109580c7d7e74a96944a55eb0fadcc2564001dcf607f727b48062"
+        "2f18566179352065740615ea89e60130da5a8e46aae224e36b44ed626722da54"
     }
     # The golden attachment declares a size but carries no bytes, so it is
     # referenced-but-unacquired: identity is known, content is not.
@@ -270,16 +278,140 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
 
     assert projection.session_hash.hex() == independent_session_hash
     assert list(projection.message_hashes) == [bytes.fromhex(hash_payload(p)) for p in independent_message_payloads]
+    # Content-derived identity: message_id/name/mime_type only, never the
+    # provider attachment id (polylogue-aggz / polylogue-d8al).
     assert projection.attachment_identities == frozenset(
-        bytes.fromhex(hash_payload({field: p[field] for field in ("id", "message_id", "name", "mime_type")}))
+        bytes.fromhex(hash_payload({field: p[field] for field in ("message_id", "name", "mime_type")}))
         for p in independent_attachment_payloads
     )
     assert projection.attachment_contents == frozenset(
         (
-            bytes.fromhex(hash_payload({field: p[field] for field in ("id", "message_id", "name", "mime_type")})),
+            bytes.fromhex(hash_payload({field: p[field] for field in ("message_id", "name", "mime_type")})),
             bytes.fromhex(str(p["inline_content_hash"])),
         )
         for p in independent_attachment_payloads
         if "inline_content_hash" in p
     )
     assert list(projection.event_hashes) == [bytes.fromhex(hash_payload(p)) for p in independent_event_payloads]
+
+
+# --- polylogue-aggz: typed identity constructor -----------------------------
+#
+# These tests prove the constructor property structurally, not just by
+# example: acquisition state, provider-reported measurement, and any field a
+# parser might add in the future cannot reach comparison identity, because
+# the identity constructors are fixed keyword-only functions -- passing
+# anything outside their declared parameters is a TypeError at the call
+# boundary, not a value that has to be remembered and stripped.
+
+
+def test_message_identity_hash_rejects_non_content_fields() -> None:
+    """The message identity constructor accepts only ``id`` -- nothing else.
+
+    Attempting to pass ``text``/``timestamp``/``role`` (what a message says,
+    not which message it is) is rejected by the function signature itself,
+    not by a runtime filter someone has to remember to apply.
+    """
+    with pytest.raises(TypeError):
+        message_identity_hash(id="m1", text="hello")  # type: ignore[call-arg]
+
+
+def test_attachment_identity_hash_rejects_acquisition_state() -> None:
+    """Acquisition state (polylogue-bu1i) cannot reach attachment identity.
+
+    ``size_bytes`` and ``inline_content_hash`` describe whether an
+    attachment's bytes have been acquired, not which attachment it is --
+    passing them is a TypeError, proving the exclusion is structural rather
+    than a convention encoded in a list of dict keys.
+    """
+    with pytest.raises(TypeError):
+        attachment_identity_hash(  # type: ignore[call-arg]
+            message_id="m1", name="f.txt", mime_type="text/plain", size_bytes=3
+        )
+    with pytest.raises(TypeError):
+        attachment_identity_hash(  # type: ignore[call-arg]
+            message_id="m1", name="f.txt", mime_type="text/plain", inline_content_hash="deadbeef"
+        )
+
+
+def test_attachment_identity_hash_rejects_full_payload_spread() -> None:
+    """A parser adding a new field to the payload dict cannot silently enter
+    identity: spreading the *entire* hash-stable attachment payload (as a
+    real future parser change might attempt, e.g. after adding a brand new
+    ``upload_origin`` or ``caption`` field to what gets hashed) into the
+    identity constructor is rejected outright, because the payload carries
+    keys (``id``, ``size_bytes``, and whatever new field a parser adds) that
+    are simply not parameters of ``attachment_identity_hash``.
+    """
+    attachment = ParsedAttachment(
+        provider_attachment_id="a1", message_provider_id="m1", name="f.txt", mime_type="text/plain", size_bytes=3
+    )
+    full_payload = _attachment_hash_payload(attachment)
+    # Simulate a parser adding a brand-new, never-seen-before field to the
+    # hash-stable payload -- the exact failure shape polylogue-bu1i/-nuec
+    # were: a NEW field silently entering identity because the extraction
+    # took "everything except a denylist" rather than an explicit allowlist.
+    full_payload["totally_new_provider_field"] = "unclassified-value"
+    with pytest.raises(TypeError):
+        attachment_identity_hash(**full_payload)
+
+
+def test_event_base_identity_hash_rejects_measurement_fields() -> None:
+    """Provider-reported measurement (polylogue-nuec) cannot reach event identity."""
+    with pytest.raises(TypeError):
+        event_base_identity_hash(  # type: ignore[call-arg]
+            event_type="generation_lifecycle",
+            source_message_provider_id="m1",
+            payload={"elapsed_duration_ms": 13000},
+        )
+
+
+def test_identity_constructors_ignore_new_payload_fields_when_called_correctly() -> None:
+    """Adding a new field to a parser fixture leaves identity unaffected.
+
+    Two attachments differing only in a field that is not one of the three
+    named identity parameters -- here, acquisition state plus a synthetic
+    "field a future parser might add" -- still produce identical identity,
+    because the constructor was never given that field to begin with.
+    """
+    acquired = ParsedAttachment(
+        provider_attachment_id="a1",
+        message_provider_id="m1",
+        name="f.txt",
+        mime_type="text/plain",
+        size_bytes=3,
+        inline_bytes=b"abc",
+    )
+    unacquired = ParsedAttachment(
+        provider_attachment_id="a1-different-provider-id",
+        message_provider_id="m1",
+        name="f.txt",
+        mime_type="text/plain",
+        size_bytes=None,
+    )
+    acquired_payload = _attachment_hash_payload(acquired)
+    unacquired_payload = _attachment_hash_payload(unacquired)
+    identity_acquired = attachment_identity_hash(
+        message_id=acquired_payload["message_id"],
+        name=acquired_payload["name"],
+        mime_type=acquired_payload["mime_type"],
+    )
+    identity_unacquired = attachment_identity_hash(
+        message_id=unacquired_payload["message_id"],
+        name=unacquired_payload["name"],
+        mime_type=unacquired_payload["mime_type"],
+    )
+    assert identity_acquired == identity_unacquired
+
+
+def test_event_canonical_identity_hash_folds_base_and_content() -> None:
+    """The canonical fold is a pure function of the two hashes it is given."""
+    base = event_base_identity_hash(event_type="chatgpt_block_metadata", source_message_provider_id="m1")
+    content_a = bytes.fromhex(hash_payload({"block_index": 0}))
+    content_b = bytes.fromhex(hash_payload({"block_index": 1}))
+    folded_a = event_canonical_identity_hash(base_identity=base, content_hash=content_a)
+    folded_b = event_canonical_identity_hash(base_identity=base, content_hash=content_b)
+    # Same base identity, different content -> different canonical identity
+    # (this is precisely what lets two distinct same-type-same-anchor events
+    # coexist as separate set entries -- polylogue-aggz).
+    assert folded_a != folded_b

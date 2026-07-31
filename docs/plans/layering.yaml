@@ -26,12 +26,18 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
+      entrypoints: [delete_sessions]
+    - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
+      surfaces:
+        - tier: index
+          durability: rebuildable
+          interruption: replayable
         - tier: source
           durability: durable
           interruption: atomic
       entrypoints:
         [apply_raw_membership_classification, apply_raw_revision_replay, classify_raw_revision_cohort,
-        delete_sessions, release_provisional_full_revisions, replace_raw_membership_census,
+        release_provisional_full_revisions, replace_raw_membership_census,
         write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,
         write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]
       twin_write_contract: raw-membership-classification
@@ -132,7 +138,7 @@ writer_modules:
       entrypoints: [apply_index_fast_forward]
   twin_write_contracts:
     - name: raw-membership-classification
-      module: polylogue/storage/sqlite/archive_tiers/archive.py
+      module: polylogue/storage/sqlite/archive_tiers/revision_governance.py
       surfaces: [index, source]
       entrypoints: [apply_raw_membership_classification]
       reason: "Applying a semantic member-head decision persists the derived session row (index) and the per-raw membership/authority decision (source) together so a partial write can never leave one raw id's authority state inconsistent with the session it was or was not accepted into."

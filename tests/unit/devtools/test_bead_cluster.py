@@ -77,11 +77,11 @@ def test_extract_footprint_area_labels_ignored_once_files_present() -> None:
 def test_extract_footprint_finds_migration_slots_and_generated_surfaces() -> None:
     bead = _bead(
         "polylogue-a",
-        design="Add migration 008_add_col.sql; regenerate topology-status.md too.",
+        design="Add migration 008_add_col.sql; regenerate topology-target.yaml too.",
     )
     fp = bead_cluster._extract_footprint(bead)
     assert "008" in fp.migration_slots
-    assert "generated:topology-status" in fp.generated_surfaces
+    assert "generated:topology-target" in fp.generated_surfaces
 
 
 def test_footprint_overlap_keys_exclude_broad_packages() -> None:
