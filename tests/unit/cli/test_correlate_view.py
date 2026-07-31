@@ -28,6 +28,7 @@ def _session() -> SimpleNamespace:
         git_repository_url="https://github.com/Sinity/polylogue",
         working_directories=(),
         messages=[],
+        session_events=(),
     )
 
 
@@ -55,6 +56,7 @@ def _result() -> SessionCorrelationResult:
 def test_run_correlation_view_json_emits_payload() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
+    env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
 
     with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
         run_correlation_view(env, session_id="target", output_format="json", github_api=False)
@@ -82,9 +84,32 @@ def test_run_correlation_view_missing_session_exits() -> None:
     env.ui.error.assert_called_once()
 
 
+def test_run_correlation_view_github_enrichment_does_not_crash() -> None:
+    """Regression: ``_enrich_with_github_api`` used ``SessionCorrelationResult``
+    at runtime while only importing it under ``TYPE_CHECKING`` -- the default
+    ``github_api=True`` path raised ``NameError`` on every session carrying
+    any issue/PR ref, silently breaking ``read --view correlation`` for the
+    live archive (verified against /realm/db/polylogue/index.db)."""
+    env = MagicMock()
+    env.polylogue.get_session = AsyncMock(return_value=_session())
+    env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
+
+    with (
+        patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()),
+        patch("subprocess.run", side_effect=FileNotFoundError("gh not installed")),
+    ):
+        run_correlation_view(env, session_id="target", output_format="json", github_api=True)
+
+    printed = "".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)
+    payload = json.loads(printed)
+    assert payload["pr_refs"][0]["number"] == 2149
+    assert payload["issue_refs"][0]["number"] == 1845
+
+
 def test_run_correlation_view_plain_renders_window() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
+    env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
 
     with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
         run_correlation_view(env, session_id="target", github_api=False)

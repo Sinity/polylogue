@@ -2,13 +2,44 @@ export async function executeProviderPageRequest(request) {
   const currentOrigin = window.location.origin;
   const requestTimeoutMs = 55000;
   const absoluteMaxResponseBytes = 32 * 1024 * 1024;
-  // A ChatGPT conversation is fetched in MAIN world, then reduced before the
-  // scripting-result bridge. Both stages stay bounded independently: raw
-  // provider bloat may use 64 MiB in page memory, but no more than 24 MiB can
-  // cross into extension storage/worker code. 24 MiB leaves 8 MiB of headroom
-  // beneath Chrome's established 32 MiB scripting-result limit.
+  // A ChatGPT conversation is fetched in MAIN world, then projected into the
+  // canonical native mapping shape (every content-type payload key and every
+  // metadata key preserved -- no field allowlist) before crossing the
+  // scripting-result bridge. Raw provider bloat may use up to 64 MiB in page
+  // memory. No single scripting-result call may exceed 24 MiB (8 MiB of
+  // headroom beneath Chrome's established 32 MiB scripting-result limit), but
+  // fidelity never trades off against size: a projection that would exceed
+  // the per-call bridge budget is split into ordered, node-aligned chunks
+  // (never splitting a single node's JSON) and the caller re-invokes this
+  // function once per chunk, reassembling the full mapping on the extension
+  // side. See buildChatGptChunks() below.
   const compactChatGptSourceMaxBytes = 64 * 1024 * 1024;
   const compactChatGptBridgeMaxBytes = 24 * 1024 * 1024;
+  // Target size when packing nodes into a chunk, well under the hard bridge
+  // cap so JSON-escaping overhead measured by assertScriptingResultBound
+  // (quotes, control characters, the extension-side wrapper) has headroom.
+  const chatGptChunkPackTargetBytes = compactChatGptBridgeMaxBytes / 2;
+  // A chunked conversation fetch does exactly one network round-trip: the
+  // raw parsed source is cached in this MAIN-world page global (persists
+  // across the sequential executeScript calls that pull each chunk) so
+  // chunk N>0 does not re-fetch. Keyed by native conversation id.
+  const chunkCacheTtlMs = 5 * 60 * 1000;
+  const maxChatGptChunks = 64;
+  window.__polylogueChatGptChunkCache = window.__polylogueChatGptChunkCache || new Map();
+  const chunkCache = window.__polylogueChatGptChunkCache;
+  // The cache entry for a fully-served conversation is deleted right after
+  // its last chunk goes out (see compactChatGptConversation). This sweep is
+  // the other half: an operator tab can live for days, and a caller that
+  // starts pulling chunks then never finishes (crash, cancel, extension
+  // reload mid-reassembly) would otherwise leave tens of MiB of projected
+  // chunks parked in this page global indefinitely -- nothing else ever
+  // revisits an abandoned nativeId to trigger the TTL check inside
+  // compactChatGptConversation. Runs on every bridge call (identity checks
+  // happen far more often than conversation fetches), so an abandoned entry
+  // is swept within one TTL window of being abandoned, not forever.
+  for (const [cachedNativeId, cached] of chunkCache) {
+    if (Date.now() - cached.createdAtMs > chunkCacheTtlMs) chunkCache.delete(cachedNativeId);
+  }
   const originalFetch = window.fetch;
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const maxResponseBytes = Number.isInteger(request?.maxResponseBytes)
@@ -73,79 +104,183 @@ export async function executeProviderPageRequest(request) {
     }
   }
 
+  // No content-type field allowlist: ChatGPT content nodes carry their
+  // payload under different keys per content_type ("parts" for
+  // multimodal_text/text, "thoughts" for reasoning nodes -- an array of
+  // {summary, content} the previous allowlist dropped entirely, collapsing
+  // every reasoning node to `{}` -- "text"/"result" for simple nodes, plus
+  // "language"/"text" for code, "aggregate_result" for execution_output,
+  // and content types not yet observed). Forwarding the object as-is keeps
+  // every current and future content_type's payload without hand-modeling
+  // each shape, and costs nothing extra: size is bounded by chunking
+  // (buildChatGptChunks), not by dropping fields.
   function compactChatGptContent(content) {
-    if (!content || typeof content !== "object") return {};
-    if (Array.isArray(content.parts)) {
-      return {
-        parts: content.parts.flatMap((part) => {
-          if (typeof part === "string") return [part];
-          if (part && typeof part === "object") {
-            const projected = {};
-            for (const key of ["content_type", "text", "asset_pointer", "file_id", "name", "mime_type"]) {
-              if (typeof part[key] === "string") projected[key] = part[key];
-            }
-            return Object.keys(projected).length ? [projected] : [];
-          }
-          return [];
-        }),
-      };
-    }
-    if (typeof content.text === "string") return { text: content.text };
-    if (typeof content.result === "string") return { result: content.result };
-    return {};
+    return content && typeof content === "object" ? content : {};
   }
 
-  function compactChatGptAttachments(metadata) {
-    if (!Array.isArray(metadata?.attachments)) return [];
-    return metadata.attachments.flatMap((attachment) => {
-      if (!attachment || typeof attachment !== "object") return [];
-      const projected = {};
-      for (const key of ["id", "name", "mime_type", "library_file_id"]) {
-        if (typeof attachment[key] === "string") projected[key] = attachment[key];
-      }
-      if (Number.isFinite(attachment.size)) projected.size = attachment.size;
-      return typeof projected.id === "string" ? [projected] : [];
-    });
+  // Ditto for message-level metadata: the previous allowlist kept only
+  // model_slug + a re-allowlisted attachments array, discarding
+  // content_references (the citation graph), citations, finish_details,
+  // request_id, reasoning_status, search_result_groups, and aggregate_result
+  // (sandbox tool output). polylogue/sources/parsers/chatgpt.py already
+  // reads all of these keys directly off message.metadata for GDPR-export
+  // parsing -- passing metadata through unfiltered here means the same
+  // parser now has full fidelity for browser-captured conversations too.
+  function compactChatGptMetadata(metadata) {
+    return metadata && typeof metadata === "object" ? metadata : {};
   }
 
-  function compactChatGptConversation(body) {
-    let source;
-    try { source = JSON.parse(body); } catch { throw new Error("provider_contract_drift:chatgpt_conversation_not_json_object"); }
-    if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object" || Array.isArray(source.mapping)) {
-      throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
-    }
-    const mapping = {};
-    for (const [nodeId, node] of Object.entries(source.mapping)) {
-      const message = node?.message;
-      mapping[nodeId] = {
-        id: typeof node?.id === "string" ? node.id : null,
-        parent: typeof node?.parent === "string" ? node.parent : null,
-        message: message && typeof message === "object"
-          ? {
-              id: typeof message.id === "string" ? message.id : null,
-              author: { role: typeof message.author?.role === "string" ? message.author.role : null },
-              content: compactChatGptContent(message.content),
-              create_time: typeof message.create_time === "string" || typeof message.create_time === "number" ? message.create_time : null,
-              status: typeof message.status === "string" ? message.status : null,
-              end_turn: typeof message.end_turn === "boolean" ? message.end_turn : null,
-              recipient: typeof message.recipient === "string" ? message.recipient : null,
-              metadata: {
-                model_slug: typeof message.metadata?.model_slug === "string" ? message.metadata.model_slug : null,
-                attachments: compactChatGptAttachments(message.metadata),
-              },
-            }
-          : null,
-      };
-    }
-    const projected = JSON.stringify({
-      polylogue_bridge_projection: "chatgpt-native-compact-v1",
+  function chatGptConversationHeader(source) {
+    return {
       id: typeof source.id === "string" ? source.id : null,
       title: typeof source.title === "string" ? source.title : null,
       create_time: typeof source.create_time === "string" || typeof source.create_time === "number" ? source.create_time : null,
       update_time: typeof source.update_time === "string" || typeof source.update_time === "number" ? source.update_time : null,
       current_node: typeof source.current_node === "string" ? source.current_node : null,
-      mapping,
+      // polylogue.sources.parsers.chatgpt.parse() reads these three
+      // top-level fields to set session_kind (is_temporary) and
+      // provider_project_ref (conversation_template_id/gizmo_id) -- omitting
+      // them silently downgraded every temporary/project-scoped ChatGPT
+      // conversation to a standard/unscoped session the moment this
+      // projection started advertising itself as native_full instead of the
+      // old degraded/compact signal.
+      is_temporary: typeof source.is_temporary === "boolean" ? source.is_temporary : null,
+      conversation_template_id: typeof source.conversation_template_id === "string" ? source.conversation_template_id : null,
+      gizmo_id: typeof source.gizmo_id === "string" ? source.gizmo_id : null,
+    };
+  }
+
+  function projectChatGptNode(node) {
+    if (!node || typeof node !== "object") return null;
+    const message = node.message;
+    return {
+      id: typeof node.id === "string" ? node.id : null,
+      parent: typeof node.parent === "string" ? node.parent : null,
+      // polylogue.sources.parsers.chatgpt.extract_messages_from_mapping
+      // derives branch_index EXCLUSIVELY from the parent node's `children`
+      // array position (a sibling's index within its parent's children,
+      // not anything computed from the child itself) -- dropping this
+      // field silently loses branch/variant ordering forever once this
+      // projection is the durable raw capture, the exact defect class this
+      // fix exists to eliminate, just one level up (node topology instead
+      // of message content). Preserved as an array of node-id strings,
+      // same shape the provider sends.
+      children: Array.isArray(node.children) ? node.children.filter((childId) => typeof childId === "string") : [],
+      message: message && typeof message === "object"
+        ? {
+            ...message,
+            content: compactChatGptContent(message.content),
+            metadata: compactChatGptMetadata(message.metadata),
+          }
+        : null,
+    };
+  }
+
+  function assertScriptingResultBound(response) {
+    // executeScript returns this exact result shape. JSON encoding is a
+    // conservative byte model for the browser bridge because escaped content
+    // can be larger than the projected conversation string alone.
+    const bytes = new globalThis.TextEncoder().encode(JSON.stringify({ ok: true, response })).length;
+    if (bytes > compactChatGptBridgeMaxBytes) {
+      throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
+    }
+    return bytes;
+  }
+
+  // Builds the full-fidelity projected node set for a source conversation,
+  // packing nodes into ordered, byte-bounded, node-aligned chunks (a node's
+  // JSON is never split across chunks) so the caller can pull the whole
+  // conversation across several bounded scripting-result calls instead of
+  // one call that would either overflow Chrome's limit or force a lossy
+  // projection. A conversation that fits in a single chunk is still wrapped
+  // in the same {chunked, chunkIndex, totalChunks} shape for a uniform
+  // caller contract; chunked === false is the common case.
+  function buildChatGptChunks(source) {
+    const nodeEntries = Object.entries(source.mapping).map(([nodeId, node]) => [nodeId, projectChatGptNode(node)]);
+    const chunks = [];
+    let current = {};
+    let currentBytes = 0;
+    for (const [nodeId, projectedNode] of nodeEntries) {
+      const nodeBytes = new globalThis.TextEncoder().encode(JSON.stringify(projectedNode)).length;
+      if (nodeBytes > chatGptChunkPackTargetBytes && currentBytes === 0) {
+        // A single node's own projection already exceeds the packing
+        // target. There is no lossless way to split one node's JSON across
+        // chunks, so this node gets its own chunk and we accept the risk
+        // that assertScriptingResultBound rejects it below -- a loud,
+        // specific failure, never a silent drop of that node's content.
+        chunks.push({ [nodeId]: projectedNode });
+        continue;
+      }
+      if (currentBytes > 0 && currentBytes + nodeBytes > chatGptChunkPackTargetBytes) {
+        chunks.push(current);
+        current = {};
+        currentBytes = 0;
+      }
+      current[nodeId] = projectedNode;
+      currentBytes += nodeBytes;
+    }
+    if (currentBytes > 0 || chunks.length === 0) chunks.push(current);
+    if (chunks.length > maxChatGptChunks) {
+      throw sizeError("backfill_bridge_projection_too_many_chunks", chunks.length, maxChatGptChunks);
+    }
+    return chunks;
+  }
+
+  function compactChatGptConversation(body, chunkIndex, nativeId) {
+    let projectedChunks;
+    let header;
+    if (chunkIndex > 0) {
+      const cached = chunkCache.get(nativeId);
+      if (!cached || Date.now() - cached.createdAtMs > chunkCacheTtlMs) {
+        throw new Error("backfill_bridge_chunk_cache_miss");
+      }
+      if (chunkIndex >= cached.chunks.length) {
+        throw new Error("backfill_bridge_chunk_index_out_of_range");
+      }
+      projectedChunks = cached.chunks;
+      header = cached.header;
+    } else {
+      let source;
+      try { source = JSON.parse(body); } catch { throw new Error("provider_contract_drift:chatgpt_conversation_not_json_object"); }
+      if (!source || typeof source !== "object" || !source.mapping || typeof source.mapping !== "object" || Array.isArray(source.mapping)) {
+        throw new Error("provider_contract_drift:chatgpt_conversation.mapping_must_be_object");
+      }
+      header = chatGptConversationHeader(source);
+      projectedChunks = buildChatGptChunks(source);
+      if (projectedChunks.length > 1) {
+        const entry = { chunks: projectedChunks, header, createdAtMs: Date.now() };
+        chunkCache.set(nativeId, entry);
+        // Scheduled at insertion time, not left to a future bridge call: a
+        // tab that goes idle right after the first chunk (no further
+        // identity/inventory/conversation traffic at all) would otherwise
+        // never trigger the sweep above, holding the entry indefinitely.
+        // The `chunkCache.get(nativeId) === entry` guard matters -- without
+        // it, a stale timer firing after this nativeId's entry was already
+        // replaced by a newer fetch (same conversation re-pulled) would
+        // delete that unrelated newer entry instead of a no-op.
+        window.setTimeout(() => {
+          if (chunkCache.get(nativeId) === entry) chunkCache.delete(nativeId);
+        }, chunkCacheTtlMs);
+      } else {
+        chunkCache.delete(nativeId);
+      }
+    }
+    const projected = JSON.stringify({
+      polylogue_bridge_projection: "chatgpt-native-bridge-v1",
+      ...header,
+      chunked: projectedChunks.length > 1,
+      chunkIndex,
+      totalChunks: projectedChunks.length,
+      mapping: projectedChunks[chunkIndex],
     });
+    // The last chunk has now been built and is about to be returned to the
+    // caller: free the cached projection immediately rather than waiting
+    // for the TTL sweep above or a future call that may never come. Safe to
+    // do before the size check below -- if that check throws, the caller
+    // never got a successful last-chunk response and will restart the whole
+    // fetch from chunkIndex 0 on retry, which is correct (a partial/rejected
+    // last chunk is not a completed transfer either way).
+    if (chunkIndex === projectedChunks.length - 1) chunkCache.delete(nativeId);
     const bytes = new globalThis.TextEncoder().encode(projected).length;
     if (bytes > compactChatGptBridgeMaxBytes) {
       throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
@@ -153,18 +288,10 @@ export async function executeProviderPageRequest(request) {
     return projected;
   }
 
-  function assertScriptingResultBound(response) {
-    // executeScript returns this exact result shape. JSON encoding is a
-    // conservative byte model for the browser bridge because escaped content
-    // can be larger than the compact conversation string alone.
-    const bytes = new globalThis.TextEncoder().encode(JSON.stringify({ ok: true, response })).length;
-    if (bytes > compactChatGptBridgeMaxBytes) {
-      throw sizeError("backfill_bridge_projection_too_large", bytes, compactChatGptBridgeMaxBytes);
-    }
-  }
-
   async function chatGptRequest() {
     let url;
+    let requestedChunkIndex = 0;
+    let requestedNativeId = null;
     if (request.operation === "inventory") {
       const offset = boundedInteger(request.params?.offset, "offset", 0, 10_000_000);
       const limit = boundedInteger(request.params?.limit, "limit", 1, 100);
@@ -180,7 +307,9 @@ export async function executeProviderPageRequest(request) {
         is_starred: String(request.params.starred),
       });
     } else if (request.operation === "conversation") {
-      url = new URL(`/backend-api/conversation/${encodeURIComponent(nativeId(request.params?.nativeId))}`, currentOrigin);
+      requestedNativeId = nativeId(request.params?.nativeId);
+      requestedChunkIndex = boundedInteger(request.params?.chunkIndex ?? 0, "chunk_index", 0, maxChatGptChunks - 1);
+      url = new URL(`/backend-api/conversation/${encodeURIComponent(requestedNativeId)}`, currentOrigin);
     } else if (request.operation !== "identity") {
       throw new Error("backfill_bridge_operation_not_allowed");
     }
@@ -194,6 +323,15 @@ export async function executeProviderPageRequest(request) {
       throw new Error("backfill_bridge_auth_context_unavailable");
     }
     if (request.operation === "identity") return { accountHandle: accountId };
+    if (request.operation === "conversation" && requestedChunkIndex > 0) {
+      // Chunk N>0 reuses the MAIN-world cache the chunk-0 fetch populated
+      // (see buildChatGptChunks/compactChatGptConversation) -- no repeat
+      // network round-trip against the provider's conversation endpoint.
+      const response = { ok: true, status: 200, contentType: "application/json", retryAfter: null, body: null };
+      response.body = compactChatGptConversation(null, requestedChunkIndex, requestedNativeId);
+      assertScriptingResultBound(response);
+      return response;
+    }
     const response = await fetchBounded(url.href, {
       credentials: "include",
       cache: "no-store",
@@ -201,7 +339,7 @@ export async function executeProviderPageRequest(request) {
     }, request.operation === "conversation" ? compactChatGptSourceMaxBytes : maxResponseBytes,
     request.operation === "conversation" ? "backfill_bridge_source_response_too_large" : "backfill_bridge_response_too_large");
     if (request.operation === "conversation" && response.ok) {
-      response.body = compactChatGptConversation(response.body);
+      response.body = compactChatGptConversation(response.body, requestedChunkIndex, requestedNativeId);
       assertScriptingResultBound(response);
     }
     return response;

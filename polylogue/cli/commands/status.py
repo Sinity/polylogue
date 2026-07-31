@@ -778,13 +778,50 @@ def _direct_archive_counts(conn: Any, *, configured_root: Path | None = None) ->
             "sessions": _fast_count(conn, "SELECT COUNT(*) FROM sessions"),
             "messages": messages,
             "raw_records": _archive_source_raw_count(conn, configured_root=configured_root),
+            "unidentified_artifacts": _archive_unidentified_artifact_count(conn, configured_root=configured_root),
         }
-    return {"sessions": 0, "messages": 0, "raw_records": 0}
+    return {"sessions": 0, "messages": 0, "raw_records": 0, "unidentified_artifacts": 0}
 
 
 def _archive_source_raw_count(conn: Any, *, configured_root: Path | None = None) -> int:
-    if _table_exists(conn, "raw_sessions"):
-        return _fast_count(conn, "SELECT COUNT(*) FROM raw_sessions")
+    return _archive_source_table_count(
+        conn, table="raw_sessions", sql="SELECT COUNT(*) FROM raw_sessions", configured_root=configured_root
+    )
+
+
+def _archive_unidentified_artifact_count(conn: Any, *, configured_root: Path | None = None) -> int:
+    """Count ``raw_artifacts`` rows classified ``artifact_kind='unknown'``.
+
+    polylogue-9ykn: a record that cannot be positively identified as a
+    session, sidecar, or other known artifact kind is durably ledgered in
+    ``source.db``'s ``raw_artifacts`` table (``archive.artifact_taxonomy.
+    classify_artifact`` -> ``storage.artifacts.inspection.inspect_raw_artifact``
+    -> ``save_artifact_observation``, run for every acquired record) rather
+    than silently becoming a session or silently vanishing. Surfacing the
+    live count here is what makes a NEW unidentified artifact class (e.g. a
+    third-party sidecar under a watched directory nobody has seen before)
+    show up in routine ``polylogue ops status`` output the week it appears,
+    instead of sitting unnoticed for a year -- see
+    ``polylogue check --check-artifact-coverage --check-cohorts`` for the
+    full per-kind/per-provider breakdown this count summarizes.
+    """
+    return _archive_source_table_count(
+        conn,
+        table="raw_artifacts",
+        sql="SELECT COUNT(*) FROM raw_artifacts WHERE artifact_kind = 'unknown'",
+        configured_root=configured_root,
+    )
+
+
+def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_root: Path | None = None) -> int:
+    """Shared source.db row-count resolution: active connection, configured
+    root, or (fallback) the active db's sibling directory via PRAGMA
+    database_list. Factored out of ``_archive_source_raw_count`` so a second
+    source.db-tier count (``_archive_unidentified_artifact_count``) does not
+    duplicate the three-branch resolution.
+    """
+    if _table_exists(conn, table):
+        return _fast_count(conn, sql)
     if configured_root is not None:
         source_db = configured_root / "source.db"
         if not source_db.exists():
@@ -792,9 +829,9 @@ def _archive_source_raw_count(conn: Any, *, configured_root: Path | None = None)
         try:
             source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
-                if not _table_exists(source_conn, "raw_sessions"):
+                if not _table_exists(source_conn, table):
                     return 0
-                return _fast_count(source_conn, "SELECT COUNT(*) FROM raw_sessions")
+                return _fast_count(source_conn, sql)
             finally:
                 source_conn.close()
         except sqlite3.Error:
@@ -802,7 +839,7 @@ def _archive_source_raw_count(conn: Any, *, configured_root: Path | None = None)
     try:
         row = conn.execute("PRAGMA database_list").fetchone()
     except Exception as exc:
-        logger.warning("raw-record count unavailable (database_list probe failed: %s); reporting 0", exc)
+        logger.warning("%s count unavailable (database_list probe failed: %s); reporting 0", table, exc)
         return 0
     if row is None or len(row) < 3 or not row[2]:
         return 0
@@ -812,9 +849,9 @@ def _archive_source_raw_count(conn: Any, *, configured_root: Path | None = None)
     try:
         source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
         try:
-            if not _table_exists(source_conn, "raw_sessions"):
+            if not _table_exists(source_conn, table):
                 return 0
-            return _fast_count(source_conn, "SELECT COUNT(*) FROM raw_sessions")
+            return _fast_count(source_conn, sql)
         finally:
             source_conn.close()
     except sqlite3.Error:
@@ -1271,9 +1308,17 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     # FTS
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):
-        pct = _safe_float(fts.get("coverage_pct"), default=100.0 if fts.get("messages_ready") else 0.0)
         fts_color = "green" if fts.get("messages_ready") else "yellow"
-        env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
+        raw_pct = fts.get("coverage_pct")
+        if raw_pct is None:
+            # An unmeasured coverage_pct must never be silently rendered as
+            # a fabricated percentage (polylogue-roax) -- say plainly that
+            # coverage is unknown rather than defaulting to 100%/0% based on
+            # the boolean readiness flag alone.
+            env.ui.console.print(f"  FTS: [{fts_color}]coverage unknown[/{fts_color}]")
+        else:
+            pct = _safe_float(raw_pct, default=0.0)
+            env.ui.console.print(f"  FTS: [{fts_color}]{pct:.1f}% indexed[/{fts_color}]")
 
     raw_frontier = status.get("raw_frontier_integrity")
     if isinstance(raw_frontier, dict):
@@ -1339,6 +1384,7 @@ def _compact_status_payload(status: dict[str, Any], *, source: str) -> dict[str,
         "sessions",
         "messages",
         "raw_records",
+        "unidentified_artifacts",
         "next_action",
         "gil_enabled",
     ):
@@ -2152,6 +2198,7 @@ def _show_direct_status(
             convs = counts["sessions"]
             msgs = counts["messages"]
             raw = counts["raw_records"]
+            unidentified = counts["unidentified_artifacts"]
             fts = _fast_fts_doc_count(conn)
         finally:
             conn.close()
@@ -2221,6 +2268,11 @@ def _show_direct_status(
         env.ui.console.print(f"  Sessions: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
+        if unidentified:
+            env.ui.console.print(
+                f"  Unidentified artifacts: [yellow]{unidentified:,}[/yellow] "
+                "(never became a session; see `polylogue check --check-artifact-coverage --check-cohorts`)"
+            )
         if fts:
             fts_pct = 100 * fts / msgs if msgs else 100
             fts_color = "green" if fts_pct > 99 else "yellow"

@@ -401,10 +401,13 @@
 
   async function fetchAssetBytes(request) {
     if (request.kind === "url") {
-      // No metadata round trip: the caller (e.g. the chatgpt-dom-v1 fallback
-      // adapter, which has no backend-api mapping to resolve file/sandbox ids
-      // from) already has a concrete byte-bearing URL straight out of the DOM
-      // (an `img.src`/`a.href` the page itself rendered).
+      // No metadata round trip: the caller already has a concrete
+      // byte-bearing URL in hand (e.g. an `img.src`/`a.href` rendered on the
+      // page) and skips straight to fetching it. No current caller in this
+      // repo builds a "url"-kind request (the chatgpt-dom-v1 adapter that
+      // originally needed it was removed -- native capture covers what used
+      // to require a DOM scrape), but the receiver-side protocol and its
+      // budget/credential-scoping guarantees stay intact for any future one.
       let directUrl;
       try {
         directUrl = new URL(String(request.url), currentOrigin);

@@ -16,8 +16,6 @@ from polylogue.storage.search.query_support import normalize_fts5_query, sort_ke
 from polylogue.storage.sqlite.connection import open_read_connection
 from polylogue.storage.table_existence import table_exists as _table_exists
 
-_MESSAGE_SEARCH_REPAIR_HINT = "Run `polylogued run`."
-
 
 @lru_cache(maxsize=128)
 def search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
@@ -53,7 +51,7 @@ def search_messages_impl(
     sql, params = query_spec.sql, query_spec.params
     with open_read_connection(db_path) as conn:
         readiness = message_fts_search_readiness_sync(conn)
-        check_fts_readiness(readiness, _MESSAGE_SEARCH_REPAIR_HINT)
+        check_fts_readiness(readiness)
         try:
             if _table_exists(conn, "messages_fts") and _table_exists(conn, "blocks"):
                 rows = _search_archive_blocks(conn, query=query, limit=limit, source=source, since=since)

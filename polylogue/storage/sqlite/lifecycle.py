@@ -434,6 +434,17 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # behaviour.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=47,
+        # polylogue-o4j2: sessions.pending_drafts_json -- aistudio-drive
+        # pendingInputs draft text, moved off the session_events axis (see
+        # index.py's v47 header comment). Values depend on parser semantics
+        # (the new column is populated only by re-parsing the drive.py
+        # payload), so a shape-only copy-forward would leave every row NULL
+        # -- the same v42/v44/v45/v46 precedent. SEMANTIC_REPARSE routes
+        # through `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

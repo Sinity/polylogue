@@ -1837,6 +1837,7 @@ def test_polylogued_run_uses_default_sources() -> None:
     assert result.exit_code == 0
     assert default_sources.call_count == 1
     assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
+    assert default_sources.call_args.kwargs["beads_roots"] == ()
     coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
     assert inspect.iscoroutine(coroutine)
     coroutine.close()
@@ -1911,6 +1912,7 @@ def test_polylogued_watch_uses_default_sources() -> None:
     assert result.exit_code == 0
     assert default_sources.call_count == 1
     assert default_sources.call_args.kwargs["hermes_root"] == Path.home() / ".hermes"
+    assert default_sources.call_args.kwargs["beads_roots"] == ()
     coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
     assert inspect.iscoroutine(coroutine)
     coroutine.close()

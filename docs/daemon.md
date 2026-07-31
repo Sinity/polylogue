@@ -554,6 +554,66 @@ See `polylogue/config.py` (`judgment_automation_enabled`/`_interval_s`/
 `_batch_limit`/`_policy`) and [configuration.md](configuration.md) for the
 full key reference.
 
+### Free-Threaded (3.14t) Parse Parallelism
+
+`_maybe_warm_raw_materialization_parse_stage` (`polylogue/daemon/cli.py`)
+pre-parses the next raw-materialization pass's candidates in a bounded
+`ThreadPoolExecutor` BEFORE the writer hold is ever requested
+(`polylogue/daemon/parse_prefetch.py`, polylogue-m6tp phase (a)). It always
+runs — there used to be a `daemon_parse_stage_split` config flag gating it
+(default off, and never set in the live operator config, so the warm never
+happened in production); that flag was deleted in `ef8a4c3d0`
+("always warm off-writer-hold") because the warm is unconditionally safe: it
+completes entirely before the write coordinator is asked for the writer
+hold, so it never contends with an active writer thread for the GIL
+regardless of interpreter build.
+
+Whether the warm's own parse dispatch (`_parse_unique_retained_raws` in
+`polylogue/sources/revision_backfill.py`) actually runs in parallel is a
+separate, runtime-only gate: `parallel_threads_effective()`
+(`polylogue/pipeline/services/process_pool.py`) checks
+`sys._is_gil_enabled()` and only takes the `ThreadPoolExecutor` branch on a
+genuinely free-threaded interpreter. On a standard GIL build it parses
+sequentially — polylogue-7mtf's control run measured GIL-build parse threads
+at 0.93x-0.96x (no win, pure lock overhead) while inflating a *concurrent*
+SQLite writer thread's commit latency ~5000x, so threads must never engage
+under the GIL. `polylogued.service` runs on the free-threaded
+`polylogue-freethreaded` (`python3.14t`) package build in production; there
+is no GIL/free-threaded package variant choice left to make (the GIL parse
+path and its tuning knobs were deleted in `ce0cd45cf`).
+
+**Measured evidence** (`tests/benchmarks/test_parse_stage_thread_scaling.py`,
+run against a synthetic 240-raw/~80KB-avg Codex corpus on this host's
+free-threaded `python3.14t` build): sequential parse 0.19s vs
+thread-parallel parse (16 workers) 0.031s — **6.13x** wall-clock speedup,
+consistent with polylogue-7mtf's own 3.9x-9.6x (w=4..16) control-run range.
+Re-run with `pytest tests/benchmarks/test_parse_stage_thread_scaling.py
+--benchmark-enable -p no:xdist -v -s` against
+`POLYLOGUE_ARCHIVE_ROOT` pointed at a scratch directory (never the live
+archive) to reproduce.
+
+**Interaction with writer contention** (polylogue-de2a): the parse-stage
+warm never holds the writer lock, so it is safe to run regardless of how
+long the raw-materialization writer-held pass itself takes (de2a's ~188s
+holds are a separate, still-open problem in the writer-held apply step, not
+in this parse stage). The warm's own worker-count/inflight-bytes/cached-tree-
+budget knobs remain independent resource-policy tunables (see
+`polylogue/daemon/parse_prefetch.py`); they do not gate whether parallelism
+is attempted at all.
+
+**Rollback**: there is no longer a config flag to flip off — the warm is
+unconditional and self-degrading (a warm failure, or a GIL-enabled
+interpreter, falls back to the exact unmodified sequential in-hold parse
+with no correctness change). To disable thread-parallel parse dispatch
+entirely without a code revert, set `POLYLOGUE_INGEST_PARSE_WORKERS=1` in
+the daemon's environment — `resolve_parse_worker_count` then forces every
+parse call (including the warm) down the `ingest_workers <= 1` sequential
+branch regardless of interpreter build. To fully revert the always-on warm
+behavior, revert `ef8a4c3d0` (restores the `daemon_parse_stage_split` flag,
+default off) and `ce0cd45cf`/`5e23e6abf` if the GIL parse path itself needs
+to come back; neither revert is expected to be necessary since the warm has
+no writer-hold interaction and degrades safely on any interpreter.
+
 ### Operator-Owned Tasks
 
 These are heavier operations that should run outside the daemon via

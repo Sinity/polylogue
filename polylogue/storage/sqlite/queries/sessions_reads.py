@@ -29,7 +29,8 @@ _SESSION_RECORD_SELECT = """
     git_repository_url,
     provider_project_ref,
     display_name,
-    run_settings_json
+    run_settings_json,
+    pending_drafts_json
 """
 
 
@@ -60,7 +61,8 @@ def _session_record_select(alias: str | None = None) -> str:
     {prefix}git_repository_url AS git_repository_url,
     {prefix}provider_project_ref AS provider_project_ref,
     {prefix}display_name AS display_name,
-    {prefix}run_settings_json AS run_settings_json
+    {prefix}run_settings_json AS run_settings_json,
+    {prefix}pending_drafts_json AS pending_drafts_json
     """
 
 

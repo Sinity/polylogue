@@ -275,6 +275,15 @@ FILTER_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] =
     ),
     click.option("--reverse", is_flag=True, help="Reverse sort order"),
     click.option("--sample", type=int, help="Random sample of N sessions"),
+    click.option(
+        "--root/--no-root",
+        "root",
+        default=None,
+        help=(
+            "Only top-level sessions (--root) or only subagent/branch children "
+            "(--no-root). Unset (default) selects both, unfiltered by structure."
+        ),
+    ),
 )
 
 OUTPUT_OPTION_DECORATORS: tuple[Callable[[ClickCallable], ClickCallable], ...] = (

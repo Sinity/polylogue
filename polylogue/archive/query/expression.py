@@ -156,8 +156,10 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
+    QuerySpecError,
     SessionQuerySpec,
     normalize_retrieval_lane,
+    optional_bool,
 )
 from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
@@ -3024,6 +3026,7 @@ class _SpecAccumulator:
     max_messages: int | None = None
     min_words: int | None = None
     max_words: int | None = None
+    root: bool | None = None
 
     def apply_token(self, tok: _LexToken) -> None:
         """Apply one token to the accumulator."""
@@ -3250,6 +3253,21 @@ class _SpecAccumulator:
                         field="lane",
                     ) from exc
 
+        elif fname == "root":
+            if tok.negated:
+                raise ExpressionCompileError(
+                    "use root:false instead of -root: to select non-root (subagent/branch) sessions",
+                    field=fname,
+                )
+            if values:
+                try:
+                    self.root = optional_bool("root", values[-1])
+                except QuerySpecError as exc:
+                    raise ExpressionCompileError(
+                        f"invalid root value {values[-1]!r}; expected root:true or root:false",
+                        field="root",
+                    ) from exc
+
         elif fname in COUNT_QUERY_FIELD_REGISTRY or fname in NUMERIC_QUERY_FIELD_REGISTRY:
             # Already handled via _CountToken; field:value form without op is an error
             raise ExpressionCompileError(
@@ -3295,6 +3313,7 @@ class _SpecAccumulator:
             max_messages=self.max_messages,
             min_words=self.min_words,
             max_words=self.max_words,
+            root=self.root,
         )
 
     def merge_from_spec(self, other: SessionQuerySpec) -> None:
@@ -3344,6 +3363,8 @@ class _SpecAccumulator:
             self.min_words = other.min_words
         if other.max_words is not None:
             self.max_words = other.max_words
+        if other.root is not None:
+            self.root = other.root
 
 
 # ---------------------------------------------------------------------------

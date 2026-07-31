@@ -142,6 +142,18 @@ def _json_object(value: JSONValue | None) -> JSONObject | None:
     return result
 
 
+def _json_object_list(value: JSONValue | None) -> list[JSONObject] | None:
+    """Parse a JSON array of objects, e.g. ``sessions.pending_drafts_json``."""
+    if not isinstance(value, list):
+        return None
+    documents: list[JSONObject] = []
+    for item in value:
+        document = json_document(item)
+        if document:
+            documents.append(dict(document))
+    return documents or None
+
+
 def _json_text_tuple(value: JSONValue | None) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()

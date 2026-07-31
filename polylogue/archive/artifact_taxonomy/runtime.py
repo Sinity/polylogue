@@ -25,6 +25,27 @@ from polylogue.core.json import JSONDocument, JSONValue, json_document
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
 _HERMES_VERIFICATION_DB_MARKER = "hermes_verification_evidence_db"
 
+# Mirrors ``polylogue.sources.source_walk._SKIP_DIRS``'s "analysis" entry at
+# the taxonomy layer (polylogue-omsw / polylogue-9ykn).  The directory-name
+# skip in the recursive source walk was meant to keep self-generated agent
+# side-output (scratch analysis artifacts an agent writes into its own
+# Claude Code project directory, e.g. an index of prior conversation ids)
+# out of the archive entirely.  It only guards the recursive walk, though --
+# a single-file acquisition route (``Source.path`` pointing directly at one
+# file, bypassing ``os.walk``) never consults it, so a path like
+# ``.../analysis/problem_solutions/problems_index.jsonl`` can still reach
+# payload classification, where a generic JSONL-of-dicts heuristic
+# (``looks_like_record_stream``) misreads its ``{"conversation": <id>,
+# "type": ...}`` pointer records as session content purely because ``type``
+# is a recordish key. Declaring the same exclusion here, on the path alone,
+# closes that gap for every acquisition route rather than only the walk.
+_SELF_GENERATED_ARTIFACT_DIR_SEGMENTS = frozenset({"analysis"})
+
+
+def _has_self_generated_artifact_dir_segment(normalized_path: str) -> bool:
+    inner = normalized_path.rsplit(":", 1)[-1]
+    return any(part in _SELF_GENERATED_ARTIFACT_DIR_SEGMENTS for part in Path(inner).parts[:-1])
+
 
 def classify_artifact_path(
     source_path: str | Path | None,
@@ -43,6 +64,16 @@ def classify_artifact_path(
     from polylogue.sources.origin_specs import artifact_rule_for_path
 
     inner_name = Path(normalized.rsplit(":", 1)[-1]).name.lower()
+    if _has_self_generated_artifact_dir_segment(normalized):
+        return ArtifactClassification(
+            provider=provider_token,
+            kind=ArtifactKind.METADATA_DOCUMENT,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason="self-generated analysis artifact under an 'analysis/' directory "
+            "(agent side-output, not conversation content; mirrors source_walk _SKIP_DIRS)",
+        )
     if rule := artifact_rule_for_path(provider_token, normalized):
         return ArtifactClassification(
             provider=provider_token,
