@@ -2125,6 +2125,7 @@ async def run_daemon_services(
                 periodic_embedding_orphan_reconcile_check,
             )
             from polylogue.daemon.fts_identity_convergence import periodic_fts_identity_drift_recompute
+            from polylogue.daemon.fts_orphan_audit import periodic_fts_orphan_audit
             from polylogue.daemon.judgment_automation import periodic_judgment_automation_sweep
 
             await _run_startup_fts_readiness(write_coordinator)
@@ -2163,6 +2164,7 @@ async def run_daemon_services(
                 _periodic_status_snapshot_refresh(),
                 periodic_judgment_automation_sweep(catch_up_complete=catch_up_complete_gate),
                 periodic_fts_identity_drift_recompute(catch_up_complete=catch_up_complete_gate),
+                periodic_fts_orphan_audit(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
