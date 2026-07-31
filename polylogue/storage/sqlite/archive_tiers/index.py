@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 from polylogue.core.enums import (
     BlockType,
     BranchType,
@@ -28,8 +30,10 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     check,
     json_array_check,
     json_object_check,
+    literal_check,
     nullable_check,
 )
+from polylogue.storage.sqlite.archive_tiers.types import DelegationMappingState, DelegationResultStatus
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
@@ -158,7 +162,22 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # content. Resolving existing rows (recovering historical thinking/reasoning
 # content) requires `polylogue ops reset --index && polylogued run` --
 # deliberately NOT executed by this declaration.
-INDEX_SCHEMA_VERSION = 50
+#
+# polylogue-u6tl: v51 wires delegation_facts.mapping_state/result_status onto
+# the `literal_check` generator (storage/sqlite/archive_tiers/common.py),
+# which previously had zero call sites despite CLAUDE.md documenting it by
+# name as the mechanism that keeps `typing.Literal` types and their SQL CHECK
+# lists in lockstep. Both columns already only ever receive values from their
+# typed counterparts (DelegationMappingState / DelegationResultStatus in
+# archive_tiers/archive.py) at the sole writer (delegation_facts_insert_sql);
+# this only adds the CHECK the Python type already implied. Measured on the
+# live archive (index.db, read-only, 2026-07-31) before declaring this
+# version: mapping_state in {edge_only, resolved, unresolved} (0 rows outside
+# the 4-value vocabulary), result_status in {error, unknown} (0 rows outside
+# the 3-value vocabulary) -- a copy-forward rejects nothing. CONSTRAINT_ONLY,
+# matching the v33/v36 precedent (widening/adding a CHECK over unchanged
+# values), not SEMANTIC_REPARSE.
+INDEX_SCHEMA_VERSION = 51
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1580,7 +1599,8 @@ CREATE TABLE IF NOT EXISTS delegation_facts (
     delegation_id                         TEXT PRIMARY KEY,
     parent_session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     child_session_id                      TEXT REFERENCES sessions(session_id) ON DELETE SET NULL,
-    mapping_state                         TEXT NOT NULL,
+    mapping_state                         TEXT NOT NULL
+                                             CHECK ({literal_check("mapping_state", *get_args(DelegationMappingState))}),
     link_confidence                       REAL,
     link_method                           TEXT,
     inheritance                            TEXT,
@@ -1594,7 +1614,8 @@ CREATE TABLE IF NOT EXISTS delegation_facts (
     artifact_text                        TEXT,
     result_is_error                      INTEGER,
     result_exit_code                     INTEGER,
-    result_status                        TEXT NOT NULL,
+    result_status                        TEXT NOT NULL
+                                             CHECK ({literal_check("result_status", *get_args(DelegationResultStatus))}),
     parent_origin                        TEXT NOT NULL,
     parent_session_dominant_model        TEXT,
     parent_session_dominant_model_family TEXT,

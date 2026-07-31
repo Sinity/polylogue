@@ -268,7 +268,92 @@ def test_layering_disallow_violation_detected(tmp_path: Path) -> None:
     assert len(violations) >= 1, "storage importing cli should produce violation"
 
 
-def test_layering_cli_imports_storage_is_ok(tmp_path: Path) -> None:
+def test_load_baseline_missing_file_returns_empty(tmp_path: Path) -> None:
+    assert verify_layering._load_baseline(tmp_path / "does-not-exist.json") == set()
+
+
+def test_load_baseline_parses_valid_entries_and_skips_malformed(tmp_path: Path) -> None:
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(
+        json.dumps(
+            [
+                {"target": "polylogue/cli", "file": "polylogue/cli/x.py", "import": "polylogue.storage.y"},
+                {"target": "polylogue/mcp", "file": "polylogue/mcp/z.py"},  # missing "import" -- skipped
+                "not-a-dict",  # skipped
+            ]
+        ),
+        encoding="utf-8",
+    )
+    entries = verify_layering._load_baseline(baseline_path)
+    assert entries == {("polylogue/cli", "polylogue/cli/x.py", "polylogue.storage.y")}
+
+
+def _write_ratchet_fixture(tmp_path: Path, *, baseline_entries: list[dict[str, str]] | None) -> None:
+    """Build a minimal repo with one pre-existing cli->storage import and a
+    ratcheted disallow rule, optionally seeded with a baseline."""
+    cli_dir = tmp_path / "polylogue" / "cli"
+    cli_dir.mkdir(parents=True, exist_ok=True)
+    (cli_dir / "commands.py").write_text("from polylogue.storage import archive_identity\n", encoding="utf-8")
+    (tmp_path / "polylogue" / "storage").mkdir(parents=True, exist_ok=True)
+
+    plans_dir = tmp_path / "docs" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    baseline_ref = "docs/plans/ratchet-baseline.json"
+    if baseline_entries is not None:
+        (tmp_path / baseline_ref).write_text(json.dumps(baseline_entries), encoding="utf-8")
+
+    rules_yaml = f"""\
+rules:
+  - target: polylogue/cli
+    description: test fixture
+    disallow:
+      from: [polylogue/storage]
+      baseline: {baseline_ref}
+"""
+    (plans_dir / "layering.yaml").write_text(rules_yaml, encoding="utf-8")
+
+
+def test_layering_ratchet_exempts_baselined_violation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_ratchet_fixture(
+        tmp_path,
+        baseline_entries=[
+            {"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"},
+        ],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    assert verify_layering.main([]) == 0
+
+
+def test_layering_ratchet_fails_on_violation_not_in_baseline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_ratchet_fixture(tmp_path, baseline_entries=[])
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    assert verify_layering.main([]) == 1
+
+
+def test_layering_ratchet_reports_stale_baseline_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _write_ratchet_fixture(
+        tmp_path,
+        baseline_entries=[
+            {"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"},
+            # This entry no longer reproduces (no such file/import exists) --
+            # it should be flagged as prunable without failing the gate.
+            {"target": "polylogue/cli", "file": "polylogue/cli/gone.py", "import": "polylogue.storage.gone"},
+        ],
+    )
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+    exit_code = verify_layering.main([])
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "1 baseline entr" in out
+
+
+def test_layering_cli_imports_storage_is_detected(tmp_path: Path) -> None:
+    # polylogue-2ciy: cli->storage is no longer unconditionally "ok" -- the
+    # production rule now disallows it too (behind a ratchet baseline). This
+    # test only pins that `_collect_imports` itself surfaces the import; see
+    # the baseline tests below for the ratchet's pass/fail behavior.
     cli_dir = tmp_path / "polylogue" / "cli"
     cli_dir.mkdir(parents=True, exist_ok=True)
     (cli_dir / "commands.py").write_text("from polylogue.storage import something\n", encoding="utf-8")

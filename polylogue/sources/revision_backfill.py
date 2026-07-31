@@ -381,7 +381,7 @@ def record_resource_blocked_revision_census(
     ``stream_safe`` (polylogue-t93b, default ``None`` for callers that have
     not classified it) records whether every member of the blocked
     component is stream-record-safe -- the daemon's escalation-tier whale
-    pass (``daemon_whale_raw_materialization``) only ever selects
+    pass only ever selects
     stream-safe components, so this distinguishes "waiting for a bounded
     whale pass" from "genuinely cannot converge automatically" directly in
     the durable census detail, without changing the admission fingerprint

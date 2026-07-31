@@ -218,12 +218,10 @@ enabled = false
 otlp_max_body_bytes = 8388608
 
 [logging]
-level = "INFO"
 force_plain = false
 
 [ui]
 theme = "auto" # auto, dark, or light
-# slow_query_notice_seconds = 2.5
 
 [schema]
 validation = "advisory" # off, advisory, or strict
@@ -367,7 +365,6 @@ A few keys not shown in the full example above, with their TOML path:
 | `live_watcher_parse_stage_workers` | `watcher.parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool (polylogue-wf8a; always runs -- pre-parses the live watcher's full-ingest catch-up/live-batch candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `live_watcher_parse_stage_max_inflight_bytes` | `watcher.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for in-flight watcher prefetch payloads; unset/`<=0` uses the adaptive 1/32-physical-RAM default (clamped [64 MiB, 512 MiB]). |
 | `live_watcher_parse_stage_warm_timeout_seconds` | `watcher.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a watcher prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 60s default. |
-| `daemon_whale_raw_materialization` | `daemon.raw_materialization.whale_convergence` | Escalation tier (polylogue-t93b, default **on**): once the ordinary trickle conveyor is quiescent, run a dedicated bounded pass for one resource-blocked, stream-safe raw-authority component at a time instead of leaving it permanently offline-manual. Non-stream-safe oversized components remain blocked with a distinct typed reason. Set `false`/`0` to hold whale components fully offline-manual (the pre-polylogue-t93b behavior). |
 | `judgment_automation_enabled` | `judgment_automation.enabled` | Opt-in (polylogue-6qjc, default off): schedule the daemon judgment-automation sweep that calls the `judge` dispatcher on auto-judgeable assertion candidates per policy and escalates the rest to a `handoff` assertion. Exercises the same authority as the MCP `judge` dispatcher, so the sweep also requires `mcp_judge_enabled`. See [`docs/daemon.md`](daemon.md). |
 | `judgment_automation_interval_s` | `judgment_automation.interval_s` | Seconds between judgment-automation sweeps (default 3600; floored at 60 at runtime). |
 | `judgment_automation_batch_limit` | `judgment_automation.batch_limit` | Maximum candidates judged per judgment-automation sweep (default 200). |
@@ -419,7 +416,6 @@ Common runtime overrides:
 | `POLYLOGUE_HOOK_PROVIDER` | `hook_provider` | Force hook-harness detection to `claude-code`/`codex`. |
 | `POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE` | `raw_authority_commit_batch_size` | Census-phase commit batch size for raw-materialization repair. |
 | `POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES` | `raw_authority_whale_payload_bytes` | Escalation-tier payload envelope for the daemon whale pass. |
-| `POLYLOGUE_DAEMON_WHALE_RAW_MATERIALIZATION` | `daemon_whale_raw_materialization` | Escalation tier on/off (default on): bounded whale pass for resource-blocked, stream-safe components. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |

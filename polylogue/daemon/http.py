@@ -23,7 +23,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePath
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import parse_qs, parse_qsl, unquote, urlparse, urlsplit
 
 from polylogue.archive.query.transaction import archive_read_context
@@ -39,6 +39,7 @@ from polylogue.daemon.events import (
 )
 from polylogue.daemon.route_contracts import RouteContract, route_contract_for_pattern
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
+from polylogue.daemon.user_state_http import RouteMethod
 from polylogue.daemon.web_auth import (
     WEB_CREDENTIAL_SCOPES,
     WebCredentialBootstrapPayload,
@@ -116,7 +117,6 @@ logger = get_logger(__name__)
 _ARCHIVE_READER_BUSY_TIMEOUT_S = 0.25
 _COORDINATION_CACHE_TTL_S = 2.0
 
-RouteMethod = Literal["GET", "POST", "DELETE"]
 _ArchiveQueryResult = TypeVar("_ArchiveQueryResult")
 
 

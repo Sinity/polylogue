@@ -223,7 +223,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     list_hook_events,
     write_source_hook_event,
 )
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.types import (
+    ArchiveTier,
+    DelegationMappingState,
+    DelegationResultStatus,
+)
 from polylogue.storage.sqlite.archive_tiers.user_annotations import (
     DurableAnnotationSchema,
     list_durable_annotation_schemas,
@@ -470,10 +474,6 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
     )
-
-
-DelegationMappingState = Literal["resolved", "unresolved", "edge_only", "quarantined"]
-DelegationResultStatus = Literal["ok", "error", "unknown"]
 
 
 @dataclass(frozen=True, slots=True)

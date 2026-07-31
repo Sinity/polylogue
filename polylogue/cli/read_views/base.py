@@ -5,11 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import click
 
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
+from polylogue.cli.read_view_registry import ReadViewSessionPolicy
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -17,7 +18,6 @@ if TYPE_CHECKING:
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
 
-ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
 ReadViewOptionName = str
 
 
@@ -199,7 +199,6 @@ __all__ = [
     "ReadViewOptionBuilder",
     "ReadViewOptions",
     "ReadViewOptionValues",
-    "ReadViewSessionPolicy",
     "deliver_content",
     "execute_query_request",
 ]
