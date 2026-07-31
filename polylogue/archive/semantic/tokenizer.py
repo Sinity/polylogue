@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-Provenance = Literal["provider_reported", "tokenizer_estimated", "heuristic_estimated", "unknown"]
+from polylogue.archive.semantic.cost_records import TokenProvenance
+
 Confidence = Literal["reported", "estimated", "unknown"]
 
 TOKENIZER_VERSION = "word-count-1.3-v1"
@@ -28,7 +29,7 @@ class TokenEstimate:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     total_tokens: int = 0
-    provenance: Provenance = "unknown"
+    provenance: TokenProvenance = "unknown"
     confidence: Confidence = "unknown"
     tokenizer_version: str = TOKENIZER_VERSION
 
@@ -92,7 +93,6 @@ def token_estimate_from_text(text: str | None, *, tokenizer_version: str = TOKEN
 __all__ = [
     "TOKENIZER_VERSION",
     "Confidence",
-    "Provenance",
     "TokenEstimate",
     "estimate_tokens_from_words",
     "estimate_tokens_from_words_split",
