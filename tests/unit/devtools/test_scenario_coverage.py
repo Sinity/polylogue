@@ -102,7 +102,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "message_type_backfill",
         "orphaned_attachments",
         "orphaned_messages",
-        "session_timestamp_backfill",
         "superseded_raw_snapshots",
     )
     assert coverage.uncovered_declared_operations == coverage.uncovered_operations

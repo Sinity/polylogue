@@ -2206,7 +2206,7 @@ files:
     target: polylogue/maintenance/scope.py
     owner: stable
   - path: polylogue/maintenance/targets.py
-    loc: 314
+    loc: 302
     target: polylogue/maintenance/targets.py
     owner: stable
   - path: polylogue/material_protocol/__init__.py
@@ -3880,7 +3880,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7154
+    loc: 7108
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -4078,10 +4078,6 @@ files:
     target: polylogue/storage/session_replacement.py
     owner: storage-root
     reason: storage-root cross-cutting helper
-  - path: polylogue/storage/session_timestamp_backfill.py
-    loc: 176
-    target: TBD
-    owner: storage-domain
   - path: polylogue/storage/source_sessions.py
     loc: 87
     target: polylogue/storage/source_sessions.py
