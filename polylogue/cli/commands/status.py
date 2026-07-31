@@ -343,6 +343,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "index",
         "batch-derives actions from index.db content blocks",
     ),
+    "get_agent_policies": ("archive_routed", "index", "reads per-session agent policy evidence rows from index.db"),
     "get_ancestors": ("archive_routed", "index", "reads session topology from index.db"),
     "get_annotation": ("archive_routed", "user", "reads annotations through user.db"),
     "get_session": ("archive_routed", "index", "reads session envelopes from index.db"),
@@ -447,6 +448,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "index",
         "builds git/GitHub correlation DTOs from index.db sessions",
     ),
+    "session_usage_reconciliation": (
+        "archive_routed",
+        "index",
+        "reads session-scoped usage/cost reconciliation from index.db",
+    ),
     "set_metadata": ("archive_routed", "user", "writes user metadata through user.db"),
     "stats": ("archive_routed", "index", "reads archive stats from index.db"),
     "storage_stats": ("archive_direct", "index", "reads lightweight archive counts from index.db"),
@@ -473,11 +479,13 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "correlates Hermes lifecycle events with delivery receipts from user.db",
     ),
     "get_context_delivery": ("archive_routed", "user", "reads a durable context-delivery receipt from user.db"),
+    "list_comparative_judgments": ("archive_routed", "user", "reads recorded comparative judgments from user.db"),
     "list_context_deliveries": (
         "archive_routed",
         "user",
         "lists bounded durable context-delivery receipts from user.db",
     ),
+    "record_comparative_judgment": ("archive_routed", "user", "persists blind comparative judgments through user.db"),
     "record_context_delivery": (
         "archive_routed",
         "user",
@@ -488,6 +496,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "user",
         "compiles a context image and records its delivery receipt through user.db",
     ),
+    "get_file_edits": ("archive_routed", "index", "reads materialized file-edit evidence rows from index.db"),
     "get_hook_event_summary_for_session": (
         "archive_routed",
         "source",
