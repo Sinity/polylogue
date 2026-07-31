@@ -732,6 +732,7 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
             AssertionKind.PATHOLOGY,
             AssertionKind.FINDING,
             AssertionKind.COMPARATIVE_JUDGMENT,
+            AssertionKind.HIGHLIGHT,
         }
 
         rows: list[tuple[str, str, AssertionKind, str, str, dict[str, object] | None, int]] = [
@@ -825,6 +826,124 @@ def test_list_assertion_claims_filters_lifecycle_assertions(tmp_path: Path) -> N
         assert list_assertion_claims(conn, kinds=()) == []
         assert list_assertion_claims(conn, statuses=()) == []
         assert [claim.assertion_id for claim in list_assertion_claims(conn, limit=1)] == ["claim-lesson-other"]
+    finally:
+        conn.close()
+
+
+def test_list_assertion_claims_excludes_expired_claims_from_the_admission_read(tmp_path: Path) -> None:
+    """polylogue-37t.1: expiry gates the same admission read the preamble
+    compiler (context/preamble.py -> list_assertion_claim_payloads ->
+    list_assertion_claims) and every other ASSERTION_CLAIM_KINDS consumer
+    goes through -- no new AssertionStatus, no parallel filtered read path.
+    """
+    conn = _connect(tmp_path / "user.db")
+    try:
+        upsert_assertion(
+            conn,
+            assertion_id="claim-expired",
+            target_ref="session:s-1",
+            kind=AssertionKind.LESSON,
+            status="active",
+            context_policy={"inject": True},
+            staleness={"expires_at_ms": 1_700_000_010_000},
+            now_ms=1_700_000_000_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-not-yet-expired",
+            target_ref="session:s-1",
+            kind=AssertionKind.LESSON,
+            status="active",
+            context_policy={"inject": True},
+            staleness={"expires_at_ms": 1_700_000_999_000},
+            now_ms=1_700_000_001_000,
+        )
+        upsert_assertion(
+            conn,
+            assertion_id="claim-no-expiry",
+            target_ref="session:s-1",
+            kind=AssertionKind.LESSON,
+            status="active",
+            context_policy={"inject": True},
+            now_ms=1_700_000_002_000,
+        )
+
+        # as_of_ms after claim-expired's deadline but before the other two's.
+        live = list_assertion_claims(conn, target_ref="session:s-1", as_of_ms=1_700_000_500_000)
+        assert {claim.assertion_id for claim in live} == {"claim-not-yet-expired", "claim-no-expiry"}
+
+        # include_expired=True is the explicit audit/export escape hatch.
+        everything = list_assertion_claims(
+            conn, target_ref="session:s-1", as_of_ms=1_700_000_500_000, include_expired=True
+        )
+        assert {claim.assertion_id for claim in everything} == {
+            "claim-expired",
+            "claim-not-yet-expired",
+            "claim-no-expiry",
+        }
+
+        # An as_of_ms before every deadline keeps all of them live.
+        early = list_assertion_claims(conn, target_ref="session:s-1", as_of_ms=1_700_000_000_500)
+        assert {claim.assertion_id for claim in early} == {
+            "claim-expired",
+            "claim-not-yet-expired",
+            "claim-no-expiry",
+        }
+    finally:
+        conn.close()
+
+
+def test_highlight_candidate_promotion_carries_expiry_into_the_active_claim(tmp_path: Path) -> None:
+    """End-to-end HIGHLIGHT loop (polylogue-37t.1): capture -> judge accept
+    with injection -> the promoted ACTIVE row keeps the candidate's
+    ``staleness`` (``_promote_candidate_assertion`` copies it verbatim) --
+    and once ``expires_at_ms`` elapses, ``list_assertion_claims`` (the exact
+    read ``context/preamble.py`` uses) stops serving it, with HIGHLIGHT now a
+    member of ``ASSERTION_CLAIM_KINDS``.
+    """
+    conn = _connect(tmp_path / "user.db")
+    try:
+        candidate = upsert_assertion(
+            conn,
+            assertion_id="assertion-terminal-note:highlight-1",
+            target_ref="session:s-1",
+            kind=AssertionKind.HIGHLIGHT,
+            body_text="a highlight worth remembering",
+            author_ref="agent:codex:session-1",
+            author_kind="agent",
+            status=AssertionStatus.CANDIDATE,
+            staleness={"expires_at_ms": 1_700_000_100_000},
+            context_policy={"inject": False, "promotion_required": True},
+            now_ms=1_700_000_000_000,
+        )
+        assert candidate.kind is AssertionKind.HIGHLIGHT
+
+        judgment = judge_assertion_candidate(
+            conn,
+            candidate_ref=f"assertion:{candidate.assertion_id}",
+            decision="accept",
+            reason="genuinely worth keeping",
+            actor_ref="user:local",
+            inject=True,
+            now_ms=1_700_000_010_000,
+        )
+        assert judgment.resulting_assertion is not None
+        assert judgment.resulting_assertion.kind is AssertionKind.HIGHLIGHT
+        assert judgment.resulting_assertion.status is AssertionStatus.ACTIVE
+        assert judgment.resulting_assertion.context_policy == {"inject": True}
+        assert judgment.resulting_assertion.staleness == {"expires_at_ms": 1_700_000_100_000}
+
+        assert AssertionKind.HIGHLIGHT in ASSERTION_CLAIM_KINDS
+
+        before_expiry = list_assertion_claims(
+            conn, target_ref="session:s-1", context_inject=True, as_of_ms=1_700_000_050_000
+        )
+        assert [claim.assertion_id for claim in before_expiry] == [judgment.resulting_assertion.assertion_id]
+
+        after_expiry = list_assertion_claims(
+            conn, target_ref="session:s-1", context_inject=True, as_of_ms=1_700_000_200_000
+        )
+        assert after_expiry == []
     finally:
         conn.close()
 

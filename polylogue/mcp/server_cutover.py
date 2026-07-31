@@ -1545,6 +1545,8 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
             refs = _field(fields, "refs")
             scope_refs = _field(fields, "scope_refs")
             cwd = _field(fields, "cwd")
+            ttl_seconds_field = _field(fields, "ttl_seconds")
+            ttl_seconds = ttl_seconds_field if isinstance(ttl_seconds_field, int) else None
             candidate_result = await poly.capture_assertion_candidate(
                 body_text=body_text,
                 kind=candidate_capture_kind(kind if isinstance(kind, str) else "note"),
@@ -1553,6 +1555,7 @@ async def _dispatch_write(hooks: ServerCallbacks, *, operation: str, kwargs: dic
                 cwd=Path(cwd) if isinstance(cwd, str) else None,
                 author_ref=author_ref,
                 author_kind="agent",
+                ttl_seconds=ttl_seconds,
             )
             return hooks.json_payload(candidate_result, exclude_none=False)
 
