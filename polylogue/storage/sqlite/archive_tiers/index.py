@@ -101,7 +101,35 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # every other SEMANTIC_REPARSE version here, resolving this requires
 # `polylogue ops reset --index && polylogued run`, which an agent must not
 # trigger against the operator's live archive without explicit scheduling.
-INDEX_SCHEMA_VERSION = 48
+# v49 batches two related cost-accounting fixes from the same forensic audit
+# (polylogue-shnc, polylogue-gt1z) onto one bump, matching the v46 "one bump
+# covering every field" precedent:
+#
+#   - polylogue-gt1z: sessions.reported_cost_usd -- the exact provider-
+#     reported session total already parsed onto ParsedSession
+#     (claude-code-session/hermes-session) but previously discarded at write
+#     time (the session_reported_costs table that once mirrored it was
+#     dropped in polylogue-v2mg as a zero-consumer table;
+#     ParsedSession.reported_cost_usd itself stayed a legitimate
+#     parsed-domain field -- see write.py's _seed_session_model_usage_rows
+#     docstring). This gives `_session_level_estimate`/`estimate_session_cost`
+#     a real value to read so the ``status == "exact"`` cost path (audited
+#     polylogue-gt1z: zero production callers behind it, a phantom-verified
+#     feature pinned only by hand-built-payload tests) becomes reachable
+#     through a real caller -- `polylogue/insights/cost_enrichment.py`'s
+#     `enrich_session_cost_insight`, which backs the `insights costs` /
+#     `SessionCostInsight` surface.
+#   - polylogue-shnc: two new session_model_usage CHECK constraints enforcing
+#     that 'priced' implies cost_usd/priced_with are both set, and
+#     'origin_reported' implies cost_usd is set -- see that column's comment
+#     for the forensic evidence (5,016 self-contradictory 'priced' rows,
+#     3,417 NULL-cost 'origin_reported' rows) and write.py's
+#     _price_provider_usage_tokens for the writer-side fix that makes the
+#     invariant hold going forward.
+#
+# Both depend on parser/pricing semantics to populate/repair existing rows --
+# SEMANTIC_REPARSE, matching the v42/v44/v45/v46/v47/v48 precedent above.
+INDEX_SCHEMA_VERSION = 49
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -240,6 +268,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     commit_hash             TEXT,
     instructions_text       TEXT,
     reported_duration_ms    INTEGER CHECK(reported_duration_ms IS NULL OR reported_duration_ms >= 0),
+    -- polylogue-gt1z (v49): exact provider-reported session cost total, when
+    -- the origin's own export carries one (claude-code-session costUSD,
+    -- hermes-session state.db) -- ParsedSession.reported_cost_usd verbatim.
+    -- NULL means the origin never reports a session-level total, not a
+    -- measured zero (a genuine $0 total is preserved by the parser same as
+    -- any other reported value). Feeds `_session_level_estimate`'s
+    -- ``status == "exact"`` cost path; per-model catalog pricing in
+    -- session_model_usage remains the token-total authority (see that
+    -- table's header) -- this column is a parallel exact-dollar figure, not
+    -- a token source.
+    reported_cost_usd       REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0),
     message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
     word_count              INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
     tool_use_count          INTEGER NOT NULL DEFAULT 0 CHECK(tool_use_count >= 0),
@@ -1076,6 +1115,23 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cost_usd                REAL,
     cost_credits            REAL,
     cost_provenance         TEXT CHECK(cost_provenance IN ('origin_reported', 'priced', 'estimated') OR cost_provenance IS NULL),
+    -- polylogue-shnc (v49): a provenance label that ASSERTS pricing evidence
+    -- must actually carry that evidence -- the forensic audit found 5,016
+    -- live rows with cost_provenance='priced' and cost_usd/priced_with both
+    -- NULL (a self-contradiction worse than an honest NULL provenance) and
+    -- 3,417 'origin_reported' rows with cost_usd NULL despite the rollup
+    -- writer's own naming implying a reported dollar figure existed.
+    -- 'origin_reported' is reserved for a genuine provider-reported dollar
+    -- total (sessions.reported_cost_usd, polylogue-gt1z) copied onto a
+    -- session_model_usage row; provider-usage-event TOKEN rollups (Codex
+    -- cumulative token_count) are catalog-priced under 'priced' instead (see
+    -- write.py's _price_provider_usage_tokens) -- conflating the two made a
+    -- catalog estimate read as if the provider itself reported that dollar
+    -- figure downstream (archive.py's list_cost_rollup_insights basis split).
+    CHECK (
+        cost_provenance != 'priced' OR (cost_usd IS NOT NULL AND priced_with IS NOT NULL)
+    ),
+    CHECK (cost_provenance != 'origin_reported' OR cost_usd IS NOT NULL),
     PRIMARY KEY(session_id, model_name)
 ) STRICT;
 

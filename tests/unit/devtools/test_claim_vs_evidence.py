@@ -208,6 +208,9 @@ def _seed_archive(root: Path) -> None:
             ("next-wordless", "s2", 0, "tool_use", None, "Read", "t5", '{"path":"z"}', None, None),
         ],
     )
+    # NOTE: this module builds its own minimal synthetic schema (not the real
+    # index.db DDL) with no priced_with column or CHECK constraint, so the
+    # polylogue-shnc invariant does not apply here.
     conn.executemany(
         """
         INSERT INTO session_model_usage(

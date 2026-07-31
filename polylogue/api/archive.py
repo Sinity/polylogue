@@ -1979,6 +1979,7 @@ def _archive_session_to_session(session: ArchiveSessionEnvelope) -> Session:
         parent_id=SessionId(session.parent_session_id) if session.parent_session_id else None,
         branch_type=BranchType(session.branch_type) if session.branch_type else None,
         attachments=[_archive_attachment_to_domain(att) for att in session.orphan_attachments],
+        reported_cost_usd=session.reported_cost_usd,
     )
 
 

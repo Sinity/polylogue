@@ -210,12 +210,21 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
             cost_is_estimated=True,
             cost_provenance="priced",
         )
+        # polylogue-shnc: 'origin_reported' now requires cost_usd set (CHECK
+        # constraint, v49) -- it means a genuine provider-reported dollar
+        # figure, not merely provider-reported tokens.
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
+            VALUES ('test-catalog', 'test-hash', 'test', 0)
+            """
+        )
         conn.execute(
             """
             INSERT OR REPLACE INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                cost_credits, cost_provenance
-            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported')
+                cost_credits, cost_provenance, cost_usd, priced_with
+            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported', 0.0075, 'test-catalog')
             """,
             (NID_PRICED_COST,),
         )
@@ -368,7 +377,10 @@ def test_usage_timeline_first_page_skips_later_provider_events(cli_workspace: Cl
     assert rows[0].bucket == "2026-03"
     assert rows[0].origin == "chatgpt-export"
     assert rows[0].event_count == 0
-    assert rows[0].stored_cost_usd == 0.0
+    # polylogue-shnc: _seed_cost_products now gives the 'origin_reported' row
+    # a real cost_usd (0.0075) to satisfy the CHECK constraint requiring one;
+    # previously this fixture carried NULL, which is what read back as 0.0.
+    assert rows[0].stored_cost_usd == pytest.approx(0.0075)
     assert rows[0].cost_provenance_counts == {"origin_reported": 1}
 
 
