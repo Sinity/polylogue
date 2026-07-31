@@ -14,9 +14,10 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from io import BytesIO
+from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Final, Literal
+from typing import BinaryIO, Final, Literal, cast
 
 from polylogue import logging as _polylogue_logging
 from polylogue.archive.ingest_flags import (
@@ -1656,8 +1657,13 @@ class _ParsedSessionSpill:
         return sessions, payload_bytes
 
 
-def _is_declared_non_session_artifact(provider: Provider, source_path: str) -> bool:
-    """Return whether OriginSpec declares this path a non-session "fact" artifact.
+def _is_declared_non_session_artifact(
+    provider: Provider,
+    source_path: str,
+    *,
+    sample: Sequence[object] = (),
+) -> bool:
+    """Return whether this raw revision must not be session-parsed on replay.
 
     polylogue-b508: retained raw revisions include OriginSpec-declared fact
     artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
@@ -1673,9 +1679,43 @@ def _is_declared_non_session_artifact(provider: Provider, source_path: str) -> b
     that fix is meant to eliminate on every future rebuild. Same check, same
     rule table, so a declared fact artifact can never become a session
     through either entry point.
+
+    polylogue-9ykn: a path-declared rule is only half of the live path's
+    gate. ``pipeline/services/ingest_worker.py`` also runs every sampled
+    JSONL payload through ``archive.artifact_taxonomy.classify_artifact`` --
+    the richer, CONTENT-based classifier that catches a non-conversational
+    record sitting under a watched Claude Code directory with no matching
+    path rule at all (e.g. a third-party analysis index such as
+    ``conversation_relationships.jsonl`` that happens to satisfy the loose
+    per-record shape check). Without the same content check here, replay
+    (this module) and rebuild (``maintenance/rebuild_index.py`` -> this
+    module) silently resurrect exactly the phantom sessions the live gate
+    now refuses, on every future rebuild -- the two "single chokepoints"
+    disagreeing is the location-as-identity defect recurring at a second
+    layer. ``sample`` -- the first up to 64 decoded records, mirroring the
+    live path's own sample bound (``ingest_worker.py``'s
+    ``_sample_jsonl_payload_with_detail(..., max_samples=64)``) -- is
+    classified only when no path rule already decided the question; an
+    empty ``sample`` (the default) preserves the original path-only
+    behavior exactly, so every existing caller is unaffected until it opts
+    in.
     """
     rule = artifact_rule_for_path(provider, source_path)
-    return rule is not None and rule.parse_policy != "session"
+    if rule is not None:
+        return rule.parse_policy != "session"
+    if not sample:
+        return False
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.json import JSONValue
+
+    # ``sample`` records come from ``_iter_json_stream`` (this module's own
+    # decode path, typed ``JsonValue`` -- ``core/query_identity.py``'s
+    # structurally-equivalent but nominally distinct alias) rather than
+    # ``classify_artifact``'s own ``core.json.JSONValue``; both describe the
+    # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
+    # a type-identity bridge, not a real behavior narrowing.
+    classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
+    return not classification.parse_as_session
 
 
 def _parse_one(
@@ -1686,17 +1726,20 @@ def _parse_one(
     payload_path: Path | None = None,
     archive_root: Path | None = None,
 ) -> list[ParsedSession]:
-    if _is_declared_non_session_artifact(provider, source_path):
-        return []
     source_name = Path(source_path).name
     fallback_id = Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):
+        records = list(_iter_json_stream(BytesIO(payload), source_name))
+        if _is_declared_non_session_artifact(provider, source_path, sample=records[:64]):
+            return []
         return parse_stream_payload(
             provider,
-            _iter_json_stream(BytesIO(payload), source_name),
+            records,
             fallback_id,
             source_path=source_path,
         )
+    if _is_declared_non_session_artifact(provider, source_path):
+        return []
     if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
             if hermes_state.looks_like_state_db_path(sqlite_path):
@@ -1748,9 +1791,18 @@ def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> li
         return []
     source_name = Path(source_path).name
     fallback_id = Path(source_path).stem
+    stream = _iter_json_stream(payload, source_name)
+    # Multi-GiB Claude Code JSONL must stay memory-bounded (module docstring:
+    # "a memory-bounded streaming path exists for multi-GiB Claude Code
+    # JSONL"), so only the first 64 records -- the same sample bound the live
+    # ingest gate uses -- are materialized for content classification; the
+    # rest of the stream is chained back on unread.
+    sample = list(islice(stream, 64))
+    if _is_declared_non_session_artifact(provider, source_path, sample=sample):
+        return []
     return parse_stream_payload(
         provider,
-        _iter_json_stream(payload, source_name),
+        chain(sample, stream),
         fallback_id,
         source_path=source_path,
     )

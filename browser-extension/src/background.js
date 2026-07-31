@@ -18,6 +18,13 @@ import {
   scheduleFreshnessHint,
 } from "./capture/freshness.js";
 
+// Must match src/common.js's TEMPORARY_CHAT_ID_KEY-adjacent sentinel exactly
+// (sessionIdFromUrl's `__polylogue_temporary_chat__` return value) -- this
+// module has no access to the content script's per-tab sessionStorage, so it
+// cannot know the eventual real `temporary:<hex>` session id in advance. It
+// only needs a stable, regex-valid ([A-Za-z0-9_-]{1,256}) truthy signal that
+// a temporary-chat URL is a real, capturable conversation.
+const TEMPORARY_CHAT_SENTINEL = "__polylogue_temporary_chat__";
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
 const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
@@ -289,9 +296,10 @@ async function backfillCoordinator() {
         // CaptureJob checkpoint.
         await restoreBackfillCheckpointFromReceiver(store, instanceId);
       }
+      const adapters = providerAdapters(providerPageFetch, { requirePageContext: true });
       return new BackfillCoordinator({
         store,
-        adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
+        adapters,
         receiver: (envelope, serialized) => postJson(
           "/v1/browser-captures",
           envelope,
@@ -314,16 +322,37 @@ async function backfillCoordinator() {
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
           return result;
         },
-        captureOverride: async ({ provider, nativeId, response }) => {
+        captureOverride: async ({ provider, nativeId, response, item, attribution }) => {
           if (provider !== "chatgpt") return null;
           const nativePayload = await response.json();
+          const nativePayloadBytes = new TextEncoder().encode(JSON.stringify(nativePayload)).length;
+          if (nativePayloadBytes > MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES) {
+            // Oversized: the content-script exact-capture path would either
+            // re-fetch this same huge conversation itself (its own native-
+            // fetch fallback, independent of this bridge) and return it in
+            // the chrome.tabs.sendMessage RESPONSE -- crossing this second
+            // IPC channel's size ceiling in the other direction -- or, for a
+            // pinned conversation id, skip its DOM fallback entirely and
+            // fail outright. adapters.chatgpt.normalizeCapture() builds a
+            // full-fidelity capture entirely in this process, no
+            // chrome.tabs.sendMessage involved at all.
+            return adapters.chatgpt.normalizeCapture(response, item, attribution);
+          }
           const captured = await captureProviderConversation(
             provider,
             nativeId,
             "backfill_exact_capture",
             { deferReceiver: true, nativePayload },
           );
-          return captured.envelope;
+          if (captured.envelope?.session?.turns?.length) return captured.envelope;
+          // The exact-capture path's own content-script normalizer doesn't
+          // (yet) read every content_type the bridge now preserves (e.g.
+          // `thoughts` reasoning nodes) -- rather than let that permanently
+          // no_turns-skip (and endlessly retry) a conversation the adapter
+          // path can already capture in full fidelity, fall back to it. The
+          // exact-capture DOM/live-generation enrichment is only lost for
+          // conversations it would have found nothing for anyway.
+          return adapters.chatgpt.normalizeCapture(response, item, attribution);
         },
         alarms: chrome.alarms,
         instanceId,
@@ -405,15 +434,19 @@ function injectionPlanForUrl(url) {
         },
       ];
     }
-    if (
-      parsed.hostname === "grok.com" ||
-      parsed.hostname.endsWith(".grok.com") ||
-      parsed.hostname === "x.com" ||
-      parsed.hostname.endsWith(".x.com") ||
-      parsed.hostname === "twitter.com" ||
-      parsed.hostname.endsWith(".twitter.com")
-    ) {
-      return [{ files: ["src/common.js", "src/content/grok.js"] }];
+    if (parsed.hostname === "grok.com" || parsed.hostname.endsWith(".grok.com")) {
+      // grok.com now has a MAIN-world bridge (native REST capture,
+      // polylogue Grok native-capture upgrade 2026-07-31) mirroring
+      // chatgpt/claude above. x.com/twitter.com were dropped here: Grok's
+      // embedded surface on X is served through X's own API, not
+      // grok.com's /rest/app-chat/* REST surface this bridge calls, and
+      // this upgrade deleted the DOM-only capture path that used to be the
+      // (lossy) fallback for those origins. See manifest.json's matching
+      // content_scripts change and this repo's Grok-on-X follow-up bead.
+      return [
+        { files: ["src/content/grok_bridge.js"], world: "MAIN" },
+        { files: ["src/common.js", "src/content/grok.js"] },
+      ];
     }
   } catch {
     return [];
@@ -1256,6 +1289,13 @@ async function setStateForTab(tabId, state, expectedTabUrl = null) {
     expectedProvider
     && expectedSessionId
     && activeSessionId
+    // TEMPORARY_CHAT_SENTINEL is a "this tab has a real, capturable
+    // conversation" signal, not the conversation's real identity -- it can
+    // never equal a captured state's true provider_session_id (the
+    // ephemeral id from the native payload), so this staleness guard would
+    // reject every state write for a temporary chat tab, including the
+    // capture that just succeeded on it.
+    && activeSessionId !== TEMPORARY_CHAT_SENTINEL
     && (
       activeProvider !== expectedProvider
       || activeSessionId !== expectedSessionId
@@ -1671,6 +1711,75 @@ function scriptingResultTooLarge(error) {
   return /(?:result|response|message|script).{0,100}(?:too large|exceed(?:s|ed)?|maximum).{0,100}(?:size|limit|length)/.test(message);
 }
 
+// The maximum number of chunk round-trips a single chunked ChatGPT
+// conversation fetch will make, mirroring page_transport.js's
+// maxChatGptChunks -- a defensive ceiling against a malformed/adversarial
+// totalChunks value from the page context, not a fidelity limit (a real
+// conversation chunk count is bounded by its own byte size divided by the
+// bridge's per-chunk packing target).
+const MAX_PROVIDER_PAGE_CHUNKS = 64;
+
+// chrome.tabs.sendMessage (used by captureProviderConversation below to hand
+// the reassembled conversation to the content script as `nativePayload`, and
+// to receive the resulting envelope back) is a second, independent Chrome
+// extension IPC channel with its own size ceiling -- distinct from, but the
+// same order of magnitude as, chrome.scripting.executeScript's ~32 MiB
+// structured-clone result limit that page_transport.js's chunking budget is
+// built around. Before the chunking fix, `nativePayload` was implicitly
+// capped at the old single-shot bridge's ~24 MiB projection limit; removing
+// that ceiling from the bridge itself must not silently remove it from this
+// second channel too.
+const MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES = 24 * 1024 * 1024;
+
+async function runProviderPageScript(transport, request) {
+  const executions = await withTimeout(
+    chrome.scripting.executeScript({
+      target: { tabId: transport.tab.id },
+      world: "MAIN",
+      func: executeProviderPageRequest,
+      args: [request],
+    }),
+    BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+    "backfill_page_request",
+  );
+  return executions?.[0]?.result;
+}
+
+// Reassembles a chunked ChatGPT conversation projection (see
+// page_transport.js's buildChatGptChunks/compactChatGptConversation) by
+// re-invoking the MAIN-world bridge once per remaining chunk and merging
+// each chunk's node-aligned `mapping` slice into one full-fidelity mapping.
+// Each individual scripting-result call stays under the bridge's per-call
+// byte cap; the reassembled conversation here in the extension process has
+// no such cap, so overall fidelity never depends on conversation size.
+async function reassembleChunkedChatGptConversation(transport, request, firstResult) {
+  const firstBody = JSON.parse(firstResult.response.body);
+  if (!firstBody.chunked) return firstResult;
+  const totalChunks = Number(firstBody.totalChunks);
+  if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > MAX_PROVIDER_PAGE_CHUNKS) {
+    throw new Error(`backfill_bridge_projection_too_many_chunks:total_chunks=${firstBody.totalChunks}`);
+  }
+  const mapping = { ...firstBody.mapping };
+  for (let chunkIndex = 1; chunkIndex < totalChunks; chunkIndex += 1) {
+    const chunkResult = await runProviderPageScript(transport, { ...request, params: { ...request.params, chunkIndex } });
+    if (!chunkResult?.ok) throw new Error(String(chunkResult?.error || "backfill_page_request_failed"));
+    const chunkBody = JSON.parse(chunkResult.response.body);
+    if (chunkBody.totalChunks !== totalChunks) {
+      throw new Error(`backfill_bridge_chunk_manifest_mismatch:expected_total=${totalChunks};observed_total=${chunkBody.totalChunks}`);
+    }
+    Object.assign(mapping, chunkBody.mapping);
+  }
+  const header = { ...firstBody };
+  delete header.chunked;
+  delete header.chunkIndex;
+  delete header.totalChunks;
+  delete header.mapping;
+  return {
+    ok: true,
+    response: { ...firstResult.response, body: JSON.stringify({ ...header, mapping }) },
+  };
+}
+
 async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
   const request = providerRequestFromUrl(url);
@@ -1679,17 +1788,10 @@ async function providerPageFetch(url, options = {}) {
     const transport = await providerTab(request.provider);
     let result;
     try {
-      const executions = await withTimeout(
-        chrome.scripting.executeScript({
-          target: { tabId: transport.tab.id },
-          world: "MAIN",
-          func: executeProviderPageRequest,
-          args: [request],
-        }),
-        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-        "backfill_page_request",
-      );
-      result = executions?.[0]?.result;
+      result = await runProviderPageScript(transport, request);
+      if (result?.ok && request.operation === "conversation" && result.response?.ok) {
+        result = await reassembleChunkedChatGptConversation(transport, request, result);
+      }
     } catch (error) {
       if (transport.owned) {
         await chrome.tabs.remove(transport.tab.id).catch(() => undefined);
@@ -1819,7 +1921,19 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
       const providerSessionId = resultWithTimeout.captureResult?.provider_session_id || envelopeSession.provider_session_id;
       const pageProvider = archiveProviderForUrl(tab.url || tab.pendingUrl || "") || provider;
-      const pageSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "") || providerSessionId;
+      // conversationIdForUrl(tab.url) is normally the right identity to log/
+      // record here (it is what every other caller in this file keys tab
+      // state by). The one exception is TEMPORARY_CHAT_SENTINEL: it is a
+      // "this tab has a real, capturable conversation" signal, not the
+      // conversation's real ephemeral id, so preferring it over the
+      // just-captured envelope's actual provider_session_id would record
+      // the sentinel as this tab's "captured" identity -- self-consistent
+      // locally, but never matching the real id the receiver/archive
+      // actually stored it under, so the tab would show "not captured"
+      // forever afterward (and setStateForTab's own staleness guard has a
+      // matching sentinel exemption for the same reason).
+      const urlSessionId = conversationIdForUrl(tab.url || tab.pendingUrl || "");
+      const pageSessionId = urlSessionId === TEMPORARY_CHAT_SENTINEL ? (providerSessionId || urlSessionId) : (urlSessionId || providerSessionId);
       await updateSessionLedger({
         provider,
         providerSessionId,
@@ -2498,13 +2612,27 @@ function conversationIdForUrl(url) {
     if (provider === "chatgpt") {
       const marker = parts.indexOf("c");
       if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
-      if (parsed.searchParams.get("temporary-chat") === "true") return null;
+      // Mirror src/common.js:sessionIdFromUrl exactly. A temporary chat has
+      // no /c/<id> path (ChatGPT never persists one), but it is still a
+      // real, capturable conversation -- returning null here made every
+      // gate downstream that checks `conversationIdForUrl(...)` truthy
+      // (captureTab's automatic-capture gate chief among them) treat every
+      // temporary chat tab as "no session" and silently never capture it,
+      // even though the content-script capture path (common.js) has always
+      // been ready to build a per-tab temporary session id. That asymmetry
+      // is why zero temporary chats have ever landed in the archive.
+      if (parsed.searchParams.get("temporary-chat") === "true") return TEMPORARY_CHAT_SENTINEL;
       return null;
     }
     if (provider === "claude-ai") {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
     if (provider === "grok") {
+      // grok.com's own conversation URLs are /c/<uuid> (verified live,
+      // 2026-07-31, same convention as ChatGPT/Claude above). The /chat/
+      // and /grok/ segment guesses below predate that verification.
+      const marker = parts.indexOf("c");
+      if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
       const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
       if (pathId) return pathId;
       const queryId = parsed.searchParams.get("conversation") || parsed.searchParams.get("conversationId");
@@ -2523,6 +2651,15 @@ function conversationIdForUrl(url) {
   return null;
 }
 
+// Known limitation for a ChatGPT temporary chat: providerSessionId below is
+// TEMPORARY_CHAT_SENTINEL, not the conversation's real ephemeral id (there is
+// no per-tab "last known real captured id" cache to consult instead), so the
+// /v1/archive-state query it drives always reports state:"missing" even
+// after a real capture landed under the true id. This does not lose data --
+// it just makes captureTab's "auto_capture_missing" branch below re-fire
+// (throttled to once per BACKGROUND_CAPTURE_MIN_INTERVAL_MS) instead of
+// confirming "already archived", and the UI's captured badge stays
+// inaccurate for that tab. Ref polylogue-upbv.
 async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowRecovery = true) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
@@ -3087,7 +3224,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const senderSessionId = conversationIdForUrl(senderUrl);
       const provider = message.provider || senderProvider;
       const nativeId = message.provider_session_id || senderSessionId;
-      if (sender.tab && (provider !== senderProvider || (senderSessionId && nativeId !== senderSessionId))) {
+      // TEMPORARY_CHAT_SENTINEL is a "this tab has a real, capturable
+      // conversation" signal, not a real provider identity -- it cannot
+      // equal chatgpt.js's freshness hints, which always carry the
+      // conversation's true ephemeral id (nativeCaptureIdentity, read from
+      // the intercepted native payload's own conversation_id/id). Enforcing
+      // strict equality against the sentinel here rejected every freshness
+      // hint a temporary chat ever sent after its first capture, silently
+      // stopping later turns from ever being re-captured.
+      if (
+        sender.tab
+        && (provider !== senderProvider
+          || (senderSessionId && senderSessionId !== TEMPORARY_CHAT_SENTINEL && nativeId !== senderSessionId))
+      ) {
         throw new Error("freshness_hint_sender_identity_mismatch");
       }
       sendResponse({

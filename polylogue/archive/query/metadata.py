@@ -133,6 +133,16 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "no",
         "example": "title:refactor",
     },
+    "root": {
+        "description": (
+            "Filter by top-level-vs-child session structure. root:true keeps only "
+            "top-level sessions; root:false keeps only subagent/branch children. "
+            "Unset (default) selects both."
+        ),
+        "spec_field": "root",
+        "negatable": "no",
+        "example": "root:true",
+    },
     "since": {
         "description": "Filter sessions after date (ISO or relative: 7d, 2w)",
         "spec_field": "since",

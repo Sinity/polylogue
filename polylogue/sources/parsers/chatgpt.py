@@ -468,8 +468,14 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
     Handles the common ``parts`` array (strings and structured dicts carrying
     ``text``) and falls back to non-``parts`` content shapes — ``code`` and
     ``execution_output`` carry a top-level ``text``, browsing display carries a
-    ``result``. Without this fallback those messages have empty text and are
-    dropped entirely (#1744).
+    ``result``, and ``thoughts``/``reasoning_recap`` (content_type "thoughts")
+    carry an array of ``{summary, content, ...}`` reasoning-step entries
+    instead. Without the thoughts fallback, the THINKING block built below
+    for those nodes gets an empty ``text`` even though the bridge/export now
+    preserves the raw bytes -- the browser-capture bridge fix that stopped
+    dropping ``content.thoughts`` upstream is not sufficient on its own; this
+    parser also has to read what it now receives. Without any fallback these
+    messages have empty text and are dropped entirely (#1744).
     """
     parts = content.get("parts")
     if isinstance(parts, list):
@@ -493,6 +499,21 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
     result = content.get("result")
     if isinstance(result, str) and result:
         return result
+    thoughts = content.get("thoughts")
+    if isinstance(thoughts, list):
+        thought_parts: list[str] = []
+        for thought in thoughts:
+            if not isinstance(thought, dict):
+                continue
+            step_content = thought.get("content")
+            if isinstance(step_content, str) and step_content:
+                thought_parts.append(step_content)
+                continue
+            summary = thought.get("summary")
+            if isinstance(summary, str) and summary:
+                thought_parts.append(summary)
+        if thought_parts:
+            return "\n".join(thought_parts)
     return ""
 
 

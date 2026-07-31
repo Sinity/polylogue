@@ -120,6 +120,37 @@ def test_install_bakes_the_current_archive_roots_resolved_spool_path(isolated_ho
     assert commands == [f"polylogue-hook SessionStart --provider claude-code --sidecar-dir {archive_root / 'hooks'}"]
 
 
+def test_hook_install_sidecar_drift_flags_a_stale_baked_path_after_archive_root_moves(
+    isolated_hook_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """(polylogue-31r1 follow-up) The root cause of the real 2026-07-31
+    hook-spool incident: an installed hook command bakes the resolved
+    sidecar dir at install time, and nothing forces a re-install when the
+    archive root later moves. ``hook_install_sidecar_drift`` must catch
+    that drift instead of leaving it silent until a human notices a
+    108K-file backlog."""
+
+    from polylogue.hooks import hook_install_sidecar_drift
+
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "hooks", "install", "--harness", "claude-code", "--events", "SessionStart", "--json"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    assert hook_install_sidecar_drift("claude-code") == ()
+
+    # The archive root moves (e.g. an operator migration) without re-running
+    # ``polylogue hooks install`` -- the baked command now points at a stale
+    # sidecar dir the daemon no longer watches.
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"]).parent / "moved"))
+
+    drift = hook_install_sidecar_drift("claude-code")
+    assert len(drift) == 1
+    assert drift[0].name == "hooks"
+
+
 def test_install_dry_run_does_not_create_settings(isolated_hook_home: Path) -> None:
     target = settings_path("claude-code")
     result = CliRunner().invoke(
