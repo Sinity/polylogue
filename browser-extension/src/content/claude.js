@@ -77,19 +77,108 @@
     return "unknown";
   }
 
+  // Claude's chat_conversations API returns the same segment shape as the
+  // GDPR export, so the structure the archive-side parser understands is
+  // already in hand here -- flattening it to prose would discard tool_use /
+  // tool_result / thinking that the export path parses in full.
+  // BlockType names and the is_error contract mirror BrowserCaptureBlock
+  // (polylogue/browser_capture/models.py): outcome fields are read from the
+  // provider's own segment, never inferred from rendered text.
+  function nativeTurnBlocks(message) {
+    const segments = Array.isArray(message && message.content) ? message.content : [];
+    const blocks = [];
+    for (const segment of segments) {
+      if (!segment || typeof segment !== "object") continue;
+      const type = segment.type;
+      if (type === "text" && typeof segment.text === "string" && segment.text) {
+        blocks.push({ type: "text", text: segment.text });
+      } else if (type === "thinking") {
+        const thinking = typeof segment.thinking === "string" ? segment.thinking : segment.text;
+        if (thinking) blocks.push({ type: "thinking", text: thinking, metadata: { content_type: type } });
+      } else if (type === "tool_use") {
+        blocks.push({
+          type: "tool_use",
+          tool_name: segment.name || null,
+          tool_id: segment.id || null,
+          tool_input: segment.input && typeof segment.input === "object" && !Array.isArray(segment.input)
+            ? segment.input
+            : null
+        });
+      } else if (type === "tool_result") {
+        blocks.push({
+          type: "tool_result",
+          tool_id: segment.tool_use_id || null,
+          text: typeof segment.content === "string" ? segment.content : null,
+          // Provider-reported outcome. Absent stays null (unknown), never false.
+          is_error: typeof segment.is_error === "boolean" ? segment.is_error : null,
+          metadata: { tool_name: segment.name || null }
+        });
+      }
+    }
+    return blocks;
+  }
+
+  // Two distinct attachment channels, both present in the conversations API:
+  //   attachments[] carries extracted_content inline (text already extracted
+  //     by the provider) but NO id -- synthesise a stable one.
+  //   files[]       carries a real file_uuid but no bytes; recorded as a
+  //     reference so a later byte acquisition can join on the uuid.
+  function nativeTurnAttachments(message, index) {
+    const out = [];
+    const messageId = String(message.uuid || message.id || `claude-message-${index}`);
+    for (const attachment of Array.isArray(message.attachments) ? message.attachments : []) {
+      if (!attachment || typeof attachment !== "object") continue;
+      const name = attachment.file_name || attachment.name || null;
+      if (!name) continue;
+      const size = Number.parseInt(attachment.file_size, 10);
+      out.push({
+        provider_attachment_id: `claude-attachment:${window.polylogueCapture.fnv1a(`${messageId}:${name}:${attachment.file_size || ""}`)}`,
+        message_provider_id: messageId,
+        name,
+        mime_type: attachment.file_type || null,
+        size_bytes: Number.isFinite(size) ? size : null,
+        extracted_content: typeof attachment.extracted_content === "string" ? attachment.extracted_content : null,
+        provider_meta: { capture_source: "claude_chat_conversations_api", channel: "attachments" }
+      });
+    }
+    for (const file of Array.isArray(message.files) ? message.files : []) {
+      if (!file || typeof file !== "object") continue;
+      const name = file.file_name || file.name || null;
+      const uuid = file.file_uuid || file.uuid || null;
+      if (!name && !uuid) continue;
+      out.push({
+        provider_attachment_id: uuid ? `claude-file:${uuid}` : `claude-file:${window.polylogueCapture.fnv1a(`${messageId}:${name}`)}`,
+        message_provider_id: messageId,
+        name,
+        provider_meta: {
+          capture_source: "claude_chat_conversations_api",
+          channel: "files",
+          file_uuid: uuid || null
+        }
+      });
+    }
+    return out;
+  }
+
   function collectNativeTurns(payload) {
     const messages = payload && payload.chat_messages;
     if (!Array.isArray(messages)) return [];
     return messages
       .map((message, index) => {
         const text = textFromMessage(message);
-        if (!text) return null;
+        const blocks = nativeTurnBlocks(message);
+        const attachments = nativeTurnAttachments(message, index);
+        // A turn with attachments or structured blocks but no prose is still a
+        // real turn -- requiring text would drop image-only and tool-only turns.
+        if (!text && !blocks.length && !attachments.length) return null;
         return {
           provider_turn_id: String(message.uuid || message.id || `claude-message-${index}`),
           role: roleFromNativeMessage(message),
           text,
           timestamp: message.created_at || message.updated_at || null,
           parent_turn_id: message.parent_message_uuid || message.parent_uuid || null,
+          blocks,
+          attachments,
           provider_meta: {
             model: message.model || null,
             sender: message.sender || message.role || null,

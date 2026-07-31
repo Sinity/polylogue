@@ -220,3 +220,177 @@ describe("claude.js native capture (real source)", () => {
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Native-payload structure extraction — extracted from src/content/claude.js,
+// keep in sync. Claude's chat_conversations API returns the same segment shape
+// as the GDPR export, so tool_use / tool_result / thinking and both attachment
+// channels are observable at capture time; flattening them to prose loses what
+// the export path parses in full.
+// ---------------------------------------------------------------------------
+
+const fnv1a = (text) => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16);
+};
+
+function nativeTurnBlocks(message) {
+  const segments = Array.isArray(message && message.content) ? message.content : [];
+  const blocks = [];
+  for (const segment of segments) {
+    if (!segment || typeof segment !== "object") continue;
+    const type = segment.type;
+    if (type === "text" && typeof segment.text === "string" && segment.text) {
+      blocks.push({ type: "text", text: segment.text });
+    } else if (type === "thinking") {
+      const thinking = typeof segment.thinking === "string" ? segment.thinking : segment.text;
+      if (thinking) blocks.push({ type: "thinking", text: thinking, metadata: { content_type: type } });
+    } else if (type === "tool_use") {
+      blocks.push({
+        type: "tool_use",
+        tool_name: segment.name || null,
+        tool_id: segment.id || null,
+        tool_input: segment.input && typeof segment.input === "object" && !Array.isArray(segment.input)
+          ? segment.input
+          : null,
+      });
+    } else if (type === "tool_result") {
+      blocks.push({
+        type: "tool_result",
+        tool_id: segment.tool_use_id || null,
+        text: typeof segment.content === "string" ? segment.content : null,
+        is_error: typeof segment.is_error === "boolean" ? segment.is_error : null,
+        metadata: { tool_name: segment.name || null },
+      });
+    }
+  }
+  return blocks;
+}
+
+function nativeTurnAttachments(message, index) {
+  const out = [];
+  const messageId = String(message.uuid || message.id || `claude-message-${index}`);
+  for (const attachment of Array.isArray(message.attachments) ? message.attachments : []) {
+    if (!attachment || typeof attachment !== "object") continue;
+    const name = attachment.file_name || attachment.name || null;
+    if (!name) continue;
+    const size = Number.parseInt(attachment.file_size, 10);
+    out.push({
+      provider_attachment_id: `claude-attachment:${fnv1a(`${messageId}:${name}:${attachment.file_size || ""}`)}`,
+      message_provider_id: messageId,
+      name,
+      mime_type: attachment.file_type || null,
+      size_bytes: Number.isFinite(size) ? size : null,
+      extracted_content: typeof attachment.extracted_content === "string" ? attachment.extracted_content : null,
+      provider_meta: { capture_source: "claude_chat_conversations_api", channel: "attachments" },
+    });
+  }
+  for (const file of Array.isArray(message.files) ? message.files : []) {
+    if (!file || typeof file !== "object") continue;
+    const name = file.file_name || file.name || null;
+    const uuid = file.file_uuid || file.uuid || null;
+    if (!name && !uuid) continue;
+    out.push({
+      provider_attachment_id: uuid ? `claude-file:${uuid}` : `claude-file:${fnv1a(`${messageId}:${name}`)}`,
+      message_provider_id: messageId,
+      name,
+      provider_meta: {
+        capture_source: "claude_chat_conversations_api",
+        channel: "files",
+        file_uuid: uuid || null,
+      },
+    });
+  }
+  return out;
+}
+
+describe("claude native capture — structured blocks", () => {
+  it("preserves tool_use with its id and input rather than flattening to prose", () => {
+    const blocks = nativeTurnBlocks({
+      content: [
+        { type: "text", text: "Let me search." },
+        { type: "tool_use", id: "toolu_01Bzda", name: "web_search", input: { query: "polylogue" } },
+      ],
+    });
+    expect(blocks).toHaveLength(2);
+    expect(blocks[1]).toMatchObject({
+      type: "tool_use",
+      tool_name: "web_search",
+      tool_id: "toolu_01Bzda",
+      tool_input: { query: "polylogue" },
+    });
+  });
+
+  it("carries the provider's own tool_result outcome, and leaves it unknown when absent", () => {
+    const failed = nativeTurnBlocks({
+      content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "boom", is_error: true }],
+    });
+    expect(failed[0]).toMatchObject({ type: "tool_result", tool_id: "toolu_1", is_error: true });
+
+    const unknown = nativeTurnBlocks({
+      content: [{ type: "tool_result", tool_use_id: "toolu_2", content: "ok" }],
+    });
+    // Absent is_error stays null (unknown) — never coerced to false.
+    expect(unknown[0].is_error).toBeNull();
+  });
+
+  it("keeps thinking segments, reading Claude's `thinking` field", () => {
+    const blocks = nativeTurnBlocks({
+      content: [{ type: "thinking", thinking: "considering options" }],
+    });
+    expect(blocks[0]).toMatchObject({ type: "thinking", text: "considering options" });
+  });
+
+  it("ignores segment shapes it does not recognise instead of guessing", () => {
+    expect(nativeTurnBlocks({ content: [{ type: "token_budget", budget: 5 }] })).toEqual([]);
+  });
+});
+
+describe("claude native capture — both attachment channels", () => {
+  it("extracts attachments[] inline content, which carries no provider id", () => {
+    const [attachment] = nativeTurnAttachments(
+      {
+        uuid: "msg-1",
+        attachments: [
+          { file_name: "paste.txt", file_size: "4817", file_type: "txt", extracted_content: "hello" },
+        ],
+      },
+      0,
+    );
+    expect(attachment).toMatchObject({
+      message_provider_id: "msg-1",
+      name: "paste.txt",
+      mime_type: "txt",
+      size_bytes: 4817,
+      extracted_content: "hello",
+    });
+    // Synthesised, stable, and namespaced so it cannot collide with files[].
+    expect(attachment.provider_attachment_id).toMatch(/^claude-attachment:[0-9a-f]+$/);
+  });
+
+  it("extracts files[] by its real uuid so a later byte acquisition can join", () => {
+    const [file] = nativeTurnAttachments(
+      { uuid: "msg-2", files: [{ file_name: "diagram.png", file_uuid: "file-abc123" }] },
+      0,
+    );
+    expect(file.provider_attachment_id).toBe("claude-file:file-abc123");
+    expect(file.provider_meta.file_uuid).toBe("file-abc123");
+  });
+
+  it("keeps the two channels distinct for one message", () => {
+    const out = nativeTurnAttachments(
+      {
+        uuid: "msg-3",
+        attachments: [{ file_name: "a.txt", file_size: "10", extracted_content: "x" }],
+        files: [{ file_name: "b.png", file_uuid: "file-b" }],
+      },
+      0,
+    );
+    expect(out).toHaveLength(2);
+    expect(out.map((a) => a.provider_meta.channel)).toEqual(["attachments", "files"]);
+  });
+});

@@ -13,6 +13,7 @@
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://claude.ai/*",
+    "https://*.claudeusercontent.com/*",
     "https://grok.com/*",
     "https://x.com/*",
     "https://twitter.com/*",

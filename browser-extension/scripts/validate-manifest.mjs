@@ -30,6 +30,11 @@ const ALLOWED_PERMISSIONS = new Set([
 const ALLOWED_HOST_GLOBS = [
   /^https:\/\/chatgpt\.com\/\*$/,
   /^https:\/\/claude\.ai\/\*$/,
+  // Claude Design serves each project's rendered files from a sandboxed
+  // per-project origin <project-uuid>.claudeusercontent.com (same pattern as
+  // artifacts), so design file content is unreachable from the claude.ai
+  // content script without this. Wildcard is on the subdomain only.
+  /^https:\/\/\*\.claudeusercontent\.com\/\*$/,
   /^https:\/\/grok\.com\/\*$/,
   /^https:\/\/x\.com\/\*$/,
   /^https:\/\/twitter\.com\/\*$/,
