@@ -113,6 +113,41 @@ def test_extract_evidence_finds_file_paths() -> None:
     assert "polylogue/sources/parsers/claude/code_parser.py" in ev.file_paths
 
 
+def test_extract_evidence_ignores_snapshot_anchor_citations() -> None:
+    # "Generated from master @ <hash>" is this repo's prework-packet snapshot
+    # header (185+ occurrences in the live backlog) -- it records what master
+    # looked like when the note was written, not that the hash is the bead's
+    # own resolving commit. Confirmed false positive against polylogue-2qx.
+    bead = _bead(
+        description=(
+            "Generated from master @ 8a975a40 2026-07-06 -- verify source anchors before coding; "
+            "line numbers are snapshot-relative."
+        )
+    )
+    ev = extract_evidence(bead)
+    assert ev.commit_candidates == []
+
+
+def test_extract_evidence_ignores_verification_pass_master_anchor() -> None:
+    # Confirmed false positive against polylogue-lkrc: the note explicitly
+    # says the named gaps are STILL open as of this master snapshot.
+    bead = _bead(
+        description=(
+            "2026-07-14 code-verification pass: re-checked the residual gaps against "
+            "current master (031d8d183) source. All 3 named residual gaps are still open."
+        )
+    )
+    ev = extract_evidence(bead)
+    assert ev.commit_candidates == []
+
+
+def test_extract_evidence_still_finds_genuine_self_citation_commit() -> None:
+    bead = _bead(description="Foundation phase merged via PR #2915 as d6501ac4615efa30cb0e2413c97614a4bf44b253.")
+    ev = extract_evidence(bead)
+    assert ev.commit_candidates == ["d6501ac4615efa30cb0e2413c97614a4bf44b253"]
+    assert ev.pr_numbers == [2915]
+
+
 def test_extract_evidence_empty_when_no_signal() -> None:
     ev = extract_evidence(_bead(description="This is a plain description with no citations."))
     assert ev == Evidence()

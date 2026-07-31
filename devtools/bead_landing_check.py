@@ -86,6 +86,9 @@ BeadDict = dict[str, Any]
 # false PR citations unconnected to the bead's own resolution.
 _PR_PATTERN = re.compile(r"(?:^|[^\w/])#(\d{2,6})\b")
 _COMMIT_PATTERN = re.compile(r"\b[0-9a-f]{7,40}\b")
+# Matches immediately before a hash that reads "master @", "master (",
+# "master@", or bare "master " -- this repo's snapshot-anchor idiom.
+_SNAPSHOT_ANCHOR_PATTERN = re.compile(r"master\s*[@(]?\s*$", re.IGNORECASE)
 _FILE_PATTERN = re.compile(
     r"(?:polylogue|tests|devtools|docs|storage|pipeline|daemon|cli|mcp"
     r"|browser[_-]extension|browser_capture|coordination|archive|insights"
@@ -134,8 +137,19 @@ def extract_evidence(bead: BeadDict) -> Evidence:
         token = m.group(0)
         # Require a hex token to mix digits and letters -- a pure-digit run is
         # a plain number (record count, port, etc.), not a commit-ish hash.
-        if any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
-            commits.add(token)
+        if not (any(c.isdigit() for c in token) and any(c.isalpha() for c in token)):
+            continue
+        if _SNAPSHOT_ANCHOR_PATTERN.search(text[max(0, m.start() - 24) : m.start()]):
+            # "Generated from master @ <hash>" / "against current master
+            # (<hash>)" is this repo's prework-packet/verification-pass
+            # snapshot-anchor idiom (185+ occurrences in the live backlog):
+            # it records what master looked like when a note was written,
+            # not that the cited hash is this bead's own resolving commit.
+            # Confirmed false positive: polylogue-lkrc cites its own
+            # verification-pass master snapshot this way in a note that
+            # explicitly says the named gaps are STILL open.
+            continue
+        commits.add(token)
 
     files = list(dict.fromkeys(_FILE_PATTERN.findall(text)))
 
@@ -505,6 +519,13 @@ def verdict_for_bead(
             )
         if not reasons:
             reasons.append("no cited commit hash or PR number found in bead text -- not verifiable by this tool")
+
+    if verdict == "LIKELY-STALE":
+        reasons.append(
+            "CAVEAT: this proves the cited commit(s)/PR(s) exist on master, not that every acceptance "
+            "criterion is satisfied -- a bead can cite a landed prerequisite, a partial-progress note, or a "
+            "verification-pass anchor while real remaining scope stays open. Read the bead's AC list before closing."
+        )
 
     evidence_payload: dict[str, Any] = {
         "pr_numbers": evidence.pr_numbers,
