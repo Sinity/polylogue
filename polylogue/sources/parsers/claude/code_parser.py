@@ -586,21 +586,24 @@ def _accumulate_delegation_progress(
     item: dict[str, object],
     timestamp: str | None,
     accumulator: dict[str, _DelegationProgressStats],
-) -> None:
+) -> bool:
     """Fold one ``progress``/``agent_progress`` record into its dispatch edge.
 
     Only ``data.type == "agent_progress"`` carries a genuine dispatcher edge
     (see the classification comment above ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``);
     every occurrence under the same ``parentToolUseID`` is one streaming tick
     of the same subagent dispatch, so ticks are counted and time-bounded
-    rather than persisted as one row apiece.
+    rather than persisted as one row apiece. Returns whether this record
+    instance folded into a dispatch edge (polylogue-pbuh AC5 coverage
+    counter) -- the other six ``progress`` subtypes return ``False`` and stay
+    genuinely transient, see the classification comment.
     """
     data = item.get("data")
     if not isinstance(data, dict) or data.get("type") != "agent_progress":
-        return
+        return False
     parent_tool_use_id = _string_field(item, "parentToolUseID")
     if not parent_tool_use_id:
-        return
+        return False
     entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
     entry.count += 1
     if timestamp:
@@ -608,6 +611,7 @@ def _accumulate_delegation_progress(
             entry.first_seen = timestamp
         if entry.last_seen is None or timestamp > entry.last_seen:
             entry.last_seen = timestamp
+    return True
 
 
 def _safe_float(value: object) -> float:
@@ -1293,6 +1297,16 @@ def _parse_code_records(
     # non-empty value wins, since it is constant within one file.
     session_slug_value: str | None = None
     session_refs: list[ParsedSessionRef] = []
+    # polylogue-pbuh AC5: per-record-type seen/persisted counts for the
+    # sidecar types this parser used to drop wholesale, plus a bounded
+    # sample of record types that fell all the way through ordinary message
+    # parsing to the empty-content drop below with no text/blocks -- so a
+    # *future* silently-dropped type is visible in the archive (one
+    # ``claude_parse_coverage`` session_event) instead of requiring another
+    # rg-the-corpus audit to notice.
+    sidecar_seen_counts: dict[str, int] = {}
+    sidecar_persisted_counts: dict[str, int] = {}
+    empty_drop_counts: dict[str, int] = {}
 
     for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
@@ -1401,23 +1415,28 @@ def _parse_code_records(
         # produced empty ``tool_result``-shaped message rows before the
         # record-type check below existed; see #1617 for that forensic.
         if record_type in _NON_MESSAGE_SIDECAR_RECORD_TYPES:
+            sidecar_seen_counts[record_type] = sidecar_seen_counts.get(record_type, 0) + 1
+            persisted_this_record = False
             if notification is not None:
                 background_notifications.append((notification, record_uuid, timestamp))
             if record_type == "progress":
-                _accumulate_delegation_progress(item, timestamp, delegation_progress)
+                persisted_this_record = _accumulate_delegation_progress(item, timestamp, delegation_progress)
             else:
                 if record_type == "ai-title":
                     ai_title_text = _string_field(item, "aiTitle")
                     if ai_title_text:
                         latest_ai_title = ai_title_text
+                        persisted_this_record = True
                 elif record_type == "custom-title":
                     custom_title_text = _string_field(item, "customTitle")
                     if custom_title_text:
                         latest_custom_title = custom_title_text
+                        persisted_this_record = True
                 elif record_type == "agent-name":
                     agent_name_text = _string_field(item, "agentName")
                     if agent_name_text:
                         latest_agent_name = agent_name_text
+                        persisted_this_record = True
                 elif record_type == "pr-link":
                     # polylogue-2qx.4 / polylogue-cgfy: generalized,
                     # tracker-agnostic evidence alongside the existing
@@ -1438,6 +1457,7 @@ def _parse_code_records(
                                 else None,
                             )
                         )
+                        persisted_this_record = True
                 elif record_type == "attachment":
                     # Subtype-dispatched -- see ``_attachment_sidecar_event``
                     # and ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` above. Handled
@@ -1453,6 +1473,7 @@ def _parse_code_records(
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
                     if evidence_payload is not None:
+                        persisted_this_record = True
                         # Message linkage belongs in the typed field, not buried
                         # in the payload dict: source_message_provider_id is what
                         # the archive joins on, and every other claude_* emitter
@@ -1470,6 +1491,8 @@ def _parse_code_records(
                                 ),
                             )
                         )
+            if persisted_this_record:
+                sidecar_persisted_counts[record_type] = sidecar_persisted_counts.get(record_type, 0) + 1
             continue
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
@@ -1529,6 +1552,7 @@ def _parse_code_records(
                 and material_origin is MaterialOrigin.HUMAN_AUTHORED
             )
             if not keep_empty_human_turn:
+                empty_drop_counts[record_type] = empty_drop_counts.get(record_type, 0) + 1
                 continue
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
@@ -1713,6 +1737,27 @@ def _parse_code_records(
                 event_type="claude_session_kind",
                 timestamp=created_at,
                 payload={"session_kind": session_kind_value},
+            )
+        )
+
+    # polylogue-pbuh AC5: one bounded coverage event per session so a future
+    # silently-dropped record type is visible without another corpus audit --
+    # counts for the known sidecar types (seen vs. actually persisted as
+    # evidence, distinguishing e.g. an ``attachment`` record whose payload
+    # was empty from one that produced an event) plus a sample of record
+    # types that reached ordinary message parsing but carried no text/blocks
+    # and were dropped there (the pre-#1617 failure mode this bead's method
+    # note warns future readers not to repeat by assumption).
+    if sidecar_seen_counts or empty_drop_counts:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_parse_coverage",
+                timestamp=updated_at,
+                payload={
+                    "sidecar_seen": dict(sorted(sidecar_seen_counts.items())),
+                    "sidecar_persisted": dict(sorted(sidecar_persisted_counts.items())),
+                    "empty_dropped_by_record_type": dict(sorted(empty_drop_counts.items())),
+                },
             )
         )
 
