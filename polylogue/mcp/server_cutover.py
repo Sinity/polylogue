@@ -831,6 +831,17 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         tool-availability spans, and similar provider evidence that rides the
         timeline rather than a dialogue message.
 
+        ``projection="file-edits"`` returns captured Claude Code Edit/Write/
+        MultiEdit tool-call evidence for the session -- structured unified
+        diffs (``structured_patch``), pre-edit file content
+        (``original_file``), and old/new string pairs -- the typed "what did
+        this session change" data instead of inferring it from tool-call
+        prose.
+
+        ``projection="agent-policies"`` returns sandbox/approval/network
+        policy facts (e.g. Codex ``agent_policy`` events) recorded on the
+        session's own timeline.
+
         ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
         for a configured subscription plan (the standalone ``cost_outlook``
         MCP tool retired by the six-tool cutover, #3095/polylogue-t46.8, has
@@ -860,6 +871,20 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(
                     MCPRootPayload(root={"session_id": session_id, "total": len(events), "events": events})
+                )
+            if projection == "file-edits" and session_id is not None:
+                edits = await hooks.get_polylogue().get_file_edits(session_id)
+                if edits is None:
+                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
+                return hooks.json_payload(
+                    MCPRootPayload(root={"session_id": session_id, "total": len(edits), "file_edits": edits})
+                )
+            if projection == "agent-policies" and session_id is not None:
+                policies = await hooks.get_polylogue().get_agent_policies(session_id)
+                if policies is None:
+                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
+                return hooks.json_payload(
+                    MCPRootPayload(root={"session_id": session_id, "total": len(policies), "agent_policies": policies})
                 )
             return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
 
