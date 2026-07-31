@@ -60,6 +60,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     record_capture_gap_event,
     record_source_outage_events,
     session_has_parser_ingest_flag,
+    should_skip_stale_replace,
     stored_message_count,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -580,7 +581,10 @@ def _write_session(
     ):
         existing_updated_at_ms = existing_row["updated_at_ms"]
         existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
-        if existing_updated_at_int is not None and incoming_freshness_ms < existing_updated_at_int:
+        if should_skip_stale_replace(
+            incoming_freshness_ms=incoming_freshness_ms,
+            existing_updated_at_ms=existing_updated_at_int,
+        ):
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count

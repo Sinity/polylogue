@@ -61,6 +61,7 @@ from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LI
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
+from polylogue.storage.sqlite.archive_tiers.ingest_precedence import should_skip_stale_replace
 from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     ArchiveSessionPhase,
     ArchiveSessionTag,
@@ -417,7 +418,10 @@ def write_parsed_session_to_archive(
             (session_id,),
         ).fetchone()
         existing_updated_at_ms = int(row[0]) if row is not None and row[0] is not None else None
-        if existing_updated_at_ms is not None and incoming_freshness_ms < existing_updated_at_ms:
+        if should_skip_stale_replace(
+            incoming_freshness_ms=incoming_freshness_ms,
+            existing_updated_at_ms=existing_updated_at_ms,
+        ):
             add_timing("index.skip_stale_replace", t0)
             return session_id
     event_duplicate_message_native_ids = _duplicate_message_native_ids(messages)
