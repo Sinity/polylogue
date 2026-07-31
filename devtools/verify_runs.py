@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 import uuid
@@ -39,6 +40,8 @@ MIN_PYTEST_AVAILABLE_KB = 1024 * 1024
 PYTEST_WORKER_MEMORY_KB = 768 * 1024
 PYTEST_HOST_RESERVE_KB = 512 * 1024
 MAX_ADAPTIVE_PYTEST_WORKERS = 12
+PYTEST_BASETEMP_MIN_FREE_MB_ENV = "POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB"
+DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB = 1024
 
 
 class PytestResourceError(RuntimeError):
@@ -489,6 +492,7 @@ def checkout_hash(root: Path) -> str:
 
 DEFAULT_PYTEST_BASETEMP_ROOT = Path("/realm/tmp/polylogue-pytest")
 _CLOUD_PYTEST_BASETEMP_ROOT = Path("/tmp/polylogue-pytest")
+PYTEST_TMPFS_ROOT = Path("/dev/shm")
 
 
 def normalize_pytest_basetemp_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -567,16 +571,21 @@ def adaptive_pytest_runtime_policy(
 
 
 def apply_managed_pytest_runtime_policy(env: Mapping[str, str]) -> tuple[dict[str, str], PytestRuntimePolicy | None]:
-    """Enable bounded tmpfs by default; preserve explicit storage choices."""
-    normalized = normalize_pytest_basetemp_env(env)
-    if normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT"):
-        return normalized, None
-    if normalized.get("POLYLOGUE_PYTEST_TMPFS") == "0":
-        return normalized, None
+    """Enable bounded tmpfs by default; preserve explicit storage choices.
 
-    policy = adaptive_pytest_runtime_policy()
-    normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
-    normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
+    Also runs the basetemp disk-headroom preflight
+    (:func:`resolve_pytest_basetemp_root`) so a starved basetemp location is
+    refused here — loudly, with the candidates checked — before pytest ever
+    starts, instead of surfacing as an ``OSError: [Errno 28]`` deep inside an
+    unrelated command minutes or hours later.
+    """
+    normalized = normalize_pytest_basetemp_env(env)
+    policy: PytestRuntimePolicy | None = None
+    if not normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT") and normalized.get("POLYLOGUE_PYTEST_TMPFS") != "0":
+        policy = adaptive_pytest_runtime_policy()
+        normalized["POLYLOGUE_PYTEST_TMPFS"] = "1"
+        normalized.setdefault(PYTEST_TMPFS_MAX_MB_ENV, str(policy.tmpfs_budget_mb))
+    resolve_pytest_basetemp_root(normalized)
     return normalized, policy
 
 
@@ -591,14 +600,154 @@ def adaptive_pytest_worker_count(env: Mapping[str, str]) -> int:
     return adaptive_pytest_runtime_policy().workers
 
 
-def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Path:
-    configured = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+def _is_tmpfs_dir(path: Path) -> bool:
+    """True when ``path`` is a directory with the sticky bit set (tmpfs mounts)."""
+    try:
+        return path.is_dir() and bool(stat.S_ISVTX & path.stat().st_mode)
+    except OSError:
+        return False
+
+
+def _existing_ancestor(path: Path) -> Path:
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            return candidate
+    return Path("/")
+
+
+def _headroom_kb(path: Path) -> int | None:
+    """Free space (KiB) at the deepest existing ancestor of ``path``."""
+    usage = _fs_usage(_existing_ancestor(path))
+    return usage.get("free_kb") if usage is not None else None
+
+
+def pytest_basetemp_min_free_kb(env: Mapping[str, str]) -> int:
+    """Required free-space headroom (KiB) a basetemp candidate must clear."""
+    raw = env.get(PYTEST_BASETEMP_MIN_FREE_MB_ENV, "").strip()
+    if raw:
+        with contextlib.suppress(ValueError):
+            return max(0, int(raw)) * 1024
+    return DEFAULT_PYTEST_BASETEMP_MIN_FREE_MB * 1024
+
+
+def pytest_basetemp_known_roots(env: Mapping[str, str] | None = None) -> tuple[Path, ...]:
+    """Every root this or a past policy revision could have placed a basetemp under.
+
+    Used for stale-basetemp sweeps so leftovers survive a placement-policy
+    change instead of leaking silently on a root the current run no longer
+    chooses.
+    """
+    roots = [PYTEST_TMPFS_ROOT, DEFAULT_PYTEST_BASETEMP_ROOT, _CLOUD_PYTEST_BASETEMP_ROOT]
+    if env is not None:
+        configured = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        if configured:
+            roots.append(Path(configured))
+    return tuple(dict.fromkeys(root for root in roots if root.is_dir()))
+
+
+def _describe_candidate(path: Path, label: str, free_kb: int | None, min_free_kb: int) -> str:
+    if free_kb is None:
+        return f"{path} ({label}): free space unknown (path unreachable)"
+    return f"{path} ({label}): {free_kb / 1024:.0f} MiB free, need >= {min_free_kb / 1024:.0f} MiB"
+
+
+def _basetemp_refusal(checked: list[str], min_free_kb: int) -> PytestResourceError:
+    lines = "\n".join(f"  - {line}" for line in checked)
+    return PytestResourceError(
+        "no pytest basetemp location has enough free space "
+        f"(headroom requirement: {min_free_kb / 1024:.0f} MiB, set via "
+        f"{PYTEST_BASETEMP_MIN_FREE_MB_ENV} to override):\n"
+        f"{lines}\n"
+        "Free space by removing stale runs, e.g.:\n"
+        "  rm -rf /dev/shm/pytest-polylogue-* /realm/tmp/polylogue-pytest/pytest-polylogue-* "
+        "/tmp/polylogue-pytest/pytest-polylogue-*\n"
+        "(never remove *-seeded-* directories while another run may still be building or using them)"
+    )
+
+
+def resolve_pytest_basetemp_root(env: Mapping[str, str]) -> tuple[Path, str]:
+    """Pick the ONE basetemp root pytest will use this run.
+
+    Single resolution order, shared by ``tests/conftest.py`` (direct pytest
+    invocations) and the ``devtools test``/``devtools verify`` preflight
+    (subprocess invocations), so there is exactly one placement policy instead
+    of two that can silently disagree:
+
+    1. ``POLYLOGUE_PYTEST_BASETEMP_ROOT``, if explicitly set. A known cloud
+       sandbox default leaking onto a workstation with ``/realm`` mounted is
+       stripped first (:func:`normalize_pytest_basetemp_env`); anything left
+       is a genuine override and is still headroom-checked, never silently
+       downgraded.
+    2. ``/dev/shm`` (tmpfs) when ``POLYLOGUE_PYTEST_TMPFS`` is not disabled
+       and it has enough free space — fast, and the deliberate default.
+    3. ``/realm/tmp/polylogue-pytest`` (NVMe scratch) when ``/realm/tmp`` is
+       mounted and has enough free space.
+    4. ``/tmp/polylogue-pytest`` — only reachable when ``/realm/tmp`` is not
+       mounted at all (a real cloud sandbox), never as a low-space fallback
+       on a workstation where a small ``/tmp`` tmpfs is the whole problem.
+
+    Raises :class:`PytestResourceError` naming every candidate checked, its
+    free space, and the requirement, instead of letting an unrelated command
+    fail three layers away with a bare ``OSError: [Errno 28]``.
+    """
+    min_free_kb = pytest_basetemp_min_free_kb(env)
+    normalized = normalize_pytest_basetemp_env(env)
+    checked: list[str] = []
+
+    configured = normalized.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
     if configured:
-        scratch_root = Path(configured)
-    elif env.get("POLYLOGUE_PYTEST_TMPFS") == "1" and Path("/dev/shm").is_dir():
-        scratch_root = Path("/dev/shm")
+        root = Path(configured)
+        free_kb = _headroom_kb(root)
+        if free_kb is not None and free_kb >= min_free_kb:
+            return root, "configured"
+        checked.append(_describe_candidate(root, "configured", free_kb, min_free_kb))
+        raise _basetemp_refusal(checked, min_free_kb)
+
+    if normalized.get("POLYLOGUE_PYTEST_TMPFS", "1") != "0":
+        shm = PYTEST_TMPFS_ROOT
+        if _is_tmpfs_dir(shm):
+            free_kb = _headroom_kb(shm)
+            if free_kb is not None and free_kb >= min_free_kb:
+                return shm, "tmpfs opt-in"
+            checked.append(_describe_candidate(shm, "tmpfs opt-in", free_kb, min_free_kb))
+
+    if DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+        free_kb = _headroom_kb(DEFAULT_PYTEST_BASETEMP_ROOT)
+        if free_kb is not None and free_kb >= min_free_kb:
+            return DEFAULT_PYTEST_BASETEMP_ROOT, "scratch"
+        checked.append(_describe_candidate(DEFAULT_PYTEST_BASETEMP_ROOT, "scratch", free_kb, min_free_kb))
     else:
-        scratch_root = DEFAULT_PYTEST_BASETEMP_ROOT
+        # /realm is not mounted at all: a genuine cloud sandbox, where the
+        # small-tmpfs-/tmp problem this policy exists to avoid does not apply.
+        free_kb = _headroom_kb(_CLOUD_PYTEST_BASETEMP_ROOT)
+        if free_kb is not None and free_kb >= min_free_kb:
+            return _CLOUD_PYTEST_BASETEMP_ROOT, "disk fallback"
+        checked.append(_describe_candidate(_CLOUD_PYTEST_BASETEMP_ROOT, "disk fallback", free_kb, min_free_kb))
+
+    raise _basetemp_refusal(checked, min_free_kb)
+
+
+def pytest_basetemp_path(*, root: Path, run_id: str, env: dict[str, str]) -> Path:
+    """Path this run's basetemp lives (or lived) at, for monitoring/cleanup.
+
+    Called both before a pytest subprocess starts (resource sampling) and
+    after it exits (own-basetemp cleanup) — by that point the space preflight
+    in :func:`apply_managed_pytest_runtime_policy` already ran, so a headroom
+    refusal here would just be noise for a monitoring/cleanup path. Fall back
+    to the top placement candidate, ignoring headroom, rather than raising.
+    """
+    try:
+        scratch_root, _label = resolve_pytest_basetemp_root(env)
+    except PytestResourceError:
+        configured = env.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
+        if configured:
+            scratch_root = Path(configured)
+        elif env.get("POLYLOGUE_PYTEST_TMPFS", "1") != "0" and _is_tmpfs_dir(PYTEST_TMPFS_ROOT):
+            scratch_root = PYTEST_TMPFS_ROOT
+        elif DEFAULT_PYTEST_BASETEMP_ROOT.parent.is_dir():
+            scratch_root = DEFAULT_PYTEST_BASETEMP_ROOT
+        else:
+            scratch_root = _CLOUD_PYTEST_BASETEMP_ROOT
     return scratch_root / f"pytest-polylogue-{checkout_hash(root)}-{run_id}"
 
 

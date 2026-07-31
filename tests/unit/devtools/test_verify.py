@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from devtools import verify_runs
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -53,8 +54,10 @@ from devtools.verify_runs import (
     apply_managed_pytest_runtime_policy,
     classify_pytest_result,
     cleanup_managed_pytest_basetemp,
+    pytest_basetemp_known_roots,
     pytest_basetemp_path,
     pytest_tmpfs_budget_kb,
+    resolve_pytest_basetemp_root,
 )
 
 
@@ -883,6 +886,178 @@ def test_managed_pytest_policy_preserves_explicit_custom_root(tmp_path: Path) ->
 
     assert env["POLYLOGUE_PYTEST_BASETEMP_ROOT"] == str(tmp_path)
     assert policy is None
+
+
+# ── basetemp placement: one resolution order, disk-headroom preflight ──────
+#
+# Root cause of the 2026-07-30 incident: `.claude/settings.json` sets
+# POLYLOGUE_PYTEST_BASETEMP_ROOT=/tmp/polylogue-pytest for cloud sandboxes,
+# but that env leaks into workstation agent shells too, where /tmp is a
+# small 6 GiB tmpfs shared by ~8 concurrent agent lanes. Nothing checked free
+# space before committing to a basetemp location, so it silently filled and
+# an unrelated command (the docs renderer) crashed with a bare ENOSPC.
+# `resolve_pytest_basetemp_root` is the single placement policy used by both
+# `tests/conftest.py` (direct pytest) and the devtools supervisor
+# (`apply_managed_pytest_runtime_policy`, tested above) so there is exactly
+# one order instead of two that can silently disagree.
+
+
+def _patch_basetemp_roots(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, realm_mounted: bool) -> tuple[Path, Path]:
+    """Point every placement-policy constant at real, tmp_path-backed dirs.
+
+    Repoints ``PYTEST_TMPFS_ROOT``/``DEFAULT_PYTEST_BASETEMP_ROOT``/
+    ``_CLOUD_PYTEST_BASETEMP_ROOT`` — the full candidate set — so no test in
+    this module can accidentally probe or sweep a real ``/dev/shm``,
+    ``/realm/tmp``, or ``/tmp`` path on the host running the suite (that host
+    may have other agents' live basetemps on it).
+    """
+    shm = tmp_path / "dev-shm"
+    shm.mkdir()
+    scratch_parent = tmp_path / "realm-tmp"
+    scratch = scratch_parent / "polylogue-pytest"
+    cloud_fallback = tmp_path / "tmp" / "polylogue-pytest"
+    cloud_fallback.parent.mkdir(parents=True)
+    if realm_mounted:
+        scratch_parent.mkdir()
+    monkeypatch.setattr(verify_runs, "PYTEST_TMPFS_ROOT", shm)
+    monkeypatch.setattr(verify_runs, "DEFAULT_PYTEST_BASETEMP_ROOT", scratch)
+    monkeypatch.setattr(verify_runs, "_CLOUD_PYTEST_BASETEMP_ROOT", cloud_fallback)
+    monkeypatch.setattr(verify_runs, "_is_tmpfs_dir", lambda path: path == shm)
+    return shm, scratch
+
+
+def test_resolve_basetemp_prefers_tmpfs_when_it_has_headroom(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    monkeypatch.setattr(
+        verify_runs, "_fs_usage", lambda path: {"used_kb": 0, "free_kb": 32 * 1024 * 1024} if path == shm else None
+    )
+
+    root, label = resolve_pytest_basetemp_root({})
+
+    assert root == shm
+    assert label == "tmpfs opt-in"
+
+
+def test_resolve_basetemp_falls_back_to_nvme_scratch_when_tmpfs_is_low(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+
+    def fake_fs_usage(path: Path) -> dict[str, int] | None:
+        if path == shm:
+            return {"used_kb": 0, "free_kb": 10 * 1024}  # 10 MiB — under the 1 GiB requirement
+        if path == scratch.parent:
+            return {"used_kb": 0, "free_kb": 200 * 1024 * 1024}
+        return None
+
+    monkeypatch.setattr(verify_runs, "_fs_usage", fake_fs_usage)
+
+    root, label = resolve_pytest_basetemp_root({})
+
+    assert root == scratch
+    assert label == "scratch"
+
+
+def test_resolve_basetemp_refuses_loudly_when_every_candidate_is_full(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The exact scenario from the incident: every candidate is starved.
+
+    This demonstrates the low-space path deliberately, by mocking the
+    free-space probe rather than actually filling a filesystem: every
+    candidate reports far less free space than the headroom requirement, and
+    the run must refuse up front with a message naming each path, its free
+    space, and the requirement — not crash three layers away in an unrelated
+    command.
+    """
+    shm, scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda path: {"used_kb": 0, "free_kb": 5 * 1024})  # 5 MiB anywhere
+
+    with pytest.raises(PytestResourceError) as excinfo:
+        resolve_pytest_basetemp_root({})
+
+    message = str(excinfo.value)
+    assert "no pytest basetemp location has enough free space" in message
+    assert str(shm) in message
+    assert str(scratch) in message
+    assert "5 MiB free" in message
+    assert "need >= 1024 MiB" in message
+    assert "rm -rf" in message
+
+
+def test_resolve_basetemp_headroom_requirement_is_overridable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda path: {"used_kb": 0, "free_kb": 200 * 1024})  # 200 MiB
+
+    root, label = resolve_pytest_basetemp_root({"POLYLOGUE_PYTEST_BASETEMP_MIN_FREE_MB": "64"})
+
+    assert root == shm
+    assert label == "tmpfs opt-in"
+
+
+def test_resolve_basetemp_strips_leaked_cloud_default_on_workstation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The literal incident trigger: the cloud-sandbox env leaking onto a workstation."""
+    shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    monkeypatch.setattr(
+        verify_runs, "_fs_usage", lambda path: {"used_kb": 0, "free_kb": 32 * 1024 * 1024} if path == shm else None
+    )
+
+    # The literal env value `.claude/settings.json` sets for cloud sandboxes;
+    # normalize_pytest_basetemp_env only strips it when it matches the
+    # (here, patched) known cloud-sentinel constant.
+    root, label = resolve_pytest_basetemp_root(
+        {"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(verify_runs._CLOUD_PYTEST_BASETEMP_ROOT)}
+    )
+
+    assert root == shm
+    assert label == "tmpfs opt-in"
+
+
+def test_resolve_basetemp_honors_a_genuine_explicit_override_but_still_checks_space(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=True)
+    monkeypatch.setattr(verify_runs, "_fs_usage", lambda path: {"used_kb": 0, "free_kb": 5 * 1024})
+    custom = tmp_path / "operator-chosen-root"
+
+    with pytest.raises(PytestResourceError, match="configured"):
+        resolve_pytest_basetemp_root({"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(custom)})
+
+
+def test_resolve_basetemp_uses_disk_fallback_only_when_realm_is_unmounted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """/tmp is a legitimate placement only when /realm/tmp genuinely isn't mounted (cloud sandbox)."""
+    _shm, _scratch = _patch_basetemp_roots(monkeypatch, tmp_path, realm_mounted=False)
+    monkeypatch.setattr(verify_runs, "_is_tmpfs_dir", lambda path: False)
+    monkeypatch.setattr(
+        verify_runs,
+        "_fs_usage",
+        lambda path: (
+            {"used_kb": 0, "free_kb": 32 * 1024 * 1024}
+            if path == verify_runs._CLOUD_PYTEST_BASETEMP_ROOT.parent
+            else None
+        ),
+    )
+
+    root, label = resolve_pytest_basetemp_root({})
+
+    assert root == verify_runs._CLOUD_PYTEST_BASETEMP_ROOT
+    assert label == "disk fallback"
+
+
+def test_pytest_basetemp_known_roots_only_lists_existing_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    monkeypatch.setattr(verify_runs, "DEFAULT_PYTEST_BASETEMP_ROOT", tmp_path / "does-not-exist")
+    monkeypatch.setattr(verify_runs, "_CLOUD_PYTEST_BASETEMP_ROOT", tmp_path / "also-missing")
+
+    roots = pytest_basetemp_known_roots({"POLYLOGUE_PYTEST_BASETEMP_ROOT": str(configured)})
+
+    assert configured in roots
+    assert tmp_path / "does-not-exist" not in roots
 
 
 def test_cleanup_managed_pytest_basetemp_removes_run_root(tmp_path: Path) -> None:

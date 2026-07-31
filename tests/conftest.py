@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
-import stat as _stat
 import subprocess
 import sys
 import threading
@@ -29,6 +29,8 @@ from hypothesis.database import DirectoryBasedExampleDatabase
 # must not be the default: interrupted full/xdist runs can otherwise leave
 # multi-GiB RAM-backed basetemps resident until reboot.
 # ---------------------------------------------------------------------------
+from devtools import verify_runs
+from devtools.verify_runs import PytestResourceError, resolve_pytest_basetemp_root
 from polylogue.archive.models import Session
 from polylogue.scenarios import CorpusSpec, build_default_corpus_specs
 from polylogue.storage.runtime import RawSessionRecord
@@ -79,8 +81,17 @@ def pytest_configure(config: pytest.Config) -> None:
         if run_id is None:
             run_id = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
             os.environ["POLYLOGUE_PYTEST_RUN_ID"] = run_id
-        root, label = _managed_pytest_temp_root()
-        config.option.basetemp = str(root / f"pytest-polylogue-{checkout}-{run_id}")
+        try:
+            root, label = _managed_pytest_temp_root()
+        except PytestResourceError as exc:
+            # Fail loudly and early: refuse before pytest starts collecting,
+            # rather than crashing an unrelated command later with a bare
+            # OSError once the chosen basetemp fills up.
+            raise pytest.UsageError(f"pytest: {exc}") from exc
+        basetemp = root / f"pytest-polylogue-{checkout}-{run_id}"
+        config.option.basetemp = str(basetemp)
+        if not hasattr(config, "workerinput"):
+            _mark_basetemp_owner(basetemp)
         sys.stderr.write(f"pytest: basetemp → {config.option.basetemp} ({label})\n")
 
 
@@ -88,40 +99,45 @@ def pytest_configure(config: pytest.Config) -> None:
 # sessionfinish (SIGKILL, OOM) leaks its basetemp, so the controller reclaims
 # clearly-dead orphans on startup. Seeded corpora (``pytest-polylogue-seeded-*``)
 # are excluded because they are shared, reusable across runs, and bounded to
-# one per checkout.
+# one per checkout. Placement policy (which root, and whether it has enough
+# free space) is a single shared source of truth in
+# ``devtools.verify_runs.resolve_pytest_basetemp_root`` — this module only
+# adds the mkdir/no-CoW-marking side effects and the stale-directory sweep.
 _STALE_BASETEMP_MAX_AGE_S = 30 * 60
-_DEFAULT_SCRATCH_ROOT = Path("/realm/tmp/polylogue-pytest")
-
-
-def _is_tmpfs(path: Path) -> bool:
-    try:
-        return path.is_dir() and bool(_stat.S_ISVTX & path.stat().st_mode)
-    except OSError:
-        return False
+_STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S = 6 * 60 * 60
+_OWNER_PID_MARKER = ".owner-pid"
 
 
 def _managed_pytest_temp_root() -> tuple[Path, str]:
     """Return the temp root for managed pytest basetemps."""
+    root, label = resolve_pytest_basetemp_root(os.environ)
+    root.mkdir(parents=True, exist_ok=True)
+    if label in ("scratch", "disk fallback"):
+        # No-CoW marking is only meaningful (and only ever was applied) for
+        # the disk-backed NVMe/cloud-fallback candidates. It shells out to
+        # findmnt/lsattr/chattr with real subprocess-spawn latency, so it
+        # must stay off the tmpfs and explicit-override paths — both are
+        # startup-latency-sensitive (every managed pytest invocation pays
+        # this once) and tmpfs never benefits from a btrfs-specific flag.
+        _mark_btrfs_nocow(root)
+    return root, label
 
-    configured = os.environ.get("POLYLOGUE_PYTEST_BASETEMP_ROOT")
-    if configured:
-        root = Path(configured)
-        root.mkdir(parents=True, exist_ok=True)
-        return root, "configured"
 
-    shm = Path("/dev/shm")
-    if os.environ.get("POLYLOGUE_PYTEST_TMPFS") == "1" and _is_tmpfs(shm):
-        return shm, "tmpfs opt-in"
+def _mark_basetemp_owner(basetemp: Path) -> None:
+    """Record the owning process pid so a stale-directory sweep never races a live run."""
+    with contextlib.suppress(OSError):
+        basetemp.mkdir(parents=True, exist_ok=True)
+        (basetemp / _OWNER_PID_MARKER).write_text(str(os.getpid()), encoding="utf-8")
 
+
+def _basetemp_owner_alive(entry: Path) -> bool | None:
+    """True/False when the owner pid marker resolves a live/dead process, else None (unknown)."""
+    marker = entry / _OWNER_PID_MARKER
     try:
-        _DEFAULT_SCRATCH_ROOT.mkdir(parents=True, exist_ok=True)
-        _mark_btrfs_nocow(_DEFAULT_SCRATCH_ROOT)
-    except OSError:
-        fallback = Path("/tmp/polylogue-pytest")
-        fallback.mkdir(parents=True, exist_ok=True)
-        _mark_btrfs_nocow(fallback)
-        return fallback, "disk fallback"
-    return _DEFAULT_SCRATCH_ROOT, "scratch"
+        pid = int(marker.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+    return Path(f"/proc/{pid}").exists()
 
 
 def _mark_btrfs_nocow(path: Path) -> None:
@@ -153,25 +169,49 @@ def _filesystem_type(path: Path) -> str | None:
 
 
 def _polylogue_basetemp_roots() -> tuple[Path, ...]:
-    roots = [_managed_pytest_temp_root()[0]]
-    shm = Path("/dev/shm")
-    if _is_tmpfs(shm):
-        roots.append(shm)
-    return tuple(dict.fromkeys(roots))
+    """Every root a current or past placement policy could have used.
+
+    Deliberately broader than "the root this run picked" so a placement
+    policy change (e.g. this fix) still reclaims leftovers on a root the
+    current run no longer chooses.
+    """
+    return verify_runs.pytest_basetemp_known_roots(os.environ)
 
 
 def _sweep_stale_polylogue_basetemps(
     *, max_age_s: int = _STALE_BASETEMP_MAX_AGE_S, roots: tuple[Path, ...] | None = None
 ) -> None:
-    """Best-effort reclaim of per-run basetemps left by crashed runs."""
+    """Best-effort reclaim of per-run basetemps left by crashed runs.
+
+    Safety invariant: never delete a basetemp whose owning process is still
+    alive, regardless of age. Age alone is not a liveness proxy — a
+    long-running scale/lab test can legitimately outlive the stale-age
+    threshold. Each managed basetemp carries a ``.owner-pid`` marker
+    (written in ``pytest_configure``); a confirmed-dead owner uses the normal
+    threshold, an unconfirmable owner (no marker — e.g. a directory from
+    before this mechanism existed, or a startup race) uses a much longer
+    threshold before being reclaimed at all. Seeded corpora
+    (``pytest-polylogue-*-seeded-*``) are never touched here — they are
+    shared, reusable, and built once behind their own ``.build.done`` guard.
+    """
 
     cutoff = time.time() - max_age_s
+    unknown_owner_cutoff = time.time() - _STALE_BASETEMP_UNKNOWN_OWNER_MAX_AGE_S
     for root in roots or _polylogue_basetemp_roots():
         for entry in root.glob("pytest-polylogue-*"):
             if "-seeded-" in entry.name:
                 continue
             try:
-                if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                if not entry.is_dir():
+                    continue
+                owner_alive = _basetemp_owner_alive(entry)
+                if owner_alive:
+                    continue
+                mtime = entry.stat().st_mtime
+                if owner_alive is False:
+                    if mtime < cutoff:
+                        shutil.rmtree(entry, ignore_errors=True)
+                elif mtime < unknown_owner_cutoff:
                     shutil.rmtree(entry, ignore_errors=True)
             except OSError:
                 pass
