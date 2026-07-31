@@ -186,6 +186,86 @@ def test_parse_one_refuses_declared_fact_artifacts(tmp_path: Path, source_path_s
     assert sessions == []
 
 
+def _relationship_index_jsonl_bytes(count: int = 8) -> bytes:
+    """Bytes shaped like the real sinex analysis artifact from polylogue-9ykn
+    (gvgi): a graph-edge index sitting under a watched Claude Code directory,
+    with no session/message envelope at all -- just conversation/parent/
+    child/type/timestamp keys, whose ``type`` happens to be a bare
+    "assistant"/"user" role word.
+    """
+    lines = [
+        json.dumps(
+            {
+                "conversation": f"conv-{index}",
+                "parent": f"parent-{index}",
+                "child": f"child-{index}",
+                "type": "assistant" if index % 2 else "user",
+                "timestamp": "2026-05-01T00:00:00.000Z",
+            }
+        )
+        for index in range(count)
+    ]
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_parse_one_refuses_non_conversational_content_with_no_path_rule(tmp_path: Path) -> None:
+    """Regression for polylogue-9ykn: a record with no OriginSpec path rule
+    at all (so ``_is_declared_non_session_artifact``'s path check alone would
+    admit it) must still be refused when its CONTENT carries no positive
+    conversation evidence.
+
+    Before this fix, this replay chokepoint (``polylogue ops reset --index``
+    / ``devtools`` rebuild-index) only consulted ``artifact_rule_for_path`` --
+    a path-pattern allowlist -- so a file with no matching path pattern, like
+    a third-party analysis index sitting under
+    ``~/.claude/projects/<proj>/analysis/index/``, sailed through unchanged
+    on every rebuild even after the live daemon ingest path (which also
+    consults the richer content classifier, ``classify_artifact``) learned to
+    refuse it. The two "single chokepoints" disagreeing is exactly the
+    location-as-identity defect recurring at a second layer.
+    """
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "analysis" / "index" / "conversation_relationships.jsonl"
+    payload = _relationship_index_jsonl_bytes()
+
+    sessions = _parse_one(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert sessions == []
+
+
+def test_parse_stream_refuses_non_conversational_content_with_no_path_rule(tmp_path: Path) -> None:
+    """Streaming-path sibling of the test above (large multi-GiB JSONL never
+    materializes fully; the content-classification sample is bounded to the
+    first 64 records instead)."""
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "analysis" / "index" / "conversation_relationships.jsonl"
+    payload = BytesIO(_relationship_index_jsonl_bytes())
+
+    sessions = revision_backfill._parse_stream(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert sessions == []
+
+
+def test_parse_one_still_replays_real_claude_code_sessions_with_no_path_rule(tmp_path: Path) -> None:
+    """Guard against the regression-direction failure mode: the content gate
+    added for polylogue-9ykn must not start refusing genuine Claude Code
+    session records that (like most session JSONL files) carry no matching
+    OriginSpec path rule."""
+    source_path = tmp_path / ".claude" / "projects" / "proj" / "analysis" / "index" / "sess-real.jsonl"
+    record = {
+        "uuid": "u1",
+        "parentUuid": None,
+        "sessionId": "sess-real",
+        "type": "user",
+        "message": {"role": "user", "content": "hello"},
+        "timestamp": "2026-05-01T00:00:00.000Z",
+    }
+    payload = (json.dumps(record) + "\n").encode("utf-8")
+
+    sessions = _parse_one(Provider.CLAUDE_CODE, payload, str(source_path))
+
+    assert len(sessions) == 1
+    assert sessions[0].messages
+
+
 def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> None:
     """End-to-end proof that the historical-repair entry point (which always
     has a real on-disk blob path, unlike the direct-bytes test above) also

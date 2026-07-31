@@ -963,7 +963,19 @@ async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict
     return readiness
 
 
-def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = "") -> None:
+# A caller-visible hint must never presume the reader knows whether a daemon
+# is currently running (polylogue-roax): "Run polylogued run" read as a
+# broken contract when the operator's daemon was already up and convergence
+# just hadn't caught the drift yet. State the actual remedy (convergence
+# self-heals while a daemon is running) and the fallback (start one) instead
+# of a command that may already be satisfied.
+MESSAGE_SEARCH_REPAIR_HINT = (
+    "This repairs automatically while `polylogued run` is active (daemon convergence "
+    "repairs FTS drift within a few convergence cycles); if no daemon is running, start one."
+)
+
+
+def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = MESSAGE_SEARCH_REPAIR_HINT) -> None:
     """Raise DatabaseError unless the FTS index is exactly ready."""
     from polylogue.core.errors import DatabaseError
 

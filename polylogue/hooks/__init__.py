@@ -350,6 +350,76 @@ def _managed_handler(harness: HookHarness, event: str) -> dict[str, object]:
     }
 
 
+def _installed_hooks_table(harness: HookHarness) -> dict[str, object]:
+    """Return the raw wired-hooks table for a harness, JSON or TOML alike."""
+    if harness == "codex":
+        path = _codex_config_path()
+        if not path.exists():
+            return {}
+        try:
+            document = tomllib.loads(path.read_bytes().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            return {}
+        hooks_value = document.get("hooks")
+        return cast(dict[str, object], hooks_value) if isinstance(hooks_value, dict) else {}
+    target = settings_path(harness)
+    document, _ = _read_json_document(target)
+    return _hooks_table(document, create=False)
+
+
+def installed_hook_sidecar_dirs(harness: HookHarness) -> set[Path]:
+    """Every baked ``--sidecar-dir PATH`` found across this harness's wired hook commands."""
+    found: set[Path] = set()
+    for groups in _installed_hooks_table(harness).values():
+        if not isinstance(groups, list):
+            continue
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            handlers = group.get("hooks")
+            if not isinstance(handlers, list):
+                continue
+            for handler in handlers:
+                if not isinstance(handler, dict):
+                    continue
+                command = handler.get("command")
+                if not isinstance(command, str) or "--sidecar-dir" not in command:
+                    continue
+                try:
+                    parts = shlex.split(command)
+                except ValueError:
+                    continue
+                if "--sidecar-dir" not in parts:
+                    continue
+                index = parts.index("--sidecar-dir")
+                if index + 1 < len(parts):
+                    found.add(Path(parts[index + 1]).expanduser())
+    return found
+
+
+def hook_install_sidecar_drift(harness: HookHarness) -> tuple[Path, ...]:
+    """Baked ``--sidecar-dir`` paths that no longer match the live-resolved spool root.
+
+    ``_managed_handler`` deliberately bakes the concrete resolved spool path
+    into the rendered command at install time (polylogue-o7hx): a hook
+    subprocess's environment cannot be trusted to carry
+    ``POLYLOGUE_ARCHIVE_ROOT``. The tradeoff is that if the archive root
+    moves *after* install (e.g. ``polylogue.toml``'s ``[archive].root``
+    changes, or a migration relocates the default), the baked path silently
+    drifts stale until ``polylogue hooks install`` is re-run -- nothing
+    forces that re-run to happen. This is the actual root cause behind the
+    2026-07-31 hook-spool incident: a hook command kept writing to a stale
+    sidecar dir for roughly 17 days while the daemon watched a different,
+    empty one, accumulating 108K+ un-drained files before anyone happened to
+    notice a directory listing. Surfacing the mismatch here (wired into the
+    daemon heartbeat) makes the drift loud instead of silent.
+    """
+    from polylogue.paths import hooks_sidecar_dir
+
+    expected = hooks_sidecar_dir()
+    return tuple(sorted({found for found in installed_hook_sidecar_dirs(harness) if found != expected}))
+
+
 def _add_event_handler(hooks: dict[str, object], harness: HookHarness, event: str) -> None:
     groups = hooks.setdefault(event, [])
     if not isinstance(groups, list):
