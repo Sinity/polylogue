@@ -491,6 +491,32 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - Committing from a linked worktree: a hook aborts if you `cd`'d into the main
   checkout from inside a worktree (worktree-escape detector, #1211); set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree flows.
+- **Worktree running against the wrong checkout's `polylogue` (2026-07-31,
+  guarded)**: a linked git worktree without its own `.venv` reuses the main
+  checkout's shared venv on PATH. That venv's editable install (a `.pth` in
+  site-packages) points at the main checkout, so a plain `import polylogue`
+  with nothing else on `sys.path` silently resolves there instead of the
+  worktree's own source — no ImportError, just wrong code answering every
+  question while looking like a genuine result (corrupted four lanes in one
+  day: a perf "after" measurement, false CLI-timeout readings, an "impossible"
+  schema-version contradiction, a benchmark needing manual `sys.path`
+  pinning). `devtools/checkout_guard.py` closes this for every entry point
+  that can plausibly hit it: `devtools/__main__.py` → `click_dispatch.main()`
+  refuses (exit 125) before dispatching any command; `devtools verify` /
+  `devtools test` refuse before running any step and print the resolved
+  `polylogue` package path as part of the run receipt (`polylogue_import_path`
+  in `.cache/verify/current-run.json`); `tests/conftest.py` refuses via
+  `pytest.UsageError` in `pytest_configure`, so even a bare `pytest`/
+  `python -m pytest` invocation that skips `devtools` entirely still catches
+  it. **Residual gap**: a standalone ad hoc script
+  (`python3 /realm/tmp/scratch.py`) that never imports `devtools` or `pytest`
+  has no hook to run the check from — the flake devShell already gives every
+  checkout its own `.venv` via `direnv allow` (`uv venv` + `uv sync` keyed off
+  `$PWD`, so it's correct-by-construction per worktree), but that costs a
+  multi-minute sync + a few hundred MB per worktree, which is why short-lived
+  agent worktrees reuse the shared venv instead. A script that wants the
+  guarantee imports `devtools.checkout_guard.assert_polylogue_matches_checkout`
+  itself in one line.
 - `AGENTS.md` is a **symlink to this file** (`CLAUDE.md`) — edit CLAUDE.md, never
   AGENTS.md; there is no render step.
 

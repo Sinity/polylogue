@@ -11,16 +11,20 @@ from __future__ import annotations
 
 import json as json_mod
 import sys
+from pathlib import Path
 from typing import Any
 
 import click
 
+from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.command_catalog import (
     COMMAND_SPECS,
     CommandSpec,
     grouped_command_specs,
     verification_lab_command_specs,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 
 GROUP_HELP: dict[str, str] = {
     "bench": "Run benchmark, mutation, SLO, and resource-budget commands.",
@@ -278,6 +282,12 @@ def main(argv: list[str] | None = None) -> int:
     import time
 
     from devtools import task_history as task_history_mod
+
+    try:
+        assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
+    except CheckoutImportMismatchError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 125
 
     args_list = list(argv or [])
     if not args_list or args_list[0].startswith("-"):
