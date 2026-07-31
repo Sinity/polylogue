@@ -25,8 +25,10 @@ from polylogue.archive.query.fields import SqlPushdownParams
 from polylogue.archive.query.plan import SessionQueryPlan
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from pathlib import Path
 
+    from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
     from polylogue.core.protocols import VectorProvider
@@ -44,6 +46,7 @@ class SessionFilter(SessionFilterBuilderMixin):
         query_plan: SessionQueryPlan | None = None,
         with_units: tuple[str, ...] = (),
         with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+        with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     ) -> None:
         self._archive_root = archive_root
         self._config = config
@@ -52,6 +55,9 @@ class SessionFilter(SessionFilterBuilderMixin):
         #: because it is a post-selection projection, not a filter/sort/limit.
         self._with_units = with_units
         self._with_unit_fields = with_unit_fields or {}
+        #: Bracket predicate/window per unit (polylogue-fnm.2), carried the
+        #: same way as ``with_unit_fields``.
+        self._with_unit_windows = with_unit_windows or {}
 
     @classmethod
     def from_query_plan(
@@ -62,6 +68,7 @@ class SessionFilter(SessionFilterBuilderMixin):
         config: Config | None = None,
         with_units: tuple[str, ...] = (),
         with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+        with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     ) -> SessionFilter:
         return cls(
             archive_root=archive_root,
@@ -69,6 +76,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             query_plan=query_plan,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
+            with_unit_windows=with_unit_windows,
         )
 
     @property
@@ -116,6 +124,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             config=self._config,
             with_units=self._with_units,
             with_unit_fields=self._with_unit_fields,
+            with_unit_windows=self._with_unit_windows,
         )
 
     async def list_summaries(self) -> builtins.list[SessionSummary]:
@@ -125,6 +134,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             config=self._config,
             with_units=self._with_units,
             with_unit_fields=self._with_unit_fields,
+            with_unit_windows=self._with_unit_windows,
         )
 
     async def list_all_summaries(self) -> builtins.list[SessionSummary]:
@@ -141,6 +151,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             default_limit=1_000_000,
             with_units=self._with_units,
             with_unit_fields=self._with_unit_fields,
+            with_unit_windows=self._with_unit_windows,
         )
 
     async def list_all(self) -> builtins.list[Session]:
@@ -152,6 +163,7 @@ class SessionFilter(SessionFilterBuilderMixin):
             default_limit=1_000_000,
             with_units=self._with_units,
             with_unit_fields=self._with_unit_fields,
+            with_unit_windows=self._with_unit_windows,
         )
 
     async def first(self) -> Session | None:

@@ -474,6 +474,21 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "correlates Hermes lifecycle events with delivery receipts from user.db",
     ),
     "get_context_delivery": ("archive_routed", "user", "reads a durable context-delivery receipt from user.db"),
+    "list_context_deliveries": (
+        "archive_routed",
+        "user",
+        "lists bounded durable context-delivery receipts from user.db",
+    ),
+    "record_context_delivery": (
+        "archive_routed",
+        "user",
+        "writes a durable context-delivery receipt for an already-compiled image to user.db",
+    ),
+    "compile_and_record_context": (
+        "archive_routed",
+        "user",
+        "compiles a context image and records its delivery receipt through user.db",
+    ),
     "get_hook_event_summary_for_session": (
         "archive_routed",
         "source",

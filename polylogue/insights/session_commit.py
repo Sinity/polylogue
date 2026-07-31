@@ -497,7 +497,15 @@ def detect_session_commits(
             )
             continue
 
-        foreign_trailer = bool(trailer_tokens) and not (trailer_tokens & own_trailer_tokens)
+        # A disagreement requires something to disagree *with*: when this
+        # session has no bridge/trailer tokens of its own (own_trailer_tokens
+        # empty), there is no typed identity to compare a commit's trailer
+        # against, so a trailer naming *some* other session is not evidence
+        # of misattribution -- it is simply the expected case for a commit
+        # from any other session (polylogue-2vor finding 3).
+        foreign_trailer = (
+            bool(trailer_tokens) and bool(own_trailer_tokens) and not (trailer_tokens & own_trailer_tokens)
+        )
 
         # Check for explicit ref first (highest confidence)
         if sha.lower() in commit_sha_refs or sha[:8].lower() in commit_sha_refs:
@@ -716,6 +724,24 @@ def build_correlation_result(
     )
 
 
+def _refs_match(a: GitHubRef, b: GitHubRef) -> bool:
+    """True when two refs plausibly identify the same PR/issue.
+
+    Bare number equality is not sufficient once a ref carries repo
+    identity: ``acme/product#42`` and ``other/repo#42`` are different
+    objects that happen to share a number (polylogue-2vor finding 2).
+    Compare the full ``(owner, repo, number)`` identity whenever *both*
+    refs are repo-qualified; fall back to number-only equality when either
+    side lacks repo identity (e.g. a bare ``#42`` regex mention), since the
+    number is the only signal available there.
+    """
+    if a.number != b.number:
+        return False
+    if a.owner and a.repo and b.owner and b.repo:
+        return a.owner.lower() == b.owner.lower() and a.repo.lower() == b.repo.lower()
+    return True
+
+
 def _resolve_refs(
     *,
     kind: str,
@@ -734,21 +760,21 @@ def _resolve_refs(
         return list(heuristic_refs), None
 
     resolved = [replace(ref, source=SOURCE_TYPED) for ref in typed_refs]
-    typed_numbers = {ref.number for ref in resolved}
-    heuristic_numbers = {ref.number for ref in heuristic_refs}
-    extra = heuristic_numbers - typed_numbers
+    extra = [h for h in heuristic_refs if not any(_refs_match(h, t) for t in resolved)]
     if not extra:
         return resolved, None
+    typed_numbers = {ref.number for ref in resolved}
+    extra_numbers = {ref.number for ref in extra}
     return (
         resolved,
         CorrelationDisagreement(
             kind=kind,
             session_id=session_id,
             typed_values=tuple(sorted(str(n) for n in typed_numbers)),
-            heuristic_values=tuple(sorted(str(n) for n in extra)),
+            heuristic_values=tuple(sorted(str(n) for n in extra_numbers)),
             detail=(
                 f"regex-scanned message text references {kind} number(s) "
-                f"{sorted(extra)} not present in typed session_refs evidence "
+                f"{sorted(extra_numbers)} not present in typed session_refs evidence "
                 f"({sorted(typed_numbers)})"
             ),
         ),
@@ -777,15 +803,38 @@ def typed_refs_from_session_refs(refs: Sequence[Any]) -> tuple[list[GitHubRef], 
             owner_name, _, repo_name = repo.partition("/")
         elif isinstance(repo, str) and repo:
             repo_name = repo
-        number = getattr(ref, "number", None) or 0
         url = getattr(ref, "url", None)
+        url_str = url if isinstance(url, str) else None
+
+        raw_number = getattr(ref, "number", None)
+        number: int | None = raw_number if isinstance(raw_number, int) and raw_number > 0 else None
+        if number is None and url_str is not None:
+            # No typed number on the row (observed for Codex Cloud's
+            # chatgpt_codex_sidecar._pull_request_ref(), which stores
+            # external_pull_request_id in url and leaves repo/number
+            # unset). Try to recover a real number by parsing a genuine
+            # github.com PR/issue URL out of it.
+            url_pattern = _GITHUB_PR_URL_RE if kind == "pull_request" else _GITHUB_ISSUE_URL_RE
+            match = url_pattern.search(url_str)
+            if match:
+                owner_name = owner_name or match.group(1)
+                repo_name = repo_name or match.group(2)
+                number = int(match.group(3))
+        if number is None:
+            # Still nothing usable (e.g. url holds an opaque non-GitHub
+            # id). Coercing this to number=0 would fabricate a bogus
+            # "PR #0" that -- because typed evidence is authoritative --
+            # would silently outrank a correctly-parsed regex fallback
+            # result (polylogue-2vor finding 1). Skip the row instead.
+            continue
+
         built = GitHubRef(
             owner=owner_name,
             repo=repo_name,
-            number=int(number),
+            number=number,
             kind="pr" if kind == "pull_request" else "issue",
-            url=url if isinstance(url, str) else None,
-            raw_match=url if isinstance(url, str) else "",
+            url=url_str,
+            raw_match=url_str or "",
             source=SOURCE_TYPED,
         )
         if kind == "pull_request":

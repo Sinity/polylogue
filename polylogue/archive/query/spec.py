@@ -28,6 +28,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.models import Session, SessionSummary
+    from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.config import Config
     from polylogue.core.protocols import VectorProvider
 
@@ -197,6 +198,28 @@ def optional_int(value: object) -> int | None:
     return int(str(value))
 
 
+def optional_bool(field: str, value: object) -> bool | None:
+    """Parse a tri-state boolean param: ``None`` means "unset", not ``False``.
+
+    Accepts native ``bool`` (from Click ``--flag/--no-flag`` pairs), and the
+    string forms ``true``/``false`` (case-insensitive, as used by the ``root:``
+    query-DSL field and JSON/MCP params). *field* names the caller's param for
+    the raised error.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text == "":
+        return None
+    if text in {"true", "1", "yes"}:
+        return True
+    if text in {"false", "0", "no"}:
+        return False
+    raise QuerySpecError(field, str(value))
+
+
 # Set of all recognized query-spec parameter names (drives strict-param mode).
 _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
     {
@@ -241,6 +264,7 @@ _RECOGNIZED_PARAMS: frozenset[str] = frozenset(
         "message_type",
         "offset",
         "cursor",
+        "root",
     }
 )
 
@@ -359,6 +383,7 @@ def build_query_spec_from_params(
         message_type=optional_message_type(params.get("message_type")),
         offset=optional_int(params.get("offset")) or 0,
         cursor=optional_text(params.get("cursor")),
+        root=optional_bool("root", params.get("root")),
     )
 
 
@@ -425,6 +450,7 @@ def query_spec_to_plan(
         offset=spec.offset,
         cursor=spec.cursor,
         boolean_predicate=spec.boolean_predicate,
+        root=spec.root,
         vector_provider=vector_provider,
     )
     if spec.latest:
@@ -485,6 +511,11 @@ class SessionQuerySpec:
     offset: int = 0
     cursor: str | None = None
     boolean_predicate: QueryPredicate | None = None
+    #: Restrict to top-level sessions (``True``) or subagent/branch children
+    #: only (``False``); ``None`` (the default) selects both, unchanged from
+    #: historical behavior. See ``root:`` in the query DSL and ``--root/--no-root``
+    #: on the CLI (polylogue-oqib).
+    root: bool | None = None
     #: Canonical query units to attach to each selected session as a
     #: post-selection projection (the DSL ``with <units>`` clause). This is a
     #: projection, not a filter/sort/limit, so it is deliberately absent from
@@ -494,6 +525,11 @@ class SessionQuerySpec:
     #: same post-selection projection. Empty/missing means the unit's default
     #: payload is emitted.
     with_unit_fields: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    #: Bracket predicate/window per unit (the DSL ``with unit[field:value,
+    #: last:N]`` clause), keyed by the same canonical unit as ``with_units``
+    #: (polylogue-fnm.2). Applied to the fetched attached rows, not pushed
+    #: down to SQL.
+    with_unit_windows: dict[str, WithUnitWindow] = field(default_factory=dict)
 
     @classmethod
     def from_params(cls, params: Mapping[str, object], *, strict: bool = False) -> SessionQuerySpec:
@@ -596,6 +632,7 @@ class SessionQuerySpec:
             query_plan=self.to_plan(vector_provider=vector_provider),
             with_units=self.with_units,
             with_unit_fields=self.with_unit_fields,
+            with_unit_windows=self.with_unit_windows,
         )
 
 

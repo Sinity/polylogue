@@ -58,6 +58,10 @@ from tests.infra.strategies.storage import (
     tag_assignment_strategy as infra_tag_assignment_strategy,
 )
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Backend round-trip tests use now() to label a row; storage echoes it back without comparison."
+)
+
 
 class RecordQueryKwargs(TypedDict, total=False):
     origin: str

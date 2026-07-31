@@ -18,6 +18,10 @@ from polylogue.paths import blob_store_root
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Rebuild-readiness path test records a live ingest heartbeat timestamp; production readiness compares that heartbeat against the host clock by design."
+)
+
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
 
 

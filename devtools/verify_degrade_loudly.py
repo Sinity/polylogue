@@ -30,8 +30,7 @@ typed signal instead of logging (``HealthAlert(severity=ERROR, message=f"...:
 dicts, ``_repair_result(..., success=False, detail=f"...: {exc}")``). This
 lint cannot see through a return value to tell whether it structurally
 encodes the failure, so those sites are pre-approved in the allowlist at
-``docs/plans/degrade-loudly-allowlist.yaml`` with a one-line rationale, the
-same shape as ``docs/plans/test-clock-allowlist.yaml``.
+``docs/plans/degrade-loudly-allowlist.yaml`` with a one-line rationale.
 
 New broad excepts must either add a log call (cheapest fix), return a typed
 signal *and* add an allowlist entry explaining what the signal is, or

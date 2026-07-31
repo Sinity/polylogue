@@ -24,6 +24,8 @@ from polylogue.sources.hooks import (
     acknowledged_hook_spool_dir,
     drain_hook_event_spool,
     enqueue_hook_event,
+    hook_spool_has_pending_events,
+    hook_spool_pending_depth,
     hook_spool_root,
     pending_hook_spool_dir,
 )
@@ -66,7 +68,7 @@ def test_hook_spool_acknowledges_only_after_source_tier_materialization(
     assert result.acknowledged == 1
     assert result.failed == 0
     assert event_path.exists() is False
-    assert (acknowledged_hook_spool_dir(spool_root) / event_path.name).exists()
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob(event_path.name)) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
         rows = conn.execute("SELECT origin, session_native_id, event_type FROM raw_hook_events").fetchall()
     assert rows == [(expected_origin, session_id, event_type)]
@@ -124,8 +126,8 @@ def test_hook_spool_keeps_event_pending_when_source_tier_write_fails(tmp_path: P
 
     assert result == type(result)(acknowledged=0, failed=1, remaining=1)
     assert event_path.exists()
-    assert list(acknowledged_hook_spool_dir(spool_root).glob("*.json")) == []
-    assert list(pending_hook_spool_dir(spool_root).glob("*.json")) == [event_path]
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob("*.json")) == []
+    assert list(pending_hook_spool_dir(spool_root).rglob("*.json")) == [event_path]
 
 
 def test_hook_spool_replay_is_idempotent_after_interrupted_acknowledgement(tmp_path: Path) -> None:
@@ -144,8 +146,13 @@ def test_hook_spool_replay_is_idempotent_after_interrupted_acknowledgement(tmp_p
     )
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
 
+    # Simulate a crash after persistence but before acknowledgement: put the
+    # same envelope back in pending (flat, at the pending root -- exercising
+    # the legacy/no-shard fallback ``_iter_pending_event_paths`` also has to
+    # cover, since a replayed file carries no shard context of its own).
     replay_path = pending_hook_spool_dir(spool_root) / event_path.name
-    (acknowledged_hook_spool_dir(spool_root) / event_path.name).replace(replay_path)
+    acked_path = next(acknowledged_hook_spool_dir(spool_root).rglob(event_path.name))
+    acked_path.replace(replay_path)
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
 
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -211,7 +218,7 @@ def test_hooks_sidecar_dir_isolates_a_scratch_archive_root_with_no_xdg_leakage(
     resolved = hooks_sidecar_dir()
 
     assert resolved == scratch_archive_root / "hooks"
-    assert list(pending_hook_spool_dir(resolved).glob("*.json")) == []
+    assert list(pending_hook_spool_dir(resolved).rglob("*.json")) == []
     # The XDG-default spool, seeded above to look like a real event, must
     # remain untouched and undiscovered by the scratch-scoped resolution.
     assert (real_looking_spool / "real-event.json").exists()
@@ -252,7 +259,7 @@ async def test_live_watcher_observes_a_spool_created_after_startup(
 
     await watcher.run()
 
-    assert (acknowledged_hook_spool_dir(spool_root) / "first-after-startup.json").exists()
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob("first-after-startup.json")) != []
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
@@ -304,7 +311,7 @@ def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
 
     assert hook_main(["PostToolUse", "--provider", provider, "--sidecar-dir", str(spool_root)]) == 0
 
-    pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
+    pending = list(pending_hook_spool_dir(spool_root).rglob("*.json"))
     assert len(pending) == 1
     record = json.loads(pending[0].read_text(encoding="utf-8"))
     assert record["provider"] == provider
@@ -348,7 +355,7 @@ def test_published_hook_adapters_fall_back_to_the_archive_root_env_var(
 
     assert result.returncode == 0, result.stderr
     spool_root = scratch_archive_root / "hooks"
-    pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
+    pending = list(pending_hook_spool_dir(spool_root).rglob("*.json"))
     assert len(pending) == 1
 
 
@@ -388,7 +395,7 @@ def test_published_hook_adapters_spool_then_materialize(
     )
 
     assert result.returncode == 0, result.stderr
-    pending = list(pending_hook_spool_dir(spool_root).glob("*.json"))
+    pending = list(pending_hook_spool_dir(spool_root).rglob("*.json"))
     assert len(pending) == 1
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -426,7 +433,7 @@ def test_published_hook_adapters_refuse_duplicated_transcript_payloads(
 
     assert result.returncode != 0
     assert "duplicated transcript" in result.stderr
-    assert list(pending_hook_spool_dir(spool_root).glob("*.json")) == []
+    assert list(pending_hook_spool_dir(spool_root).rglob("*.json")) == []
 
 
 def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> None:
@@ -493,7 +500,8 @@ def test_hermes_hook_spool_replay_is_idempotent_after_interrupted_acknowledgemen
     # Simulate a crash after persistence but before acknowledgement: replay
     # the same envelope from "pending" again.
     replay_path = pending_hook_spool_dir(spool_root) / event_path.name
-    (acknowledged_hook_spool_dir(spool_root) / event_path.name).replace(replay_path)
+    acked_path = next(acknowledged_hook_spool_dir(spool_root).rglob(event_path.name))
+    acked_path.replace(replay_path)
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
 
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -529,7 +537,7 @@ def test_hermes_hook_spool_survives_a_truncated_envelope_alongside_a_valid_one(t
     assert result.failed == 1
     # The malformed file is neither silently deleted nor moved to acknowledged.
     assert truncated_path.exists()
-    assert not (acknowledged_hook_spool_dir(spool_root) / truncated_path.name).exists()
+    assert list(acknowledged_hook_spool_dir(spool_root).rglob(truncated_path.name)) == []
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (1,)
 
@@ -572,13 +580,121 @@ def test_drain_opens_archive_once_per_pass_and_honors_limit(
     first = drain_hook_event_spool(archive_root, root=spool_root, limit=2)
     assert first.acknowledged == 2
     assert first.failed == 0
-    assert first.remaining == 3
+    # ``remaining`` is a lower-bound "drain again" signal, not an exact
+    # backlog count, once the pass is bounded (see HookSpoolDrainResult) --
+    # collection deliberately stops after proving one path exists beyond the
+    # requested limit rather than paying to enumerate the whole backlog.
+    assert first.remaining == 1
     assert open_calls == 1
 
     second = drain_hook_event_spool(archive_root, root=spool_root)
     assert second.acknowledged == 3
     assert second.remaining == 0
     assert open_calls == 2
+
+
+def test_enqueue_shards_pending_events_by_utc_arrival_day(tmp_path: Path) -> None:
+    """(scaling hazard follow-up) A pending envelope lands under a
+    ``YYYY-MM-DD`` day-shard subdirectory, not flat in ``pending/`` -- the
+    fix for a stalled consumer accumulating 108K+ dentries in one directory
+    (observed live: ~17 days undrained, root cause in
+    ``polylogue hooks install`` baking a stale sidecar dir)."""
+
+    spool_root = tmp_path / "hooks"
+    event_path = enqueue_hook_event(
+        event_id="sharded-event",
+        provider="claude-code",
+        event_type="PostToolUse",
+        session_id="session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_name": "Bash"},
+        root=spool_root,
+    )
+
+    pending = pending_hook_spool_dir(spool_root)
+    assert event_path.parent.parent == pending
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", event_path.parent.name)
+    # The flat legacy layout (no day subdirectory) has no file at this level.
+    assert not (pending / "sharded-event.json").exists()
+
+
+def test_hook_spool_has_pending_events_true_and_false(tmp_path: Path) -> None:
+    """O(1)-ish existence probe: true once an envelope is enqueued, false
+    once every envelope has been acknowledged, and false for an
+    entirely-absent spool root."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    assert hook_spool_has_pending_events(spool_root) is False
+
+    enqueue_hook_event(
+        event_id="liveness-event",
+        provider="codex",
+        event_type="PostToolUse",
+        session_id="session-1",
+        timestamp="2026-07-12T10:00:00Z",
+        payload={"tool_name": "exec"},
+        root=spool_root,
+    )
+    assert hook_spool_has_pending_events(spool_root) is True
+
+    assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+    assert hook_spool_has_pending_events(spool_root) is False
+
+
+def test_hook_spool_pending_depth_is_bounded_by_cap(tmp_path: Path) -> None:
+    """The observability depth count never enumerates past ``cap`` -- it
+    reports the cap itself once the backlog reaches it, which is the whole
+    point: a heartbeat log must never become an O(n) scan of an unboundedly
+    large backlog."""
+
+    spool_root = tmp_path / "hooks"
+    for index in range(6):
+        enqueue_hook_event(
+            event_id=f"depth-event-{index}",
+            provider="claude-code",
+            event_type="PostToolUse",
+            session_id="session-1",
+            timestamp="2026-07-12T10:00:00Z",
+            payload={"tool_name": "Bash"},
+            root=spool_root,
+        )
+
+    assert hook_spool_pending_depth(spool_root) == 6
+    assert hook_spool_pending_depth(spool_root, cap=3) == 3
+
+
+def test_drain_reads_a_legacy_flat_pending_file_without_a_day_shard(tmp_path: Path) -> None:
+    """A pre-sharding envelope (or one migrated in from a stale spool root)
+    sitting directly under ``pending/`` -- no day subdirectory -- is still
+    discovered and drained. This is the compatibility path a one-time
+    migration of the real 108K-file backlog depends on."""
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    pending = pending_hook_spool_dir(spool_root)
+    pending.mkdir(parents=True)
+    legacy_path = pending / "legacy-event.json"
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "event_id": "legacy-event",
+                "event_type": "PostToolUse",
+                "session_id": "session-1",
+                "timestamp": "2026-07-12T10:00:00Z",
+                "provider": "claude-code",
+                "payload": {"tool_name": "Bash"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert hook_spool_has_pending_events(spool_root) is True
+    result = drain_hook_event_spool(archive_root, root=spool_root)
+    assert result.acknowledged == 1
+    assert not legacy_path.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("session-1",)
 
 
 def test_persist_record_raises_rather_than_defaulting_an_unmapped_provider_to_codex(tmp_path: Path) -> None:

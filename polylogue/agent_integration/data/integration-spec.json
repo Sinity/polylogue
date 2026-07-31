@@ -139,6 +139,10 @@
       "token": "claude-ai-export"
     },
     {
+      "meaning": "Claude Design agentic chat sessions.",
+      "token": "claude-design-session"
+    },
+    {
       "meaning": "Google AI Studio or Drive/Takeout conversation exports.",
       "token": "aistudio-drive"
     },

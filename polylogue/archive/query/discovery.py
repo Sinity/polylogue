@@ -322,7 +322,7 @@ DELEGATION_COLUMNS = (
     "inheritance",
     "evidence_refs",
 )
-AGGREGATE_COLUMNS = ("unit", "group_by", "group_key", "count")
+AGGREGATE_COLUMNS = ("unit", "group_by", "group_key", "count", "metrics")
 RECURSIVE_COLUMNS = ("session_id", "parent_refs", "child_refs", "continuation")
 
 
@@ -1287,7 +1287,7 @@ QUERY_DISCOVERY_NEGATIVE_EXAMPLES: tuple[QueryDiscoveryNegativeExample, ...] = (
         diagnostic_class="ExpressionCompileError",
         diagnostic=(
             "unsupported pipeline stage 'group role'; supported terminal stages are `sort by time|count|key "
-            "[asc|desc]`, `group by FIELD`, `count`, `limit N`, and `offset N`"
+            "[asc|desc]`, `group by FIELD`, `count`, `agg count|FN:FIELD[,...]`, `limit N`, and `offset N`"
         ),
         corrected_form="messages where role:assistant | group by role | count",
     ),
@@ -1399,7 +1399,7 @@ QUERY_DISCOVERY_NEGATIVE_EXAMPLES: tuple[QueryDiscoveryNegativeExample, ...] = (
         diagnostic=(
             "unknown query field 'text'; recognized fields: action, assistant_messages, assistant_words, "
             "authored_user_messages, authored_user_words, contains, cwd, duration_ms, has, id, lane, lineage, "
-            "messages, near, origin, paste_messages, path, project, repo, session, since, system_messages, tag, "
+            "messages, near, origin, paste_messages, path, project, repo, root, session, since, system_messages, tag, "
             "thinking_messages, title, tool, tool_messages, tool_use_messages, until, user_messages, user_words, words"
         ),
         field="text",

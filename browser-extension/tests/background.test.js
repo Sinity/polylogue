@@ -2463,8 +2463,8 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueDebugLog[0].ok).toBe(false);
   });
 
-  it("injects Grok DOM capture scripts for open Grok/X tabs", async () => {
-    tabs = [{ id: 77, url: "https://x.com/i/grok", title: "Grok" }];
+  it("injects the Grok native bridge and content script for open grok.com tabs", async () => {
+    tabs = [{ id: 77, url: "https://grok.com/c/1f9de430-6505-4d43-935b-ec0dd1c13222", title: "Grok" }];
 
     await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
 
@@ -2472,8 +2472,29 @@ describe("background receiver diagnostics", () => {
 
     expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
       target: { tabId: 77 },
+      files: ["src/content/grok_bridge.js"],
+      world: "MAIN",
+    });
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 77 },
       files: ["src/common.js", "src/content/grok.js"],
     });
+  });
+
+  // Grok's native REST capture (polylogue Grok native-capture upgrade,
+  // 2026-07-31) is only reachable from grok.com itself -- x.com's embedded
+  // Grok surface is served through X's own API, not grok.com's
+  // /rest/app-chat/* this bridge calls. The DOM-only fallback that used to
+  // give x.com/twitter.com tabs a (lossy) capture path was removed in the
+  // same change, so those tabs now correctly get no injection at all rather
+  // than a script that would silently produce nothing.
+  it("does not inject any Grok capture script for x.com/twitter.com tabs", async () => {
+    tabs = [{ id: 78, url: "https://x.com/i/grok", title: "Grok" }];
+
+    await sendRuntimeMessage({ type: "polylogue.captureSupportedTabs", reason: "popup_sync_open_tabs" });
+
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 });
 

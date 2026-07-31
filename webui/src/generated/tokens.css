@@ -91,6 +91,9 @@
   --pl-origin-claude-ai-export-fg: #9a3412;
   --pl-origin-claude-ai-export-bg: #ffedd5;
   --pl-origin-claude-ai-export-border: #9a3412;
+  --pl-origin-claude-design-session-fg: #c2410c;
+  --pl-origin-claude-design-session-bg: #ffedd5;
+  --pl-origin-claude-design-session-border: #c2410c;
   --pl-origin-aistudio-drive-fg: #3730a3;
   --pl-origin-aistudio-drive-bg: #e0e7ff;
   --pl-origin-aistudio-drive-border: #3730a3;
@@ -156,6 +159,9 @@
   --pl-origin-claude-ai-export-fg: #fed7aa;
   --pl-origin-claude-ai-export-bg: #3b2410;
   --pl-origin-claude-ai-export-border: #fed7aa;
+  --pl-origin-claude-design-session-fg: #fdba74;
+  --pl-origin-claude-design-session-bg: #3a2a12;
+  --pl-origin-claude-design-session-border: #fdba74;
   --pl-origin-aistudio-drive-fg: #a5b4fc;
   --pl-origin-aistudio-drive-bg: #24264b;
   --pl-origin-aistudio-drive-border: #a5b4fc;
@@ -221,6 +227,9 @@
   --pl-origin-claude-ai-export-fg: #fed7aa;
   --pl-origin-claude-ai-export-bg: #3b2410;
   --pl-origin-claude-ai-export-border: #fed7aa;
+  --pl-origin-claude-design-session-fg: #fdba74;
+  --pl-origin-claude-design-session-bg: #3a2a12;
+  --pl-origin-claude-design-session-border: #fdba74;
   --pl-origin-aistudio-drive-fg: #a5b4fc;
   --pl-origin-aistudio-drive-bg: #24264b;
   --pl-origin-aistudio-drive-border: #a5b4fc;
@@ -295,6 +304,11 @@
 .pl-origin-badge[data-origin='claude-ai-export'] {
   color: var(--pl-origin-claude-ai-export-fg);
   background: var(--pl-origin-claude-ai-export-bg);
+}
+
+.pl-origin-badge[data-origin='claude-design-session'] {
+  color: var(--pl-origin-claude-design-session-fg);
+  background: var(--pl-origin-claude-design-session-bg);
 }
 
 .pl-origin-badge[data-origin='aistudio-drive'] {

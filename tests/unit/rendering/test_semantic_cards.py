@@ -180,6 +180,7 @@ def test_provider_namespace_policy_discloses_open_world_fallback() -> None:
         "beads",
         "chatgpt",
         "claude-ai",
+        "claude-design",
         "claude-code",
         "codex",
         "gemini-cli",

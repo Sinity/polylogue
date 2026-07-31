@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -103,17 +103,25 @@ def _clean_title_text(text: str) -> str:
 
 
 logger = get_logger(__name__)
-# ``_SKIPPED_SIDECAR_RECORD_TYPES`` marks record types that never become a
+# ``_NON_MESSAGE_SIDECAR_RECORD_TYPES`` marks record types that never become a
 # ``ParsedMessage`` row (they are not chat content). That is still correct for
-# all twelve types below. What changed (polylogue-pbuh, audited against the
-# live corpus 2026-07-29, ~1.17M records total) is that most of them ARE
-# evidence-bearing and are no longer silently discarded: they persist through
-# ``_sidecar_evidence_payload``/the ``progress`` delegation accumulator below
-# as typed ``session_events`` (index.db). ``session_events.event_type`` has no
-# CHECK-constrained vocabulary (see ``storage/sqlite/archive_tiers/index.py``),
-# so adding new event types here is additive data, not a schema change.
+# all twelve types below -- the name used to be
+# ``_SKIPPED_SIDECAR_RECORD_TYPES``, which stopped being accurate the day most
+# of these started persisting as ``session_events`` (polylogue-pbuh); 13 of
+# the 15 members below ARE persisted today, so "skipped" described the
+# pre-polylogue-pbuh behavior, not the current one. Renamed (polylogue lane,
+# audited against the live corpus 2026-07-31) with no compat alias -- this
+# repo does not carry old spellings forward. What changed originally
+# (polylogue-pbuh, audited 2026-07-29, ~1.17M records total) is that most of
+# these ARE evidence-bearing and are no longer silently discarded: they
+# persist through ``_sidecar_evidence_payload``/the ``progress`` delegation
+# accumulator/the attachment-subtype dispatch below as typed ``session_events``
+# (index.db). ``session_events.event_type`` has no CHECK-constrained
+# vocabulary (see ``storage/sqlite/archive_tiers/index.py``), so adding new
+# event types here is additive data, not a schema change.
 #
-# Per-type disposition (counts = live corpus, rg single pass, 2026-07-29):
+# Per-type disposition (counts = live corpus, rg single pass, 2026-07-29
+# unless noted):
 #   ai-title (18,561)              EVIDENCE, wins session title (TitleSource.ORIGIN)
 #   agent-name (5,001)             EVIDENCE -> claude_agent_name event, ALSO wins
 #                                    session title (TitleSource.ORIGIN, below
@@ -129,10 +137,18 @@ logger = get_logger(__name__)
 #                                    bypassPermissions -- real operational signal)
 #   last-prompt (37,799)           EVIDENCE -> claude_last_prompt event
 #   queue-operation (60,709)       EVIDENCE -> claude_queue_operation event
-#   attachment (86,237)            EVIDENCE -> claude_attachment event (20 distinct
-#                                    attachment.type payloads incl. real files,
-#                                    edited-file records, diagnostics; per-subtype
-#                                    fidelity split is a follow-up, not this pass)
+#   attachment (87,539 as of 2026-07-31 re-audit) EVIDENCE, subtype-dispatched --
+#                                    see ``_ATTACHMENT_SUBTYPE_EVENT_TYPES``
+#                                    below. The type used to collapse all 20+
+#                                    ``attachment.type`` payloads into one
+#                                    ``claude_attachment`` event regardless of
+#                                    whether the record was a real referenced
+#                                    file or a hook success ping; a 2026-07-31
+#                                    full-corpus enumeration found 38 distinct
+#                                    subtypes (corpus growth/CLI evolution
+#                                    since the 20-subtype estimate above), now
+#                                    routed to ~22 semantically grouped event
+#                                    types plus 4 confirmed-transient subtypes.
 #   progress (850,678)             MIXED, not uniformly evidence-bearing -- an
 #                                    earlier draft of this bead's tracking issue
 #                                    guessed the whole type was noise, then
@@ -159,15 +175,28 @@ logger = get_logger(__name__)
 #                                    facts. Persisting them would 4-8x the
 #                                    session_events row count for zero
 #                                    incremental evidence. Kept transient.
-#   init (0 live occurrences)      TRANSIENT: every corpus occurrence on record
-#                                    is a bare {"type": "init"} marker with no
-#                                    field beyond ``type``/``sessionId`` --
-#                                    nothing to lose.
-#   mode (20,779)                  TRANSIENT: ``mode`` was the literal string
-#                                    "normal" in 100% of live records -- zero
-#                                    information content in the corpus as
-#                                    observed. Re-audit if a non-"normal" value
-#                                    is ever seen.
+#                                    OUT OF SCOPE for the 2026-07-31 lane that
+#                                    added the attachment-subtype dispatch and
+#                                    re-verified init/mode below -- this
+#                                    disposition is unchanged and was
+#                                    deliberately not revisited.
+#   init (0 live occurrences, re-confirmed 2026-07-31 against the full
+#         ~11.7K-session-file corpus) TRANSIENT: every corpus occurrence on
+#                                    record is a bare {"type": "init"} marker
+#                                    with no field beyond ``type``/
+#                                    ``sessionId`` -- nothing to lose. Zero
+#                                    occurrences both times measured.
+#   mode (21,545 as of 2026-07-31 re-audit, up from 20,779 on 2026-07-29 --
+#         corpus growth) TRANSIENT: ``mode`` was the literal string "normal"
+#                                    in 100% of live records both times
+#                                    measured (21,545/21,545 on the 2026-07-31
+#                                    pass) -- zero information content in the
+#                                    corpus as observed, in contrast to the
+#                                    sibling ``permission-mode`` type above
+#                                    (kept: 5 distinct values observed). Kept
+#                                    transient on repeated evidence, not
+#                                    assumption; re-audit if a non-"normal"
+#                                    value is ever seen.
 #
 # Two more sidecar record types (parser-diff triage, 2026-07-29, ~600-file
 # sample of the live corpus) were not in the original twelve and fell through
@@ -181,7 +210,7 @@ logger = get_logger(__name__)
 #                                    (per-file incremental backup, the
 #                                    fine-grained sibling of the
 #                                    whole-snapshot file-history-snapshot type)
-_SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
+_NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
         "file-history-snapshot",
@@ -202,10 +231,12 @@ _SKIPPED_SIDECAR_RECORD_TYPES = frozenset(
 
 # record_type -> session_events.event_type for the sidecar types persisted
 # generically via ``_sidecar_evidence_payload``. ``progress``, ``ai-title``,
-# and ``custom-title`` are handled separately in ``_parse_code_records``
-# (progress needs whole-session deduplication; ai-title/custom-title feed
-# title resolution as well as an audit-trail event). ``init``/``mode`` map to
-# nothing (transient, see above).
+# ``custom-title``, and ``attachment`` are handled separately in
+# ``_parse_code_records`` (progress needs whole-session deduplication;
+# ai-title/custom-title feed title resolution as well as an audit-trail
+# event; attachment needs subtype-dependent dispatch -- see
+# ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` below). ``init``/``mode`` map to nothing
+# (transient, see above).
 _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "agent-name": "claude_agent_name",
     "pr-link": "claude_pr_link",
@@ -215,18 +246,263 @@ _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "permission-mode": "claude_permission_mode",
     "last-prompt": "claude_last_prompt",
     "queue-operation": "claude_queue_operation",
-    "attachment": "claude_attachment",
     "ai-title": "claude_ai_title",
     "custom-title": "claude_custom_title",
 }
 
+# ``attachment.type`` subtype -> session_events.event_type (polylogue lane,
+# 2026-07-31). Replaces the single collapsed ``claude_attachment`` bucket: a
+# full-corpus enumeration (~11.7K Claude Code session files,
+# ``~/.claude/projects``) found 38 distinct ``attachment.type`` payloads
+# spanning genuinely different kinds of fact -- a real referenced file's
+# content is not the same *kind of thing* as a hook success ping, and both
+# were previously indistinguishable at the ``event_type`` level (payload had
+# to be JSON-inspected to tell them apart). Grouping rule: subtypes that
+# report the same real-world entity (a hook firing, a mode transition, a
+# capability/tool-surface delta) share one event_type distinguished by
+# payload fields, rather than one event_type per subtype -- that would have
+# produced ~38 near-empty event types for what are structurally the same
+# few kinds of fact. Real file/reference content gets its own dedicated
+# event_type per subtype since each is a structurally distinct artifact
+# (a full file vs. an edit snippet vs. a bare path reference).
+#
+# Counts below are live-corpus occurrences of the *subtype*, 2026-07-31,
+# same corpus as the 87,539 total above:
+_ATTACHMENT_SUBTYPE_EVENT_TYPES: dict[str, str] = {
+    # Real file/reference content -- each subtype is a structurally distinct
+    # artifact, so each gets its own event_type (no collapsing these into
+    # each other, let alone into the hook/capability buckets below).
+    "file": "claude_attachment_file",  # 711: a real referenced file's full content
+    "edited_text_file": "claude_attachment_edited_file",  # 2,446: editor-buffer snippet at edit time
+    "nested_memory": "claude_attachment_nested_memory",  # 487: a nested CLAUDE.md/memory file's content
+    "plan_file_reference": "claude_attachment_plan_reference",  # 43: a plan file's full content
+    "compact_file_reference": "claude_attachment_file_reference",  # 460: a bare path reference, no content
+    "directory": "claude_attachment_directory_listing",  # 16: a directory listing (path + entry names)
+    # Hook lifecycle -- six subtypes report the same real-world entity (a
+    # hook firing) distinguished only by outcome; one event_type with the
+    # subtype riding in payload["type"] (already present via dict(attachment))
+    # avoids six near-identical event types for one entity.
+    "hook_success": "claude_hook_event",  # 27,678
+    "hook_non_blocking_error": "claude_hook_event",  # 558
+    "hook_blocking_error": "claude_hook_event",  # 60
+    "hook_cancelled": "claude_hook_event",  # 303
+    "hook_system_message": "claude_hook_event",  # 129
+    "hook_additional_context": "claude_hook_event",  # 1,003
+    # Agent-mode transitions (auto-mode / plan-mode enter-exit-reentry) -- one
+    # session-state-transition entity, five lifecycle phases.
+    "auto_mode": "claude_agent_mode_event",  # 644
+    "auto_mode_exit": "claude_agent_mode_event",  # 130
+    "plan_mode": "claude_agent_mode_event",  # 84
+    "plan_mode_exit": "claude_agent_mode_event",  # 99
+    "plan_mode_reentry": "claude_agent_mode_event",  # 15
+    # Capability/tool-surface deltas presented to the model mid-session --
+    # bounded to names/counts, not the full injected instruction blocks
+    # (which can be large and duplicate what's already visible on the
+    # transcript), matching the existing bounded-summary precedent in
+    # ``_tool_execution_result_payload``.
+    "deferred_tools_delta": "claude_capability_delta",  # 2,856
+    "mcp_instructions_delta": "claude_capability_delta",  # 1,050
+    "agent_listing_delta": "claude_capability_delta",  # 200
+    "skill_listing": "claude_capability_snapshot",  # 2,690
+    "invoked_skills": "claude_capability_snapshot",  # 117
+    # Small, clean, high-signal single-field events -- real operational
+    # state, same tier of evidence as the existing ``permission-mode`` type.
+    "output_style": "claude_output_style",  # 10,055
+    "command_permissions": "claude_command_permissions",  # 570
+    # Queue activity -- semantically the same entity as the top-level
+    # ``queue-operation`` record type (see ``_SIDECAR_EVENT_TYPES`` above),
+    # just reached via a different code path in the provider; reuses the
+    # same event_type with ``operation="queued_command"`` rather than
+    # inventing a sibling type for the identical concept.
+    "queued_command": "claude_queue_operation",  # 7,387
+    # Task/todo evidence.
+    "task_status": "claude_task_status",  # 80: one polled background task's status
+    "task_reminder": "claude_task_reminder",  # 19,751: 37% carry real todo-list
+    #                                            state (id/subject/status/blocks/
+    #                                            blockedBy) when non-empty --
+    #                                            NOT uniformly noise despite the
+    #                                            majority being an empty-list
+    #                                            reminder; see the todo_reminder
+    #                                            sibling below for the contrast
+    #                                            that justifies keeping this one.
+    # Misc small, real, evidence-bearing signals.
+    "diagnostics": "claude_diagnostics",  # 1,583: bounded per-file diagnostic counts
+    "goal_status": "claude_agent_goal_status",  # 367: sentinel goal condition evaluation
+    "date_change": "claude_date_change",  # 163: session crossed a calendar day
+    "read_truncation_notice": "claude_read_truncation_notice",  # 97: a Read tool output was truncated
+    "ultrathink_effort": "claude_agent_effort",  # 11: explicit reasoning-effort signal
+    "structured_output": "claude_structured_output",  # 1: rare but potentially meaningful
+    "max_turns_reached": "claude_max_turns_reached",  # 1: session hit a turn budget
+}
+
+# Subtypes audited and found to carry zero information content in the live
+# corpus -- dropped (no event emitted), the same evidentiary bar applied to
+# ``init``/``mode`` above, not an assumption:
+#   total_tokens_reminder (5,677) -- the literal string
+#     "<total_tokens>Infinite tokens left</total_tokens>" in every sample
+#     checked; zero variance observed.
+#   todo_reminder (5) -- always {"content": [], "itemCount": 0} in every
+#     occurrence observed (contrast with the sibling task_reminder above,
+#     which is 37% non-empty and kept); volume too small to rule out a
+#     future non-empty value, but zero signal in every occurrence measured.
+#   context_tip (11) -- CLI feature-adoption UI hints ("try /compact",
+#     "you have background agents stopped") aimed at the human operator's
+#     product experience, not evidence about the session's actual work.
+#   companion_intro (1) -- a novelty/branding record (pet companion name);
+#     not operational evidence by any reading.
+_ATTACHMENT_TRANSIENT_SUBTYPES = frozenset(
+    {
+        "total_tokens_reminder",
+        "todo_reminder",
+        "context_tip",
+        "companion_intro",
+    }
+)
+
+# Fallback for an attachment subtype not in the table above -- e.g. a new
+# Claude Code CLI version introducing a 39th subtype. FAIL LOUD: still
+# persisted (never silently dropped into the generic bucket, which is
+# exactly the collapse this dispatch replaces), tagged with a event_type
+# that is greppable/triageable on its own, distinct from every classified
+# bucket above.
+_ATTACHMENT_UNCLASSIFIED_EVENT_TYPE = "claude_attachment_unclassified"
+
+
+_SKILL_LISTING_NAME_RE = re.compile(r"^-\s*([\w-]+):", re.MULTILINE)
+
+
+def _bounded_delta_payload(attachment: Mapping[str, object]) -> dict[str, object]:
+    """Bound a capability-delta attachment to names/counts.
+
+    ``deferred_tools_delta``/``mcp_instructions_delta``/``agent_listing_delta``
+    carry an ``added*`` name list alongside an ``added*`` body-text list (full
+    tool/skill/MCP-server instruction blocks, potentially large and already
+    duplicated on disk or in the provider's own capability registry). Keeping
+    the names but dropping the body text matches the existing bounded-summary
+    precedent in ``_tool_execution_result_payload`` (hunk counts, not full
+    diffs) and ``_file_history_snapshot`` handling (file list, not file
+    contents).
+    """
+    added_names: list[str] = []
+    added_body_count = 0
+    for key, value in attachment.items():
+        if not isinstance(value, list):
+            continue
+        if key.endswith("Names") or key.endswith("Types"):
+            added_names.extend(str(v) for v in value if isinstance(v, str))
+        elif key.endswith("Lines") or key.endswith("Blocks"):
+            added_body_count += len(value)
+    return {"added_names": added_names, "added_body_count": added_body_count}
+
+
+def _bounded_capability_snapshot_payload(attachment: Mapping[str, object]) -> dict[str, object]:
+    """Bound a capability-snapshot attachment to names/counts.
+
+    ``skill_listing`` carries one large concatenated-markdown ``content``
+    string (all available skills' full descriptions); ``invoked_skills``
+    carries a ``skills`` list whose ``content`` field is each skill's full
+    body. Both duplicate content that already exists as a skill file on
+    disk -- extract just the names (bounded, queryable) rather than persist
+    the full text verbatim into every session that loads the skill roster.
+    """
+    skills = attachment.get("skills")
+    if isinstance(skills, list):
+        names = [str(skill.get("name")) for skill in skills if isinstance(skill, dict) and skill.get("name")]
+        return {"skill_names": names, "skill_count": len(skills)}
+    content = attachment.get("content")
+    if isinstance(content, str):
+        names = _SKILL_LISTING_NAME_RE.findall(content)
+        return {"skill_names": names, "skill_count": len(names)}
+    return {"skill_names": [], "skill_count": 0}
+
+
+def _bounded_diagnostics_payload(attachment: Mapping[str, object]) -> dict[str, object]:
+    """Bound a diagnostics attachment to per-file counts, not full messages.
+
+    ``diagnostics.files[].diagnostics[]`` carries full Pyright/LSP message
+    text, source ranges, and codes per finding -- unbounded in principle (as
+    many findings as the language server reports). Persist file-level counts
+    (queryable: "how many diagnostics did this session generate, on which
+    files") rather than the full message text, matching the
+    ``structured_patch_hunk_count`` precedent in ``_tool_execution_result_payload``.
+    """
+    files = attachment.get("files")
+    if not isinstance(files, list):
+        return {"file_count": 0, "diagnostic_count": 0, "files": []}
+    file_summaries: list[dict[str, object]] = []
+    total = 0
+    for file_entry in files:
+        if not isinstance(file_entry, dict):
+            continue
+        diagnostics = file_entry.get("diagnostics")
+        count = len(diagnostics) if isinstance(diagnostics, list) else 0
+        total += count
+        uri = file_entry.get("uri")
+        file_summaries.append({"uri": uri if isinstance(uri, str) else None, "diagnostic_count": count})
+    return {"file_count": len(file_summaries), "diagnostic_count": total, "files": file_summaries}
+
+
+# Subtypes whose generic ``dict(attachment)`` payload carries unbounded free
+# text (full injected instruction blocks, full skill bodies, full diagnostic
+# messages) -- these get a dedicated bounded builder instead of the raw
+# pass-through every other subtype uses. Real file/reference content
+# (file/edited_text_file/nested_memory/plan_file_reference/task_reminder) is
+# deliberately NOT in this set: the full text there IS the evidence, not
+# duplicated decoration around it.
+_ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS: dict[str, Callable[[Mapping[str, object]], dict[str, object]]] = {
+    "deferred_tools_delta": _bounded_delta_payload,
+    "mcp_instructions_delta": _bounded_delta_payload,
+    "agent_listing_delta": _bounded_delta_payload,
+    "skill_listing": _bounded_capability_snapshot_payload,
+    "invoked_skills": _bounded_capability_snapshot_payload,
+    "diagnostics": _bounded_diagnostics_payload,
+}
+
+
+def _attachment_sidecar_event(item: dict[str, object], timestamp: str | None) -> ParsedSessionEvent | None:
+    """Build the typed session_event for one ``attachment`` sidecar record.
+
+    Subtype-dispatched (see ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` above) instead
+    of the collapsed single ``claude_attachment`` event_type this replaces.
+    Returns ``None`` only when the record carries no usable ``attachment``
+    dict, or the subtype is confirmed-transient (``_ATTACHMENT_TRANSIENT_SUBTYPES``).
+    """
+    attachment = item.get("attachment")
+    if not isinstance(attachment, dict):
+        return None
+    raw_subtype = attachment.get("type")
+    subtype = str(raw_subtype) if raw_subtype is not None else None
+    if subtype in _ATTACHMENT_TRANSIENT_SUBTYPES:
+        return None
+    event_type = (
+        _ATTACHMENT_SUBTYPE_EVENT_TYPES.get(subtype, _ATTACHMENT_UNCLASSIFIED_EVENT_TYPE)
+        if subtype
+        else _ATTACHMENT_UNCLASSIFIED_EVENT_TYPE
+    )
+    if subtype == "queued_command":
+        # Fold into the shared claude_queue_operation shape (operation/content)
+        # instead of the raw commandMode/prompt field names.
+        payload: dict[str, object] = {
+            "operation": "queued_command",
+            "content": attachment.get("prompt"),
+            "command_mode": attachment.get("commandMode"),
+        }
+    elif subtype is not None and subtype in _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS:
+        payload = _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS[subtype](attachment)
+    else:
+        payload = dict(attachment)
+    payload["summary"] = subtype or "attachment"
+    return ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=payload)
+
 
 def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict[str, object] | None:
-    """Return a typed evidence payload for a skipped-as-message sidecar record.
+    """Return a typed evidence payload for a non-message sidecar record.
 
     Returns ``None`` when the specific record instance carries no usable
-    signal (e.g. an ``attachment`` record whose ``attachment`` field is
-    missing) so the caller can skip emitting an empty event.
+    signal (e.g. a ``last-prompt`` record whose ``lastPrompt`` field is
+    empty) so the caller can skip emitting an empty event. ``attachment`` is
+    handled separately by ``_attachment_sidecar_event`` (subtype-dependent
+    dispatch), not here.
     """
     if record_type == "agent-name":
         name = _string_field(item, "agentName")
@@ -278,14 +554,6 @@ def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict
         else:
             payload["summary"] = operation
         return payload
-    if record_type == "attachment":
-        attachment = item.get("attachment")
-        if not isinstance(attachment, dict):
-            return None
-        payload = dict(attachment)
-        attachment_kind = attachment.get("type")
-        payload["summary"] = str(attachment_kind) if attachment_kind is not None else "attachment"
-        return payload
     if record_type == "ai-title":
         ai_title = _string_field(item, "aiTitle")
         return {"ai_title": ai_title, "summary": ai_title} if ai_title else None
@@ -318,21 +586,24 @@ def _accumulate_delegation_progress(
     item: dict[str, object],
     timestamp: str | None,
     accumulator: dict[str, _DelegationProgressStats],
-) -> None:
+) -> bool:
     """Fold one ``progress``/``agent_progress`` record into its dispatch edge.
 
     Only ``data.type == "agent_progress"`` carries a genuine dispatcher edge
-    (see the classification comment above ``_SKIPPED_SIDECAR_RECORD_TYPES``);
+    (see the classification comment above ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``);
     every occurrence under the same ``parentToolUseID`` is one streaming tick
     of the same subagent dispatch, so ticks are counted and time-bounded
-    rather than persisted as one row apiece.
+    rather than persisted as one row apiece. Returns whether this record
+    instance folded into a dispatch edge (polylogue-pbuh AC5 coverage
+    counter) -- the other six ``progress`` subtypes return ``False`` and stay
+    genuinely transient, see the classification comment.
     """
     data = item.get("data")
     if not isinstance(data, dict) or data.get("type") != "agent_progress":
-        return
+        return False
     parent_tool_use_id = _string_field(item, "parentToolUseID")
     if not parent_tool_use_id:
-        return
+        return False
     entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
     entry.count += 1
     if timestamp:
@@ -340,6 +611,7 @@ def _accumulate_delegation_progress(
             entry.first_seen = timestamp
         if entry.last_seen is None or timestamp > entry.last_seen:
             entry.last_seen = timestamp
+    return True
 
 
 def _safe_float(value: object) -> float:
@@ -1025,6 +1297,16 @@ def _parse_code_records(
     # non-empty value wins, since it is constant within one file.
     session_slug_value: str | None = None
     session_refs: list[ParsedSessionRef] = []
+    # polylogue-pbuh AC5: per-record-type seen/persisted counts for the
+    # sidecar types this parser used to drop wholesale, plus a bounded
+    # sample of record types that fell all the way through ordinary message
+    # parsing to the empty-content drop below with no text/blocks -- so a
+    # *future* silently-dropped type is visible in the archive (one
+    # ``claude_parse_coverage`` session_event) instead of requiring another
+    # rg-the-corpus audit to notice.
+    sidecar_seen_counts: dict[str, int] = {}
+    sidecar_persisted_counts: dict[str, int] = {}
+    empty_drop_counts: dict[str, int] = {}
 
     for index, item in enumerate(records, start=record_index_start + 1):
         if not isinstance(item, dict):
@@ -1125,31 +1407,36 @@ def _parse_code_records(
         notification = _task_notification_from_record(item, message)
 
         # These twelve record types are never chat content -- see the
-        # classification comment above ``_SKIPPED_SIDECAR_RECORD_TYPES`` for
-        # why each one either persists as typed ``session_events`` evidence
-        # (polylogue-pbuh) or stays genuinely transient. ``progress`` (hook
-        # lifecycle pings, streaming tool-progress ticks, and the one
+        # classification comment above ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``
+        # for why each one either persists as typed ``session_events``
+        # evidence (polylogue-pbuh) or stays genuinely transient. ``progress``
+        # (hook lifecycle pings, streaming tool-progress ticks, and the one
         # evidence-bearing subtype ``agent_progress``) previously also
         # produced empty ``tool_result``-shaped message rows before the
         # record-type check below existed; see #1617 for that forensic.
-        if record_type in _SKIPPED_SIDECAR_RECORD_TYPES:
+        if record_type in _NON_MESSAGE_SIDECAR_RECORD_TYPES:
+            sidecar_seen_counts[record_type] = sidecar_seen_counts.get(record_type, 0) + 1
+            persisted_this_record = False
             if notification is not None:
                 background_notifications.append((notification, record_uuid, timestamp))
             if record_type == "progress":
-                _accumulate_delegation_progress(item, timestamp, delegation_progress)
+                persisted_this_record = _accumulate_delegation_progress(item, timestamp, delegation_progress)
             else:
                 if record_type == "ai-title":
                     ai_title_text = _string_field(item, "aiTitle")
                     if ai_title_text:
                         latest_ai_title = ai_title_text
+                        persisted_this_record = True
                 elif record_type == "custom-title":
                     custom_title_text = _string_field(item, "customTitle")
                     if custom_title_text:
                         latest_custom_title = custom_title_text
+                        persisted_this_record = True
                 elif record_type == "agent-name":
                     agent_name_text = _string_field(item, "agentName")
                     if agent_name_text:
                         latest_agent_name = agent_name_text
+                        persisted_this_record = True
                 elif record_type == "pr-link":
                     # polylogue-2qx.4 / polylogue-cgfy: generalized,
                     # tracker-agnostic evidence alongside the existing
@@ -1170,10 +1457,24 @@ def _parse_code_records(
                                 else None,
                             )
                         )
+                        persisted_this_record = True
+                elif record_type == "attachment":
+                    # Subtype-dispatched -- see ``_attachment_sidecar_event``
+                    # and ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` above. Handled
+                    # here rather than through the generic
+                    # ``_SIDECAR_EVENT_TYPES``/``_sidecar_evidence_payload``
+                    # path below because the event_type itself depends on the
+                    # nested ``attachment.type``, not just the outer
+                    # record_type.
+                    attachment_event = _attachment_sidecar_event(item, timestamp)
+                    if attachment_event is not None:
+                        session_events.append(attachment_event)
+                        persisted_this_record = True
                 event_type = _SIDECAR_EVENT_TYPES.get(record_type)
                 if event_type is not None:
                     evidence_payload = _sidecar_evidence_payload(record_type, item)
                     if evidence_payload is not None:
+                        persisted_this_record = True
                         # Message linkage belongs in the typed field, not buried
                         # in the payload dict: source_message_provider_id is what
                         # the archive joins on, and every other claude_* emitter
@@ -1191,6 +1492,8 @@ def _parse_code_records(
                                 ),
                             )
                         )
+            if persisted_this_record:
+                sidecar_persisted_counts[record_type] = sidecar_persisted_counts.get(record_type, 0) + 1
             continue
         if timestamp:
             created_at = timestamp if created_at is None or timestamp < created_at else created_at
@@ -1250,6 +1553,7 @@ def _parse_code_records(
                 and material_origin is MaterialOrigin.HUMAN_AUTHORED
             )
             if not keep_empty_human_turn:
+                empty_drop_counts[record_type] = empty_drop_counts.get(record_type, 0) + 1
                 continue
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
@@ -1434,6 +1738,27 @@ def _parse_code_records(
                 event_type="claude_session_kind",
                 timestamp=created_at,
                 payload={"session_kind": session_kind_value},
+            )
+        )
+
+    # polylogue-pbuh AC5: one bounded coverage event per session so a future
+    # silently-dropped record type is visible without another corpus audit --
+    # counts for the known sidecar types (seen vs. actually persisted as
+    # evidence, distinguishing e.g. an ``attachment`` record whose payload
+    # was empty from one that produced an event) plus a sample of record
+    # types that reached ordinary message parsing but carried no text/blocks
+    # and were dropped there (the pre-#1617 failure mode this bead's method
+    # note warns future readers not to repeat by assumption).
+    if sidecar_seen_counts or empty_drop_counts:
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_parse_coverage",
+                timestamp=updated_at,
+                payload={
+                    "sidecar_seen": dict(sorted(sidecar_seen_counts.items())),
+                    "sidecar_persisted": dict(sorted(sidecar_persisted_counts.items())),
+                    "empty_dropped_by_record_type": dict(sorted(empty_drop_counts.items())),
+                },
             )
         )
 

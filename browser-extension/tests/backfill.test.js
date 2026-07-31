@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { BackfillCoordinator } from "../src/backfill/coordinator.js";
 import { backfillAlarmName, serializedContentHash, serializedJson } from "../src/backfill/models.js";
-import { ChatGptBackfillAdapter, ClaudeBackfillAdapter } from "../src/backfill/providers.js";
+import { ChatGptBackfillAdapter, ClaudeBackfillAdapter, GrokBackfillAdapter } from "../src/backfill/providers.js";
 import { IndexedDbBackfillStore, MemoryBackfillStore, progressBuckets } from "../src/backfill/storage.js";
 
 function response(body, { status = 200, retryAfter = null } = {}) {
@@ -1165,5 +1165,88 @@ describe("provider adapter contracts", () => {
     expect(fetchImpl.mock.calls[2][0]).toContain("consistency=strong");
 
     await expect(adapter.normalizeCapture(response({ messages: [] }), inventory.items[0], {})).rejects.toThrow("provider_contract_drift:claude_conversation.chat_messages_must_be_array");
+  });
+
+  // Grok's own /rest/app-chat/conversations REST surface, verified live
+  // 2026-07-31 (see src/content/grok_bridge.js): pageToken-cursored
+  // enumeration, and a two-request native fetch (conversation metadata +
+  // /responses) combined into one payload for normalizeCapture.
+  it("enumerates Grok conversations by pageToken and stops when nextPageToken is absent", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({
+        conversations: [
+          { conversationId: "g-1", title: "First", modifyTime: "2026-07-01T00:00:00Z" },
+          { conversationId: "g-2", title: "Second", modifyTime: "2026-06-30T00:00:00Z" },
+        ],
+        nextPageToken: "g-2",
+      }))
+      .mockResolvedValueOnce(response({
+        conversations: [{ conversationId: "g-3", title: "Third", modifyTime: "2026-06-01T00:00:00Z" }],
+      }));
+    const adapter = new GrokBackfillAdapter(fetchImpl);
+
+    const first = await adapter.enumerate("0", null);
+    expect(first).toMatchObject({ classification: "success", done: false, next_cursor: "g-2" });
+    expect(first.items.map((item) => item.native_id)).toEqual(["g-1", "g-2"]);
+    expect(fetchImpl.mock.calls[0][0]).not.toContain("pageToken");
+
+    const second = await adapter.enumerate(first.next_cursor, null);
+    expect(second).toMatchObject({ classification: "success", done: true });
+    expect(second.items.map((item) => item.native_id)).toEqual(["g-3"]);
+    expect(fetchImpl.mock.calls[1][0]).toContain("pageToken=g-2");
+  });
+
+  it("stops Grok pagination once a page crosses the cutoff", async () => {
+    const adapter = new GrokBackfillAdapter(vi.fn(async () => response({
+      conversations: [
+        { conversationId: "new", modifyTime: "2026-07-01T00:00:00Z" },
+        { conversationId: "old", modifyTime: "2020-01-01T00:00:00Z" },
+      ],
+      nextPageToken: "old",
+    })));
+    const inventory = await adapter.enumerate("0", "2026-01-01T00:00:00Z");
+    expect(inventory.items.map((item) => item.native_id)).toEqual(["new"]);
+    expect(inventory.done).toBe(true);
+  });
+
+  it("rejects a non-array Grok inventory loudly", async () => {
+    const adapter = new GrokBackfillAdapter(vi.fn(async () => response({ conversations: "not-an-array" })));
+    await expect(adapter.enumerate()).rejects.toThrow("provider_contract_drift:grok_inventory.conversations_must_be_array");
+  });
+
+  it("combines Grok conversation metadata and /responses into one normalized capture, including temporary sessions", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ conversationId: "g-1", title: "Fixture", temporary: true, createTime: "2026-06-27T12:39:08Z", modifyTime: "2026-06-27T13:46:12Z" }))
+      .mockResolvedValueOnce(response({
+        responses: [
+          { responseId: "r-1", sender: "human", message: "hello", createTime: "2026-06-27T12:39:09Z" },
+          { responseId: "r-2", sender: "ASSISTANT", parentResponseId: "r-1", message: "hi there", createTime: "2026-06-27T12:39:15Z", model: "grok-3" },
+        ],
+      }));
+    const adapter = new GrokBackfillAdapter(fetchImpl);
+    const capture = await adapter.normalizeCapture(await adapter.fetchNative("g-1"), { native_id: "g-1", title: "Fixture" }, { job_id: "j" });
+
+    expect(capture.session.provider).toBe("grok");
+    expect(capture.session.session_kind).toBe("temporary");
+    expect(capture.session.turns).toHaveLength(2);
+    expect(capture.session.turns[0]).toMatchObject({ role: "user", text: "hello" });
+    expect(capture.session.turns[1]).toMatchObject({ role: "assistant", text: "hi there", parent_turn_id: "r-1" });
+    expect(capture.session.turns[1].provider_meta.model).toBe("grok-3");
+    expect(fetchImpl.mock.calls[1][0]).toContain("/responses");
+
+    await expect(
+      adapter.normalizeCapture(response({ responses: "not-an-array" }), { native_id: "g-1" }, {}),
+    ).rejects.toThrow("provider_contract_drift:grok_conversation_combined.responses_must_be_array");
+  });
+
+  it("surfaces a failed Grok /responses fetch as the fetchNative result without a second request", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(response({ conversationId: "g-1" }))
+      .mockResolvedValueOnce(response({ code: 5 }, { status: 404 }));
+    const adapter = new GrokBackfillAdapter(fetchImpl);
+
+    const result = await adapter.fetchNative("g-1");
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(404);
   });
 });

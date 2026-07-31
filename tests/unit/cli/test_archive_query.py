@@ -17,7 +17,6 @@ from polylogue.cli.archive_query import (
     _csv,
     _csv_tokens,
     _decode_cursor,
-    _ellipsize,
     _emit_delete,
     _emit_no_results,
     _emit_stats,
@@ -599,30 +598,10 @@ class TestCsv:
         assert lines[0] == "key"
 
 
-# Tests for _ellipsize
-class TestEllipsize:
-    """Tests for _ellipsize."""
-
-    def test_short_string_unchanged(self) -> None:
-        """Short string is unchanged."""
-        result = _ellipsize("hello", 10)
-        assert result == "hello"
-
-    def test_long_string_truncated(self) -> None:
-        """Long string is truncated with ellipsis."""
-        result = _ellipsize("hello world", 8)
-        assert result == "hello..."
-        assert len(result) == 8
-
-    def test_max_width_3_or_less(self) -> None:
-        """max_width <= 3 is hard slice."""
-        result = _ellipsize("hello", 3)
-        assert result == "hel"
-
-    def test_exact_length_no_truncation(self) -> None:
-        """String of exact length is not truncated."""
-        result = _ellipsize("hello", 5)
-        assert result == "hello"
+# _ellipsize was deleted as dead code (polylogue-x7d): archive_query.py's
+# row-truncation duplicate (_snippet/_ellipsize) was replaced by the shared
+# polylogue.archive.query.search_hits.bound_display_text primitive, which
+# carries the equivalent behavior tests in tests/unit/archive/test_search_hits.py.
 
 
 # Tests for _summary_line

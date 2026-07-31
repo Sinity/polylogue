@@ -279,6 +279,62 @@ def _construct_from_reference(
     )
 
 
+def _construct_has_content(construct: ParsedWebConstruct) -> bool:
+    return any(
+        (
+            construct.url,
+            construct.title,
+            construct.text,
+            construct.source_id,
+            construct.asset_pointer,
+            construct.start_index is not None,
+            construct.end_index is not None,
+        )
+    )
+
+
+def _constructs_from_content_reference_item(
+    item: Mapping[str, object],
+    *,
+    provider_key: str,
+    rank: int,
+) -> list[ParsedWebConstruct]:
+    """Expand one ``content_references``/``citations`` entry into its constructs.
+
+    Most citation shapes carry their own url/title directly (file-search
+    citations nested one or two levels down in ``item.metadata``/
+    ``item.metadata.extra``, already handled by ``_construct_from_reference``).
+    But ``grouped_webpages`` reference items (polylogue-zocm: measured 60.8%
+    of July content_reference URLs) carry NO url of their own -- every URL
+    lives one level down, in ``item.items[]`` (primary sources) and
+    ``item.fallback_items[]`` (secondary/backup sources). Mirrors the
+    ``search_result_groups`` descent below (``results``/``items``/
+    ``search_results``/``sources``).
+    """
+    primary = _construct_from_reference(
+        item,
+        construct_type=WebConstructType.CONTENT_REFERENCE,
+        provider_key=provider_key,
+        rank=rank,
+    )
+    constructs = [primary] if _construct_has_content(primary) else []
+    group_title = _string_value(item, "alt", "matched_text", "title")
+    group_id = _string_value(item, "id") or f"{provider_key}:{rank}"
+    for nested_key in ("items", "fallback_items"):
+        for nested_rank, nested_item in enumerate(_iter_mapping_items(item.get(nested_key))):
+            constructs.append(
+                _construct_from_reference(
+                    nested_item,
+                    construct_type=WebConstructType.CONTENT_REFERENCE,
+                    provider_key=f"{provider_key}.{nested_key}",
+                    rank=nested_rank,
+                    group_id=group_id,
+                    group_title=group_title,
+                )
+            )
+    return constructs
+
+
 def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebConstruct]:
     if not isinstance(msg_metadata, Mapping):
         return []
@@ -297,14 +353,7 @@ def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebCon
     for provider_key in ("content_references", "citations", "_cite_metadata"):
         value = msg_metadata.get(provider_key)
         for rank, item in enumerate(_iter_mapping_items(value)):
-            constructs.append(
-                _construct_from_reference(
-                    item,
-                    construct_type=WebConstructType.CONTENT_REFERENCE,
-                    provider_key=provider_key,
-                    rank=rank,
-                )
-            )
+            constructs.extend(_constructs_from_content_reference_item(item, provider_key=provider_key, rank=rank))
     search_queries = msg_metadata.get("search_queries")
     if isinstance(search_queries, list):
         for rank, item in enumerate(search_queries):
@@ -491,14 +540,18 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
                 # Skip image_asset_pointer and other non-text dicts
         if text_parts:
             return "\n".join(text_parts)
-    # Non-parts content shapes: code / execution_output carry top-level text;
-    # browsing display carries a result string.
+    # Non-parts content shapes: code / execution_output / system_error /
+    # tether_quote carry top-level text; tether_browsing_display carries a
+    # result string; citable_code_output carries output_str (polylogue-xofj).
     top_text = content.get("text")
     if isinstance(top_text, str) and top_text:
         return top_text
     result = content.get("result")
     if isinstance(result, str) and result:
         return result
+    output_str = content.get("output_str")
+    if isinstance(output_str, str) and output_str:
+        return output_str
     thoughts = content.get("thoughts")
     if isinstance(thoughts, list):
         thought_parts: list[str] = []
@@ -739,6 +792,131 @@ def extract_messages_from_mapping(
                     tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
                     is_error=execution_is_error,
+                )
+            )
+        elif content_type == "computer_output":
+            # Computer-use tool result (April-era browsing/desktop-agent
+            # layer, polylogue-xofj: 8,192 measured) -- a screenshot + DOM/
+            # browser-state snapshot returned by the computer.do tool loop.
+            # tool_id = the calling node's id (mapping-tree `parent`), the
+            # same convention execution_output/code use above (polylogue-
+            # 4fm3/polylogue-grub) so the actions view can join the pair.
+            # is_error reads the node's own `status`, the same terminal-
+            # state vocabulary execution_output reads.
+            node_status = msg.get("status")
+            computer_is_error = (
+                True
+                if node_status == "finished_partial_completion"
+                else False
+                if node_status == "finished_successfully"
+                else None
+            )
+            state = content.get("state")
+            state_url = _string_value(state, "url") if isinstance(state, Mapping) else None
+            state_title = _string_value(state, "title") if isinstance(state, Mapping) else None
+            summary = " — ".join(part for part in (state_title, state_url) if part)
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    text=summary or None,
+                    tool_id=parent_message_provider_id,
+                    metadata={"content_type": content_type},
+                    is_error=computer_is_error,
+                )
+            )
+        elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
+            # Browsing/web-search retrieval (April-era layer, polylogue-xofj):
+            # tether_quote (1,178 measured) is a quoted document/file excerpt
+            # from the myfiles_browser tool (top-level `text` + `domain`);
+            # tether_browsing_display (1,399 measured) is a page-listing from
+            # the browser tool (`result` string); sonic_webpage (30 measured)
+            # is a single fetched web.search page (`text`/`snippet` +
+            # `domain` + `ref_id`). All three are retrieved-source evidence,
+            # not free text -- projected as a SEARCH_RESULT web construct
+            # (polylogue-zocm: SEARCH_RESULT means "retrieved", distinct from
+            # CONTENT_REFERENCE's "cited") carried on a DOCUMENT block,
+            # mirroring the audio_transcription/audio_asset_pointer DOCUMENT+
+            # web_constructs idiom below.
+            domain = _string_value(content, "domain")
+            construct_text = text or _string_value(content, "snippet") or None
+            source_id = _string_value(content, "tether_id", "ref_id")
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.DOCUMENT,
+                    text=text or None,
+                    web_constructs=[
+                        ParsedWebConstruct(
+                            construct_type=WebConstructType.SEARCH_RESULT,
+                            provider_key=content_type,
+                            title=domain,
+                            text=construct_text,
+                            source_id=source_id,
+                        )
+                    ],
+                )
+            )
+        elif content_type == "system_error":
+            # Structural tool/browsing failure (April-era layer, polylogue-
+            # xofj: 177 measured) -- `content_type` itself IS the provider's
+            # error signal, never guessed from prose. tool_id = the calling
+            # node's id (mapping-tree `parent`), the execution_output/code
+            # convention, so the pair still joins even though the error-
+            # report message's own `status` ("finished_successfully" -- the
+            # error report itself was delivered fine) says nothing about the
+            # underlying failure.
+            error_name = _string_value(content, "name")
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    text=text,
+                    tool_id=parent_message_provider_id,
+                    metadata={"content_type": content_type, **({"error_name": error_name} if error_name else {})},
+                    is_error=True,
+                )
+            )
+        elif content_type == "citable_code_output":
+            # Connector-sourced retrieval result (April-era layer, polylogue-
+            # xofj: 8 measured) -- e.g. api_tool.call_tool reading a Gmail/
+            # Drive connector document. Effectively a code/tool result
+            # (`output_str`, folded into `_extract_content_text`'s fallback
+            # above) plus a citation anchor identifying the connector
+            # document it was read from -- "a code result with citation
+            # anchors". tool_id/is_error follow the same execution_output
+            # convention as the branches above.
+            node_status = msg.get("status")
+            citable_is_error = (
+                True
+                if node_status == "finished_partial_completion"
+                else False
+                if node_status == "finished_successfully"
+                else None
+            )
+            cite_metadata = content.get("metadata")
+            cite_constructs: list[ParsedWebConstruct] = []
+            if isinstance(cite_metadata, Mapping):
+                display_title = _string_value(cite_metadata, "display_title")
+                display_url = _string_value(cite_metadata, "display_url")
+                connector_id = _string_value(cite_metadata, "connector_id")
+                connector_source = _string_value(cite_metadata, "connector_source")
+                if display_title or display_url or connector_id:
+                    cite_constructs.append(
+                        ParsedWebConstruct(
+                            construct_type=WebConstructType.CONTENT_REFERENCE,
+                            provider_key=content_type,
+                            title=display_title,
+                            url=display_url,
+                            source_id=connector_id,
+                            text=connector_source,
+                        )
+                    )
+            content_blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT,
+                    text=text,
+                    tool_id=parent_message_provider_id,
+                    metadata={"content_type": content_type},
+                    is_error=citable_is_error,
+                    web_constructs=cite_constructs,
                 )
             )
         elif content_type in ("user_editable_context", "model_editable_context"):

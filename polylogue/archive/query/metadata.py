@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Literal
 
 QueryUnitName = Literal[
@@ -35,6 +36,19 @@ class QueryUnitDescriptor:
     cli_plain_renderer: str | None = None
     time_sort_supported: bool = True
     aggregate_group_fields: tuple[str, ...] = ()
+    #: Numeric fields a ``| agg ...`` pipeline stage may reduce with
+    #: sum/avg/min/max/percentile functions, in addition to the always-legal
+    #: field-less ``count`` metric. Empty means only ``count`` is available.
+    aggregate_metric_fields: tuple[str, ...] = ()
+    #: Bracket-predicate field vocabulary for a ``with unit[field:value, ...]``
+    #: projection clause (polylogue-fnm.2), mapping the DSL-facing field name
+    #: to its attached-row payload attribute name. Deliberately a small,
+    #: explicit vocabulary rather than the full ``<unit> where`` structural
+    #: predicate field set: bracket predicates filter already-fetched payload
+    #: rows in Python (not pushed down to SQL), so only fields present on the
+    #: unit's own projected payload model are safe to filter. Empty means the
+    #: unit only supports the ``first:N``/``last:N`` window, not predicates.
+    attached_bracket_fields: dict[str, str] = dataclass_field(default_factory=dict)
     fields: tuple[StructuralQueryFieldInfo, ...] = ()
     description: str = ""
     example: str = ""
@@ -132,6 +146,16 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "spec_field": "title",
         "negatable": "no",
         "example": "title:refactor",
+    },
+    "root": {
+        "description": (
+            "Filter by top-level-vs-child session structure. root:true keeps only "
+            "top-level sessions; root:false keeps only subagent/branch children. "
+            "Unset (default) selects both."
+        ),
+        "spec_field": "root",
+        "negatable": "no",
+        "example": "root:true",
     },
     "since": {
         "description": "Filter sessions after date (ISO or relative: 7d, 2w)",
@@ -795,6 +819,8 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_messages",
         cli_plain_renderer="message",
         aggregate_group_fields=("role", "type", "session.origin", "session.repo"),
+        aggregate_metric_fields=("word_count",),
+        attached_bracket_fields={"role": "role", "type": "message_type"},
         fields=_unit_info("message").fields,
         description=_unit_info("message").description,
         example=_unit_info("message").example,
@@ -818,6 +844,15 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
             "session.origin",
             "session.repo",
         ),
+        aggregate_metric_fields=("is_error", "exit_code"),
+        attached_bracket_fields={
+            "tool": "tool_name",
+            "action": "semantic_type",
+            "type": "semantic_type",
+            "is_error": "is_error",
+            "exit_code": "exit_code",
+            "followup_class": "followup_class",
+        },
         fields=_unit_info("action").fields,
         description=_unit_info("action").description,
         example=_unit_info("action").example,
@@ -846,6 +881,12 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_assertions",
         cli_plain_renderer="assertion",
         aggregate_group_fields=("kind", "status", "visibility", "author_kind", "session.origin", "session.repo"),
+        attached_bracket_fields={
+            "kind": "kind",
+            "status": "status",
+            "visibility": "visibility",
+            "author_kind": "author_kind",
+        },
         fields=_unit_info("assertion").fields,
         description=_unit_info("assertion").description,
         example=_unit_info("assertion").example,
@@ -860,6 +901,7 @@ QUERY_UNIT_DESCRIPTORS: tuple[QueryUnitDescriptor, ...] = (
         sql_query_method="query_files",
         cli_plain_renderer="file",
         aggregate_group_fields=("path", "session.origin", "session.repo"),
+        attached_bracket_fields={"path": "path"},
         fields=_unit_info("file").fields,
         description=_unit_info("file").description,
         example=_unit_info("file").example,
@@ -1311,6 +1353,20 @@ def terminal_query_pipeline_stage_infos(source: str) -> tuple[QueryPipelineStage
                     source_unit=descriptor.unit,
                     lowerer_kind=descriptor.lowerer_kind,
                 ),
+            )
+        )
+    if descriptor.aggregate_metric_fields:
+        example_field = descriptor.aggregate_metric_fields[0]
+        stages.append(
+            QueryPipelineStageInfo(
+                value="agg",
+                insert=f"agg count, avg:{example_field}",
+                description=(
+                    "Reduce each preceding group with named metrics: `count`, or "
+                    f"`sum|avg|min|max|pNN:FIELD` over {', '.join(descriptor.aggregate_metric_fields)}."
+                ),
+                source_unit=descriptor.unit,
+                lowerer_kind=descriptor.lowerer_kind,
             )
         )
     stages.extend(
