@@ -104,6 +104,7 @@ if TYPE_CHECKING:
     from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.insights.judgment.types import ComparativeJudgment
     from polylogue.insights.pathology import PathologyReport
     from polylogue.insights.portfolio import PortfolioBundle
     from polylogue.insights.postmortem import PostmortemBundle
@@ -1816,6 +1817,58 @@ def _archive_judge_assertion_candidates(
         raise RuntimeError(f"failed to judge assertion candidates: {exc}") from exc
 
 
+def _archive_record_comparative_judgment(
+    config: Config,
+    judgment: Any,
+    *,
+    author_kind: str,
+) -> Any:
+    """Write one comparative judgment (rxdo.9.11/9.6/9.7/9.12) as an assertion row.
+
+    Mirrors :func:`_archive_judge_assertion_candidates`'s connection
+    lifecycle. This is the first production caller of
+    :func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`
+    -- the storage/read functions were fully built and tested but never
+    invoked outside ``tests/unit/storage/`` before the ``judge compare`` /
+    ``judge calibration`` CLI commands.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_comparative_judgment_assertion
+
+    user_db = _active_archive_root(config) / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    try:
+        conn = open_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind=author_kind)
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to record comparative judgment: {exc}") from exc
+
+
+def _archive_list_comparative_judgments(config: Config) -> Any:
+    """Read back every live comparative-judgment assertion row."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import list_comparative_judgments
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(user_db)
+        try:
+            return list_comparative_judgments(conn)
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to list comparative judgments: {exc}") from exc
+
+
 def _archive_count_table_rows(conn: Any, table_name: str) -> int | None:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
@@ -3022,6 +3075,30 @@ class PolylogueArchiveMixin:
         result = _archive_judge_assertion_candidates(self.config, items=items)
         return AssertionBulkJudgmentPayload.from_envelope(cast("ArchiveAssertionBulkJudgmentEnvelope", result))
 
+    async def record_comparative_judgment(
+        self,
+        judgment: ComparativeJudgment,
+        *,
+        author_kind: str = "user",
+    ) -> ArchiveAssertionEnvelope:
+        """Persist one blind pairwise/n-wise comparative judgment (rxdo.9.6/.9.7/.9.11/.9.12).
+
+        ``author_kind`` follows the existing promotion gate: a non-``"user"``
+        author (an agent judge) is coerced to a non-injected ``CANDIDATE``
+        row regardless of the caller's request, per the recursive-safety
+        spine. Reuses the storage layer's fully-tested write chokepoint
+        (:func:`~polylogue.storage.sqlite.archive_tiers.user_write.upsert_comparative_judgment_assertion`),
+        which previously had no production caller.
+        """
+        return cast(
+            "ArchiveAssertionEnvelope",
+            _archive_record_comparative_judgment(self.config, judgment, author_kind=author_kind),
+        )
+
+    async def list_comparative_judgments(self) -> list[ComparativeJudgment]:
+        """Read back every live comparative-judgment assertion row."""
+        return cast("list[ComparativeJudgment]", _archive_list_comparative_judgments(self.config))
+
     async def join_typed_annotations(
         self,
         *,
@@ -3938,6 +4015,7 @@ class PolylogueArchiveMixin:
         with closing(open_readonly_connection(user_db)) as conn:
             conn.row_factory = sqlite3.Row
             provenance = compute_finding_provenance(conn, object_ref.object_id)
+            controls_document = self._finding_controls_document(conn, object_ref.object_id)
         if provenance is None:
             return cast(
                 PublicRefResolutionPayload,
@@ -3977,13 +4055,21 @@ class PolylogueArchiveMixin:
                 if ref_value
             )
         )
+        payload_document = model_json_document(payload)
+        if controls_document is not None:
+            payload_document["controls"] = controls_document["controls"]
+            payload_document["rank_tier"] = controls_document["rank_tier"]
+            payload_document["downgraded"] = controls_document["downgraded"]
+            if controls_document["downgraded"]:
+                caveats = (*caveats, "claim downgraded: at least one bound negative control failed")
+
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,
             kind="finding",
             resolved=True,
             payload_kind="finding-provenance",
-            payload=model_json_document(payload),
+            payload=payload_document,
             title=provenance.claim_key or provenance.finding_kind or "finding",
             summary=f"{provenance.finding_kind or 'finding'} ({provenance.status})",
             object_refs=object_refs,
@@ -3991,6 +4077,54 @@ class PolylogueArchiveMixin:
             caveats=caveats,
             actions=(_resolution_action("list target evidence", f"polylogue find {provenance.target_ref} then read"),),
         )
+
+    @staticmethod
+    def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] | None:
+        """Render claim-vs-control together when the finding declared controls (rxdo.9.7).
+
+        Reuses :class:`~polylogue.insights.judgment.controls.ClaimWithControls`
+        (mutation-tested, previously constructed only by its own unit tests)
+        rather than re-deriving the downgrade/rank-tier logic here.
+        """
+        from polylogue.insights.judgment.controls import ClaimWithControls, ControlOutcome, NegativeControl
+        from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
+
+        envelope = read_assertion_envelope(conn, assertion_id)
+        if envelope is None or not isinstance(envelope.value, dict):
+            return None
+        raw_controls = envelope.value.get("controls")
+        if not isinstance(raw_controls, list) or not raw_controls:
+            return None
+        outcomes = tuple(
+            ControlOutcome(
+                control=NegativeControl(
+                    control_kind=cast(Any, raw["control_kind"]),
+                    query_ref=cast(str, raw["query_ref"]),
+                    result_ref=cast(str, raw["result_ref"]),
+                    matching_variables=tuple(cast("Sequence[str]", raw.get("matching_variables", ()))),
+                    expected_null=cast(str, raw["expected_null"]),
+                    confounds_checked=tuple(cast("Sequence[str]", raw.get("confounds_checked", ()))),
+                ),
+                observed_null_held=bool(raw["observed_null_held"]),
+            )
+            for raw in raw_controls
+            if isinstance(raw, dict)
+        )
+        claim = ClaimWithControls(claim_ref=f"assertion:{assertion_id}", controls=outcomes)
+        return {
+            "controls": [
+                {
+                    "control_kind": outcome.control.control_kind,
+                    "query_ref": outcome.control.query_ref,
+                    "result_ref": outcome.control.result_ref,
+                    "expected_null": outcome.control.expected_null,
+                    "observed_null_held": outcome.observed_null_held,
+                }
+                for outcome in claim.controls
+            ],
+            "rank_tier": claim.rank_tier,
+            "downgraded": claim.downgraded,
+        }
 
     def _resolve_annotation_batch_object_ref(
         self,

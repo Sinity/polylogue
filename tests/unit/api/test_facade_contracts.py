@@ -275,6 +275,12 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "compare_sessions",
         "find_similar_sessions_by_metadata",
         "correlate_sessions",
+        # Comparative judgment storage (rxdo.9.6/.9.7/.9.11/.9.12), wired
+        # into the real `polylogue compare` CLI command (tests/unit/cli/
+        # test_compare_command.py) and the finding-controls read path
+        # (test_resolve_ref_renders_finding_claim_with_controls above).
+        "record_comparative_judgment",
+        "list_comparative_judgments",
     }
 )
 
@@ -2934,6 +2940,106 @@ async def test_resolve_ref_returns_finding_provenance_payload(tmp_path: Path) ->
         assert missing.resolved is False
         assert missing.kind == "finding"
         assert missing.payload is None
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_renders_finding_claim_with_controls(tmp_path: Path) -> None:
+    """polylogue-rxdo.9.7: a finding with declared negative controls renders claim-vs-control.
+
+    Before this, ``ClaimWithControls`` (rxdo.9.7, mutation-tested) had zero
+    callers outside its own unit tests. This is the real production route:
+    a finding written through the real storage writer, resolved through the
+    real ``Polylogue.resolve_ref`` facade.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import FindingAssertion, upsert_findings_as_assertions
+
+    archive = _archive(tmp_path)
+    try:
+        user_db = archive.config.archive_root / "user.db"
+        initialize_archive_database(user_db, ArchiveTier.USER)
+        with sqlite3.connect(user_db) as conn:
+            envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="controlled-claim",
+                        target_ref="query:controlled-claim-v1",
+                        body_text="A claim backed by a passing negative control.",
+                        finding_kind="measure",
+                        statistic={"op": "rate", "value": 0.18, "unit": "fraction"},
+                        n=200,
+                        query_ref="query:controlled-claim-v1",
+                        result_set_ref="result-set:controlled-claim-run",
+                        detector_ref="agent:controls-detector",
+                        controls=(
+                            {
+                                "control_kind": "shifted_window",
+                                "query_ref": "query:controlled-claim-control",
+                                "result_ref": "result-set:controlled-claim-control",
+                                "matching_variables": ["repo"],
+                                "expected_null": "no rate change outside the treatment window",
+                                "observed_null_held": True,
+                            },
+                        ),
+                        control_frame_variables=("repo",),
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        assertion_id = envelopes[0].assertion_id
+
+        passing = await archive.resolve_ref(f"finding:{assertion_id}")
+        assert passing.payload is not None
+        assert passing.payload["rank_tier"] == "controlled_pass"
+        assert passing.payload["downgraded"] is False
+        assert passing.payload["controls"][0]["observed_null_held"] is True
+        # The control's own query/result refs are ad-hoc (not backed by real
+        # archived query/result-set rows), so staleness caveats independently
+        # about evidence resolvability are expected here; the assertion of
+        # interest is that no *downgrade* caveat is added for a passing control.
+        assert not any("downgraded" in caveat for caveat in passing.caveats)
+
+        with sqlite3.connect(user_db) as conn:
+            failing_envelopes = upsert_findings_as_assertions(
+                conn,
+                [
+                    FindingAssertion(
+                        claim_key="downgraded-claim",
+                        target_ref="query:downgraded-claim-v1",
+                        body_text="A claim whose negative control failed.",
+                        finding_kind="measure",
+                        statistic={"op": "rate", "value": 0.18, "unit": "fraction"},
+                        n=200,
+                        query_ref="query:downgraded-claim-v1",
+                        result_set_ref="result-set:downgraded-claim-run",
+                        detector_ref="agent:controls-detector",
+                        controls=(
+                            {
+                                "control_kind": "shifted_window",
+                                "query_ref": "query:downgraded-claim-control",
+                                "result_ref": "result-set:downgraded-claim-control",
+                                "matching_variables": ["repo"],
+                                "expected_null": "no rate change outside the treatment window",
+                                "observed_null_held": False,
+                            },
+                        ),
+                        control_frame_variables=("repo",),
+                    )
+                ],
+                now_ms=1,
+            )
+            conn.commit()
+        failing_assertion_id = failing_envelopes[0].assertion_id
+
+        downgraded = await archive.resolve_ref(f"finding:{failing_assertion_id}")
+        assert downgraded.payload is not None
+        assert downgraded.payload["rank_tier"] == "controlled_fail"
+        assert downgraded.payload["downgraded"] is True
+        assert any("downgraded" in caveat for caveat in downgraded.caveats)
     finally:
         await archive.close()
 

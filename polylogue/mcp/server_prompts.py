@@ -542,10 +542,11 @@ Rules: path matching is substring — prefer repo-relative fragments (e.g. polyl
         return f"""Report cost/usage for the last {since}, with honest accounting.
 
 Call sequence:
-1. cost_rollups(since="{since}") — aggregate spend by model.
-2. session_costs(since="{since}", limit={limit}) — top sessions by cost.
-3. provider_usage(detail="summary") — usage accounting diagnostics without billing estimates.
-4. For the current repo's sessions: search(query={repository_query!r}) then session_costs(session_id=<id>) per hit — cost tools have no repo filter.
+1. get(ref="cost-outlook:<plan_name>") — current billing-cycle projection for a configured subscription plan (burn rate, quota pressure, overage).
+2. status(scope="archive", include=["provider_usage"]) — usage accounting diagnostics without billing estimates.
+3. For the current repo's sessions: query(expression={repository_query!r}) for hits, then get(ref="session:<id>") per hit for per-session cost detail.
+
+Note: per-model/per-session cost rollup listing (formerly the retired cost_rollups/session_costs tools) has no MCP surface yet -- use the CLI `polylogue analyze --insight cost-rollups` / `--insight costs` commands for that (tracked as remaining scope on polylogue-hg97).
 
 Rules:
 - cost_usd is API-list-equivalent; on subscription plans report the subscription-credit view separately (cache reads are ~free on Claude Max/Pro).

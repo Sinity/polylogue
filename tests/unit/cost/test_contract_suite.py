@@ -483,24 +483,20 @@ def test_api_cost_outlook_returns_typed_cycle_outlook() -> None:
         assert key in payload, f"missing key {key!r} in outlook envelope"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "The six-tool MCP cutover (polylogue-t46.8, #3095) retired the standalone "
-        "cost_outlook tool without a replacement -- cost/usage rollup MCP wiring "
-        "needs a design decision (point-fix vs. generic re-hosting of the whole "
-        "INSIGHT_REGISTRY cost/usage family), tracked in polylogue-hg97."
-    ),
-    raises=KeyError,
-    strict=True,
-)
 @pytest.mark.asyncio
-async def test_mcp_cost_outlook_tool_uses_shared_envelope() -> None:
-    """The MCP ``cost_outlook`` tool serializes the same typed envelope.
+async def test_mcp_get_cost_outlook_ref_uses_shared_envelope() -> None:
+    """The consolidated ``get`` tool resolves ``cost-outlook:<plan>`` refs.
 
-    The MCP tool is a leaf adapter — it must not redefine the cost outlook
-    shape. This test builds the MCP server, mocks the facade, calls the
-    ``cost_outlook`` tool, and asserts the JSON envelope contains the typed
-    fields produced by the cost engine.
+    The six-tool MCP cutover (polylogue-t46.8, #3095) retired the standalone
+    ``cost_outlook`` tool without a replacement; polylogue-hg97 designed and
+    landed the replacement as a ``get(ref="cost-outlook:<plan>", ...)``
+    resolution (rather than an 11th top-level tool, which would contradict
+    the consolidated-tool architecture) -- see ``_cost_outlook_payload`` in
+    ``polylogue/mcp/server_cutover.py``. The MCP tool is a leaf adapter — it
+    must not redefine the cost outlook shape. This test builds the MCP
+    server, mocks the facade, calls ``get`` with a cost-outlook ref, and
+    asserts the JSON envelope contains the typed fields produced by the cost
+    engine.
     """
     import asyncio as _asyncio
     import json as _json
@@ -520,16 +516,46 @@ async def test_mcp_cost_outlook_tool_uses_shared_envelope() -> None:
         facade_mock.cost_outlook = AsyncMock(return_value=outlook)
         mock_get_polylogue.return_value = facade_mock
         raw = await invoke_surface_async(
-            server._tool_manager._tools["cost_outlook"].fn,
-            plan="claude-pro",
-            method="linear",
+            server._tool_manager._tools["get"].fn,
+            ref="cost-outlook:claude-pro",
+            projection="linear",
+        )
+        facade_mock.cost_outlook.assert_awaited_once()
+
+    payload = _json.loads(raw)
+    # The get() cost-outlook resolution emits the typed CycleOutlook payload
+    # at the top level (matching the retired standalone-tool contract).
+    for key in ("plan_name", "window", "projection_method", "quota_pressure"):
+        assert key in payload, f"MCP get(cost-outlook:...) payload missing {key!r}"
+
+
+@pytest.mark.asyncio
+async def test_mcp_get_cost_outlook_unknown_plan_reports_typed_error() -> None:
+    """An unknown plan name resolves to a typed invalid_argument error, not a KeyError/traceback."""
+    import asyncio as _asyncio
+    import json as _json
+
+    from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
+
+    _asyncio.set_event_loop_policy(None)
+    from polylogue.cost.plans import PlanLookupError
+    from polylogue.mcp.server import build_server
+    from tests.infra.mcp import ALL_CAPABILITIES
+
+    server = build_server(capabilities=ALL_CAPABILITIES)
+    assert isinstance(server, MCPServerUnderTest)
+
+    with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+        facade_mock = make_polylogue_mock()
+        facade_mock.cost_outlook = AsyncMock(side_effect=PlanLookupError("unknown plan: nope"))
+        mock_get_polylogue.return_value = facade_mock
+        raw = await invoke_surface_async(
+            server._tool_manager._tools["get"].fn,
+            ref="cost-outlook:nope",
         )
 
     payload = _json.loads(raw)
-    # The MCP cost_outlook tool emits the typed CycleOutlook payload at the
-    # top level (matching the existing test_cost_outlook_tool.py contract).
-    for key in ("plan_name", "window", "projection_method", "quota_pressure"):
-        assert key in payload, f"MCP cost_outlook payload missing {key!r}"
+    assert payload.get("code") == "invalid_argument", payload
 
 
 # ---------------------------------------------------------------------------

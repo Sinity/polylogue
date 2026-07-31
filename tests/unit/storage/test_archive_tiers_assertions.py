@@ -12,6 +12,7 @@ from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
+from polylogue.core.json import JSONValue
 from polylogue.core.types import SessionId
 from polylogue.insights.transforms import compile_session_digest
 from polylogue.storage.sqlite.archive_tiers import user_write
@@ -1888,6 +1889,81 @@ def test_upsert_findings_rejects_incomplete_delta_and_unresolved_ref_shapes(tmp_
         )
         with pytest.raises(ValueError, match="result_set_ref"):
             upsert_findings_as_assertions(conn, [malformed_ref])
+    finally:
+        conn.close()
+
+
+def _finding_with_control(**control_overrides: JSONValue) -> FindingAssertion:
+    control: dict[str, JSONValue] = {
+        "control_kind": "shifted_window",
+        "query_ref": "query:control-window",
+        "result_ref": "result-set:control-window",
+        "matching_variables": ["repo"],
+        "expected_null": "no rate change outside the treatment window",
+        "observed_null_held": True,
+    }
+    control.update(control_overrides)
+    return FindingAssertion(
+        claim_key="tool-failure-rate-with-control",
+        target_ref="query:tool-failure-rate-v1",
+        body_text="The failure rate increased from the pre-registered baseline.",
+        finding_kind="measure",
+        statistic={"op": "rate", "value": 0.18, "unit": "fraction"},
+        n=200,
+        query_ref="query:tool-failure-rate-v1",
+        result_set_ref="result-set:tool-failure-rate-run-2",
+        detector_ref="insight:tool-failure-detector@v1",
+        controls=(control,),
+        control_frame_variables=("repo",),
+    )
+
+
+def test_upsert_finding_with_matched_control_stores_validated_observed_outcome(tmp_path: Path) -> None:
+    """A matched-shape control that isolates the frame variable is accepted and stored (rxdo.9.7)."""
+    conn = _connect(tmp_path / "user.db")
+    try:
+        finding = _finding_with_control()
+        written = upsert_findings_as_assertions(conn, [finding], now_ms=1_700_000_000_000)
+        assert len(written) == 1
+        value = written[0].value
+        assert isinstance(value, dict)
+        stored_controls = value["controls"]
+        assert stored_controls == [
+            {
+                "control_kind": "shifted_window",
+                "query_ref": "query:control-window",
+                "result_ref": "result-set:control-window",
+                "matching_variables": ["repo"],
+                "expected_null": "no rate change outside the treatment window",
+                "confounds_checked": [],
+                "observed_null_held": True,
+            }
+        ]
+        # Control query/result refs are resolvable evidence, not opaque metadata.
+        assert "query:control-window" in written[0].evidence_refs
+        assert "result-set:control-window" in written[0].evidence_refs
+    finally:
+        conn.close()
+
+
+def test_upsert_finding_rejects_confounded_unrelated_cohort_control(tmp_path: Path) -> None:
+    """A deliberately divergent baseline that leaves the claim's frame variable unchecked fails closed."""
+    conn = _connect(tmp_path / "user.db")
+    try:
+        finding = _finding_with_control(control_kind="unrelated_cohort", confounds_checked=[])
+        with pytest.raises(ValueError, match="control rejected"):
+            upsert_findings_as_assertions(conn, [finding])
+    finally:
+        conn.close()
+
+
+def test_upsert_finding_rejects_control_without_matching_variables(tmp_path: Path) -> None:
+    """A matched-shape control declaring no matching variables isolates nothing -- rejected, not silently stored."""
+    conn = _connect(tmp_path / "user.db")
+    try:
+        finding = _finding_with_control(matching_variables=[])
+        with pytest.raises(ValueError, match="control rejected"):
+            upsert_findings_as_assertions(conn, [finding])
     finally:
         conn.close()
 

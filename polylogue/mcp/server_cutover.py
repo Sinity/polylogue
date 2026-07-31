@@ -50,6 +50,150 @@ def _object_ref(ref: str) -> str:
     return f"{prefix}:{object_id}"
 
 
+async def _resolve_reference_query_pipeline(
+    hooks: ServerCallbacks, expression: str, *, limit: int | None
+) -> str | None:
+    """Resolve a ``from query:<hash>|result-set:<id>|query-run:<id>|cohort:<id>`` pipeline.
+
+    Returns ``None`` when ``expression`` is not a reference pipeline (the
+    caller falls through to the ordinary DSL path). Otherwise resolves the
+    root operand through the real planner seam (``DurableRefResolver`` +
+    ``ArchiveCanonicalPlanEvaluator``, both production implementations as of
+    PR #2899) and returns its member refs with lineage -- rxdo.6's "next
+    concrete slice": wire ONE command surface to call the reference-aware
+    planner instead of hard-erroring. Stage composition after the root
+    operand (``| group by ... | count``) is not implemented yet; a pipeline
+    with stages returns a typed ``not_implemented`` error naming the gap
+    rather than silently ignoring the stages or crashing.
+    """
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.archive.query.evaluator import RetainedRelationUnavailableError
+    from polylogue.archive.query.expression import (
+        ExpressionCompileError,
+        RefOperandCycleError,
+        parse_reference_query_pipeline,
+        resolve_ref_operand,
+    )
+    from polylogue.archive.query.production_evaluator import (
+        ArchiveCanonicalPlanEvaluator,
+        LegacyQueryDefinitionNotExecutableError,
+        UnsupportedEvaluationGrainError,
+    )
+    from polylogue.mcp.archive_support import mcp_archive_root
+
+    pipeline = parse_reference_query_pipeline(expression)
+    if pipeline is None:
+        return None
+    if pipeline.stages:
+        return hooks.error_json(
+            "reference-pipeline stage composition (e.g. `| group by ...`, `| count`) is not "
+            "implemented yet; only the bare `from <ref>` operand resolves. See polylogue-rxdo.6.",
+            code="not_implemented",
+            tool="query",
+        )
+
+    archive_root = mcp_archive_root(hooks.get_config())
+    user_db = archive_root / "user.db"
+    index_db = archive_root / "index.db"
+    if not user_db.exists() or not index_db.exists():
+        return hooks.error_json("archive is not initialized", code="not_found", tool="query")
+
+    evaluator = ArchiveCanonicalPlanEvaluator(index_db, surface="mcp")
+    try:
+        with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
+            from polylogue.archive.query.evaluator import DurableRefResolver
+
+            resolver = DurableRefResolver(conn, evaluator)
+            resolved = resolve_ref_operand(pipeline.operand, resolver)
+    except KeyError:
+        return hooks.error_json(
+            f"reference not found: {pipeline.operand.reference.format()}", code="not_found", tool="query"
+        )
+    except (
+        RetainedRelationUnavailableError,
+        RefOperandCycleError,
+        ExpressionCompileError,
+        LegacyQueryDefinitionNotExecutableError,
+        UnsupportedEvaluationGrainError,
+        NotImplementedError,
+    ) as exc:
+        return hooks.error_json(str(exc), code="invalid_argument", tool="query")
+
+    member_refs = resolved.member_refs
+    truncated = False
+    if limit is not None and limit >= 0 and len(member_refs) > limit:
+        member_refs = member_refs[:limit]
+        truncated = True
+    return hooks.json_payload(
+        MCPRootPayload(
+            root={
+                "source": pipeline.operand.reference.format(),
+                "grain": resolved.grain,
+                "lineage": [ref.format() for ref in resolved.lineage],
+                "member_count": len(resolved.member_refs),
+                "members": member_refs,
+                "truncated": truncated,
+            }
+        )
+    )
+
+
+def _metric_definition_payload(hooks: ServerCallbacks, metric_id: str) -> str:
+    """Resolve a ``metric:<hash-or-registered-name>`` ref (rxdo.9.1 identity layer).
+
+    Looks up the friendly name first (the common case for a hand-typed
+    ref), falling back to a direct content-hash lookup for
+    ``metric:<hash>`` refs copied from another surface's output.
+    """
+    from polylogue.insights.measurement.registered_metrics import DEFAULT_METRIC_REGISTRY
+
+    definition = DEFAULT_METRIC_REGISTRY.resolve(metric_id) or DEFAULT_METRIC_REGISTRY.get(f"metric:{metric_id}")
+    if definition is None:
+        return hooks.error_json(f"metric not found in the default registry: metric:{metric_id}", code="not_found")
+    return hooks.json_payload(
+        MCPRootPayload(root={"ref": definition.ref, "definition": definition.canonical_payload()}),
+        exclude_none=True,
+    )
+
+
+async def _cost_outlook_payload(hooks: ServerCallbacks, *, plan_name: str, method: str | None) -> str:
+    """Project the current billing cycle for ``plan_name`` (``get`` tool, ``cost-outlook:`` refs).
+
+    Mirrors the CLI ``analyze --cost-outlook`` call shape
+    (``polylogue/cli/query_verbs.py``) so both surfaces share one
+    ``Polylogue.cost_outlook`` production route rather than redefining the
+    projection or its "no cycle window" degradation here.
+    """
+    from polylogue.cost.outlook import ProjectionMethod
+    from polylogue.cost.plans import PlanLookupError
+    from polylogue.insights.projection_contracts import cost_outlook_availability
+
+    if not plan_name.strip():
+        return hooks.error_json("cost-outlook ref requires a plan name", code="invalid_argument", tool="get")
+    try:
+        projection_method = ProjectionMethod(method) if method else ProjectionMethod.linear
+    except ValueError:
+        valid = ", ".join(item.value for item in ProjectionMethod)
+        return hooks.error_json(
+            f"unsupported cost-outlook projection {method!r}; expected one of: {valid}",
+            code="invalid_argument",
+            tool="get",
+        )
+    try:
+        outlook = await hooks.get_polylogue().cost_outlook(plan_name, method=projection_method)
+    except PlanLookupError as exc:
+        return hooks.error_json(str(exc), code="invalid_argument", tool="get")
+    if outlook is None:
+        availability = cost_outlook_availability(plan_name, ready=False, elapsed_s=0.0)
+        return hooks.json_payload(
+            MCPRootPayload(root={"outlook": None, "availability": availability.model_dump(mode="json")}),
+            exclude_none=True,
+        )
+    return hooks.json_payload(outlook, exclude_none=True)
+
+
 async def _query_sessions(
     hooks: ServerCallbacks,
     *,
@@ -571,6 +715,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         """
 
         async def run() -> str:
+            if expression is not None:
+                reference_result = await _resolve_reference_query_pipeline(hooks, expression, limit=limit)
+                if reference_result is not None:
+                    return reference_result
+
             if projection == "sessions":
                 if continuation is not None:
                     return hooks.error_json(
@@ -681,11 +830,30 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``turn_context`` policy facts, Claude Code sidecar events, Hermes
         tool-availability spans, and similar provider evidence that rides the
         timeline rather than a dialogue message.
+
+        ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
+        for a configured subscription plan (the standalone ``cost_outlook``
+        MCP tool retired by the six-tool cutover, #3095/polylogue-t46.8, has
+        no replacement otherwise -- see polylogue-hg97). ``projection``
+        selects the projection method (``linear`` default, ``trailing-7d-mean``,
+        or ``eom-naive``).
+
+        ``ref="metric:<hash-or-registered-name>"`` resolves a canonical
+        ``metric:<hash>`` definition (rxdo.9.1) from the process-wide
+        default registry (``polylogue/insights/measurement/
+        registered_metrics.py``) -- identity/schema resolution only, not
+        execution (no aggregation engine exists yet; see polylogue-9l5.7).
         """
         normalized = _object_ref(ref)
         session_id = normalized.removeprefix("session:") if normalized.startswith("session:") else None
+        plan_name = normalized.removeprefix("cost-outlook:") if normalized.startswith("cost-outlook:") else None
+        metric_id = normalized.removeprefix("metric:") if normalized.startswith("metric:") else None
 
         async def run() -> str:
+            if plan_name is not None:
+                return await _cost_outlook_payload(hooks, plan_name=plan_name, method=projection)
+            if metric_id is not None:
+                return _metric_definition_payload(hooks, metric_id)
             if projection == "events" and session_id is not None:
                 events = await hooks.get_polylogue().get_session_events(session_id)
                 if events is None:
