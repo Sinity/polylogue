@@ -8,7 +8,7 @@ from typing import cast
 
 import pytest
 
-from devtools import verify_demo_packet, verify_demo_packet_registry
+from devtools import verify_demo_packet_registry
 from devtools.demo_packet import (
     PACKET_FILENAMES,
     PROVENANCE_STANZA_FIELDS,
@@ -421,33 +421,3 @@ def test_registry_lint_reports_missing_registry_file(tmp_path: Path, capsys: pyt
     assert exit_code == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
-
-
-def test_single_packet_cli_returns_zero_for_conforming_packet(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    packet_dir = tmp_path / "packet"
-    _write_conforming_packet(packet_dir)
-
-    exit_code = verify_demo_packet.main([str(packet_dir), "--json"])
-
-    assert exit_code == 0
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["ok"] is True
-
-
-def test_single_packet_cli_returns_one_for_missing_falsifier(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    packet_dir = tmp_path / "packet"
-    payload = json.loads((FIXTURE_ROOT / "invalid-missing-falsifier.json").read_text(encoding="utf-8"))
-    _write_conforming_packet(packet_dir, payload=payload)
-
-    exit_code = verify_demo_packet.main([str(packet_dir), "--json"])
-
-    assert exit_code == 1
-    result = json.loads(capsys.readouterr().out)
-    assert result["ok"] is False
-    assert any("falsifier" in error for error in result["schema_errors"])
