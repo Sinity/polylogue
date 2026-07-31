@@ -68,9 +68,19 @@ Load-bearing columns:
 - FTS5 is **contentless** (`content=''`, `contentless_delete=1`) over
   `blocks.search_text`, kept in sync by three triggers. `tokenize=unicode61`
   (no porter stemmer in this build — don't change it).
-- CHECK constraints are **generated from Python types** —
-  `literal_check("status", *get_args(RunStatus))` embeds `typing.Literal` args
-  into SQL, so Python type ↔ SQL constraint stay in lockstep.
+- CHECK constraints are **generated from Python types** where a call site
+  exists — `check`/`nullable_check` (`storage/sqlite/archive_tiers/common.py`)
+  embed a `PolylogueStrEnum`'s values via `sql_check_in`/`nullable_sql_check_in`
+  (e.g. `check("origin", Origin)`, `check("role", Role)`), and `literal_check`
+  does the same for `typing.Literal` columns (e.g.
+  `delegation_facts.mapping_state`/`.result_status` via
+  `literal_check("mapping_state", *get_args(DelegationMappingState))`).
+  This is real for the ~20 enum-backed columns and the handful of
+  `literal_check` call sites wired so far (polylogue-u6tl) — most
+  hand-written `CHECK(col IN (...))` lists across `archive_tiers/*.py`
+  still have no generator tie and can drift silently; `RunStatus`
+  (`insights/run_projection.py`) is intentionally storage-free (an
+  in-memory projection, never a column) and has no SQL surface to generate.
 
 **Lineage normalization** (`session_links`, index v12+) is the sharpest design
 point. Forks/resumes/subagents/auto-compaction physically replay the parent's
