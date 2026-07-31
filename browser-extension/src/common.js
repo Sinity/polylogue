@@ -132,6 +132,12 @@
           ordinal,
           parent_turn_id: turn.parent_turn_id || null,
           attachments: Array.isArray(turn.attachments) ? turn.attachments : [],
+          // Structured content (tool_use/tool_result/thinking/...) an
+          // adapter observed for this turn. Previously dropped here even
+          // when a caller (e.g. chatgpt.js's collectNativeTurns) populated
+          // it, silently flattening every native capture's tool call/result
+          // structure back down to prose (polylogue-ah21 regressed).
+          blocks: Array.isArray(turn.blocks) ? turn.blocks : [],
           provider_meta: turn.provider_meta || {}
         })),
         attachments: Array.isArray(attachments) ? attachments : []
