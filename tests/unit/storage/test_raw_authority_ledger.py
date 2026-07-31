@@ -1270,7 +1270,7 @@ def _seed_ambiguous_membership_component(
     *,
     native_id: str,
     parser_fingerprint: str | None,
-) -> tuple[str, object]:
+) -> tuple[str, RawReplayPlanOutcome]:
     """Seed one raw whose membership decision is durably 'ambiguous'.
 
     ``parser_fingerprint`` controls what (if anything) the per-raw

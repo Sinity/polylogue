@@ -5,6 +5,7 @@ import sqlite3
 import time
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -2558,7 +2559,7 @@ def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, m
         calls = 0
         original = archive_tier_write._reextract_prefix_tail_db
 
-        def counting_wrapper(*args: object, **kwargs: object) -> object:
+        def counting_wrapper(*args: Any, **kwargs: Any) -> Any:
             nonlocal calls
             calls += 1
             return original(*args, **kwargs)
