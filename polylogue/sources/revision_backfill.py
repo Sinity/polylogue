@@ -11,7 +11,8 @@ import threading
 import time
 from collections import OrderedDict
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from io import BytesIO
 from itertools import chain, islice
@@ -44,6 +45,7 @@ from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
 
@@ -857,9 +859,21 @@ def backfill_historical_revision_evidence(
         else ArchiveStore.open_existing(archive_root, read_only=False)
     )
     spill_cache_bytes = max_cached_payload_bytes if max_cached_payload_bytes is not None else max_payload_bytes
+    # polylogue-fpid: one background worker that builds the NEXT byte-proven
+    # cohort's PreparedSessionRows (message/block row tuples -- pure CPU,
+    # per-item hashing/JSON-encoding/enum lookups, no DB connection) while
+    # THIS cohort's apply_raw_revision_replay() does its own preamble
+    # (attachment preacquisition, blob flush, raw_revision_heads lookup) on
+    # the calling thread. Only real parallelism under a free-threaded
+    # interpreter (see ``parallel_threads_effective``'s docstring for why a
+    # GIL build must not engage worker threads here either) -- a GIL build
+    # gets ``prepare_pool=None`` and every write falls back to building rows
+    # inline, byte-identical to before this change.
+    prepare_pool = ThreadPoolExecutor(max_workers=1) if parallel_threads_effective() else None
     with (
         archive_context as archive,
         _ParsedSessionSpill(archive_root, max_cached_payload_bytes=spill_cache_bytes) as spill,
+        prepare_pool if prepare_pool is not None else nullcontext(),
     ):
         census_started = time.perf_counter()
         census = _census_historical_revision_evidence(
@@ -964,6 +978,19 @@ def backfill_historical_revision_evidence(
                 retained_bytes += payload_bytes
             if retention_observer is not None:
                 retention_observer(len(parsed_by_raw_id), retained_bytes)
+            # polylogue-fpid: kick off row-tuple construction for the chain's
+            # sole full-replace position (position 0 -- see apply_raw_
+            # revision_replay's docstring) on the background pool now, so it
+            # runs concurrently with the adoptability check below and this
+            # cohort's own apply_raw_revision_replay() preamble. A GIL build
+            # (prepare_pool is None) leaves prepared_by_raw_id empty and this
+            # write falls back to building rows inline, unchanged.
+            prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] = {}
+            if prepare_pool is not None:
+                position0_raw_id = plan.accepted_raw_ids[0]
+                prepared_by_raw_id[position0_raw_id] = prepare_pool.submit(
+                    prepare_session_rows, parsed_by_raw_id[position0_raw_id]
+                )
             accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
             if not archive.raw_revision_replay_adoptable(accepted_sessions):
                 archive.defer_raw_revision_adoption(plan.logical_source_key, plan.accepted_raw_ids, accepted_sessions)
@@ -972,6 +999,11 @@ def backfill_historical_revision_evidence(
                 if plan_raw_ids and plan_raw_ids <= provisional_raw_ids:
                     archive.release_provisional_full_revisions(sorted(plan_raw_ids))
                 adoption_deferred += len(plan.accepted_raw_ids)
+                # The submitted future is discarded unused here (this cohort
+                # was deferred, not written) -- harmless: its result is a
+                # pure, side-effect-free row-tuple build with no DB
+                # connection, so an unconsumed Future just gets garbage
+                # collected once the pool shuts down.
                 continue
             try:
                 archive.apply_raw_revision_replay(
@@ -982,6 +1014,7 @@ def backfill_historical_revision_evidence(
                     manage_transaction=not replay_batched,
                     bulk_fts=bulk_fts,
                     bulk_build=bulk_build,
+                    prepared_by_raw_id=prepared_by_raw_id or None,
                 )
             except sqlite3.IntegrityError as exc:
                 raise sqlite3.IntegrityError(

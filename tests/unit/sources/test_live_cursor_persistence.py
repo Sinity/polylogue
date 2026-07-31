@@ -15,6 +15,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveRawParsedWriteResult, ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows
 
 
 def _claude_message(
@@ -75,6 +76,7 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
         bulk_fts: bool = False,
         bulk_build: bool = False,
         defer_fts_rebuild: bool = False,
+        prepared: PreparedSessionRows | None = None,
     ) -> ArchiveRawParsedWriteResult:
         nonlocal attempts
         attempts += 1
@@ -93,6 +95,7 @@ def _lock_first_index_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
             defer_fts_rebuild=defer_fts_rebuild,
+            prepared=prepared,
         )
 
     monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", lock_once)

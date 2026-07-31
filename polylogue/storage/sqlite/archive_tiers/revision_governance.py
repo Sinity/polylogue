@@ -91,6 +91,7 @@ import hashlib
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import Future
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -148,6 +149,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    PreparedSessionRows,
     _timestamp_ms,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
@@ -215,6 +217,7 @@ def _write_parsed_precedence_result(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
+    prepared: PreparedSessionRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
     content_hash = str(session_content_hash(session))
@@ -248,6 +251,7 @@ def _write_parsed_precedence_result(
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
             defer_fts_rebuild=defer_fts_rebuild,
+            prepared=prepared,
         )
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
@@ -418,6 +422,7 @@ def _write_parsed_precedence_result(
         stage_timing_prefix=stage_timing_prefix,
         preacquired_attachment_blobs=preacquired_attachment_blobs,
         manage_transaction=manage_transaction,
+        prepared=prepared,
     )
     counts = store._write_counts(session)
     if (
@@ -1917,8 +1922,26 @@ def apply_raw_revision_replay(
     bulk_build: bool = False,
     defer_fts: bool = False,
     skip_already_applied: bool = False,
+    prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """Apply a proven chain and atomically receipt its exact index state.
+
+    ``prepared_by_raw_id`` (polylogue-fpid) optionally supplies row tuples
+    already built off the writer thread for one or more of ``plan.
+    accepted_raw_ids`` -- keyed by ``raw_id``, value either the
+    ``PreparedSessionRows`` itself or a ``Future`` resolved here right
+    before use (so a caller can ``submit()`` the CPU-bound build on a
+    background thread and let it run concurrently with this function's own
+    attachment-preacquisition/blob-flush/head-lookup preamble, then pay only
+    the (likely already-finished) ``Future.result()`` wait). Only ever
+    consulted for ``position == 0`` (the chain's sole full-replace write --
+    every other position is a ``merge_append``, which
+    ``write_parsed_session_to_archive`` never accepts prepared rows for
+    regardless). A missing key, ``None`` value, or a value that turns out
+    stale (session content hash mismatch, or lineage tail-slicing changed
+    ``messages`` after it was built) is always safe: ``write_parsed_session_
+    to_archive`` falls back to building rows inline, byte-identical to
+    ``prepared_by_raw_id=None``.
 
     ``manage_transaction=False`` batches this cohort's index.db writes
     and terminal source.db parse-state markers into the caller's open
@@ -2061,6 +2084,18 @@ def apply_raw_revision_replay(
                 parsed = parsed_by_raw_id[raw_id]
                 session_ids.add(str(make_session_id(parsed.source_name, parsed.provider_session_id)))
                 continue
+            # polylogue-fpid: only position 0 is ever a full-replace write
+            # (every later position is merge_append, source_index=-1 above),
+            # so a prepared entry is only ever resolved/consulted there --
+            # see this function's docstring for the resolve-here-not-earlier
+            # rationale and the always-safe stale-prepared fallback.
+            resolved_prepared: PreparedSessionRows | None = None
+            if position == 0 and prepared_by_raw_id is not None:
+                prepared_candidate = prepared_by_raw_id.get(raw_id)
+                if isinstance(prepared_candidate, Future):
+                    resolved_prepared = prepared_candidate.result()
+                else:
+                    resolved_prepared = prepared_candidate
             index_started = time.perf_counter()
             result = _index_parsed_for_retained_raw(
                 store,
@@ -2076,6 +2111,7 @@ def apply_raw_revision_replay(
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
                 defer_fts_rebuild=not bulk_build,
+                prepared=resolved_prepared,
             )
             if stage_timings_s is not None:
                 key = f"{stage_timing_prefix}.index_parsed_write"
@@ -2621,6 +2657,7 @@ def _index_parsed_for_retained_raw(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
+    prepared: PreparedSessionRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
     provider = Provider.from_string(session.source_name)
     try:
@@ -2637,6 +2674,7 @@ def _index_parsed_for_retained_raw(
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
             defer_fts_rebuild=defer_fts_rebuild,
+            prepared=prepared,
         )
     except Exception as exc:
         finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, exc))
