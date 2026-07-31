@@ -367,10 +367,15 @@ describe("background backfill coordinator", () => {
     expect(receiver).toHaveBeenCalledTimes(1);
   });
 
-  it("consumes the bounded ChatGPT bridge projection as an honest compact capture", async () => {
+  it("consumes the bounded ChatGPT bridge projection as an honest full-fidelity capture", async () => {
+    // The bridge (page_transport.js) no longer emits a lossy "compact"
+    // projection at all -- every ChatGPT capture that reaches the receiver
+    // is native_full, because content/metadata field-dropping was replaced
+    // with chunking (see page_transport.test.js). captureFidelity here is
+    // no longer a function of the wire tag; it is unconditionally native_full.
     const adapter = new ChatGptBackfillAdapter();
     const capture = await adapter.normalizeCapture(response({
-      polylogue_bridge_projection: "chatgpt-native-compact-v1",
+      polylogue_bridge_projection: "chatgpt-native-bridge-v1",
       id: "compact-one",
       title: "Compact one",
       create_time: 1710000000,
@@ -391,21 +396,21 @@ describe("background backfill coordinator", () => {
     }), { native_id: "compact-one", title: "Compact one", updated_at: "2026-07-01T00:00:00Z" }, { job_id: "job", queue_id: "queue", instance_id: "worker" });
 
     expect(capture).toMatchObject({
-      raw_provider_payload: { polylogue_bridge_projection: "chatgpt-native-compact-v1" },
-      provider_meta: { capture_fidelity: "native_compact" },
-      session: { provider_meta: { capture_fidelity: "native_compact" }, turns: [{ text: "retained text" }] },
+      raw_provider_payload: { polylogue_bridge_projection: "chatgpt-native-bridge-v1" },
+      provider_meta: { capture_fidelity: "native_full" },
+      session: { provider_meta: { capture_fidelity: "native_full" }, turns: [{ text: "retained text" }] },
     });
   });
 
-  it("preserves compact-capture fidelity after the receiver acknowledges it", async () => {
+  it("reports native_full capture fidelity after the receiver acknowledges a chunk-eligible ChatGPT bridge projection", async () => {
     const adapter = new FixtureAdapter(["compact-one"]);
-    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-compact-v1" })];
+    adapter.responses = [response({ ...chatGptNative("compact-one"), polylogue_bridge_projection: "chatgpt-native-bridge-v1" })];
     const h = harness({ adapter });
     const job = await startJob(h);
     await enumerateThenAdvance(h, job);
     await h.coordinator.wake(job.id);
 
-    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_compact" }]);
+    expect(await h.store.listQueue(job.id)).toMatchObject([{ state: "complete", capture_fidelity: "native_full" }]);
   });
 
   it("submits the exact capture override through the ordinary receiver path", async () => {

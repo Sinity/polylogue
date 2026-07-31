@@ -1671,6 +1671,63 @@ function scriptingResultTooLarge(error) {
   return /(?:result|response|message|script).{0,100}(?:too large|exceed(?:s|ed)?|maximum).{0,100}(?:size|limit|length)/.test(message);
 }
 
+// The maximum number of chunk round-trips a single chunked ChatGPT
+// conversation fetch will make, mirroring page_transport.js's
+// maxChatGptChunks -- a defensive ceiling against a malformed/adversarial
+// totalChunks value from the page context, not a fidelity limit (a real
+// conversation chunk count is bounded by its own byte size divided by the
+// bridge's per-chunk packing target).
+const MAX_PROVIDER_PAGE_CHUNKS = 64;
+
+async function runProviderPageScript(transport, request) {
+  const executions = await withTimeout(
+    chrome.scripting.executeScript({
+      target: { tabId: transport.tab.id },
+      world: "MAIN",
+      func: executeProviderPageRequest,
+      args: [request],
+    }),
+    BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
+    "backfill_page_request",
+  );
+  return executions?.[0]?.result;
+}
+
+// Reassembles a chunked ChatGPT conversation projection (see
+// page_transport.js's buildChatGptChunks/compactChatGptConversation) by
+// re-invoking the MAIN-world bridge once per remaining chunk and merging
+// each chunk's node-aligned `mapping` slice into one full-fidelity mapping.
+// Each individual scripting-result call stays under the bridge's per-call
+// byte cap; the reassembled conversation here in the extension process has
+// no such cap, so overall fidelity never depends on conversation size.
+async function reassembleChunkedChatGptConversation(transport, request, firstResult) {
+  const firstBody = JSON.parse(firstResult.response.body);
+  if (!firstBody.chunked) return firstResult;
+  const totalChunks = Number(firstBody.totalChunks);
+  if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > MAX_PROVIDER_PAGE_CHUNKS) {
+    throw new Error(`backfill_bridge_projection_too_many_chunks:total_chunks=${firstBody.totalChunks}`);
+  }
+  const mapping = { ...firstBody.mapping };
+  for (let chunkIndex = 1; chunkIndex < totalChunks; chunkIndex += 1) {
+    const chunkResult = await runProviderPageScript(transport, { ...request, params: { ...request.params, chunkIndex } });
+    if (!chunkResult?.ok) throw new Error(String(chunkResult?.error || "backfill_page_request_failed"));
+    const chunkBody = JSON.parse(chunkResult.response.body);
+    if (chunkBody.totalChunks !== totalChunks) {
+      throw new Error(`backfill_bridge_chunk_manifest_mismatch:expected_total=${totalChunks};observed_total=${chunkBody.totalChunks}`);
+    }
+    Object.assign(mapping, chunkBody.mapping);
+  }
+  const header = { ...firstBody };
+  delete header.chunked;
+  delete header.chunkIndex;
+  delete header.totalChunks;
+  delete header.mapping;
+  return {
+    ok: true,
+    response: { ...firstResult.response, body: JSON.stringify({ ...header, mapping }) },
+  };
+}
+
 async function providerPageFetch(url, options = {}) {
   if (options.method && options.method !== "GET") throw new Error("backfill_provider_method_not_allowed");
   const request = providerRequestFromUrl(url);
@@ -1679,17 +1736,10 @@ async function providerPageFetch(url, options = {}) {
     const transport = await providerTab(request.provider);
     let result;
     try {
-      const executions = await withTimeout(
-        chrome.scripting.executeScript({
-          target: { tabId: transport.tab.id },
-          world: "MAIN",
-          func: executeProviderPageRequest,
-          args: [request],
-        }),
-        BACKFILL_PAGE_REQUEST_TIMEOUT_MS,
-        "backfill_page_request",
-      );
-      result = executions?.[0]?.result;
+      result = await runProviderPageScript(transport, request);
+      if (result?.ok && request.operation === "conversation" && result.response?.ok) {
+        result = await reassembleChunkedChatGptConversation(transport, request, result);
+      }
     } catch (error) {
       if (transport.owned) {
         await chrome.tabs.remove(transport.tab.id).catch(() => undefined);

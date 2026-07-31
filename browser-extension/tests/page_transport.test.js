@@ -137,7 +137,7 @@ describe("first-party provider page transport", () => {
     expect(reads).toBe(2);
   });
 
-  it("projects a declared-over-32-MiB ChatGPT conversation before crossing the bridge", async () => {
+  it("projects a declared-over-32-MiB ChatGPT conversation before crossing the bridge, dropping only envelope-level noise", async () => {
     const token = "synthetic-bearer-secret";
     const accountId = "synthetic-account-secret";
     const fetchImpl = vi.fn(async (input) => {
@@ -145,7 +145,7 @@ describe("first-party provider page transport", () => {
       if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
       return new Response(JSON.stringify({
         id: "conversation-1",
-        title: "Compact fixture",
+        title: "Fixture",
         mapping: {
           node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["kept"] }, metadata: { model_slug: "fixture" }, create_time: 1 } },
         },
@@ -158,8 +158,149 @@ describe("first-party provider page transport", () => {
 
     expect(result).toMatchObject({ ok: true, response: { ok: true } });
     const body = JSON.parse(result.response.body);
-    expect(body).toMatchObject({ polylogue_bridge_projection: "chatgpt-native-compact-v1", mapping: { node: { message: { content: { parts: ["kept"] } } } } });
+    expect(body).toMatchObject({
+      polylogue_bridge_projection: "chatgpt-native-bridge-v1",
+      chunked: false,
+      chunkIndex: 0,
+      totalChunks: 1,
+      mapping: { node: { message: { content: { parts: ["kept"] }, metadata: { model_slug: "fixture" } } } },
+    });
+    // Envelope-level fields not in the declared header (id/title/create_time/
+    // update_time/current_node) are conversation-object noise, distinct from
+    // the per-node content/metadata fidelity bug this fix addresses.
     expect(JSON.stringify(body)).not.toContain("ignored_large_provider_metadata");
+  });
+
+  it("forwards a ChatGPT `thoughts` reasoning node's full payload instead of collapsing it to {}", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        mapping: {
+          "reasoning-node": {
+            id: "reasoning-node",
+            parent: null,
+            message: {
+              id: "reasoning-message",
+              author: { role: "assistant" },
+              content: {
+                content_type: "thoughts",
+                thoughts: [
+                  { summary: "Considering the request", content: "The user wants X, so I should check Y first." },
+                  { summary: "Checking constraints", content: "Y depends on Z, verified via tool call." },
+                ],
+              },
+              metadata: { model_slug: "gpt-5-6-thinking" },
+            },
+          },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    const body = JSON.parse(result.response.body);
+    expect(body.mapping["reasoning-node"].message.content).toEqual({
+      content_type: "thoughts",
+      thoughts: [
+        { summary: "Considering the request", content: "The user wants X, so I should check Y first." },
+        { summary: "Checking constraints", content: "Y depends on Z, verified via tool call." },
+      ],
+    });
+  });
+
+  it("forwards content_references, citations, and other metadata keys the old allowlist dropped", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const richMetadata = {
+      model_slug: "gpt-5-6",
+      content_references: [{ matched_text: "a source", url: "https://example.com/a", type: "webpage" }],
+      citations: [{ start_ix: 0, end_ix: 5, metadata: { url: "https://example.com/b" } }],
+      finish_details: { type: "stop", stop_tokens: [200002] },
+      request_id: "req-abc123",
+      reasoning_status: "reasoning_ended",
+      search_result_groups: [{ domain: "example.com", entries: [{ url: "https://example.com/c" }] }],
+      aggregate_result: { status: "success", final_expression_output: '{"result": 42}' },
+      attachments: [{ id: "file-1", name: "data.csv", mime_type: "text/csv", size: 1234, extracted_content: "col_a,col_b\n1,2\n" }],
+    };
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({
+        id: "conversation-1",
+        mapping: {
+          node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { content_type: "text", parts: ["with citation"] }, metadata: richMetadata } },
+        },
+      }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    const body = JSON.parse(result.response.body);
+    expect(body.mapping.node.message.metadata).toEqual(richMetadata);
+  });
+
+  it("chunks a ChatGPT conversation whose full-fidelity projection exceeds one bridge call, and re-serves later chunks from the MAIN-world cache without refetching", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    let conversationFetches = 0;
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      conversationFetches += 1;
+      const mapping = {};
+      for (let index = 0; index < 4; index += 1) {
+        mapping[`node-${index}`] = {
+          id: `node-${index}`,
+          parent: index > 0 ? `node-${index - 1}` : null,
+          message: { id: `message-${index}`, author: { role: "assistant" }, content: { content_type: "text", parts: ["x".repeat(7 * 1024 * 1024)] } },
+        };
+      }
+      return new Response(JSON.stringify({ id: "conversation-1", mapping }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const chunk0 = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1" }, maxResponseBytes: 32 * 1024 * 1024 });
+    const body0 = JSON.parse(chunk0.response.body);
+    expect(body0.chunked).toBe(true);
+    expect(body0.totalChunks).toBeGreaterThan(1);
+    expect(conversationFetches).toBe(1);
+
+    const collected = { ...body0.mapping };
+    for (let chunkIndex = 1; chunkIndex < body0.totalChunks; chunkIndex += 1) {
+      const chunkResult = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "conversation-1", chunkIndex }, maxResponseBytes: 32 * 1024 * 1024 });
+      const chunkBody = JSON.parse(chunkResult.response.body);
+      expect(chunkBody.totalChunks).toBe(body0.totalChunks);
+      Object.assign(collected, chunkBody.mapping);
+    }
+
+    // Every chunk pull after the first reused the cached raw source instead
+    // of hitting the network again.
+    expect(conversationFetches).toBe(1);
+    expect(Object.keys(collected).sort()).toEqual(["node-0", "node-1", "node-2", "node-3"]);
+    for (let index = 0; index < 4; index += 1) {
+      expect(collected[`node-${index}`].message.content.parts[0]).toHaveLength(7 * 1024 * 1024);
+    }
+  });
+
+  it("fails loud on a stale chunk request instead of silently reassembling a truncated conversation", async () => {
+    const token = "synthetic-bearer-secret";
+    const accountId = "synthetic-account-secret";
+    const fetchImpl = vi.fn(async (input) => {
+      const url = new URL(input);
+      if (url.pathname === "/api/auth/session") return new Response(JSON.stringify({ accessToken: token, account: { id: accountId } }));
+      return new Response(JSON.stringify({ id: "conversation-1", mapping: { node: { id: "node", parent: null, message: { id: "message", author: { role: "assistant" }, content: { parts: ["kept"] } } } } }));
+    });
+    installWindow("https://chatgpt.com/", fetchImpl);
+
+    const result = await executeProviderPageRequest({ provider: "chatgpt", operation: "conversation", params: { nativeId: "never-fetched-conversation", chunkIndex: 3 }, maxResponseBytes: 32 * 1024 * 1024 });
+
+    expect(result).toEqual({ ok: false, error: "backfill_bridge_chunk_cache_miss" });
   });
 
   it("preserves completion and asset descriptors in the bounded ChatGPT projection", async () => {

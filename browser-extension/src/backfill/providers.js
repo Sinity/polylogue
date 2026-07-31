@@ -221,8 +221,14 @@ export class ChatGptBackfillAdapter {
         },
       }];
     });
-    const compact = body.polylogue_bridge_projection === "chatgpt-native-compact-v1";
-    return envelope({ provider: "chatgpt", nativeId: item.native_id, title: body.title || item.title, createdAt: isoTimestamp(body.create_time), updatedAt: isoTimestamp(body.update_time) || item.updated_at, turns, rawPayload: body, adapterName: compact ? "chatgpt-backfill-compact-v1" : "chatgpt-backfill-native-v1", sourceUrl: `https://chatgpt.com/c/${item.native_id}`, attribution, captureFidelity: compact ? "native_compact" : "native_full" });
+    // page_transport.js's ChatGPT bridge projection is full-fidelity (every
+    // content-type payload key and every metadata key preserved, chunked
+    // across bounded scripting-result calls rather than field-dropped -- see
+    // polylogue-thoughts-fidelity), so a backfilled ChatGPT capture is always
+    // native_full now; the lossy "compact" projection tag/capture_fidelity
+    // value no longer exists on the emitting side (the Python parser retains
+    // read support for historical archive rows tagged native_compact).
+    return envelope({ provider: "chatgpt", nativeId: item.native_id, title: body.title || item.title, createdAt: isoTimestamp(body.create_time), updatedAt: isoTimestamp(body.update_time) || item.updated_at, turns, rawPayload: body, adapterName: "chatgpt-backfill-native-v1", sourceUrl: `https://chatgpt.com/c/${item.native_id}`, attribution, captureFidelity: "native_full" });
   }
 }
 

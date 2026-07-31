@@ -976,6 +976,155 @@ describe("background receiver diagnostics", () => {
     expect(JSON.stringify(stored)).not.toContain("paired:chatgpt");
   });
 
+  it("reassembles a chunked ChatGPT conversation across multiple scripting-result calls before it reaches the receiver", async () => {
+    // Proves the real production wiring end to end: background.js's
+    // providerPageFetch -> reassembleChunkedChatGptConversation actually
+    // drives a second chrome.scripting.executeScript call (chunkIndex: 1)
+    // and merges its mapping into the envelope the receiver gets, rather
+    // than the mapping only ever containing chunk 0 (which would silently
+    // drop the back half of every conversation the bridge has to chunk).
+    const pairing = { state: "online", receiver_id: "rx-chunk-test", api_schema: "polylogue-browser-capture/v1", endpoint: "http://127.0.0.1:8875" };
+    stored.polylogueReceiverPairing = pairing;
+    tabs = [{ id: 42, url: "https://chatgpt.com/", title: "ChatGPT" }];
+    // The ChatGPT backfill queue always tries an "exact" open-tab capture
+    // first (background.js's captureOverride -> captureProviderConversation
+    // -> chrome.tabs.sendMessage(..., "polylogue.capturePage")), passing the
+    // bridge's reassembled body through as `nativePayload`. Stand in for the
+    // content script and echo that payload straight into the envelope, so
+    // this test still proves the bridge's chunk reassembly reached the
+    // capture that would be submitted to the receiver -- not a separate,
+    // unrelated DOM-scrape code path (owned by another lane of this fix).
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_tabId, message) => {
+      if (message.type === "polylogue.capturePage") {
+        return {
+          ok: true,
+          envelope: {
+            provider_meta: { capture_fidelity: "native_full" },
+            raw_provider_payload: message.nativePayload,
+            session: {
+              provider: "chatgpt",
+              provider_session_id: message.providerSessionId,
+              provider_meta: { capture_fidelity: "native_full" },
+              turns: Object.values(message.nativePayload?.mapping || {}).map((node) => ({
+                provider_turn_id: node.id,
+                text: node.message?.content?.parts?.[0] || "",
+              })),
+            },
+          },
+        };
+      }
+      return { ok: false, error: "unexpected_capture_message" };
+    });
+    const accountHandle = "stable-chatgpt-account-id";
+    const conversationChunkIndexes = [];
+    const chunkBodies = [
+      {
+        polylogue_bridge_projection: "chatgpt-native-bridge-v1", id: "chunked-conversation", title: "Chunked",
+        chunked: true, chunkIndex: 0, totalChunks: 2,
+        mapping: { "node-a": { id: "node-a", parent: null, message: { id: "message-a", author: { role: "user" }, content: { content_type: "text", parts: ["first half"] } } } },
+      },
+      {
+        polylogue_bridge_projection: "chatgpt-native-bridge-v1", id: "chunked-conversation", title: "Chunked",
+        chunked: true, chunkIndex: 1, totalChunks: 2,
+        mapping: { "node-b": { id: "node-b", parent: "node-a", message: { id: "message-b", author: { role: "assistant" }, content: { content_type: "text", parts: ["second half"] } } } },
+      },
+    ];
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      const request = details.args?.[0];
+      if (request?.operation === "identity") return [{ result: { ok: true, response: { accountHandle } } }];
+      if (request?.operation === "inventory") {
+        return [{ result: { ok: true, response: {
+          ok: true, status: 200, contentType: "application/json",
+          body: JSON.stringify({ items: [{ id: "chunked-conversation" }], total: 1 }),
+        } } }];
+      }
+      if (request?.operation === "conversation") {
+        const chunkIndex = request.params?.chunkIndex ?? 0;
+        conversationChunkIndexes.push(chunkIndex);
+        return [{ result: { ok: true, response: {
+          ok: true, status: 200, contentType: "application/json",
+          body: JSON.stringify(chunkBodies[chunkIndex]),
+        } } }];
+      }
+      // Other passive features (e.g. ambient DOM reconciliation for the open
+      // tab) also drive chrome.scripting.executeScript; this fixture only
+      // cares about the ChatGPT backfill bridge above.
+      return [{ result: undefined }];
+    });
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const captureJobResponse = captureJobFixtureResponse(url, options);
+      if (captureJobResponse) return captureJobResponse;
+      const path = new URL(url).pathname;
+      if (path === "/v1/status") {
+        return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
+      }
+      if (path === "/v1/browser-captures/capabilities") {
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+      }
+      if (path === "/v1/backfill-checkpoint") return responseJson({ stored_at: "now" }, { status: 202 });
+      if (path === "/v1/browser-captures") {
+        const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(options.body));
+        const contentHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+        return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "chunked-conversation", state: "complete", artifact_ref: "chatgpt/chunked-conversation.json", content_hash: contentHash });
+      }
+      return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+
+    // The coordinator real-time paces successive provider requests
+    // (learned_cadence_ms, ~15s) to avoid hammering the ChatGPT API, and one
+    // wake only ever enumerates a single inventory partition or processes
+    // queued items, never both. Advance the coordinator's injected clock
+    // (BackfillCoordinator defaults to `() => Date.now()`) instead of really
+    // sleeping ~75s of wall-clock time per test run.
+    let simulatedNowMs = Date.now();
+    const clockSpy = vi.spyOn(Date, "now").mockImplementation(() => simulatedNowMs);
+    try {
+      const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
+      await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
+      // Four ChatGPT inventory partitions (active/archived x starred/
+      // unstarred) to walk through before inventory_complete, plus one more
+      // wake to fetch the queued conversation.
+      for (let wake = 0; wake < 5; wake += 1) {
+        simulatedNowMs += 20000;
+        alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+        // Let the wake's async chain (provider fetch, capture, receiver
+        // POST, checkpoint mirroring) fully settle before advancing the
+        // clock again. A later wake may have nothing left to do once the
+        // item is already captured, so this does not assert growth.
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+        if (fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
+      }
+      // The four partitions all resolve to the same single native id, so the
+      // item may be (re)fetched more than once across the simulated wakes;
+      // what matters is that every fetch pulls chunk 0 then chunk 1, never
+      // chunk 0 alone (which would silently drop the back half forever).
+      expect(conversationChunkIndexes.length).toBeGreaterThanOrEqual(2);
+      expect(conversationChunkIndexes.slice(0, 2)).toEqual([0, 1]);
+      // Submitting the reassembled capture to the receiver is its own wake
+      // step (acquireNextLease for "captured_waiting_receiver" happens
+      // before the provider-fetch loop in runLeasedJob), so it can still be
+      // pending after the wake that only just finished the provider fetch.
+      for (let submitWake = 0; submitWake < 3; submitWake += 1) {
+        if (fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")) break;
+        simulatedNowMs += 20000;
+        alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 150));
+      }
+      await vi.waitFor(() => expect(fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST")).toBe(true), { timeout: 4000 });
+    } finally {
+      clockSpy.mockRestore();
+    }
+
+    const captureCall = fetchCalls.find((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
+    const envelope = JSON.parse(captureCall.options.body);
+    expect(envelope.raw_provider_payload.mapping).toMatchObject({
+      "node-a": { message: { content: { parts: ["first half"] } } },
+      "node-b": { message: { content: { parts: ["second half"] } } },
+    });
+    expect(envelope.session.turns.map((turn) => turn.text)).toEqual(["first half", "second half"]);
+  }, 20000);
+
   it("holds the job visibly when the receiver authority cannot commit", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
