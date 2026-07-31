@@ -676,6 +676,10 @@ async def _rebuild_index_from_source_owned(
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
                     return pass_receipt
+            # polylogue-o56w: terminal-stage costs used to survive only as log
+            # lines; collect them here and persist them on the final receipt
+            # so a full rebuild's cost breakdown is durable forensics.
+            terminal_timings_s: dict[str, float] = {}
             terminal_started_at = time.perf_counter()
             insight_result = repair_session_insights(
                 config,
@@ -683,11 +687,12 @@ async def _rebuild_index_from_source_owned(
                 archive_root_override=generation_root,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
             )
+            terminal_timings_s["terminal.session_insights"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",
                 generation_id=generation.generation_id,
                 stage="session_insights",
-                elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+                elapsed_s=round(terminal_timings_s["terminal.session_insights"], 3),
             )
             if not insight_result.success:
                 raise RuntimeError(f"session insight materialization failed: {insight_result.detail}")
@@ -707,6 +712,7 @@ async def _rebuild_index_from_source_owned(
             # readiness can observe (and silently accept) a mismatch.
             bulk_timings_s = _repopulate_bulk_build_derived_state(Path(generation.index_path))
             for stage, elapsed_s in bulk_timings_s.items():
+                terminal_timings_s[f"terminal.bulk_build.{stage}"] = elapsed_s
                 logger.info(
                     "rebuild_terminal_stage_complete",
                     generation_id=generation.generation_id,
@@ -715,11 +721,12 @@ async def _rebuild_index_from_source_owned(
                 )
             terminal_started_at = time.perf_counter()
             parity_report = verify_archive(generation_root, checks=["fts-parity"])
+            terminal_timings_s["terminal.fts_parity"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",
                 generation_id=generation.generation_id,
                 stage="fts_parity",
-                elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+                elapsed_s=round(terminal_timings_s["terminal.fts_parity"], 3),
             )
             if parity_report.blocking:
                 failing = "; ".join(check.summary for check in parity_report.checks if check.status.value == "error")
@@ -728,11 +735,12 @@ async def _rebuild_index_from_source_owned(
                 )
             terminal_started_at = time.perf_counter()
             readiness = archive_readiness_status(generation_root)
+            terminal_timings_s["terminal.readiness"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",
                 generation_id=generation.generation_id,
                 stage="readiness",
-                elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+                elapsed_s=round(terminal_timings_s["terminal.readiness"], 3),
             )
             if not readiness.get("checked") or int(readiness.get("blocked_surface_count", 1)) != 0:
                 blocked = [
@@ -757,11 +765,12 @@ async def _rebuild_index_from_source_owned(
                 assert_owns_archive_location(owned, ArchiveLocation.resolve(root))
                 terminal_started_at = time.perf_counter()
                 generation = generation_store.promote(generation)
+                terminal_timings_s["terminal.promote"] = time.perf_counter() - terminal_started_at
                 logger.info(
                     "rebuild_terminal_stage_complete",
                     generation_id=generation.generation_id,
                     stage="promote",
-                    elapsed_s=round(time.perf_counter() - terminal_started_at, 3),
+                    elapsed_s=round(terminal_timings_s["terminal.promote"], 3),
                 )
                 if transaction is not None:
                     transaction = generation_store.checkpoint_transaction(transaction, status="promoted")
@@ -789,6 +798,7 @@ async def _rebuild_index_from_source_owned(
         readiness=cast(dict[str, object], readiness),
         replay=replay,
         transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
+        timings_s={key: round(value, 3) for key, value in terminal_timings_s.items()},
     )
     if transaction is not None:
         generation_store.save_pass_receipt(transaction.operation_id, final_receipt.to_dict())
