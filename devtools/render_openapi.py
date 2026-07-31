@@ -24,7 +24,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import yaml
 from pydantic import BaseModel
@@ -42,6 +42,7 @@ from polylogue.daemon.route_contracts import ROUTE_CONTRACTS, RouteContract
 from polylogue.daemon.web_auth import (
     WebCredentialBootstrapPayload,
     WebCredentialFailurePayload,
+    WebCredentialFailureState,
     WebCredentialRevocationPayload,
 )
 from polylogue.surfaces.payloads import (
@@ -79,14 +80,10 @@ _PUBLISHED_MODELS: tuple[type[BaseModel], ...] = (
     QueryExpressionExplanationAst,
 )
 
-_WEB_CREDENTIAL_FAILURE_STATES = [
-    "web_credential_missing",
-    "web_credential_invalid",
-    "web_credential_expired",
-    "web_credential_revoked",
-    "web_credential_wrong_origin",
-    "web_credential_insufficient_scope",
-]
+# Derived from the typed source of truth so the OpenAPI enum cannot drift
+# from the daemon's actual failure vocabulary (same discipline as
+# EXPECTED_TOOL_NAMES / literal_check: derive, don't hand-copy).
+_WEB_CREDENTIAL_FAILURE_STATES = list(get_args(WebCredentialFailureState))
 
 
 def _protected_read_security() -> list[dict[str, list[str]]]:
