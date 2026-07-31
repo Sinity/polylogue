@@ -38,6 +38,7 @@ from polylogue.cli.read_views.context import (
 )
 from polylogue.cli.read_views.correlation import build_correlation_options, run_read_correlation
 from polylogue.cli.read_views.events import build_events_options, run_read_events
+from polylogue.cli.read_views.file_edits import run_read_agent_policies, run_read_file_edits
 from polylogue.cli.read_views.messages import (
     build_message_options,
     run_read_hooks,
@@ -104,6 +105,18 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         default_format="json",
         accepted_options=EVENTS_READ_VIEW_OPTION_NAMES,
         option_builder=build_events_options,
+    ),
+    "file-edits": ReadViewHandler(
+        "file-edits",
+        "required",
+        run_read_file_edits,
+        default_format="json",
+    ),
+    "agent-policies": ReadViewHandler(
+        "agent-policies",
+        "required",
+        run_read_agent_policies,
+        default_format="json",
     ),
     "context": ReadViewHandler(
         "context",

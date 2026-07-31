@@ -49,6 +49,13 @@ class SessionSummary(SessionSummaryRuntimeMixin, BaseModel):
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
+    # Provider-assigned human-readable session name distinct from the
+    # (possibly inferred) title -- e.g. Claude Code's "slug" wire field
+    # ("greedy-squishing-hamming"), captured but previously dropped before
+    # reaching any domain model (polylogue-cgfy: 1,500 sampled occurrences,
+    # the fix for subagent rows displaying "<uuid>:agent-<suffix>" instead
+    # of a human name).
+    display_name: str | None = None
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None
     message_count: int | None = None
@@ -104,6 +111,8 @@ class Session(SessionRuntimeMixin, BaseModel):
     git_branch: str | None = None
     git_repository_url: str | None = None
     provider_project_ref: str | None = None
+    # See ``SessionSummary.display_name`` (polylogue-cgfy).
+    display_name: str | None = None
     session_events: tuple[SessionEvent, ...] = ()
     parent_id: SessionId | None = None
     branch_type: BranchType | None = None

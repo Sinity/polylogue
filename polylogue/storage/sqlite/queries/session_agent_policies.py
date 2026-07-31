@@ -25,7 +25,6 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 __all__ = [
     "get_session_agent_policies",
     "get_session_agent_policies_batch",
-    "sync_session_agent_policies_batch",
 ]
 
 _SELECT_COLUMNS = (
@@ -84,32 +83,6 @@ async def get_session_agent_policies_batch(
             """,
             tuple(session_ids),
         )
-    ).fetchall()
-    result: dict[str, list[ArchiveAgentPolicy]] = defaultdict(list)
-    for session_id in session_ids:
-        result.setdefault(session_id, [])
-    for row in rows:
-        policy = _row_to_agent_policy(row)
-        result[policy.session_id].append(policy)
-    return dict(result)
-
-
-def sync_session_agent_policies_batch(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-) -> dict[str, list[ArchiveAgentPolicy]]:
-    """Sync sibling of :func:`get_session_agent_policies_batch`."""
-    if not session_ids:
-        return {}
-    placeholders = ", ".join("?" for _ in session_ids)
-    rows = conn.execute(
-        f"""
-        SELECT {_SELECT_COLUMNS}
-        FROM session_agent_policies
-        WHERE session_id IN ({placeholders})
-        ORDER BY session_id, position
-        """,
-        tuple(session_ids),
     ).fetchall()
     result: dict[str, list[ArchiveAgentPolicy]] = defaultdict(list)
     for session_id in session_ids:

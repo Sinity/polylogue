@@ -28,6 +28,7 @@ class SessionSummaryRuntimeMixin:
     metadata: dict[str, object]
     parent_id: SessionId | None
     branch_type: BranchType | None
+    display_name: str | None
 
     @property
     def display_date(self) -> datetime | None:
@@ -40,6 +41,9 @@ class SessionSummaryRuntimeMixin:
             return user_title
         if self.title:
             return self.title
+        # polylogue-cgfy: see Session.display_title's twin fallback.
+        if self.display_name:
+            return self.display_name
         return self.id[:8]
 
     @property
