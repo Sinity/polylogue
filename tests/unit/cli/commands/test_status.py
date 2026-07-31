@@ -21,6 +21,7 @@ from polylogue.cli.commands.status import (
     _archive_table_counts,
     _archive_tier_files,
     _archive_tier_status,
+    _archive_unidentified_artifact_count,
     _candidate_daemon_urls,
     _column_exists,
     _default_daemon_url,
@@ -738,6 +739,53 @@ class TestDirectArchiveCounts:
             result = _direct_archive_counts(conn)
             assert result["sessions"] == 2
             assert result["messages"] == 3
+        finally:
+            conn.close()
+
+    def test_counts_unidentified_artifacts_from_source_tier(self, tmp_path: Path) -> None:
+        """Regression for polylogue-9ykn: a record that classify_artifact
+        could not positively identify as a session/sidecar/other known kind
+        is durably ledgered in source.db's raw_artifacts with
+        artifact_kind='unknown'. That count must be visible from the index
+        connection's sibling source.db, the same resolution
+        _archive_source_raw_count already uses for raw_records.
+        """
+        index_path = tmp_path / "index.db"
+        source_path = tmp_path / "source.db"
+        initialize_archive_database(index_path, ArchiveTier.INDEX)
+        initialize_archive_database(source_path, ArchiveTier.SOURCE)
+        source_conn = sqlite3.connect(source_path)
+        try:
+            source_conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES ('raw1', 'claude-code-session', 'native-1', 'one.jsonl', 0, ?, 32, 1)
+                """,
+                (bytes.fromhex("1" * 64),),
+            )
+            source_conn.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                    support_status, classification_reason, parse_as_session, schema_eligible,
+                    first_observed_at_ms, last_observed_at_ms
+                ) VALUES
+                    ('art1', 'raw1', 'claude-code-session', 'one.jsonl', 0, 'unknown',
+                     'unknown', 'unrecognized document payload', 0, 0, 1, 1),
+                    ('art2', 'raw1', 'claude-code-session', 'two.jsonl', 0, 'agent_sidecar_meta',
+                     'recognized_unparsed', 'agent sidecar metadata path', 0, 0, 1, 1)
+                """
+            )
+            source_conn.commit()
+        finally:
+            source_conn.close()
+
+        conn = sqlite3.connect(index_path)
+        try:
+            assert _archive_unidentified_artifact_count(conn, configured_root=tmp_path) == 1
+            result = _direct_archive_counts(conn, configured_root=tmp_path)
+            assert result["unidentified_artifacts"] == 1
         finally:
             conn.close()
 
