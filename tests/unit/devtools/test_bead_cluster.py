@@ -357,6 +357,42 @@ def test_weighted_clusters_refuses_merge_past_max_cluster_size() -> None:
     assert {b["id"] for b in shared_beads} <= covered
 
 
+def test_hub_token_shared_by_many_beads_does_not_merge_them() -> None:
+    # The exact degeneracy this algorithm exists to fix: a hub file
+    # (docs/internals.md-style) referenced by 8 of 10 beads. Unweighted
+    # connected-components would chain all 8 into one mega-cluster via
+    # any-shared-token transitivity. Weighted clustering must not: each
+    # pairwise edge on ONLY the hub token has df=8 among n_docs=10, so
+    # log2(10/8) ~= 0.32 per shared token -- far below --min-similarity's
+    # default of 3.0 -- so no edge involving solely the hub token ever
+    # clears the threshold and none of these beads merge on it.
+    hub_file = "docs/internals.md"
+    hub_beads = [
+        _bead(f"polylogue-hub{i}", labels=["horizon:frontier"], design=f"Update {hub_file} for area {i}.")
+        for i in range(8)
+    ]
+    other_beads = [
+        _bead(f"polylogue-other{i}", labels=["horizon:frontier"], design=f"Touch polylogue/core/mod{i}.py.")
+        for i in range(2)
+    ]
+    beads = hub_beads + other_beads
+    footprints = {b["id"]: bead_cluster._extract_footprint(b) for b in beads}
+
+    df = bead_cluster._document_frequencies(beads, footprints)
+    assert df[hub_file] == 8
+    weight, _shared = bead_cluster._pair_weight(
+        footprints["polylogue-hub0"], footprints["polylogue-hub1"], df, len(beads)
+    )
+    assert weight < bead_cluster.DEFAULT_MIN_SIMILARITY
+
+    clusters = bead_cluster._weighted_clusters(beads, footprints)
+    sizes = sorted(len(c.beads) for c in clusters)
+    # Every bead is its own singleton cluster -- the hub token alone never
+    # produces a qualifying edge, so nothing merges.
+    assert sizes == [1] * len(beads)
+    assert {bid for c in clusters for bid in c.beads} == {b["id"] for b in beads}
+
+
 def test_main_human_output_renders_sections(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     beads = [
         _bead("polylogue-a", priority=1, labels=["horizon:frontier"], design="Touch polylogue/mcp/server.py."),
