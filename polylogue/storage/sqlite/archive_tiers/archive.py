@@ -8321,14 +8321,26 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     session_id = str(row["session_id"])
     message_count = int(row["message_count"] or 0)
     raw_title = str(row["title"]) if row["title"] is not None else None
-    provider_title = raw_title if raw_title and raw_title.strip() else None
     raw_title_source = str(row["title_source"]) if row["title_source"] is not None else None
+    # A non-blank ``sessions.title`` is only a genuine provider/derived title
+    # when ``title_source`` says so. ``title_source='unknown'`` rows still
+    # carry a NON-NULL title -- the writer's pre-cijx.4 fallback stores the
+    # raw native id there (a bare UUID, or "<uuid>:agent-<hash>" for a
+    # subagent), which is exactly the "worse than the UUID it replaces" case
+    # decision 3 exists to fix. Measured live: 7,501 of 15,401 root sessions
+    # (48.7%) carry title_source='unknown' -- checking only "is title
+    # non-blank" (the pre-fix condition) made the structural-label fallback
+    # dead code for all of them. ``title_source='path'`` is the structural
+    # label's own prior output; treating it as "not a real title" keeps this
+    # idempotent on rebuild instead of freezing a stale message count.
+    has_real_title = bool(raw_title and raw_title.strip()) and raw_title_source in {"origin", "heuristic", "user"}
+    provider_title = raw_title if has_real_title else None
     if provider_title is not None:
         title = provider_title
         title_source = raw_title_source
     else:
-        # No provider-supplied title (or a blank one): fall back to the
-        # structural label (polylogue-cijx.4 decision 3) rather than
+        # No provider-supplied title (or a blank/synthetic one): fall back to
+        # the structural label (polylogue-cijx.4 decision 3) rather than
         # exposing a bare/blank title to CLI/MCP/API surfaces. This is a
         # read-time projection only -- never written back to sessions.title.
         title = session_structural_label_for_session(
