@@ -19,11 +19,11 @@ from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCos
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.session_profile import SessionProfile, build_session_analysis, build_session_profile
-from polylogue.core.enums import SessionKind
+from polylogue.core.enums import Origin, SessionKind
 from polylogue.core.memory import release_process_memory
 from polylogue.core.protocols import ProgressCallback
 from polylogue.core.timestamps import parse_archive_datetime
-from polylogue.core.types import SessionId
+from polylogue.core.types import ContentHash, SessionId
 from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
@@ -94,6 +94,7 @@ from polylogue.storage.sqlite.queries.mappers import (
 )
 from polylogue.storage.sqlite.queries.model_usage import get_model_usage_batch, sync_model_usage_batch
 from polylogue.storage.sqlite.queries.session_events import (
+    _row_to_session_event,
     get_session_event_compaction_counts,
     get_session_events_batch,
     sync_session_event_compaction_counts,
@@ -121,6 +122,15 @@ _SESSION_INSIGHT_DEGRADED_WORD_THRESHOLD = 50_000
 _SESSION_INSIGHT_DEGRADED_TOOL_THRESHOLD = 100
 _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS = 16_384
 _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS = 4_096
+# polylogue-wofr: the bounded/degraded large-session profile path previously
+# hardcoded terminal_state="unknown" unconditionally, even though
+# `_terminal_state` (archive/session/runtime.py) only needs the last message,
+# last tool outcomes, and trailing session events -- O(tail), not O(session).
+# These bound how much tail we read to compute it: generous enough to catch
+# multi-turn pending-tool-call chains, cheap enough to stay well under the
+# bounded path's whole reason for existing.
+_SESSION_INSIGHT_TERMINAL_STATE_TAIL_MESSAGE_LIMIT = 50
+_SESSION_INSIGHT_TERMINAL_STATE_TAIL_EVENT_LIMIT = 200
 _SESSION_INSIGHT_SESSION_SQL_TEMPLATE = """
 SELECT
     session_id,
@@ -229,6 +239,88 @@ SELECT
     git_repository_url
 FROM sessions
 WHERE session_id = ?
+"""
+# polylogue-wofr: bounded tail read for the degraded large-session profile's
+# terminal_state -- mirrors _SESSION_INSIGHT_MESSAGE_SQL_TEMPLATE /
+# _SESSION_INSIGHT_BLOCK_SQL_TEMPLATE but for exactly one session, ordered by
+# the most recent messages/events first (LIMIT-bounded), reversed back to
+# chronological order by the caller. Never touches the full message/event
+# history a heavy session may carry.
+_SESSION_INSIGHT_TAIL_MESSAGE_SQL = """
+SELECT * FROM (
+    SELECT
+        m.message_id,
+        m.session_id,
+        m.native_id AS provider_message_id,
+        m.role,
+        (
+            SELECT substr(b.text, 1, ?)
+            FROM blocks b
+            WHERE b.message_id = m.message_id
+              AND b.block_type = 'text'
+              AND b.text IS NOT NULL
+            ORDER BY b.position
+            LIMIT 1
+        ) AS text,
+        CAST(m.occurred_at_ms AS REAL) / 1000.0 AS sort_key,
+        hex(m.content_hash) AS content_hash,
+        1 AS version,
+        m.parent_message_id,
+        m.variant_index AS branch_index,
+        s.origin AS source_name,
+        m.word_count,
+        m.has_tool_use,
+        m.has_thinking,
+        m.has_paste,
+        m.input_tokens,
+        m.output_tokens,
+        m.cache_read_tokens,
+        m.cache_write_tokens,
+        m.model_name,
+        m.message_type,
+        m.stop_reason,
+        m.position AS tail_position
+    FROM messages m
+    JOIN sessions s ON s.session_id = m.session_id
+    WHERE m.session_id = ?
+    ORDER BY m.position DESC
+    LIMIT ?
+)
+ORDER BY tail_position ASC
+"""
+_SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE = """
+SELECT
+    block_id,
+    message_id,
+    session_id,
+    position AS block_index,
+    block_type AS type,
+    CASE
+        WHEN text IS NULL THEN NULL
+        ELSE substr(text, 1, ?)
+    END AS text,
+    tool_name,
+    tool_id,
+    tool_input,
+    NULL AS metadata,
+    semantic_type,
+    tool_result_is_error,
+    tool_result_exit_code
+FROM blocks
+WHERE message_id IN ({placeholders})
+  AND block_type != 'text'
+ORDER BY message_id, position
+"""
+_SESSION_INSIGHT_TAIL_EVENT_SQL = """
+SELECT * FROM (
+    SELECT se.*, s.origin
+    FROM session_events se
+    JOIN sessions s ON s.session_id = se.session_id
+    WHERE se.session_id = ?
+    ORDER BY se.position DESC
+    LIMIT ?
+)
+ORDER BY position ASC
 """
 
 
@@ -835,6 +927,151 @@ async def _session_count_row_async(conn: aiosqlite.Connection, session_id: str) 
     return row
 
 
+def _tail_session_record(
+    session_id: str,
+    row: sqlite3.Row,
+) -> SessionRecord:
+    """Minimal `SessionRecord` for bounded tail hydration.
+
+    Only the fields `session_from_records` actually reads (origin, title,
+    timestamps, parent, git attribution) matter here -- `native_id` and
+    `content_hash` are required by the model but never read back off a
+    hydrated `Session`, so a placeholder is honest (this record is never
+    persisted, only used to build an in-memory `Session` for the terminal-
+    state derivation).
+    """
+    parent_session_id = _row_text(row, "parent_session_id")
+    return SessionRecord(
+        session_id=SessionId(session_id),
+        native_id=session_id,
+        origin=Origin.from_string(str(row["origin"])),
+        title=_row_text(row, "title"),
+        content_hash=ContentHash("bounded-tail-not-persisted"),
+        created_at=_row_text(row, "created_at"),
+        updated_at=_row_text(row, "updated_at"),
+        parent_session_id=SessionId(parent_session_id) if parent_session_id else None,
+        git_branch=_row_text(row, "git_branch"),
+        git_repository_url=_row_text(row, "git_repository_url"),
+    )
+
+
+def _tail_session_sync(conn: sqlite3.Connection, session_id: str, row: sqlite3.Row) -> Session:
+    message_rows = conn.execute(
+        _SESSION_INSIGHT_TAIL_MESSAGE_SQL,
+        (
+            _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
+            session_id,
+            _SESSION_INSIGHT_TERMINAL_STATE_TAIL_MESSAGE_LIMIT,
+        ),
+    ).fetchall()
+    tail_messages = [_row_to_message(message_row) for message_row in message_rows]
+    message_ids = [str(message.message_id) for message in tail_messages]
+    blocks: list[BlockRecord] = []
+    if message_ids:
+        placeholders = ", ".join("?" for _ in message_ids)
+        block_rows = conn.execute(
+            _SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+            (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *message_ids),
+        ).fetchall()
+        blocks = [_row_to_content_block(block_row) for block_row in block_rows]
+    attached_messages = attach_blocks_to_messages(tail_messages, blocks)
+    event_rows = conn.execute(
+        _SESSION_INSIGHT_TAIL_EVENT_SQL,
+        (session_id, _SESSION_INSIGHT_TERMINAL_STATE_TAIL_EVENT_LIMIT),
+    ).fetchall()
+    tail_events = [_row_to_session_event(event_row) for event_row in event_rows]
+    return session_from_records(_tail_session_record(session_id, row), attached_messages, [], tail_events)
+
+
+async def _tail_session_async(conn: aiosqlite.Connection, session_id: str, row: sqlite3.Row) -> Session:
+    message_rows = await (
+        await conn.execute(
+            _SESSION_INSIGHT_TAIL_MESSAGE_SQL,
+            (
+                _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
+                session_id,
+                _SESSION_INSIGHT_TERMINAL_STATE_TAIL_MESSAGE_LIMIT,
+            ),
+        )
+    ).fetchall()
+    tail_messages = [_row_to_message(message_row) for message_row in message_rows]
+    message_ids = [str(message.message_id) for message in tail_messages]
+    blocks: list[BlockRecord] = []
+    if message_ids:
+        placeholders = ", ".join("?" for _ in message_ids)
+        block_rows = await (
+            await conn.execute(
+                _SESSION_INSIGHT_TAIL_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
+                (_SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS, *message_ids),
+            )
+        ).fetchall()
+        blocks = [_row_to_content_block(block_row) for block_row in block_rows]
+    attached_messages = attach_blocks_to_messages(tail_messages, blocks)
+    event_rows = await (
+        await conn.execute(
+            _SESSION_INSIGHT_TAIL_EVENT_SQL,
+            (session_id, _SESSION_INSIGHT_TERMINAL_STATE_TAIL_EVENT_LIMIT),
+        )
+    ).fetchall()
+    tail_events = [_row_to_session_event(event_row) for event_row in event_rows]
+    return session_from_records(_tail_session_record(session_id, row), attached_messages, [], tail_events)
+
+
+_TerminalStateResult = tuple[str, float, dict[str, int | float | str | None], str]
+
+_UNKNOWN_BOUNDED_TERMINAL_STATE: _TerminalStateResult = (
+    "unknown",
+    0.0,
+    {},
+    "bounded_materialization",
+)
+
+
+def _bounded_session_terminal_state_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+    row: sqlite3.Row,
+) -> _TerminalStateResult:
+    """Real terminal_state for a bounded/degraded large-session profile.
+
+    polylogue-wofr: the bounded path previously hardcoded
+    terminal_state="unknown" unconditionally -- all 1,575 bounded_large_session
+    profiles carried terminal_state=unknown, making the longest (and most
+    failure-prone) sessions terminal-state-blind. `_terminal_state` is
+    structurally O(session tail): it only needs the last message, last tool
+    outcomes, and trailing session events, not a full-session scan, so this
+    reads a bounded tail window (see `_tail_session_sync`) and reuses the
+    exact same derivation the unbounded profile path uses
+    (`polylogue.archive.session.runtime._terminal_state`) -- never a parallel
+    heuristic. A session whose real terminal event fell outside the tail
+    window degrades to whatever `_terminal_state` reports from the window it
+    was given (typically "unknown"/"no_signal"), the same honest behavior as
+    before for sessions with no structural evidence.
+    """
+    from polylogue.archive.session.runtime import _terminal_state
+
+    session = _tail_session_sync(conn, session_id, row)
+    if not session.messages:
+        return _UNKNOWN_BOUNDED_TERMINAL_STATE
+    analysis = build_session_analysis(session)
+    return _terminal_state(session, analysis)
+
+
+async def _bounded_session_terminal_state_async(
+    conn: aiosqlite.Connection,
+    session_id: str,
+    row: sqlite3.Row,
+) -> _TerminalStateResult:
+    """Async twin of `_bounded_session_terminal_state_sync` -- see its docstring."""
+    from polylogue.archive.session.runtime import _terminal_state
+
+    session = await _tail_session_async(conn, session_id, row)
+    if not session.messages:
+        return _UNKNOWN_BOUNDED_TERMINAL_STATE
+    analysis = build_session_analysis(session)
+    return _terminal_state(session, analysis)
+
+
 def _bounded_session_cost_summary(
     session_id: str,
     origin: str,
@@ -879,6 +1116,7 @@ def _large_session_profile_record_from_row(
     logical_session_id: str | None,
     materialized_at: str,
     model_usage: Sequence[ModelUsageTotals] = (),
+    terminal_state_result: _TerminalStateResult | None = None,
 ) -> SessionProfileRecord:
     created_at = parse_archive_datetime(row["created_at"])
     updated_at = parse_archive_datetime(row["updated_at"])
@@ -929,6 +1167,20 @@ def _large_session_profile_record_from_row(
         cost_is_estimated = True
         per_model_cost_json = "[]"
 
+    # polylogue-wofr: use the real bounded-tail terminal_state derivation when
+    # the caller computed one, falling back to the honest "we didn't compute
+    # this" unknown otherwise (e.g. a caller that skips the tail read
+    # entirely). `terminal_state_evidence` always keeps the
+    # `bounded_materialization` marker so a reader can still tell this record
+    # came from the degraded path, alongside whatever structural evidence
+    # `_terminal_state` found in the tail window.
+    resolved_terminal_state_result = terminal_state_result or _UNKNOWN_BOUNDED_TERMINAL_STATE
+    terminal_state, terminal_state_confidence, terminal_state_derivation_evidence, terminal_state_method = (
+        resolved_terminal_state_result
+    )
+    terminal_state_evidence: dict[str, object] = dict(terminal_state_derivation_evidence)
+    terminal_state_evidence.setdefault("bounded_materialization", FallbackReason.LARGE_SESSION_BOUNDED.value)
+
     evidence = SessionEvidencePayload(
         created_at=created_at.isoformat() if created_at else None,
         updated_at=updated_at.isoformat() if updated_at else None,
@@ -948,7 +1200,7 @@ def _large_session_profile_record_from_row(
         total_duration_ms=int(row["reported_duration_ms"] or 0),
         wall_duration_ms=int(row["reported_duration_ms"] or 0),
         workflow_shape_features=workflow_features,
-        terminal_state_evidence={"bounded_materialization": FallbackReason.LARGE_SESSION_BOUNDED.value},
+        terminal_state_evidence=terminal_state_evidence,
         branch_names=(str(row["git_branch"]),) if row["git_branch"] else (),
         repo_paths=(str(row["git_repository_url"]),) if row["git_repository_url"] else (),
         tags=(f"origin:{origin}", "degraded:large-session"),
@@ -966,9 +1218,9 @@ def _large_session_profile_record_from_row(
         phase_count=0,
         workflow_shape="bounded_large_session",
         workflow_shape_confidence=0.35,
-        terminal_state="unknown",
-        terminal_state_confidence=0.0,
-        terminal_state_method="bounded_materialization",
+        terminal_state=terminal_state,
+        terminal_state_confidence=terminal_state_confidence,
+        terminal_state_method=terminal_state_method,
         auto_tags=(f"origin:{origin}", "degraded:large-session"),
         fallback_reasons=(
             FallbackReason.LARGE_SESSION_BOUNDED,
@@ -1021,13 +1273,10 @@ def _large_session_profile_record_from_row(
         workflow_shape="bounded_large_session",
         workflow_shape_confidence=0.35,
         workflow_shape_features_json=_json.dumps(workflow_features, sort_keys=True),
-        terminal_state="unknown",
-        terminal_state_confidence=0.0,
-        terminal_state_method="bounded_materialization",
-        terminal_state_evidence_json=_json.dumps(
-            {"bounded_materialization": FallbackReason.LARGE_SESSION_BOUNDED.value},
-            sort_keys=True,
-        ),
+        terminal_state=terminal_state,
+        terminal_state_confidence=terminal_state_confidence,
+        terminal_state_method=terminal_state_method,
+        terminal_state_evidence_json=_json.dumps(terminal_state_evidence, sort_keys=True),
         timing_provenance="bounded_session_counters",
         total_cost_usd=cost_summary.total_api_cost_usd,
         total_credit_cost=cost_summary.total_credit_cost,
@@ -1059,12 +1308,14 @@ def _large_session_profile_record(
 ) -> SessionProfileRecord:
     row = _session_count_row(conn, session_id)
     model_usage = sync_model_usage_batch(conn, [session_id]).get(session_id, [])
+    terminal_state_result = _bounded_session_terminal_state_sync(conn, session_id, row)
     return _large_session_profile_record_from_row(
         row,
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=materialized_at,
         model_usage=model_usage,
+        terminal_state_result=terminal_state_result,
     )
 
 
@@ -1127,12 +1378,14 @@ async def build_large_session_insight_record_bundle_async(
     built_at = materialized_at or now_iso()
     row = await _session_count_row_async(conn, session_id)
     model_usage = (await get_model_usage_batch(conn, [session_id])).get(session_id, [])
+    terminal_state_result = await _bounded_session_terminal_state_async(conn, session_id, row)
     profile = _large_session_profile_record_from_row(
         row,
         session_id,
         logical_session_id=logical_session_id,
         materialized_at=built_at,
         model_usage=model_usage,
+        terminal_state_result=terminal_state_result,
     )
     return SessionInsightRecordBundle(
         profile_record=profile,
