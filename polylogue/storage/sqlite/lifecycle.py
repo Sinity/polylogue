@@ -478,6 +478,28 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # `polylogue ops reset --index && polylogued run`.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=50,
+        # polylogue-u6tl: delegation_facts.mapping_state and .result_status
+        # gain CHECK constraints generated from their existing typed
+        # counterparts (DelegationMappingState / DelegationResultStatus,
+        # archive_tiers/archive.py) via the literal_check generator -- see
+        # index.py's v50 header comment for the measured live-impact count
+        # (0 rows outside either vocabulary). No column is added, no existing
+        # value changes; this only tightens the CHECK an already-correct
+        # single writer (delegation_facts_insert_sql) already satisfied.
+        # Matches the v33/v36 CONSTRAINT_ONLY precedent, not v42/44/45/46/
+        # 47/48/49's SEMANTIC_REPARSE (those all depended on parser/pricing
+        # semantics to populate or repair rows; this does not).
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v50-delegation-facts-checks",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "delegation_facts"),),
+            ),
+        ),
+    ),
 )
 
 

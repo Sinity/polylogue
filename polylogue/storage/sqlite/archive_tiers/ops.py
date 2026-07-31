@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 from polylogue.core.enums import Origin
-from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
+from polylogue.schemas.drift_sentinel import DriftClassification
+from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
 OPS_SCHEMA_VERSION = 1
 
@@ -288,11 +291,25 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- read back as a windowed rate instead of discovered manually. ops.db is
 -- disposable, so this is a plain freeform-additive table (no migration),
 -- pruned by time and row count like fts_drift_samples/route_observations.
+--
+-- polylogue-u6tl: `classification` previously hand-listed only 3 of
+-- DriftClassification's 4 values (schemas/drift_sentinel.py), silently
+-- omitting 'known_field_unread'. record_schema_drift_observations_to_ops_sync
+-- (schemas/drift_sentinel_sampling.py) writes classification=observation.
+-- classification -- a real DriftClassification value -- inside a bare
+-- `except sqlite3.Error: return 0` best-effort guard, so every
+-- 'known_field_unread' observation was silently dropped by the CHECK
+-- instead of raising. Confirmed live (ops.db, read-only, 2026-07-31):
+-- schema_drift_samples has 313 'unseen_shape' rows and exactly 0
+-- 'known_field_unread' rows despite the classifier actively producing that
+-- label. Generating the CHECK from DriftClassification via literal_check
+-- closes the gap; ops.db is disposable so this needs no migration/version
+-- bump, just the corrected DDL for the next bootstrap/bootstrap-repair.
 CREATE TABLE IF NOT EXISTS schema_drift_samples (
     sample_id             TEXT PRIMARY KEY,
     origin                TEXT NOT NULL CHECK ({check("origin", Origin)}),
     element_kind          TEXT NOT NULL,
-    classification        TEXT NOT NULL CHECK(classification IN ('unseen_shape', 'new_field', 'field_changed')),
+    classification        TEXT NOT NULL CHECK ({literal_check("classification", *get_args(DriftClassification))}),
     unseen_key_signature  TEXT NOT NULL DEFAULT '',
     native_id_example     TEXT NOT NULL,
     raw_id                TEXT NOT NULL,
