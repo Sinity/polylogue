@@ -25,10 +25,14 @@ import pytest
 
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.security.secret_scan import (
+    SECRET_SCAN_VERSION,
+    count_pending_secret_scan_sessions,
     record_secret_candidates,
+    scan_archive_for_secret_candidates,
     scan_session_for_secret_candidates,
     scan_text_for_secret_candidates,
     secret_candidate_assertion_id,
+    select_pending_secret_scan_session_ids,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -289,3 +293,188 @@ class TestScanSessionForSecretCandidates:
         finally:
             user_conn.close()
         assert count == len(first.written_assertion_ids)
+
+
+def _seed_archive_session(archive_root: Path, *, native_id: str, text: str) -> str:
+    """Write one real session with a single text block into ``archive_root``.
+
+    Shared by the bulk-scan tests below: builds a multi-session ``index.db``
+    fixture one call at a time, mirroring
+    ``TestScanSessionForSecretCandidates._seed_session_with_block_text`` but
+    against a stable ``archive_root`` shared across calls (the bulk scanner
+    operates on the whole archive, not one caller-known session).
+    """
+    archive_root.mkdir(parents=True, exist_ok=True)
+    index_db = archive_root / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    conn = sqlite3.connect(index_db)
+    conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms) "
+            "VALUES (?, 'codex-session', ?, zeroblob(32), 1000, 2000)",
+            (native_id, f"Session {native_id}"),
+        )
+        session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", (native_id,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, content_hash) "
+            "VALUES (?, 'm1', 0, 'user', zeroblob(32))",
+            (session_id,),
+        )
+        message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
+            (message_id, session_id, text),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return str(session_id)
+
+
+class TestScanArchiveForSecretCandidates:
+    """Bulk/archive-wide scan coverage (polylogue-layg.1).
+
+    Anti-vacuity: an implementation that silently skips sessions in a batch
+    (the exact regression class this bead exists to prevent -- an operator
+    with no session id in hand previously had no way to discover candidates
+    at all) fails ``test_full_sweep_covers_every_session_and_finds_every_planted_secret``,
+    because it asserts every planted session ends up with a recorded
+    candidate and zero remaining pending coverage, not merely that *some*
+    candidates were found.
+    """
+
+    def test_missing_archive_is_a_bounded_noop(self, tmp_path: Path) -> None:
+        result = scan_archive_for_secret_candidates(tmp_path / "does-not-exist")
+        assert result.sessions_scanned == 0
+        assert result.remaining_pending == 0
+        assert result.more_pending is False
+
+    def test_full_sweep_covers_every_session_and_finds_every_planted_secret(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        planted_secret_sessions = {
+            _seed_archive_session(archive_root, native_id=f"bulk-{i}", text=f"AWS_ACCESS_KEY_ID=AKIA{i:016X}")
+            for i in range(5)
+        }
+        clean_session = _seed_archive_session(archive_root, native_id="bulk-clean", text="just an ordinary message")
+        all_sessions = planted_secret_sessions | {clean_session}
+
+        # A page size smaller than the total session count forces the bulk
+        # scanner to require multiple calls -- the shape a mutation that
+        # "forgets" to advance past an already-scanned batch (double-scans
+        # the same page forever, or drops the tail) would fail under.
+        scanned_ids: set[str] = set()
+        total_candidates = 0
+        seen_pages = 0
+        result = scan_archive_for_secret_candidates(archive_root, max_sessions=2)
+        while True:
+            seen_pages += 1
+            scanned_ids.update(result.scanned_session_ids)
+            total_candidates += result.candidates_found
+            if not result.more_pending:
+                break
+            result = scan_archive_for_secret_candidates(archive_root, max_sessions=2)
+
+        assert seen_pages > 1, "fixture must require more than one page to exercise resumable paging"
+        assert scanned_ids == all_sessions, "every session in the archive must be covered exactly once"
+        assert total_candidates == len(planted_secret_sessions), "every planted secret must be found"
+
+        remaining = count_pending_secret_scan_sessions(archive_root / "index.db", archive_root / "ops.db")
+        assert remaining == 0, "no session may be left uncovered after a full sweep"
+
+        user_conn = sqlite3.connect(archive_root / "user.db")
+        try:
+            count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = ?", (AssertionKind.SECRET_CANDIDATE.value,)
+            ).fetchone()[0]
+        finally:
+            user_conn.close()
+        assert count == len(planted_secret_sessions)
+
+    def test_interrupt_and_resume_covers_all_sessions_exactly_once(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        sessions = {
+            _seed_archive_session(archive_root, native_id=f"resume-{i}", text=f"AWS_ACCESS_KEY_ID=AKIA{i:016X}")
+            for i in range(6)
+        }
+
+        # Simulate a kill after the first bounded page ("interrupted").
+        first = scan_archive_for_secret_candidates(archive_root, max_sessions=3)
+        assert first.sessions_scanned == 3
+        assert first.more_pending is True
+
+        # A fresh call with no state carried over ("resumed") must pick up
+        # exactly the sessions the first page did not cover -- never
+        # re-scanning a covered session (which would duplicate assertions
+        # were the write chokepoint not idempotent) and never skipping one.
+        pending_after_first = set(
+            select_pending_secret_scan_session_ids(archive_root / "index.db", archive_root / "ops.db", limit=100)
+        )
+        assert pending_after_first == sessions - set(first.scanned_session_ids)
+
+        second = scan_archive_for_secret_candidates(archive_root, max_sessions=100)
+        assert second.more_pending is False
+        assert set(second.scanned_session_ids) == pending_after_first
+
+        total_scanned = set(first.scanned_session_ids) | set(second.scanned_session_ids)
+        assert total_scanned == sessions
+
+        user_conn = sqlite3.connect(archive_root / "user.db")
+        try:
+            count = user_conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE kind = ?", (AssertionKind.SECRET_CANDIDATE.value,)
+            ).fetchone()[0]
+        finally:
+            user_conn.close()
+        assert count == len(sessions), "resuming must not duplicate candidates for any session"
+
+    def test_scanner_version_bump_schedules_intentional_rescan(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive_session(
+            archive_root, native_id="version-bump", text="AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP"
+        )
+        first = scan_archive_for_secret_candidates(archive_root, scanner_version=1)
+        assert session_id in first.scanned_session_ids
+
+        # At the same version, the session is already covered: nothing to do.
+        same_version = scan_archive_for_secret_candidates(archive_root, scanner_version=1)
+        assert same_version.sessions_scanned == 0
+
+        # A version bump invalidates the existing coverage row and schedules
+        # an intentional rescan.
+        bumped = scan_archive_for_secret_candidates(archive_root, scanner_version=2)
+        assert session_id in bumped.scanned_session_ids
+
+    def test_default_scanner_version_matches_module_constant(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        session_id = _seed_archive_session(archive_root, native_id="default-version", text="just text")
+        scan_archive_for_secret_candidates(archive_root)
+
+        ops_conn = sqlite3.connect(archive_root / "ops.db")
+        try:
+            version = ops_conn.execute(
+                "SELECT scanner_version FROM secret_scan_status WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+        finally:
+            ops_conn.close()
+        assert version == SECRET_SCAN_VERSION
+
+    def test_origin_scope_restricts_the_sweep(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        codex_session = _seed_archive_session(
+            archive_root, native_id="scope-codex", text="AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP"
+        )
+        # A second origin's session must not be touched by an origin-scoped sweep.
+        archive_root.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(archive_root / "index.db")
+        try:
+            conn.execute(
+                "INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms) "
+                "VALUES ('scope-claude', 'claude-code-session', 'x', zeroblob(32), 1000, 2000)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        result = scan_archive_for_secret_candidates(archive_root, origin="codex-session")
+        assert result.scanned_session_ids == (codex_session,)

@@ -20,6 +20,23 @@ to the CLI as ``polylogue ops scan-secrets --session <id>``
 captured content and writing through ``record_secret_candidates``, the
 regex/entropy rules and the non-injectable write path exist but never run
 against an operator's actual archive (polylogue-27m fix round).
+
+``scan_archive_for_secret_candidates`` is the archive-wide sibling
+(polylogue-layg.1): a single-session scan requires an operator to already
+know a session id, so nothing discovers candidates archive-wide without one.
+It is a bounded, resumable sweep over sessions the ops-tier
+``secret_scan_status`` table has not yet covered at the current
+``SECRET_SCAN_VERSION`` -- each page scans up to ``max_sessions`` pending
+sessions, commits their findings and coverage rows together, and reports how
+much work remains. Killing the process mid-sweep loses nothing: only
+already-committed sessions are marked covered, so resuming re-derives the
+still-pending set from the same table and never re-scans (or duplicates
+findings for) a session already covered at the current version. Bumping
+``SECRET_SCAN_VERSION`` (e.g. adding a pattern rule) invalidates every
+existing coverage row, scheduling an intentional full rescan.
+``polylogue ops scan-secrets --all`` (CLI) and
+``polylogue.daemon.secret_scan_sweep`` (bounded daemon catch-up) are its two
+production callers.
 """
 
 from __future__ import annotations
@@ -35,7 +52,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, READ_DB_TIMEOUT
+
+logger = get_logger(__name__)
 
 # One-shot tier connections here mirror the pattern in security/excision.py:
 # a direct connect (not open_connection/open_readonly_connection, so no
@@ -314,11 +334,341 @@ def scan_session_for_secret_candidates(
     )
 
 
+# ---------------------------------------------------------------------------
+# Bulk/archive-wide scan (polylogue-layg.1)
+# ---------------------------------------------------------------------------
+#
+# ``scan_session_for_secret_candidates`` above requires an operator to
+# already know a session id. Nothing archive-wide called it, so an operator
+# with no prior signal had no way to discover candidates at all. The bulk
+# scanner below covers that gap as a bounded, checkpointed sweep: it selects
+# sessions the ops-tier ``secret_scan_status`` table has not yet covered at
+# the current scanner version, scans each one with the same rules and write
+# chokepoint as the single-session path, and commits per-session coverage
+# rows in the same transaction as the findings they cover -- so a kill mid
+# sweep can never leave a session "covered" without its candidates durably
+# recorded, or vice versa.
+
+#: Bump when ``_PATTERN_RULES`` changes in a way that could surface new
+#: candidates in previously-scanned content (new rule, widened regex, changed
+#: entropy threshold). Every existing ``secret_scan_status`` row is written at
+#: the version current when it was scanned, so a bump makes every prior row
+#: stale and schedules an intentional rescan on the next sweep -- mirrors
+#: ``EmbeddingRecipe``'s model/dimension versioning for the embed backlog.
+SECRET_SCAN_VERSION = 1
+
+#: Default bounded page size for one bulk-scan call (CLI ``--limit`` default,
+#: daemon sweep window). A large archive is covered incrementally across
+#: repeated calls rather than one unbounded scan.
+DEFAULT_SECRET_SCAN_PAGE_SIZE = 200
+
+
+@dataclass(frozen=True, slots=True)
+class BulkSecretScanResult:
+    """Outcome of one bounded archive-wide sweep.
+
+    Never carries any matched literal or session content -- only counts, the
+    scanned session ids (for progress reporting), and whether more pending
+    work remains after this page.
+    """
+
+    sessions_scanned: int = 0
+    blocks_scanned: int = 0
+    candidates_found: int = 0
+    errors: int = 0
+    scanned_session_ids: tuple[str, ...] = field(default_factory=tuple)
+    remaining_pending: int = 0
+
+    @property
+    def more_pending(self) -> bool:
+        return self.remaining_pending > 0
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "sessions_scanned": self.sessions_scanned,
+            "blocks_scanned": self.blocks_scanned,
+            "candidates_found": self.candidates_found,
+            "errors": self.errors,
+            "remaining_pending": self.remaining_pending,
+            "more_pending": self.more_pending,
+        }
+
+
+def _attached_secret_scan_status_table_exists(conn: sqlite3.Connection, *, schema: str) -> bool:
+    row = conn.execute(
+        f"SELECT 1 FROM {schema}.sqlite_master WHERE type = 'table' AND name = 'secret_scan_status' LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def select_pending_secret_scan_session_ids(
+    index_db: Path,
+    ops_db: Path,
+    *,
+    scanner_version: int = SECRET_SCAN_VERSION,
+    limit: int = DEFAULT_SECRET_SCAN_PAGE_SIZE,
+    origin: str | None = None,
+    since_ms: int | None = None,
+) -> list[str]:
+    """Return up to ``limit`` session ids not yet covered at ``scanner_version``.
+
+    A session is pending when it has no ``secret_scan_status`` row, or one
+    recorded at an older ``scanner_version``. Ordered by ``session_id`` for a
+    stable, deterministic sweep across repeated bounded calls: two calls with
+    no coverage writes between them return the same page, and a call after a
+    coverage-writing call naturally advances past it -- the coverage table
+    itself is the resumable cursor, so no separate cursor row is needed.
+    """
+    if not index_db.exists():
+        return []
+    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    try:
+        if ops_db.exists():
+            conn.execute("ATTACH DATABASE ? AS ops", (str(ops_db),))
+            has_status_table = _attached_secret_scan_status_table_exists(conn, schema="ops")
+        else:
+            has_status_table = False
+        clauses = ["1 = 1"]
+        params: list[object] = []
+        if origin is not None:
+            clauses.append("s.origin = ?")
+            params.append(origin)
+        if since_ms is not None:
+            clauses.append("s.created_at_ms >= ?")
+            params.append(since_ms)
+        where_sql = " AND ".join(clauses)
+        if has_status_table:
+            query = f"""
+                SELECT s.session_id
+                FROM sessions AS s
+                LEFT JOIN ops.secret_scan_status AS st ON st.session_id = s.session_id
+                WHERE {where_sql}
+                  AND (st.session_id IS NULL OR st.scanner_version < ?)
+                ORDER BY s.session_id
+                LIMIT ?
+            """
+            params.extend([scanner_version, limit])
+        else:
+            query = f"""
+                SELECT s.session_id
+                FROM sessions AS s
+                WHERE {where_sql}
+                ORDER BY s.session_id
+                LIMIT ?
+            """
+            params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        conn.close()
+
+
+def count_pending_secret_scan_sessions(
+    index_db: Path,
+    ops_db: Path,
+    *,
+    scanner_version: int = SECRET_SCAN_VERSION,
+    origin: str | None = None,
+    since_ms: int | None = None,
+) -> int:
+    """Count sessions not yet covered at ``scanner_version`` (status reporting)."""
+    if not index_db.exists():
+        return 0
+    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    try:
+        if ops_db.exists():
+            conn.execute("ATTACH DATABASE ? AS ops", (str(ops_db),))
+            has_status_table = _attached_secret_scan_status_table_exists(conn, schema="ops")
+        else:
+            has_status_table = False
+        clauses = ["1 = 1"]
+        params: list[object] = []
+        if origin is not None:
+            clauses.append("s.origin = ?")
+            params.append(origin)
+        if since_ms is not None:
+            clauses.append("s.created_at_ms >= ?")
+            params.append(since_ms)
+        where_sql = " AND ".join(clauses)
+        if has_status_table:
+            query = f"""
+                SELECT COUNT(*)
+                FROM sessions AS s
+                LEFT JOIN ops.secret_scan_status AS st ON st.session_id = s.session_id
+                WHERE {where_sql}
+                  AND (st.session_id IS NULL OR st.scanner_version < ?)
+            """
+            params.append(scanner_version)
+        else:
+            query = f"SELECT COUNT(*) FROM sessions AS s WHERE {where_sql}"
+        row = conn.execute(query, params).fetchone()
+        return int(row[0] or 0) if row is not None else 0
+    finally:
+        conn.close()
+
+
+def _record_secret_scan_status(
+    ops_conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    scanner_version: int,
+    now_ms: int,
+    blocks_scanned: int,
+    candidates_found: int,
+) -> None:
+    ops_conn.execute(
+        """
+        INSERT INTO secret_scan_status
+            (session_id, scanner_version, scanned_at_ms, blocks_scanned, candidates_found)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            scanner_version = excluded.scanner_version,
+            scanned_at_ms = excluded.scanned_at_ms,
+            blocks_scanned = excluded.blocks_scanned,
+            candidates_found = excluded.candidates_found
+        """,
+        (session_id, scanner_version, now_ms, blocks_scanned, candidates_found),
+    )
+
+
+def scan_archive_for_secret_candidates(
+    archive_root: Path,
+    *,
+    max_sessions: int = DEFAULT_SECRET_SCAN_PAGE_SIZE,
+    scanner_version: int = SECRET_SCAN_VERSION,
+    now_ms: int | None = None,
+    origin: str | None = None,
+    since_ms: int | None = None,
+) -> BulkSecretScanResult:
+    """Scan up to ``max_sessions`` not-yet-covered sessions for secret candidates.
+
+    One bounded page of the archive-wide sweep (polylogue-layg.1): selects
+    pending sessions via :func:`select_pending_secret_scan_session_ids`, scans
+    each with the same rules and non-injectable write chokepoint as
+    :func:`scan_session_for_secret_candidates`, and commits each session's
+    findings together with its ``secret_scan_status`` coverage row in one
+    ``user.db``/``ops.db`` transaction pair -- so an interrupted sweep never
+    leaves a session marked covered without its candidates recorded, and a
+    resumed sweep (a fresh call with no ``max_sessions`` change) naturally
+    re-derives the still-pending set from the coverage table rather than
+    starting over or duplicating findings. Callers loop on
+    ``result.more_pending`` for a full-archive drain, or call once for a
+    single bounded catch-up window (the daemon sweep shape).
+    """
+    timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+
+    index_db = archive_root / "index.db"
+    if not index_db.exists():
+        return BulkSecretScanResult()
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = archive_root / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    user_db = archive_root / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+
+    pending_ids = select_pending_secret_scan_session_ids(
+        index_db,
+        ops_db,
+        scanner_version=scanner_version,
+        limit=max_sessions,
+        origin=origin,
+        since_ms=since_ms,
+    )
+    if not pending_ids:
+        return BulkSecretScanResult(remaining_pending=0)
+
+    index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    index_conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    user_conn = sqlite3.connect(user_db)
+    user_conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+    ops_conn = sqlite3.connect(ops_db)
+    ops_conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+
+    sessions_scanned = 0
+    blocks_scanned_total = 0
+    candidates_found_total = 0
+    errors = 0
+    scanned_ids: list[str] = []
+    try:
+        for session_id in pending_ids:
+            try:
+                rows = index_conn.execute(
+                    "SELECT block_id, COALESCE(text, ''), COALESCE(tool_input, '') FROM blocks "
+                    "WHERE session_id = ? ORDER BY message_id, position",
+                    (session_id,),
+                ).fetchall()
+                written: list[str] = []
+                with user_conn:
+                    for block_id, text, tool_input in rows:
+                        combined = f"{text} {tool_input}".strip()
+                        if not combined:
+                            continue
+                        spans = scan_text_for_secret_candidates(combined)
+                        if not spans:
+                            continue
+                        written.extend(
+                            record_secret_candidates(
+                                user_conn,
+                                target_ref=f"block:{block_id}",
+                                spans=spans,
+                                now_ms=timestamp,
+                            )
+                        )
+                with ops_conn:
+                    _record_secret_scan_status(
+                        ops_conn,
+                        session_id=session_id,
+                        scanner_version=scanner_version,
+                        now_ms=timestamp,
+                        blocks_scanned=len(rows),
+                        candidates_found=len(written),
+                    )
+            except sqlite3.Error:
+                logger.warning("secret scan sweep: session %r failed", session_id, exc_info=True)
+                errors += 1
+                continue
+            sessions_scanned += 1
+            blocks_scanned_total += len(rows)
+            candidates_found_total += len(written)
+            scanned_ids.append(session_id)
+    finally:
+        index_conn.close()
+        user_conn.close()
+        ops_conn.close()
+
+    remaining = count_pending_secret_scan_sessions(
+        index_db,
+        ops_db,
+        scanner_version=scanner_version,
+        origin=origin,
+        since_ms=since_ms,
+    )
+    return BulkSecretScanResult(
+        sessions_scanned=sessions_scanned,
+        blocks_scanned=blocks_scanned_total,
+        candidates_found=candidates_found_total,
+        errors=errors,
+        scanned_session_ids=tuple(scanned_ids),
+        remaining_pending=remaining,
+    )
+
+
 __all__ = [
+    "BulkSecretScanResult",
+    "DEFAULT_SECRET_SCAN_PAGE_SIZE",
+    "SECRET_SCAN_VERSION",
     "SecretCandidateSpan",
     "SecretScanResult",
+    "count_pending_secret_scan_sessions",
     "record_secret_candidates",
+    "scan_archive_for_secret_candidates",
     "scan_session_for_secret_candidates",
     "scan_text_for_secret_candidates",
+    "select_pending_secret_scan_session_ids",
     "secret_candidate_assertion_id",
 ]

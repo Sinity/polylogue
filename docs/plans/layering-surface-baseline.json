@@ -1401,6 +1401,11 @@
   },
   {
     "target": "polylogue/daemon",
+    "file": "polylogue/daemon/secret_scan_sweep.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
     "file": "polylogue/daemon/similarity.py",
     "import": "polylogue.storage.archive_identity"
   },

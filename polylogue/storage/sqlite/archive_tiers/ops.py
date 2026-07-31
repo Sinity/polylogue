@@ -147,6 +147,27 @@ CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     error_message       TEXT
 ) STRICT;
 
+-- Bulk/archive-wide secret-candidate scan coverage (polylogue-layg.1).
+-- Sole live table for the bounded, resumable ``scan_archive_for_secret_candidates``
+-- sweep (``polylogue/security/secret_scan.py``): one row per session naming the
+-- scanner version that last covered it. A session missing here, or present at
+-- an older ``scanner_version`` than the current build, is pending work; a
+-- scanner-version bump (new pattern rules) makes every existing row stale and
+-- schedules an intentional rescan without touching any other tier. Disposable:
+-- losing this table only means re-scanning (idempotent by construction --
+-- ``record_secret_candidates`` writes deterministic assertion ids), never lost
+-- candidates, since the actual findings live durably in user.db.
+CREATE TABLE IF NOT EXISTS secret_scan_status (
+    session_id       TEXT PRIMARY KEY,
+    scanner_version  INTEGER NOT NULL,
+    scanned_at_ms    INTEGER NOT NULL,
+    blocks_scanned   INTEGER NOT NULL DEFAULT 0 CHECK(blocks_scanned >= 0),
+    candidates_found INTEGER NOT NULL DEFAULT 0 CHECK(candidates_found >= 0)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_secret_scan_status_version
+ON secret_scan_status(scanner_version);
+
 CREATE TABLE IF NOT EXISTS otlp_spans (
     trace_id          TEXT NOT NULL,
     span_id           TEXT NOT NULL,
