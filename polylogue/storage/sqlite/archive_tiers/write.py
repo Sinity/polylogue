@@ -524,11 +524,20 @@ def write_parsed_session_to_archive(
             # the upsert would always see this write's own raw_id and could
             # never observe a difference.
             existing_session_raw_id: str | None = None
+            # polylogue-cs86: distinct from ``existing_session_raw_id`` above --
+            # a session row can exist with a NULL ``raw_id`` (ambiguous with
+            # "no row at all" for the union-precedence check), but existence
+            # of the row itself is unambiguous from ``fetchone()`` and is
+            # exactly what ``_replace_full_session_messages_and_blocks`` needs
+            # to know whether its ~14-table point-DELETE cascade has anything
+            # to do at all.
+            session_row_existed = False
             if not merge_append:
                 existing_raw_id_row = conn.execute(
                     "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()
                 if existing_raw_id_row is not None:
+                    session_row_existed = True
                     existing_session_raw_id = existing_raw_id_row[0]
             t0 = time.perf_counter()
             conn.execute(
@@ -658,6 +667,7 @@ def write_parsed_session_to_archive(
                     duplicate_native_ids=duplicate_message_native_ids,
                     raw_id=raw_id,
                     existing_raw_id=existing_session_raw_id,
+                    session_row_existed=session_row_existed,
                     force_replace=force_replace,
                     stage_timings_s=stage_timings_s,
                     stage_timing_prefix=stage_timing_prefix,
@@ -2470,6 +2480,7 @@ def _replace_full_session_messages_and_blocks(
     duplicate_native_ids: frozenset[str],
     raw_id: str | None = None,
     existing_raw_id: str | None = None,
+    session_row_existed: bool = True,
     force_replace: bool = False,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
@@ -2511,6 +2522,38 @@ def _replace_full_session_messages_and_blocks(
     a weaker DOM-fallback one) that this write must win wholesale, not merge
     with -- unioning against a session the caller has explicitly ruled
     inferior would silently partially undo that decision.
+
+    ``session_row_existed`` (polylogue-cs86, default ``True`` -- so any
+    caller that does not thread it reproduces the exact prior behavior)
+    tells this function whether ``sessions`` already had a row for this
+    ``session_id`` immediately before the caller's own upsert. When
+    ``False``, the caller has PROVEN (via a single PK lookup on
+    ``sessions``, already paid for regardless -- see
+    ``write_parsed_session_to_archive``'s ``existing_session_raw_id``
+    capture) that this session_id has never been written before, under
+    this exact archive connection/transaction. Every row this function's
+    delete cascade would otherwise remove (``_clear_session_projection_rows``'s
+    ~14 tables plus the bare ``DELETE FROM messages``) is written ONLY
+    together with (or after) that same ``sessions`` row, by this same
+    function or by ``merge_append`` -- which itself requires the session to
+    already exist (it reads ``MAX(position) FROM messages WHERE
+    session_id = ?``). So "no prior ``sessions`` row" implies "no prior rows
+    anywhere in the cascade" unconditionally, not merely for a fresh
+    bulk-build generation -- skipping the cascade is provably a no-op, not a
+    heuristic. This turns each of those ~14 point-DELETEs (and the
+    parent_message_id-nulling UPDATE) from a real statement into dead work
+    on the hot bulk-rebuild path, where every incoming raw's session_id is
+    new on its first pass through an empty generation (measured: this
+    cascade was ~20% of ``apply_s`` on a from-empty bulk build even with
+    every index present, since a DELETE against zero matching rows still
+    pays a full statement-execution + index-descent cost per table).
+    Same-connection reads see the same transaction's own uncommitted writes,
+    so a session_id revisited later in one multi-raw bulk transaction (e.g.
+    a second accepted revision in the same raw-revision chain) correctly
+    observes ``session_row_existed=True`` on its second occurrence and still
+    runs the cascade -- this is not scoped to "first write in this process",
+    it is scoped to "first write in this session_id's history in this
+    archive".
     """
 
     def add_timing(name: str, started_at: float) -> None:
@@ -2546,25 +2589,33 @@ def _replace_full_session_messages_and_blocks(
     use_scoped_fts_rebuild = not bulk_build and message_fts_triggers_present_sync(conn)
     add_timing("fts_probe", t0)
     if use_scoped_fts_rebuild:
-        t0 = time.perf_counter()
-        conn.execute(delete_session_rows_sql(1), (session_id,))
-        add_timing("fts_messages_delete", t0)
-        # polylogue-miwv: identity-ledger companion, same chunk params as the
-        # messages_fts delete above -- see message_identity_mismatch_sql's
-        # docstring for why this non-bulk full-session-replace fast path must
-        # keep messages_fts_identity paired with messages_fts.
-        t0 = time.perf_counter()
-        conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-        add_timing("fts_identity_delete", t0)
-        # Full replacement also deletes and recreates tool-use blocks.  The
-        # trigram external-content index must be cleared while their old text
-        # is still available, before the guard below suppresses its per-row
-        # triggers.  Leaving it trigger-maintained made a live 18 MB Codex
-        # transcript spend minutes performing thousands of individual FTS5
-        # updates under the sole writer lock.
-        t0 = time.perf_counter()
-        conn.execute(trigram_delete_session_rows_sql(), (session_id,))
-        add_timing("fts_trigram_delete", t0)
+        # polylogue-cs86: these three deletes are keyed by session_id exactly
+        # like the base-table cascade below, and the same proof applies -- a
+        # session_id with no prior ``sessions`` row can have no prior FTS/
+        # trigram rows either (they are only ever written alongside base
+        # rows this same function or a prior call already wrote). Skipping
+        # them when ``session_row_existed`` is False is a no-op removal, not
+        # a heuristic.
+        if session_row_existed:
+            t0 = time.perf_counter()
+            conn.execute(delete_session_rows_sql(1), (session_id,))
+            add_timing("fts_messages_delete", t0)
+            # polylogue-miwv: identity-ledger companion, same chunk params as the
+            # messages_fts delete above -- see message_identity_mismatch_sql's
+            # docstring for why this non-bulk full-session-replace fast path must
+            # keep messages_fts_identity paired with messages_fts.
+            t0 = time.perf_counter()
+            conn.execute(delete_session_identity_rows_sql(1), (session_id,))
+            add_timing("fts_identity_delete", t0)
+            # Full replacement also deletes and recreates tool-use blocks.  The
+            # trigram external-content index must be cleared while their old text
+            # is still available, before the guard below suppresses its per-row
+            # triggers.  Leaving it trigger-maintained made a live 18 MB Codex
+            # transcript spend minutes performing thousands of individual FTS5
+            # updates under the sole writer lock.
+            t0 = time.perf_counter()
+            conn.execute(trigram_delete_session_rows_sql(), (session_id,))
+            add_timing("fts_trigram_delete", t0)
         t0 = time.perf_counter()
         # Keep the canonical triggers structurally present and gate both the
         # message and trigram bodies for the whole replacement.  This is the
@@ -2577,12 +2628,24 @@ def _replace_full_session_messages_and_blocks(
         add_timing("fts_guard", t0)
     replacement_complete = False
     try:
-        t0 = time.perf_counter()
-        _clear_session_projection_rows(conn, session_id)
-        add_timing("clear_projection_rows", t0)
-        t0 = time.perf_counter()
-        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-        add_timing("delete_messages", t0)
+        # polylogue-cs86: ``_clear_session_projection_rows`` (~14 point-DELETEs
+        # across messages/blocks/action_pairs/session_events/session_links/...)
+        # plus the bare messages delete below are a no-op cascade whenever this
+        # session_id has never had a ``sessions`` row before -- see
+        # ``session_row_existed``'s docstring for the invariant proof. Every
+        # DELETE against zero matching rows still pays a full statement
+        # execution + index descent per table, measured at ~20% of apply_s on
+        # a from-empty bulk-build pass even with every index present -- this
+        # is where that cost was going. Skipping is exact, not approximate:
+        # the statements below are guaranteed to delete zero rows in this
+        # branch, so omitting them changes no observable state.
+        if session_row_existed:
+            t0 = time.perf_counter()
+            _clear_session_projection_rows(conn, session_id)
+            add_timing("clear_projection_rows", t0)
+            t0 = time.perf_counter()
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            add_timing("delete_messages", t0)
         t0 = time.perf_counter()
         _write_messages(
             conn,
