@@ -38,6 +38,9 @@ through the same typed AST and query planner:
 compact-query      ::= compact-clause*
 boolean-query      ::= ["sessions" "where"] predicate
 projection-query   ::= (compact-query | boolean-query) "with" projection-list
+projection-list    ::= projection-item ("," projection-item)*
+projection-item    ::= unit ["(" field ("," field)* ")"] ["[" bracket-clause ("," bracket-clause)* "]"]
+bracket-clause     ::= field ":" value | ("first" | "last") ":" integer
 unit-query         ::= ("messages" | "actions" | "blocks" | "files" | "assertions" | "runs" | "observed-events" | "context-snapshots" | "delegations") "where" predicate
 pipeline-query     ::= unit-query ("|" pipeline-stage)+
                      | "sessions" "where" predicate "|" unit-query ("|" pipeline-stage)*
@@ -216,6 +219,48 @@ Unsupported forms raise typed `ExpressionCompileError`s and must not broaden
 into looser full-text search. In particular, reserved unit prefixes such as
 `messages where` are errors when malformed; they are not treated as ordinary
 text terms.
+
+### Bracket predicates/windows on attached units (`with unit[...]`)
+
+The `with <units>` projection clause (session-selecting queries, not
+terminal pipelines) accepts an optional bracket after each unit item,
+narrowing what gets attached to every selected session (polylogue-fnm.2):
+
+```bash
+polylogue --format json 'repo:polylogue with messages[role:user, last:20]'
+polylogue --format json 'repo:polylogue with actions[tool:Bash, first:5]'
+polylogue --format json 'repo:polylogue with messages(message_id,role,text)[role:user, last:10]'
+```
+
+A bracket is a comma-separated list of `field:value` equality predicates
+and/or a single `first:N`/`last:N` window, combinable with the existing
+`unit(field, field)` payload-field selector in either order. Bracket
+predicate fields are a small, explicit vocabulary per unit — the fields
+already present on that unit's attached row payload, not the full
+`<unit> where ...` structural predicate field set:
+
+| Unit | Bracket predicate fields |
+|------|---------------------------|
+| `message` | `role`, `type` |
+| `action` | `tool`, `action`, `type`, `is_error`, `exit_code`, `followup_class` |
+| `file` | `path` |
+| `assertion` | `kind`, `status`, `visibility`, `author_kind` |
+
+An unsupported bracket field or malformed clause raises a typed error naming
+the unit, the field, and the supported set. `first:N`/`last:N` trims each
+session's attached rows to the first/last *N* after predicates are applied,
+by fetch order — `last:N` fetches that unit in descending time order (then
+restores ascending order) precisely so the per-session/per-page row cap
+lands on the session's actual tail instead of silently landing on its head
+whenever a session has more matching rows than the cap.
+
+Bracket predicates/windows apply to the already-fetched, capped attached-row
+set (`attached_units.py`'s existing `_MAX_ROWS_PER_SESSION`/
+`_MAX_ROWS_PER_PAGE` caps) — they are not pushed down to the SQL fetch
+itself. A predicate combined with `last:N` on a session whose *matching*
+rows are sparser than the fetch cap can still under-fetch; this is the same
+bounded-fetch tradeoff every other post-fetch filter on this path already
+has, not a window-specific gap.
 
 ### DSL Fields
 

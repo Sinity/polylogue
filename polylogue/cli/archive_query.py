@@ -27,6 +27,7 @@ from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
     QueryUnitSource,
+    WithUnitWindow,
     parse_unit_source_expression,
     split_with_projection_clause,
 )
@@ -207,8 +208,11 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     unit_source_query = raw_query
     with_units: tuple[str, ...] = ()
     with_unit_fields: dict[str, tuple[str, ...]] = {}
+    with_unit_windows: dict[str, WithUnitWindow] = {}
     if unit_source_query and not (unit_source_query.startswith("{") or unit_source_query.startswith("[")):
-        unit_source_query, with_units, with_unit_fields = split_with_projection_clause(unit_source_query)
+        unit_source_query, with_units, with_unit_fields, with_unit_windows = split_with_projection_clause(
+            unit_source_query
+        )
     unit_source = (
         parse_unit_source_expression(unit_source_query)
         if unit_source_query and not _optional_str(params.get("similar_text"))
@@ -225,6 +229,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     if compiled_spec.with_units:
         with_units = compiled_spec.with_units
         with_unit_fields = compiled_spec.with_unit_fields
+        with_unit_windows = compiled_spec.with_unit_windows
     env.record_timing("compile", compile_started_at)
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
@@ -320,6 +325,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
         query=query,
         limit=limit,
         offset=page_offset,
@@ -655,6 +661,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         typo_hint=typo_hint,
                         with_units=with_units,
                         with_unit_fields=with_unit_fields,
+                        with_unit_windows=with_unit_windows,
                         diagnostics=(
                             _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why")))
                             if not page_hits
@@ -779,6 +786,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 typo_hint=typo_hint,
                 with_units=with_units,
                 with_unit_fields=with_unit_fields,
+                with_unit_windows=with_unit_windows,
                 diagnostics=(
                     _search_miss_diagnostics(env, compiled_spec, why=bool(params.get("why"))) if not page_hits else None
                 ),
@@ -846,6 +854,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             archive=archive,
             with_units=with_units,
             with_unit_fields=with_unit_fields,
+            with_unit_windows=with_unit_windows,
             lineage_seed_session_id=lineage_seed_session_id,
         )
 
@@ -1035,6 +1044,7 @@ def _try_emit_daemon_session_page(
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
+    with_unit_windows: Mapping[str, WithUnitWindow],
     query: str,
     limit: int,
     offset: int,
@@ -1069,6 +1079,7 @@ def _try_emit_daemon_session_page(
         unit_source=unit_source,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
         tags_to_add=tags_to_add,
         metadata_to_set=metadata_to_set,
         delete_matched=delete_matched,
@@ -1211,6 +1222,7 @@ def _daemon_session_page_supported(
     unit_source: QueryUnitSource | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]],
+    with_unit_windows: Mapping[str, WithUnitWindow],
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
     delete_matched: bool,
@@ -1223,7 +1235,7 @@ def _daemon_session_page_supported(
     similar_session_id: str | None,
     retrieval_lane: str,
 ) -> bool:
-    if unit_source is not None or with_units or with_unit_fields:
+    if unit_source is not None or with_units or with_unit_fields or with_unit_windows:
         return False
     if any(params.get(key) for key in ("stats_only", "stats_by", "count_only", "conv_id", "latest", "open_result")):
         return False
@@ -2131,6 +2143,7 @@ def _inject_attached_units(
     archive: ArchiveStore | None,
     with_units: tuple[str, ...],
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
 ) -> None:
     """Attach ``with <units>`` projection rows to each rendered row payload.
 
@@ -2141,7 +2154,9 @@ def _inject_attached_units(
 
     if not with_units or archive is None or not items:
         return
-    attached = fetch_attached_units(archive, session_ids, with_units, unit_fields=with_unit_fields)
+    attached = fetch_attached_units(
+        archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
+    )
     for item, session_id in zip(items, session_ids, strict=False):
         item["attached_units"] = {unit: list(by_session.get(session_id, ())) for unit, by_session in attached.items()}
 
@@ -2159,6 +2174,7 @@ def _emit_list(
     archive: ArchiveStore | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     lineage_seed_session_id: str | None = None,
 ) -> None:
     lineage_edges: dict[str, tuple[str | None, tuple[str, ...]]] = {}
@@ -2196,6 +2212,7 @@ def _emit_list(
         archive=archive,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
     )
     envelope: dict[str, object] = {
         "mode": "list",
@@ -2254,6 +2271,7 @@ def _emit_search(
     typo_hint: str | None = None,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
+    with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
     diagnostics: QueryMissDiagnosticsPayload | None = None,
 ) -> None:
     items = [
@@ -2270,6 +2288,7 @@ def _emit_search(
         archive=archive,
         with_units=with_units,
         with_unit_fields=with_unit_fields,
+        with_unit_windows=with_unit_windows,
     )
     envelope: dict[str, object] = {
         "mode": "search",
