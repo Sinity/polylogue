@@ -34,6 +34,7 @@ from polylogue.insights.confidence import ConfidenceBand, from_signals
 from polylogue.insights.fallback import FallbackReason
 from polylogue.insights.objective_posture import structural_objective_posture
 from polylogue.insights.temporal_source import classify_profile_hwm_source
+from polylogue.storage.insights.session.storage import _epoch_ms_or_none
 from polylogue.storage.runtime import (
     SESSION_ENRICHMENT_FAMILY,
     SESSION_ENRICHMENT_VERSION,
@@ -395,6 +396,10 @@ def build_session_profile_record(
         per_model_cost_json=profile.per_model_cost_json,
         primary_model_name=profile.primary_model_name,
         primary_model_family=profile.primary_model_family,
+        cost_usd=profile.cost_usd,
+        cost_credits=profile.cost_credits,
+        priced_with=profile.priced_with,
+        priced_at_ms=(_epoch_ms_or_none(built_at) if profile.priced_with is not None else None),
         thinking_duration_ms=profile.thinking_duration_ms,
         output_duration_ms=profile.output_duration_ms,
         tool_duration_ms=profile.tool_duration_ms,
@@ -486,6 +491,9 @@ def hydrate_session_profile(record: SessionProfileRecord) -> SessionProfile:
         "per_model_cost_json": record.per_model_cost_json,
         "primary_model_name": record.primary_model_name,
         "primary_model_family": record.primary_model_family,
+        "cost_usd": record.cost_usd,
+        "cost_credits": record.cost_credits,
+        "priced_with": record.priced_with,
     }
     return SessionProfile.from_dict(merged_payload)
 

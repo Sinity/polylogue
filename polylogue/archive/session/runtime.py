@@ -511,6 +511,23 @@ def build_session_profile(
     cost_usd = cost_summary.total_api_cost_usd
     cost_is_estimated = cost_summary.cost_confidence != "reported"
     primary_model_name, primary_model_family = _primary_model(cost_summary)
+    # polylogue-f2qv.6: cost_usd/cost_credits/priced_with (distinct from
+    # total_cost_usd/total_credit_cost above, which always carry a summary
+    # number) stay None when no model in this session actually has a
+    # catalog price entry -- the same "no fabrication" contract
+    # session_model_usage.cost_usd already honors per model (write.py's
+    # `if normalized in PRICING and billable > 0`), rather than treating
+    # an estimate_cost() fallback of 0.0 for an unrecognized model as a
+    # real priced value.
+    from polylogue.archive.semantic.pricing import PRICING
+
+    has_priced_model = any(
+        breakdown.normalized_model is not None and breakdown.normalized_model in PRICING
+        for breakdown in cost_summary.per_model
+    )
+    profile_cost_usd = cost_usd if has_priced_model else None
+    profile_cost_credits = cost_summary.total_credit_cost if has_priced_model else None
+    profile_priced_with = cost_summary.price_snapshot_version if has_priced_model else None
     t0 = time.perf_counter()
     resolved_compaction_count = (
         compaction_count
@@ -611,6 +628,9 @@ def build_session_profile(
         ),
         primary_model_name=primary_model_name,
         primary_model_family=primary_model_family,
+        cost_usd=profile_cost_usd,
+        cost_credits=profile_cost_credits,
+        priced_with=profile_priced_with,
         compaction_count=resolved_compaction_count,
         tags=tuple(session.tags),
         is_continuation=session.is_continuation,
