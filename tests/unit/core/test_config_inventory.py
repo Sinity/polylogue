@@ -161,6 +161,41 @@ roots = ["{missing_root}"]
     assert diag["next_action"] == "Remove the stale source root or create/mount it before running the daemon."
 
 
+def test_effective_config_payload_reports_configured_beads_root_debt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    missing_root = tmp_path / "missing-beads-repo"
+    cfg_path = tmp_path / "polylogue.toml"
+    cfg_path.write_text(
+        f"""
+[sources]
+beads_roots = ["{missing_root}"]
+""".strip(),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+
+    payload = effective_config_payload(load_polylogue_config(config_path=cfg_path))
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    matches = [
+        diag for diag in diagnostics if isinstance(diag, dict) and diag.get("code") == "configured_beads_root_missing"
+    ]
+    assert matches
+    diag = matches[0]
+    assert diag["severity"] == "warning"
+    assert diag["key"] == "beads_roots"
+    assert diag["toml_path"] == "sources.beads_roots"
+    assert diag["source_layer"] == "user"
+    assert diag["value"] == [str(missing_root)]
+    assert diag["message"] == f"Configured Beads repository root does not exist: {missing_root}."
+
+
 def test_effective_config_payload_reports_invalid_home_expansion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

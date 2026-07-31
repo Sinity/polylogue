@@ -794,7 +794,11 @@ def _beads_spec() -> OriginSpec:
         acquisition_modes=("issue-jsonl",),
         parser_paths=("polylogue/sources/parsers/beads.py",),
         fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
-        stream_parser_path="polylogue/sources/parsers/beads.py:parse_beads_stream",
+        # dispatch.py:parse_stream_payload routes Provider.BEADS to the
+        # plain ``beads.parse`` entry point -- there is no dedicated
+        # ``parse_beads_stream`` function; this declaration must name the
+        # function dispatch actually calls.
+        stream_parser_path="polylogue/sources/parsers/beads.py:parse",
         display_description="Beads issue exports (non-chat work artifacts)",
     )
 
