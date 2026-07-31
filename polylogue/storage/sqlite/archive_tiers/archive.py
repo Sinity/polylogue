@@ -1133,6 +1133,72 @@ def _hydrate_archive_file_query_row(row: sqlite3.Row) -> ArchiveFileQueryRow:
     )
 
 
+# polylogue-aif4: the same drift hazard, for ``ArchiveActionQueryRow``.
+# ``query_actions`` and ``query_session_actions`` both join the actions view
+# (aliased ``a``) to ``sessions``/``messages`` and project the identical
+# sixteen-column action shape -- hand-duplicated byte-for-byte before this.
+# ``query_session_action_occurrences`` is deliberately NOT included: it
+# selects from raw ``blocks`` (aliased ``u``/``r``, no follow-up relation) to
+# stay cheap on very large sessions, so its column *sources* genuinely
+# differ even though the output shape rhymes -- forcing it onto this same
+# fragment would either lose that cost tradeoff or fake follow-up columns
+# that were never computed.
+_ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("session_id", "a.session_id"),
+    ("message_id", "a.message_id"),
+    ("origin", "s.origin"),
+    ("title", "s.title"),
+    ("tool_use_block_id", "a.tool_use_block_id"),
+    ("tool_result_block_id", "a.tool_result_block_id"),
+    ("tool_name", "a.tool_name"),
+    ("semantic_type", "a.semantic_type"),
+    ("tool_command", _action_command_expression("a")),
+    ("tool_path", "a.tool_path"),
+    ("occurred_at_ms", "m.occurred_at_ms"),
+    ("output_text", "a.output_text"),
+    ("is_error", "a.is_error"),
+    ("exit_code", "a.exit_code"),
+    ("followup_class", "a.followup_class"),
+    ("followup_message_ref", "a.followup_message_ref"),
+)
+
+_ARCHIVE_ACTION_QUERY_SELECT_SQL = ",\n                ".join(
+    expr if expr.endswith(f".{name}") else f"{expr} AS {name}" for name, expr in _ARCHIVE_ACTION_QUERY_COLUMNS
+)
+
+
+# polylogue-aif4: ``query_unit_counts`` and ``query_unit_multi_counts`` each
+# hand-maintained an identical copy of the unit -> row-alias map and the unit
+# -> FROM-clause map used to dispatch a terminal aggregate query across the
+# seven SQL-backed query units. Both dicts were byte-identical between the
+# two methods (the only per-call variation is the ``action`` entry's derived
+# relation name, now a parameter). One source of truth here means a new
+# query unit is wired into aggregate counts by editing one place, not two
+# that can silently drift apart.
+_QUERY_UNIT_ROW_ALIAS: dict[str, str] = {
+    "message": "m",
+    "action": "a",
+    "block": "b",
+    "file": "f",
+    "assertion": "a",
+    "observed-event": "e",
+    "delegation": "d",
+}
+
+
+def _query_unit_from_sql_by_unit(action_relation_name: str) -> dict[str, str]:
+    """Return the unit -> FROM-clause map shared by both aggregate-count methods."""
+
+    return {
+        "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
+        "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
+        "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
+        "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
+        "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+        "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
+    }
+
+
 def _query_unit_aggregate_order(
     sort: Literal["count", "key"] | None,
     direction: Literal["asc", "desc"],
@@ -6755,15 +6821,7 @@ class ArchiveStore:
         if unit == "assertion":
             self._attach_user_tier_if_present()
 
-        row_alias = {
-            "message": "m",
-            "action": "a",
-            "block": "b",
-            "file": "f",
-            "assertion": "a",
-            "observed-event": "e",
-            "delegation": "d",
-        }.get(unit)
+        row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
         if unit == "file":
@@ -6800,14 +6858,7 @@ class ArchiveStore:
                 predicate=predicate,
                 include_followup=action_needs_followup,
             )
-        from_sql_by_unit = {
-            "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-            "action": (f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id"),
-            "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
-            "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
-            "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
-            "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
-        }
+        from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
         from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
         source_where = "0=1"
@@ -6886,15 +6937,7 @@ class ArchiveStore:
         if unit == "assertion":
             self._attach_user_tier_if_present()
 
-        row_alias = {
-            "message": "m",
-            "action": "a",
-            "block": "b",
-            "file": "f",
-            "assertion": "a",
-            "observed-event": "e",
-            "delegation": "d",
-        }.get(unit)
+        row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL multi-aggregate counts")
 
@@ -6954,14 +6997,7 @@ class ArchiveStore:
                     predicate=predicate,
                     include_followup=action_needs_followup,
                 )
-            from_sql_by_unit = {
-                "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-                "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
-                "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
-                "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
-                "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
-                "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
-            }
+            from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
             from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
             if unit == "observed-event":
                 source_where, source_params = observed_event_source_pushdown(predicate)
