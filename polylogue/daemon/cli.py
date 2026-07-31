@@ -294,6 +294,7 @@ def _watch_sources_from_roots(
     *,
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
+    beads_roots: tuple[Path, ...] = (),
 ) -> tuple[WatchSource, ...]:
     """Build watch sources for explicit daemon roots.
 
@@ -302,9 +303,13 @@ def _watch_sources_from_roots(
     including ChatGPT ``.json`` files and zipped takeouts, so an isolated
     daemon pointed at that inbox must keep the same suffix contract as the
     default inbox source.
+
+    ``beads_roots`` only applies to the default (no explicit ``--root``)
+    case, matching how an explicit ``--root`` already replaces every other
+    default source rather than adding to it.
     """
     if not roots:
-        sources = list(default_sources(hermes_root=hermes_root))
+        sources = list(default_sources(hermes_root=hermes_root, beads_roots=beads_roots))
         if browser_capture_spool_path is not None:
             spool = browser_capture_spool_path.expanduser()
             sources = [source for source in sources if source.name != "browser-capture"]
@@ -2779,6 +2784,7 @@ def run_command(
         roots,
         browser_capture_spool_path=spool_path,
         hermes_root=runtime.source_paths.hermes,
+        beads_roots=runtime.source_paths.beads,
     )
     components = []
     if enable_watch:
@@ -2835,7 +2841,12 @@ def run_command(
 def watch_command(roots: tuple[Path, ...], debounce_s: float) -> None:
     from polylogue.config import resolve_runtime_config
 
-    sources = _watch_sources_from_roots(roots, hermes_root=resolve_runtime_config().source_paths.hermes)
+    runtime_source_paths = resolve_runtime_config().source_paths
+    sources = _watch_sources_from_roots(
+        roots,
+        hermes_root=runtime_source_paths.hermes,
+        beads_roots=runtime_source_paths.beads,
+    )
 
     click.echo(
         f"Watching {len(sources)} source(s); debounce={debounce_s}s. Ctrl-C to stop.",
