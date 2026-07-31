@@ -398,6 +398,10 @@ class PolylogueConfig:
         return v if isinstance(v, str) and v else None
 
     @property
+    def api_allow_no_auth(self) -> bool:
+        return bool(self._data.get("api_allow_no_auth"))
+
+    @property
     def browser_capture_port(self) -> int:
         return int(str(self._data.get("browser_capture_port", 8765)))
 
@@ -942,7 +946,16 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         cli_override="polylogued run --api-auth-token",
         owner_class="network-security",
         reload_behavior="startup-bound",
-        description="Bearer token required when the daemon API is exposed beyond loopback.",
+        description="Bearer token for the daemon API; auto-minted/loaded from a 0600 file if unset.",
+    ),
+    ConfigInventoryEntry(
+        "api_allow_no_auth",
+        toml_path="daemon.api.allow_no_auth",
+        env_var="POLYLOGUE_API_ALLOW_NO_AUTH",
+        cli_override="polylogued run --api-allow-no-auth",
+        owner_class="network-security",
+        reload_behavior="startup-bound",
+        description="Explicit opt-out of the auto-minted API bearer token (API serves unauthenticated).",
     ),
     ConfigInventoryEntry(
         "browser_capture_host",
@@ -1620,6 +1633,7 @@ _BOOL_CONFIG_KEYS = frozenset(
     {
         "browser_capture_allow_remote",
         "browser_capture_allow_no_auth",
+        "api_allow_no_auth",
         "embedding_enabled",
         "force_plain",
         "no_color",
@@ -1768,6 +1782,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "api_host": "127.0.0.1",
         "api_port": 8766,
         "api_auth_token": None,
+        "api_allow_no_auth": False,
         "browser_capture_port": 8765,
         "browser_capture_allowed_origins": "chrome-extension://*",
         "embedding_enabled": False,

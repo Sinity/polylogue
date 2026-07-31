@@ -27,6 +27,11 @@ from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_serv
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
+from polylogue.daemon.api_auth import (
+    API_ALLOW_NO_AUTH_ENV,
+    api_command,
+    resolve_api_auth_token,
+)
 from polylogue.daemon.browser_capture import browser_capture_command
 
 # FTS startup readiness extracted to ``polylogue.daemon.fts_startup`` (#1614).
@@ -1948,6 +1953,7 @@ async def run_daemon_services(
     api_host: str = "127.0.0.1",
     api_port: int = 8766,
     api_auth_token: str | None = None,
+    api_allow_no_auth: bool = False,
 ) -> None:
     """Run configured daemon components until interrupted."""
     from polylogue.daemon import process_start as _process_start
@@ -1976,16 +1982,28 @@ async def run_daemon_services(
             f"Set distinct --api-port/--port values or bind one component to a non-overlapping host."
         )
 
-    # Non-localhost API binding requires explicit opt-in AND an auth token.
+    # The daemon API must never start in an ambiguous unauthenticated state
+    # (polylogue-rzve): an explicit --api-auth-token always wins, otherwise a
+    # persisted 0600 token is auto-minted/loaded (mirroring the
+    # browser-capture receiver's resolve_receiver_auth_token contract), and
+    # --api-allow-no-auth is the loud, explicit opt-out for a deployment that
+    # wants the API fully open.
+    resolved_api_auth_token = (
+        resolve_api_auth_token(api_auth_token, allow_no_auth=api_allow_no_auth) if enable_api else None
+    )
+
+    # Non-localhost API binding requires explicit opt-in AND an auth token --
+    # allow_no_auth cannot be combined with a remote bind.
     if enable_api and not is_loopback_host(api_host):
         if not browser_capture_allow_remote:
             raise click.UsageError(
                 f"--api-host={api_host} is not a loopback address. "
                 f"Add --insecure-allow-remote to accept the risk of exposing the daemon API."
             )
-        if not api_auth_token:
+        if not resolved_api_auth_token:
             raise click.UsageError(
-                f"--api-host={api_host} with --insecure-allow-remote requires --api-auth-token. "
+                f"--api-host={api_host} with --insecure-allow-remote requires --api-auth-token "
+                f"(or an auto-minted token; drop --api-allow-no-auth). "
                 f"Remote binding without authentication is not supported."
             )
     configure_runtime_components(
@@ -2148,7 +2166,7 @@ async def run_daemon_services(
             api_server = DaemonAPIHTTPServer(
                 (api_host, api_port),
                 DaemonAPIHandler,
-                auth_token=api_auth_token,
+                auth_token=resolved_api_auth_token,
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
@@ -2159,7 +2177,7 @@ async def run_daemon_services(
             uds_server = DaemonAPIUnixHTTPServer(
                 daemon_socket_path(),
                 DaemonAPIHandler,
-                auth_token=api_auth_token,
+                auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
             uds_server_task = asyncio.create_task(asyncio.to_thread(uds_server.serve_forever, 0.5))
@@ -2169,7 +2187,7 @@ async def run_daemon_services(
                     "component_started",
                     archive_root_path=archive_root_path,
                     component="api",
-                    payload={"host": api_host, "port": api_port, "auth_enabled": bool(api_auth_token)},
+                    payload={"host": api_host, "port": api_port, "auth_enabled": resolved_api_auth_token is not None},
                 )
 
         # Ensure FTS structure after HTTP surfaces are bound and before live
@@ -2533,6 +2551,7 @@ def main() -> None:
 
 
 main.add_command(browser_capture_command)
+main.add_command(api_command)
 
 
 _LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
@@ -2761,7 +2780,17 @@ def health_command(
 @click.option(
     "--api-auth-token",
     default=None,
-    help="Daemon API auth token (generate one if not provided; write to archive root).",
+    help="Daemon API auth token; auto-minted/loaded from a 0600 file if not given.",
+)
+@click.option(
+    "--api-allow-no-auth",
+    is_flag=True,
+    default=False,
+    envvar=API_ALLOW_NO_AUTH_ENV,
+    help=(
+        "Run the daemon API with no bearer token at all. Any local process can then read/write "
+        "through it -- default OFF; an explicit opt-out for the auto-minted-token default."
+    ),
 )
 @click.pass_context
 def run_command(
@@ -2782,6 +2811,7 @@ def run_command(
     api_host: str,
     api_port: int,
     api_auth_token: str | None,
+    api_allow_no_auth: bool,
 ) -> None:
     """Run configured daemon components.
 
@@ -2834,6 +2864,8 @@ def run_command(
             api_port = cfg.daemon_port
     if parameter_is_default("api_auth_token") and cfg.api_auth_token:
         api_auth_token = cfg.api_auth_token
+    if parameter_is_default("api_allow_no_auth"):
+        api_allow_no_auth = cfg.api_allow_no_auth
 
     enable_watch = not no_watch
     enable_source_catchup = not no_source_catchup
@@ -2881,6 +2913,7 @@ def run_command(
                 api_host=api_host,
                 api_port=api_port,
                 api_auth_token=api_auth_token,
+                api_allow_no_auth=api_allow_no_auth,
             )
         )
     except KeyboardInterrupt:

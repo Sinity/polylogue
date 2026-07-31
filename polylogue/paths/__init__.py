@@ -10,6 +10,7 @@ from __future__ import annotations
 from polylogue.paths._roots import (
     GEMINI_DRIVE_FOLDER,
     antigravity_path,
+    api_auth_token_path,
     archive_file_set_index_available_for_paths,
     archive_root,
     blob_store_root,
@@ -43,6 +44,7 @@ from polylogue.paths._roots import (
 __all__ = [
     "GEMINI_DRIVE_FOLDER",
     "antigravity_path",
+    "api_auth_token_path",
     "archive_root",
     "blob_store_root",
     "browser_capture_pairing_state_path",

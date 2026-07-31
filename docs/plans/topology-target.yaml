@@ -1035,7 +1035,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2482
+    loc: 2485
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1309,7 +1309,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2882
+    loc: 2897
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1330,7 +1330,7 @@ files:
     target: polylogue/context/hermes_lifecycle_reconciliation.py
     owner: stable
   - path: polylogue/context/preamble.py
-    loc: 195
+    loc: 234
     target: polylogue/context/preamble.py
     owner: stable
   - path: polylogue/context/selection.py
@@ -1518,6 +1518,10 @@ files:
     loc: 19
     target: polylogue/daemon/__init__.py
     owner: stable
+  - path: polylogue/daemon/api_auth.py
+    loc: 135
+    target: polylogue/daemon/api_auth.py
+    owner: stable
   - path: polylogue/daemon/backup.py
     loc: 1057
     target: polylogue/daemon/backup.py
@@ -1543,7 +1547,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 2931
+    loc: 2964
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1635,7 +1639,7 @@ files:
     target: polylogue/daemon/healthz.py
     owner: stable
   - path: polylogue/daemon/http.py
-    loc: 5542
+    loc: 5546
     target: polylogue/daemon/http.py
     owner: stable
   - path: polylogue/daemon/judgment_automation.py
@@ -1724,7 +1728,7 @@ files:
     target: polylogue/daemon/similarity.py
     owner: stable
   - path: polylogue/daemon/status.py
-    loc: 3211
+    loc: 3208
     target: polylogue/daemon/status.py
     owner: stable
   - path: polylogue/daemon/status_snapshot.py
@@ -2318,7 +2322,7 @@ files:
     target: polylogue/mcp/server.py
     owner: stable
   - path: polylogue/mcp/server_cutover.py
-    loc: 2370
+    loc: 2325
     target: polylogue/mcp/server_cutover.py
     owner: stable
   - path: polylogue/mcp/server_prompts.py
@@ -2402,11 +2406,11 @@ files:
     target: polylogue/operations/work_effect_reconciliation.py
     owner: stable
   - path: polylogue/paths/__init__.py
-    loc: 74
+    loc: 76
     target: polylogue/paths/__init__.py
     owner: stable
   - path: polylogue/paths/_roots.py
-    loc: 234
+    loc: 246
     target: polylogue/paths/_roots.py
     owner: stable
   - path: polylogue/paths/sanitize.py
@@ -3432,7 +3436,7 @@ files:
     target: polylogue/sources/parsers/claude/orchestration.py
     owner: stable
   - path: polylogue/sources/parsers/codex.py
-    loc: 2571
+    loc: 2651
     target: polylogue/sources/parsers/codex.py
     owner: stable
   - path: polylogue/sources/parsers/codex_state.py
@@ -3540,7 +3544,7 @@ files:
     owner: stable
     cross_cut: { lifecycle: model }
   - path: polylogue/sources/revision_backfill.py
-    loc: 2332
+    loc: 2463
     target: polylogue/sources/revision_backfill.py
     owner: stable
   - path: polylogue/sources/source_acquisition.py
@@ -3581,7 +3585,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_readiness.py
-    loc: 1294
+    loc: 1366
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/archive_views.py
@@ -3875,7 +3879,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 2264
+    loc: 2280
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
@@ -3888,7 +3892,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7108
+    loc: 7149
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper

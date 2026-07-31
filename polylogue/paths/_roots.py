@@ -117,6 +117,18 @@ def browser_capture_receiver_identity_path() -> Path:
     return archive_root() / "browser-capture-receiver-id"
 
 
+def api_auth_token_path() -> Path:
+    """Path for the auto-minted daemon HTTP API bearer token, scoped under the archive root.
+
+    Mirrors :func:`browser_capture_receiver_token_path` (polylogue-rzve): must
+    track ``archive_root()`` (not ``state_home()``) so two ``polylogued``
+    instances with different ``POLYLOGUE_ARCHIVE_ROOT`` values never share one
+    API token, and so an explicit ``--api-auth-token``/config value always
+    takes precedence over whatever is minted here.
+    """
+    return archive_root() / "api-auth-token"
+
+
 def browser_capture_pairing_state_path() -> Path:
     """Path for the receiver's ephemeral one-time pairing-code state.
 

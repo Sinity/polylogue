@@ -1,21 +1,26 @@
-"""Remote-bind enforcement for the daemon API (#868-A4, #868-A5).
+"""Remote-bind enforcement for the daemon API (#868-A4, #868-A5, polylogue-rzve).
 
 The daemon must refuse to start an HTTP API on a non-loopback address
 unless the operator explicitly opts in (``--insecure-allow-remote``)
-*and* configures a bearer token (``--api-auth-token``). The logic lives
-at the top of ``run_daemon_services`` and is the gate that prevents
-accidental exposure of the local archive over the network.
+*and* an auth token is in effect (``--api-auth-token`` is an "auto"
+default -- polylogue-rzve made that real: a token is auto-minted/loaded
+unless the operator explicitly opts all the way out with
+``--api-allow-no-auth``). The logic lives at the top of
+``run_daemon_services`` and is the gate that prevents accidental
+exposure of the local archive over the network.
 
-Two refusal conditions, each tested:
+Refusal conditions, each tested:
 
 1. Non-loopback bind without ``--insecure-allow-remote`` → UsageError.
-2. Non-loopback bind with ``--insecure-allow-remote`` but no token →
-   UsageError.
+2. Non-loopback bind with ``--insecure-allow-remote`` *and*
+   ``--api-allow-no-auth`` (the only way to reach "no token in effect"
+   now that a token auto-mints by default) → UsageError.
 
-A passing positive case (loopback bind, no token required) would
-require mocking the entire daemon startup chain, which is out of scope
-for a focused security test. The pure-logic refusal lives at the top
-of the function and fires before any heavyweight setup.
+A passing positive case (loopback bind, no explicit token, token
+auto-mints) would require mocking the entire daemon startup chain,
+which is out of scope for a focused security test. The pure-logic
+refusal lives at the top of the function and fires before any
+heavyweight setup.
 """
 
 from __future__ import annotations
@@ -68,11 +73,61 @@ def test_non_loopback_bind_without_allow_remote_refuses(api_host: str) -> None:
 
 
 @pytest.mark.parametrize("api_host", ["0.0.0.0", "192.168.1.1"])
-def test_non_loopback_bind_with_allow_remote_but_no_token_refuses(
+def test_non_loopback_bind_with_allow_remote_and_allow_no_auth_refuses(
     api_host: str,
 ) -> None:
-    """Even with the explicit risk-acknowledgement flag, a token is required."""
+    """Even with the explicit risk-acknowledgement flag, an explicit
+    ``--api-allow-no-auth`` opt-out cannot be combined with a remote bind --
+    remote exposure without any credential in effect is never supported."""
     with pytest.raises(click.UsageError, match="requires --api-auth-token"):
+        _run(
+            run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                browser_capture_allow_remote=True,
+                browser_capture_auth_token=None,
+                browser_capture_extra_origins=(),
+                enable_api=True,
+                api_host=api_host,
+                api_port=8766,
+                api_auth_token=None,
+                api_allow_no_auth=True,
+            )
+        )
+
+
+@pytest.mark.parametrize("api_host", ["0.0.0.0", "192.168.1.1"])
+def test_non_loopback_bind_with_allow_remote_and_no_explicit_token_auto_mints(
+    api_host: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remote bind with no explicit ``--api-auth-token`` and no
+    ``--api-allow-no-auth`` opt-out succeeds -- the gate is satisfied by a
+    real auto-minted token, matching the browser-capture receiver's
+    already-shipped contract (polylogue-rzve). Removing the auto-mint call
+    from ``resolve_api_auth_token`` makes this raise UsageError instead.
+
+    The HTTP/UDS server classes are stubbed out so the test never attempts a
+    real bind to a non-loopback address that may not exist on the test host
+    (``192.168.1.1``) -- only the pure-logic gate at the top of
+    ``run_daemon_services`` is under test here.
+    """
+    from unittest.mock import MagicMock
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive"))
+    with (
+        patch("polylogue.daemon.http.DaemonAPIHTTPServer", return_value=MagicMock()),
+        patch("polylogue.daemon.uds.DaemonAPIUnixHTTPServer", return_value=MagicMock()),
+        patch(
+            "polylogue.daemon.cli._run_startup_fts_readiness",
+            side_effect=RuntimeError("post-gate sentinel"),
+        ),
+        pytest.raises(RuntimeError, match="post-gate sentinel"),
+    ):
         _run(
             run_daemon_services(
                 sources=(),
@@ -91,32 +146,9 @@ def test_non_loopback_bind_with_allow_remote_but_no_token_refuses(
                 api_auth_token=None,
             )
         )
+    from polylogue.paths import api_auth_token_path
 
-
-@pytest.mark.parametrize("api_host", ["0.0.0.0", "192.168.1.1"])
-def test_non_loopback_bind_with_allow_remote_and_empty_token_refuses(
-    api_host: str,
-) -> None:
-    """Empty string token is treated as no token (truthy check)."""
-    with pytest.raises(click.UsageError, match="requires --api-auth-token"):
-        _run(
-            run_daemon_services(
-                sources=(),
-                debounce_s=1.0,
-                enable_watch=False,
-                enable_browser_capture=False,
-                browser_capture_host="127.0.0.1",
-                browser_capture_port=8765,
-                browser_capture_spool_path=None,
-                browser_capture_allow_remote=True,
-                browser_capture_auth_token=None,
-                browser_capture_extra_origins=(),
-                enable_api=True,
-                api_host=api_host,
-                api_port=8766,
-                api_auth_token="",
-            )
-        )
+    assert api_auth_token_path().exists()
 
 
 @pytest.mark.parametrize(
@@ -242,11 +274,18 @@ def test_run_command_applies_configured_remote_api_fail_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """TOML/env network policy feeds the same remote-bind safety gate as CLI flags."""
+    """TOML/env network policy feeds the same remote-bind safety gate as CLI flags.
+
+    A remote bind alone no longer fails closed by itself -- an auth token
+    now auto-mints by default (polylogue-rzve) -- so this also sets the
+    explicit ``POLYLOGUE_API_ALLOW_NO_AUTH`` opt-out to reach the "no token
+    in effect" state the remote-bind gate refuses.
+    """
     monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(tmp_path / "absent.toml"))
     monkeypatch.setenv("POLYLOGUE_API_HOST", "0.0.0.0")
     monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE", "true")
+    monkeypatch.setenv("POLYLOGUE_API_ALLOW_NO_AUTH", "true")
 
     result = CliRunner().invoke(main, ["run", "--no-watch", "--no-browser-capture"])
 

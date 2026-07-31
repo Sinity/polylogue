@@ -1353,10 +1353,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _check_auth(self, required_scope: WebCredentialScope = "read", *, allow_web: bool = True) -> bool:
         """Validate a machine bearer or a scoped first-party web credential.
 
-        When no token is configured the API is open (local dev default).
-        When a token IS configured, all clients — including localhost —
-        must present it. Loopback is not a security boundary when a
-        browser on the same host can reach the daemon.
+        When no token is configured the API is open. This server object only
+        ever receives ``auth_token=None`` when the operator explicitly opted
+        out via ``--api-allow-no-auth`` (``polylogue.daemon.api_auth``
+        auto-mints/loads a persisted token by default, mirroring the
+        browser-capture receiver's contract; polylogue-rzve). When a token
+        IS configured, all clients — including localhost — must present it.
+        Loopback is not a security boundary when a browser on the same host
+        can reach the daemon.
 
         Native ``EventSource`` receives the same HttpOnly cookie as fetch, so
         no credential is ever accepted from a query parameter.

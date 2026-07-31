@@ -80,7 +80,17 @@ local process can then read/post to the receiver).
 |------|---------|-------------|
 | `--api-host` | `127.0.0.1` | API server host |
 | `--api-port` | `8766` | API server port |
-| `--api-auth-token` | auto | API auth token (auto-generated if not provided) |
+| `--api-auth-token` (`daemon.api.auth_token` / `api_auth_token`) | auto | API bearer token; auto-minted/loaded from a 0600 file if not given |
+| `--api-allow-no-auth` (`daemon.api.allow_no_auth` / `api_allow_no_auth`) | off | Explicit opt-out: serve the API with no bearer token at all |
+
+By default the daemon API requires the auto-minted/loaded bearer token on
+every route that isn't explicitly classified unauthenticated (see the route
+class table below) — run `polylogued api token show` to print it. Pass
+`--api-allow-no-auth` (or set `daemon.api.allow_no_auth` /
+`POLYLOGUE_API_ALLOW_NO_AUTH=true`) to opt out and serve without a token (any
+local process can then read/write through the API); this cannot be combined
+with a non-loopback `--api-host` (`--insecure-allow-remote` still requires a
+real token in effect).
 
 ## HTTP API Endpoints
 
