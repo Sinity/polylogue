@@ -172,6 +172,17 @@ class ArchiveBlobPublisher(BlobStore):
         """Return the receipt for the most recent write of *blob_hash*."""
         return self._latest_receipt_by_hash.get(blob_hash)
 
+    @property
+    def has_pending(self) -> bool:
+        """Whether ``flush()`` would do real work (take the source write lock).
+
+        A batched replay caller commits its open archive transaction before a
+        non-empty flush so this publisher's separate ``BEGIN IMMEDIATE``
+        connection never waits behind the batch's held source.db write lock
+        (the deadlock that previously forced per-cohort replay commits).
+        """
+        return bool(self._pending)
+
     def flush(self) -> tuple[BlobPublicationReceipt, ...]:
         """Commit all receipts once, then expose all corresponding final paths."""
         if not self._pending:

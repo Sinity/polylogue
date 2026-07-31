@@ -909,7 +909,11 @@ def backfill_historical_revision_evidence(
             nonlocal pending_replay_commits
             pending_replay_commits += 1
             if replay_batch_size is not None and pending_replay_commits >= replay_batch_size:
+                commit_started = time.perf_counter()
                 archive.commit()
+                stage_timings["replay.commit"] = stage_timings.get("replay.commit", 0.0) + (
+                    time.perf_counter() - commit_started
+                )
                 pending_replay_commits = 0
 
         replayed = 0
@@ -923,7 +927,19 @@ def backfill_historical_revision_evidence(
             # (sources/live/batch.py) does NOT opt in: a watched path can be
             # legitimately, atomically replaced with a different session's
             # content, which must not be quarantined as "divergent evidence".
-            plan = archive.classify_raw_revision_cohort(logical_key, check_source_path_identity_split=True)
+            classify_started = time.perf_counter()
+            plan = archive.classify_raw_revision_cohort(
+                logical_key,
+                check_source_path_identity_split=True,
+                # Batched replay defers the classification's source.db
+                # authority updates into the same batch window as the replay
+                # writes (idempotent, re-derived on resume -- see
+                # classify_raw_revision_cohort's docstring).
+                manage_transaction=not replay_batched,
+            )
+            stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
+                time.perf_counter() - classify_started
+            )
             if not plan.accepted_raw_ids:
                 # Complete snapshots that are not a unique byte-prefix chain
                 # still carry semantic evidence. Move only that full-only
@@ -992,7 +1008,12 @@ def backfill_historical_revision_evidence(
                     prepare_session_rows, parsed_by_raw_id[position0_raw_id]
                 )
             accepted_sessions = [parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids]
-            if not archive.raw_revision_replay_adoptable(accepted_sessions):
+            adoptable_started = time.perf_counter()
+            adoptable = archive.raw_revision_replay_adoptable(accepted_sessions)
+            stage_timings["replay.adoptable_check"] = stage_timings.get("replay.adoptable_check", 0.0) + (
+                time.perf_counter() - adoptable_started
+            )
+            if not adoptable:
                 archive.defer_raw_revision_adoption(plan.logical_source_key, plan.accepted_raw_ids, accepted_sessions)
                 provisional_raw_ids = provisional_full_raw_ids.get(logical_key, set())
                 plan_raw_ids = {application.raw_id for application in plan.applications}
@@ -1033,8 +1054,12 @@ def backfill_historical_revision_evidence(
             revisions: list[MembershipRevision] = []
             projections = {}
             retained_bytes = 0
+            candidates_started = time.perf_counter()
             candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
             candidate_raw_ids.update(membership_candidates.get(logical_key, ()))
+            stage_timings["membership.candidates"] = stage_timings.get("membership.candidates", 0.0) + (
+                time.perf_counter() - candidates_started
+            )
             # Cohort absorption: candidate selection is page-dependent, so a
             # head written by an EARLIER page's membership cohort for this key
             # may not be in this page's candidate set -- membership replay
@@ -1057,7 +1082,11 @@ def backfill_historical_revision_evidence(
                     session_logical_key = f"{session.source_name.value}:{session.provider_session_id}"
                     if session_logical_key != logical_key:
                         continue
+                    projection_started = time.perf_counter()
                     projection = session_revision_projection(session)
+                    stage_timings["membership.project"] = stage_timings.get("membership.project", 0.0) + (
+                        time.perf_counter() - projection_started
+                    )
                     member_sessions[raw_id] = session
                     projections[raw_id] = projection
                     revisions.append(
@@ -1075,7 +1104,11 @@ def backfill_historical_revision_evidence(
                     retained_bytes += payload_bytes
             if retention_observer is not None:
                 retention_observer(len(member_sessions), retained_bytes)
+            membership_classify_started = time.perf_counter()
             classification = classify_membership_revisions(revisions)
+            stage_timings["membership.classify"] = stage_timings.get("membership.classify", 0.0) + (
+                time.perf_counter() - membership_classify_started
+            )
             if classification.ambiguous_raw_ids:
                 quarantined += len(classification.ambiguous_raw_ids)
             accepted_sessions = [member_sessions[raw_id] for raw_id in classification.accepted_raw_ids]
