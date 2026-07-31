@@ -26,6 +26,30 @@ def test_relationship_index_jsonl_is_metadata_not_session_stream() -> None:
     assert artifact.parse_as_session is False
 
 
+def test_self_generated_analysis_index_is_not_a_session() -> None:
+    """bd polylogue-omsw / polylogue-9ykn: a self-generated analysis index an
+    agent wrote into its own Claude Code project directory (e.g. an index of
+    prior conversation ids under ``analysis/problem_solutions/``) must never
+    become a session, even though its per-line records carry a generic
+    "type" key that ``looks_like_record_entry`` treats as recordish. The
+    directory-path exclusion is what actually saves this case -- the payload
+    shape alone (no "session"/"parent"/"child" keys) does not hit the
+    existing ``_RELATIONSHIP_INDEX_KEYS`` metadata branch.
+    """
+    records: list[JSONValue] = [
+        {"conversation": f"conv-{index}", "type": "unknown", "preview": "     1->use chrono::{...}"}
+        for index in range(4)
+    ]
+
+    artifact = classify_artifact(
+        records,
+        provider="claude-code",
+        source_path="/home/user/.claude/projects/x/analysis/problem_solutions/problems_index.jsonl",
+    )
+
+    assert artifact.kind is ArtifactKind.METADATA_DOCUMENT
+
+
 def test_relationship_index_jsonl_conversation_field_is_metadata_not_session_stream() -> None:
     """Regression for polylogue-9ykn (gvgi): the REAL live-archive shape uses
     a ``"conversation"`` field, not ``"session"`` (the field name the sibling
