@@ -161,6 +161,7 @@ async def rebuild_index_from_source(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    deadline_check: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Replay retained bytes through typed revision authority.
 
@@ -184,6 +185,11 @@ async def rebuild_index_from_source(
     substitute parse output already computed off the writer hold (the
     daemon's ``DaemonParseStage``) for this pass's census phase; see
     ``backfill_historical_revision_evidence``.
+
+    ``deadline_check`` (polylogue-uhgm, default ``None``) is forwarded
+    unchanged to ``backfill_historical_revision_evidence``'s own parameter of
+    the same name -- see its docstring for the exact interruption contract
+    (checked between REPLAY cohorts, not only after this call returns).
     """
     if raw_batch_size <= 0:
         raise ValueError("raw_batch_size must be positive")
@@ -224,6 +230,7 @@ async def rebuild_index_from_source(
         bulk_fts=bulk_fts,
         bulk_build=bulk_build,
         prefetch_cache=prefetch_cache,
+        deadline_check=deadline_check,
     )
     if progress_callback is not None:
         progress_callback(result.replayed_logical_sources, "revision replay complete")

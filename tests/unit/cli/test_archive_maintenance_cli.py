@@ -2202,25 +2202,35 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
     # is robust to however many intervening `time.time()` calls production
     # code makes before/between the two reads this test actually cares
     # about, rather than pinning an exact call count.
+    #
+    # polylogue-uhgm: the deadline is now ALSO checked between replay
+    # cohorts (not only once, post-hoc, after the whole page replayed), so
+    # an ever-advancing clock left active across BOTH invocations would trip
+    # the resumed pass's very first between-cohorts check too and never let
+    # it promote. Scope the fake clock to just the first (interrupted)
+    # invocation with `monkeypatch.context()`; the resumed invocation runs
+    # on the real clock against the transaction's durable 1s budget, which
+    # is ample for this single-raw fixture.
     fake_clock = itertools.count(100.0, 50.0)
-    monkeypatch.setattr(
-        "polylogue.maintenance.rebuild_index.time.time",
-        lambda: next(fake_clock),
-    )
-    first = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "rebuild-index",
-            "--pass-deadline-seconds",
-            "1",
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
+    with pytest.MonkeyPatch.context() as clock_patch:
+        clock_patch.setattr(
+            "polylogue.maintenance.rebuild_index.time.time",
+            lambda: next(fake_clock),
+        )
+        first = cli_runner.invoke(
+            cli,
+            [
+                "--plain",
+                "ops",
+                "maintenance",
+                "rebuild-index",
+                "--pass-deadline-seconds",
+                "1",
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
     assert first.exit_code == 0
     # This pass replays a raw page through the shared revision-backfill
     # machinery, which logs "backfill stage timings" to stderr on every
@@ -2229,6 +2239,11 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
     payload = json.loads(first.stdout)
     assert payload["status"] == "deferred"
     assert payload["transaction"]["status"] == "deferred"
+    # polylogue-uhgm: the deadline fired before the sole raw in this page
+    # was ever replayed (not merely observed too late afterward), so this
+    # pass recorded zero forward progress -- the whole point of the fix.
+    assert payload["transaction"]["processed_raw_count"] == 0
+    assert payload["transaction"]["last_raw_id"] is None
     assert not root.joinpath("index.db").is_symlink()
     resumed = cli_runner.invoke(
         cli,
