@@ -13,6 +13,108 @@ from polylogue.config import get_config
 from polylogue.paths.sanitize import is_within_root, safe_path_component
 
 
+class TestArchiveRootHonoursConfigFile:
+    """polylogue-4ma3: paths.archive_root() must not resolve from the
+    environment alone -- it has to fall back to ``polylogue.toml``'s
+    ``[archive] root`` before the bare XDG default, matching the precedence
+    :func:`polylogue.config.load_polylogue_config` documents and implements.
+
+    Reverted-mutation witness: replace ``archive_root()`` in
+    ``polylogue/paths/_roots.py`` with the pre-fix
+    ``return _xdg_path("POLYLOGUE_ARCHIVE_ROOT", data_home())`` -- every test
+    below except ``test_env_var_overrides_config_file`` and
+    ``test_default_with_neither_env_nor_config_lands_under_xdg_data_home``
+    then fails because the TOML-configured root is silently ignored.
+
+    Every test here relies on the autouse ``_clear_polylogue_env`` fixture
+    (``tests/conftest.py``) to strip inherited ``POLYLOGUE_*`` vars and repoint
+    ``XDG_CONFIG_HOME``/``XDG_DATA_HOME`` at a fresh ``tmp_path``, so no test
+    can read the real operator's ``~/.config/polylogue/polylogue.toml``.
+    """
+
+    def _write_user_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, root: Path) -> None:
+        config_dir = tmp_path / "xdg-config" / "polylogue"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "polylogue.toml").write_text(f'[archive]\nroot = "{root.as_posix()}"\n', encoding="utf-8")
+
+    def test_config_file_only_resolution_works_with_no_env_var(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.paths import archive_root
+
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+        configured_root = tmp_path / "configured-archive"
+        self._write_user_config(monkeypatch, tmp_path, configured_root)
+
+        assert archive_root() == configured_root
+
+    def test_env_var_overrides_config_file(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        from polylogue.paths import archive_root
+
+        configured_root = tmp_path / "configured-archive"
+        self._write_user_config(monkeypatch, tmp_path, configured_root)
+        env_root = tmp_path / "env-override-archive"
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(env_root))
+
+        assert archive_root() == env_root
+
+    def test_per_test_env_override_still_isolates(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A monkeypatched POLYLOGUE_ARCHIVE_ROOT must take effect immediately
+        and un-set again just as fast -- archive_root() must not cache a
+        resolution across calls within one test (or across tests), which
+        would break the many fixtures/tests that isolate scratch archives via
+        a per-test override."""
+        from polylogue.paths import archive_root
+
+        configured_root = tmp_path / "configured-archive"
+        self._write_user_config(monkeypatch, tmp_path, configured_root)
+
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+        assert archive_root() == configured_root
+
+        scratch_a = tmp_path / "scratch-a"
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(scratch_a))
+        assert archive_root() == scratch_a
+
+        scratch_b = tmp_path / "scratch-b"
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(scratch_b))
+        assert archive_root() == scratch_b
+
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+        assert archive_root() == configured_root
+
+    def test_default_with_neither_env_nor_config_lands_under_xdg_data_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.paths import archive_root, data_home
+
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+        # No polylogue.toml written under XDG_CONFIG_HOME for this test.
+
+        assert archive_root() == data_home()
+        assert archive_root() == Path(tmp_path / "xdg-data" / "polylogue")
+
+    def test_site_config_lower_precedence_than_user_config(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from polylogue.paths import archive_root
+
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+        site_root = tmp_path / "site-archive"
+        site_path = tmp_path / "site.toml"
+        site_path.write_text(f'[archive]\nroot = "{site_root.as_posix()}"\n', encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", str(site_path))
+
+        # Only the site layer is configured so far.
+        assert archive_root() == site_root
+
+        user_root = tmp_path / "user-archive"
+        self._write_user_config(monkeypatch, tmp_path, user_root)
+
+        # The user layer must win over the site layer once both are present.
+        assert archive_root() == user_root
+
+
 def test_external_active_pointer_changes_only_the_index_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "archive"
     root.mkdir()
