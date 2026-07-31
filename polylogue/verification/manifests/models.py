@@ -221,6 +221,11 @@ class LayeringConstraint(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     from_targets: list[str] | None = Field(default=None, validation_alias="from")  # YAML uses "from" keyword
+    # polylogue-2ciy: a checked-in known-violations ratchet baseline (see
+    # devtools/verify_layering.py:_load_baseline) -- repo-relative path to a
+    # JSON file of pre-existing (target, file, import) triples exempted from
+    # this constraint. Only meaningful on `disallow`.
+    baseline: str | None = None
 
 
 class LayeringRule(BaseModel):
