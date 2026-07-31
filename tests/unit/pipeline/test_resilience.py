@@ -576,11 +576,17 @@ def test_ingest_worker_decodes_and_dispatches_provider(tmp_path: Path) -> None:
     # Verify the result structure
     assert result.raw_id is not None  # Should be the actual hash
     assert result.payload_provider is not None  # Provider detected
-    # ingest_record returns a materializable SessionWritePayload even when
-    # the source has no messages yet; that still produces an index.db session.
+    # polylogue-9ykn: an empty ``mapping`` carries no positive conversational
+    # evidence (zero messages) -- ingest_record now refuses to materialize a
+    # session for it (via require_positive_conversational_evidence, applied
+    # in _parse_plan_sessions) and records a bounded, honest parse error
+    # instead of the old "materializable session with zero messages"
+    # default. See test_ingest_worker_quarantines_session_artifact_with_no_
+    # sessions below for the equivalent no-sessions-at-all case this now
+    # shares an error shape with.
     assert isinstance(result.sessions, list)
-    assert len(result.sessions) == 1
-    assert result.error is None
+    assert len(result.sessions) == 0
+    assert result.error == "parse: session artifact produced no materializable sessions"
 
 
 def test_ingest_worker_quarantines_session_artifact_with_no_sessions(
