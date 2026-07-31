@@ -80,10 +80,13 @@ async def test_cost_rollups_aggregate_typed_cost_rows_without_message_load(
             priced_with="origin-reported",
             priced_at_ms=1_772_360_400_000,
         )
+        # polylogue-shnc: a skeleton row with no tokens/cost carries no
+        # provenance claim (NULL) -- 'origin_reported' now means a genuine
+        # provider-reported dollar figure, which this row does not have.
         conn.execute(
             """
             INSERT INTO session_model_usage (session_id, model_name, cost_provenance)
-            VALUES (?, 'claude-sonnet-4-5', 'origin_reported')
+            VALUES (?, 'claude-sonnet-4-5', NULL)
             """,
             (priced_id,),
         )

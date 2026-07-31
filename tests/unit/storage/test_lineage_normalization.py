@@ -268,7 +268,7 @@ def test_prefix_sharing_child_provider_usage_rollup_counts_only_tail(tmp_path: P
         "input_tokens": 50,
         "output_tokens": 15,
         "cache_read_tokens": 10,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
     events = conn.execute(
         """
@@ -1222,7 +1222,7 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
         "input_tokens": 50,
         "output_tokens": 15,
         "cache_read_tokens": 10,
-        "cost_provenance": "origin_reported",
+        "cost_provenance": "priced",
     }
     provenance_rows = conn.execute(
         """
