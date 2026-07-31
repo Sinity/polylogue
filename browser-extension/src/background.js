@@ -18,6 +18,13 @@ import {
   scheduleFreshnessHint,
 } from "./capture/freshness.js";
 
+// Must match src/common.js's TEMPORARY_CHAT_ID_KEY-adjacent sentinel exactly
+// (sessionIdFromUrl's `__polylogue_temporary_chat__` return value) -- this
+// module has no access to the content script's per-tab sessionStorage, so it
+// cannot know the eventual real `temporary:<hex>` session id in advance. It
+// only needs a stable, regex-valid ([A-Za-z0-9_-]{1,256}) truthy signal that
+// a temporary-chat URL is a real, capturable conversation.
+const TEMPORARY_CHAT_SENTINEL = "__polylogue_temporary_chat__";
 const DEFAULT_RECEIVER = "http://127.0.0.1:8765";
 const EXTENSION_CONTRACT_EPOCH = "canonical-capture-mission-control-v1";
 const RECEIVER_API_SCHEMA = "polylogue-browser-capture/v1";
@@ -2582,7 +2589,16 @@ function conversationIdForUrl(url) {
     if (provider === "chatgpt") {
       const marker = parts.indexOf("c");
       if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
-      if (parsed.searchParams.get("temporary-chat") === "true") return null;
+      // Mirror src/common.js:sessionIdFromUrl exactly. A temporary chat has
+      // no /c/<id> path (ChatGPT never persists one), but it is still a
+      // real, capturable conversation -- returning null here made every
+      // gate downstream that checks `conversationIdForUrl(...)` truthy
+      // (captureTab's automatic-capture gate chief among them) treat every
+      // temporary chat tab as "no session" and silently never capture it,
+      // even though the content-script capture path (common.js) has always
+      // been ready to build a per-tab temporary session id. That asymmetry
+      // is why zero temporary chats have ever landed in the archive.
+      if (parsed.searchParams.get("temporary-chat") === "true") return TEMPORARY_CHAT_SENTINEL;
       return null;
     }
     if (provider === "claude-ai") {
