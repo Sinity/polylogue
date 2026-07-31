@@ -15,9 +15,7 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
     CostBasisPayload,
-    CostEstimatePayload,
     CostModelBreakdown,
-    CostUsagePayload,
     estimate_session_cost,
 )
 from tests.infra.builders import make_conv, make_msg
@@ -51,28 +49,37 @@ def test_provider_reported_total_populates_provider_and_api_basis() -> None:
     usage tokens are known, so consumers can compare provider-reported cost
     against catalog-estimated cost on the same usage. Subscription basis
     stays zero unless explicitly configured.
+
+    Exercises the real production exact-cost path (polylogue-gt1z): a
+    ``Session`` with ``reported_cost_usd`` set (the field
+    ``_session_level_estimate`` reads, populated in production from
+    ``sessions.reported_cost_usd``/``ParsedSession.reported_cost_usd``) run
+    through ``estimate_session_cost()`` -- not a ``CostEstimatePayload``
+    built from literals, which verifies only that pydantic returns the
+    fields it was just assigned.
     """
 
-    estimate = CostEstimatePayload(
-        origin="claude-code-session",
-        session_id="conv-exact",
-        model_name="claude-sonnet-4-5",
-        normalized_model="claude-sonnet-4-5",
-        status="exact",
-        confidence=1.0,
-        total_usd=1.25,
-        usage=CostUsagePayload(input_tokens=1000, output_tokens=500),
-        basis=CostBasisPayload(
-            provider_reported_usd=1.25,
-            api_equivalent_usd=1.25,
-            catalog_priced_usd=0.0,
+    session = make_conv(
+        id="conv-exact",
+        provider="claude-code",
+        messages=MessageCollection(
+            messages=[
+                _msg_with_tokens(
+                    id="m1",
+                    model="claude-sonnet-4-5",
+                    input_tokens=1000,
+                    output_tokens=500,
+                )
+            ]
         ),
-        provenance=("archive_session_reported_cost",),
+        reported_cost_usd=1.25,
     )
+    estimate = estimate_session_cost(session)
 
     assert estimate.status == "exact"
     assert estimate.basis.provider_reported_usd == pytest.approx(1.25)
     assert estimate.basis.api_equivalent_usd == pytest.approx(1.25)
+    assert estimate.basis.catalog_priced_usd > 0.0
     assert estimate.basis.subscription_equivalent_usd == 0.0
     assert estimate.basis.tool_surcharge_usd == 0.0
     assert estimate.unavailable_reason is None
