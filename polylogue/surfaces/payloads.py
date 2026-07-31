@@ -973,15 +973,31 @@ class SessionListRowPayload(SurfacePayloadModel):
     continuation: str | None = None
 
     @classmethod
-    def from_session(cls, session: Session) -> SessionListRowPayload:
+    def from_session(cls, session: Session, *, bound_title: bool = True) -> SessionListRowPayload:
+        """Build a row payload from a full ``Session``.
+
+        ``bound_title`` defaults to ``True`` for genuine list contexts (the
+        common case). It must be passed ``False`` where this payload is
+        spliced into a *full single-session* JSON/YAML detail read
+        (``rendering/formatting.py::_conv_to_json``/``_conv_to_yaml``, via
+        ``_conv_to_dict``) -- that surface promises lossless output, and a
+        row-list title budget would silently truncate the title on every
+        ``find ... then read --format json`` call (polylogue-x7d PR #3420
+        follow-up: caught by review before merge, see PR discussion).
+        """
         session_id = str(session.id)
         created_at = session.created_at.isoformat() if session.created_at else None
         updated_at = session.updated_at.isoformat() if session.updated_at else None
         msg_count = len(session.messages)
+        title = (
+            bound_display_title(session.display_title, session_id)
+            if bound_title
+            else (session.display_title or session_id)
+        )
         return cls(
             id=session_id,
             origin=session.origin,
-            title=bound_display_title(session.display_title, session_id),
+            title=title,
             title_source=session.title_source.value if session.title_source else None,
             title_ref=session.title_ref,
             title_confidence=session.title_confidence,

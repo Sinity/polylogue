@@ -339,6 +339,27 @@ class TestSessionFormatting:
         assert len(json_data["messages"]) == len(yaml_data["messages"]) == 2
         assert json_data["messages"][1]["text"] == yaml_data["messages"][1]["text"] == "Response"
 
+    @pytest.mark.parametrize("output_format", ["json", "yaml"])
+    def test_full_session_read_preserves_giant_title_unbounded(self, output_format: str) -> None:
+        """polylogue-x7d PR #3420 follow-up (caught by review before merge):
+
+        ``_conv_to_json``/``_conv_to_yaml`` build their top-level document
+        via ``_conv_to_dict`` -> ``SessionListRowPayload.from_session``, the
+        same constructor list contexts use. A single-session ``find ...
+        then read --format json/yaml`` must stay lossless -- it must NOT
+        inherit the 96-char list-row title budget, unlike genuine list
+        output (``format_summary_list``/``format_search_hit_list``/
+        ``_format_list``/the TUI session list), which intentionally does.
+        """
+        giant_title = "needle " + ("full title content " * 20)
+        conv = _make_conv(title=giant_title)
+
+        rendered = format_session(conv, output_format, None)
+        data = json.loads(rendered) if output_format == "json" else yaml.safe_load(rendered)
+
+        assert data["title"] == giant_title
+        assert len(data["title"]) > 96
+
     def test_csv_messages_skips_empty_text(self) -> None:
         conv = _make_conv(messages=[_make_msg("user", None, id="empty"), _make_msg("assistant", "Reply", id="reply")])
         rendered = format_session(conv, "csv", None)
@@ -409,6 +430,20 @@ class TestListFormatting:
             payload = yaml.safe_load(rendered)
             assert payload["items"][0]["id"] == "conv-1234567890abcdef"
             assert payload["items"][0]["origin"] == "claude-ai-export"
+
+    @pytest.mark.parametrize("output_format", ["json", "yaml"])
+    def test_format_list_bounds_giant_titles_unlike_single_session_read(self, output_format: str) -> None:
+        """The multi-session ``find`` list path (unlike the single-session
+        ``read`` path above) intentionally bounds titles -- this is the
+        genuine list context polylogue-x7d's shared budget targets."""
+        giant_title = "needle " + ("full title content " * 20)
+        conv = _make_conv(title=giant_title)
+
+        rendered = _format_list([conv], output_format, None)
+        payload = json.loads(rendered) if output_format == "json" else yaml.safe_load(rendered)
+
+        assert payload["items"][0]["title"] != giant_title
+        assert len(payload["items"][0]["title"]) <= DEFAULT_TITLE_MAX_CHARS + 3
 
     @pytest.mark.parametrize("output_format", ["json", "yaml", "csv", "text"])
     def test_format_summary_list_contract(self, output_format: str) -> None:
