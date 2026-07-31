@@ -2,7 +2,7 @@
   "generated_by": "devtools render webui-design-system",
   "method": "WCAG 2.x relative luminance and contrast ratio",
   "minimum_focus_ratio": 7.09,
-  "minimum_text_ratio": 4.82,
+  "minimum_text_ratio": 4.52,
   "pairs": [
     {
       "background": "#f7f9fb",
@@ -182,6 +182,15 @@
       "pair": "origin-claude-ai-export",
       "passes": true,
       "ratio": 6.38,
+      "threshold": 4.5
+    },
+    {
+      "background": "#ffedd5",
+      "foreground": "#c2410c",
+      "mode": "light",
+      "pair": "origin-claude-design-session",
+      "passes": true,
+      "ratio": 4.52,
       "threshold": 4.5
     },
     {
@@ -371,6 +380,15 @@
       "pair": "origin-claude-ai-export",
       "passes": true,
       "ratio": 10.73,
+      "threshold": 4.5
+    },
+    {
+      "background": "#3a2a12",
+      "foreground": "#fdba74",
+      "mode": "dark",
+      "pair": "origin-claude-design-session",
+      "passes": true,
+      "ratio": 8.19,
       "threshold": 4.5
     },
     {

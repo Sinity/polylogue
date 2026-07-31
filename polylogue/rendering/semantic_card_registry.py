@@ -386,6 +386,7 @@ _ORIGIN_POLICIES: tuple[OriginPolicy, ...] = (
     OriginPolicy(Origin.GROK_EXPORT, "grok"),
     OriginPolicy(Origin.CHATGPT_EXPORT, "chatgpt"),
     OriginPolicy(Origin.CLAUDE_AI_EXPORT, "claude-ai"),
+    OriginPolicy(Origin.CLAUDE_DESIGN_SESSION, "claude-design"),
     OriginPolicy(Origin.AISTUDIO_DRIVE, "gemini-cli"),
     OriginPolicy(Origin.UNKNOWN_EXPORT, "unknown"),
 )

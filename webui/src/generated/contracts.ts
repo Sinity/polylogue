@@ -10,6 +10,7 @@ export const PUBLIC_ORIGINS = [
   "grok-export",
   "chatgpt-export",
   "claude-ai-export",
+  "claude-design-session",
   "aistudio-drive"
 ] as const;
 export type OriginToken = (typeof PUBLIC_ORIGINS)[number];
@@ -23,6 +24,7 @@ export const ORIGIN_LABELS: Readonly<Record<OriginToken, string>> = {
   "grok-export": "Grok export",
   "chatgpt-export": "ChatGPT export",
   "claude-ai-export": "Claude.ai export",
+  "claude-design-session": "Claude Design",
   "aistudio-drive": "AI Studio Drive"
 };
 export const EVIDENCE_STATES = [
