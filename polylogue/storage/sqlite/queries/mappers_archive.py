@@ -33,6 +33,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
+    _json_object_list,
     _parse_json,
     _row_float,
     _row_get,
@@ -67,6 +68,9 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
         display_name=_row_text(row, "display_name"),
         run_settings=_json_object(
             _parse_json(_row_get(row, "run_settings_json"), field="run_settings_json", record_id=row["session_id"])
+        ),
+        pending_drafts=_json_object_list(
+            _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
         ),
     )
 

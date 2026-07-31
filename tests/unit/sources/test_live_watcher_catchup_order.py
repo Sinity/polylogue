@@ -80,6 +80,40 @@ def test_default_sources_uses_resolved_hermes_root(tmp_path: Path) -> None:
     assert hermes.accepts(configured_root / "observability" / "hermes-atof.jsonl")
 
 
+def test_default_sources_omits_beads_by_default() -> None:
+    """Beads has no home-relative default -- unlike every other source here,
+    a ledger belongs to a specific git repository. Omitting ``beads_roots``
+    must not synthesize a watch source out of nowhere."""
+    names = {source.name for source in live_watcher.default_sources()}
+
+    assert not any(name.startswith("beads:") for name in names)
+
+
+def test_default_sources_watches_configured_beads_roots(tmp_path: Path) -> None:
+    repo_a = tmp_path / "repo-a"
+    repo_b = tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+
+    sources = {
+        source.name: source
+        for source in live_watcher.default_sources(beads_roots=(repo_a, repo_b))
+        if source.name.startswith("beads:")
+    }
+
+    assert set(sources) == {"beads:repo-a", "beads:repo-b"}
+    beads_a = sources["beads:repo-a"]
+    assert beads_a.root == repo_a / ".beads"
+    assert beads_a.accepts(repo_a / ".beads" / "interactions.jsonl")
+    # The mutable current-state ledger and rotated backups must never be
+    # treated as the append-only interaction timeline.
+    assert not beads_a.accepts(repo_a / ".beads" / "issues.jsonl")
+    assert not beads_a.accepts(repo_a / ".beads" / "backup" / "snapshot.darc")
+    # A repository without a ledger yet is still watched so a ledger
+    # created later is picked up without a daemon restart.
+    assert not beads_a.exists()
+
+
 def test_default_sources_watch_codex_state_db(monkeypatch: Any, tmp_path: Path) -> None:
     """polylogue-0jf4: a second, narrower WatchSource covers the five live
     ~/.codex SQLite databases without widening the existing "codex" JSONL

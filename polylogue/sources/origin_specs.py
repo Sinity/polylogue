@@ -434,7 +434,7 @@ def _claude_code_spec() -> OriginSpec:
             "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
             "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
             "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
-            "code_parser.py's _SKIPPED_SIDECAR_RECORD_TYPES (14 sidecar record "
+            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES (14 sidecar record "
             "types) already carries a per-type disposition with corpus counts "
             "in a comment block (polylogue-pbuh/parser-diff triage, "
             "2026-07-29) -- not converted to a DroppedValueVocabulary "
@@ -794,7 +794,11 @@ def _beads_spec() -> OriginSpec:
         acquisition_modes=("issue-jsonl",),
         parser_paths=("polylogue/sources/parsers/beads.py",),
         fixture_paths=("tests/unit/sources/parsers/test_beads.py",),
-        stream_parser_path="polylogue/sources/parsers/beads.py:parse_beads_stream",
+        # dispatch.py:parse_stream_payload routes Provider.BEADS to the
+        # plain ``beads.parse`` entry point -- there is no dedicated
+        # ``parse_beads_stream`` function; this declaration must name the
+        # function dispatch actually calls.
+        stream_parser_path="polylogue/sources/parsers/beads.py:parse",
         display_description="Beads issue exports (non-chat work artifacts)",
     )
 
@@ -832,6 +836,10 @@ def _aistudio_drive_spec() -> OriginSpec:
             "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
             "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
             "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+            "chunkedPrompt.pendingInputs (unsent textbox drafts) is read and stored verbatim as "
+            "sessions.pending_drafts_json (polylogue-o4j2), deliberately as a session-row field rather than a "
+            "session_event: a draft is mutable current UI state, and session_events participate in "
+            "session_revision_projection's append-only comparison axes (polylogue-aggz Invariant 1).",
             "drive_support_blocks.py's _SUCCESS_OUTCOMES ({'ok', 'success', "
             "'succeeded', 'completed', 'outcome_ok'}) is not (yet) a "
             "DroppedValueVocabulary (polylogue-2qx): Gemini's own committed "

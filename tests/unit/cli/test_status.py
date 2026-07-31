@@ -1650,6 +1650,12 @@ class TestNoArchiveStatus:
         assert "87.5% indexed" in _combined_calls(env)
 
     def test_daemon_status_treats_null_fts_coverage_as_unknown_progress(self) -> None:
+        """A null coverage_pct must render as explicitly unknown, never a
+        fabricated percentage (polylogue-roax): defaulting an unmeasured
+        value to 0.0% (or, before this fix, 100.0% when ``messages_ready``
+        was true) is exactly the "measuring the wrong thing" bug that let
+        `ops status` and `find` disagree while pointing at the same archive.
+        """
         env = _make_app_env()
 
         _show_daemon_status(
@@ -1663,7 +1669,25 @@ class TestNoArchiveStatus:
             },
         )
 
-        assert "FTS: [yellow]0.0% indexed[/yellow]" in _combined_calls(env)
+        assert "FTS: [yellow]coverage unknown[/yellow]" in _combined_calls(env)
+
+    def test_daemon_status_treats_null_fts_coverage_as_unknown_even_when_ready(self) -> None:
+        """The ready-but-unmeasured shape must not render as 100% either."""
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "fts_readiness": {
+                    "messages_ready": True,
+                    "coverage_pct": None,
+                },
+            },
+        )
+
+        assert "FTS: [green]coverage unknown[/green]" in _combined_calls(env)
+        assert "100.0%" not in _combined_calls(env)
 
     def test_daemon_status_archive_fts_reports_message_surface(self) -> None:
         env = _make_app_env()

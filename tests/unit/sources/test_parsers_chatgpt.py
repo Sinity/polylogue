@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Any, TypeAlias
 
 import pytest
@@ -20,6 +22,7 @@ from polylogue.sources.parsers.chatgpt import (
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code
+from tests.infra.live_ingest import write_session_sync
 from tests.infra.source_builders import make_chatgpt_node
 
 ProviderCheck: TypeAlias = Callable[[object], bool]
@@ -513,6 +516,81 @@ def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None
         pass
     elif expected_type is None:
         pass  # No special metadata expected
+
+
+def test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end(test_db: Path) -> None:
+    """A ``thoughts`` node's THINKING block must carry real text, and be searchable.
+
+    ``_extract_content_text`` used to only read ``parts``/``text``/``result``;
+    a ``thoughts`` content node (the shape reasoning nodes actually use --
+    an array of ``{summary, content, ...}`` steps, no top-level text/parts)
+    produced an empty string, so ``extract_messages_from_mapping`` built a
+    THINKING block with ``text=""`` -- the reasoning content was present in
+    the raw payload but invisible everywhere text is read: the block's own
+    ``text`` field, and (since ``blocks.search_text`` is generated FROM that
+    field) full-text search. Preserving the raw bytes across the
+    browser-capture bridge (page_transport.js) is necessary but not
+    sufficient if this parser still can't read them -- this test proves the
+    text reaches both the parsed block AND a live FTS index, not just that
+    JSON round-trips.
+    """
+    thought_text = "Weighing the tradeoffs between approach A and approach B before answering."
+    mapping: dict[str, object] = {
+        "node1": {
+            "id": "node1",
+            "parent": None,
+            "message": {
+                "id": "reasoning-msg-1",
+                "author": {"role": "assistant"},
+                "content": {
+                    "content_type": "thoughts",
+                    "thoughts": [
+                        {"summary": "Weighing options", "content": thought_text},
+                    ],
+                },
+                "create_time": 1700000000.0,
+            },
+        }
+    }
+
+    session = chatgpt_parse({"id": "reasoning-only", "mapping": mapping}, "fallback-id")
+
+    assert len(session.messages) == 1
+    message = session.messages[0]
+    assert message.text == thought_text
+    thinking_blocks = [block for block in message.blocks if block.type == BlockType.THINKING]
+    assert len(thinking_blocks) == 1
+    assert thinking_blocks[0].text == thought_text
+
+    session_id = write_session_sync(test_db, session)
+    conn = sqlite3.connect(str(test_db))
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        stored_text = conn.execute(
+            "SELECT search_text FROM blocks WHERE session_id = ? AND block_type = 'thinking'",
+            (session_id,),
+        ).fetchone()
+        assert stored_text is not None
+        assert thought_text in stored_text[0]
+        # messages_fts is a CONTENTLESS FTS5 table (content=''): its own
+        # UNINDEXED columns (session_id included) are write-only and never
+        # retrievable by SELECT (see FTS_MESSAGES_IDENTITY_TABLE_SQL's
+        # docstring in polylogue/storage/fts/sql.py) -- the rowid-to-block_id
+        # identity ledger is the real way to resolve a MATCH hit's identity.
+        fts_hit = conn.execute(
+            """
+            SELECT b.session_id
+            FROM messages_fts
+            JOIN messages_fts_identity ON messages_fts_identity.rowid = messages_fts.rowid
+            JOIN blocks AS b ON b.block_id = messages_fts_identity.block_id
+            WHERE messages_fts MATCH ?
+            """,
+            ("tradeoffs",),
+        ).fetchone()
+        assert fts_hit is not None, "reasoning text must be findable via full-text search, not just stored"
+        assert fts_hit[0] == session_id
+    finally:
+        conn.close()
 
 
 # -----------------------------------------------------------------------------

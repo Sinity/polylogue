@@ -371,6 +371,7 @@ class ArchiveSessionSummary:
     message_count: int
     word_count: int
     tags: tuple[str, ...]
+    parent_id: str | None = None
     session_kind: str = "standard"
     reported_duration_ms: int | None = None
     tool_use_count: int = 0
@@ -1006,6 +1007,196 @@ def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["A
     """Return a closed SQL direction token for terminal row ordering."""
 
     return "DESC" if direction == "desc" else "ASC"
+
+
+# polylogue-a7xr.16: table-driving the SELECT side. ``query_messages`` and
+# ``query_session_messages`` used to hand-duplicate an identical "fetch every
+# block for a set of message_ids, hydrate ArchiveBlockRow" block (column
+# list, WHERE/ORDER BY shape, and the twelve-line per-field accessor loop),
+# so a column added to this projection had to be added twice, by hand, in
+# lockstep. ``_ARCHIVE_BLOCK_QUERY_COLUMNS`` is now the single source of
+# truth for that projection's column list -- both the SELECT clause and the
+# hydration loop derive from it -- and ``_fetch_blocks_for_messages`` is the
+# one place either query method calls. Unlike the INSERT side (write.py),
+# column order here carries no correctness risk on its own (sqlite3.Row is
+# accessed by name, not position); the risk this eliminates is the same
+# projection existing in two places that can silently drift out of sync.
+_ARCHIVE_BLOCK_QUERY_COLUMNS: tuple[str, ...] = (
+    "block_id",
+    "message_id",
+    "block_type",
+    "text",
+    "tool_name",
+    "tool_id",
+    "semantic_type",
+    "tool_input",
+    "language",
+    "tool_result_is_error",
+    "tool_result_exit_code",
+)
+
+
+def _hydrate_archive_block_row(row: sqlite3.Row) -> ArchiveBlockRow:
+    """Build an ``ArchiveBlockRow`` from a row selected via ``_ARCHIVE_BLOCK_QUERY_COLUMNS``."""
+
+    return ArchiveBlockRow(
+        block_id=str(row["block_id"]),
+        message_id=str(row["message_id"]),
+        block_type=str(row["block_type"]),
+        text=str(row["text"]) if row["text"] is not None else None,
+        tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
+        tool_id=str(row["tool_id"]) if row["tool_id"] is not None else None,
+        semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
+        tool_input=str(row["tool_input"]) if row["tool_input"] is not None else None,
+        language=str(row["language"]) if row["language"] is not None else None,
+        tool_result_is_error=(int(row["tool_result_is_error"]) if row["tool_result_is_error"] is not None else None),
+        tool_result_exit_code=(int(row["tool_result_exit_code"]) if row["tool_result_exit_code"] is not None else None),
+    )
+
+
+def _fetch_blocks_for_messages(
+    conn: sqlite3.Connection, message_ids: tuple[str, ...]
+) -> dict[str, list[ArchiveBlockRow]]:
+    """Fetch and hydrate every block for ``message_ids``, keyed by message_id.
+
+    Shared by ``query_messages`` and ``query_session_messages`` -- see
+    ``_ARCHIVE_BLOCK_QUERY_COLUMNS`` docstring above for why this used to be
+    two independently-maintained copies of the same query.
+    """
+
+    blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
+    if not message_ids:
+        return blocks_by_message
+    block_placeholders = ", ".join("?" for _ in message_ids)
+    columns_sql = ", ".join(_ARCHIVE_BLOCK_QUERY_COLUMNS)
+    block_rows = conn.execute(
+        f"""
+        SELECT {columns_sql}
+        FROM blocks
+        WHERE message_id IN ({block_placeholders})
+        ORDER BY message_id, position, block_id
+        """,
+        message_ids,
+    ).fetchall()
+    for block in block_rows:
+        blocks_by_message[str(block["message_id"])].append(_hydrate_archive_block_row(block))
+    return blocks_by_message
+
+
+# polylogue-a7xr.16: the same drift hazard, for ``ArchiveFileQueryRow``.
+# ``query_files`` and ``query_session_files`` derive their affected-file
+# aggregate from two different inner subqueries (actions vs. blocks), but the
+# OUTER SELECT projecting the aggregate's columns (aliased ``f.`` for the
+# inner subquery, ``s.`` for the joined session) is byte-identical between
+# the two methods, as was the twelve-line hydration loop consuming it.
+# ``_ARCHIVE_FILE_QUERY_COLUMNS`` (output name, source expression) is the one
+# place that outer projection is named; ``_ARCHIVE_FILE_QUERY_SELECT_SQL``
+# derives the shared SELECT fragment from it and ``_hydrate_archive_file_query_row``
+# derives the shared hydration from the same output names, so the two can
+# never drift out of sync with each other again.
+_ARCHIVE_FILE_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("session_id", "f.session_id"),
+    ("origin", "s.origin"),
+    ("title", "s.title"),
+    ("path", "f.path"),
+    ("action_count", "f.action_count"),
+    ("first_message_id", "f.first_message_id"),
+    ("first_tool_use_block_id", "f.first_tool_use_block_id"),
+    ("last_tool_use_block_id", "f.last_tool_use_block_id"),
+    ("first_seen_ms", "f.first_seen_ms"),
+    ("last_seen_ms", "f.last_seen_ms"),
+)
+
+_ARCHIVE_FILE_QUERY_SELECT_SQL = ",\n                ".join(
+    expr if expr.endswith(f".{name}") else f"{expr} AS {name}" for name, expr in _ARCHIVE_FILE_QUERY_COLUMNS
+)
+
+
+def _hydrate_archive_file_query_row(row: sqlite3.Row) -> ArchiveFileQueryRow:
+    """Build an ``ArchiveFileQueryRow`` from a row selected via ``_ARCHIVE_FILE_QUERY_SELECT_SQL``."""
+
+    return ArchiveFileQueryRow(
+        session_id=str(row["session_id"]),
+        origin=str(row["origin"]),
+        title=str(row["title"]) if row["title"] is not None else None,
+        path=str(row["path"]),
+        action_count=int(row["action_count"]),
+        first_message_id=str(row["first_message_id"]) if row["first_message_id"] is not None else None,
+        first_tool_use_block_id=str(row["first_tool_use_block_id"])
+        if row["first_tool_use_block_id"] is not None
+        else None,
+        last_tool_use_block_id=str(row["last_tool_use_block_id"])
+        if row["last_tool_use_block_id"] is not None
+        else None,
+        first_seen_ms=int(row["first_seen_ms"]) if row["first_seen_ms"] is not None else None,
+        last_seen_ms=int(row["last_seen_ms"]) if row["last_seen_ms"] is not None else None,
+    )
+
+
+# polylogue-aif4: the same drift hazard, for ``ArchiveActionQueryRow``.
+# ``query_actions`` and ``query_session_actions`` both join the actions view
+# (aliased ``a``) to ``sessions``/``messages`` and project the identical
+# sixteen-column action shape -- hand-duplicated byte-for-byte before this.
+# ``query_session_action_occurrences`` is deliberately NOT included: it
+# selects from raw ``blocks`` (aliased ``u``/``r``, no follow-up relation) to
+# stay cheap on very large sessions, so its column *sources* genuinely
+# differ even though the output shape rhymes -- forcing it onto this same
+# fragment would either lose that cost tradeoff or fake follow-up columns
+# that were never computed.
+_ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("session_id", "a.session_id"),
+    ("message_id", "a.message_id"),
+    ("origin", "s.origin"),
+    ("title", "s.title"),
+    ("tool_use_block_id", "a.tool_use_block_id"),
+    ("tool_result_block_id", "a.tool_result_block_id"),
+    ("tool_name", "a.tool_name"),
+    ("semantic_type", "a.semantic_type"),
+    ("tool_command", _action_command_expression("a")),
+    ("tool_path", "a.tool_path"),
+    ("occurred_at_ms", "m.occurred_at_ms"),
+    ("output_text", "a.output_text"),
+    ("is_error", "a.is_error"),
+    ("exit_code", "a.exit_code"),
+    ("followup_class", "a.followup_class"),
+    ("followup_message_ref", "a.followup_message_ref"),
+)
+
+_ARCHIVE_ACTION_QUERY_SELECT_SQL = ",\n                ".join(
+    expr if expr.endswith(f".{name}") else f"{expr} AS {name}" for name, expr in _ARCHIVE_ACTION_QUERY_COLUMNS
+)
+
+
+# polylogue-aif4: ``query_unit_counts`` and ``query_unit_multi_counts`` each
+# hand-maintained an identical copy of the unit -> row-alias map and the unit
+# -> FROM-clause map used to dispatch a terminal aggregate query across the
+# seven SQL-backed query units. Both dicts were byte-identical between the
+# two methods (the only per-call variation is the ``action`` entry's derived
+# relation name, now a parameter). One source of truth here means a new
+# query unit is wired into aggregate counts by editing one place, not two
+# that can silently drift apart.
+_QUERY_UNIT_ROW_ALIAS: dict[str, str] = {
+    "message": "m",
+    "action": "a",
+    "block": "b",
+    "file": "f",
+    "assertion": "a",
+    "observed-event": "e",
+    "delegation": "d",
+}
+
+
+def _query_unit_from_sql_by_unit(action_relation_name: str) -> dict[str, str]:
+    """Return the unit -> FROM-clause map shared by both aggregate-count methods."""
+
+    return {
+        "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
+        "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
+        "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
+        "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
+        "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
+        "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
+    }
 
 
 def _query_unit_aggregate_order(
@@ -3555,6 +3746,7 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.parent_session_id,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -5378,6 +5570,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> int:
         """Count sessions in the archive index."""
         where, params = _session_filter_clause(
@@ -5411,6 +5604,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -5849,6 +6043,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
@@ -5885,6 +6080,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -5900,6 +6096,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.parent_session_id,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -5973,6 +6170,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> list[ArchiveSessionSearchHit]:
         """Search archive block text and return session-level hits with snippets."""
         match_query = normalize_fts5_query(query)
@@ -6016,6 +6214,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -6101,6 +6300,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> int:
         """Count distinct sessions matching the archive block FTS search."""
         match_query = normalize_fts5_query(query)
@@ -6137,6 +6337,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -6201,6 +6402,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> tuple[str, ...]:
         """Return distinct sessions matching the archive block FTS search."""
         match_query = normalize_fts5_query(query)
@@ -6238,6 +6440,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -6306,6 +6509,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> list[ArchiveSessionSearchHit]:
         """Resolve vector-ranked message ids into filtered session-level hits."""
         if not scored_message_ids:
@@ -6342,6 +6546,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -6452,40 +6657,7 @@ class ArchiveStore:
             [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         message_ids = tuple(str(row["message_id"]) for row in rows)
-        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
-        if message_ids:
-            block_placeholders = ", ".join("?" for _ in message_ids)
-            block_rows = self._conn.execute(
-                f"""
-                SELECT block_id, message_id, block_type, text, tool_name, tool_id,
-                       semantic_type, tool_input, language,
-                       tool_result_is_error, tool_result_exit_code
-                FROM blocks
-                WHERE message_id IN ({block_placeholders})
-                ORDER BY message_id, position, block_id
-                """,
-                message_ids,
-            ).fetchall()
-            for block in block_rows:
-                blocks_by_message[str(block["message_id"])].append(
-                    ArchiveBlockRow(
-                        block_id=str(block["block_id"]),
-                        message_id=str(block["message_id"]),
-                        block_type=str(block["block_type"]),
-                        text=str(block["text"]) if block["text"] is not None else None,
-                        tool_name=str(block["tool_name"]) if block["tool_name"] is not None else None,
-                        tool_id=str(block["tool_id"]) if block["tool_id"] is not None else None,
-                        semantic_type=str(block["semantic_type"]) if block["semantic_type"] is not None else None,
-                        tool_input=str(block["tool_input"]) if block["tool_input"] is not None else None,
-                        language=str(block["language"]) if block["language"] is not None else None,
-                        tool_result_is_error=(
-                            int(block["tool_result_is_error"]) if block["tool_result_is_error"] is not None else None
-                        ),
-                        tool_result_exit_code=(
-                            int(block["tool_result_exit_code"]) if block["tool_result_exit_code"] is not None else None
-                        ),
-                    )
-                )
+        blocks_by_message = _fetch_blocks_for_messages(self._conn, message_ids)
         return [
             ArchiveMessageQueryRow(
                 message_id=str(row["message_id"]),
@@ -6573,40 +6745,7 @@ class ArchiveStore:
             [*filter_params, normalized_limit, normalized_offset],
         ).fetchall()
         message_ids = tuple(str(row["message_id"]) for row in rows)
-        blocks_by_message: dict[str, list[ArchiveBlockRow]] = {message_id: [] for message_id in message_ids}
-        if message_ids:
-            block_placeholders = ", ".join("?" for _ in message_ids)
-            block_rows = self._conn.execute(
-                f"""
-                SELECT block_id, message_id, block_type, text, tool_name, tool_id,
-                       semantic_type, tool_input, language,
-                       tool_result_is_error, tool_result_exit_code
-                FROM blocks
-                WHERE message_id IN ({block_placeholders})
-                ORDER BY message_id, position, block_id
-                """,
-                message_ids,
-            ).fetchall()
-            for block in block_rows:
-                blocks_by_message[str(block["message_id"])].append(
-                    ArchiveBlockRow(
-                        block_id=str(block["block_id"]),
-                        message_id=str(block["message_id"]),
-                        block_type=str(block["block_type"]),
-                        text=str(block["text"]) if block["text"] is not None else None,
-                        tool_name=str(block["tool_name"]) if block["tool_name"] is not None else None,
-                        tool_id=str(block["tool_id"]) if block["tool_id"] is not None else None,
-                        semantic_type=str(block["semantic_type"]) if block["semantic_type"] is not None else None,
-                        tool_input=str(block["tool_input"]) if block["tool_input"] is not None else None,
-                        language=str(block["language"]) if block["language"] is not None else None,
-                        tool_result_is_error=(
-                            int(block["tool_result_is_error"]) if block["tool_result_is_error"] is not None else None
-                        ),
-                        tool_result_exit_code=(
-                            int(block["tool_result_exit_code"]) if block["tool_result_exit_code"] is not None else None
-                        ),
-                    )
-                )
+        blocks_by_message = _fetch_blocks_for_messages(self._conn, message_ids)
         return [
             ArchiveMessageQueryRow(
                 message_id=str(row["message_id"]),
@@ -6682,15 +6821,7 @@ class ArchiveStore:
         if unit == "assertion":
             self._attach_user_tier_if_present()
 
-        row_alias = {
-            "message": "m",
-            "action": "a",
-            "block": "b",
-            "file": "f",
-            "assertion": "a",
-            "observed-event": "e",
-            "delegation": "d",
-        }.get(unit)
+        row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL aggregate counts")
         if unit == "file":
@@ -6727,14 +6858,7 @@ class ArchiveStore:
                 predicate=predicate,
                 include_followup=action_needs_followup,
             )
-        from_sql_by_unit = {
-            "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-            "action": (f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id"),
-            "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
-            "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
-            "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
-            "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
-        }
+        from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
         from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
         order_clause = _query_unit_aggregate_order(sort, sort_direction)
         source_where = "0=1"
@@ -6813,15 +6937,7 @@ class ArchiveStore:
         if unit == "assertion":
             self._attach_user_tier_if_present()
 
-        row_alias = {
-            "message": "m",
-            "action": "a",
-            "block": "b",
-            "file": "f",
-            "assertion": "a",
-            "observed-event": "e",
-            "delegation": "d",
-        }.get(unit)
+        row_alias = _QUERY_UNIT_ROW_ALIAS.get(unit)
         if row_alias is None:
             raise ValueError(f"Query unit {unit!r} is not wired to SQL multi-aggregate counts")
 
@@ -6881,14 +6997,7 @@ class ArchiveStore:
                     predicate=predicate,
                     include_followup=action_needs_followup,
                 )
-            from_sql_by_unit = {
-                "message": "messages m JOIN sessions s ON s.session_id = m.session_id",
-                "action": f"{action_relation_name} a JOIN sessions s ON s.session_id = a.session_id",
-                "block": "blocks b JOIN sessions s ON s.session_id = b.session_id",
-                "assertion": "user_tier.assertions a LEFT JOIN sessions s ON a.target_ref = 'session:' || s.session_id",
-                "observed-event": "observed_events e JOIN sessions s ON s.session_id = e.session_id",
-                "delegation": "delegations d JOIN sessions s ON s.session_id = d.parent_session_id",
-            }
+            from_sql_by_unit = _query_unit_from_sql_by_unit(action_relation_name)
             from_sql = "observed_events e" if unit == "observed-event" and not needs_session else from_sql_by_unit[unit]
             if unit == "observed-event":
                 source_where, source_params = observed_event_source_pushdown(predicate)
@@ -7108,22 +7217,7 @@ class ArchiveStore:
             f"""
             {prefix_sql}
             SELECT
-                a.session_id,
-                a.message_id,
-                s.origin,
-                s.title,
-                a.tool_use_block_id,
-                a.tool_result_block_id,
-                a.tool_name,
-                a.semantic_type,
-                {_action_command_expression("a")} AS tool_command,
-                a.tool_path,
-                m.occurred_at_ms,
-                a.output_text,
-                a.is_error,
-                a.exit_code,
-                a.followup_class,
-                a.followup_message_ref
+                {_ARCHIVE_ACTION_QUERY_SELECT_SQL}
             FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
@@ -7163,22 +7257,7 @@ class ArchiveStore:
             f"""
             {prefix_sql}
             SELECT
-                a.session_id,
-                a.message_id,
-                s.origin,
-                s.title,
-                a.tool_use_block_id,
-                a.tool_result_block_id,
-                a.tool_name,
-                a.semantic_type,
-                {_action_command_expression("a")} AS tool_command,
-                a.tool_path,
-                m.occurred_at_ms,
-                a.output_text,
-                a.is_error,
-                a.exit_code,
-                a.followup_class,
-                a.followup_message_ref
+                {_ARCHIVE_ACTION_QUERY_SELECT_SQL}
             FROM {action_relation_name} a
             JOIN sessions s ON s.session_id = a.session_id
             JOIN messages m ON m.message_id = a.message_id
@@ -7554,16 +7633,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT
-                f.session_id,
-                s.origin,
-                s.title,
-                f.path,
-                f.action_count,
-                f.first_message_id,
-                f.first_tool_use_block_id,
-                f.last_tool_use_block_id,
-                f.first_seen_ms,
-                f.last_seen_ms
+                {_ARCHIVE_FILE_QUERY_SELECT_SQL}
             FROM (
                 SELECT
                     a.session_id,
@@ -7589,25 +7659,7 @@ class ArchiveStore:
             """,
             [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
-        return [
-            ArchiveFileQueryRow(
-                session_id=str(row["session_id"]),
-                origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                path=str(row["path"]),
-                action_count=int(row["action_count"]),
-                first_message_id=str(row["first_message_id"]) if row["first_message_id"] is not None else None,
-                first_tool_use_block_id=str(row["first_tool_use_block_id"])
-                if row["first_tool_use_block_id"] is not None
-                else None,
-                last_tool_use_block_id=str(row["last_tool_use_block_id"])
-                if row["last_tool_use_block_id"] is not None
-                else None,
-                first_seen_ms=int(row["first_seen_ms"]) if row["first_seen_ms"] is not None else None,
-                last_seen_ms=int(row["last_seen_ms"]) if row["last_seen_ms"] is not None else None,
-            )
-            for row in rows
-        ]
+        return [_hydrate_archive_file_query_row(row) for row in rows]
 
     def query_session_files(
         self,
@@ -7631,16 +7683,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT
-                f.session_id,
-                s.origin,
-                s.title,
-                f.path,
-                f.action_count,
-                f.first_message_id,
-                f.first_tool_use_block_id,
-                f.last_tool_use_block_id,
-                f.first_seen_ms,
-                f.last_seen_ms
+                {_ARCHIVE_FILE_QUERY_SELECT_SQL}
             FROM (
                 SELECT
                     u.session_id,
@@ -7667,25 +7710,7 @@ class ArchiveStore:
             """,
             [*normalized_session_ids, normalized_limit, normalized_offset],
         ).fetchall()
-        return [
-            ArchiveFileQueryRow(
-                session_id=str(row["session_id"]),
-                origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                path=str(row["path"]),
-                action_count=int(row["action_count"]),
-                first_message_id=str(row["first_message_id"]) if row["first_message_id"] is not None else None,
-                first_tool_use_block_id=str(row["first_tool_use_block_id"])
-                if row["first_tool_use_block_id"] is not None
-                else None,
-                last_tool_use_block_id=str(row["last_tool_use_block_id"])
-                if row["last_tool_use_block_id"] is not None
-                else None,
-                first_seen_ms=int(row["first_seen_ms"]) if row["first_seen_ms"] is not None else None,
-                last_seen_ms=int(row["last_seen_ms"]) if row["last_seen_ms"] is not None else None,
-            )
-            for row in rows
-        ]
+        return [_hydrate_archive_file_query_row(row) for row in rows]
 
     def _query_file_counts(
         self,
@@ -8070,6 +8095,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         session_ids: tuple[str, ...] = (),
+        root: bool | None = None,
     ) -> ArchiveStats:
         """Return archive-level stats from filtered archive index sessions."""
         where, params = _session_filter_clause(
@@ -8102,6 +8128,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -8251,6 +8278,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         session_ids: tuple[str, ...] = (),
+        root: bool | None = None,
     ) -> dict[str, int]:
         """Return filtered session counts grouped by a archive dimension."""
         where, params = _session_filter_clause(
@@ -8283,6 +8311,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -8350,12 +8379,24 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
             provider_title=None,
         )
         title_source = "path"
+    parent_id: str | None
+    try:
+        raw_parent_id = row["parent_session_id"]
+    except IndexError:
+        # Not every caller's SELECT projects parent_session_id (e.g. rows built
+        # for contexts that never need root/child filtering); treat absence as
+        # unknown rather than raising, matching row_int's IndexError handling
+        # above for other optional columns.
+        parent_id = None
+    else:
+        parent_id = str(raw_parent_id) if raw_parent_id else None
     return ArchiveSessionSummary(
         session_id=session_id,
         native_id=str(row["native_id"]),
         origin=origin,
         title=title,
         title_source=title_source,
+        parent_id=parent_id,
         title_ref=str(row["title_ref"]) if row["title_ref"] is not None else None,
         title_confidence=(float(row["title_confidence"]) if row["title_confidence"] is not None else None),
         session_kind=str(row["session_kind"] or "standard"),
@@ -10251,6 +10292,7 @@ def _session_filter_clause(
     since_ms: int | None = None,
     until_ms: int | None = None,
     boolean_predicate: QueryPredicate | None = None,
+    root: bool | None = None,
     tags_relation: str = "session_tags",
     prefix: str = "WHERE",
 ) -> tuple[str, list[object]]:
@@ -10506,6 +10548,10 @@ def _session_filter_clause(
     if until_ms is not None:
         clauses.append(f"COALESCE({table_alias}.updated_at_ms, {table_alias}.created_at_ms) <= ?")
         params.append(until_ms)
+    if root is True:
+        clauses.append(f"{table_alias}.parent_session_id IS NULL")
+    elif root is False:
+        clauses.append(f"{table_alias}.parent_session_id IS NOT NULL")
     if boolean_predicate is not None:
         boolean_clause, boolean_params = _boolean_predicate_clause(
             table_alias,
@@ -10638,7 +10684,7 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     """
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
-    check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
+    check_fts_readiness(message_fts_search_readiness_sync(conn))
 
 
 def _epoch_ms_from_iso(value: object) -> int | None:

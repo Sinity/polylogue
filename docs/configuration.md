@@ -163,7 +163,7 @@ configured Voyage key.
 
 | Class | Where it lives | Examples | Reload behavior |
 | --- | --- | --- | --- |
-| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins, source roots | Restart `polylogued` after changing. |
+| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins, source roots, beads roots | Restart `polylogued` after changing. |
 | Deployment policy | TOML/env/Nix/HM/systemd | remote-bind opt-in, auth requirements, systemd memory/IO limits, schema validation mode | Restart the managed service; policy is outside archive content hashes. |
 | Runtime mutable user state | `user.db` | tags, marks, saved views, workspaces, assertions, authored overlays | Mutated through CLI/API; not TOML and not source content. |
 | Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Embedding loops read the gate/cost controls; no provider call happens unless explicitly enabled and credentials are present. |
@@ -198,6 +198,13 @@ debounce_s = 2.0
 
 [sources]
 roots = ["/home/user/.claude/projects", "/home/user/.codex/sessions"]
+# beads_roots names repository roots (not their .beads/ directories) whose
+# append-only .beads/interactions.jsonl issue-evidence ledger should be
+# watched and ingested as beads-issue sessions. Opt-in and empty by default:
+# unlike every other source above, a Beads ledger is scoped to one git
+# repository, not a single home-relative directory, so there is no safe
+# default to guess.
+# beads_roots = ["/home/user/project/polylogue", "/home/user/project/sinnix"]
 
 [embedding]
 enabled = false
@@ -343,6 +350,7 @@ A few keys not shown in the full example above, with their TOML path:
 | `no_daemon` | `client.no_daemon` | Force direct in-process archive access, bypassing the daemon client even when one is reachable. |
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
 | `hermes_root` | `sources.hermes.root` | Runtime root watched for Hermes state, snapshots, NeMo Relay ATIF/ATOF artifacts, and verification evidence. Defaults to `~/.hermes`. |
+| `beads_roots` | `sources.beads_roots` | Repository roots (not their `.beads/` directories) whose append-only `.beads/interactions.jsonl` ledger is watched and ingested as `beads-issue` sessions, one session per issue. Opt-in; empty by default, since a Beads ledger belongs to one git repository rather than a single home-relative directory. |
 | `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. Defaults to `<archive_root>/hooks`, so a scratch/test `POLYLOGUE_ARCHIVE_ROOT` genuinely isolates its hook spool from the real one; set explicitly only if you need the spool somewhere other than the archive it belongs to. |
 | `hook_provider` | `sources.hook_provider` | Force hook-event harness detection to `claude-code` or `codex` instead of sniffing the payload shape; unset auto-detects. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
@@ -390,6 +398,7 @@ Common runtime overrides:
 | `POLYLOGUE_SITE_CONFIG` | config layer | Explicit site config path; empty disables site config. |
 | `POLYLOGUE_ARCHIVE_ROOT` | `archive_root` | Override the archive root. |
 | `POLYLOGUE_HERMES_ROOT` | `hermes_root` | Override the Hermes runtime root watched by the daemon. |
+| `POLYLOGUE_BEADS_ROOTS` | `beads_roots` | Comma-separated repository roots whose `.beads/interactions.jsonl` ledger the daemon watches. |
 | `POLYLOGUE_DAEMON_URL` | `daemon_url` | CLI/MCP client daemon base URL. |
 | `POLYLOGUE_API_HOST` / `POLYLOGUE_API_PORT` | `api_host` / `api_port` | Daemon HTTP API bind. |
 | `POLYLOGUE_API_AUTH_TOKEN` | `api_auth_token` | API bearer token; redacted in config output. |

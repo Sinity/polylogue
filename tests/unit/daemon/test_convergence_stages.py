@@ -526,6 +526,63 @@ def test_archive_fts_global_repair_does_not_run_full_exact_snapshot(tmp_path: Pa
         assert row == ("ready", 1, 1, 0, 0)
 
 
+def test_archive_fts_global_repair_records_real_counts_status_and_query_agree(tmp_path: Path) -> None:
+    """polylogue-roax: the status surface and the query-path readiness check
+    must derive the same verdict from the repaired ledger row.
+
+    Before the fix, ``repair_messages_fts_surface`` recorded a fabricated
+    ``source_rows=1, indexed_rows=1`` placeholder regardless of the real
+    archive size. On the single-block fixture used by the sibling test above
+    that placeholder happens to equal the real count, so it never exposed
+    the bug -- this test seeds several indexable blocks so a fabricated 1/1
+    placeholder would be caught: ``fts_readiness_info`` (the status surface)
+    would report a real coverage_pct computed from wrong denominators, while
+    ``message_fts_search_readiness_sync`` (the query-path fast check) would
+    still trust the same self-consistent-but-wrong 1==1 shape -- so a
+    regression here would show up as a real-count/real-count mismatch, not
+    as a raised DatabaseError.
+    """
+    from polylogue.daemon.fts_status import fts_readiness_info
+    from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
+
+    archive_db = tmp_path / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        session_ids = [
+            _seed_index_session(conn, session_id=f"codex-session:s{i}", text=f"needle {i}") for i in range(5)
+        ]
+        assert len(session_ids) == 5
+        # Simulate drift: a bulk write suspended the FTS triggers, so the
+        # shadow table lags the real indexable block count.
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+
+    assert stages.repair_messages_fts_surface(archive_db) is True
+
+    with sqlite3.connect(archive_db) as conn:
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, detail
+            FROM fts_freshness_state
+            WHERE surface = 'messages_fts'
+            """
+        ).fetchone()
+    assert row == ("ready", 5, 5, 0, 0, None)
+
+    status_view = fts_readiness_info(archive_db, exact=False)
+    assert status_view["messages_ready"] is True
+    assert status_view["coverage_pct"] == 100.0
+    assert status_view["message_indexed_count"] == 5
+    assert status_view["message_indexable_count"] == 5
+
+    with sqlite3.connect(archive_db) as conn:
+        conn.row_factory = sqlite3.Row
+        query_readiness = message_fts_search_readiness_sync(conn)
+        assert query_readiness["ready"] is True
+        # Must not raise -- the query path agrees with the status surface.
+        check_fts_readiness(query_readiness)
+
+
 def test_archive_fts_global_repair_deletes_excess_rows_without_reset(tmp_path: Path) -> None:
     """Global surface debt should remove excess rows without a full rebuild."""
     from unittest import mock
