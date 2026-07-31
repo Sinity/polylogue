@@ -375,9 +375,10 @@ isolated XDG paths + archive root.
   harness (repo env, single-process by default, live output, stall/runtime
   timeouts, serialized overlapping runs). `POLYLOGUE_PYTEST_WORKERS=N` overrides.
 - **Clock hygiene:** timestamp-sensitive tests use the `frozen_clock` fixture
-  (`tests/infra/frozen_clock.py`), not the host wall clock. The
-  `verify-test-clock-hygiene` lint rejects new direct `datetime.now`/`time.time`
-  in tests outside `docs/plans/test-clock-allowlist.yaml`.
+  (`tests/infra/frozen_clock.py`), not the host wall clock. An autouse guard
+  (`tests/infra/clock_guard.py`) makes direct `datetime.now`/`time.time` reads
+  from test code raise immediately — there is no allowlist; genuine
+  exceptions opt out inline via `@pytest.mark.uses_real_clock("reason")`.
 - Pytest temp DBs default to `/realm/tmp/polylogue-pytest` (not `/dev/shm`).
   `seeded_db`/`corpus_seeded_db` build a shared DB once under a `.build.done`
   guard — a SIGKILL mid-build leaves a partial DB + set guard →

@@ -42,6 +42,8 @@ from polylogue.storage.raw.artifacts import RawIngestArtifactState
 from polylogue.storage.raw.models import RawSessionState
 from polylogue.storage.runtime import RawSessionRecord
 
+pytestmark = pytest.mark.uses_real_clock("Quarantine-fixture acquired_at is opaque metadata for the test corpus.")
+
 EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 

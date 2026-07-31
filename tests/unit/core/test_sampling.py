@@ -22,6 +22,10 @@ from polylogue.schemas.observation_runtime import _document_profile_tokens
 from polylogue.schemas.sampling import iter_schema_units, load_samples_from_db, load_samples_from_sessions
 from tests.infra.schema_access import schema_node
 
+pytestmark = pytest.mark.uses_real_clock(
+    "Reservoir sampling tests measure event clustering against a real epoch; production sampler uses the same wall clock by design."
+)
+
 
 def test_document_profile_tokens_collapse_record_identity_keys() -> None:
     # should_collapse_observed_keys() (schemas/field_stats/detection.py) now

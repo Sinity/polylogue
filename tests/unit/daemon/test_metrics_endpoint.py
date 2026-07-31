@@ -31,12 +31,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
+import pytest
+
 from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     format_metrics,
 )
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+
+pytestmark = pytest.mark.uses_real_clock(
+    "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
+)
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer

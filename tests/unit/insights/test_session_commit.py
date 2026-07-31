@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from polylogue.core.refs import ObjectRef
 from polylogue.insights.session_commit import (
     SOURCE_HEURISTIC,
@@ -38,6 +40,13 @@ from polylogue.insights.session_commit import (
     extract_referenced_files,
     score_file_overlap,
     typed_refs_from_session_refs,
+)
+
+pytestmark = pytest.mark.uses_real_clock(
+    "polylogue-l9su trailer-priority tests create a real git commit via subprocess "
+    "(git records its own wall-clock author/commit time) and derive the session scan "
+    "window around that same real now() so the commit falls inside it; a frozen clock "
+    "would not match the real commit's git-recorded timestamp."
 )
 
 
