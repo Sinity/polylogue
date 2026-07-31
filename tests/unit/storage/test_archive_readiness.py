@@ -8,7 +8,12 @@ from typing import cast
 import pytest
 
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.archive_readiness import (
+    CLAUDE_WORKFLOW_STAGE_NAME,
+    claude_workflow_materialization_status,
+    raw_materialization_readiness_snapshot,
+    raw_materialization_ready,
+)
 from polylogue.storage.raw_authority import (
     RawReplayPlan,
     RawReplayPlanOutcome,
@@ -918,3 +923,39 @@ def test_raw_materialization_ready_rejects_failed_debt_classifier() -> None:
     }
     assert raw_materialization_ready(clean) is True
     assert raw_materialization_ready({**clean, "debt_classifier_error": "RuntimeError: ops.db locked"}) is False
+
+
+def test_claude_workflow_materialization_status_missing_ops_db_returns_none(tmp_path: Path) -> None:
+    assert claude_workflow_materialization_status(tmp_path / "ops.db") is None
+
+
+def test_claude_workflow_materialization_status_reads_latest_stage_event(tmp_path: Path) -> None:
+    """Reads back exactly what daemon/convergence_stages.py's claude_workflow
+    stage persists via record_daemon_stage_event -- the wiring this bead adds
+    so a materialization gap count survives past one log line (bd polylogue-uh9l).
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    ops_db = tmp_path / "ops.db"
+    conn = sqlite3.connect(ops_db)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        record_daemon_stage_event(
+            conn,
+            stage=CLAUDE_WORKFLOW_STAGE_NAME,
+            status="gaps",
+            observed_at_ms=1_700_000_000_000,
+            payload={"gap_count": 2, "gaps": ["missing agent metadata for transcript agent-a", "unresolved call x"]},
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    status = claude_workflow_materialization_status(ops_db)
+    assert status is not None
+    assert status["status"] == "gaps"
+    assert status["gap_count"] == 2
+    assert status["gaps"] == ["missing agent metadata for transcript agent-a", "unresolved call x"]
+    assert status["observed_at_ms"] == 1_700_000_000_000

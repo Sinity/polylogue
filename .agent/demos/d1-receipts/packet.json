@@ -1,0 +1,135 @@
+{
+  "schema_version": "2.0.0",
+  "packet_id": "d1-receipts",
+  "title": "D1 receipts: claim-vs-evidence on a real merged PR",
+  "mode": "private",
+  "primary_construct": {
+    "id": "correlation.session_refs.pr_link",
+    "statement": "session_refs typed pull_request evidence (Claude Code's own pr-link sidecar record) resolves a real merged PR to its authoring/dispatch session with structural confidence, and that session's own tool_use/tool_result blocks let each PR-body verification claim be checked against real evidence instead of trusted prose.",
+    "product_primitives": [
+      "session_refs (storage table)",
+      "polylogue read --view correlation",
+      "insights/session_commit.py:build_correlation_result",
+      "structural SQL reads over blocks/session_refs for citation"
+    ]
+  },
+  "claim": {
+    "statement": "session_refs resolves PR #3282 to claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc, and 3 of 4 checked PR-body claims are supported by that session's own recorded blocks; the fourth is correctly scored not_supported rather than assumed.",
+    "declared_before_execution": true,
+    "scope": "one real merged PR (Sinity/polylogue#3282) and its session_refs-resolved authoring/dispatch session, on the live archive at /realm/db/polylogue",
+    "status": "supported",
+    "receipts": ["artifact:d1-receipts-predeclaration", "artifact:d1-receipts-evidence"]
+  },
+  "oracle": {
+    "description": "The SQL queries and gh CLI output cited are independent of the report prose and re-runnable against the same live archive and GitHub history.",
+    "independent": true,
+    "method": "Re-run the reproduce commands in report.md and compare cited block text / query results against evidence.ndjson.",
+    "expected": {"queries_return_matching_rows": true, "negative_control_returns_zero": true},
+    "receipts": ["artifact:d1-receipts-evidence"]
+  },
+  "baseline": {
+    "name": "regex/time-window PR reference scan (the pre-#3425 default correlation path)",
+    "method": "Scan message text for #NNN patterns within a time window around the session, with no structural resolution to a specific typed evidence row.",
+    "result": "The same read --view correlation call surfaces a disagreements entry: the regex heuristic independently found 13 additional PR numbers in this session's message text that are NOT corroborated by typed session_refs evidence -- demonstrating why the typed path is authoritative and the heuristic path is demoted to a disagreement signal, not silently trusted.",
+    "receipts": ["artifact:d1-receipts-evidence"]
+  },
+  "controls": {
+    "negative": [
+      {
+        "id": "gh-pr-create-body-url-match-control",
+        "purpose": "Prevent a stale or edited PR body from being treated as automatically representative of the session's own recorded claim text.",
+        "expected": {"gh_pr_create_tool_result_url": "https://github.com/Sinity/polylogue/pull/3282"},
+        "observed": {"gh_pr_create_tool_result_url": "https://github.com/Sinity/polylogue/pull/3282"},
+        "passed": true,
+        "receipts": ["artifact:d1-receipts-evidence"]
+      }
+    ],
+    "missing_evidence": [
+      {
+        "id": "unverified-7-file-devtools-test-claim",
+        "purpose": "Require a PR-body claim's supporting evidence to be structurally present in the resolved session, not assumed from the PR body's own prose.",
+        "expected": {"status": "not_supported_when_no_matching_tool_use_block_exists"},
+        "observed": {"status": "not_supported", "matching_tool_use_rows_excluding_gh_pr_create": 0},
+        "passed": true,
+        "receipts": ["artifact:d1-receipts-evidence"]
+      }
+    ]
+  },
+  "falsifier": {
+    "condition": "The gh pr create tool_use body text does not byte-match the live-fetched PR #3282 body, or the devtools verify --quick tool_result JSON contains any step with exit != 0, or the negative-control count in evidence.ndjson is nonzero.",
+    "evaluation_method": "Apply the stated condition to the committed evidence and re-run the queries in report.md's Reproduce section against the live archive.",
+    "triggered": false,
+    "result": "pass",
+    "receipts": ["artifact:d1-receipts-evidence"]
+  },
+  "results": {
+    "status": "pass",
+    "summary": "3 of 4 checked PR-body claims are structurally supported by the session_refs-resolved session's own blocks; the 4th is correctly scored not_supported, and the session is shown to be a merge-conductor session (0 Edit/Write tool_use blocks) rather than the direct file-editing session -- both are real, documented findings, not hidden.",
+    "measurements": [
+      {
+        "name": "claims_checked",
+        "value": 4,
+        "unit": "claims",
+        "receipts": ["artifact:d1-receipts-evidence"]
+      },
+      {
+        "name": "claims_supported",
+        "value": 3,
+        "unit": "claims",
+        "receipts": ["artifact:d1-receipts-evidence"]
+      },
+      {
+        "name": "claims_not_independently_verified",
+        "value": 1,
+        "unit": "claims",
+        "receipts": ["artifact:d1-receipts-evidence"]
+      },
+      {
+        "name": "tool_use_blocks_edit_or_write",
+        "value": 0,
+        "unit": "blocks",
+        "receipts": ["artifact:d1-receipts-evidence"]
+      }
+    ]
+  },
+  "non_claims": [
+    "This packet does not prove every sentence in PR #3282's body is independently verified -- only the four claims explicitly checked are scored.",
+    "This packet does not establish that session_refs correctly resolves every PR reference archive-wide -- only that it resolves this one case with structural evidence.",
+    "This packet does not reproduce on the public seed corpus (seed 1843); it requires read-only access to the live archive and the Sinity/polylogue GitHub history -- the public-corpus D1 variant is not built by this packet."
+  ],
+  "receipts": [
+    {
+      "ref": "artifact:d1-receipts-evidence",
+      "kind": "artifact",
+      "description": "Committed evidence rows and block/session citations for this packet.",
+      "artifact_path": "evidence.ndjson",
+      "resolved": true,
+      "sha256": "1370ede81fa593585b216ed9d4f834093cf50cdd9a2e634467f4c267b3628fad"
+    },
+    {
+      "ref": "artifact:d1-receipts-predeclaration",
+      "kind": "artifact",
+      "description": "The committed prompt that states the packet claim before execution.",
+      "artifact_path": "PROMPT.md",
+      "resolved": true,
+      "sha256": "9860720832a1ed3460a8cb9196b1a0682f9223487821c569817e8f5da3098ecd"
+    }
+  ],
+  "reproduction": {
+    "fixture": "live archive /realm/db/polylogue (read-only) + Sinity/polylogue GitHub history",
+    "deterministic": false,
+    "private_data": true,
+    "commands": [
+      "sqlite3 \"file:/realm/db/polylogue/index.db?mode=ro\" \"SELECT session_id, repo, ref_number, url FROM session_refs WHERE kind='pull_request' AND repo='Sinity/polylogue' AND ref_number=3282\"",
+      "polylogue find \"id:claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc\" then read --view correlation --format json",
+      "gh pr view 3282 --repo Sinity/polylogue --json body"
+    ]
+  },
+  "provenance": {
+    "archive_cursor": "live-archive:/realm/db/polylogue (read-only, file:...?mode=ro)",
+    "measure_version": "demo-packet-v2",
+    "commit_sha": "59744a30bf461a587cc679ee62a432e8cd2cf82a",
+    "sample_frame_predicate": "session_refs WHERE kind='pull_request' AND repo='Sinity/polylogue' AND ref_number=3282",
+    "run_date": "2026-07-31"
+  }
+}

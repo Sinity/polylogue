@@ -37,7 +37,7 @@ from polylogue.readiness.capability import (
     component_from_transform_registry,
 )
 from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
-from polylogue.storage.archive_readiness import raw_materialization_ready
+from polylogue.storage.archive_readiness import claude_workflow_materialization_status, raw_materialization_ready
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
 from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -579,6 +579,41 @@ def _collect_table_status_best_effort(
     return derived_statuses, archive_debt
 
 
+def _claude_workflow_materialization_check(archive_root: Path) -> ReadinessCheck:
+    """Surface the claude_workflow convergence stage's gap count.
+
+    ``insights/claude_workflow_materializer.py`` computes a fresh gap tuple
+    every daemon convergence pass; before this it was only ever logged
+    (``daemon/convergence_stages.py``) and discarded. This reads the value
+    that stage now persists to ``ops.db`` so "subagents/workflows is a known
+    sidecar" cannot read as healthy while materialization gaps exist.
+    """
+    status = claude_workflow_materialization_status(archive_root / "ops.db")
+    if status is None:
+        return ReadinessCheck(
+            "claude_workflow_materialization",
+            VerifyStatus.SKIP,
+            summary="No Claude Workflow materialization has run against this archive yet",
+        )
+    gap_count = _payload_int(status.get("gap_count"))
+    raw_gaps = status.get("gaps")
+    gaps = [str(gap) for gap in raw_gaps] if isinstance(raw_gaps, list) else []
+    if gap_count > 0:
+        example = gaps[0] if gaps else ""
+        return ReadinessCheck(
+            "claude_workflow_materialization",
+            VerifyStatus.WARNING,
+            count=gap_count,
+            summary=f"{gap_count} Claude Workflow materialization gap(s), e.g. {example}",
+            details=gaps,
+        )
+    return ReadinessCheck(
+        "claude_workflow_materialization",
+        VerifyStatus.OK,
+        summary="No Claude Workflow materialization gaps",
+    )
+
+
 def _raw_frontier_integrity_check(projection: RawFrontierIntegrityProjection) -> ReadinessCheck:
     """Register the canonical projection in archive/devtools readiness output."""
 
@@ -640,6 +675,7 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
     checks.append(ReadinessCheck("config", VerifyStatus.OK, summary="XDG defaults active"))
     checks.extend(_config_path_checks(config))
     checks.append(_raw_frontier_integrity_check(raw_frontier_projection))
+    checks.append(_claude_workflow_materialization_check(archive_root))
 
     # --- database reachability ---
     db_checks, db_error = _database_probe_checks(config, deep=deep)
