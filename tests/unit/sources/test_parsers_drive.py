@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.drive import (
     _attachment_from_doc,
@@ -276,49 +276,40 @@ def test_pending_draft_mutation_does_not_break_revision_containment() -> None:
     )
     from polylogue.pipeline.ids import session_revision_projection
 
-    chunks_before_submit = [{"id": "msg-1", "role": "user", "text": "hi"}]
+    chunks_before_submit: list[JSONValue] = [{"id": "msg-1", "role": "user", "text": "hi"}]
 
     # Revision 1: retain with an initial draft in the textbox.
-    revision_1 = parse_chunked_prompt(
-        "gemini",
-        {
-            "id": "gemini-draft-lifecycle",
-            "chunkedPrompt": {
-                "chunks": chunks_before_submit,
-                "pendingInputs": [{"text": "draft v1", "role": "user"}],
-            },
+    payload_1: JSONDocument = {
+        "id": "gemini-draft-lifecycle",
+        "chunkedPrompt": {
+            "chunks": chunks_before_submit,
+            "pendingInputs": [{"text": "draft v1", "role": "user"}],
         },
-        "fallback-id",
-    )
+    }
+    revision_1 = parse_chunked_prompt("gemini", payload_1, "fallback-id")
     # Revision 2: the SAME conversation retained again after the operator
     # edited the draft text (no new message yet).
-    revision_2 = parse_chunked_prompt(
-        "gemini",
-        {
-            "id": "gemini-draft-lifecycle",
-            "chunkedPrompt": {
-                "chunks": chunks_before_submit,
-                "pendingInputs": [{"text": "draft v2, much longer now", "role": "user"}],
-            },
+    payload_2: JSONDocument = {
+        "id": "gemini-draft-lifecycle",
+        "chunkedPrompt": {
+            "chunks": chunks_before_submit,
+            "pendingInputs": [{"text": "draft v2, much longer now", "role": "user"}],
         },
-        "fallback-id",
-    )
+    }
+    revision_2 = parse_chunked_prompt("gemini", payload_2, "fallback-id")
     # Revision 3: the draft was submitted -- it becomes a real message and
     # pendingInputs is empty again.
-    revision_3 = parse_chunked_prompt(
-        "gemini",
-        {
-            "id": "gemini-draft-lifecycle",
-            "chunkedPrompt": {
-                "chunks": [
-                    *chunks_before_submit,
-                    {"id": "msg-2", "role": "user", "text": "draft v2, much longer now"},
-                ],
-                "pendingInputs": [{"text": "", "role": "user"}],
-            },
+    payload_3: JSONDocument = {
+        "id": "gemini-draft-lifecycle",
+        "chunkedPrompt": {
+            "chunks": [
+                *chunks_before_submit,
+                {"id": "msg-2", "role": "user", "text": "draft v2, much longer now"},
+            ],
+            "pendingInputs": [{"text": "", "role": "user"}],
         },
-        "fallback-id",
-    )
+    }
+    revision_3 = parse_chunked_prompt("gemini", payload_3, "fallback-id")
 
     projection_1 = session_revision_projection(revision_1)
     projection_2 = session_revision_projection(revision_2)
