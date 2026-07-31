@@ -665,6 +665,51 @@ class TestArchiveOneTierStatus:
         assert result["table_counts"]["messages"] == 1
 
 
+class TestArchiveOneTierStatusDaemonParity:
+    """polylogue-703 regression guard: CLI and daemon must agree by construction.
+
+    Both surfaces now build their per-tier exists/size/user_version/
+    version_status facts from the single shared
+    ``polylogue.storage.archive_readiness.probe_archive_tier`` (see
+    ``_archive_one_tier_status`` here and
+    ``polylogue.daemon.status._archive_tier_status``). This test would fail
+    if either surface went back to computing those facts independently (e.g.
+    a version-mismatch tier reported "ok" by one surface and "mismatch" by
+    the other) -- the exact bug class behind the 2026-07-03 production
+    disagreement (bare CLI status: FTS 100%/844.6 MB vs daemon-backed web
+    header: degraded/28.5 GB during an unacknowledged rebuild).
+    """
+
+    def test_version_mismatch_agrees_with_daemon(self, tmp_path: Path) -> None:
+        from polylogue.daemon.status import _archive_tier_status as _daemon_archive_tier_status
+
+        db_path = tmp_path / "index.db"
+        conn = sqlite3.connect(db_path)
+        expected_version = ARCHIVE_VERSION_BY_TIER[_ARCHIVE_TIER_ENUM["index"]]
+        conn.execute(f"PRAGMA user_version = {expected_version + 999}")
+        conn.commit()
+        conn.close()
+
+        cli_result = _archive_one_tier_status("index", db_path)
+        daemon_result = _daemon_archive_tier_status("index", db_path)
+
+        assert cli_result["exists"] is daemon_result.exists
+        assert cli_result["user_version"] == daemon_result.user_version
+        assert cli_result["expected_user_version"] == daemon_result.expected_user_version
+        assert cli_result["version_status"] == daemon_result.version_status == "mismatch"
+        assert cli_result["size_bytes"] == daemon_result.size_bytes
+
+    def test_missing_tier_agrees_with_daemon(self, tmp_path: Path) -> None:
+        from polylogue.daemon.status import _archive_tier_status as _daemon_archive_tier_status
+
+        nonexistent = tmp_path / "nonexistent.db"
+        cli_result = _archive_one_tier_status("index", nonexistent)
+        daemon_result = _daemon_archive_tier_status("index", nonexistent)
+
+        assert cli_result["exists"] is daemon_result.exists is False
+        assert cli_result["version_status"] == daemon_result.version_status == "missing"
+
+
 class TestArchiveTierStatus:
     """Tests for _archive_tier_status()."""
 

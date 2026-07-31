@@ -8,19 +8,91 @@ import time
 from collections import Counter
 from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from polylogue.archive.raw_materialization import (
     parsed_non_session_artifact_reason,
     source_path_native_id_candidates,
 )
 from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.raw_authority import raw_authority_detail_query_handle
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
+
+ArchiveTierVersionStatus = Literal["ok", "missing", "mismatch", "invalid"]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveTierProbe:
+    """One archive tier file's existence/size/schema-version facts.
+
+    The sole, shared read-only probe of a tier file's ``PRAGMA user_version``
+    against ``ARCHIVE_VERSION_BY_TIER`` (polylogue-703 -- ONE status
+    assembly). ``polylogue.daemon.status`` (daemon HTTP/TUI/web status) and
+    ``polylogue.cli.commands.status`` (CLI direct-fallback status, used when
+    the daemon is unreachable) both build their per-tier status payload from
+    this probe instead of each reimplementing the PRAGMA read independently
+    -- the prior independent implementations were the mechanism behind a
+    real production disagreement between bare-CLI and daemon-backed status
+    (2026-07-03). Do not add a third independent tier-version probe; import
+    this one.
+    """
+
+    tier: ArchiveTier
+    path: str
+    exists: bool
+    size_bytes: int
+    wal_size_bytes: int
+    user_version: int | None
+    expected_user_version: int
+    version_status: ArchiveTierVersionStatus
+
+
+def probe_archive_tier(tier: ArchiveTier, path: Path) -> ArchiveTierProbe:
+    """Read-only probe of one archive tier file's existence/size/version."""
+    expected_user_version = ARCHIVE_VERSION_BY_TIER[tier]
+    if not path.exists():
+        return ArchiveTierProbe(
+            tier=tier,
+            path=str(path),
+            exists=False,
+            size_bytes=0,
+            wal_size_bytes=0,
+            user_version=None,
+            expected_user_version=expected_user_version,
+            version_status="missing",
+        )
+    wal_path = Path(f"{path}-wal")
+    user_version: int | None = None
+    version_status: ArchiveTierVersionStatus = "invalid"
+    try:
+        conn = open_readonly_connection(path)
+        try:
+            user_version = _row_int(conn.execute("PRAGMA user_version").fetchone()[0])
+            version_status = "ok" if user_version == expected_user_version else "mismatch"
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("archive tier version probe failed for %s (%s): %s", path, tier.value, exc, exc_info=True)
+    return ArchiveTierProbe(
+        tier=tier,
+        path=str(path),
+        exists=True,
+        size_bytes=path.stat().st_size,
+        wal_size_bytes=wal_path.stat().st_size if wal_path.exists() else 0,
+        user_version=user_version,
+        expected_user_version=expected_user_version,
+        version_status=version_status,
+    )
+
 
 CLAUDE_WORKFLOW_STAGE_NAME = "claude_workflow"
 """daemon_stage_events ``stage`` value written by the claude_workflow
