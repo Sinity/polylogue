@@ -10626,7 +10626,7 @@ def _ensure_messages_fts_ready(conn: sqlite3.Connection) -> None:
     """
     from polylogue.storage.fts.fts_lifecycle import check_fts_readiness, message_fts_search_readiness_sync
 
-    check_fts_readiness(message_fts_search_readiness_sync(conn), "Run `polylogued run`.")
+    check_fts_readiness(message_fts_search_readiness_sync(conn))
 
 
 def _epoch_ms_from_iso(value: object) -> int | None:
