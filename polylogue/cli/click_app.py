@@ -395,6 +395,7 @@ def cli(
     sort: str | None,
     reverse: bool,
     sample: int | None,
+    root: bool | None,
     # Output
     output: str | None,
     output_format: str | None,

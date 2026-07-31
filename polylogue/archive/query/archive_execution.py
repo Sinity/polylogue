@@ -192,6 +192,7 @@ def _summary_to_domain(summary: ArchiveSessionSummary) -> SessionSummary:
         provider_project_ref=summary.provider_project_ref,
         message_count=summary.message_count,
         tags_m2m=summary.tags,
+        parent_id=SessionId(summary.parent_id) if summary.parent_id else None,
     )
 
 

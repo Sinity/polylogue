@@ -1752,3 +1752,86 @@ def test_list_archive_debt_insights_correct_while_main_connection_holds_transact
             assert facade._conn.in_transaction
         finally:
             facade._conn.rollback()
+
+
+def test_root_filter_partitions_top_level_and_subagent_sessions(tmp_path: Path) -> None:
+    """``root`` filters/counts sessions by whether they have a parent (polylogue-oqib).
+
+    Regression coverage for two bugs found while wiring the ``root:`` query
+    field end to end: (1) ``ArchiveStore.list_summaries``/``search_summaries``/
+    ``count_sessions``/``count_search_sessions``/``search_session_ids``/
+    ``semantic_summaries``/``stats``/``stats_by`` never accepted a ``root``
+    kwarg or pushed it into ``_session_filter_clause`` at all, so a top-level-
+    only query returned everything unfiltered; (2) even where the plan-level
+    ``is_root`` post-filter existed, ``ArchiveSessionSummary``/``SessionSummary``
+    never carried ``parent_id`` from ``sessions.parent_session_id`` (the SELECT
+    never projected the column and the row builder never read it), so every
+    summary row silently reported ``is_root=True`` regardless of its actual
+    parent.
+    """
+    parent = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="root-parent",
+        title="Parent session",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha parent token")],
+            )
+        ],
+    )
+    child = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="root-parent:agent-child",
+        title="Subagent session",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha child token")],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        parent_id = facade.write_parsed(parent)
+        child_id = facade.write_parsed(child)
+        facade._conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+            (parent_id, child_id),
+        )
+        facade._conn.commit()
+
+    with ArchiveStore.open_existing(root) as facade:
+        assert facade.count_sessions() == 2
+        assert facade.count_sessions(root=True) == 1
+        assert facade.count_sessions(root=False) == 1
+
+        root_summaries = facade.list_summaries(limit=5, root=True)
+        child_summaries = facade.list_summaries(limit=5, root=False)
+        all_summaries = facade.list_summaries(limit=5)
+
+        root_hits = facade.search_summaries("alpha", limit=5, root=True)
+        child_hits = facade.search_summaries("alpha", limit=5, root=False)
+        assert facade.count_search_sessions("alpha", root=True) == 1
+        assert facade.count_search_sessions("alpha", root=False) == 1
+        assert facade.search_session_ids("alpha", root=True) == (parent_id,)
+        assert facade.search_session_ids("alpha", root=False) == (child_id,)
+
+        root_stats = facade.stats(root=True)
+        child_stats = facade.stats(root=False)
+        root_stats_by_origin = facade.stats_by("origin", root=True)
+
+    assert [summary.session_id for summary in root_summaries] == [parent_id]
+    assert [summary.session_id for summary in child_summaries] == [child_id]
+    assert {summary.session_id for summary in all_summaries} == {parent_id, child_id}
+    assert root_summaries[0].parent_id is None
+    assert child_summaries[0].parent_id == parent_id
+
+    assert [hit.session_id for hit in root_hits] == [parent_id]
+    assert [hit.session_id for hit in child_hits] == [child_id]
+
+    assert root_stats.total_sessions == 1
+    assert child_stats.total_sessions == 1
+    assert root_stats_by_origin == {"claude-code-session": 1}
