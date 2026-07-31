@@ -37,6 +37,16 @@ ATTEMPT_COUNT = 91
 UNRELATED_COUNT = 38
 
 
+def _status_gap_count(status: dict[str, object]) -> int:
+    value = status["gap_count"]
+    return int(value) if isinstance(value, int | float) else 0
+
+
+def _status_gaps(status: dict[str, object]) -> list[str]:
+    value = status["gaps"]
+    return [str(gap) for gap in value] if isinstance(value, list) else []
+
+
 @pytest.mark.asyncio
 async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_rebuilds(
     workspace_env: dict[str, Path],
@@ -295,15 +305,16 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     # against it rather than assuming zero.
     baseline_status = claude_workflow_materialization_status(archive_root / "ops.db")
     assert baseline_status is not None
-    baseline_gaps = set(baseline_status["gaps"])
+    baseline_gap_count = _status_gap_count(baseline_status)
+    baseline_gaps = _status_gaps(baseline_status)
     assert "missing paired agent metadata sidecar" not in " ".join(baseline_gaps)
 
     config = Config(archive_root=archive_root, render_root=archive_root, sources=[])
     baseline_check = next(
         check for check in get_readiness(config).checks if check.name == "claude_workflow_materialization"
     )
-    assert baseline_check.count == baseline_status["gap_count"]
-    if baseline_status["gap_count"] == 0:
+    assert baseline_check.count == baseline_gap_count
+    if baseline_gap_count == 0:
         assert baseline_check.status == VerifyStatus.OK
     else:
         assert baseline_check.status == VerifyStatus.WARNING
@@ -320,8 +331,10 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     degraded_status = claude_workflow_materialization_status(archive_root / "ops.db")
     assert degraded_status is not None
     assert degraded_status["status"] == "gaps"
-    assert degraded_status["gap_count"] > baseline_status["gap_count"]
-    assert any("missing paired agent metadata sidecar" in gap for gap in degraded_status["gaps"])
+    degraded_gap_count = _status_gap_count(degraded_status)
+    degraded_gaps = _status_gaps(degraded_status)
+    assert degraded_gap_count > baseline_gap_count
+    assert any("missing paired agent metadata sidecar" in gap for gap in degraded_gaps)
 
     degraded_check = next(
         check for check in get_readiness(config).checks if check.name == "claude_workflow_materialization"
