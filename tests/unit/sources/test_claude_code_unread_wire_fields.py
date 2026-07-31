@@ -348,6 +348,30 @@ def test_thinking_metadata_absent_omits_the_key() -> None:
     assert "max_thinking_tokens" not in usage_events[0].payload
 
 
+def test_thinking_metadata_negative_tokens_omits_the_key() -> None:
+    """A negative ``maxThinkingTokens`` is not a real token budget -- omit it
+    rather than persisting a nonsensical value (CodeRabbit review, PR #3465)."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-negative-thinking-metadata",
+                "thinkingMetadata": {"maxThinkingTokens": -1},
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                },
+            },
+        ],
+        "sess-negative-thinking-metadata",
+    )
+    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
+    assert len(usage_events) == 1
+    assert "max_thinking_tokens" not in usage_events[0].payload
+
+
 def test_background_task_start_ack_gets_distrusted_reason() -> None:
     """The backgrounded-task start acknowledgement's ``is_error=false`` is
     positively distrusted (it only confirms the task started), not merely

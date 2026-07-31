@@ -754,7 +754,11 @@ def _message_usage_event_payload(
         thinking_metadata = record.get("thinkingMetadata")
         if isinstance(thinking_metadata, dict):
             max_thinking_tokens = thinking_metadata.get("maxThinkingTokens")
-            if isinstance(max_thinking_tokens, int) and not isinstance(max_thinking_tokens, bool):
+            if (
+                isinstance(max_thinking_tokens, int)
+                and not isinstance(max_thinking_tokens, bool)
+                and max_thinking_tokens >= 0
+            ):
                 payload["max_thinking_tokens"] = max_thinking_tokens
     return payload
 
