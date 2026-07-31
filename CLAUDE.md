@@ -76,9 +76,12 @@ Load-bearing columns:
 - FTS5 is **contentless** (`content=''`, `contentless_delete=1`) over
   `blocks.search_text`, kept in sync by three triggers. `tokenize=unicode61`
   (no porter stemmer in this build — don't change it).
-- CHECK constraints are **generated from Python types** —
-  `literal_check("status", *get_args(RunStatus))` embeds `typing.Literal` args
-  into SQL, so Python type ↔ SQL constraint stay in lockstep.
+- Enum-backed CHECK constraints are **generated from Python types** —
+  `check("origin", Origin)` / `nullable_check(...)` (`archive_tiers/common.py`)
+  render a `PolylogueStrEnum` into the SQL `IN (...)` list, so Python enum ↔
+  SQL constraint stay in lockstep. Many other CHECK lists are still
+  hand-written string literals with no Python-side type — do not assume a
+  vocabulary is generated without checking the DDL site.
 
 **Lineage normalization** (`session_links`, index v12+) is the sharpest design
 point. Forks/resumes/subagents/auto-compaction physically replay the parent's
