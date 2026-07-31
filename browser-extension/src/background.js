@@ -289,9 +289,10 @@ async function backfillCoordinator() {
         // CaptureJob checkpoint.
         await restoreBackfillCheckpointFromReceiver(store, instanceId);
       }
+      const adapters = providerAdapters(providerPageFetch, { requirePageContext: true });
       return new BackfillCoordinator({
         store,
-        adapters: providerAdapters(providerPageFetch, { requirePageContext: true }),
+        adapters,
         receiver: (envelope, serialized) => postJson(
           "/v1/browser-captures",
           envelope,
@@ -314,37 +315,37 @@ async function backfillCoordinator() {
           mirrorBackfillCheckpointToReceiver(instanceId, checkpoint);
           return result;
         },
-        captureOverride: async ({ provider, nativeId, response }) => {
+        captureOverride: async ({ provider, nativeId, response, item, attribution }) => {
           if (provider !== "chatgpt") return null;
           const nativePayload = await response.json();
           const nativePayloadBytes = new TextEncoder().encode(JSON.stringify(nativePayload)).length;
-          const fitsExactCaptureChannel = nativePayloadBytes <= MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES;
+          if (nativePayloadBytes > MAX_EXACT_CAPTURE_NATIVE_PAYLOAD_BYTES) {
+            // Oversized: the content-script exact-capture path would either
+            // re-fetch this same huge conversation itself (its own native-
+            // fetch fallback, independent of this bridge) and return it in
+            // the chrome.tabs.sendMessage RESPONSE -- crossing this second
+            // IPC channel's size ceiling in the other direction -- or, for a
+            // pinned conversation id, skip its DOM fallback entirely and
+            // fail outright. adapters.chatgpt.normalizeCapture() builds a
+            // full-fidelity capture entirely in this process, no
+            // chrome.tabs.sendMessage involved at all.
+            return adapters.chatgpt.normalizeCapture(response, item, attribution);
+          }
           const captured = await captureProviderConversation(
             provider,
             nativeId,
             "backfill_exact_capture",
-            // A conversation whose full-fidelity projection doesn't fit this
-            // second IPC channel's safe budget is not forwarded as an
-            // override -- captureProviderConversation's content-script side
-            // falls back to its own pre-existing (independent of this
-            // bridge) native-fetch/DOM-capture path instead of receiving an
-            // oversized message. The full nativePayload is still attached to
-            // the returned envelope below, entirely inside this background
-            // process, so archival fidelity is never actually lost -- only
-            // the exact-capture DOM enrichment step for a payload this size.
-            { deferReceiver: true, nativePayload: fitsExactCaptureChannel ? nativePayload : null },
+            { deferReceiver: true, nativePayload },
           );
-          if (!fitsExactCaptureChannel && captured?.envelope) {
-            captured.envelope.raw_provider_payload = nativePayload;
-            captured.envelope.provider_meta = { ...captured.envelope.provider_meta, capture_fidelity: "native_full" };
-            if (captured.envelope.session) {
-              captured.envelope.session = {
-                ...captured.envelope.session,
-                provider_meta: { ...captured.envelope.session.provider_meta, capture_fidelity: "native_full" },
-              };
-            }
-          }
-          return captured.envelope;
+          if (captured.envelope?.session?.turns?.length) return captured.envelope;
+          // The exact-capture path's own content-script normalizer doesn't
+          // (yet) read every content_type the bridge now preserves (e.g.
+          // `thoughts` reasoning nodes) -- rather than let that permanently
+          // no_turns-skip (and endlessly retry) a conversation the adapter
+          // path can already capture in full fidelity, fall back to it. The
+          // exact-capture DOM/live-generation enrichment is only lost for
+          // conversations it would have found nothing for anyway.
+          return adapters.chatgpt.normalizeCapture(response, item, attribution);
         },
         alarms: chrome.alarms,
         instanceId,
