@@ -23,15 +23,14 @@ def literal_check(column: str, *values: str) -> str:
     expand the alias with ``typing.get_args`` at the call site so this helper
     stays free of an ``insights`` import inside the storage substrate.
 
-    Restored here after #3458 deleted it as "uncalled" on stale evidence:
-    #3451 had already wired three real call sites into
-    ``archive_tiers/index.py`` (``delegation_facts.mapping_state`` /
-    ``.result_status``) before #3458 merged, which #3458's own removal claim
-    never re-checked — so master's HEAD broke every import of the storage
-    package (``ImportError: cannot import name 'literal_check'``) the moment
-    #3458 landed. Found while trying to run the test suite for the
-    polylogue-u19l/polylogue-w32w raw-authority fix; fixed here as a
-    prerequisite because nothing in ``polylogue.storage`` imports without it.
+    PR #3458 deleted this as "zero call sites" (bead polylogue-u6tl); that
+    claim was false at merge time (``archive_tiers/index.py``'s
+    ``delegation_facts`` DDL calls it for ``DelegationMappingState``/
+    ``DelegationResultStatus``, both real ``typing.Literal`` columns) and its
+    deletion broke every import of ``archive_tiers`` — restored here rather
+    than migrating those two call sites to a different mechanism, since
+    ``check()``/``nullable_check()`` only accept ``PolylogueStrEnum``, not a
+    bare ``typing.Literal`` alias.
     """
     if not values:
         raise ValueError("literal_check requires at least one value")
