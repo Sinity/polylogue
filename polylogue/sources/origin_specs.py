@@ -831,6 +831,10 @@ def _aistudio_drive_spec() -> OriginSpec:
             "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
             "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
             "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+            "chunkedPrompt.pendingInputs (unsent textbox drafts) is read and stored verbatim as "
+            "sessions.pending_drafts_json (polylogue-o4j2), deliberately as a session-row field rather than a "
+            "session_event: a draft is mutable current UI state, and session_events participate in "
+            "session_revision_projection's append-only comparison axes (polylogue-aggz Invariant 1).",
             "drive_support_blocks.py's _SUCCESS_OUTCOMES ({'ok', 'success', "
             "'succeeded', 'completed', 'outcome_ok'}) is not (yet) a "
             "DroppedValueVocabulary (polylogue-2qx): Gemini's own committed "

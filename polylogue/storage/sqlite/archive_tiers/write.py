@@ -516,7 +516,7 @@ def write_parsed_session_to_archive(
                 INSERT INTO sessions (
                     native_id, origin, raw_id, branch_type, active_leaf_message_id,
                     title, session_kind, title_source, title_ref, title_confidence,
-                    display_name, run_settings_json,
+                    display_name, run_settings_json, pending_drafts_json,
                     git_branch, git_repository_url, commit_hash,
                     instructions_text, reported_duration_ms, provider_project_ref,
                     message_count, word_count, tool_use_count, thinking_count,
@@ -524,7 +524,7 @@ def write_parsed_session_to_archive(
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     branch_type = excluded.branch_type,
@@ -536,6 +536,12 @@ def write_parsed_session_to_archive(
                     title_confidence = COALESCE(excluded.title_confidence, sessions.title_confidence),
                     display_name = COALESCE(excluded.display_name, sessions.display_name),
                     run_settings_json = COALESCE(excluded.run_settings_json, sessions.run_settings_json),
+                    -- Plain overwrite, NOT COALESCE like run_settings_json above:
+                    -- a draft is current mutable state, so a reprocess that finds
+                    -- no non-blank pendingInputs (submitted, or cleared) must
+                    -- actually clear the stored value rather than preserving a
+                    -- now-stale draft forever (polylogue-o4j2).
+                    pending_drafts_json = excluded.pending_drafts_json,
                     git_branch = excluded.git_branch,
                     git_repository_url = excluded.git_repository_url,
                     commit_hash = excluded.commit_hash,
@@ -562,6 +568,7 @@ def write_parsed_session_to_archive(
                     session.title_confidence,
                     _sqlite_text(session.display_name),
                     _json_dumps(session.run_settings) if session.run_settings else None,
+                    _json_dumps(session.pending_drafts) if session.pending_drafts else None,
                     _sqlite_text(session.git_branch),
                     _sqlite_text(session.git_repository_url),
                     _sqlite_text(session.git_commit_hash),

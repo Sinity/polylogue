@@ -215,39 +215,48 @@ def _model_config_event(
     )
 
 
-def _draft_input_events(pending_inputs: object, *, timestamp: str | None) -> list[ParsedSessionEvent]:
-    """Model ``chunkedPrompt.pendingInputs`` as session events.
+def _pending_drafts(pending_inputs: object) -> list[dict[str, object]]:
+    """Extract non-blank ``chunkedPrompt.pendingInputs`` entries.
 
     AI Studio's Drive-synced JSON carries the operator's not-yet-submitted
     textbox content here -- draft prompts that never became a chunk and are
     otherwise unrecoverable once overwritten (polylogue-o4j2). Entries with
     blank/whitespace-only text are the overwhelmingly common case (the
     textbox was empty when synced) and carry no evidence, so they are
-    skipped rather than emitted as near-100%-empty noise.
+    skipped rather than kept as near-100%-empty noise.
+
+    Deliberately returned as plain dicts for ``ParsedSession.pending_drafts``,
+    NOT ``ParsedSessionEvent``s: a draft is mutable CURRENT state (the
+    operator edits the same textbox in place, and the entry disappears
+    entirely once submitted), not an append-only historical fact.
+    ``session_events`` feeds ``session_revision_projection``'s
+    message/attachment/event comparison axes (polylogue-aggz Invariant 1),
+    which assume every axis only ever grows between two acquisitions of the
+    same session; a mutable, disappearing item there reproduces the exact
+    defect class polylogue-bu1i (acquisition state in identity) and
+    polylogue-nuec (provider-remeasurement in identity) were fixed for --
+    edits would compare as disjoint forks, and submission would shrink the
+    event axis while the message axis grows, both misclassifying revision
+    membership. ``pending_drafts`` stays outside every identity/hash
+    computation in ``pipeline/ids.py`` (see ``sessions.pending_drafts_json``).
     """
     if not isinstance(pending_inputs, list):
         return []
-    events: list[ParsedSessionEvent] = []
+    drafts: list[dict[str, object]] = []
     for entry in pending_inputs:
         entry_obj = json_document(entry)
         text = entry_obj.get("text")
         if not isinstance(text, str) or not text.strip():
             continue
-        payload: dict[str, object] = {"text": text}
+        draft: dict[str, object] = {"text": text}
         role_val = _string_field(entry_obj, "role")
         if role_val is not None:
-            payload["role"] = role_val
+            draft["role"] = role_val
         token_count = _non_negative_int_field(entry_obj, "tokenCount", "token_count")
         if token_count is not None:
-            payload["token_count"] = token_count
-        events.append(
-            ParsedSessionEvent(
-                event_type="draft_input",
-                timestamp=timestamp,
-                payload=payload,
-            )
-        )
-    return events
+            draft["token_count"] = token_count
+        drafts.append(draft)
+    return drafts
 
 
 def _delivery_status(chunk_obj: JSONDocument) -> str | None:
@@ -415,9 +424,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         if payload.get("updateTime")
         else _select_timestamp(observed_timestamps, latest=True)
     )
-    session_events.extend(
-        _draft_input_events(prompt.get("pendingInputs"), timestamp=update_time_str or default_timestamp)
-    )
+    pending_drafts = _pending_drafts(prompt.get("pendingInputs"))
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
         messages = [
@@ -447,6 +454,11 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         # the ``model_config`` session_event above; this is the same value
         # landing on the session row itself.
         run_settings=dict(run_settings) if run_settings else None,
+        # polylogue-o4j2: pendingInputs draft(s), kept off session_events on
+        # purpose -- see _pending_drafts' docstring for why (mutable current
+        # state must not enter session_revision_projection's comparison
+        # axes).
+        pending_drafts=pending_drafts,
     )
 
 

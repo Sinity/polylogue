@@ -198,11 +198,17 @@ def test_parse_chunked_prompt_without_run_settings_leaves_it_none() -> None:
     assert result.run_settings is None
 
 
-def test_parse_chunked_prompt_records_nonempty_pending_input_as_draft_event() -> None:
+def test_parse_chunked_prompt_records_nonempty_pending_input_as_draft() -> None:
     """``chunkedPrompt.pendingInputs`` (polylogue-o4j2) is the operator's
     not-yet-submitted textbox content -- unrecoverable once overwritten if
-    dropped at parse. A non-blank entry must survive as a ``draft_input``
-    session event.
+    dropped at parse. A non-blank entry must survive on
+    ``ParsedSession.pending_drafts``.
+
+    Deliberately NOT a session_event: a draft is mutable current state, and
+    session_events feed session_revision_projection's append-only
+    comparison axes (polylogue-aggz Invariant 1) -- see
+    ``test_pending_draft_mutation_does_not_break_revision_containment``
+    below for the failure this would otherwise reproduce.
     """
     payload: JSONDocument = {
         "id": "gemini-pending-draft",
@@ -215,19 +221,13 @@ def test_parse_chunked_prompt_records_nonempty_pending_input_as_draft_event() ->
 
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
-    draft_events = [e for e in result.session_events if e.event_type == "draft_input"]
-    assert len(draft_events) == 1
-    assert draft_events[0].payload == {
-        "text": "unsent follow-up question",
-        "role": "user",
-        "token_count": 4,
-    }
-    assert draft_events[0].timestamp == "2024-01-15T11:45:00Z"
+    assert result.pending_drafts == [{"text": "unsent follow-up question", "role": "user", "token_count": 4}]
+    assert not [e for e in result.session_events if e.event_type == "draft_input"]
 
 
 def test_parse_chunked_prompt_skips_blank_pending_input() -> None:
     """The wire-common case -- the textbox was empty when Drive synced -- carries
-    no evidence and must not be emitted as a session event.
+    no evidence and must not be recorded as a draft.
     """
     payload: JSONDocument = {
         "id": "gemini-pending-blank",
@@ -239,10 +239,10 @@ def test_parse_chunked_prompt_skips_blank_pending_input() -> None:
 
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
-    assert not [e for e in result.session_events if e.event_type == "draft_input"]
+    assert result.pending_drafts == []
 
 
-def test_parse_chunked_prompt_without_pending_inputs_emits_no_draft_events() -> None:
+def test_parse_chunked_prompt_without_pending_inputs_has_no_drafts() -> None:
     payload: JSONDocument = {
         "id": "gemini-no-pending",
         "chunkedPrompt": {"chunks": [{"id": "msg-user", "role": "user", "text": "hi"}]},
@@ -250,7 +250,102 @@ def test_parse_chunked_prompt_without_pending_inputs_emits_no_draft_events() -> 
 
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
-    assert not [e for e in result.session_events if e.event_type == "draft_input"]
+    assert result.pending_drafts == []
+
+
+def test_pending_draft_mutation_does_not_break_revision_containment() -> None:
+    """Regression for the P1 a reviewer traced on drive.py's original
+    draft-as-session_event design (polylogue-o4j2 fix-up).
+
+    A draft is mutable: the operator edits the textbox, then eventually
+    submits it (at which point the pendingInputs entry disappears and a real
+    message appears instead). If the draft were folded into
+    session_revision_projection's event axis, editing it would create
+    disjoint event identities (comparing as a conflict/fork) and submitting
+    it would shrink the event axis while the message axis grows --
+    ``_relation`` requires every non-equal axis to agree on direction, so
+    both cases would misclassify revision membership
+    (classify_membership_revisions). This walks retain -> edit draft ->
+    retain -> submit and asserts containment holds at every step now that
+    drafts live outside every comparison axis.
+    """
+    from polylogue.archive.session_revision_membership import (
+        MembershipRevision,
+        _relation,
+        classify_membership_revisions,
+    )
+    from polylogue.pipeline.ids import session_revision_projection
+
+    chunks_before_submit = [{"id": "msg-1", "role": "user", "text": "hi"}]
+
+    # Revision 1: retain with an initial draft in the textbox.
+    revision_1 = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-draft-lifecycle",
+            "chunkedPrompt": {
+                "chunks": chunks_before_submit,
+                "pendingInputs": [{"text": "draft v1", "role": "user"}],
+            },
+        },
+        "fallback-id",
+    )
+    # Revision 2: the SAME conversation retained again after the operator
+    # edited the draft text (no new message yet).
+    revision_2 = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-draft-lifecycle",
+            "chunkedPrompt": {
+                "chunks": chunks_before_submit,
+                "pendingInputs": [{"text": "draft v2, much longer now", "role": "user"}],
+            },
+        },
+        "fallback-id",
+    )
+    # Revision 3: the draft was submitted -- it becomes a real message and
+    # pendingInputs is empty again.
+    revision_3 = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-draft-lifecycle",
+            "chunkedPrompt": {
+                "chunks": [
+                    *chunks_before_submit,
+                    {"id": "msg-2", "role": "user", "text": "draft v2, much longer now"},
+                ],
+                "pendingInputs": [{"text": "", "role": "user"}],
+            },
+        },
+        "fallback-id",
+    )
+
+    projection_1 = session_revision_projection(revision_1)
+    projection_2 = session_revision_projection(revision_2)
+    projection_3 = session_revision_projection(revision_3)
+
+    # Editing the draft alone (same messages, different draft text) must not
+    # look like a fork -- both revisions carry the exact same content-bearing
+    # evidence once drafts are excluded from comparison identity.
+    assert _relation(projection_1, projection_2) == "equal"
+    # Submitting must read as ordinary append-only growth (revision 3
+    # contains revision 2), not a conflict from the event axis shrinking.
+    assert _relation(projection_3, projection_2) == "a_contains_b"
+
+    classification = classify_membership_revisions(
+        [
+            MembershipRevision(raw_id="r1", projection=projection_1),
+            MembershipRevision(raw_id="r2", projection=projection_2),
+            MembershipRevision(raw_id="r3", projection=projection_3),
+        ]
+    )
+    # accepted_raw_ids is the whole append-only growth chain, oldest to
+    # newest (r1/r2 collapse to one "equal" representative -- edit-only
+    # revisions -- which then chains into r3's growth); the key assertion is
+    # what is ABSENT: no conflict, so nothing lands in ambiguous_raw_ids.
+    assert classification.accepted_raw_ids == ("r1", "r3")
+    assert classification.equivalent_raw_ids == ("r2",)
+    assert not classification.ambiguous_raw_ids
 
 
 def test_parse_chunked_prompt_records_fallback_title_source() -> None:
