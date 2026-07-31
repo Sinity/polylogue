@@ -371,6 +371,7 @@ class ArchiveSessionSummary:
     message_count: int
     word_count: int
     tags: tuple[str, ...]
+    parent_id: str | None = None
     session_kind: str = "standard"
     reported_duration_ms: int | None = None
     tool_use_count: int = 0
@@ -3679,6 +3680,7 @@ class ArchiveStore:
         row = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.parent_session_id,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -5502,6 +5504,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> int:
         """Count sessions in the archive index."""
         where, params = _session_filter_clause(
@@ -5535,6 +5538,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -5973,6 +5977,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
@@ -6009,6 +6014,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -6024,6 +6030,7 @@ class ArchiveStore:
         rows = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.parent_session_id,
                    s.session_kind,
                    s.message_count, s.word_count, s.reported_duration_ms,
                    s.tool_use_count, s.thinking_count, s.paste_count,
@@ -6097,6 +6104,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> list[ArchiveSessionSearchHit]:
         """Search archive block text and return session-level hits with snippets."""
         match_query = normalize_fts5_query(query)
@@ -6140,6 +6148,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -6225,6 +6234,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> int:
         """Count distinct sessions matching the archive block FTS search."""
         match_query = normalize_fts5_query(query)
@@ -6261,6 +6271,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -6325,6 +6336,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> tuple[str, ...]:
         """Return distinct sessions matching the archive block FTS search."""
         match_query = normalize_fts5_query(query)
@@ -6362,6 +6374,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
             prefix="AND",
         )
@@ -6430,6 +6443,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
+        root: bool | None = None,
     ) -> list[ArchiveSessionSearchHit]:
         """Resolve vector-ranked message ids into filtered session-level hits."""
         if not scored_message_ids:
@@ -6466,6 +6480,7 @@ class ArchiveStore:
             since_ms=since_ms,
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -8074,6 +8089,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         session_ids: tuple[str, ...] = (),
+        root: bool | None = None,
     ) -> ArchiveStats:
         """Return archive-level stats from filtered archive index sessions."""
         where, params = _session_filter_clause(
@@ -8106,6 +8122,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -8255,6 +8272,7 @@ class ArchiveStore:
         until_ms: int | None = None,
         since_session_id: str | None = None,
         session_ids: tuple[str, ...] = (),
+        root: bool | None = None,
     ) -> dict[str, int]:
         """Return filtered session counts grouped by a archive dimension."""
         where, params = _session_filter_clause(
@@ -8287,6 +8305,7 @@ class ArchiveStore:
             max_words=max_words,
             since_ms=since_ms,
             until_ms=until_ms,
+            root=root,
             tags_relation=self._tags_relation,
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
@@ -8342,12 +8361,24 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
             provider_title=None,
         )
         title_source = "path"
+    parent_id: str | None
+    try:
+        raw_parent_id = row["parent_session_id"]
+    except IndexError:
+        # Not every caller's SELECT projects parent_session_id (e.g. rows built
+        # for contexts that never need root/child filtering); treat absence as
+        # unknown rather than raising, matching row_int's IndexError handling
+        # above for other optional columns.
+        parent_id = None
+    else:
+        parent_id = str(raw_parent_id) if raw_parent_id else None
     return ArchiveSessionSummary(
         session_id=session_id,
         native_id=str(row["native_id"]),
         origin=origin,
         title=title,
         title_source=title_source,
+        parent_id=parent_id,
         title_ref=str(row["title_ref"]) if row["title_ref"] is not None else None,
         title_confidence=(float(row["title_confidence"]) if row["title_confidence"] is not None else None),
         session_kind=str(row["session_kind"] or "standard"),
@@ -10243,6 +10274,7 @@ def _session_filter_clause(
     since_ms: int | None = None,
     until_ms: int | None = None,
     boolean_predicate: QueryPredicate | None = None,
+    root: bool | None = None,
     tags_relation: str = "session_tags",
     prefix: str = "WHERE",
 ) -> tuple[str, list[object]]:
@@ -10498,6 +10530,10 @@ def _session_filter_clause(
     if until_ms is not None:
         clauses.append(f"COALESCE({table_alias}.updated_at_ms, {table_alias}.created_at_ms) <= ?")
         params.append(until_ms)
+    if root is True:
+        clauses.append(f"{table_alias}.parent_session_id IS NULL")
+    elif root is False:
+        clauses.append(f"{table_alias}.parent_session_id IS NOT NULL")
     if boolean_predicate is not None:
         boolean_clause, boolean_params = _boolean_predicate_clause(
             table_alias,
