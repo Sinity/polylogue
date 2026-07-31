@@ -618,6 +618,30 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace bead-landing-check",
+        "workspace",
+        "Verify whether a bead's cited commits/PRs already landed on master before dispatching an investigation.",
+        "devtools.bead_landing_check",
+        use_when=(
+            "Before claiming or dispatching a bead, or for a full-backlog sweep: extracts commit hashes, PR "
+            "numbers, and file paths cited in a bead's description/design/AC/notes/close_reason/comments, "
+            "cherry-picks cited commits onto master in ONE reused throwaway worktree (empty diff = already "
+            "landed, proof against squash-merge id rewriting), checks cited PR merge state via `gh pr view` "
+            "(disk-cached), and emits LIKELY-STALE / LIKELY-LIVE / UNDETERMINED per bead. Never guesses when "
+            "no evidence is cited -- UNDETERMINED is reported honestly rather than defaulting either way. "
+            "Never auto-closes anything; it only reports. Five open beads (o4j2, hiu, 0jf4, pbuh, cijx.4) each "
+            "cost a full dispatched-agent investigation cycle 2026-07-30/31 before turning out to already be "
+            "done on master -- this is the repeatable, cheap check that replaces hand-auditing 600+ beads."
+        ),
+        examples=(
+            "devtools workspace bead-landing-check",
+            "devtools workspace bead-landing-check --json --stale-only",
+            "devtools workspace bead-landing-check polylogue-o4j2 polylogue-hiu",
+            "devtools workspace bead-landing-check --offline --only-evidenced",
+            "devtools workspace bead-landing-check --no-commits  # PR checks only, fastest pass",
+        ),
+    ),
+    CommandSpec(
         "workspace bead-reimport-guard",
         "workspace",
         "Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization.",

@@ -216,6 +216,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
+| `devtools workspace bead-landing-check` | Verify whether a bead's cited commits/PRs already landed on master before dispatching an investigation. |
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
 | `devtools workspace claim-vs-evidence` | Build a structured failure follow-up claim-vs-evidence demo. |
 | `devtools workspace cli-surface-audit` | Capture a current-curated CLI surface audit demo. |
