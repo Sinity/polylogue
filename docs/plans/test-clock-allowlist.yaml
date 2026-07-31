@@ -91,3 +91,5 @@ files:
     reason: "polylogue-z9gh.1 execution-control tests measure real elapsed wall-clock by contract: cancellation/deadline abort SLOs against a genuinely running SQLite statement, event-loop heartbeat gaps during worker-thread offload, and cross-thread admission queue waits. frozen_clock cannot substitute for real thread scheduling and SQLite progress-handler cadence."
   - path: tests/unit/pipeline/test_schema_drift_sentinel_ingest.py
     reason: "polylogue-da1 format-drift sentinel ingest tests build RawSessionRecord fixtures via the same helper as test_resilience.py; acquired_at/file_mtime are opaque now() metadata with no production timing comparison."
+  - path: tests/unit/insights/test_session_commit.py
+    reason: "polylogue-l9su trailer-priority tests create a real git commit via subprocess (git records its own wall-clock author/commit time) and derive the session scan window around that same real now() so the commit falls inside it; a frozen clock would not match the real commit's git-recorded timestamp."
