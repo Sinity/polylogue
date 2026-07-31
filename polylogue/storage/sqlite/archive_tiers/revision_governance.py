@@ -175,6 +175,8 @@ class RawRevisionGovernanceHost(Protocol):
 
     def _ensure_source_conn(self) -> sqlite3.Connection: ...
 
+    def commit(self) -> None: ...
+
     def _preacquire_attachment_blobs(
         self,
         session: ParsedSession,
@@ -816,7 +818,11 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
 
 
 def classify_raw_revision_cohort(
-    store: RawRevisionGovernanceHost, logical_source_key: str, *, check_source_path_identity_split: bool = False
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+    *,
+    check_source_path_identity_split: bool = False,
+    manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
     """Promote only a unique byte-prefix full chain and contiguous appends.
 
@@ -835,6 +841,16 @@ def classify_raw_revision_cohort(
     et al.) -- the live incremental watcher (``sources/live/batch.py``)
     must not quarantine that as "divergent evidence", so it leaves this
     off.
+
+    ``manage_transaction=False`` (polylogue batched-rebuild path) leaves the
+    classification's ``raw_sessions`` authority updates uncommitted in the
+    caller's open batch window instead of committing per cohort. This is
+    safe under the same contract as the census batching: classification is
+    derived purely from durable raw bytes and re-derives identically on a
+    resumed pass, so a crash that discards an uncommitted batch loses no
+    authority evidence -- the resume re-classifies the same cohorts from
+    scratch. The follow-up ``raw_revision_replay_plan`` read runs on the
+    SAME source connection and sees the uncommitted updates.
     """
     if store._blob_publisher is None:
         raise RuntimeError("raw revision classification requires a writable blob publisher")
@@ -926,7 +942,7 @@ def classify_raw_revision_cohort(
             generation_by_raw_id[current] = generation
             current = children.get(current)
             generation += 1
-    with source_conn:
+    with source_conn if manage_transaction else nullcontext():
         for row in full_rows:
             raw_id = str(row[0])
             decision = by_raw_id.get(raw_id)
@@ -2013,6 +2029,15 @@ def apply_raw_revision_replay(
         attachments_by_raw_id[raw_id] = acquired
         attachment_refs_by_raw_id[raw_id] = refs
     if store._blob_publisher is not None:
+        if not manage_transaction and store._blob_publisher.has_pending:
+            # Batched replay holds one transaction across many cohorts; a
+            # non-empty flush opens a SEPARATE source.db connection at
+            # ``BEGIN IMMEDIATE`` which would wait out its busy timeout
+            # behind this batch's held source write lock. Commit the open
+            # batch first: everything committed is a complete prior-cohort
+            # boundary (this cohort has written nothing yet), so crash
+            # semantics are identical to a smaller batch.
+            store.commit()
         store._blob_publisher.flush()
     for raw_id, refs in attachment_refs_by_raw_id.items():
         write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
@@ -2265,6 +2290,11 @@ def apply_raw_membership_classification(
             acquired_at_ms=acquired_at_ms,
         )
         if store._blob_publisher is not None:
+            if not manage_transaction and store._blob_publisher.has_pending:
+                # Same batched-replay deadlock avoidance as
+                # ``apply_raw_revision_replay``: commit the open batch before
+                # a non-empty flush takes its separate source.db write lock.
+                store.commit()
             store._blob_publisher.flush()
         write_source_blob_refs(conn, accepted_raw_id, refs)
         with store._conn if manage_transaction else nullcontext():

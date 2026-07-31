@@ -627,6 +627,18 @@ these — operators are responsible for scheduling them:
 | Database vacuum | `sqlite3 <db> "VACUUM"` | Monthly | Reclaims space after large deletes or updates. Requires downtime or `VACUUM INTO` to a new file while the daemon runs. |
 | Litestream replication | Litestream | Continuous | Real-time WAL replication to S3-compatible storage. Configure Litestream to watch the database and WAL files; the daemon's periodic WAL checkpoint is compatible with Litestream's replication model. |
 
+**Do not schedule any of these against a busy archive.** `polylogue ops backup`
+checkpoints and copies each tier under a write lock, so it is safe but will
+block on a hot writer; a raw `sqlite3 <db> "VACUUM INTO ..."` outside
+`polylogue ops backup` has no such lock and restarts its read transaction
+whenever the source is written mid-copy, so against a busy WAL file it does
+not merely run slowly — it can livelock, rewriting an ever-growing partial
+copy indefinitely (observed 2026-07-30 on an unrelated host-level `VACUUM
+INTO` cron job: 1.5 TB written in 2 hours against a live `index.db` rebuild
+before the operation was killed by its own timeout). Run any operator-owned
+task in a quiet window and never concurrently with
+`polylogue ops reset --index && polylogued run`.
+
 ### Litestream Integration (Guidance)
 
 Litestream provides continuous SQLite replication by shipping WAL frames

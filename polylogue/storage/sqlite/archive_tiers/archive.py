@@ -2039,10 +2039,17 @@ class ArchiveStore:
         return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
 
     def classify_raw_revision_cohort(
-        self, logical_source_key: str, *, check_source_path_identity_split: bool = False
+        self,
+        logical_source_key: str,
+        *,
+        check_source_path_identity_split: bool = False,
+        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         return classify_raw_revision_cohort(
-            self, logical_source_key, check_source_path_identity_split=check_source_path_identity_split
+            self,
+            logical_source_key,
+            check_source_path_identity_split=check_source_path_identity_split,
+            manage_transaction=manage_transaction,
         )
 
     def classify_untyped_full_revision_groups(self, raw_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
