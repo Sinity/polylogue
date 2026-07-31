@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import inspect
 import json
+import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,6 +18,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import raw_authority as raw_authority_mod
+from polylogue.storage import raw_reconciler as raw_reconciler_mod
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.raw_authority import (
@@ -1409,6 +1412,135 @@ def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_frontier_blocking_count"] == 1
     assert raw_materialization_ready(readiness) is False
+
+
+def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quarantine(tmp_path: Path) -> None:
+    """polylogue-u19l: reproduces the absorbing-state defect end to end.
+
+    Live evidence (source.db, read-only, 2026-07-31): 4,147 open
+    ``raw_authority_blockers`` rows all read "accepted raw authority remains
+    quarantined pending exact refinement proof" with actuator
+    REFINE_QUARANTINE, 15,205/17,384 frontier plans residual, fixed_point=0
+    on all 256 retained censuses, and the gap count only ever grew
+    (16,874 -> 17,384). Root cause: REFINE_QUARANTINE has a real apply()
+    dispatch branch (``raw_reconciler.py``, the ``item.actuator is
+    RawAuthorityActuator.REFINE_QUARANTINE`` block), but the executability
+    gate (``_EXECUTABLE_STATES``) only ever admits SAFELY_REKEYABLE /
+    DUPLICATE_ALIAS states -- so once ``inspect_quarantined_accepted_raws``
+    proves a quarantined raw's refinement is "ineligible" (a permanent
+    structural fact, not a transient one -- see the reasons enumerated in
+    ``_inspect_quarantined_accepted_raw``), the census silently promised an
+    actuator that neither the daemon nor the operator break-glass path
+    could ever select.
+
+    Force a raw into exactly that "ineligible" shape by accepting it
+    normally, then flipping only its ``revision_authority`` to
+    'quarantined' out from under an otherwise byte-proven envelope -- this
+    fails ``_inspect_quarantined_accepted_raw``'s typed-envelope check
+    (source/predecessor/baseline columns don't match any of the three
+    admitted envelopes), which is exactly the "source raw has an
+    incompatible typed authority envelope" ineligibility reason observed
+    live. The frontier item must come back non-executable AND with an
+    honest NONE actuator -- never REFINE_QUARANTINE -- while remaining
+    countable (state_counts) and operator-visible (raw_authority_blockers).
+    """
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(
+        tmp_path, native_id="quarantine-ineligible", source_path="quarantine.jsonl", acquired_at_ms=1
+    )
+    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.execute(
+            "UPDATE raw_sessions SET revision_authority = 'quarantined' WHERE raw_id = ?",
+            (raw_id,),
+        )
+        source_conn.commit()
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    item = next(entry for entry in census.items if entry.raw_id == raw_id)
+    assert item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
+    assert item.actuator is raw_reconciler_mod.RawAuthorityActuator.NONE
+    assert item.executable is False
+    assert "ineligible" in item.reason
+    assert census.state_counts[RawAuthorityFrontierState.UNRESOLVED_PROVENANCE.value] == 1
+
+    # Terminal, countable, operator-visible: still tracked as an open
+    # blocker (an operator can find it), just no longer misrepresented as
+    # "an automatic actuator will resolve this".
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        blocker = source_conn.execute(
+            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE plan_id = ?",
+            (item.plan_id,),
+        ).fetchone()
+    assert blocker is not None
+    assert blocker[1] is None
+    assert "ineligible" in blocker[0]
+
+    readiness = raw_materialization_readiness_snapshot(tmp_path)
+    assert readiness["raw_authority_frontier_blocking_count"] == 1
+
+
+def test_frontier_item_construction_rejects_unreachable_actuator_state_pairs() -> None:
+    """polylogue-w32w: the invariant made structurally enforceable.
+
+    ``RawAuthorityFrontierItem.__post_init__`` must reject any combination
+    of a dispatch-handled actuator (one with a real apply() branch) paired
+    with a state the executability gate does not admit -- the exact defect
+    class polylogue-u19l fixed for REFINE_QUARANTINE. This proves the guard
+    fires at construction, not merely that today's call sites happen to
+    comply.
+    """
+    row: dict[str, object] = {
+        "accepted_raw_id": "raw-1",
+        "logical_source_key": "codex:native-1",
+        "session_id": "codex-session:native-1",
+    }
+    with pytest.raises(ValueError, match="unreachable"):
+        raw_reconciler_mod._item(
+            state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
+            actuator=raw_reconciler_mod.RawAuthorityActuator.REFINE_QUARANTINE,
+            row=row,
+            reason="an actuator with a real apply() handler must only pair with an executable state",
+        )
+    # The dual is fine: an executable state may pair with a dispatched actuator.
+    executable_item = raw_reconciler_mod._item(
+        state=RawAuthorityFrontierState.SAFELY_REKEYABLE,
+        actuator=raw_reconciler_mod.RawAuthorityActuator.REFINE_QUARANTINE,
+        row=row,
+        reason="eligible",
+    )
+    assert executable_item.executable is True
+    # And a non-dispatched actuator (REQUEST_JUDGMENT, REACQUIRE, NONE) may
+    # legitimately pair with a non-executable state -- those resolve
+    # out-of-band (operator judgment, ordinary re-acquisition), not through
+    # this apply dispatcher.
+    judgment_item = raw_reconciler_mod._item(
+        state=RawAuthorityFrontierState.CONFLICTING_AUTHORITY_NEEDS_JUDGMENT,
+        actuator=raw_reconciler_mod.RawAuthorityActuator.REQUEST_JUDGMENT,
+        row=row,
+        reason="needs an operator disposition",
+    )
+    assert judgment_item.executable is False
+
+
+def test_apply_dispatched_actuators_match_apply_branches() -> None:
+    """polylogue-w32w: keep ``_APPLY_DISPATCHED_ACTUATORS`` from drifting out
+    of sync with ``apply_raw_authority_frontier``'s actual dispatch
+    branches. If a future actuator gets a real ``if item.actuator is
+    RawAuthorityActuator.<X>:`` handler without also being added to
+    ``_APPLY_DISPATCHED_ACTUATORS``, the new handler is silently exempt
+    from the ``RawAuthorityFrontierItem.__post_init__`` reachability
+    invariant -- exactly the kind of drift that let polylogue-u19l happen
+    undetected. Parses the actual dispatch branches out of the module
+    source rather than hand-duplicating the list, so this fails the moment
+    the two go out of sync in either direction.
+    """
+    source = inspect.getsource(raw_reconciler_mod)
+    member_names = re.findall(r"item\.actuator is RawAuthorityActuator\.(\w+)", source)
+    dispatched_in_source = {raw_reconciler_mod.RawAuthorityActuator[member_name] for member_name in member_names}
+    assert dispatched_in_source == raw_reconciler_mod._APPLY_DISPATCHED_ACTUATORS
 
 
 def _census_row_counts(root: Path) -> tuple[int, int, int]:

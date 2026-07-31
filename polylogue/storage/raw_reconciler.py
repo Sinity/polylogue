@@ -79,6 +79,26 @@ _EXECUTABLE_STATES = {
     RawAuthorityFrontierState.DUPLICATE_ALIAS,
 }
 
+#: polylogue-w32w: actuators with a real apply() dispatch branch in
+#: ``_apply_raw_authority_plan`` -- i.e. actuators that promise "something
+#: automatically executes this". Must mirror exactly the
+#: ``if item.actuator is RawAuthorityActuator.<X>:`` branches there
+#: (``test_apply_dispatched_actuators_match_apply_branches`` in
+#: ``tests/unit/storage/test_raw_authority_ledger.py`` fails if this drifts).
+#: REACQUIRE and REQUEST_JUDGMENT are deliberately excluded: they resolve
+#: out-of-band (ordinary ingest re-acquisition; an operator judgment
+#: assertion promoted by ``_apply_judgment_dispositions``), not through this
+#: apply dispatcher, so a non-executable state pairing with them is not the
+#: defect class this guards against.
+_APPLY_DISPATCHED_ACTUATORS = frozenset(
+    {
+        RawAuthorityActuator.RESOLVE_CONFLICT,
+        RawAuthorityActuator.FOLD_DUPLICATE_ALIAS,
+        RawAuthorityActuator.COPY_FORWARD_ORIGIN,
+        RawAuthorityActuator.REFINE_QUARANTINE,
+    }
+)
+
 _VERIFIED_BLOB_STATS: dict[str, tuple[int, int, int, int, int]] = {}
 
 _ChunkT = TypeVar("_ChunkT")
@@ -131,6 +151,27 @@ class RawAuthorityFrontierItem:
     strategy_witness: JSONDocument
     plan_id: str
     evidence_ref: str | None = None
+
+    def __post_init__(self) -> None:
+        # polylogue-w32w: the invariant this class enforces at construction
+        # -- "every frontier state must have an actuator the executability
+        # gate can admit" -- reframed as its exact contrapositive: an
+        # actuator that HAS a real apply() handler must only ever be paired
+        # with an executable state. polylogue-u19l was precisely a
+        # violation of this: REFINE_QUARANTINE (a dispatched actuator) was
+        # being assigned to UNRESOLVED_PROVENANCE (a non-executable state),
+        # so the daemon and the operator break-glass path could never
+        # select it -- 4,147 blockers accumulated behind an actuator that
+        # was structurally unreachable through every path that exists. This
+        # makes that exact shape impossible to construct, not merely
+        # undocumented.
+        if self.actuator in _APPLY_DISPATCHED_ACTUATORS and self.state not in _EXECUTABLE_STATES:
+            raise ValueError(
+                f"raw-authority frontier item is unreachable: actuator {self.actuator.value!r} has an apply() "
+                f"dispatch branch but state {self.state.value!r} is not in the executability gate "
+                "(_EXECUTABLE_STATES) -- no path (daemon or operator) would ever select this item for apply "
+                "(polylogue-u19l/polylogue-w32w)"
+            )
 
     def to_dict(self) -> JSONDocument:
         return json_document(dataclasses.asdict(self))
@@ -585,16 +626,31 @@ def _classify_frontier(
             reason="origin mismatch lacks a strategy proof admitted by the shared reconciler",
         )
     if row.get("revision_authority") == "quarantined":
+        # polylogue-u19l/w32w: reachable only when ``logical_source_key`` is
+        # missing (so ``_strategy_overrides`` never had a key to inspect
+        # under) -- every other quarantined row is now given an explicit
+        # eligible-or-ineligible override below, and REFINE_QUARANTINE is
+        # never assigned here because that actuator has an apply() dispatch
+        # branch that only ever selects SAFELY_REKEYABLE items
+        # (``_EXECUTABLE_STATES``); promising it for a non-executable state
+        # is exactly the absorbing-state defect this bead fixed (4,147
+        # blockers, fixed_point=0 on all 256 retained censuses, gap count
+        # that never shrank). Actuator NONE here is an honest "nothing will
+        # execute this automatically", not a broken promise.
         return _item(
             state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
-            actuator=RawAuthorityActuator.REFINE_QUARANTINE,
+            actuator=RawAuthorityActuator.NONE,
             row=row,
-            reason="accepted raw authority remains quarantined pending exact refinement proof",
+            reason="accepted raw authority remains quarantined and has no logical source key to refine against",
         )
     if row.get("raw_logical_source_key") != row.get("logical_source_key"):
+        # polylogue-w32w: REPLAY has no apply() dispatch branch at all (grep
+        # confirms it), so -- like the REFINE_QUARANTINE case above -- it can
+        # never be selected by the executability gate. Mirror the same fix:
+        # actuator NONE, not a promise nothing discharges.
         return _item(
             state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
-            actuator=RawAuthorityActuator.REPLAY,
+            actuator=RawAuthorityActuator.NONE,
             row=row,
             reason="accepted raw and index head logical authority keys disagree",
         )
@@ -696,6 +752,35 @@ def _strategy_overrides(
                     reason="quarantined-raw strategy proved exact accepted-byte and semantic authority",
                     witness=_quarantine_strategy_witness(quarantine_item),
                     input_raw_ids=tuple(sorted({quarantine_item.raw_id, *quarantine_item.census_stage_raw_ids})),
+                )
+            else:
+                # polylogue-u19l: an "ineligible" proof here is a permanent
+                # structural fact about this raw's own data (missing rows,
+                # mismatched hashes, competing authority, an incompatible
+                # typed envelope -- see every ``_quarantined_raw_item(...)``
+                # return in ``_inspect_quarantined_accepted_raw``), not a
+                # transient state waiting on a retry: nothing about this
+                # raw's bytes or index rows changes on its own between
+                # census cycles. Previously this branch registered no
+                # override at all, so the row fell through to the
+                # classifier's default REFINE_QUARANTINE assignment -- an
+                # actuator with a real apply() handler that the
+                # executability gate (``_EXECUTABLE_STATES``) can never
+                # select, because the state stayed UNRESOLVED_PROVENANCE.
+                # That is the audited absorbing state: 4,147 open
+                # blockers all reading "pending exact refinement proof",
+                # 15,205/17,384 frontier plans residual, fixed_point=0 on
+                # every one of 256 retained censuses, and a gap count that
+                # only ever grew (16,874 -> 17,384). Recording the real
+                # ineligibility reason with actuator NONE makes this a
+                # terminal, countable (state_counts), operator-visible
+                # (raw_authority_blockers) fact instead of a false promise.
+                overrides[_quarantine_override_key(raw_id, logical_source_key)] = _StrategyOverride(
+                    state=RawAuthorityFrontierState.UNRESOLVED_PROVENANCE,
+                    actuator=RawAuthorityActuator.NONE,
+                    reason=f"quarantined-raw refinement strategy proved this raw ineligible: {quarantine_item.reason}",
+                    witness=_quarantine_strategy_witness(quarantine_item),
+                    input_raw_ids=(quarantine_item.raw_id,),
                 )
     return overrides
 

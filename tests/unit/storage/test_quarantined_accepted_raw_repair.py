@@ -417,6 +417,17 @@ def test_quarantine_refinement_fanout_scopes_by_logical_source_key(tmp_path: Pat
     accepted-head row sharing the same raw_id, whose own content does not
     match) is provably -- and permanently -- ineligible via the real
     content-mismatch check, not a crash.
+
+    polylogue-u19l/polylogue-w32w: ``session_b``'s actuator must be NONE,
+    not REFINE_QUARANTINE. Before that fix this assertion read
+    ``RawAuthorityActuator.REFINE_QUARANTINE`` here -- i.e. this exact
+    permanently-ineligible fan-out sibling was the reproduction case for
+    the absorbing-state defect: a non-executable state paired with an
+    actuator that has a real apply() dispatch handler the executability
+    gate (``_EXECUTABLE_STATES``) could never select it for. NONE is the
+    honest signal that nothing will execute this automatically, while the
+    item remains countable (state_counts) and operator-visible
+    (raw_authority_blockers).
     """
     raw_id, heads = _seed_quarantined_raw_fanout(tmp_path)
     (session_a, key_a), (session_b, key_b) = heads
@@ -430,7 +441,7 @@ def test_quarantine_refinement_fanout_scopes_by_logical_source_key(tmp_path: Pat
     assert by_key[key_a].executable
 
     assert by_key[key_b].state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
-    assert by_key[key_b].actuator is RawAuthorityActuator.REFINE_QUARANTINE
+    assert by_key[key_b].actuator is RawAuthorityActuator.NONE
     assert not by_key[key_b].executable
 
     # The deep proof itself (not just the census-level fallback reason)
