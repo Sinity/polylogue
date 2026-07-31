@@ -40,6 +40,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -3616,7 +3617,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
             store.replace_raw_membership_census(
                 raw_id,
                 sessions,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,

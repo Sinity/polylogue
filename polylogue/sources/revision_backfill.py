@@ -45,6 +45,10 @@ from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
+from polylogue.storage.raw_authority import (
+    RAW_AUTHORITY_PARSER_FINGERPRINT,
+    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
+)
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
 
@@ -320,7 +324,7 @@ class RawRevisionReplayResourceBlockedError(RuntimeError):
 
 def _resource_blocked_parser_fingerprint(max_payload_bytes: int) -> str:
     """Return the durable admission identity for one bounded census envelope."""
-    return f"revision-membership-v1:resource-blocked:{max_payload_bytes}"
+    return f"{RAW_AUTHORITY_PARSER_FINGERPRINT}:resource-blocked:{max_payload_bytes}"
 
 
 def uncensused_historical_revision_raw_ids(
@@ -331,10 +335,21 @@ def uncensused_historical_revision_raw_ids(
 ) -> tuple[str, ...]:
     """Return inputs whose current parser identity has not been persisted.
 
-    The dedicated receipt proves that the current parser actually observed
-    every relevant raw. Durable revision or membership rows alone may have
-    been produced by an older parser and therefore cannot establish current
-    quiescence.
+    The dedicated receipt proves that *some* parser version whose semantics
+    are still known to this codebase actually observed every relevant raw.
+    Durable revision or membership rows alone may have been produced by an
+    older parser and therefore cannot establish current quiescence.
+
+    This deliberately accepts any *known* fingerprint (the current one, or
+    one listed in ``SUPERSEDED_MEMBERSHIP_FINGERPRINTS``), not only the
+    current one (polylogue-9dxn): the census answers "was this raw ever
+    observed by a real parser?", which a fingerprint bump alone does not
+    change -- only ``classify_membership_revisions`` semantics changing (a
+    superseded fingerprint) can make a *verdict* stale, which is a separate
+    question the terminal-decision check in ``storage/repair.py`` answers.
+    Treating a bump as forcing full re-census here would mean every
+    fingerprint bump re-parses the entire archive just to re-confirm facts
+    that did not change.
     """
     if not raw_ids:
         return ()
@@ -342,6 +357,8 @@ def uncensused_historical_revision_raw_ids(
     resource_blocked_fingerprint = (
         _resource_blocked_parser_fingerprint(max_payload_bytes) if max_payload_bytes is not None else None
     )
+    known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
+    known_placeholders = ",".join("?" for _ in known_fingerprints)
     with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
         rows = conn.execute(
             f"""
@@ -350,7 +367,7 @@ def uncensused_historical_revision_raw_ids(
             LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
             WHERE r.raw_id IN ({placeholders})
               AND NOT COALESCE(
-                  c.parser_fingerprint = 'revision-membership-v1'
+                  c.parser_fingerprint IN ({known_placeholders})
                   AND c.status = 'complete',
                   0
               )
@@ -361,7 +378,7 @@ def uncensused_historical_revision_raw_ids(
               )
             ORDER BY r.raw_id
             """,
-            [*raw_ids, resource_blocked_fingerprint],
+            [*raw_ids, *known_fingerprints, resource_blocked_fingerprint],
         ).fetchall()
     return tuple(str(row[0]) for row in rows)
 
@@ -440,9 +457,9 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
             membership_census = conn.execute(
                 """
                 SELECT status, detail FROM raw_membership_census
-                WHERE raw_id = ? AND parser_fingerprint = 'revision-membership-v1'
+                WHERE raw_id = ? AND parser_fingerprint = ?
                 """,
-                (raw_id,),
+                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
             ).fetchone()
             membership_keys = [
                 str(row[0])
@@ -477,7 +494,7 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
                 INSERT INTO raw_authority_parser_census (
                     raw_id, parser_fingerprint, status, logical_keys_json,
                     detail, censused_at_ms
-                ) VALUES (?, 'revision-membership-v1', ?, ?, ?, 0)
+                ) VALUES (?, ?, ?, ?, ?, 0)
                 ON CONFLICT(raw_id) DO UPDATE SET
                     parser_fingerprint = excluded.parser_fingerprint,
                     status = excluded.status,
@@ -485,7 +502,13 @@ def _record_raw_authority_parser_census(archive_root: Path, raw_ids: tuple[str, 
                     detail = excluded.detail,
                     censused_at_ms = excluded.censused_at_ms
                 """,
-                (raw_id, "complete" if complete else "failed", json.dumps(logical_keys), detail),
+                (
+                    raw_id,
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    "complete" if complete else "failed",
+                    json.dumps(logical_keys),
+                    detail,
+                ),
             )
 
 
@@ -554,7 +577,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 None,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail=BYTE_AUTHORITY_CENSUS_DETAIL,
                 manage_transaction=not batched,
@@ -567,7 +590,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 None,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail=str(outcome),
                 manage_transaction=not batched,
@@ -598,7 +621,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 sessions,
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 manage_transaction=not batched,
             )
@@ -752,6 +775,104 @@ def census_historical_revision_evidence(
         expanded,
         logical_keys,
     )
+
+
+def _lineage_aware_replay_order(
+    logical_keys: set[str],
+    archive: ArchiveStore,
+    spill: _ParsedSessionSpill,
+    archive_root: Path,
+) -> list[str]:
+    """Order one rebuild's byte-typed logical keys so a parent's cohort
+    replays before any of its children's (polylogue-5q2u).
+
+    Replaying a child before its parent forces ``_resolve_session_graph`` to
+    store the child's shared prefix WHOLE, then re-walk and normalize it
+    (delete the duplicate prefix rows, remap ``session_events`` refs, delete
+    prefix-scoped dependents) once the parent finally arrives -- the
+    #2467 deferred-tail path, O(orphaned_children * shared_prefix_size) real
+    row-mutation work. The previous ``sorted(logical_keys)`` lexicographic
+    order has zero relationship to parent/child lineage, so it triggers this
+    expensive path roughly as often as not during a cold/full rebuild.
+    Visiting roots first (and each child only after its parent) minimizes
+    how often it triggers.
+
+    This is deliberately scheduling-only: it must never change WHAT gets
+    replayed or adopted, only the order this module's own replay loop visits
+    logical keys in. A key whose parent cannot be resolved here -- no
+    ``parent_session_provider_id``, a parent outside this rebuild's
+    ``logical_keys`` (missing/external/cross-batch parent), or a lineage
+    cycle -- degrades to the original lexicographic position among the
+    unresolved remainder. Nothing is ever skipped.
+    """
+    sorted_keys = sorted(logical_keys)
+    if len(sorted_keys) <= 1:
+        return sorted_keys
+
+    placeholders = ",".join("?" for _ in sorted_keys)
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT logical_source_key, raw_id
+            FROM raw_sessions
+            WHERE logical_source_key IN ({placeholders})
+            ORDER BY logical_source_key, acquired_at_ms DESC
+            """,
+            sorted_keys,
+        ).fetchall()
+    representative_raw_id: dict[str, str] = {}
+    for logical_source_key, raw_id in rows:
+        representative_raw_id.setdefault(str(logical_source_key), str(raw_id))
+
+    parent_of: dict[str, str | None] = {}
+    for key in sorted_keys:
+        parent_key: str | None = None
+        raw_id = representative_raw_id.get(key)
+        if raw_id is not None:
+            try:
+                sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+            except Exception:
+                # Lineage ordering is a scheduling optimization only -- any
+                # failure here degrades to "treat as unresolved", never to a
+                # replay/adoption failure.
+                sessions = []
+            if sessions:
+                session = sessions[0]
+                parent_provider_id = session.parent_session_provider_id
+                if parent_provider_id:
+                    parent_key = f"{session.source_name.value}:{parent_provider_id}"
+        parent_of[key] = parent_key
+
+    children: dict[str, list[str]] = {}
+    roots: list[str] = []
+    for key in sorted_keys:
+        parent_key = parent_of[key]
+        if parent_key is not None and parent_key in logical_keys and parent_key != key:
+            children.setdefault(parent_key, []).append(key)
+        else:
+            roots.append(key)
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def visit(key: str) -> None:
+        if key in seen:
+            return
+        seen.add(key)
+        ordered.append(key)
+        for child in children.get(key, ()):
+            visit(child)
+
+    for key in roots:
+        visit(key)
+    # Cycles: every remaining member has a not-yet-visited parent inside the
+    # set. Fall back to lexicographic order for the unresolved remainder --
+    # ``visit`` still walks each one's children once reached, so nothing is
+    # skipped or duplicated.
+    for key in sorted_keys:
+        if key not in seen:
+            visit(key)
+    return ordered
 
 
 def backfill_historical_revision_evidence(
@@ -949,13 +1070,23 @@ def backfill_historical_revision_evidence(
                 and len(logical_keys) + len(membership_keys) >= _PIPELINE_DECODE_MIN_COHORTS
             )
         )
+        # polylogue-5q2u: replay in lineage order (roots, then children after
+        # their parent) instead of lexicographic order -- see
+        # ``_lineage_aware_replay_order``'s docstring. Scheduling-only: the
+        # SET of keys replayed and the plan/adoption outcome for each is
+        # unaffected, only wall-clock and how often the deferred-tail path
+        # (#2467) triggers. Both the pipeline-decode prefetcher and the
+        # writer's own replay loop consume this SAME order so the
+        # prefetcher's lookahead actually matches what the writer visits
+        # next.
+        ordered_logical_keys = _lineage_aware_replay_order(logical_keys, archive, spill, archive_root)
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
             decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
             spill.attach_prefetcher(decode_prefetcher)
-            decode_prefetcher.start_phase(sorted(logical_keys), provisional_full_raw_ids)
+            decode_prefetcher.start_phase(ordered_logical_keys, provisional_full_raw_ids)
         try:
-            for logical_key in sorted(logical_keys):
+            for logical_key in ordered_logical_keys:
                 if decode_prefetcher is not None:
                     decode_prefetcher.enter_key(logical_key)
                 # polylogue-eqnv: the offline backfill/rebuild path is the one
@@ -995,7 +1126,7 @@ def backfill_historical_revision_evidence(
                         archive.replace_raw_membership_census(
                             raw_id,
                             sessions,
-                            parser_fingerprint="revision-membership-v1",
+                            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                             censused_at_ms=0,
                             detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                             retire_full_revision_governance=True,

@@ -30,6 +30,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -595,7 +596,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             archive.replace_raw_membership_census(
                 raw_id,
                 [session],
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail="historical non-prefix full revision governance",
                 retire_full_revision_governance=True,
@@ -818,7 +819,7 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
             archive.replace_raw_membership_census(
                 raw_id,
                 [session],
-                parser_fingerprint="revision-membership-v1",
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                 censused_at_ms=0,
                 detail="cross-route full revision governance",
                 retire_full_revision_governance=True,

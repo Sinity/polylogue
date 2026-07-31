@@ -13,6 +13,7 @@ from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
@@ -136,9 +137,9 @@ def _seed_invalid_head(
             """
             INSERT INTO raw_membership_census (
                 raw_id, parser_fingerprint, status, member_count, censused_at_ms
-            ) VALUES (?, 'revision-membership-v1', 'complete', 1, 0)
+            ) VALUES (?, ?, 'complete', 1, 0)
             """,
-            (raw_id,),
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
         )
         source.commit()
     return raw_id
@@ -382,9 +383,9 @@ def _seed_quarantined_raw_fanout(root: Path) -> tuple[str, tuple[tuple[str, str]
             """
             INSERT INTO raw_membership_census (
                 raw_id, parser_fingerprint, status, member_count, censused_at_ms
-            ) VALUES (?, 'revision-membership-v1', 'complete', 1, 0)
+            ) VALUES (?, ?, 'complete', 1, 0)
             """,
-            (raw_id,),
+            (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT),
         )
         source.commit()
     with sqlite3.connect(root / "source.db") as source:

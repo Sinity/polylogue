@@ -33,6 +33,7 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.replay import rebuild_index_from_source
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.repair import repair_session_insights
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -52,7 +53,7 @@ CHILD_FIRST = f"{CHILD_SESSION}:lineage-child-m0"
 CANONICAL_TOKEN = "quartzneedle"
 STALE_TOKEN = "staleonlytoken"
 OVERLAY_TAG = "operator-canary"
-PARSER_RECIPE = "revision-membership-v1"
+PARSER_RECIPE = RAW_AUTHORITY_PARSER_FINGERPRINT
 
 # Volatile attempt timestamps are not canonical derivation output. The exact
 # semantic stamps beside them remain compared.

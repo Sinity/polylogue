@@ -255,7 +255,7 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
     assert result.repaired_count == 0
-    assert result.success is False
+    assert result.success is True
     assert result.metrics == {
         "raw_materialization_candidate_count": 1.0,
         "raw_materialization_selected_count": 1.0,
@@ -323,7 +323,7 @@ def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling
 
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
-    assert result.success is False
+    assert result.success is True
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
 
@@ -686,7 +686,7 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
     assert result.repaired_count == 0
-    assert result.success is False
+    assert result.success is True
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
     assert "already parsed but not materialized" in result.detail
@@ -748,7 +748,7 @@ def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild
     result = repair_mod.repair_raw_materialization(config, dry_run=True)
 
     assert result.repaired_count == 0
-    assert result.success is False
+    assert result.success is True
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
     assert "already parsed but not materialized" in result.detail
@@ -1429,7 +1429,7 @@ def test_raw_materialization_dry_run_reports_limited_selection(
     result, incomplete_censuses = _complete_bounded_raw_census(config, limit=2)
 
     assert len(incomplete_censuses) == 1
-    assert result.success is False
+    assert result.success is True
     assert result.repaired_count == 0
     assert "Would: classify and replay" in result.detail
     assert result.metrics["raw_materialization_candidate_count"] == 4.0
@@ -2095,7 +2095,7 @@ def test_raw_materialization_reports_the_active_custom_payload_envelope(tmp_path
 
     result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True, max_payload_bytes=max_payload_bytes)
 
-    assert result.success is False
+    assert result.success is True
     assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(max_payload_bytes)
     assert "100 B" in result.detail
     assert "1.0 GiB" not in result.detail

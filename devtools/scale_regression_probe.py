@@ -405,10 +405,14 @@ def _check_raw_materialization_backlog(root: Path) -> ScaleRegressionCheck:
     preview = repair_mod.raw_materialization_replay_backlog(config, limit=5)
     dry_run = repair_mod.repair_raw_materialization(config, dry_run=True)
     selected_plan_count = len(dry_run.plan_outcomes)
+    # polylogue-f57q: a dry-run preview that identifies exactly one
+    # candidate/eligible/planned raw and mutates nothing is a phase-honest
+    # SUCCESS -- repaired_count staying 0 is what proves the preview never
+    # mutated, not dry_run.success being False.
     ok = (
         preview["candidate_count"] == 1
         and dry_run.repaired_count == 0
-        and dry_run.success is False
+        and dry_run.success is True
         and selected_plan_count == 1
     )
     return ScaleRegressionCheck(
