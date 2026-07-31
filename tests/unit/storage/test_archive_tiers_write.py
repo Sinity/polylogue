@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -1362,10 +1363,24 @@ def test_provider_usage_model_switch_on_reingest_does_not_double_count(tmp_path:
     )
 
 
-def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_path: Path) -> None:
-    """A message's model can vanish between full re-ingests (e.g. corrected
-    message-boundary re-parsing). The old model's session_model_usage row
-    must not survive as an orphaned, stale contributor to per-model sums."""
+def test_provider_usage_model_vanishing_on_reingest_preserves_message_with_zero_usage_rollup(
+    tmp_path: Path,
+) -> None:
+    """polylogue-geop changed this test's outcome intentionally.
+
+    Previously a message whose native id no longer appeared in a full
+    re-ingest was treated as superseded and purged along with its
+    session_model_usage rollup. Since polylogue-geop, a full re-ingest is a
+    field-path UNION against what is already archived (measured: newer
+    provider exports are not supersets of older ones -- a message missing
+    from the newer acquisition is not proof it was corrected away, only
+    that this acquisition didn't observe it), so message m1 is reinjected
+    rather than deleted. Its session_model_usage skeleton row is seeded from
+    the reinjected message's model_name, but session_events (the token_count
+    usage evidence) are NOT unioned -- that tier is out of this change's
+    scope (see polylogue-geop follow-up) -- so the reinjected model
+    legitimately rolls up to zero usage rather than carrying stale, summed
+    tokens forward."""
     conn = _connect(tmp_path / "index.db")
 
     def _usage_event(model: str, *, input_tokens: int, cached: int, output: int) -> ParsedSessionEvent:
@@ -1418,7 +1433,20 @@ def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_p
         (session_id,),
     ).fetchall()
     per_model = {row["model_name"]: (row["input_tokens"], row["output_tokens"]) for row in rows}
-    assert per_model == {"gpt-5-codex": (50, 10)}, f"stale vanished-model rollup survived: {per_model}"
+    # gpt-5-codex-mini's message (m1) was reinjected by the field-path union
+    # (polylogue-geop) instead of deleted, so its skeleton rollup row still
+    # exists; it carries zero tokens because session_events weren't unioned.
+    assert per_model == {"gpt-5-codex": (50, 10), "gpt-5-codex-mini": (0, 0)}, (
+        f"reinjected message's model rollup should be a zero-usage skeleton, not stale or absent: {per_model}"
+    )
+
+    surviving_native_ids = {
+        row["native_id"]
+        for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (session_id,)).fetchall()
+    }
+    assert surviving_native_ids == {"m1", "m2"}, (
+        f"field-path union must reinject the message a newer acquisition dropped: {surviving_native_ids}"
+    )
 
 
 def test_provider_usage_disjoint_lanes_subtracts_cached_and_does_not_re_add_reasoning() -> None:
@@ -4252,3 +4280,133 @@ def test_merge_append_advances_derived_updated_at_ms_from_new_message_evidence(
     # updated_at_ms advances to the newly appended message's timestamp.
     assert second_row["created_at_ms"] == 1_775_001_600_000
     assert second_row["updated_at_ms"] == 1_775_007_000_000  # 2026-04-01T01:30:00Z
+
+
+def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_path: Path) -> None:
+    """polylogue-geop: newer provider exports are not supersets of older ones.
+
+    Measured on chatgpt (2026-07-31): a 2026-07 export of the same
+    conversations as a 2026-04 export dropped the ENTIRE tool/system role
+    layer (24,914 tool messages, 20,384 code blocks) and, within citation
+    records both exports still carried, dropped several keys one level
+    deeper (start_idx/end_idx/matched_text/refs/safe_urls/error/status/
+    style) while keeping identical record counts and byte-identical message
+    text. This pins the fix: re-ingesting a POORER acquisition of an
+    already-archived session must never delete a message, a block, or a
+    field within a block's ``tool_input`` that a prior, richer acquisition
+    supplied -- it must union, not replace.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rich = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="union-rich-vs-poor",
+            title="citations",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    text="see citation",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TEXT,
+                            text="see citation",
+                            tool_input={
+                                "content_references": [
+                                    {
+                                        "type": "webpage",
+                                        "start_idx": 10,
+                                        "end_idx": 42,
+                                        "matched_text": "the source",
+                                        "refs": ["r1", "r2"],
+                                        "safe_urls": ["https://example.com"],
+                                        "url": "https://example.com",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                ),
+                # A whole message/role the newer export drops entirely (the
+                # measured tool-layer removal).
+                ParsedMessage(
+                    provider_message_id="m2-tool",
+                    role=Role.TOOL,
+                    text="tool output",
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="tool output")],
+                ),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich)
+
+        # The July-shaped re-export: message m1's citation record survives but
+        # loses several keys one level deeper; message m2-tool is entirely
+        # absent (the dropped tool layer).
+        poorer = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="union-rich-vs-poor",
+            title="citations",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    text="see citation",
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TEXT,
+                            text="see citation",
+                            tool_input={
+                                "content_references": [
+                                    {
+                                        "type": "webpage",
+                                        "url": "https://example.com",
+                                    }
+                                ]
+                            },
+                        )
+                    ],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, poorer)
+
+        message_rows = conn.execute(
+            "SELECT native_id FROM messages WHERE session_id = ? ORDER BY native_id",
+            (session_id,),
+        ).fetchall()
+        native_ids = {row["native_id"] for row in message_rows}
+        assert native_ids == {"m1", "m2-tool"}, (
+            f"the poorer re-export deleted a message the richer acquisition supplied: {native_ids}"
+        )
+
+        block_row = conn.execute(
+            """
+            SELECT b.tool_input FROM blocks b
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND m.native_id = 'm1' AND b.position = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        merged_tool_input = json.loads(block_row["tool_input"])
+        merged_citation = merged_tool_input["content_references"][0]
+        assert merged_citation == {
+            "type": "webpage",
+            "start_idx": 10,
+            "end_idx": 42,
+            "matched_text": "the source",
+            "refs": ["r1", "r2"],
+            "safe_urls": ["https://example.com"],
+            "url": "https://example.com",
+        }, f"field-path union dropped keys the richer acquisition supplied: {merged_citation}"
+
+        tool_block_row = conn.execute(
+            """
+            SELECT b.text FROM blocks b
+            JOIN messages m ON m.message_id = b.message_id
+            WHERE m.session_id = ? AND m.native_id = 'm2-tool' AND b.position = 0
+            """,
+            (session_id,),
+        ).fetchone()
+        assert tool_block_row["text"] == "tool output"
+    finally:
+        conn.close()
