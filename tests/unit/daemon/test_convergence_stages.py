@@ -864,7 +864,17 @@ def test_fts_repair_needs_ignores_empty_text_messages(tmp_path: Path) -> None:
         assert stages._fts_repair_needs_for_sessions(conn, [session_id]) == stages._FtsRepairNeeds()
 
 
-def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> None:
+def test_targeted_fts_ready_marker_records_real_archive_counts(tmp_path: Path) -> None:
+    """The marker writes the real exact archive-wide invariant, not a stale carry-over.
+
+    Regression guard for polylogue-rlvj: this used to *preserve* whatever
+    counts a prior exact snapshot had recorded (100/99/missing=1) unchanged
+    while flipping state to 'ready' -- a self-contradictory row
+    (source_rows != indexed_rows yet state='ready') driven by a cheap
+    existence check, not a real recount. The fix always recomputes the true
+    counts, so a single fully-indexed session must report the real (1, 1, 0)
+    triple, discarding the stale placeholder.
+    """
     from polylogue.storage.fts.freshness import record_fts_surface_state_sync
 
     db_path = tmp_path / "index.db"
@@ -890,13 +900,57 @@ def test_targeted_fts_ready_marker_preserves_ledger_counts(tmp_path: Path) -> No
 
     assert tuple(row) == (
         "ready",
-        100,
-        99,
+        1,
+        1,
         0,
         0,
         0,
         "targeted changed-session repair complete",
     )
+
+
+def test_targeted_fts_ready_marker_stays_stale_for_an_untouched_gap(tmp_path: Path) -> None:
+    """A targeted repair must not launder an unrelated session's real gap into 'ready'.
+
+    Regression test for the live incident (polylogue-rlvj): 12,659 blocks
+    were missing from ``messages_fts`` while the ledger reported
+    ``ready``/``missing_rows=0`` because a targeted repair for *other*
+    sessions unconditionally wrote a global ready verdict. Seed two
+    sessions, delete the FTS row for one (simulating drift outside the
+    write path, exactly what ``fts_orphan_audit`` finds), then run the
+    marker as if only the untouched session had just been repaired -- the
+    ledger must stay honest about the sibling's gap.
+    """
+    db_path = tmp_path / "index.db"
+    with open_connection(db_path) as conn:
+        _seed_index_session(conn, session_id="conv-ledger-fixed", text="indexed text")
+        orphan_session_id = _seed_index_session(conn, session_id="conv-ledger-orphan", text="also indexed")
+        deleted = conn.execute(
+            """
+            DELETE FROM messages_fts_docsize
+            WHERE id IN (SELECT rowid FROM blocks WHERE session_id = ?)
+            """,
+            (orphan_session_id,),
+        ).rowcount
+        assert deleted == 1
+        conn.commit()
+
+        stages._mark_message_fts_ready_after_targeted_repair(conn)
+        row = conn.execute(
+            """
+            SELECT state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail
+            FROM fts_freshness_state
+            WHERE surface='messages_fts'
+            """,
+        ).fetchone()
+
+    assert row[0] == "stale"
+    assert row[1] == 2  # both blocks are indexable
+    assert row[2] == 1  # only the fixed session's block is actually indexed
+    assert row[3] == 1  # the orphan's gap is reported honestly, not zeroed
+    assert row[4] == 0
+    assert row[5] == 0
+    assert row[6] == "targeted changed-session repair left an archive-wide FTS gap"
 
 
 def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path) -> None:
@@ -926,8 +980,8 @@ def test_targeted_fts_ready_marker_handles_legacy_freshness_table(tmp_path: Path
 
     assert tuple(row) == (
         "ready",
-        0,
-        0,
+        1,
+        1,
         0,
         0,
         0,

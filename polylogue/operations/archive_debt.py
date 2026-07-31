@@ -173,14 +173,9 @@ def _tier_missing_severity(durability: str) -> ArchiveDebtSeverity:
 def _assertion_candidate_rows(user_db: Path) -> list[ArchiveDebtRowPayload]:
     if not user_db.exists():
         return []
-    try:
-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return []
+    conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
     try:
         candidates = list_assertion_candidates(conn)
-    except sqlite3.Error:
-        return []
     finally:
         conn.close()
 
@@ -230,12 +225,9 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
     index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return []
-    try:
-        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-        conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
-    except sqlite3.Error:
-        return []
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
     try:
         candidate_rows = list(
             conn.execute(
@@ -286,8 +278,6 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                     conn, str(row["origin"] or ""), embedded_ids
                 )
             grouped.setdefault((str(row["origin"]), category), []).append(row)
-    except sqlite3.Error:
-        return []
     finally:
         conn.close()
 
@@ -854,11 +844,8 @@ def _source_family(subject_type: str, subject_id: str) -> str:
 def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     if not index_db.exists():
         return []
-    try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-        conn.row_factory = sqlite3.Row
-    except sqlite3.Error:
-        return []
+    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
     try:
         if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_model_usage"):
             return []
@@ -881,8 +868,6 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
                 """
             )
         )
-    except sqlite3.Error:
-        return []
     finally:
         conn.close()
 
@@ -924,13 +909,10 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    try:
-        row = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-            (table,),
-        ).fetchone()
-    except sqlite3.Error:
-        return False
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
+        (table,),
+    ).fetchone()
     return row is not None
 
 

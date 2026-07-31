@@ -52,6 +52,38 @@ _MESSAGES_FTS_SURFACE_TABLES = frozenset({"messages_fts", "messages_fts_identity
 # here (see fts_lifecycle.rebuild_fts_index_sync).
 _OTHER_FTS_SURFACE_TABLES = frozenset({"session_work_events_fts", "threads_fts"})
 
+# polylogue-rlvj: fts_freshness_state's v51 REPLACE_TABLE (the new
+# state='ready' => balanced-counters CHECK) is, unlike every prior
+# CONSTRAINT_ONLY delta here, not guaranteed satisfied by pre-existing rows.
+# The exact bug the CHECK exists to make unrepresentable
+# (daemon/convergence_stages.py's now-fixed
+# `_mark_message_fts_ready_after_targeted_repair`) could already have written
+# a poisoned `messages_fts` row -- state='ready' with source_rows !=
+# indexed_rows -- on any archive that ran the old code, and the live archive
+# audited when this fix landed had exactly that row. A blind shared-column
+# copy into the new, stricter schema would raise a CHECK violation and abort
+# the whole fast-forward for those archives. The `_REPLACE_TABLE_SANITIZERS`
+# entry below downgrades any such row to 'stale' (an honest "unknown, needs
+# reconvergence" verdict, not a lost measurement -- the daemon's ordinary
+# convergence stages recompute a real value on the next pass) against the OLD
+# table, which has no such CHECK, before the generic copy runs.
+_REPLACE_TABLE_SANITIZERS: dict[str, str] = {
+    "fts_freshness_state": """
+        UPDATE "fts_freshness_state"
+        SET state = 'stale',
+            detail = 'downgraded during index schema fast-forward: a prior '
+                     || '''ready'' row failed the new missing_rows=0/excess_rows=0/'
+                     || 'duplicate_rows=0/source_rows=indexed_rows invariant'
+        WHERE state = 'ready'
+          AND NOT (
+              missing_rows = 0
+              AND excess_rows = 0
+              AND duplicate_rows = 0
+              AND source_rows = indexed_rows
+          )
+    """,
+}
+
 
 def _apply_drop_table(conn: sqlite3.Connection, name: str) -> None:
     conn.execute(f'DROP TABLE IF EXISTS "{name}"')
@@ -86,6 +118,16 @@ def _apply_replace_table(conn: sqlite3.Connection, name: str, canonical_sql: str
         # DDL already uses IF NOT EXISTS, so a plain create is equivalent.
         conn.execute(canonical_sql)
         return
+    sanitizer = _REPLACE_TABLE_SANITIZERS.get(name)
+    if sanitizer is not None and {
+        "state",
+        "missing_rows",
+        "excess_rows",
+        "duplicate_rows",
+        "source_rows",
+        "indexed_rows",
+    } <= set(existing_columns):
+        conn.execute(sanitizer)
     scratch = sqlite3.connect(":memory:")
     try:
         scratch.execute(canonical_sql)
