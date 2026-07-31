@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from collections import Counter
@@ -20,6 +21,11 @@ from polylogue.storage.insights.session.status import session_insight_status_syn
 from polylogue.storage.raw_authority import raw_authority_detail_query_handle
 
 logger = get_logger(__name__)
+
+CLAUDE_WORKFLOW_STAGE_NAME = "claude_workflow"
+"""daemon_stage_events ``stage`` value written by the claude_workflow
+convergence stage (daemon/convergence_stages.py); imported from there so the
+writer and this reader cannot drift apart."""
 
 ACTIVE_REBUILD_STALE_AFTER_S = 180.0
 """Maximum heartbeat/start age for a rebuild-index row to count as active."""
@@ -59,6 +65,50 @@ def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
         }
         for row in rows
     ]
+
+
+def claude_workflow_materialization_status(ops_db: Path) -> dict[str, object] | None:
+    """Return the most recently recorded Claude Workflow materialization summary.
+
+    Reads the latest ``daemon_stage_events`` row written by
+    ``daemon.convergence_stages``'s claude_workflow stage each time it
+    materializes evidence graphs. Returns ``None`` when the stage has never
+    run against this archive (ops.db missing, table missing, or no rows).
+    """
+    if not ops_db.exists():
+        return None
+    try:
+        with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
+            conn.row_factory = sqlite3.Row
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_stage_events'"
+            ).fetchone()
+            if has_table is None:
+                return None
+            row = conn.execute(
+                """
+                SELECT status, observed_at_ms, payload_json
+                FROM daemon_stage_events
+                WHERE stage = ?
+                ORDER BY observed_at_ms DESC, rowid DESC
+                LIMIT 1
+                """,
+                (CLAUDE_WORKFLOW_STAGE_NAME,),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        logger.warning("claude workflow materialization status query failed for %s: %s", ops_db, exc, exc_info=True)
+        return None
+    if row is None:
+        return None
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except (TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    payload["status"] = str(row["status"])
+    payload["observed_at_ms"] = int(row["observed_at_ms"])
+    return payload
 
 
 def _read_int(readiness: Mapping[str, Any], key: str) -> int:
