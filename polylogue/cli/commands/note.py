@@ -16,7 +16,7 @@ from polylogue.surfaces.payloads import AssertionClaimPayload
 
 MAX_NOTE_STDIN_BYTES = 256 * 1024
 
-_KIND_NAMES = ("note", "claim", "correction", "lesson")
+_KIND_NAMES = ("note", "claim", "correction", "lesson", "highlight", "prompt_eval")
 
 
 def _scope_refs(repo: str | None, topic: str | None) -> tuple[str, ...]:
@@ -52,6 +52,14 @@ def _stdin_note() -> str:
     default=None,
     help="Caller-scoped retry key; exact replays return the original lifecycle row.",
 )
+@click.option(
+    "--ttl-seconds",
+    "ttl_seconds",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Expire this candidate this many seconds after capture (staleness.expires_at_ms); "
+    "expired claims are excluded from ASSERTION_CLAIM_KINDS reads (preamble compiler etc.).",
+)
 @click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
 def note_command(
     text: str | None,
@@ -61,6 +69,7 @@ def note_command(
     topic: str | None,
     kind_name: str,
     idempotency_key: str | None,
+    ttl_seconds: int | None,
     output_format: str,
 ) -> None:
     """Capture one terminal memory candidate; judgment remains a separate step."""
@@ -79,6 +88,7 @@ def note_command(
                 scope_refs=_scope_refs(repo, topic),
                 cwd=Path.cwd(),
                 idempotency_key=idempotency_key,
+                ttl_seconds=ttl_seconds,
             )
 
     try:

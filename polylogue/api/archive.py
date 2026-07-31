@@ -179,6 +179,8 @@ _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
     "claim": AssertionKind.DECISION,
     "correction": AssertionKind.CORRECTION,
     "lesson": AssertionKind.LESSON,
+    "highlight": AssertionKind.HIGHLIGHT,
+    "prompt_eval": AssertionKind.PROMPT_EVAL,
 }
 
 
@@ -1660,8 +1662,17 @@ def _archive_capture_assertion_candidate(
     author_ref: str = "user:local",
     author_kind: str = "user",
     idempotency_key: str | None = None,
+    ttl_seconds: int | None = None,
 ) -> Any:
-    """Write one terminal-captured assertion through the user-tier gate."""
+    """Write one terminal-captured assertion through the user-tier gate.
+
+    ``ttl_seconds``, when given, stamps ``staleness={"expires_at_ms": ...}``
+    on the written row (polylogue-37t.1): the admission read
+    (:func:`~polylogue.storage.sqlite.archive_tiers.user_write.list_assertion_claims`)
+    excludes expired claims from the preamble compiler and every other
+    ``ASSERTION_CLAIM_KINDS`` consumer once ``expires_at_ms`` elapses, with no
+    new assertion status introduced.
+    """
 
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
@@ -1673,6 +1684,8 @@ def _archive_capture_assertion_candidate(
     normalized_author_kind = author_kind.strip().lower()
     if not normalized_author_kind:
         raise ValueError("author_kind cannot be empty")
+    if ttl_seconds is not None and ttl_seconds <= 0:
+        raise ValueError("ttl_seconds must be positive")
 
     normalized_idempotency_key = None if idempotency_key is None else idempotency_key.strip()
     if idempotency_key is not None and not normalized_idempotency_key:
@@ -1766,6 +1779,8 @@ def _archive_capture_assertion_candidate(
                     conn.commit()
                     return existing
                 raise ValueError("idempotency_key conflicts with a different assertion candidate capture")
+            capture_now_ms = int(datetime.now(UTC).timestamp() * 1000)
+            staleness = None if ttl_seconds is None else {"expires_at_ms": capture_now_ms + ttl_seconds * 1000}
             envelope = upsert_assertion(
                 conn,
                 assertion_id=assertion_id,
@@ -1783,7 +1798,9 @@ def _archive_capture_assertion_candidate(
                 author_kind=normalized_author_kind,
                 evidence_refs=tuple(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
                 status=AssertionStatus.CANDIDATE,
+                staleness=staleness,
                 context_policy={"inject": False, "promotion_required": True},
+                now_ms=capture_now_ms,
             )
             conn.commit()
             return envelope
@@ -3048,8 +3065,13 @@ class PolylogueArchiveMixin:
         author_ref: str = "user:local",
         author_kind: str = "user",
         idempotency_key: str | None = None,
+        ttl_seconds: int | None = None,
     ) -> AssertionClaimPayload:
-        """Capture a terminal assertion as a non-injected candidate for review."""
+        """Capture a terminal assertion as a non-injected candidate for review.
+
+        ``ttl_seconds`` stamps an expiry on the written row (polylogue-37t.1);
+        see :func:`_archive_capture_assertion_candidate`.
+        """
 
         from polylogue.surfaces.payloads import AssertionClaimPayload
 
@@ -3063,6 +3085,7 @@ class PolylogueArchiveMixin:
             author_ref=author_ref,
             author_kind=author_kind,
             idempotency_key=idempotency_key,
+            ttl_seconds=ttl_seconds,
         )
         return AssertionClaimPayload.from_envelope(envelope)
 

@@ -87,11 +87,36 @@ def test_terminal_note_kind_options_all_land_as_candidates(cli_workspace: dict[s
         "claim": AssertionKind.DECISION,
         "correction": AssertionKind.CORRECTION,
         "lesson": AssertionKind.LESSON,
+        "highlight": AssertionKind.HIGHLIGHT,
+        "prompt_eval": AssertionKind.PROMPT_EVAL,
     }
     for option, assertion_kind in expected.items():
         payload = _capture(cli_workspace, [f"{option} capture", "--kind", option])
         assert payload["kind"] == assertion_kind.value
         assert payload["status"] == AssertionStatus.CANDIDATE.value
+
+
+def test_terminal_note_highlight_and_prompt_eval_reach_the_judgment_queue(
+    cli_workspace: dict[str, Path],
+) -> None:
+    """Anti-vacuity: HIGHLIGHT/PROMPT_EVAL had a schema slot and a user_audit
+    surface entry but no production writer (polylogue-37t.1). Capturing
+    through the real `note` command must also land the row somewhere a human
+    can actually judge it -- an unreachable CANDIDATE row is as dead as no
+    writer at all.
+    """
+
+    highlight = _capture(cli_workspace, ["a highlight worth keeping", "--kind", "highlight"])
+    prompt_eval = _capture(cli_workspace, ["an eval definition candidate", "--kind", "prompt_eval"])
+
+    async def read() -> list[str]:
+        async with Polylogue(archive_root=cli_workspace["archive_root"]) as poly:
+            reviews = await poly.list_assertion_candidate_reviews()
+            return [review.candidate.assertion_id for review in reviews.items]
+
+    review_ids = asyncio.run(read())
+    assert highlight["assertion_id"] in review_ids
+    assert prompt_eval["assertion_id"] in review_ids
 
 
 def test_terminal_note_reads_bounded_stdin(cli_workspace: dict[str, Path]) -> None:

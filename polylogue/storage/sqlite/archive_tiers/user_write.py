@@ -1809,6 +1809,12 @@ ASSERTION_CANDIDATE_JUDGMENT_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.NOTE,
     AssertionKind.CORRECTION,
     AssertionKind.COMPARATIVE_JUDGMENT,
+    # HIGHLIGHT/PROMPT_EVAL (polylogue-37t.1): both are now capturable via
+    # `capture_assertion_candidate` (candidate_capture_kind); without a slot
+    # here every row it writes would be a permanently-unjudgeable orphan --
+    # visible to no queue, reachable by no `judge` call.
+    AssertionKind.HIGHLIGHT,
+    AssertionKind.PROMPT_EVAL,
 )
 
 
@@ -1834,6 +1840,9 @@ def list_assertion_candidate_reviews(
         target_ref=target_ref,
         statuses=statuses,
         limit=limit,
+        # Audit surface: never let an expiry silently erase judged history
+        # (mirrors the deliberate status retention documented above).
+        include_expired=True,
     )
     return [
         ArchiveAssertionCandidateReviewEnvelope(
@@ -2398,6 +2407,13 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
     AssertionKind.PATHOLOGY,
     AssertionKind.FINDING,
     AssertionKind.COMPARATIVE_JUDGMENT,
+    # HIGHLIGHT (polylogue-37t.1): an accepted highlight is exactly the kind
+    # of quoted-evidence guidance the preamble compiler already renders for
+    # LESSON/DECISION rows (see context/preamble.py's
+    # `_assertion_guidance_from_claim`). PROMPT_EVAL is deliberately absent
+    # here -- it is stc-lifecycle experiment-definition data
+    # (insights/judgment/experiments.py), not context guidance prose.
+    AssertionKind.HIGHLIGHT,
 )
 
 
@@ -2415,12 +2431,24 @@ def list_assertion_claims(
     annotation_target_kind: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    include_expired: bool = False,
+    as_of_ms: int | None = None,
 ) -> list[ArchiveAssertionEnvelope]:
     """List lifecycle claims for successor-context/profile consumers.
 
     This helper intentionally covers authored/transform claims, not every
     overlay assertion row. Marks, annotations, saved views, recall packs, and
     workspaces keep their domain-specific read helpers above.
+
+    Expiry (polylogue-37t.1): a claim carrying ``staleness={"expires_at_ms":
+    N}`` (see :func:`upsert_assertion`) is excluded once ``N`` has elapsed --
+    this is the single admission read every ``ASSERTION_CLAIM_KINDS``
+    consumer goes through (the preamble compiler's
+    ``list_assertion_claim_payloads`` call among them), so no separate
+    expiry-aware status or a parallel filtered read path is needed. Rows with
+    no ``expires_at_ms`` (the default -- most rows never carry one) are
+    unaffected. Pass ``include_expired=True`` for audit/export reads that
+    must still see expired rows.
     """
 
     if not _table_exists(conn, "assertions"):
@@ -2464,6 +2492,14 @@ def list_assertion_claims(
         target_prefix = f"{annotation_target_kind}:"
         where.append("substr(target_ref, 1, length(?)) = ?")
         params.extend((target_prefix, target_prefix))
+    if not include_expired:
+        effective_as_of_ms = as_of_ms if as_of_ms is not None else _now_ms()
+        where.append(
+            "(staleness_json IS NULL"
+            " OR json_extract(staleness_json, '$.expires_at_ms') IS NULL"
+            " OR json_extract(staleness_json, '$.expires_at_ms') > ?)"
+        )
+        params.append(effective_as_of_ms)
 
     sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
     if where:
