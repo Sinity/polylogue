@@ -1765,6 +1765,202 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
         assert counts["skipped_sessions"] == 0
 
 
+def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path: Path) -> None:
+    """polylogue-buq8/i415/lkos: a write for the raw ``raw_revision_heads``
+    itself names as the accepted authority for this session must never be
+    refused, even though the session already has a governed head.
+
+    Live-archive reproduction (2026-07-31): 11 ``codex-session`` rows carry
+    ``message_count=0`` despite 996 KB-3.3 MB of real ``event_msg``/
+    ``response_item`` content in their raw bytes. Every one has
+    ``raw_revision_heads.accepted_raw_id`` equal to its own
+    ``sessions.raw_id`` -- ``decided_at_ms`` for the governance row postdates
+    ``sessions.updated_at_ms`` by months, proving a later bookkeeping-only
+    backfill (recomputing authority for a pre-governance session) recorded
+    the raw as authoritative without re-running message extraction against
+    it. Direct reproduction of ``parse_stream_payload`` against the exact
+    live raw bytes of the flagship sample (native_id
+    ``0199fada-d8bd-7fc0-997b-d23d3a6849c7``) confirms the current codex
+    parser already extracts 1,496 real messages correctly -- the content
+    loss was never a parser defect in ``sources/``. It was
+    ``revision_authority_refuses_write``'s ``governed`` check refusing
+    *every* write once ``raw_revision_heads`` had any row for the
+    ``session_id``, with no comparison against which raw the row actually
+    names -- permanently freezing whatever content the pre-governance write
+    happened to leave behind, including zero messages, because the very raw
+    the backfill just declared authoritative could never pass its own gate.
+
+    Mutation that fails this: reverting the ``accepted_raw_id`` comparison
+    back to a bare existence check (``governed is not None: return True``).
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        # Simulate the historical defect: a session was written (long ago,
+        # ``force_write=True`` standing in for whatever historical write
+        # path/bug left this content behind) with zero messages for raw
+        # "raw-accepted", then a bookkeeping-only backfill later recorded
+        # that same raw as the accepted revision head without ever
+        # re-writing the session's content.
+        stub = _session_data(
+            "codex-session:frozen-empty",
+            content_hash="hash-stub-empty",
+            raw_id="raw-accepted",
+            message_tuples=[],
+        )
+        _write_session(conn, stub, force_write=True)
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('codex:frozen-empty','codex-session:frozen-empty','raw-accepted','sr',?,'byte',1,0,1)",
+            (b"\x09" * 32,),
+        )
+        conn.commit()
+
+        real_msg = _message_tuple(
+            "msg-real",
+            "codex-session:frozen-empty",
+            role="user",
+            text="the real conversation content",
+            content_hash="hash-real",
+            sort_key=1.0,
+        )
+        corrective = _session_data(
+            "codex-session:frozen-empty",
+            content_hash="hash-corrected",
+            raw_id="raw-accepted",
+            message_tuples=[real_msg],
+        )
+        changed, counts = _write_session(conn, corrective)
+        conn.commit()
+
+        stored = conn.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:frozen-empty",),
+        ).fetchone()
+
+    assert changed is True
+    assert counts["skipped_sessions"] == 0
+    assert stored["message_count"] == 1
+
+
+def test_write_session_still_refuses_a_different_raw_than_the_accepted_head(tmp_path: Path) -> None:
+    """The mirror of the fix above: a *different*, non-accepted raw for a
+    governed session_id must still be refused -- the accepted-raw carve-out
+    must not reopen the door to an arbitrary competing/losing raw
+    overwriting the winner."""
+    with open_connection(tmp_path / "index.db") as conn:
+        winner = _session_data(
+            "codex-session:governed",
+            content_hash="hash-winner",
+            raw_id="raw-winner",
+            message_tuples=[
+                _message_tuple(
+                    "msg-winner",
+                    "codex-session:governed",
+                    role="user",
+                    text="winning content",
+                    content_hash="hash-winner-msg",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        _write_session(conn, winner)
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('codex:governed','codex-session:governed','raw-winner','sr',?,'byte',1,0,1)",
+            (b"\x0a" * 32,),
+        )
+        conn.commit()
+
+        loser = _session_data(
+            "codex-session:governed",
+            content_hash="hash-loser",
+            raw_id="raw-loser",
+            message_tuples=[
+                _message_tuple(
+                    "msg-loser",
+                    "codex-session:governed",
+                    role="user",
+                    text="losing content",
+                    content_hash="hash-loser-msg",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        changed, counts = _write_session(conn, loser)
+        conn.commit()
+
+        stored = conn.execute(
+            "SELECT raw_id, message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:governed",),
+        ).fetchone()
+
+    assert changed is False
+    assert counts["skipped_sessions"] == 1
+    assert dict(stored) == {"raw_id": "raw-winner", "message_count": 1}
+
+
+def test_write_session_refuses_when_a_parallel_head_accepts_a_different_raw(tmp_path: Path) -> None:
+    """P2 bot finding on PR #3527: with more than one ``raw_revision_heads``
+    row for the same ``session_id`` (historical drift or an interrupted
+    repair -- ``storage/repair.py``'s ``parallel_session_heads`` shape), the
+    refusal decision must not depend on which row a bare ``LIMIT 1``
+    happened to select. Two heads for this session: one already accepts
+    the incoming raw, the other accepts a different raw -- the write must
+    still be refused, regardless of which row is inserted (and therefore
+    selected) first.
+
+    Mutation that fails this: reverting to ``SELECT accepted_raw_id ...
+    LIMIT 1`` and comparing only that single arbitrary row.
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('codex:parallel-a','codex-session:parallel','raw-incoming','sr',?,'byte',1,0,1)",
+            (b"\x0b" * 32,),
+        )
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('codex:parallel-b','codex-session:parallel','raw-other','sr',?,'byte',1,0,1)",
+            (b"\x0c" * 32,),
+        )
+        conn.commit()
+
+        incoming = _session_data(
+            "codex-session:parallel",
+            content_hash="hash-incoming",
+            raw_id="raw-incoming",
+            message_tuples=[
+                _message_tuple(
+                    "msg-incoming",
+                    "codex-session:parallel",
+                    role="user",
+                    text="incoming content",
+                    content_hash="hash-incoming-msg",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        changed, counts = _write_session(conn, incoming)
+        conn.commit()
+
+        stored = conn.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:parallel",),
+        ).fetchone()
+
+    assert changed is False
+    assert counts["skipped_sessions"] == 1
+    # Refused before ever inserting: this was the session's first write attempt.
+    assert stored is None
+
+
 def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Path) -> None:
     """``_write_session`` -- the daemon's default batch-ingest write path,
     used for most non-drive origins -- must refuse a session whose OWN
