@@ -59,6 +59,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     browser_capture_precedence,
     record_capture_gap_event,
     record_source_outage_events,
+    revision_authority_refuses_write,
     session_has_parser_ingest_flag,
     should_skip_stale_replace,
     stored_message_count,
@@ -460,62 +461,18 @@ def _write_session(
     merge_append = False
     browser_precedence: BrowserCapturePrecedence = "default"
 
-    has_revision_heads = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_revision_heads'"
-    ).fetchone()
-    if has_revision_heads is not None:
-        governed = conn.execute(
-            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
-            (payload.session_id,),
-        ).fetchone()
-        if governed is not None:
-            counts["skipped_sessions"] = 1
-            counts["skipped_messages"] = payload.message_count
-            counts["skipped_attachments"] = payload.attachment_count
-            counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-            return False, counts
-
-    # polylogue-c737: mirrors ArchiveStore._write_parsed_precedence_result's
-    # ambiguous-membership refusal (#3397/#3398). ``governed`` above only
-    # catches a logical identity with an ACCEPTED revision-authority head
-    # (``raw_revision_heads``, populated only when a cohort has a winner). A
-    # cohort ``classify_membership_revisions`` genuinely refused to
-    # arbitrate never gets an accepted head, so ``governed`` stays ``None``
-    # here even though this raw's own membership is recorded authority
-    # debt -- and this batch write path, the daemon's default for most
-    # non-drive origins, never consulted ``raw_session_memberships`` at all
-    # before this fix. Falling through to the freshness/precedence logic
-    # below then writes the session unconditionally on the raw's next
-    # reparse -- last-writer-wins over the "never silently choose between
-    # branches" invariant.
-    #
-    # Scoped to the membership actually being written (raw_id AND
-    # provider_session_id), not to the raw alone: one retained raw routinely
-    # lowers to many independently-arbitrated sessions (a Claude Code
-    # transcript plus its subagent sidechains, a bundle member set), and
-    # #3398 measured 295 raws carrying a mix of decisions with 489 sessions
-    # whose own membership is NOT ambiguous -- a raw-scoped predicate would
-    # suppress all of those too, trading a fidelity downgrade for outright
-    # absence.
-    if source_conn is not None and payload.raw_id:
-        has_memberships = source_conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_session_memberships'"
-        ).fetchone()
-        if has_memberships is not None:
-            ambiguous_membership = source_conn.execute(
-                """
-                SELECT 1 FROM raw_session_memberships
-                WHERE raw_id = ? AND provider_session_id = ? AND decision = 'ambiguous'
-                LIMIT 1
-                """,
-                (payload.raw_id, payload.parsed_session.provider_session_id),
-            ).fetchone()
-            if ambiguous_membership is not None:
-                counts["skipped_sessions"] = 1
-                counts["skipped_messages"] = payload.message_count
-                counts["skipped_attachments"] = payload.attachment_count
-                counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-                return False, counts
+    if revision_authority_refuses_write(
+        conn,
+        source_conn,
+        session_id=payload.session_id,
+        raw_id=payload.raw_id or "",
+        provider_session_id=payload.parsed_session.provider_session_id,
+    ):
+        counts["skipped_sessions"] = 1
+        counts["skipped_messages"] = payload.message_count
+        counts["skipped_attachments"] = payload.attachment_count
+        counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+        return False, counts
 
     if (
         not force_write
