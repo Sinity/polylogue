@@ -930,6 +930,105 @@ def test_superseded_raw_cleanup_keeps_blob_with_remaining_protected_reference(tm
     )
 
 
+def test_superseded_raw_cleanup_prunes_orphaned_raw_authority_plans(tmp_path: Path) -> None:
+    """polylogue-i3zo: retention's raw delete must not orphan raw_authority_plans.
+
+    ``raw_authority_plans.input_raw_ids_json`` references raws by JSON string,
+    not FK, so deleting a raw here does not cascade-clean a plan naming it.
+    Before the fix, a plan whose every input raw is gone survives the purge and
+    the daemon reconciler's next pass throws RuntimeError("duplicate strategy
+    did not reach its typed terminal postcondition") on the dangling plan
+    (live incident 2026-07-22, ``polylogue/storage/raw_reconciler.py``). This
+    reproduces the exact shape against the real production entry point,
+    :func:`cleanup_superseded_raw_snapshots`: a plan whose only input raw is
+    superseded-and-deleted must be pruned along with it, in the same
+    transaction, while a plan whose input raw survives must be untouched.
+    """
+    db_path = tmp_path / "source.db"
+    source = tmp_path / "rollout.jsonl"
+    source.write_text('{"type":"message"}\n', encoding="utf-8")
+    blob_store = BlobStore(tmp_path / "blob")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    _ensure_archive_source_schema(conn)
+    conn.execute(
+        """CREATE TABLE raw_authority_plans (
+            plan_id TEXT PRIMARY KEY,
+            input_raw_ids_json TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_blockers (
+            blocker_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_census_plans (
+            plan_id TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_census_post_plans (
+            plan_id TEXT NOT NULL
+        )"""
+    )
+
+    full_old, full_old_size = _write_blob(blob_store, b"full-old")
+    full_new, full_new_size = _write_blob(blob_store, b"full-new")
+    _insert_archive_raw_session(
+        conn,
+        raw_id=full_old,
+        source_path=source,
+        source_index=0,
+        blob_hash=full_old,
+        blob_size=full_old_size,
+        acquired_at_ms=1_000,
+    )
+    _insert_archive_raw_session(
+        conn,
+        raw_id=full_new,
+        source_path=source,
+        source_index=0,
+        blob_hash=full_new,
+        blob_size=full_new_size,
+        acquired_at_ms=2_000,
+    )
+
+    # plan-orphan names only the raw about to be deleted (full_old); it must
+    # be pruned. plan-kept names the raw that survives; it must be untouched.
+    conn.execute(
+        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-orphan', ?)",
+        (f'["{full_old}"]',),
+    )
+    conn.execute(
+        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-kept', ?)",
+        (f'["{full_new}"]',),
+    )
+    conn.execute("INSERT INTO raw_authority_blockers (blocker_id, plan_id) VALUES ('blk-orphan', 'plan-orphan')")
+    conn.execute("INSERT INTO raw_authority_census_plans (plan_id) VALUES ('plan-orphan')")
+    conn.execute("INSERT INTO raw_authority_census_post_plans (plan_id) VALUES ('plan-kept')")
+    conn.commit()
+
+    candidates = superseded_raw_snapshot_candidates(conn, limit=100)
+    assert {candidate.raw_id for candidate in candidates} == {full_old}
+
+    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
+    assert result.deleted_raw_count == 1
+    assert result.deleted_orphaned_authority_plan_count == 1
+
+    remaining_plans = {str(row[0]) for row in conn.execute("SELECT plan_id FROM raw_authority_plans").fetchall()}
+    assert remaining_plans == {"plan-kept"}
+    assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM raw_authority_census_plans").fetchone()[0] == 0
+    remaining_post_plans = {
+        str(row[0]) for row in conn.execute("SELECT plan_id FROM raw_authority_census_post_plans").fetchall()
+    }
+    assert remaining_post_plans == {"plan-kept"}
+
+
 def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_path: Path) -> None:
     # Archive file-set cleanup simply compacts the superseded append snapshot.
     db_path = tmp_path / "source.db"

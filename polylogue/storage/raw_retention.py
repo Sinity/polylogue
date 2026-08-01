@@ -89,6 +89,7 @@ class RawSnapshotCleanupResult:
     deleted_blob_bytes: int
     skipped_missing_source_count: int
     skipped_referenced_count: int = 0
+    deleted_orphaned_authority_plan_count: int = 0
     errors: tuple[str, ...] = ()
 
 
@@ -1555,6 +1556,101 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, int]:
     return {str(row[0]): int(row[1]) for row in rows if row[1] is not None}
 
 
+# ---------------------------------------------------------------------------
+# Orphaned raw-authority plan cleanup (polylogue-i3zo)
+# ---------------------------------------------------------------------------
+#
+# raw_authority_plans/blockers/census_plans/census_post_plans reference raws
+# by JSON string (input_raw_ids_json), not by FK, so deleting a raw_sessions
+# row here does NOT cascade-clean its frontier plans. A plan whose EVERY
+# input raw is gone is unprocessable and must be pruned in the same
+# transaction as the raw delete, or the daemon reconciler's next convergence
+# pass throws RuntimeError("duplicate strategy did not reach its typed
+# terminal postcondition") on the dangling plan (live incident 2026-07-22,
+# first observed against polylogue/maintenance/hook_deinflation.py's
+# one-time repair, which has since been deleted -- ee22574e5 -- because that
+# specific repair completed; the same unguarded gap exists here for
+# ordinary retention-driven raw deletion and was never given a home).
+#
+# Design: hard-delete, not a soft terminal-state transition. This mirrors the
+# only prior art for this exact gap (unmerged commit c2554a615, "prune
+# orphaned raw-authority plans in hook-deinflation repair"): a plan is durable
+# audit evidence of a *reconciliation attempt*, not of user-authored history,
+# and once every raw it names is gone the plan cannot be replayed, retried,
+# or inspected against source evidence -- there is nothing left to audit.
+# raw_authority_plans lives in source.db (a durable tier) but is populated and
+# consumed entirely by the daemon reconciler, with no read surface exposing
+# historical plans to a human operator; keeping a terminally-orphaned plan
+# around serves no audit purpose and actively breaks the reconciler. This is
+# unlike `user.db` assertions (durable, human-authored, always additive) or
+# `raw_sessions` full/append revision chains (superseded but still
+# byte-reconstructible) -- neither pattern applies to a plan with zero
+# remaining inputs.
+#
+# Set-based (single pass, LEFT JOIN on the raw_id PK): expand each plan's
+# input raws, GROUP BY plan, keep plans whose inputs are ALL missing. The
+# equivalent correlated-subquery form measured ~26 billion ops (>1h) on the
+# live archive; this form completes in ~0.3s. A plan with empty inputs
+# produces no json_each rows and is correctly excluded (it is not
+# orphaned-by-missing-raw).
+_PURELY_ORPHANED_AUTHORITY_PLANS_SQL = """
+    SELECT p.plan_id
+    FROM raw_authority_plans p, json_each(p.input_raw_ids_json) j
+    LEFT JOIN raw_sessions r ON r.raw_id = j.value
+    GROUP BY p.plan_id
+    HAVING SUM(CASE WHEN r.raw_id IS NULL THEN 1 ELSE 0 END) > 0
+       AND SUM(CASE WHEN r.raw_id IS NOT NULL THEN 1 ELSE 0 END) = 0
+"""
+
+
+def _delete_orphaned_raw_authority_plans(conn: sqlite3.Connection) -> int:
+    """Prune raw-authority plans whose every input raw is gone, plus their
+    blocker/census children. Children first (they carry NO ACTION/RESTRICT
+    FKs to ``raw_authority_plans``, so the parent delete would otherwise
+    fail once the schema enforces foreign keys).
+
+    Must run in the same transaction as (and after) the raw delete that may
+    have orphaned these plans, so "orphaned" is always computed against the
+    post-delete raw set. No-ops (returns 0) when ``raw_authority_plans``
+    doesn't exist, so this is safe to call unconditionally.
+
+    Temporary full ``plan_id`` indexes are created on the three child tables:
+    their durable indexes are partial (``WHERE resolved_at_ms IS NULL`` /
+    composite ``PRIMARY KEY(census_id, plan_id)`` with ``plan_id`` non-leading)
+    so an IN-delete keyed on ``plan_id`` alone would otherwise full-scan each
+    child per plan -- the exact ~26-51 billion op hang (>1h) observed on the
+    live 84k-plan / 405k-census-row tables before this was measured. The temp
+    indexes are dropped before returning so the durable schema is unchanged.
+    """
+    if not _table_exists(conn, "raw_authority_plans"):
+        return 0
+    conn.execute("CREATE TEMP TABLE _orphan_authority_plans (plan_id TEXT PRIMARY KEY)")
+    try:
+        conn.execute(f"INSERT INTO _orphan_authority_plans (plan_id) {_PURELY_ORPHANED_AUTHORITY_PLANS_SQL}")
+        count = int(conn.execute("SELECT COUNT(*) FROM _orphan_authority_plans").fetchone()[0])
+        if count == 0:
+            return 0
+        child_indexes = {
+            "_tmp_rawretention_blk_plan": "raw_authority_blockers",
+            "_tmp_rawretention_cp_plan": "raw_authority_census_plans",
+            "_tmp_rawretention_cpp_plan": "raw_authority_census_post_plans",
+        }
+        for index_name, table in child_indexes.items():
+            conn.execute(f"CREATE INDEX {index_name} ON {table}(plan_id)")
+        try:
+            for table in child_indexes.values():
+                conn.execute(f"DELETE FROM {table} WHERE plan_id IN (SELECT plan_id FROM _orphan_authority_plans)")
+            conn.execute(
+                "DELETE FROM raw_authority_plans WHERE plan_id IN (SELECT plan_id FROM _orphan_authority_plans)"
+            )
+        finally:
+            for index_name in child_indexes:
+                conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+        return count
+    finally:
+        conn.execute("DROP TABLE IF EXISTS _orphan_authority_plans")
+
+
 def _superseded_archive_raw_session_candidates(
     conn: sqlite3.Connection,
     *,
@@ -1687,6 +1783,11 @@ def cleanup_superseded_raw_snapshots(
     elif _column_exists(conn, "blob_refs", "raw_id"):
         conn.execute(f"DELETE FROM blob_refs WHERE raw_id IN ({placeholders})", raw_ids)
     conn.execute(f"DELETE FROM raw_sessions WHERE raw_id IN ({placeholders})", raw_ids)
+    # Prune raw-authority plans/blockers/census rows now dangling on the
+    # deleted raws (input_raw_ids_json is a JSON string, not an FK, so no
+    # cascade cleaned them -- polylogue-i3zo). Same transaction, after the raw
+    # delete, so orphaned-ness is computed against the post-delete raw set.
+    deleted_orphaned_authority_plan_count = _delete_orphaned_raw_authority_plans(conn)
     conn.commit()
 
     store = blob_store if blob_store is not None else get_blob_store()
@@ -1729,6 +1830,7 @@ def cleanup_superseded_raw_snapshots(
         deleted_blob_bytes=deleted_blob_bytes,
         skipped_missing_source_count=0,
         skipped_referenced_count=skipped_referenced_count,
+        deleted_orphaned_authority_plan_count=deleted_orphaned_authority_plan_count,
         errors=tuple(errors),
     )
 
@@ -1772,6 +1874,9 @@ def compact_paths_superseded_raw_snapshots(
             deleted_blob_bytes=totals.deleted_blob_bytes + result.deleted_blob_bytes,
             skipped_missing_source_count=totals.skipped_missing_source_count + result.skipped_missing_source_count,
             skipped_referenced_count=totals.skipped_referenced_count + result.skipped_referenced_count,
+            deleted_orphaned_authority_plan_count=(
+                totals.deleted_orphaned_authority_plan_count + result.deleted_orphaned_authority_plan_count
+            ),
             errors=tuple(errors),
         )
     return totals
