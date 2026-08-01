@@ -844,9 +844,21 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 print_url=bool(params.get("print_url")),
             )
             return
+        list_total = (
+            None
+            if sample_count is not None
+            else _count_root_matches(
+                archive,
+                query="",
+                similar_text=None,
+                session_id=None,
+                filter_kwargs=filter_kwargs,
+            )
+        )
         _emit_list_miss_if_field_syntax(
             env,
             items=page_summaries,
+            total=list_total,
             raw_query=raw_query,
             compiled_spec=compiled_spec,
             why=bool(params.get("why")),
@@ -859,17 +871,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         )
         _emit_list(
             page_summaries,
-            total=(
-                None
-                if sample_count is not None
-                else _count_root_matches(
-                    archive,
-                    query="",
-                    similar_text=None,
-                    session_id=None,
-                    filter_kwargs=filter_kwargs,
-                )
-            ),
+            total=list_total,
             limit=limit,
             offset=page_offset,
             next_cursor=next_cursor,
@@ -1146,6 +1148,7 @@ def _try_emit_daemon_session_page(
         _emit_list_miss_if_field_syntax(
             env,
             items=daemon_items,
+            total=_object_int(payload.get("total")) if payload.get("total") is not None else None,
             raw_query=raw_query,
             compiled_spec=compiled_spec,
             why=bool(params.get("why")),
@@ -2326,6 +2329,7 @@ def _emit_list_miss_if_field_syntax(
     env: AppEnv,
     *,
     items: Sequence[object],
+    total: int | None,
     raw_query: str,
     compiled_spec: SessionQuerySpec,
     why: bool,
@@ -2350,8 +2354,16 @@ def _emit_list_miss_if_field_syntax(
     just had no free-text residue after field-syntax compilation), so treat
     that case as a miss like a lexical search: the shared
     ``Why this may have missed:`` block, exit 2.
+
+    ``items`` alone cannot distinguish a genuine zero-match query from an
+    exhausted page (a nonzero ``--offset`` past the last row of a query that
+    DID match): both render an empty page. ``total`` is the unpaginated match
+    count when known (``None`` for lanes without a cheap count primitive,
+    e.g. vector/hybrid retrieval) -- a page with no items but a positive
+    total is valid empty pagination, not a miss, and must not fabricate
+    ``total: 0`` or exit 2.
     """
-    if items or not raw_query.strip():
+    if items or (total is not None and total > 0) or not raw_query.strip():
         return
     _emit_no_results(
         _list_no_results_envelope(origin=origin, limit=limit, offset=offset, root=root),

@@ -3357,6 +3357,41 @@ class TestSearchQueryContracts:
             assert "No sessions matched" in result.output
             assert "Why this may have missed:" in result.output
 
+    def test_field_syntax_query_past_the_last_page_is_exhausted_not_a_miss(
+        self, search_workspace: SearchWorkspace
+    ) -> None:
+        """An offset beyond a REAL match count is valid empty pagination, not a miss.
+
+        ``repo:polylogue`` matches (at least) one session (``run-hit``).
+        Requesting an offset past the last row asks for the page past the
+        last match: the page itself is empty, but the query genuinely
+        matched, so this must render the normal empty-page envelope (exit 0,
+        real nonzero total, no fabricated ``total: 0``) rather than routing
+        through the same miss diagnostics an actual zero-match query gets.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        matched = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "find", "repo:polylogue", "-f", "json"],
+        )
+        assert matched.exit_code == 0, matched.output
+        real_total = json.loads(matched.output)["total"]
+        assert real_total > 0, "fixture must have at least one repo:polylogue match for this test to be meaningful"
+
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "find", "repo:polylogue", "--offset", str(real_total), "-f", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "list"
+        assert payload["items"] == []
+        assert payload["total"] == real_total
+        assert "diagnostics" not in payload
+
     def test_debug_timing_keeps_query_output_on_stdout(
         self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
