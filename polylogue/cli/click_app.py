@@ -275,15 +275,14 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
 def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
     """Fetch the minimal recent-session page from a config-matched daemon."""
 
-    from pathlib import Path
-
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.cli.select import SelectSessionRow
+    from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
     client = DaemonClient(
-        Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock",
+        daemon_socket_path(config.archive_root),
         auth_token=getattr(config, "api_auth_token", None),
     )
     if (

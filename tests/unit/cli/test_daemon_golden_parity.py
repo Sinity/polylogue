@@ -105,7 +105,7 @@ def test_find_list_json_parity_between_direct_and_daemon(
     golden_parity_workspace: dict[str, Path],
     _uds_runtime_dir: Path,
 ) -> None:
-    del golden_parity_workspace
+    archive_root = golden_parity_workspace["archive_root"]
     args = ["--repo", "polylogue"]
 
     # 1. Direct path: no daemon socket exists at XDG_RUNTIME_DIR, so the probe
@@ -119,7 +119,7 @@ def test_find_list_json_parity_between_direct_and_daemon(
     from polylogue.daemon.http import DaemonAPIHandler
     from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
 
-    socket_path = daemon_socket_path(str(_uds_runtime_dir))
+    socket_path = daemon_socket_path(archive_root, runtime_dir=str(_uds_runtime_dir))
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
     server.auth_token = ""
     thread = threading.Thread(target=server.serve_forever, name="golden-parity-uds", daemon=True)
@@ -152,7 +152,7 @@ def test_facets_json_parity_between_direct_and_daemon(
     _uds_runtime_dir: Path,
 ) -> None:
     """The facets surface has its own daemon fast path (`_fetch_daemon_facets`)."""
-    del golden_parity_workspace
+    archive_root = golden_parity_workspace["archive_root"]
     from polylogue.cli import cli
 
     runner = CliRunner()
@@ -164,7 +164,7 @@ def test_facets_json_parity_between_direct_and_daemon(
     from polylogue.daemon.http import DaemonAPIHandler
     from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
 
-    socket_path = daemon_socket_path(str(_uds_runtime_dir))
+    socket_path = daemon_socket_path(archive_root, runtime_dir=str(_uds_runtime_dir))
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
     server.auth_token = ""
     thread = threading.Thread(target=server.serve_forever, name="golden-parity-facets-uds", daemon=True)
@@ -221,12 +221,12 @@ def test_find_then_read_transcript_survives_daemon_proxied_keyword_search(
     producer (direct CLI ``_hit_payload``, MCP ``archive_search_hit_payload``)
     -- reads ``match["rank"]``.
     """
-    del golden_parity_workspace
+    archive_root = golden_parity_workspace["archive_root"]
     from polylogue.cli import cli
     from polylogue.daemon.http import DaemonAPIHandler
     from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
 
-    socket_path = daemon_socket_path(str(_uds_runtime_dir))
+    socket_path = daemon_socket_path(archive_root, runtime_dir=str(_uds_runtime_dir))
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
     server.auth_token = ""
     thread = threading.Thread(target=server.serve_forever, name="golden-parity-transcript-uds", daemon=True)

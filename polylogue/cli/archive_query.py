@@ -6,7 +6,6 @@ import csv
 import io
 import json
 import multiprocessing
-import os
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -1417,10 +1416,11 @@ def _fetch_daemon_payload(
     if _daemon_disabled(flag=disabled):
         return None
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
-    socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
+    socket_path = daemon_socket_path(config.archive_root)
     client = DaemonClient(socket_path, auth_token=getattr(config, "api_auth_token", None))
     if (
         client.probe(
