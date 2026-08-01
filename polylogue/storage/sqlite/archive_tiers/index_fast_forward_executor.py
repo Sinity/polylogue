@@ -31,14 +31,20 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import time
 import uuid
+from pathlib import Path
 
 from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import insert_all_message_identity_rows_sql, insert_all_message_rows_sql
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.lifecycle import (
     FastForwardOperation,
     FastForwardOperationKind,
     IndexFastForwardPlan,
+    TargetedReprocessScope,
     resolve_canonical_index_objects,
 )
 
@@ -107,10 +113,25 @@ def _apply_replace_table(conn: sqlite3.Connection, name: str, canonical_sql: str
     per-declaration documentation, a constraint-widening or dead-column-
     removal change: no surviving column changes meaning. Copying the columns
     common to both the existing and canonical shape reproduces the declared
-    v33/v36/v38/v41 deltas without a raw reparse -- widened CHECK
+    v33/v36/v38/v41/v44 deltas without a raw reparse -- widened CHECK
     constraints apply to the copied rows for free (SQLite validates on
     insert into the new table), and dropped columns are simply excluded from
     the copy.
+
+    The final rename runs under ``PRAGMA legacy_alter_table=ON``
+    (polylogue-9rw0.1): a table with a dependent view defined against its
+    *old* name (e.g. ``delegation_facts_source`` against ``sessions``) makes
+    a plain ``ALTER TABLE ... RENAME TO`` raise
+    ``OperationalError: error in view ...: no such table`` the instant the
+    original is dropped and only the differently-named temporary table
+    exists -- SQLite re-validates every dependent view's SQL as part of an
+    ordinary rename. Legacy mode skips that reference-following rewrite (the
+    view's stored SQL still says the original name, which is exactly the
+    name the temporary table is being renamed *to*, so the view resolves
+    correctly again the moment the statement completes). This was latent for
+    every REPLACE_TABLE declaration touching ``sessions``/``action_pairs``
+    before a test exercised the executor against a schema with the
+    dependent view actually present.
     """
     existing_columns = [str(row[1]) for row in conn.execute(f'PRAGMA table_info("{name}")').fetchall()]
     if not existing_columns:
@@ -150,7 +171,11 @@ def _apply_replace_table(conn: sqlite3.Connection, name: str, canonical_sql: str
     conn.execute(create_temporary)
     conn.execute(f'INSERT INTO "{temporary_name}" ({quoted_columns}) SELECT {quoted_columns} FROM "{name}"')
     conn.execute(f'DROP TABLE "{name}"')
-    conn.execute(f'ALTER TABLE "{temporary_name}" RENAME TO "{name}"')
+    conn.execute("PRAGMA legacy_alter_table = ON")
+    try:
+        conn.execute(f'ALTER TABLE "{temporary_name}" RENAME TO "{name}"')
+    finally:
+        conn.execute("PRAGMA legacy_alter_table = OFF")
 
 
 def _apply_rebuild_fts(conn: sqlite3.Connection, operation: FastForwardOperation) -> None:
@@ -197,6 +222,88 @@ def _apply_operation(
             raise RuntimeError(f"unhandled fast-forward operation kind: {operation.kind!r}")
 
 
+def _resolve_ops_db_path(conn: sqlite3.Connection) -> Path | None:
+    """Return the sibling ``ops.db`` path for this index-tier connection.
+
+    The five archive tiers are five sibling files in one archive root
+    (``source.db``/``index.db``/``embeddings.db``/``user.db``/``ops.db``);
+    ``apply_index_fast_forward`` only receives the index-tier connection, so
+    this derives the ops-tier path from SQLite's own ``PRAGMA database_list``
+    rather than widening the function signature. Returns ``None`` for an
+    unnamed/in-memory connection (tests), in which case enqueueing is
+    skipped rather than raising -- there is no sibling file to write to.
+    """
+    for _, name, file in conn.execute("PRAGMA database_list").fetchall():
+        if name == "main" and file:
+            return Path(file).parent / "ops.db"
+    return None
+
+
+def _enqueue_targeted_reprocess_debt(
+    index_conn: sqlite3.Connection,
+    plan: IndexFastForwardPlan,
+) -> int:
+    """Enqueue bounded, real convergence-debt rows for a plan's pending reprocess scopes.
+
+    Runs against the sibling ``ops.db`` connection (``convergence_debt`` is
+    an ops-tier table, not an index-tier one) so the archive is never left
+    silently claiming its new schema-version columns are populated: every
+    session actually in scope gets one ``convergence_debt`` row the daemon's
+    ordinary retry machinery (``daemon/convergence_debt_status.py``,
+    ``sources/live/convergence_debt_retry.py``) already surfaces and drains
+    the same way it drains every other deferred-until-quiet backlog
+    (CLAUDE.md's ``false_means_pending`` idiom). Returns the total number of
+    debt rows enqueued (0 when the plan has no pending scope, or when
+    ``index_conn`` has no resolvable sibling ops.db, e.g. an in-memory test
+    connection).
+    """
+    scopes = plan.pending_reprocess_scopes
+    if not scopes:
+        return 0
+    ops_db_path = _resolve_ops_db_path(index_conn)
+    if ops_db_path is None:
+        return 0
+    enqueued = 0
+    now_ms = int(time.time() * 1000)
+    ops_conn = sqlite3.connect(ops_db_path)
+    try:
+        initialize_archive_tier(ops_conn, ArchiveTier.OPS)
+        for version, scope in scopes:
+            enqueued += _enqueue_scope(index_conn, ops_conn, version, scope, now_ms)
+        ops_conn.commit()
+    finally:
+        ops_conn.close()
+    return enqueued
+
+
+def _enqueue_scope(
+    index_conn: sqlite3.Connection,
+    ops_conn: sqlite3.Connection,
+    version: int,
+    scope: TargetedReprocessScope,
+    now_ms: int,
+) -> int:
+    where_sql, params = scope.matching_predicate_sql()
+    session_ids = [
+        str(row[0]) for row in index_conn.execute(f"SELECT session_id FROM sessions WHERE {where_sql}", params)
+    ]
+    stage = f"index-v{version}-targeted-reprocess"
+    for session_id in session_ids:
+        add_convergence_debt(
+            ops_conn,
+            stage=stage,
+            target_type="session",
+            target_id=session_id,
+            status="deferred",
+            priority=0,
+            attempts=0,
+            last_error=None,
+            created_at_ms=now_ms,
+            updated_at_ms=now_ms,
+        )
+    return len(session_ids)
+
+
 def apply_index_fast_forward(conn: sqlite3.Connection, plan: IndexFastForwardPlan) -> None:
     """Apply every declaration in ``plan`` to ``conn``, one declaration at a time.
 
@@ -213,6 +320,15 @@ def apply_index_fast_forward(conn: sqlite3.Connection, plan: IndexFastForwardPla
     :func:`polylogue.storage.sqlite.lifecycle.index_fast_forward_plan`, which
     already refuses non-contiguous spans and spans containing a
     ``SEMANTIC_REPARSE`` declaration.
+
+    After every declaration's DDL lands, any declaration classed
+    ``SHAPE_FORWARD_TARGETED_REPROCESS`` (polylogue-9rw0.1) has its declared
+    ``reprocess_scope`` resolved against the just-upgraded ``sessions`` table
+    and enqueued as real ``convergence_debt`` rows in the sibling ``ops.db``
+    -- the DDL alone leaves the new columns/tables schema-correct but
+    populated only where a shared column happened to carry the same value,
+    so the scope must survive as durable, drainable debt rather than being
+    silently dropped once ``user_version`` reaches the target.
     """
     if not plan.eligible_for_sql_fast_forward:
         raise RuntimeError("index fast-forward plan is not eligible for SQL fast-forward")
@@ -242,6 +358,7 @@ def apply_index_fast_forward(conn: sqlite3.Connection, plan: IndexFastForwardPla
             raise
         else:
             conn.commit()
+    _enqueue_targeted_reprocess_debt(conn, plan)
 
 
 __all__ = ["apply_index_fast_forward"]
