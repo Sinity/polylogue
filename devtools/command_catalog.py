@@ -680,6 +680,28 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace merge-gate",
+        "workspace",
+        "Structural pre-merge safety check: fresh local-verification receipt + no late review comments.",
+        "devtools.merge_gate",
+        use_when=(
+            "Immediately before squash-merging any PR in a merge train, replacing coordinator memory "
+            "(grace-period comment polling, remembering to run the broader local test suite CI skips "
+            'per-PR) with a check that fails closed. `record <PR> --command "..."` runs a local '
+            "verification command against the PR's current head sha and persists a receipt; "
+            "`check <PR>` BLOCKs unless a receipt exists for the CURRENT head sha within a freshness "
+            "window with exit_code 0, and no review comment's created_at is newer than the head "
+            "commit's timestamp (printed explicitly, not silently skipped). Motivated by two "
+            "2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings posted, and PR #3517 "
+            "nearly merged with a 43-test regression no CI check or review comment ever flagged."
+        ),
+        examples=(
+            'devtools workspace merge-gate record 3517 --command "devtools verify --quick"',
+            "devtools workspace merge-gate check 3517",
+            "devtools workspace merge-gate check 3517 --json --max-age-s 7200",
+        ),
+    ),
+    CommandSpec(
         "workspace merge-conductor",
         "workspace",
         "Mechanical-conflict triage for the PR merge train (dry-run by default).",
