@@ -353,6 +353,42 @@ additive migration + backup manifest; derived tiers → edit canonical DDL +
 rebuild plan (`polylogue ops reset --index && polylogued run`), never an upgrade
 helper (`devtools lab policy schema-versioning` rejects them).
 
+### Multi-lane / merge-train tooling — use these, don't reinvent the discipline by hand
+
+Discoverable-only tooling is inert tooling: a command that exists but isn't
+named here is invisible to the next session unless it happens to remember it
+from transcript, so it doesn't get used and the failure mode it exists to
+prevent recurs. These four are load-bearing steps in the fanout/merge-train
+workflow, not optional conveniences — use them at the point named, every time:
+
+- **Before claiming a batch of ready beads**: `devtools workspace bead-cluster`
+  — footprint/overlap/contention clustering so overlapping-file beads land on
+  one branch instead of colliding across parallel lanes.
+- **When dispatching a worktree-isolated lane**: `devtools workspace lane-brief
+  <ids> --out <path>` for its dispatch prompt (footprint, prior art, hazards).
+- **Immediately after spawning a worktree-isolated lane, not after it reports
+  back**: `devtools workspace verify-worktree <path> --expect-branch
+  <branch>` — confirms the worktree is real and isolated before the lane has
+  had a chance to run anything. Waiting until the lane reports is too late:
+  the 2026-08-01 incident this check exists for was a silent worktree-escape
+  where ~1700 lines of half-finished output had already landed directly in
+  the coordinator's live tree by the time the lane reported back.
+- **Before squash-merging any PR**: `devtools workspace merge-gate record <PR>
+  --command "devtools verify"` (or a narrower test selection) against the
+  PR's current head, then `devtools workspace merge-gate check <PR>` —
+  BLOCKs unless a fresh receipt exists for the exact head sha and no review
+  comment (inline, issue-level, or review-summary) is newer than the head
+  commit's timestamp unless explicitly `ack`'d. This replaces "remember to
+  grace-period-poll and remember to run the broader suite CI skips" with one
+  command; it is not automatic (a coordinator still has to remember to run
+  it), so treat it as a required step in the merge checklist below, not an
+  optional nicety.
+- Sizing/triage input: `devtools workspace backlog-calibration` for
+  lead-time/discovery/staleness distributions before deciding batch size.
+
+If you build a new tool in this family, add it here in the same sentence —
+a tool without a line in this file is a tool the next session won't use.
+
 ### Commit / PR discipline
 
 All product code lands via **feature branches + squash-merged PRs** to `master`
