@@ -21,7 +21,7 @@ from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
-from polylogue.surfaces.projection_spec import RenderFormat, projection_from_views
+from polylogue.surfaces.projection_spec import ProjectionSpec, QueryProjectionSpec, RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
 
 
@@ -331,6 +331,65 @@ def test_dialogue_read_view_renders_projected_authored_prose(capsys: pytest.Capt
     assert "agent answer" in rendered
     assert "system prompt" not in rendered
     assert "tool output body" not in rendered
+
+
+def test_dialogue_read_view_browser_destination_honors_projection_window() -> None:
+    """``read --view dialogue --to browser`` with a projection window must
+    open the browser on the WINDOWED session, not the full one.
+
+    Regression test (CodeRabbit review on PR #3504, polylogue-bvnz follow-up):
+    ``open_in_browser`` (``query_output.py``) re-derives HTML from the
+    ``session`` kwarg for non-html output formats rather than using the
+    already-rendered ``content`` string, so ``run_read_dialogue`` must pass a
+    session that has already gone through ``_window_dialogue_session`` with
+    the requested projection -- passing the raw, un-windowed session would
+    silently show the full dialogue in the browser even when a body_limit
+    projection was requested. The production caller this test exercises is
+    ``run_read_dialogue`` (``read_views/standard.py``); the mutation that
+    makes this test fail is passing ``session=session`` (the raw session)
+    instead of the windowed one to ``deliver_content``.
+    """
+    session = make_conv(
+        id="session-1",
+        title="Mixed transcript",
+        messages=[
+            make_msg(id="user-1", role="user", text="one", material_origin="human_authored"),
+            make_msg(id="assistant-1", role="assistant", text="two", material_origin="assistant_authored"),
+            make_msg(id="user-2", role="user", text="three", material_origin="human_authored"),
+            make_msg(id="assistant-2", role="assistant", text="four", material_origin="assistant_authored"),
+        ],
+    )
+
+    class _FakePolylogue:
+        async def get_session(self, session_id: str, *, content_projection: object | None = None) -> object | None:
+            assert session_id == "session-1"
+            if content_projection is None:
+                return session
+            return session.with_content_projection(content_projection)  # type: ignore[arg-type]
+
+    env = cast(AppEnv, SimpleNamespace(polylogue=_FakePolylogue(), ui=MagicMock()))
+    projection_spec = QueryProjectionSpec(projection=ProjectionSpec(body_limit=1))
+
+    with patch("polylogue.cli.read_views.standard.deliver_content") as deliver:
+        read_view_handlers.run_read_view(
+            env,
+            RootModeRequest.from_params({}),
+            ReadViewInvocation(
+                view="dialogue",
+                session_id="session-1",
+                output_format="markdown",
+                destination="browser",
+                out_path=None,
+                projection_spec=projection_spec,
+            ),
+        )
+
+    deliver.assert_called_once()
+    delivered_session = deliver.call_args.kwargs["session"]
+    assert delivered_session is not None
+    assert len(delivered_session.messages) == 1, (
+        "browser delivery must receive the windowed session (body_limit=1), not the full 4-message session"
+    )
 
 
 def test_dialogue_json_uses_compact_payload(capsys: pytest.CaptureFixture[str]) -> None:

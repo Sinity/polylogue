@@ -149,13 +149,20 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         return
     fmt = invocation.output_format or "markdown"
     content = _format_dialogue_session(session, fmt, projection=projection)
+    # open_in_browser() re-derives HTML from `session` for non-html formats
+    # rather than using `content` directly, so it must receive the same
+    # windowed session `_format_dialogue_session` rendered from -- passing
+    # the raw, un-windowed `session` here would silently show the full
+    # dialogue in the browser even when a projection/window was requested
+    # (polylogue-bvnz follow-up, CodeRabbit review on #3504).
+    windowed_session = _window_dialogue_session(session, projection)
     deliver_content(
         env,
         content,
         destination=invocation.destination,
         out_path=invocation.out_path,
         output_format=fmt,
-        session=session,
+        session=windowed_session,
     )
 
 
