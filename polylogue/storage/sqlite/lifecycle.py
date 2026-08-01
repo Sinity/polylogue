@@ -24,6 +24,57 @@ class DerivedDeltaClass(StrEnum):
     FTS_REINDEX = "fts-reindex"
     CACHE_REMOVAL = "cache-removal"
     SEMANTIC_REPARSE = "semantic-reparse"
+    # polylogue-9rw0.1: a clone-safe DDL shape (additive nullable columns or
+    # tables) whose new VALUES come from parser/materializer semantics, not
+    # from existing columns. Unlike SEMANTIC_REPARSE, the raw evidence never
+    # needs re-reading in full: a bounded, declared reprocess scope (see
+    # ``TargetedReprocessScope``) names exactly which already-persisted
+    # sessions must be re-materialized to populate the new surface. The v44
+    # witness (sessions.title_ref/title_confidence, 3,201 of 18,871 Codex
+    # sessions) is the measured case this exists to express: previously the
+    # only truthful class was SEMANTIC_REPARSE, which routed every archive
+    # through a full raw replay to backfill two nullable columns on one
+    # origin's sessions.
+    SHAPE_FORWARD_TARGETED_REPROCESS = "shape-forward-targeted-reprocess"
+
+
+@dataclass(frozen=True, slots=True)
+class TargetedReprocessScope:
+    """A bounded reprocess scope over already-persisted sessions, as data.
+
+    Mirrors the ``origin``/``session_ids`` dimensions of
+    ``polylogue.maintenance.scope.MaintenanceScopeFilter`` -- the vocabulary
+    every other maintenance backfill already scopes by -- without importing
+    that module here: ``lifecycle.py`` is deliberately free of any
+    non-stdlib import so the schema-versioning policy lint, the fast-forward
+    executor, and unit tests can all evaluate it from the thinnest possible
+    surface. A caller that already imports ``polylogue.maintenance`` can
+    losslessly round-trip an instance into a ``MaintenanceScopeFilter``.
+
+    At least one dimension must be set -- an empty scope would silently mean
+    "every session", which is exactly the full-corpus cost this delta class
+    exists to avoid.
+    """
+
+    origin: str | None = None
+    session_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.origin is None and not self.session_ids:
+            raise ValueError("TargetedReprocessScope must declare origin and/or session_ids")
+
+    def matching_predicate_sql(self) -> tuple[str, tuple[object, ...]]:
+        """Return a ``sessions``-table WHERE fragment and its bound params."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if self.origin is not None:
+            clauses.append("origin = ?")
+            params.append(self.origin)
+        if self.session_ids:
+            placeholders = ", ".join("?" for _ in self.session_ids)
+            clauses.append(f"session_id IN ({placeholders})")
+            params.extend(self.session_ids)
+        return " AND ".join(clauses), tuple(params)
 
 
 class FastForwardOperationKind(StrEnum):
@@ -52,10 +103,27 @@ class IndexDeltaDeclaration:
     version: int
     classes: tuple[DerivedDeltaClass, ...]
     operations: tuple[FastForwardOperation, ...] = ()
+    # Required exactly when SHAPE_FORWARD_TARGETED_REPROCESS is in ``classes``
+    # (enforced by ``__post_init__``): the exact bounded scope a fast-forward
+    # of this version must enqueue for reprocessing, expressed as data.
+    reprocess_scope: TargetedReprocessScope | None = None
+
+    def __post_init__(self) -> None:
+        declares_class = DerivedDeltaClass.SHAPE_FORWARD_TARGETED_REPROCESS in self.classes
+        has_scope = self.reprocess_scope is not None
+        if declares_class != has_scope:
+            raise ValueError(
+                f"index delta v{self.version}: SHAPE_FORWARD_TARGETED_REPROCESS and reprocess_scope "
+                f"must be declared together (class present={declares_class!r}, scope present={has_scope!r})"
+            )
 
     @property
     def requires_semantic_reparse(self) -> bool:
         return DerivedDeltaClass.SEMANTIC_REPARSE in self.classes
+
+    @property
+    def requires_targeted_reprocess(self) -> bool:
+        return DerivedDeltaClass.SHAPE_FORWARD_TARGETED_REPROCESS in self.classes
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +145,21 @@ class IndexFastForwardPlan:
             and not self.requires_semantic_reparse
             and all(declaration.classes for declaration in self.declarations)
             and all(declaration.operations for declaration in self.declarations)
+        )
+
+    @property
+    def pending_reprocess_scopes(self) -> tuple[tuple[int, TargetedReprocessScope], ...]:
+        """Return the (version, scope) pairs this plan's execution must enqueue.
+
+        Non-empty exactly when the plan crosses a SHAPE_FORWARD_TARGETED_REPROCESS
+        declaration -- the executor consumes this to enqueue real, bounded
+        reprocess debt after the clone-safe DDL lands, instead of silently
+        treating the shape-only copy-forward as complete.
+        """
+        return tuple(
+            (declaration.version, declaration.reprocess_scope)
+            for declaration in self.declarations
+            if declaration.requires_targeted_reprocess and declaration.reprocess_scope is not None
         )
 
     @property
@@ -349,16 +432,30 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # to copy forward -- but their VALUES come from the v44 Codex title
         # resolver (thread name -> authored history -> first HUMAN_AUTHORED
         # message), so a shape-only fast-forward would leave every row NULL
-        # while a cold rebuild populates them. That divergence is exactly what
-        # DerivedDeltaClass cannot currently express: there is no class for
-        # "additive columns, clone-safe shape, values via targeted reprocess".
-        # SEMANTIC_REPARSE is therefore the truthful classification today, and
-        # it keeps the existing full-rebuild behaviour rather than silently
-        # promoting a generation whose new columns disagree with a cold
-        # rebuild. polylogue-9rw0.1 owns extending the vocabulary so this exact
-        # delta class becomes a bounded shape fast-forward plus a Codex-scoped
-        # reprocess instead of a full-corpus replay.
-        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+        # while a cold rebuild populates them.
+        #
+        # polylogue-9rw0.1: re-declared under SHAPE_FORWARD_TARGETED_REPROCESS
+        # instead of SEMANTIC_REPARSE. The DDL still copy-forwards generically
+        # via the shared-columns REPLACE_TABLE path below (existing rows keep
+        # every column they already have; the two new columns start NULL,
+        # same as any additive-column REPLACE_TABLE); what changes is that the
+        # declaration now also states, as data, exactly which already-
+        # persisted sessions need re-materializing to populate them --
+        # origin=codex-session, the full 100% of the affected population
+        # measured in the bead witness -- so the executor enqueues bounded
+        # per-session reprocess debt instead of the archive silently
+        # promoting to v44 with every title_ref left NULL, or an operator
+        # having to reach for a full `polylogue ops reset --index` replay of
+        # all 41,363 raws to backfill two columns on one origin.
+        classes=(DerivedDeltaClass.SHAPE_FORWARD_TARGETED_REPROCESS,),
+        operations=(
+            FastForwardOperation(
+                name="v44-title-ref-shape",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "sessions"),),
+            ),
+        ),
+        reprocess_scope=TargetedReprocessScope(origin="codex-session"),
     ),
     IndexDeltaDeclaration(
         version=45,
@@ -611,6 +708,7 @@ def index_delta_declaration_report(current_version: int) -> IndexDeltaDeclaratio
         if declaration.version > current_version
         or not declaration.classes
         or (not declaration.requires_semantic_reparse and not declaration.operations)
+        or (declaration.requires_targeted_reprocess and declaration.reprocess_scope is None)
     )
     return {
         "compatibility_floor": INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR,
@@ -712,6 +810,7 @@ __all__ = [
     "IndexDeltaDeclaration",
     "IndexDeltaDeclarationReport",
     "IndexFastForwardPlan",
+    "TargetedReprocessScope",
     "get_latest_sql_fast_forwardable_version",
     "get_semantic_reparse_blocking_version_pair",
     "index_delta_declaration_report",

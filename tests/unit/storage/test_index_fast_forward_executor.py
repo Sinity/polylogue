@@ -396,3 +396,79 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
     # An already-honest row is untouched.
     assert rows["threads_fts"][1] == "stale"
     assert rows["threads_fts"][2:] == (15411, 15401, 10)
+
+
+def test_shape_forward_targeted_reprocess_enqueues_bounded_ops_debt(tmp_path: Path) -> None:
+    """polylogue-9rw0.1: a SHAPE_FORWARD_TARGETED_REPROCESS fast-forward enqueues real debt.
+
+    Builds a pre-v44 shaped ``sessions`` table (no ``title_ref``/
+    ``title_confidence`` columns), seeds two codex-session sessions and one
+    other-origin session, then fast-forwards through the production v44
+    declaration. The DDL copy-forward alone would silently leave every new
+    column NULL with no record that anything is owed; this asserts the
+    executor also enqueues one ``convergence_debt`` row per *in-scope*
+    session in the sibling ``ops.db`` -- exactly the origin-scoped population
+    the declaration states as data, not the whole archive.
+
+    ANTI-VACUITY: deleting the ``_enqueue_targeted_reprocess_debt`` call in
+    ``apply_index_fast_forward`` makes the ``ops.db`` file never get created
+    (or, if it already existed, its ``convergence_debt`` table stays empty)
+    -- this test's final assertion on ``debt_rows`` would fail from 2 to 0.
+    """
+    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
+    from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
+
+    index_path = tmp_path / "index.db"
+    conn = sqlite3.connect(index_path)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute('ALTER TABLE sessions DROP COLUMN "title_ref"')
+        conn.execute('ALTER TABLE sessions DROP COLUMN "title_confidence"')
+        conn.commit()
+
+        _seed_indexable_block(conn, native_suffix="codex-a", text="codex prose one")
+        _seed_indexable_block(conn, native_suffix="codex-b", text="codex prose two")
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, title, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("native-session-other", "claude-code-session", "unrelated origin", _HASH, 1, 1),
+        )
+        conn.commit()
+        codex_session_ids = {
+            str(row[0])
+            for row in conn.execute("SELECT session_id FROM sessions WHERE origin = 'codex-session'").fetchall()
+        }
+        assert len(codex_session_ids) == 2
+
+        conn.execute("PRAGMA user_version = 43")
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = sqlite3.connect(index_path)
+    try:
+        plan = index_fast_forward_plan(43, 44)
+        assert plan is not None
+        apply_index_fast_forward(conn, plan)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 44
+        # Shape landed; values are NOT backfilled by the DDL copy-forward alone.
+        title_refs = {row[0] for row in conn.execute("SELECT title_ref FROM sessions").fetchall()}
+        assert title_refs == {None}
+    finally:
+        conn.close()
+
+    ops_path = tmp_path / "ops.db"
+    assert ops_path.exists()
+    ops_conn = sqlite3.connect(ops_path)
+    try:
+        debt_rows = ops_conn.execute(
+            "SELECT target_id, status FROM convergence_debt WHERE stage = 'index-v44-targeted-reprocess'"
+        ).fetchall()
+    finally:
+        ops_conn.close()
+
+    assert {row[0] for row in debt_rows} == codex_session_ids
+    assert all(row[1] == "deferred" for row in debt_rows)
