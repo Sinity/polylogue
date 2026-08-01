@@ -319,6 +319,26 @@ fixture using the synthetic corpus generator. For tests needing a realistic arch
 generators. `schema_conformant_payload(provider)` produces payloads that match
 each provider's JSON schema.
 
+### Cardinality guards on loop-only assertions
+
+A test whose only assertions live inside `for item in result: ...` passes
+vacuously if `result` is empty — a regression that makes the exercised code
+return nothing (the total-failure mode) hides behind the unreached loop body.
+Before merging such a test, add an explicit non-empty check ahead of the loop:
+
+```python
+result = await SessionFilter(archive_root=repo).exclude_origin("codex-session").list()
+assert len(result) >= 1  # or == N when the fixture's count is exact and stable
+for session in result:
+    assert session.origin != "codex-session"
+```
+
+This guard is unnecessary when the loop body delegates to a shared assertion
+helper that itself asserts non-emptiness (e.g. `_assert_structured_error`), or
+when an earlier line in the same test already establishes a non-empty
+invariant (`assert len(result) == count()`, a prior `.first()` call, etc.).
+Skip the guard rather than adding a redundant one in those cases.
+
 ## Time and Clock
 
 Timestamp-sensitive tests opt into the `frozen_clock` fixture so the test's
