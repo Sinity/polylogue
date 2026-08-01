@@ -37,6 +37,17 @@ Wired into:
   ``python -m pytest`` invocation that bypasses ``devtools`` entirely still
   refuses, because ``tests/conftest.py`` is always collected for any pytest
   run rooted at this repo.
+- ``polylogue/cli/click_app.py:main()`` — the installed ``polylogue``/``plg``
+  console scripts. This one differs from the others: those callers compute
+  "the invoking checkout" from their *own* ``__file__`` (trustworthy, because
+  ``devtools/__main__.py`` and ``tests/conftest.py`` are only ever reached via
+  a real filesystem path on ``sys.path``, never via the shared venv's
+  editable ``.pth``). ``polylogue/cli/click_app.py`` cannot do that: if the
+  hazard has already occurred, *this file itself* resolved from the wrong
+  checkout, so its own ``__file__`` is exactly as compromised as
+  ``polylogue.__file__`` and proves nothing. The trustworthy anchor there is
+  the process's current working directory instead — see
+  :func:`find_git_worktree_root`.
 
 What this does **not** close: an ad hoc one-off script
 (``python3 /realm/tmp/scratch.py``) that never imports ``devtools`` or
@@ -67,6 +78,31 @@ def resolved_polylogue_path() -> Path:
     import polylogue
 
     return Path(polylogue.__file__).resolve()
+
+
+def find_git_worktree_root(start: Path) -> Path | None:
+    """Walk upward from ``start`` looking for a ``.git`` entry.
+
+    Pure filesystem ``stat``/``exists`` calls — no subprocess — so this is
+    cheap enough to run unconditionally on every CLI invocation (a handful of
+    directory levels at most, not a ``git rev-parse`` fork+exec). Matches both
+    a plain repo's ``.git`` directory and a linked worktree's ``.git`` *file*
+    (which points at the shared ``.git/worktrees/<name>`` gitdir elsewhere).
+
+    Returns the first directory containing a ``.git`` entry, or ``None`` if
+    none is found before reaching the filesystem root — e.g. a real installed
+    ``polylogue`` invocation with no dev checkout in its cwd ancestry at all,
+    which this guard deliberately leaves alone.
+    """
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        try:
+            found = (candidate / ".git").exists()
+        except OSError:
+            found = False
+        if found:
+            return candidate
+    return None
 
 
 def assert_polylogue_matches_checkout(repo_root: Path, *, context: str) -> Path:
