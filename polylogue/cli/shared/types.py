@@ -110,10 +110,26 @@ class AppEnv:
 
     @property
     def runtime(self) -> ResolvedRuntimeConfig:
+        # Short-circuit through the already-resolved runtime when services
+        # have not been built yet, rather than forcing ``self.services``
+        # (below). ``self.services`` (``_lazy_services`` ->
+        # ``polylogue.services``) imports the full ``SessionRepository`` /
+        # ``SQLiteBackend`` stack at module scope -- expensive (part of the
+        # cost this module's docstring already calls out), and entirely
+        # unneeded just to hand back the ``ResolvedRuntimeConfig`` the
+        # composition root already resolved. Callers that only need
+        # config/runtime (e.g. the CLI daemon fast path, polylogue-g3jk)
+        # never pay for backend/repository construction; callers that
+        # actually need ``.backend``/``.repository`` still build the full
+        # services object via those properties below.
+        if self._services is None and self._runtime is not None:
+            return self._runtime
         return self.services.get_runtime()
 
     @property
     def config(self) -> Config:
+        if self._services is None and self._runtime is not None:
+            return self._runtime.as_config()
         return self.services.get_config()
 
     @property

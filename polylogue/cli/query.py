@@ -8,10 +8,10 @@ from typing import TYPE_CHECKING
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.query_contracts import QueryExecutionPlan
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.async_bridge import run_coroutine_sync
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -93,7 +93,15 @@ def _explain_query_request(request: RootModeRequest) -> None:
 
 
 def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:
-    """Execute a typed root-mode request (path)."""
+    """Execute a typed root-mode request (path).
+
+    Uses ``polylogue.core.async_bridge`` (not ``polylogue.api.sync.bridge``)
+    deliberately: the latter is a submodule of ``polylogue.api``, so importing
+    it forces Python to execute ``polylogue/api/__init__.py`` first -- the
+    whole ``Polylogue`` facade, ~1.7-2.8s of import time -- even for a
+    daemon-served ``find`` that never touches the local
+    ``ArchiveStore``/``Polylogue`` facade at all (polylogue-g3jk).
+    """
     run_coroutine_sync(async_execute_query_request(env, request))
 
 
