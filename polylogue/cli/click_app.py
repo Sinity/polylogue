@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING
 
 import click
 from click.shell_completion import CompletionItem
 
+from devtools.checkout_guard import (
+    CheckoutImportMismatchError,
+    assert_polylogue_matches_checkout,
+    find_git_worktree_root,
+)
 from polylogue.cli.click_command_registration import _LazyCommand, _LazyGroup, register_root_commands
 from polylogue.cli.click_option_groups import apply_query_mode_options
 from polylogue.cli.command_inventory import ROOT_COMMAND_ROLE_SECTIONS
@@ -631,6 +637,41 @@ for _verb in sorted(VERB_NAMES):
     cli.add_command(_command)
 
 
+def _guard_checkout_or_exit() -> None:
+    """Refuse to run when ``import polylogue`` resolved outside this checkout.
+
+    Mirrors ``devtools/checkout_guard.py``'s protection of the
+    ``devtools``/``pytest`` entry points (see that module's docstring for the
+    full 2026-07-30/31 hazard writeup): a linked git worktree without its own
+    ``.venv`` silently reuses the main checkout's shared editable install, so
+    ``import polylogue`` can resolve to a *different* checkout than the one
+    the CLI was actually invoked from — no ImportError, just wrong code
+    answering every command while looking genuine.
+
+    Unlike ``devtools/__main__.py``, this module's own ``__file__`` cannot
+    anchor "the invoking checkout": if the hazard already occurred, this file
+    itself is the wrong checkout's copy. The trustworthy anchor is the
+    process's current working directory instead — an agent hits this hazard
+    by ``cd``ing into a worktree and running ``polylogue ...`` there, so a
+    ``.git`` found by walking up from cwd names the checkout actually
+    intended.
+
+    No-ops (does not raise) when cwd has no git ancestry at all (a real
+    installed-tool invocation, not a dev checkout) or when
+    ``POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1`` is set.
+    """
+    if os.environ.get("POLYLOGUE_ALLOW_WORKTREE_ESCAPE") == "1":
+        return
+    repo_root = find_git_worktree_root(Path.cwd())
+    if repo_root is None:
+        return
+    try:
+        assert_polylogue_matches_checkout(repo_root, context="polylogue")
+    except CheckoutImportMismatchError as exc:
+        sys.stderr.write(f"{exc}\n")
+        raise SystemExit(125) from None
+
+
 def main() -> None:
     """CLI entrypoint with machine-error handling.
 
@@ -640,6 +681,7 @@ def main() -> None:
     """
     import sys
 
+    _guard_checkout_or_exit()
     run_machine_entry(cli, sys.argv[1:])
 
 

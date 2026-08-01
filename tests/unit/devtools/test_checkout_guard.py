@@ -20,6 +20,7 @@ import polylogue
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
+    find_git_worktree_root,
     resolved_polylogue_path,
 )
 
@@ -60,6 +61,50 @@ def test_assert_matches_checkout_rejects_a_sibling_directory(tmp_path: Path) -> 
     sibling = package_root.parent / f"{package_root.name}-decoy"
     with pytest.raises(CheckoutImportMismatchError):
         assert_polylogue_matches_checkout(sibling, context="sibling probe")
+
+
+def test_find_git_worktree_root_finds_the_real_polylogue_checkout() -> None:
+    """The happy path: cwd inside this actual checkout resolves to its root."""
+    repo_root = Path(polylogue.__file__).resolve().parents[1]
+    assert find_git_worktree_root(repo_root) == repo_root
+
+
+def test_find_git_worktree_root_no_ops_for_an_unrelated_git_repo(tmp_path: Path) -> None:
+    """Regression (polylogue-373yt): an ordinary, unrelated git repo must not be
+
+    mistaken for "the invoking Polylogue checkout". Before this fix,
+    ``find_git_worktree_root`` returned the first ``.git``-containing
+    ancestor unconditionally, so `cd ~/some-other-project && polylogue
+    --version` found that repo's root, and the mismatch guard fired against
+    it (exit 125) for every single command -- a normally pip-installed
+    ``polylogue`` invoked from any unrelated git repository was completely
+    unusable.
+
+    Mutation this guards against: dropping the
+    ``_is_polylogue_checkout_root`` gate from ``find_git_worktree_root`` (i.e.
+    reverting to "return the first ``.git`` ancestor, full stop") makes this
+    test fail because it would return ``unrelated_repo`` instead of ``None``.
+    """
+    unrelated_repo = tmp_path / "some-other-project"
+    unrelated_repo.mkdir()
+    (unrelated_repo / ".git").mkdir()
+    # Deliberately no pyproject.toml and no polylogue/ package tree here --
+    # this is what makes it "unrelated" rather than a Polylogue checkout.
+
+    nested_cwd = unrelated_repo / "src" / "pkg"
+    nested_cwd.mkdir(parents=True)
+
+    assert find_git_worktree_root(nested_cwd) is None
+
+
+def test_find_git_worktree_root_no_ops_with_no_git_ancestry_at_all(tmp_path: Path) -> None:
+    """A plain directory tree with no ``.git`` anywhere -- e.g. a real installed
+
+    ``polylogue`` invocation with no dev checkout in cwd's ancestry at all.
+    """
+    plain_dir = tmp_path / "no-git-here"
+    plain_dir.mkdir()
+    assert find_git_worktree_root(plain_dir) is None
 
 
 def test_click_dispatch_main_refuses_on_checkout_mismatch(

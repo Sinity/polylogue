@@ -37,6 +37,17 @@ Wired into:
   ``python -m pytest`` invocation that bypasses ``devtools`` entirely still
   refuses, because ``tests/conftest.py`` is always collected for any pytest
   run rooted at this repo.
+- ``polylogue/cli/click_app.py:main()`` — the installed ``polylogue``/``plg``
+  console scripts. This one differs from the others: those callers compute
+  "the invoking checkout" from their *own* ``__file__`` (trustworthy, because
+  ``devtools/__main__.py`` and ``tests/conftest.py`` are only ever reached via
+  a real filesystem path on ``sys.path``, never via the shared venv's
+  editable ``.pth``). ``polylogue/cli/click_app.py`` cannot do that: if the
+  hazard has already occurred, *this file itself* resolved from the wrong
+  checkout, so its own ``__file__`` is exactly as compromised as
+  ``polylogue.__file__`` and proves nothing. The trustworthy anchor there is
+  the process's current working directory instead — see
+  :func:`find_git_worktree_root`.
 
 What this does **not** close: an ad hoc one-off script
 (``python3 /realm/tmp/scratch.py``) that never imports ``devtools`` or
@@ -50,6 +61,8 @@ call); a script that wants the guarantee can import and call
 from __future__ import annotations
 
 from pathlib import Path
+
+import tomllib
 
 
 class CheckoutImportMismatchError(RuntimeError):
@@ -67,6 +80,79 @@ def resolved_polylogue_path() -> Path:
     import polylogue
 
     return Path(polylogue.__file__).resolve()
+
+
+def _is_polylogue_checkout_root(candidate: Path) -> bool:
+    """Return whether ``candidate`` is plausibly the root of a Polylogue checkout.
+
+    Cheap, filesystem-only markers (no subprocess): either a
+    ``pyproject.toml`` whose ``[project].name`` is literally ``"polylogue"``,
+    or (fallback, for the rare case a checkout's ``pyproject.toml`` is
+    missing/unparseable but the source tree is intact) the package's own
+    entry-point file, ``polylogue/cli/click_app.py``, existing under
+    ``candidate``. Either marker is present in every Polylogue checkout and
+    worktree, and absent from an unrelated repository.
+    """
+    pyproject = candidate / "pyproject.toml"
+    try:
+        raw = pyproject.read_bytes()
+    except OSError:
+        raw = None
+    if raw is not None:
+        try:
+            data = tomllib.loads(raw.decode("utf-8"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+            data = {}
+        project_name = data.get("project", {}).get("name")
+        if project_name == "polylogue":
+            return True
+    try:
+        return (candidate / "polylogue" / "cli" / "click_app.py").is_file()
+    except OSError:
+        return False
+
+
+def find_git_worktree_root(start: Path) -> Path | None:
+    """Walk upward from ``start`` looking for the enclosing Polylogue checkout.
+
+    Pure filesystem ``stat``/``exists`` calls — no subprocess — so this is
+    cheap enough to run unconditionally on every CLI invocation (a handful of
+    directory levels at most, not a ``git rev-parse`` fork+exec). Matches both
+    a plain repo's ``.git`` directory and a linked worktree's ``.git`` *file*
+    (which points at the shared ``.git/worktrees/<name>`` gitdir elsewhere).
+
+    Returns the first ``.git``-containing ancestor directory, but **only**
+    when that directory also looks like a Polylogue checkout
+    (:func:`_is_polylogue_checkout_root`). Two ``None`` cases, deliberately
+    not distinguished by the caller:
+
+    - No ``.git`` entry anywhere in the ancestry — e.g. a real installed
+      ``polylogue`` invocation with no dev checkout in its cwd ancestry at
+      all.
+    - A ``.git`` entry *is* found, but it belongs to some other, unrelated
+      repository (``cd ~/some-other-project && polylogue --version`` — an
+      ordinary, common invocation). The walk stops at that repo's root
+      rather than climbing past it into parent directories: a git
+      repository boundary is exactly the boundary of "the checkout the
+      process is running from", so a non-Polylogue repo there means cwd is
+      not inside any Polylogue checkout, full stop — climbing further up
+      could otherwise find an unrelated Polylogue checkout that merely
+      happens to be an ancestor directory and misfire the guard against it.
+
+    Both cases must no-op identically (2026-08-01 regression, polylogue-373yt):
+    the guard exists to catch a linked *Polylogue* worktree resolving a
+    *different* Polylogue checkout's package, not to flag every invocation
+    whose cwd happens to have some ``.git`` ancestor.
+    """
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        try:
+            has_git = (candidate / ".git").exists()
+        except OSError:
+            has_git = False
+        if has_git:
+            return candidate if _is_polylogue_checkout_root(candidate) else None
+    return None
 
 
 def assert_polylogue_matches_checkout(repo_root: Path, *, context: str) -> Path:
