@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
@@ -103,13 +101,14 @@ def _fetch_daemon_facets(
         return None
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.version import POLYLOGUE_VERSION
 
     config = load_effective_config(env)
     client = DaemonClient(
-        Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock",
+        daemon_socket_path(config.archive_root),
         auth_token=getattr(config, "api_auth_token", None),
     )
     if (

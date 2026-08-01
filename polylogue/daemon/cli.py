@@ -2175,7 +2175,7 @@ async def run_daemon_services(
             from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
 
             uds_server = DaemonAPIUnixHTTPServer(
-                daemon_socket_path(),
+                daemon_socket_path(archive_root_path),
                 DaemonAPIHandler,
                 auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),

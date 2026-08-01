@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import socketserver
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -16,14 +15,9 @@ from polylogue.daemon.http import (
     _ARCHIVE_QUERY_MAX_WORKERS,
     _StandaloneWriteRuntime,
 )
+from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.daemon.web_auth import WebCredentialRegistry
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-
-
-def daemon_socket_path(runtime_dir: str | None = None) -> Path:
-    """Return the per-user UDS path without creating it."""
-
-    return Path(runtime_dir or os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue" / "daemon.sock"
 
 
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):

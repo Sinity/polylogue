@@ -73,7 +73,7 @@ def bench_daemon_uds_client(
     monkeypatch.delenv("POLYLOGUE_NO_DAEMON", raising=False)
     monkeypatch.delenv("POLYLOGUE_DAEMON", raising=False)
 
-    socket_path = daemon_socket_path(str(runtime_dir))
+    socket_path = daemon_socket_path(bench_daemon_uds_archive_root, runtime_dir=str(runtime_dir))
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
     server.auth_token = ""
     thread = threading.Thread(target=server.serve_forever, name="bench-daemon-uds", daemon=True)

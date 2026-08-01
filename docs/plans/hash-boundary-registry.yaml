@@ -320,6 +320,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'deterministic handoff assertion id, PK-style.'
+- path: polylogue/daemon/socket_path.py
+  function: '<module>.archive_scope_key'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: identifier
+  note: 'archive-root-scoped UDS socket-path key (polylogue-kadx3); never compared for drift, only used to derive a filesystem path so two archives never collide on one socket.'
 - path: polylogue/daemon/user_state_http.py
   function: '<module>._default_annotation_id'
   call: hashlib.sha256
