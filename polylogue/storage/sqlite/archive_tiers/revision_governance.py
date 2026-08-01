@@ -96,7 +96,10 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+
+if TYPE_CHECKING:
+    from polylogue.sources.parsers.base import ParsedSession
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
@@ -119,8 +122,6 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.sources.dispatch import merge_parsed_session_chunks
-from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
@@ -1809,6 +1810,10 @@ def raw_membership_decision_pending(store: RawRevisionGovernanceHost, raw_id: st
 
 def raw_revision_replay_adoptable(store: RawRevisionGovernanceHost, sessions: Sequence[ParsedSession]) -> bool:
     """Return whether replay may adopt an existing ungoverned session."""
+    # Deferred: sources.dispatch imports the full provider-parser universe
+    # (~0.26s); this write-path-only helper must not tax read-path imports.
+    from polylogue.sources.dispatch import merge_parsed_session_chunks
+
     aggregate = merge_parsed_session_chunks(sessions)
     if len(aggregate) != 1:
         return False
@@ -1842,6 +1847,8 @@ def defer_raw_revision_adoption(
         return
     source_conn = store._ensure_source_conn()
     decided_at_ms = int(time.time() * 1000)
+    from polylogue.sources.dispatch import merge_parsed_session_chunks
+
     aggregate = merge_parsed_session_chunks(sessions)
     if len(aggregate) != 1:
         raise RuntimeError("deferred revision cohort did not compose to one session")
@@ -1967,6 +1974,8 @@ def apply_raw_revision_replay(
     """
     if not plan.accepted_raw_ids:
         raise ValueError("cannot apply a revision plan without an accepted chain")
+    from polylogue.sources.dispatch import merge_parsed_session_chunks
+
     candidates = {item.raw_id: item for item in _raw_revision_candidates(store, plan.logical_source_key)}
     aggregate_sessions = merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
     if len(aggregate_sessions) != 1:

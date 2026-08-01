@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
-from polylogue.cli.commands.status import _render_schema_drift_status, _schema_drift_status
+from polylogue.cli.commands.status import _render_schema_drift_status
 from polylogue.cli.shared.types import AppEnv
+from polylogue.insights.schema_drift import schema_drift_status
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -30,7 +31,7 @@ def _make_app_env() -> AppEnv:
 
 
 def test_schema_drift_status_reports_missing_ops_tier(tmp_path: Path) -> None:
-    result = _schema_drift_status(tmp_path, now_ms=10_000)
+    result = schema_drift_status(tmp_path, now_ms=10_000)
     assert result["available"] is False
     assert result["reason"] == "missing_ops_tier"
 
@@ -76,7 +77,7 @@ def test_schema_drift_status_computes_windowed_risky_rate(tmp_path: Path) -> Non
     )
     conn.close()
 
-    result = _schema_drift_status(tmp_path, now_ms=now_ms)
+    result = schema_drift_status(tmp_path, now_ms=now_ms)
     assert result["available"] is True
     origins = result["origins"]
     assert len(origins) == 1
