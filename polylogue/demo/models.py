@@ -20,6 +20,7 @@ class DemoSeedResult:
     overlays_seeded: bool
     assertion_count: int
     construct_coverage: tuple[DemoConstructCoverage, ...] = ()
+    healed_tiers: tuple[str, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         """Serialize the seed result for CLI JSON output and tests."""
@@ -33,6 +34,7 @@ class DemoSeedResult:
             "overlays_seeded": self.overlays_seeded,
             "assertion_count": self.assertion_count,
             "construct_coverage": [row.to_payload() for row in self.construct_coverage],
+            "healed_tiers": list(self.healed_tiers),
         }
 
 

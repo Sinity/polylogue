@@ -378,3 +378,75 @@ async def test_seed_demo_archive_forces_sequential_parse_workers(
 
     assert captured.get("parse_workers") == 1
     assert result.session_count == len(DEMO_SESSION_IDS)
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_self_heals_a_stale_schema_on_a_demo_owned_root(tmp_path: Path) -> None:
+    """Re-seeding a demo archive whose index.db predates the current schema self-heals.
+
+    Reproduces polylogue-3ycw: ``demo seed`` documented as the safe,
+    private-data-free onboarding path failed outright with
+    ``RuntimeError: index.db schema version N is not the current index tier
+    version M; move it aside and rebuild the archive root`` and no
+    self-heal, even though a demo archive's tiers hold only synthetic
+    fixture content this exact command regenerates every run.
+
+    ANTI-VACUITY: the production caller exercised is
+    ``polylogue.demo.seed.seed_demo_archive`` (imported directly, no
+    test-local reimplementation). Deleting the
+    ``_self_heal_stale_demo_archive_tiers`` call from ``seed_demo_archive``
+    (or deleting that helper's move-aside-and-reinitialize body) makes this
+    exact test fail with the original unhandled ``RuntimeError`` instead of
+    seeding successfully a second time.
+    """
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True)
+
+    # Roll index.db's schema version back, as if this demo archive had been
+    # seeded by an older Polylogue release whose index tier version was lower
+    # than the current code's.
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    seed = await seed_demo_archive(archive_root, force=False)
+
+    assert seed.healed_tiers == ("index.db",)
+    assert seed.session_count == len(DEMO_SESSION_IDS)
+    assert seed.construct_coverage
+    assert all(row.ok for row in seed.construct_coverage)
+
+    verify = verify_demo_archive(archive_root)
+    assert verify.ok is True
+
+    stale_backups = list(archive_root.glob("index.db.stale-*"))
+    assert len(stale_backups) == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_never_self_heals_a_non_demo_owned_root(tmp_path: Path) -> None:
+    """A stale-schema root lacking the demo fixture source directory is never auto-rebuilt.
+
+    Guards the safety half of the polylogue-3ycw fix: self-heal must never
+    fire for a root that was not itself created by an earlier ``demo seed``
+    call (for example, an operator forgot ``--root`` and
+    ``archive_root()`` fell through to the configured production archive).
+    Without the ``_archive_root_is_demo_owned`` gate this scenario would
+    silently move aside and rebuild real archive tiers on a schema
+    mismatch instead of refusing loudly.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="move it aside and rebuild the archive root"):
+        await seed_demo_archive(archive_root, force=False)
+
+    # Nothing was moved aside: the non-demo-owned root's tiers are untouched.
+    assert not list(archive_root.glob("index.db.stale-*"))

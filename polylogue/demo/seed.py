@@ -39,7 +39,7 @@ from polylogue.storage.embeddings.identity import (
 )
 from polylogue.storage.embeddings.materialization import archive_embeddable_message_where, message_prose_sql
 from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embedding_write import ArchiveEmbeddingWrite, upsert_message_embeddings
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -85,6 +85,66 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
     _write_demo_antigravity_sources(source_root)
     _write_demo_hermes_sources(source_root)
     return source_root
+
+
+def _archive_root_is_demo_owned(root: Path) -> bool:
+    """Return whether *root* already holds a prior demo seed's fixture source.
+
+    ``DEMO_SOURCE_DIRNAME`` is written exclusively by :func:`materialize_demo_source`
+    and by nothing else in the codebase -- in particular the live daemon
+    (``polylogued run``) never creates it. Its presence *before* this call is
+    therefore strong, retroactive-compatible evidence that ``root``'s tier
+    databases hold only synthetic demo content this same command is about to
+    regenerate, never real archive data. This is the gate that makes
+    :func:`_self_heal_stale_demo_archive_tiers` safe to call unconditionally
+    for demo seeding while never touching a live/foreign archive that
+    happens to be at the resolved root (e.g. an operator forgot ``--root``
+    and ``archive_root()`` fell through to the configured production root).
+    """
+
+    return (root / DEMO_SOURCE_DIRNAME).exists()
+
+
+def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
+    """Move aside and rebuild any demo archive tier whose schema predates the current code.
+
+    Only ever called after :func:`_archive_root_is_demo_owned` has confirmed
+    ``archive_root`` is a disposable demo archive this exact command
+    regenerates every run (never the live/production archive). ``index.db``
+    and friends are declared *rebuildable* tiers (see ``CLAUDE.md``'s "Schema
+    regimes"), and a demo archive's content is entirely synthetic fixture
+    data with no durability requirement at all, so a stale on-disk schema
+    version here is safe to move aside and rebuild automatically -- unlike
+    the live archive, where the same version drift requires an explicit,
+    consented durable-tier migration or ``polylogue ops reset --index``.
+
+    Without this, a demo archive seeded by an older Polylogue version (or by
+    a fresher-schema worktree feeding an older-schema one, and vice versa)
+    fails hard with an unhelpful, unnamed-path error on every subsequent
+    ``demo seed`` against the same root (polylogue-3ycw) even though nothing
+    of value would be lost by rebuilding it.
+
+    Returns the tier filenames that were actually moved aside and rebuilt.
+    """
+
+    healed: list[str] = []
+    stale_suffix = f".stale-{int(time.time())}"
+    for spec in ARCHIVE_TIER_SPECS.values():
+        db_path = archive_root / spec.filename
+        if not db_path.exists():
+            continue
+        try:
+            initialize_archive_database(db_path, spec.tier)
+        except RuntimeError as exc:
+            if "schema version" not in str(exc):
+                raise
+            for sidecar_suffix in ("", "-wal", "-shm"):
+                sidecar = db_path.with_name(db_path.name + sidecar_suffix)
+                if sidecar.exists():
+                    sidecar.rename(sidecar.with_name(sidecar.name + stale_suffix))
+            initialize_archive_database(db_path, spec.tier)
+            healed.append(spec.filename)
+    return tuple(healed)
 
 
 def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> None:
@@ -1291,6 +1351,10 @@ async def seed_demo_archive(
 ) -> DemoSeedResult:
     """Materialize, ingest, and optionally overlay the deterministic demo archive."""
 
+    healed_tiers: tuple[str, ...] = ()
+    if _archive_root_is_demo_owned(archive_root):
+        healed_tiers = _self_heal_stale_demo_archive_tiers(archive_root)
+
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
         # Force sequential (single-worker) parsing for the fixed, dozen-file
@@ -1325,6 +1389,7 @@ async def seed_demo_archive(
         overlays_seeded=overlay is not None,
         assertion_count=len(overlay.assertion_ids) if overlay else 0,
         construct_coverage=construct_coverage,
+        healed_tiers=healed_tiers,
     )
 
 

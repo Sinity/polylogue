@@ -215,9 +215,14 @@ def initialize_archive_database(
                 if plan is not None:
                     apply_index_fast_forward(conn, plan)
                     return
+            rebuild_command = (
+                "polylogue ops reset --index && polylogued run"
+                if tier is ArchiveTier.INDEX
+                else f"mv {path} {path}.stale"
+            )
             raise RuntimeError(
-                f"{path.name} schema version {current_version} is not the current {tier.value} tier version "
-                f"{expected_version}; move it aside and rebuild the archive root"
+                f"{path} schema version {current_version} is not the current {tier.value} tier version "
+                f"{expected_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_archive_tier(conn, tier)
     finally:
