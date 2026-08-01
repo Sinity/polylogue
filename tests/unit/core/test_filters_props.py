@@ -503,20 +503,64 @@ def test_sql_pushdown_empty() -> None:
     assert f._sql_pushdown_params() == {}
 
 
-@given(
-    st.lists(st.sampled_from(["chatgpt", "claude-ai", "codex"]), min_size=1, max_size=3),
-    st.lists(st.sampled_from(["chatgpt", "claude-ai", "codex"]), min_size=0, max_size=2),
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "include_origins,exclude_origins",
+    [
+        (["claude-ai-export"], []),
+        (["claude-ai-export", "chatgpt-export"], ["chatgpt-export"]),
+        (["chatgpt-export", "codex-session"], ["codex-session"]),
+        # Contradictory filter: the same origin is both included and excluded.
+        # exclude_origin() must still win -- this is the case that proves the
+        # exclusion actually does something rather than being a no-op.
+        (["claude-ai-export"], ["claude-ai-export"]),
+    ],
 )
-def test_provider_filter_exclusion_disjoint(
-    include_providers: list[str],
-    exclude_providers: list[str],
+async def test_provider_filter_exclusion_disjoint(
+    tmp_path: Path,
+    include_origins: list[str],
+    exclude_origins: list[str],
 ) -> None:
-    """Provider inclusion and exclusion should be mutually exclusive."""
-    included = set(include_providers)
-    excluded = set(exclude_providers)
-    result = included - excluded
-    for provider in result:
-        assert provider not in excluded
+    """Origin inclusion and exclusion are mutually exclusive on SessionFilter.list():
+    no session returned by .list() ever has an origin that was passed to
+    exclude_origin(), even when that same origin was also passed to origin().
+
+    Anti-vacuity: this fails if exclude_origin() were mutated to a no-op (e.g. by
+    writing into the wrong SessionQueryPlan field instead of `excluded_origins`) --
+    the contradictory-filter case (["claude-ai-export"], ["claude-ai-export"]) would
+    then wrongly return the claude-ai-export session instead of the empty set. This
+    exercises real SessionFilter/SessionQueryPlan production code end-to-end via
+    .list(), not a bare Python set difference.
+    """
+    root = tmp_path / "origin_exclusion_archive"
+    root.mkdir()
+    db_path = root / "index.db"
+    (
+        SessionBuilder(db_path, "conv-claude")
+        .provider("claude-ai")
+        .title("Claude session")
+        .add_message("m1", role="user", text="hello")
+        .save()
+    )
+    (
+        SessionBuilder(db_path, "conv-chatgpt")
+        .provider("chatgpt")
+        .title("ChatGPT session")
+        .add_message("m2", role="user", text="hello")
+        .save()
+    )
+    (
+        SessionBuilder(db_path, "conv-codex")
+        .provider("codex")
+        .title("Codex session")
+        .add_message("m3", role="user", text="hello")
+        .save()
+    )
+
+    result = await SessionFilter(archive_root=root).origin(*include_origins).exclude_origin(*exclude_origins).list()
+
+    for session in result:
+        assert session.origin not in exclude_origins
 
 
 # =============================================================================
@@ -797,6 +841,11 @@ class TestSessionFilterCombinedFilters:
             .exclude_tag("quantum")
             .list()
         )
+        # filter_repo_advanced has 2 chatgpt-export + 1 codex-session session left
+        # after excluding all 4 claude-ai-export sessions; cardinality guard so a
+        # regression that empties the filter (total-failure mode) can't hide behind
+        # an unreached loop body.
+        assert len(result) >= 1
         assert all(c.origin != "claude-ai-export" for c in result)
         for conv in result:
             assert "quantum" not in conv.tags
@@ -809,6 +858,11 @@ class TestSessionFilterCombinedFilters:
             .exclude_tag("simple")
             .list()
         )
+        # filter_repo_advanced has 4 claude-ai-export sessions and none of them are
+        # tagged "simple" (only the codex session is), so this must be non-empty;
+        # cardinality guard so a regression that empties the filter can't hide
+        # behind an unreached loop body.
+        assert len(result) >= 1
         assert all(c.origin == "claude-ai-export" for c in result)
         for conv in result:
             assert "simple" not in conv.tags
@@ -820,6 +874,10 @@ class TestSessionFilterCombinedFilters:
             .exclude_origin("claude-ai-export", "chatgpt-export")
             .list()
         )
+        # filter_repo_advanced has 1 codex-session session left after excluding all
+        # claude-ai-export and chatgpt-export sessions; cardinality guard so a
+        # regression that empties the filter can't hide behind an unreached loop body.
+        assert len(result) >= 1
         for conv in result:
             assert conv.origin not in ("claude-ai-export", "chatgpt-export")
 

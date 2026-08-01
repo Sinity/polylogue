@@ -168,15 +168,23 @@ def test_loads_known_invalid_json_raises_under_every_backend(
 @given(st.text(min_size=1, alphabet='{[}"]:').filter(lambda s: s.strip() not in ("[]", "{}", '""', "{}")))
 def test_loads_malformed_json_never_silent(text: str) -> None:
     """loads either raises or returns a non-None value; it never silently returns None
-    for a non-null JSON input."""
+    for a non-null JSON input.
+
+    Anti-vacuity: this fails if loads() is mutated to swallow a decode failure and
+    return None instead of raising -- the alphabet here ('{[}"]:') can never spell the
+    literal token "null", so the documented null carve-out is preserved but not
+    reachable from this generator; it is still checked explicitly for robustness
+    against future alphabet changes.
+    """
     try:
         result = core_json.loads(text)
-        # If loads succeeds, it must have parsed to something
-        # (Note: valid JSON 'null' would return None, so we only assert on successful
-        # non-null parses)
-        _ = result  # No assertion needed - successful parse is fine
     except Exception:
         pass  # Expected for malformed input
+    else:
+        # Valid JSON 'null' legitimately parses to None; every other successful
+        # parse must produce a non-None value.
+        if text.strip() != "null":
+            assert result is not None
 
 
 # ---------------------------------------------------------------------------
