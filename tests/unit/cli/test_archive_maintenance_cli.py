@@ -67,7 +67,7 @@ def test_raw_authority_census_cli_resolves_receipt_handle(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["query_handle"] == receipt.query_handle
     assert payload["census"]["census_id"] == receipt.census_id
 
@@ -115,7 +115,7 @@ def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
     )
     assert census_result.exit_code == 0
     assert len(census_result.output) < 8_000
-    census_payload = json.loads(census_result.output)
+    census_payload = json.loads(census_result.stdout)
     item = census_payload["plans"][0]
     assert item["plan"]["input_raw_count"] == 2_000
     assert "raw-01999" not in census_result.output
@@ -136,7 +136,7 @@ def test_raw_authority_cli_bounds_oversized_plan_and_resolves_detail(
         catch_exceptions=False,
     )
     assert detail_result.exit_code == 0
-    detail_payload = json.loads(detail_result.output)
+    detail_payload = json.loads(detail_result.stdout)
     assert len(detail_payload["chunk"]) <= 256
     assert detail_payload["next_query_handle"] is not None
 
@@ -309,7 +309,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         catch_exceptions=False,
     )
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     by_id = {row["blocker_id"]: row for row in payload["blockers"]}
     assert by_id["blocker-stale"]["kind"] == "stale_plan"
     assert by_id["blocker-frontier"]["kind"] == "frontier_judgment"
@@ -340,7 +340,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         ["--plain", "ops", "maintenance", "raw-authority-blockers", "--output-format", "json"],
         catch_exceptions=False,
     )
-    after_payload = json.loads(after.output)
+    after_payload = json.loads(after.stdout)
     remaining = {row["blocker_id"] for row in after_payload["blockers"]}
     assert remaining == {"blocker-frontier", "blocker-obligation"}
     assert after_payload["total_count"] == 2
@@ -376,7 +376,7 @@ def test_raw_authority_blockers_cli_paginates_past_the_limit(
         ],
         catch_exceptions=False,
     )
-    first_payload = json.loads(first.output)
+    first_payload = json.loads(first.stdout)
     assert first_payload["returned_count"] == 2
     assert first_payload["total_count"] == 3
     assert first_payload["truncated"] is True
@@ -399,7 +399,7 @@ def test_raw_authority_blockers_cli_paginates_past_the_limit(
         ],
         catch_exceptions=False,
     )
-    second_payload = json.loads(second.output)
+    second_payload = json.loads(second.stdout)
     assert second_payload["returned_count"] == 1
     assert second_payload["truncated"] is False
 
@@ -566,7 +566,7 @@ def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], c
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ready"] is True
     assert {tier["tier"]: tier["action"] for tier in payload["tiers"]} == {
         "source": "create",
@@ -606,7 +606,7 @@ def test_archive_plan_cli_surfaces_existing_target_blocker(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ready"] is False
     source_plan = next(tier for tier in payload["tiers"] if tier["tier"] == "source")
     assert source_plan["action"] == "blocked"
@@ -624,7 +624,7 @@ def test_backup_plan_cli_reports_backup_profiles_and_tier_boundaries(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["mode"] == "backup_plan"
     assert payload["mutates"] is False
@@ -666,7 +666,7 @@ def test_backup_plan_cli_surfaces_missing_tiers_and_wal_checkpoint_warning(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     tiers = {tier["tier"]: tier for tier in payload["tiers"]}
     assert tiers["index"]["present"] is False
     assert tiers["user"]["wal_present"] is True
@@ -703,7 +703,7 @@ def test_assertion_export_cli_emits_all_assertions_as_jsonl(
     )
 
     assert result.exit_code == 0
-    rows = [json.loads(line) for line in result.output.splitlines()]
+    rows = [json.loads(line) for line in result.stdout.splitlines()]
     assert [row["assertion_id"] for row in rows] == ["export-mark", "export-deleted-note"]
     assert rows[0]["kind"] == "mark"
     assert rows[0]["value"] == {"label": "important"}
@@ -738,7 +738,7 @@ def test_assertion_export_cli_filters_and_writes_json_file(
     )
 
     assert result.exit_code == 0
-    assert result.output == f"Exported 1 assertions to {out_path}\n"
+    assert result.stdout == f"Exported 1 assertions to {out_path}\n"
     payload = json.loads(out_path.read_text(encoding="utf-8"))
     assert payload["mode"] == "assertion_export"
     assert payload["count"] == 1
@@ -759,7 +759,7 @@ def test_blob_gc_cli_dry_run_reports_without_deleting(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["mode"] == "blob_gc"
     assert payload["mutates"] is False
@@ -806,7 +806,7 @@ def test_blob_gc_cli_yes_deletes_and_records_generation(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mutates"] is True
     assert payload["dry_run"] is False
     assert payload["would_delete_count"] == 0
@@ -842,7 +842,7 @@ def test_blob_publications_cli_requires_confirmation_to_abandon(
         catch_exceptions=False,
     )
     assert inspected.exit_code == 0
-    payload = json.loads(inspected.output)
+    payload = json.loads(inspected.stdout)
     assert payload["mutates"] is False
     assert payload["receipts"][0]["publication_id"] == receipt_id
 
@@ -869,7 +869,7 @@ def test_blob_publications_cli_requires_confirmation_to_abandon(
         catch_exceptions=False,
     )
     assert abandoned.exit_code == 0
-    payload = json.loads(abandoned.output)
+    payload = json.loads(abandoned.stdout)
     assert payload["abandonment"]["abandoned"] == 1
     assert payload["receipts"] == []
 
@@ -899,7 +899,7 @@ def test_blob_reference_debt_cli_classifies_missing_refs(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_debt"
     assert payload["mutates"] is False
     assert payload["ok"] is False
@@ -947,7 +947,7 @@ def test_attachment_acquisition_debt_cli_reports_clean_empty_archive(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "attachment_acquisition_debt"
     assert payload["mutates"] is False
     assert payload["ok"] is True
@@ -998,7 +998,7 @@ def test_blob_reference_recovery_plan_cli_writes_raw_backed_manifest(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_recovery_plan"
     assert payload["mutates"] is False
     assert payload["writes_manifest"] is True
@@ -1047,7 +1047,7 @@ def test_blob_reference_replace_from_source_cli_applies_with_manifest(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_replace_from_source"
     assert payload["mutates"] is True
     assert payload["writes_manifest"] is True
@@ -1080,7 +1080,7 @@ def test_blob_reference_prune_orphans_cli_dry_run_keeps_refs(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "blob_reference_prune_orphans"
     assert payload["mutates"] is False
     assert payload["dry_run"] is True
@@ -1116,7 +1116,7 @@ def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mutates"] is True
     assert payload["dry_run"] is False
     assert payload["missing_orphan_refs"] == 1
@@ -1250,7 +1250,7 @@ def test_embedding_orphan_reconcile_cli_dry_run_keeps_rows(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "embedding_orphan_reconcile"
     assert payload["mutates"] is False
     assert payload["dry_run"] is True
@@ -1324,7 +1324,7 @@ def test_archive_init_cli_is_dry_run_without_yes(cli_workspace: dict[str, Path],
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["executed"] is False
     assert payload["ready"] is True
     assert not (cli_workspace["archive_root"] / "index.db").exists()
@@ -1360,7 +1360,7 @@ def test_archive_init_cli_executes_confirmed_initialization(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["executed"] is True
     assert payload["tiers"] == [
         {
@@ -1399,7 +1399,7 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["tier"] == "user"
     assert payload["from_version"] == 3
@@ -1454,7 +1454,7 @@ def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(
     )
 
     assert result.exit_code == 1
-    assert "successful backup verification receipt" in json.loads(result.output)["error"]
+    assert "successful backup verification receipt" in json.loads(result.stdout)["error"]
     with sqlite3.connect(user_db) as conn:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
 
@@ -1489,7 +1489,7 @@ def test_migrate_tier_cli_rejects_one_byte_tampered_backup_before_user_version_c
     )
 
     assert result.exit_code == 1
-    assert "tier artifact hash mismatch" in json.loads(result.output)["error"]
+    assert "tier artifact hash mismatch" in json.loads(result.stdout)["error"]
     with sqlite3.connect(user_db) as conn:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
 
@@ -1520,7 +1520,7 @@ def test_migrate_tier_cli_refuses_manifest_missing_target_tier(
     )
 
     assert result.exit_code == 1
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["ok"] is False
     assert "does not include user.db" in payload["error"]
     with sqlite3.connect(user_db) as conn:
@@ -1565,7 +1565,7 @@ def test_raw_authority_frontier_cli_replaces_incident_specific_commands(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["accepted_head_count"] == 0
     assert payload["plan_count"] == 0
     assert payload["executable_plan_count"] == 0
@@ -1673,7 +1673,7 @@ def test_archive_read_cli_lists_archive_sessions(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "list"
     assert payload["sessions"] == [
         {
@@ -1745,7 +1745,7 @@ def test_archive_read_cli_searches_archive_blocks(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "search"
     assert payload["hits"][0]["block_id"] == "codex-session:native-1:m1:0"
     assert payload["hits"][0]["snippet"] == "[needle]"
@@ -2340,7 +2340,7 @@ def test_rebuild_index_explicit_raw_ids_remain_inspectable_in_plan_mode(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["raw_session_count"] == 10
     assert payload["selected_raw_count"] == 2
     assert payload["raw_id_count"] == 3
@@ -2396,7 +2396,7 @@ def test_rebuild_index_filters_selected_rows_by_blob_size(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["selected_raw_count"] == 1
     assert payload["totals"]["blob_bytes"] == 1 * 1024 * 1024
     assert payload["skipped_by_blob_limit_count"] == 1
@@ -2462,7 +2462,7 @@ def test_rebuild_index_plan_reports_weighted_top_rows(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["status"] == "ok"
     assert payload["raw_session_count"] == 3
     assert payload["selected_raw_count"] == 3

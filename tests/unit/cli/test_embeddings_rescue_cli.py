@@ -78,7 +78,7 @@ def test_embeddings_rescue_cli_plan_mode_is_read_only_on_empty_archive(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "plan"
     assert payload["mutates"] is False
     assert payload["eligible_sessions"] == 0
@@ -111,7 +111,7 @@ def test_embeddings_rescue_cli_apply_mode_no_op_on_empty_archive(
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["mode"] == "execute"
     assert payload["mutates"] is True
     assert payload["rescued_sessions"] == 0

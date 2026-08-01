@@ -9,8 +9,53 @@ from typing import Any
 
 import click
 
+from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import Origin
 from polylogue.maintenance.scope import MaintenanceScopeFilter
+
+#: Human-readable description of where each config layer's value came from,
+#: keyed by the layer names `PolylogueConfig.layer_of` returns
+#: (`default`/`site`/`user`/`env`/`cli`).
+_LAYER_DESCRIPTIONS: dict[str, str] = {
+    "env": "POLYLOGUE_ARCHIVE_ROOT environment variable",
+    "cli": "CLI flag",
+    "default": "built-in default (no config file or environment override)",
+}
+
+
+def archive_root_provenance_line(env: AppEnv) -> str:
+    """Return a one-line "archive root + provenance" description.
+
+    Every ``ops maintenance`` command resolves its archive root through the
+    same 5-layer precedence as the rest of the CLI (see
+    ``polylogue/config.py``'s module docstring), but a break-glass operator
+    running in an unfamiliar shell has no way to tell whether that root came
+    from ``polylogue.toml`` or from a stray ``POLYLOGUE_ARCHIVE_ROOT`` left
+    over from a devshell/demo session (polylogue-l1qg: an operator drew
+    "archive looks clean" conclusions from a scratch archive this way). This
+    is printed unconditionally at the top of every maintenance invocation --
+    not gated behind ``--verbose`` -- because the whole point is that the
+    operator should not have to know to ask for it.
+    """
+    settings = env.runtime.settings
+    layer = settings.layer_of("archive_root")
+    archive_root = env.config.archive_root
+    if layer in ("site", "user"):
+        config_path = settings.layer_paths.get(layer)
+        source = f"{layer} config file ({config_path})" if config_path else f"{layer} config file"
+    else:
+        source = _LAYER_DESCRIPTIONS.get(layer, layer)
+    return f"Archive root: {archive_root} [source: {source}]"
+
+
+def print_archive_root_provenance(env: AppEnv) -> None:
+    """Print :func:`archive_root_provenance_line` to stderr.
+
+    Stderr (not stdout) so the banner never corrupts a subcommand's
+    ``--output-format json`` payload piped downstream, while still landing
+    in the operator's terminal by default.
+    """
+    click.echo(archive_root_provenance_line(env), err=True)
 
 
 def _build_scope_filter(
