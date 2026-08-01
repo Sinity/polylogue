@@ -62,6 +62,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import tomllib
+
 
 class CheckoutImportMismatchError(RuntimeError):
     """``import polylogue`` resolved to a package outside the invoking checkout."""
@@ -80,8 +82,38 @@ def resolved_polylogue_path() -> Path:
     return Path(polylogue.__file__).resolve()
 
 
+def _is_polylogue_checkout_root(candidate: Path) -> bool:
+    """Return whether ``candidate`` is plausibly the root of a Polylogue checkout.
+
+    Cheap, filesystem-only markers (no subprocess): either a
+    ``pyproject.toml`` whose ``[project].name`` is literally ``"polylogue"``,
+    or (fallback, for the rare case a checkout's ``pyproject.toml`` is
+    missing/unparseable but the source tree is intact) the package's own
+    entry-point file, ``polylogue/cli/click_app.py``, existing under
+    ``candidate``. Either marker is present in every Polylogue checkout and
+    worktree, and absent from an unrelated repository.
+    """
+    pyproject = candidate / "pyproject.toml"
+    try:
+        raw = pyproject.read_bytes()
+    except OSError:
+        raw = None
+    if raw is not None:
+        try:
+            data = tomllib.loads(raw.decode("utf-8"))
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+            data = {}
+        project_name = data.get("project", {}).get("name")
+        if project_name == "polylogue":
+            return True
+    try:
+        return (candidate / "polylogue" / "cli" / "click_app.py").is_file()
+    except OSError:
+        return False
+
+
 def find_git_worktree_root(start: Path) -> Path | None:
-    """Walk upward from ``start`` looking for a ``.git`` entry.
+    """Walk upward from ``start`` looking for the enclosing Polylogue checkout.
 
     Pure filesystem ``stat``/``exists`` calls — no subprocess — so this is
     cheap enough to run unconditionally on every CLI invocation (a handful of
@@ -89,19 +121,37 @@ def find_git_worktree_root(start: Path) -> Path | None:
     a plain repo's ``.git`` directory and a linked worktree's ``.git`` *file*
     (which points at the shared ``.git/worktrees/<name>`` gitdir elsewhere).
 
-    Returns the first directory containing a ``.git`` entry, or ``None`` if
-    none is found before reaching the filesystem root — e.g. a real installed
-    ``polylogue`` invocation with no dev checkout in its cwd ancestry at all,
-    which this guard deliberately leaves alone.
+    Returns the first ``.git``-containing ancestor directory, but **only**
+    when that directory also looks like a Polylogue checkout
+    (:func:`_is_polylogue_checkout_root`). Two ``None`` cases, deliberately
+    not distinguished by the caller:
+
+    - No ``.git`` entry anywhere in the ancestry — e.g. a real installed
+      ``polylogue`` invocation with no dev checkout in its cwd ancestry at
+      all.
+    - A ``.git`` entry *is* found, but it belongs to some other, unrelated
+      repository (``cd ~/some-other-project && polylogue --version`` — an
+      ordinary, common invocation). The walk stops at that repo's root
+      rather than climbing past it into parent directories: a git
+      repository boundary is exactly the boundary of "the checkout the
+      process is running from", so a non-Polylogue repo there means cwd is
+      not inside any Polylogue checkout, full stop — climbing further up
+      could otherwise find an unrelated Polylogue checkout that merely
+      happens to be an ancestor directory and misfire the guard against it.
+
+    Both cases must no-op identically (2026-08-01 regression, polylogue-373yt):
+    the guard exists to catch a linked *Polylogue* worktree resolving a
+    *different* Polylogue checkout's package, not to flag every invocation
+    whose cwd happens to have some ``.git`` ancestor.
     """
     current = start.resolve()
     for candidate in (current, *current.parents):
         try:
-            found = (candidate / ".git").exists()
+            has_git = (candidate / ".git").exists()
         except OSError:
-            found = False
-        if found:
-            return candidate
+            has_git = False
+        if has_git:
+            return candidate if _is_polylogue_checkout_root(candidate) else None
     return None
 
 
