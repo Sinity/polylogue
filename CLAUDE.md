@@ -366,12 +366,13 @@ workflow, not optional conveniences — use them at the point named, every time:
   one branch instead of colliding across parallel lanes.
 - **When dispatching a worktree-isolated lane**: `devtools workspace lane-brief
   <ids> --out <path>` for its dispatch prompt (footprint, prior art, hazards).
-- **Immediately after a worktree-isolated agent reports back, before trusting
-  its diff**: `devtools workspace verify-worktree <path> --expect-branch
-  <branch>` — confirms the worktree is real and isolated, not a silent
-  escape into the main checkout (the 2026-08-01 incident this exists for:
-  ~1700 lines of half-finished output landed directly in the coordinator's
-  live tree because nothing checked this first).
+- **Immediately after spawning a worktree-isolated lane, not after it reports
+  back**: `devtools workspace verify-worktree <path> --expect-branch
+  <branch>` — confirms the worktree is real and isolated before the lane has
+  had a chance to run anything. Waiting until the lane reports is too late:
+  the 2026-08-01 incident this check exists for was a silent worktree-escape
+  where ~1700 lines of half-finished output had already landed directly in
+  the coordinator's live tree by the time the lane reported back.
 - **Before squash-merging any PR**: `devtools workspace merge-gate record <PR>
   --command "devtools verify"` (or a narrower test selection) against the
   PR's current head, then `devtools workspace merge-gate check <PR>` —
