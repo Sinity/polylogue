@@ -147,9 +147,17 @@ def message_prose_sql(
                      to exclude thinking, tool_result, etc.).
 
     Returns:
-        A GROUP_CONCAT SQL expression (without "AS text" clause) that when selected
-        with an alias produces ordered, filtered block prose.
-        The expression uses a correlated subquery for proper ordering.
+        A self-contained scalar subquery (without "AS text" clause) that when
+        selected with an alias produces ordered, filtered, concatenated block
+        prose for that one message. The GROUP_CONCAT aggregation happens
+        *inside* the subquery, over a pre-sorted derived table -- it does not
+        rely on the outer query's own GROUP BY/JOIN shape. This matters
+        because every caller LEFT JOINs `blocks` to filter/order by block
+        columns, which fans a multi-block message out into multiple outer
+        rows; wrapping GROUP_CONCAT around a *correlated scalar* subquery
+        (the previous implementation) evaluated that scalar once per fanned-
+        out row and returned only a single block's text, repeated -- multi
+        TEXT-block messages silently lost every block but the first.
 
     Example:
         >>> prose_expr = message_prose_sql("m", separator="'\\n'", block_types=("text",))
@@ -158,16 +166,16 @@ def message_prose_sql(
     # Format block_types as SQL list for IN clause
     block_types_sql = ", ".join(f"'{bt}'" for bt in block_types)
 
-    return f"""GROUP_CONCAT(
-        (
+    return f"""(
+        SELECT GROUP_CONCAT(prose_block.text, {separator})
+        FROM (
             SELECT b.text
             FROM blocks b
             WHERE b.message_id = {alias}.message_id
               AND b.block_type IN ({block_types_sql})
               AND b.text IS NOT NULL
             ORDER BY b.position
-        ),
-        {separator}
+        ) AS prose_block
     )"""
 
 
