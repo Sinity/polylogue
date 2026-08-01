@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+import click
 import yaml
 
 from polylogue.api.sync.bridge import run_coroutine_sync
@@ -102,14 +103,22 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
         execute_query_request(env, updated)
     elif invocation.destination == "clipboard":
         execute_query_request(env, updated.with_param_updates(output="clipboard"))
+    elif invocation.destination == "browser":
+        # Route through the same query-output delivery contract that
+        # `find QUERY --to browser` (without `read`) already uses --
+        # `QueryOutputSpec`/`deliver_query_output` (query_output.py) resolve
+        # ``output="browser"`` to the existing browser-opening path
+        # (query_output.open_in_browser). Previously this branch was
+        # missing and fell through to the plain-stdout `else`, so
+        # `read --to browser` silently printed to the terminal
+        # (polylogue-bvnz).
+        execute_query_request(env, updated.with_param_updates(output="browser"))
     elif invocation.destination == "file":
         if not invocation.out_path:
-            import click
-
             raise click.UsageError("--to file requires --out <path>.")
         execute_query_request(env, updated.with_param_updates(output=invocation.out_path))
     else:
-        execute_query_request(env, updated)
+        raise click.UsageError(f"Unrecognized read destination: {invocation.destination!r}.")
 
 
 def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
@@ -140,7 +149,14 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         return
     fmt = invocation.output_format or "markdown"
     content = _format_dialogue_session(session, fmt, projection=projection)
-    deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+    deliver_content(
+        env,
+        content,
+        destination=invocation.destination,
+        out_path=invocation.out_path,
+        output_format=fmt,
+        session=session,
+    )
 
 
 def _format_dialogue_session(
@@ -452,7 +468,7 @@ def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         content = json.dumps({"temporal_window": window.model_dump(mode="json")}, indent=2) + "\n"
     else:
         content = _render_temporal_window_markdown(window)
-    deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+    deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path, output_format=fmt)
 
 
 def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:

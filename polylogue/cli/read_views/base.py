@@ -14,6 +14,7 @@ from polylogue.cli.read_view_registry import ReadViewSessionPolicy
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
+    from polylogue.archive.session.domain_models import Session
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
@@ -160,8 +161,24 @@ class ReadViewHandler:
         return self.option_builder(values)
 
 
-def deliver_content(env: AppEnv, content: str, *, destination: str, out_path: str | None) -> None:
-    """Deliver captured content to the requested destination."""
+def deliver_content(
+    env: AppEnv,
+    content: str,
+    *,
+    destination: str,
+    out_path: str | None,
+    output_format: str = "markdown",
+    session: Session | None = None,
+) -> None:
+    """Deliver captured content to the requested destination.
+
+    ``destination`` must be one of the values in ``_READ_DESTINATIONS``
+    (``query_verbs.py``): ``terminal``/``stdout``, ``clipboard``, ``file``, or
+    ``browser``. An unrecognized destination raises rather than silently
+    falling back to terminal output -- a prior version of this dispatch let
+    any unhandled destination (including the valid-but-unwired ``browser``)
+    degrade to a plain ``click.echo`` (polylogue-bvnz).
+    """
 
     if destination == "file":
         if not out_path:
@@ -172,8 +189,14 @@ def deliver_content(env: AppEnv, content: str, *, destination: str, out_path: st
         from polylogue.cli.query_output import copy_to_clipboard
 
         copy_to_clipboard(env, content)
-    else:
+    elif destination == "browser":
+        from polylogue.cli.query_output import open_in_browser
+
+        open_in_browser(env, content, output_format, session)
+    elif destination in ("stdout", "terminal"):
         click.echo(content, nl=False)
+    else:
+        raise click.UsageError(f"Unrecognized read destination: {destination!r}.")
 
 
 def execute_query_request(env: AppEnv, request: RootModeRequest) -> None:

@@ -469,6 +469,47 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
     return defaults
 
 
+def test_deliver_content_browser_destination_opens_browser() -> None:
+    """base.deliver_content's ``"browser"`` branch must route through the
+    existing query_output.open_in_browser mechanism (polylogue-bvnz), not a
+    second bespoke implementation.
+
+    Anti-vacuity: the production caller is ``deliver_content``
+    (``read_views/base.py``), used by every read view that streams rendered
+    content (dialogue, temporal, context, neighbors, messages, events,
+    file-edits, chronicle). Removing the ``elif destination == "browser":``
+    branch (or reverting it to fall into the generic ``else``) makes this
+    test fail because ``open_in_browser`` would never be called.
+    """
+    from polylogue.cli.read_views.base import deliver_content
+
+    env = cast(AppEnv, SimpleNamespace(ui=MagicMock()))
+    with patch("polylogue.cli.query_output.open_in_browser") as open_browser:
+        deliver_content(
+            env,
+            "rendered content",
+            destination="browser",
+            out_path=None,
+            output_format="markdown",
+            session=None,
+        )
+    open_browser.assert_called_once_with(env, "rendered content", "markdown", None)
+
+
+def test_deliver_content_unrecognized_destination_raises() -> None:
+    """An unrecognized destination must raise, never silently echo to stdout.
+
+    Prior behavior let any destination unhandled by the if/elif chain
+    (including the valid-but-unwired ``"browser"``) fall through to a plain
+    ``click.echo`` -- the exact silent-degradation bug this bead fixes.
+    """
+    from polylogue.cli.read_views.base import deliver_content
+
+    env = cast(AppEnv, SimpleNamespace(ui=MagicMock()))
+    with pytest.raises(click.UsageError, match="Unrecognized read destination"):
+        deliver_content(env, "content", destination="bogus", out_path=None)
+
+
 def _continue_verb_kwargs(**overrides: object) -> dict[str, object]:
     defaults: dict[str, object] = {
         "destination": "terminal",
@@ -501,6 +542,62 @@ def test_read_verb_summary_dispatches_to_execute_query_verb() -> None:
     request = execute.call_args.args[1]
     assert isinstance(request, RootModeRequest)
     assert request.query_params()["origin"] == "chatgpt-export"
+
+
+def test_read_verb_summary_browser_destination_routes_through_query_output_delivery() -> None:
+    """read --to browser must route through the existing browser-delivery
+    contract instead of silently degrading to terminal output.
+
+    Regression test for polylogue-bvnz: the destination dispatch in
+    ``run_read_summary_or_transcript`` (the handler for the default
+    ``summary`` view) previously had no ``"browser"`` branch and fell
+    through to the same ``execute_query_request(env, updated)`` call used
+    for plain stdout -- so ``read --to browser`` printed rows to the
+    terminal with no browser opened and no warning. The production
+    caller this test exercises is ``read_verb`` (``query_verbs.py``)
+    dispatching into ``run_read_summary_or_transcript``
+    (``read_views/standard.py``); the mutation that must make this test
+    fail is removing the ``elif invocation.destination == "browser":``
+    branch there (or dropping the ``output="browser"`` param update),
+    which would revert to the silent-echo fallthrough.
+    """
+    _, child = _context_pair(params={"origin": "chatgpt-export"}, query_terms=("alpha",))
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+
+    with (
+        patch("polylogue.cli.query_verbs._resolve_query_action_session_id", return_value=None),
+        patch("polylogue.cli.read_views.standard.execute_query_request") as execute,
+    ):
+        wrapped(child, **_read_verb_kwargs(view="summary", destination="browser"))
+
+    execute.assert_called_once()
+    request = execute.call_args.args[1]
+    assert isinstance(request, RootModeRequest)
+    # "output" must be set to "browser" so QueryOutputSpec.from_params (in
+    # query_contracts.py) parses a QueryDeliveryTarget(kind="browser") and
+    # deliver_query_output (query_output.py) opens a browser -- the same
+    # contract `find QUERY --to browser` (without `read`) already uses.
+    # Before the fix, "output" was left unset here (defaulting to stdout).
+    assert request.query_params()["output"] == "browser"
+
+
+def test_read_verb_summary_unrecognized_destination_raises() -> None:
+    """An unrecognized destination must raise, never silently echo to stdout."""
+    from polylogue.cli.read_views.base import ReadViewInvocation
+    from polylogue.cli.read_views.standard import run_read_summary_or_transcript
+
+    env = cast(AppEnv, SimpleNamespace(ui=MagicMock(), config=SimpleNamespace(archive_root=None)))
+    request = RootModeRequest.from_params({})
+    invocation = ReadViewInvocation(
+        view="summary",
+        session_id=None,
+        output_format="markdown",
+        destination="bogus",
+        out_path=None,
+    )
+    with pytest.raises(click.UsageError, match="Unrecognized read destination"):
+        run_read_summary_or_transcript(env, request, invocation)
 
 
 def test_read_verb_summary_exact_ref_dispatches_direct_read() -> None:
