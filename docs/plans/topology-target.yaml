@@ -556,7 +556,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/cost_compute.py
-    loc: 298
+    loc: 375
     target: polylogue/archive/semantic/cost_compute.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -576,7 +576,7 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/pricing.py
-    loc: 995
+    loc: 1000
     target: polylogue/archive/semantic/pricing.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -823,7 +823,7 @@ files:
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
-    loc: 652
+    loc: 694
     target: polylogue/cli/click_app.py
     owner: stable
   - path: polylogue/cli/click_command_registration.py
@@ -951,7 +951,7 @@ files:
     target: polylogue/cli/commands/maintenance/_blob_gc.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_integrity.py
-    loc: 430
+    loc: 436
     target: polylogue/cli/commands/maintenance/_blob_integrity.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_publications.py
@@ -1035,7 +1035,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2494
+    loc: 2428
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -2105,6 +2105,10 @@ files:
     loc: 474
     target: polylogue/insights/run_projection.py
     owner: stable
+  - path: polylogue/insights/schema_drift.py
+    loc: 89
+    target: polylogue/insights/schema_drift.py
+    owner: stable
   - path: polylogue/insights/session_analytics.py
     loc: 274
     target: polylogue/insights/session_analytics.py
@@ -2723,7 +2727,7 @@ files:
     target: polylogue/scenarios/workload.py
     owner: stable
   - path: polylogue/schemas/__init__.py
-    loc: 9
+    loc: 35
     target: polylogue/schemas/__init__.py
     owner: stable
   - path: polylogue/schemas/audit/__init__.py
@@ -3633,7 +3637,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/blob_integrity.py
-    loc: 2108
+    loc: 2151
     target: polylogue/storage/blob_integrity.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -4169,7 +4173,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/index_convergence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
-    loc: 247
+    loc: 364
     target: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
@@ -4193,7 +4197,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2868
+    loc: 2877
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -4237,7 +4241,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 6295
+    loc: 6312
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py
@@ -4269,7 +4273,7 @@ files:
     target: polylogue/storage/sqlite/finding_provenance.py
     owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
-    loc: 720
+    loc: 819
     target: polylogue/storage/sqlite/lifecycle.py
     owner: stable
   - path: polylogue/storage/sqlite/maintenance.py
