@@ -1560,39 +1560,71 @@ def _ops_cursor_byte_offsets(ops_db_path: Path) -> dict[str, int]:
 # Orphaned raw-authority plan cleanup (polylogue-i3zo)
 # ---------------------------------------------------------------------------
 #
-# raw_authority_plans/blockers/census_plans/census_post_plans reference raws
-# by JSON string (input_raw_ids_json), not by FK, so deleting a raw_sessions
-# row here does NOT cascade-clean its frontier plans. A plan whose EVERY
-# input raw is gone is unprocessable and must be pruned in the same
-# transaction as the raw delete, or the daemon reconciler's next convergence
-# pass throws RuntimeError("duplicate strategy did not reach its typed
-# terminal postcondition") on the dangling plan (live incident 2026-07-22,
-# first observed against polylogue/maintenance/hook_deinflation.py's
-# one-time repair, which has since been deleted -- ee22574e5 -- because that
-# specific repair completed; the same unguarded gap exists here for
-# ordinary retention-driven raw deletion and was never given a home).
+# raw_authority_plans references raws by JSON string (input_raw_ids_json),
+# not by FK, so deleting a raw_sessions row here does NOT cascade-clean a
+# frontier plan naming it. A plan whose every input raw is gone and which no
+# census still references is unprocessable and must be pruned in the same
+# transaction as the raw delete, or the row simply accumulates forever
+# (bounded growth was the original motivation; see polylogue-i3zo).
 #
-# Design: hard-delete, not a soft terminal-state transition. This mirrors the
-# only prior art for this exact gap (unmerged commit c2554a615, "prune
-# orphaned raw-authority plans in hook-deinflation repair"): a plan is durable
-# audit evidence of a *reconciliation attempt*, not of user-authored history,
-# and once every raw it names is gone the plan cannot be replayed, retried,
-# or inspected against source evidence -- there is nothing left to audit.
-# raw_authority_plans lives in source.db (a durable tier) but is populated and
-# consumed entirely by the daemon reconciler, with no read surface exposing
-# historical plans to a human operator; keeping a terminally-orphaned plan
-# around serves no audit purpose and actively breaks the reconciler. This is
-# unlike `user.db` assertions (durable, human-authored, always additive) or
-# `raw_sessions` full/append revision chains (superseded but still
-# byte-reconstructible) -- neither pattern applies to a plan with zero
-# remaining inputs.
+# CENSUS-SAFETY (revised after a real review finding on the first version of
+# this fix, chatgpt-codex-connector on PR #3530): the first draft deleted
+# `raw_authority_census_plans` / `raw_authority_census_post_plans` /
+# `raw_authority_blockers` rows for any orphaned plan, unconditionally. That
+# is wrong: `raw_authority_censuses.plan_count` / `post_plan_count` are
+# immutable per-census totals read verbatim by `read_raw_authority_census`
+# (`polylogue/storage/raw_authority.py`) to report a census's total AND to
+# decide whether pagination has more pages (`next_offset < max(total,
+# post_total)`). Deleting a census's plan-membership rows without adjusting
+# those counts makes the total lie, and once a census's rows are ALL
+# removed, `next_offset` (computed from `len(plans)`, now always 0) stops
+# advancing -- `next_query_handle` is reissued forever. Deleting an
+# unresolved `raw_authority_blockers` row is worse: `prune_raw_authority_census_history`
+# (same module) already treats an unresolved blocker as "a live durable
+# obligation, not history" and refuses to touch it for exactly this reason.
+#
+# The fix: never delete `raw_authority_census_plans` / `_post_plans` /
+# `raw_authority_blockers` from this function at all -- only ever delete a
+# `raw_authority_plans` row once it has ZERO remaining references in any of
+# those three tables. This composes with, rather than fights, the existing
+# retention path: every `raw_authority_plans` row is inserted in the same
+# transaction as its owning census's `raw_authority_census_plans` row
+# (`record_raw_authority_census` in raw_authority.py), so a plan can only
+# reach zero census references once `prune_raw_authority_census_history`'s
+# own plan-retention window (`RAW_AUTHORITY_CENSUS_PLAN_RETENTION`, 8
+# generations) has already decided its census-plan detail is safe to drop --
+# which that function only does once no unresolved blocker remains. This
+# function therefore only ever touches a `raw_authority_plans` row that
+# established machinery has already judged expendable; it cannot advance
+# that judgment early, and cannot itself corrupt any `plan_count` /
+# `post_plan_count` because it never deletes the rows those counts describe.
+#
+# Consequence, stated honestly: a plan still referenced by an active
+# ('planned', unresolved) census -- a genuine live obligation -- is left
+# untouched by this pass even if every raw it names is already gone. That
+# is deliberate: the original 2026-07-22 live incident this bead cites was
+# caused by a one-time repair script (`hook_deinflation.py`, since deleted)
+# deleting raws out from under an in-flight census apply directly, bypassing
+# retention authority entirely -- a defect in that now-gone one-time script,
+# not something `cleanup_superseded_raw_snapshots` reproduces (it only
+# deletes raws proven superseded via `active_raw_retention_authority` /
+# the file-set recency heuristic, an orthogonal concern from census
+# membership). A dangling reference from a still-live census plan to an
+# already-superseded raw is a pre-existing reconciler-robustness question
+# (tracked separately, polylogue-7f8yc) and is not this function's job to
+# solve by deleting durable census evidence. The pagination/plan_count
+# staleness this review also flagged already exists today via
+# prune_raw_authority_census_history's own plan-retention window, entirely
+# independent of this function (tracked separately, polylogue-4uzoo).
 #
 # Set-based (single pass, LEFT JOIN on the raw_id PK): expand each plan's
 # input raws, GROUP BY plan, keep plans whose inputs are ALL missing. The
 # equivalent correlated-subquery form measured ~26 billion ops (>1h) on the
 # live archive; this form completes in ~0.3s. A plan with empty inputs
 # produces no json_each rows and is correctly excluded (it is not
-# orphaned-by-missing-raw).
+# orphaned-by-missing-raw). The candidate set from this query is then
+# anti-joined against the three census/blocker tables (temp `plan_id`
+# indexes make that anti-join index-driven too) before anything is deleted.
 _PURELY_ORPHANED_AUTHORITY_PLANS_SQL = """
     SELECT p.plan_id
     FROM raw_authority_plans p, json_each(p.input_raw_ids_json) j
@@ -1604,51 +1636,60 @@ _PURELY_ORPHANED_AUTHORITY_PLANS_SQL = """
 
 
 def _delete_orphaned_raw_authority_plans(conn: sqlite3.Connection) -> int:
-    """Prune raw-authority plans whose every input raw is gone, plus their
-    blocker/census children. Children first (they carry NO ACTION/RESTRICT
-    FKs to ``raw_authority_plans``, so the parent delete would otherwise
-    fail once the schema enforces foreign keys).
+    """Prune ``raw_authority_plans`` rows that are both raw-orphaned (every
+    input raw is gone) AND already census-free (zero remaining rows in
+    ``raw_authority_census_plans`` / ``_post_plans`` / ``raw_authority_blockers``).
 
-    Must run in the same transaction as (and after) the raw delete that may
-    have orphaned these plans, so "orphaned" is always computed against the
-    post-delete raw set. No-ops (returns 0) when ``raw_authority_plans``
-    doesn't exist, so this is safe to call unconditionally.
-
-    Temporary full ``plan_id`` indexes are created on the three child tables:
-    their durable indexes are partial (``WHERE resolved_at_ms IS NULL`` /
-    composite ``PRIMARY KEY(census_id, plan_id)`` with ``plan_id`` non-leading)
-    so an IN-delete keyed on ``plan_id`` alone would otherwise full-scan each
-    child per plan -- the exact ~26-51 billion op hang (>1h) observed on the
-    live 84k-plan / 405k-census-row tables before this was measured. The temp
-    indexes are dropped before returning so the durable schema is unchanged.
+    Never deletes from the census/blocker tables themselves -- see the
+    module comment above for why that would corrupt the immutable
+    ``raw_authority_censuses.plan_count`` / ``post_plan_count`` ledger and
+    silently drop live blocker obligations. Must run in the same transaction
+    as (and after) the raw delete that may have orphaned these plans, so
+    "orphaned" is always computed against the post-delete raw set. No-ops
+    (returns 0) when ``raw_authority_plans`` doesn't exist, so this is safe
+    to call unconditionally.
     """
     if not _table_exists(conn, "raw_authority_plans"):
         return 0
-    conn.execute("CREATE TEMP TABLE _orphan_authority_plans (plan_id TEXT PRIMARY KEY)")
+    conn.execute("CREATE TEMP TABLE _orphan_authority_plan_candidates (plan_id TEXT PRIMARY KEY)")
     try:
-        conn.execute(f"INSERT INTO _orphan_authority_plans (plan_id) {_PURELY_ORPHANED_AUTHORITY_PLANS_SQL}")
-        count = int(conn.execute("SELECT COUNT(*) FROM _orphan_authority_plans").fetchone()[0])
-        if count == 0:
+        conn.execute(f"INSERT INTO _orphan_authority_plan_candidates (plan_id) {_PURELY_ORPHANED_AUTHORITY_PLANS_SQL}")
+        candidate_count = int(conn.execute("SELECT COUNT(*) FROM _orphan_authority_plan_candidates").fetchone()[0])
+        if candidate_count == 0:
             return 0
-        child_indexes = {
-            "_tmp_rawretention_blk_plan": "raw_authority_blockers",
-            "_tmp_rawretention_cp_plan": "raw_authority_census_plans",
-            "_tmp_rawretention_cpp_plan": "raw_authority_census_post_plans",
+        # Exclude any candidate still referenced by a census or an
+        # (un)resolved blocker -- never delete a plan those durable rows
+        # describe. Temp full plan_id indexes make this index-driven instead
+        # of a full scan of the (potentially hundreds-of-thousands-row)
+        # census/blocker tables per candidate.
+        reference_indexes = {
+            "_tmp_rawretention_authplan_cp": "raw_authority_census_plans",
+            "_tmp_rawretention_authplan_cpp": "raw_authority_census_post_plans",
+            "_tmp_rawretention_authplan_blk": "raw_authority_blockers",
         }
-        for index_name, table in child_indexes.items():
+        for index_name, table in reference_indexes.items():
             conn.execute(f"CREATE INDEX {index_name} ON {table}(plan_id)")
         try:
-            for table in child_indexes.values():
-                conn.execute(f"DELETE FROM {table} WHERE plan_id IN (SELECT plan_id FROM _orphan_authority_plans)")
             conn.execute(
-                "DELETE FROM raw_authority_plans WHERE plan_id IN (SELECT plan_id FROM _orphan_authority_plans)"
+                """
+                DELETE FROM _orphan_authority_plan_candidates
+                WHERE plan_id IN (SELECT plan_id FROM raw_authority_census_plans)
+                   OR plan_id IN (SELECT plan_id FROM raw_authority_census_post_plans)
+                   OR plan_id IN (SELECT plan_id FROM raw_authority_blockers)
+                """
             )
         finally:
-            for index_name in child_indexes:
+            for index_name in reference_indexes:
                 conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+        count = int(conn.execute("SELECT COUNT(*) FROM _orphan_authority_plan_candidates").fetchone()[0])
+        if count == 0:
+            return 0
+        conn.execute(
+            "DELETE FROM raw_authority_plans WHERE plan_id IN (SELECT plan_id FROM _orphan_authority_plan_candidates)"
+        )
         return count
     finally:
-        conn.execute("DROP TABLE IF EXISTS _orphan_authority_plans")
+        conn.execute("DROP TABLE IF EXISTS _orphan_authority_plan_candidates")
 
 
 def _superseded_archive_raw_session_candidates(
