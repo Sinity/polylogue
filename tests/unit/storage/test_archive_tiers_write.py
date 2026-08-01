@@ -4472,3 +4472,253 @@ def test_reingest_with_same_raw_id_replaces_instead_of_unioning(tmp_path: Path) 
         )
     finally:
         conn.close()
+
+
+def test_reingest_interior_message_omission_preserves_transcript_order(tmp_path: Path) -> None:
+    """PR #3413 review (P1 write.py:2359): a reinjected message must land
+    back in its correct RELATIVE transcript position, not get appended after
+    the incoming maximum. Old [user, tool, assistant] + new [user, assistant]
+    (tool dropped) must reconcile to [user, tool, assistant] -- proving
+    nothing is lost is not enough; a naive append would produce
+    [user, assistant, tool], which is invisible corruption, not data loss."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rich = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="order-preservation",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1-user",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run the tests")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2-tool",
+                    role=Role.TOOL,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="42 passed")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m3-assistant",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="all green")],
+                ),
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-generation-1")
+
+        poorer = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="order-preservation",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1-user",
+                    role=Role.USER,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="run the tests")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m3-assistant",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="all green")],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, poorer, raw_id="raw-generation-2")
+
+        ordered_native_ids = [
+            row["native_id"]
+            for row in conn.execute(
+                "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position", (session_id,)
+            ).fetchall()
+        ]
+        assert ordered_native_ids == ["m1-user", "m2-tool", "m3-assistant"], (
+            f"interior omission must reconcile to the original relative order, not scramble it: {ordered_native_ids}"
+        )
+    finally:
+        conn.close()
+
+
+def test_reingest_interior_block_omission_preserves_block_order(tmp_path: Path) -> None:
+    """PR #3413 review (P1 write.py:2383): dropping a non-trailing block
+    shifts every later block's position. [text, code, text] -> [text, text]
+    (code dropped) must reconcile to [text, code, text] by content-addressed
+    structural identity, not corrupt the trailing text by treating it as the
+    dropped code block's old occupant."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rich = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="block-order-preservation",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        ParsedContentBlock(type=BlockType.TEXT, text="here's the fix"),
+                        ParsedContentBlock(
+                            type=BlockType.CODE, text="def fixed(): return 42", metadata={"language": "python"}
+                        ),
+                        ParsedContentBlock(type=BlockType.TEXT, text="let me know if that works"),
+                    ],
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-generation-1")
+
+        poorer = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="block-order-preservation",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        ParsedContentBlock(type=BlockType.TEXT, text="here's the fix"),
+                        ParsedContentBlock(type=BlockType.TEXT, text="let me know if that works"),
+                    ],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, poorer, raw_id="raw-generation-2")
+
+        ordered_blocks = [
+            (row["block_type"], row["text"])
+            for row in conn.execute(
+                """
+                SELECT b.block_type, b.text FROM blocks b
+                JOIN messages m ON m.message_id = b.message_id
+                WHERE m.session_id = ? AND m.native_id = 'm1'
+                ORDER BY b.position
+                """,
+                (session_id,),
+            ).fetchall()
+        ]
+        assert ordered_blocks == [
+            ("text", "here's the fix"),
+            ("code", "def fixed(): return 42"),
+            ("text", "let me know if that works"),
+        ], f"interior block omission must reconcile to the original relative order: {ordered_blocks}"
+    finally:
+        conn.close()
+
+
+def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path) -> None:
+    """PR #3413 review (P1 write.py:2433): attachment_refs is rebuilt SOLELY
+    from the incoming ParsedSession's domain objects on every full replace,
+    never from the union'd/reinjected row tuples. A reinjected message's
+    transcript row surviving is not enough -- its attachment metadata must
+    survive too, or structured reads silently lose it."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rich = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-restoration",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1-tool",
+                    role=Role.TOOL,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, text="generated a file")],
+                ),
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="see attached")],
+                ),
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="att-1",
+                    message_provider_id="m1-tool",
+                    name="report.pdf",
+                    mime_type="application/pdf",
+                    path="report.pdf",
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-generation-1")
+
+        poorer = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-restoration",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m2",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="see attached")],
+                ),
+            ],
+        )
+        write_parsed_session_to_archive(conn, poorer, raw_id="raw-generation-2")
+
+        attachment_row = conn.execute(
+            """
+            SELECT ar.ref_id, ar.attachment_id FROM attachment_refs ar
+            JOIN messages m ON m.message_id = ar.message_id
+            WHERE m.session_id = ? AND m.native_id = 'm1-tool'
+            """,
+            (session_id,),
+        ).fetchone()
+        assert attachment_row is not None, "reinjected message's attachment_ref was not restored"
+        native_id_row = conn.execute(
+            "SELECT native_id FROM attachment_native_ids WHERE ref_id = ? AND id_kind = 'attachment'",
+            (attachment_row["ref_id"],),
+        ).fetchone()
+        assert native_id_row is not None, "reinjected attachment_ref's native id was not restored"
+        assert native_id_row["native_id"] == "att-1"
+    finally:
+        conn.close()
+
+
+def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_path: Path) -> None:
+    """PR #3413 review (P2 write.py:2334): when a still-present message drops
+    a tool-use block that field-path union restores, the message's
+    ``has_tool_use`` flag and ``content_hash`` must reflect the FINAL
+    (restored) block set, not the incoming acquisition's flags alone --
+    otherwise counts derived from the flag contradict the stored blocks."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        rich = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="metadata-recompute",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[
+                        ParsedContentBlock(type=BlockType.TEXT, text="running a check"),
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE, tool_name="Bash", tool_id="call-1", tool_input={"command": "ls"}
+                        ),
+                    ],
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-generation-1")
+        original_hash = conn.execute(
+            "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'", (session_id,)
+        ).fetchone()["content_hash"]
+
+        poorer = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="metadata-recompute",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="running a check")],
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, poorer, raw_id="raw-generation-2")
+
+        row = conn.execute(
+            "SELECT has_tool_use, content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'",
+            (session_id,),
+        ).fetchone()
+        assert row["has_tool_use"] == 1, (
+            "the restored tool_use block must flip has_tool_use back on, not keep the incoming acquisition's 0"
+        )
+        assert row["content_hash"] != original_hash, (
+            "content_hash must be recomputed once blocks change, not reused from either acquisition's own write"
+        )
+    finally:
+        conn.close()

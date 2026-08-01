@@ -628,6 +628,7 @@ def write_parsed_session_to_archive(
             add_timing("index.session_upsert", t0)
             position_offset = 0
             stale_attachment_ids: set[str] = set()
+            projection_carry_forward: _ProjectionCarryForward | None = None
             t0 = time.perf_counter()
             if merge_append:
                 row = conn.execute(
@@ -660,7 +661,7 @@ def write_parsed_session_to_archive(
                 add_timing("index.merge_prepare", t0)
             else:
                 stale_attachment_ids = _session_attachment_ids(conn, session_id)
-                _replace_full_session_messages_and_blocks(
+                projection_carry_forward = _replace_full_session_messages_and_blocks(
                     conn,
                     session,
                     messages,
@@ -719,6 +720,24 @@ def write_parsed_session_to_archive(
                 )
                 add_timing("index.web_constructs", t0)
             t0 = time.perf_counter()
+            # polylogue-geop: an attachment_id that projection carry-forward
+            # is about to restore an attachment_refs row for must NOT be
+            # swept here just because it looks unreferenced right now --
+            # its old attachment_refs row was already cascade-deleted by the
+            # full-replace's message DELETE and the replacement hasn't been
+            # (re)inserted yet (_restore_captured_projection_rows runs after
+            # this call). Passing it through refresh_attachment_ids would
+            # zero its ref_count and delete the attachments row outright,
+            # so the later restore's FK to attachments(attachment_id) fails.
+            carried_forward_attachment_ids = (
+                {
+                    cast(str, row[0])
+                    for row in projection_carry_forward.captured.attachment_refs
+                    if row[2] in projection_carry_forward.live_message_ids
+                }
+                if projection_carry_forward is not None
+                else set()
+            )
             _write_attachments(
                 conn,
                 session_id,
@@ -726,7 +745,7 @@ def write_parsed_session_to_archive(
                 session.attachments,
                 position_offset=position_offset,
                 duplicate_native_ids=duplicate_message_native_ids,
-                refresh_attachment_ids=stale_attachment_ids,
+                refresh_attachment_ids=stale_attachment_ids - carried_forward_attachment_ids,
                 preacquired_blobs=preacquired_attachment_blobs,
             )
             add_timing("index.attachments", t0)
@@ -739,6 +758,17 @@ def write_parsed_session_to_archive(
                 duplicate_native_ids=duplicate_message_native_ids,
             )
             add_timing("index.paste_spans", t0)
+            if projection_carry_forward is not None:
+                # polylogue-geop: all four evidence-dependent projection
+                # tables (attachment_refs/paste_spans just above, file_edits/
+                # web_content_constructs inside _replace_full_session_
+                # messages_and_blocks) have now been rebuilt from the
+                # incoming ParsedSession alone -- restore any pre-delete row
+                # a reinjected/reconciled message or block owned that the
+                # rebuild didn't recreate.
+                t0 = time.perf_counter()
+                _restore_captured_projection_rows(conn, projection_carry_forward)
+                add_timing("index.restore_projections", t0)
             t0 = time.perf_counter()
             _write_parent_links(
                 conn,
@@ -2217,6 +2247,339 @@ def _coalesce_scalar(new: object, old: object) -> object:
     return new if new is not None else old
 
 
+_SPLICE_FRONT: object = object()
+
+
+def _splice_merge_keys(old_keys: list[object], new_keys: list[object]) -> list[tuple[str, object]]:
+    """Merge two ordered key sequences, preserving the relative order of both.
+
+    A key present in ``old_keys`` but not ``new_keys`` is spliced back in
+    immediately after the nearest PRECEDING key common to both sequences (or
+    at the very front if none precedes it) -- not appended after everything.
+    This is what lets a reinjected message/block land back in its correct
+    relative transcript position instead of scrambling order (polylogue-geop
+    PR review): naive append turns old ``[user, tool, assistant]`` + new
+    ``[user, assistant]`` (tool dropped) into stored ``[user, assistant,
+    tool]``; this produces ``[user, tool, assistant]``.
+
+    Returns ``(source, key)`` pairs in final order. ``source`` is ``"new"``
+    for any key present in ``new_keys`` (including common ones -- the merge
+    step still uses the incoming row as the coalesce base for those) and
+    ``"old"`` for a key present only in ``old_keys``.
+    """
+    common = set(old_keys) & set(new_keys)
+    vanished_after: dict[object, list[object]] = {}
+    last_common: object = _SPLICE_FRONT
+    for key in old_keys:
+        if key in common:
+            last_common = key
+        else:
+            vanished_after.setdefault(last_common, []).append(key)
+    result: list[tuple[str, object]] = [("old", k) for k in vanished_after.get(_SPLICE_FRONT, [])]
+    for key in new_keys:
+        result.append(("new", key))
+        if key in common:
+            result.extend(("old", k) for k in vanished_after.get(key, []))
+    return result
+
+
+def _block_structural_keys(rows: list[tuple[object, ...]], b_idx: dict[str, int]) -> list[object]:
+    """Content-addressed identity for a message's block sequence, NOT position.
+
+    polylogue-geop PR review: position shifts when a non-trailing block is
+    dropped (``[text, code, text]`` -> ``[text, text]`` shifts the trailing
+    text from position 2 to position 1), so matching by raw position treats
+    the shifted survivor as the omitted block's old occupant and corrupts
+    both. ``svfj`` (the block evidence hash) already excludes position and
+    ``tool_id`` from a single block's identity for the same reason a block
+    can shift -- this extends that to sequence-level matching: prefer
+    ``tool_id`` (a provider-assigned id, stable across independent export
+    downloads of the same conversation) when present, else fall back to
+    "the Nth block of this type seen so far in this message", which is
+    exactly what distinguishes the two ``text`` blocks in the example above.
+    """
+    keys: list[object] = []
+    occurrence: dict[object, int] = {}
+    for row in rows:
+        block_type = row[b_idx["block_type"]]
+        tool_id = row[b_idx["tool_id"]]
+        if tool_id:
+            keys.append(("tool_id", block_type, tool_id))
+        else:
+            n = occurrence.get(block_type, 0)
+            occurrence[block_type] = n + 1
+            keys.append(("occurrence", block_type, n))
+    return keys
+
+
+def _coalesce_block_row(
+    new_row: tuple[object, ...],
+    old_row: tuple[object, ...],
+    b_idx: dict[str, int],
+    *,
+    message_id: str,
+    position: int,
+) -> tuple[object, ...]:
+    """Field-path coalesce of one matched block pair (shared by both the
+    direct block-loop and the structural-identity reconciliation loop)."""
+    merged_values: list[object] = list(new_row)
+    conflict_context = f"blocks.tool_input message_id={message_id} position={position}"
+    tool_input_idx = b_idx["tool_input"]
+    for col_name, idx in b_idx.items():
+        if col_name in ("message_id", "session_id", "position", "content_hash"):
+            continue
+        if col_name == "tool_input":
+            new_raw = cast("str | None", new_row[idx])
+            old_raw = cast("str | None", old_row[idx])
+            new_json = json.loads(new_raw) if new_raw is not None else None
+            old_json = json.loads(old_raw) if old_raw is not None else None
+            merged_json = _merge_json_value(new_json, old_json, context=conflict_context)
+            merged_values[idx] = _json_dumps(merged_json) if merged_json is not None else None
+        else:
+            merged_values[idx] = _coalesce_scalar(new_row[idx], old_row[idx])
+    is_error_value = merged_values[b_idx["tool_result_is_error"]]
+    merged_values[b_idx["content_hash"]] = _block_content_hash(
+        block_type=cast(str, merged_values[b_idx["block_type"]]),
+        text=cast("str | None", merged_values[b_idx["text"]]),
+        tool_name=cast("str | None", merged_values[b_idx["tool_name"]]),
+        tool_input_json=cast("str | None", merged_values[tool_input_idx]),
+        semantic_type=cast("str | None", merged_values[b_idx["semantic_type"]]),
+        media_type=cast("str | None", merged_values[b_idx["media_type"]]),
+        language=cast("str | None", merged_values[b_idx["language"]]),
+        is_error=None if is_error_value is None else bool(is_error_value),
+        exit_code=cast("int | None", merged_values[b_idx["tool_result_exit_code"]]),
+        outcome_unknown_reason=cast("str | None", merged_values[b_idx["tool_result_outcome_unknown_reason"]]),
+    )
+    return tuple(merged_values)
+
+
+def _message_content_hash_from_rows(
+    session_id: str,
+    native_id: str,
+    position: int,
+    variant_index: int,
+    role: str | None,
+    message_type: str | None,
+    material_origin: str | None,
+    user_context_text: str | None,
+    stop_reason: str | None,
+    block_rows: list[tuple[object, ...]],
+    b_idx: dict[str, int],
+) -> bytes:
+    """Row-tuple analog of ``_message_content_hash`` for a message whose
+    final block set was changed by field-path union (polylogue-geop PR
+    review P2): a merged message must not keep the incoming row's hash and
+    zero/tool-use/thinking flags once its blocks were reconciled against
+    what an older acquisition supplied, or the stored hash and flags
+    describe content that no longer matches the stored blocks.
+
+    ``message.text`` (the ``ParsedMessage``'s own free-text field) has no
+    stored column and cannot be recovered at this row-tuple layer -- this
+    treats it as empty, consistently across every row this function
+    computes. That makes the result NOT bit-identical to what a normal
+    parse-time write would hash for the same final text, but the docstring
+    on ``_message_content_hash`` already notes embedding freshness is keyed
+    off ``embedding_input_hash`` instead: this remains a row-level
+    change-detection signal, not a content-integrity guarantee, and this is
+    a bounded, understood narrowing of it -- not silent staleness.
+    """
+    block_parts: list[str] = []
+    for row in block_rows:
+        is_error = row[b_idx["tool_result_is_error"]]
+        exit_code = row[b_idx["tool_result_exit_code"]]
+        block_parts.extend(
+            (
+                cast(str, row[b_idx["block_type"]]),
+                cast("str | None", row[b_idx["text"]]) or "",
+                cast("str | None", row[b_idx["tool_name"]]) or "",
+                cast("str | None", row[b_idx["tool_id"]]) or "",
+                cast("str | None", row[b_idx["tool_input"]]) or "",
+                cast("str | None", row[b_idx["semantic_type"]]) or "",
+                cast("str | None", row[b_idx["media_type"]]) or "",
+                cast("str | None", row[b_idx["language"]]) or "",
+                "" if is_error is None else str(int(cast(int, is_error))),
+                "" if exit_code is None else str(cast(int, exit_code)),
+            )
+        )
+    return _hash_bytes(
+        "message",
+        session_id,
+        native_id or "",
+        str(position),
+        str(variant_index),
+        role or "",
+        message_type or "",
+        material_origin or "",
+        "",  # message.text unavailable at this layer -- see docstring
+        user_context_text or "",
+        stop_reason or "",
+        *block_parts,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _CapturedProjections:
+    """Pre-delete snapshot of a session's evidence-dependent projection rows
+    (polylogue-geop PR review P1: ``attachment_refs``/``paste_spans``/
+    ``file_edits``/``web_content_constructs`` are rebuilt SOLELY from the
+    incoming ``ParsedSession``'s domain objects on every full replace, never
+    from the union'd/reinjected row tuples -- so a message or block the
+    field-path union restores still silently loses its attachment, paste
+    span, file-edit, or citation metadata unless that metadata is captured
+    here before the delete and re-inserted after the incoming rebuild)."""
+
+    attachment_refs: list[tuple[object, ...]]
+    attachment_native_ids: list[tuple[object, ...]]
+    paste_spans: list[tuple[object, ...]]
+    file_edits: list[tuple[object, ...]]
+    web_content_constructs: list[tuple[object, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectionCarryForward:
+    captured: _CapturedProjections
+    block_id_remap: dict[str, str]
+    live_message_ids: frozenset[str]
+
+
+def _capture_session_projection_rows(conn: sqlite3.Connection, session_id: str) -> _CapturedProjections:
+    attachment_refs = conn.execute(
+        "SELECT attachment_id, session_id, message_id, position, upload_origin, source_url, caption "
+        "FROM attachment_refs WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    ref_ids = [f"{row[2]}:attachment:{row[3]}" for row in attachment_refs]
+    attachment_native_ids: list[sqlite3.Row] = []
+    if ref_ids:
+        placeholders = ",".join("?" for _ in ref_ids)
+        attachment_native_ids = conn.execute(
+            f"SELECT ref_id, id_kind, native_id FROM attachment_native_ids WHERE ref_id IN ({placeholders})",
+            ref_ids,
+        ).fetchall()
+    paste_spans = conn.execute(
+        "SELECT message_id, session_id, position, start_offset, end_offset, boundary_state, "
+        "source_event_id, source_marker, content_hash, observed_at_ms FROM paste_spans WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    file_edits = conn.execute(
+        "SELECT tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
+        "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms "
+        "FROM file_edits WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    web_content_constructs = conn.execute(
+        "SELECT session_id, message_id, block_id, position, provider, construct_type, provider_key, "
+        "title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, "
+        "task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
+        (session_id,),
+    ).fetchall()
+    return _CapturedProjections(
+        attachment_refs=[tuple(r) for r in attachment_refs],
+        attachment_native_ids=[tuple(r) for r in attachment_native_ids],
+        paste_spans=[tuple(r) for r in paste_spans],
+        file_edits=[tuple(r) for r in file_edits],
+        web_content_constructs=[tuple(r) for r in web_content_constructs],
+    )
+
+
+def _restore_captured_projection_rows(
+    conn: sqlite3.Connection,
+    carry_forward: _ProjectionCarryForward,
+) -> None:
+    """Re-insert a captured pre-delete projection row whose slot wasn't
+    reclaimed by the incoming acquisition's own rebuild. Only rows whose
+    owning message survived the merge (``live_message_ids``) are eligible --
+    a message the field-path union deliberately did not reinject (the
+    prefix-sharing-parent guard) must not have its sidecar evidence restored
+    either. ``block_id`` references are remapped through
+    ``block_id_remap`` when the owning block's position shifted during
+    reconciliation (``block_id`` embeds position); ``attachment_refs``/
+    ``paste_spans`` need no remap -- their own PK ``position`` column is an
+    independent per-message ordinal, not the message's transcript position.
+    """
+    captured = carry_forward.captured
+    live_message_ids = carry_forward.live_message_ids
+    block_id_remap = carry_forward.block_id_remap
+
+    restored_attachment_ref_ids: set[str] = set()
+    for row in captured.attachment_refs:
+        message_id = cast(str, row[2])
+        position = row[3]
+        if message_id not in live_message_ids:
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM attachment_refs WHERE message_id = ? AND position = ?", (message_id, position)
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO attachment_refs "
+                "(attachment_id, session_id, message_id, position, upload_origin, source_url, caption) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+            restored_attachment_ref_ids.add(f"{message_id}:attachment:{position}")
+
+    for row in captured.attachment_native_ids:
+        if row[0] in restored_attachment_ref_ids:
+            conn.execute(
+                "INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, ?, ?)",
+                row,
+            )
+
+    for row in captured.paste_spans:
+        message_id = cast(str, row[0])
+        position = row[2]
+        if message_id not in live_message_ids:
+            continue
+        exists = conn.execute(
+            "SELECT 1 FROM paste_spans WHERE message_id = ? AND position = ?", (message_id, position)
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO paste_spans "
+                "(message_id, session_id, position, start_offset, end_offset, boundary_state, "
+                "source_event_id, source_marker, content_hash, observed_at_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+
+    for row in captured.file_edits:
+        message_id = cast(str, row[2])
+        if message_id not in live_message_ids:
+            continue
+        old_block_id = cast(str, row[0])
+        new_block_id = block_id_remap.get(old_block_id, old_block_id)
+        exists = conn.execute("SELECT 1 FROM file_edits WHERE tool_use_block_id = ?", (new_block_id,)).fetchone()
+        if exists is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO file_edits "
+                "(tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
+                "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_block_id, *row[1:]),
+            )
+
+    for row in captured.web_content_constructs:
+        message_id = cast(str, row[1])
+        if message_id not in live_message_ids:
+            continue
+        old_block_id = cast(str, row[2])
+        new_block_id = block_id_remap.get(old_block_id, old_block_id)
+        position = row[3]
+        exists = conn.execute(
+            "SELECT 1 FROM web_content_constructs WHERE block_id = ? AND position = ?", (new_block_id, position)
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO web_content_constructs ("
+                "session_id, message_id, block_id, position, provider, construct_type, provider_key, "
+                "title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, "
+                "task_id, task_type, rank, start_index, end_index"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (row[0], message_id, new_block_id, *row[3:]),
+            )
+
+
 def _union_with_existing_rows(
     conn: sqlite3.Connection,
     session_id: str,
@@ -2226,7 +2589,7 @@ def _union_with_existing_rows(
     raw_id: str | None,
     existing_raw_id: str | None,
     force_replace: bool = False,
-) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
+) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]], _ProjectionCarryForward | None]:
     """Field-path union coalesce of a fresh full-replace against what is stored.
 
     polylogue-geop: newer provider exports are not supersets of older ones
@@ -2279,6 +2642,25 @@ def _union_with_existing_rows(
     not guaranteed stable across independent acquisitions), so those keep
     the prior whole-row-replace behavior unchanged, exactly as before this
     change.
+
+    Four things beyond plain field coalescing (PR #3413 review):
+
+      1. Reinjecting a vanished message/block preserves its RELATIVE
+         transcript order via ``_splice_merge_keys`` -- appending it after
+         the incoming maximum would silently reorder the conversation
+         (worse than dropping it, since it's invisible).
+      2. Blocks are matched by content-addressed structural identity
+         (``_block_structural_keys`` -- ``tool_id`` or "Nth block of this
+         type"), not raw position, since dropping a non-trailing block
+         shifts everything after it.
+      3. Sidecar projection rows (``attachment_refs``/``paste_spans``/
+         ``file_edits``/``web_content_constructs``) tied to reinjected or
+         reconciled evidence are captured here and restored by the caller
+         after its own incoming-only rebuild -- see ``_ProjectionCarryForward``.
+      4. A matched message's block-derived flags (``has_tool_use``/
+         ``has_thinking``) and ``content_hash`` are recomputed from its
+         FINAL block set, not left describing only the incoming
+         acquisition's blocks.
     """
     # ``existing_raw_id`` must be captured by the CALLER before its own
     # sessions upsert overwrites ``sessions.raw_id`` -- by the time this
@@ -2291,7 +2673,7 @@ def _union_with_existing_rows(
         # (force_replace): ordinary replace, no union -- a corrected
         # re-parse (or a caller-decided supersession) must be able to
         # retract content the old parse wrongly produced.
-        return message_rows, block_rows
+        return message_rows, block_rows, None
 
     m_spec = archive_tiers_specs.MESSAGES_SPEC
     b_spec = archive_tiers_specs.BLOCKS_SPEC
@@ -2312,22 +2694,30 @@ def _union_with_existing_rows(
     if not existing_by_native_id:
         # Nothing previously stored under a stable identity -- ordinary
         # first-write path, nothing to union against.
-        return message_rows, block_rows
+        return message_rows, block_rows, None
 
     existing_block_rows = conn.execute(
         f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ?", (session_id,)
     ).fetchall()
-    existing_blocks_by_message: dict[str, dict[int, tuple[object, ...]]] = {}
+    existing_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
     for erow in existing_block_rows:
         row_message_id = cast(str, erow[b_idx["message_id"]])
-        row_position = cast(int, erow[b_idx["position"]])
-        existing_blocks_by_message.setdefault(row_message_id, {})[row_position] = tuple(erow)
+        existing_blocks_by_message.setdefault(row_message_id, []).append(tuple(erow))
+    for rows in existing_blocks_by_message.values():
+        rows.sort(key=lambda r: cast(int, r[b_idx["position"]]))
 
     native_idx = m_idx["native_id"]
     position_idx = m_idx["position"]
     variant_idx = m_idx["variant_index"]
-    tool_input_idx = b_idx["tool_input"]
-    block_content_hash_idx = b_idx["content_hash"]
+    role_idx = m_idx["role"]
+    message_type_idx = m_idx["message_type"]
+    material_origin_idx = m_idx["material_origin"]
+    user_context_text_idx = m_idx["user_context_text"]
+    stop_reason_idx = m_idx["stop_reason"]
+    has_tool_use_idx = m_idx["has_tool_use"]
+    has_thinking_idx = m_idx["has_thinking"]
+    message_content_hash_idx = m_idx["content_hash"]
+    block_position_idx = b_idx["position"]
 
     # A session that is itself the resolved parent of a prefix-sharing child
     # has a load-bearing message set: the child's stored
@@ -2348,128 +2738,158 @@ def _union_with_existing_rows(
         is not None
     )
 
+    # --- Message-level reconciliation: preserve relative transcript order ---
+    # (PR review P1 write.py:2359) A vanished message must be spliced back
+    # into its correct relative position, not appended after the incoming
+    # maximum -- see `_splice_merge_keys`.
+    old_message_order = sorted(
+        existing_by_native_id.keys(), key=lambda nid: cast(int, existing_by_native_id[nid][position_idx])
+    )
     incoming_native_ids = {cast(str, row[native_idx]) for row in message_rows if row[native_idx] is not None}
-    used_positions = {cast(int, row[position_idx]) for row in message_rows}
-    next_position = (max(used_positions) + 1) if used_positions else 0
+    matched_native_ids = set(existing_by_native_id.keys()) & incoming_native_ids
+    new_message_keys: list[object] = [
+        (row[native_idx] if row[native_idx] is not None else object()) for row in message_rows
+    ]
+    incoming_row_by_key = dict(zip(new_message_keys, message_rows, strict=True))
+    splice_old_keys: list[object] = [] if is_prefix_sharing_parent else list(old_message_order)
 
     merged_message_rows: list[tuple[object, ...]] = []
     merged_message_ids: dict[str, str] = {}  # native_id -> merged message_id
-    for row in message_rows:
-        row_native_id = row[native_idx]
-        existing_row = existing_by_native_id.get(cast(str, row_native_id)) if row_native_id is not None else None
-        if existing_row is None:
-            merged_message_rows.append(row)
+    for new_pos, (source, key) in enumerate(_splice_merge_keys(splice_old_keys, new_message_keys)):
+        if source == "new":
+            row = incoming_row_by_key[key]
+            nid = row[native_idx]
+            if nid is not None and nid in existing_by_native_id:
+                existing_row = existing_by_native_id[nid]
+                row = tuple(_coalesce_scalar(nv, ov) for nv, ov in zip(row, existing_row, strict=True))
         else:
-            merged_message_rows.append(
-                tuple(_coalesce_scalar(new_v, old_v) for new_v, old_v in zip(row, existing_row, strict=True))
-            )
-        if row_native_id is not None:
-            merged_message_ids[cast(str, row_native_id)] = archive_message_id(
-                session_id,
-                cast(str, row_native_id),
-                position=cast(int, row[position_idx]),
-                variant_index=cast(int, row[variant_idx] or 0),
-            )
-
-    for existing_native_id, existing_row in existing_by_native_id.items():
-        if existing_native_id in incoming_native_ids:
-            continue
-        if is_prefix_sharing_parent:
-            continue
-        # This message's content was observed by a prior acquisition but is
-        # absent from this one entirely -- reinject it verbatim rather than
-        # letting the full-replace delete it. Reassign position only if the
-        # original collides with an incoming row (native_id already makes
-        # message_id independent of position, so this is always safe).
-        reinject_position = cast(int, existing_row[position_idx])
-        if reinject_position in used_positions:
-            reinject_position = next_position
-            next_position += 1
-            row_list = list(existing_row)
-            row_list[position_idx] = reinject_position
-            existing_row = tuple(row_list)
-        used_positions.add(reinject_position)
-        merged_message_rows.append(existing_row)
-        merged_message_ids[existing_native_id] = archive_message_id(
-            session_id,
-            existing_native_id,
-            position=reinject_position,
-            variant_index=cast(int, existing_row[variant_idx] or 0),
-        )
-        logger.info(
-            "field-path union (polylogue-geop): reinjecting message native_id=%s session_id=%s "
-            "dropped by newer acquisition",
-            existing_native_id,
-            session_id,
-        )
-
-    # Blocks are matched within a still-live message by (message_id, position).
-    incoming_block_positions: dict[str, set[int]] = {}
-    merged_block_rows: list[tuple[object, ...]] = []
-    for row in block_rows:
-        row_message_id = cast(str, row[b_idx["message_id"]])
-        row_position = cast(int, row[b_idx["position"]])
-        incoming_block_positions.setdefault(row_message_id, set()).add(row_position)
-        existing_block = existing_blocks_by_message.get(row_message_id, {}).get(row_position)
-        if existing_block is None or existing_block[b_idx["block_type"]] != row[b_idx["block_type"]]:
-            # No stored block at this slot, or a re-parse reordered/replaced
-            # what occupies it (block identity is content-addressed, not
-            # position -- svfj deliberately excludes position/tool_id from
-            # the evidence hash because both can shift on re-parse). Only
-            # coalesce when the same kind of evidence still occupies the
-            # slot; otherwise this is a fresh block, not a partial
-            # observation of the old one.
-            merged_block_rows.append(row)
-            continue
-        merged_values: list[object] = list(row)
-        conflict_context = f"blocks.tool_input message_id={row_message_id} position={row_position}"
-        for col_name, idx in b_idx.items():
-            if col_name in ("message_id", "session_id", "position", "content_hash"):
-                continue
-            if col_name == "tool_input":
-                new_raw = cast("str | None", row[idx])
-                old_raw = cast("str | None", existing_block[idx])
-                new_json = json.loads(new_raw) if new_raw is not None else None
-                old_json = json.loads(old_raw) if old_raw is not None else None
-                merged_json = _merge_json_value(new_json, old_json, context=conflict_context)
-                merged_values[idx] = _json_dumps(merged_json) if merged_json is not None else None
-            else:
-                merged_values[idx] = _coalesce_scalar(row[idx], existing_block[idx])
-        is_error_value = merged_values[b_idx["tool_result_is_error"]]
-        merged_values[block_content_hash_idx] = _block_content_hash(
-            block_type=cast(str, merged_values[b_idx["block_type"]]),
-            text=cast("str | None", merged_values[b_idx["text"]]),
-            tool_name=cast("str | None", merged_values[b_idx["tool_name"]]),
-            tool_input_json=cast("str | None", merged_values[tool_input_idx]),
-            semantic_type=cast("str | None", merged_values[b_idx["semantic_type"]]),
-            media_type=cast("str | None", merged_values[b_idx["media_type"]]),
-            language=cast("str | None", merged_values[b_idx["language"]]),
-            is_error=None if is_error_value is None else bool(is_error_value),
-            exit_code=cast("int | None", merged_values[b_idx["tool_result_exit_code"]]),
-            outcome_unknown_reason=cast("str | None", merged_values[b_idx["tool_result_outcome_unknown_reason"]]),
-        )
-        merged_block_rows.append(tuple(merged_values))
-
-    live_message_ids = set(merged_message_ids.values())
-    for message_id, existing_blocks in existing_blocks_by_message.items():
-        # Only reinject blocks belonging to a message that survives the merge
-        # (either still incoming, or itself reinjected above) -- a block
-        # whose parent message is genuinely gone has nothing to attach to.
-        if message_id not in live_message_ids and message_id not in incoming_block_positions:
-            continue
-        seen_positions = incoming_block_positions.get(message_id, set())
-        for block_position, existing_block in existing_blocks.items():
-            if block_position in seen_positions:
-                continue
-            merged_block_rows.append(existing_block)
+            nid = cast(str, key)
+            row = existing_by_native_id[nid]
             logger.info(
-                "field-path union (polylogue-geop): reinjecting block message_id=%s position=%s "
-                "dropped by newer acquisition",
-                message_id,
-                block_position,
+                "field-path union (polylogue-geop): reinjecting message native_id=%s session_id=%s "
+                "dropped by newer acquisition, restored at relative position %s",
+                nid,
+                session_id,
+                new_pos,
+            )
+        row_list = list(row)
+        row_list[position_idx] = new_pos
+        row = tuple(row_list)
+        merged_message_rows.append(row)
+        if isinstance(key, str):
+            merged_message_ids[key] = archive_message_id(
+                session_id, key, position=new_pos, variant_index=cast(int, row_list[variant_idx] or 0)
             )
 
-    return merged_message_rows, merged_block_rows
+    live_message_ids = frozenset(merged_message_ids.values())
+
+    # --- Block-level reconciliation, per still-live message ---
+    # (PR review P1 write.py:2383) Matching by raw position mismatches once a
+    # non-trailing block is dropped -- match by content-addressed structural
+    # identity instead (`_block_structural_keys`), then splice-merge exactly
+    # like messages above.
+    incoming_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
+    for row in block_rows:
+        incoming_blocks_by_message.setdefault(cast(str, row[b_idx["message_id"]]), []).append(row)
+    for rows in incoming_blocks_by_message.values():
+        rows.sort(key=lambda r: cast(int, r[block_position_idx]))
+
+    matched_message_ids = incoming_blocks_by_message.keys() & existing_blocks_by_message.keys()
+    merged_block_rows: list[tuple[object, ...]] = []
+    block_id_remap: dict[str, str] = {}
+    final_blocks_by_message: dict[str, list[tuple[object, ...]]] = {}
+
+    for message_id, new_rows in incoming_blocks_by_message.items():
+        if message_id not in matched_message_ids:
+            merged_block_rows.extend(new_rows)
+            final_blocks_by_message[message_id] = new_rows
+            continue
+        old_rows = existing_blocks_by_message[message_id]
+        new_keys = _block_structural_keys(new_rows, b_idx)
+        old_keys = _block_structural_keys(old_rows, b_idx)
+        new_row_by_key = dict(zip(new_keys, new_rows, strict=True))
+        old_row_by_key = dict(zip(old_keys, old_rows, strict=True))
+        old_position_by_key = {k: cast(int, r[block_position_idx]) for k, r in zip(old_keys, old_rows, strict=True)}
+
+        final_rows: list[tuple[object, ...]] = []
+        for new_block_pos, (source, key) in enumerate(_splice_merge_keys(old_keys, new_keys)):
+            if source == "new":
+                row = new_row_by_key[key]
+                if key in old_row_by_key:
+                    row = _coalesce_block_row(
+                        row, old_row_by_key[key], b_idx, message_id=message_id, position=new_block_pos
+                    )
+                old_pos = old_position_by_key.get(key)
+            else:
+                row = old_row_by_key[key]
+                old_pos = old_position_by_key[key]
+                logger.info(
+                    "field-path union (polylogue-geop): reinjecting block message_id=%s "
+                    "dropped by newer acquisition, restored at relative position %s",
+                    message_id,
+                    new_block_pos,
+                )
+            if old_pos is not None and old_pos != new_block_pos:
+                block_id_remap[f"{message_id}:{old_pos}"] = f"{message_id}:{new_block_pos}"
+            row_list = list(row)
+            row_list[block_position_idx] = new_block_pos
+            final_rows.append(tuple(row_list))
+        merged_block_rows.extend(final_rows)
+        final_blocks_by_message[message_id] = final_rows
+
+    # Blocks for a wholesale-reinjected message (old-only, no incoming block
+    # sequence to reconcile against) carry over verbatim, unchanged position.
+    for message_id, old_rows in existing_blocks_by_message.items():
+        if message_id in matched_message_ids:
+            continue
+        if message_id not in live_message_ids:
+            continue  # is_prefix_sharing_parent skip: message truly not reinjected
+        merged_block_rows.extend(old_rows)
+        final_blocks_by_message[message_id] = old_rows
+
+    # --- Recompute block-derived message metadata for reconciled messages ---
+    # (PR review P2 write.py:2334) A matched message's has_tool_use/
+    # has_thinking flags and content_hash must reflect its FINAL block set,
+    # not whatever the incoming acquisition alone reported.
+    recomputed_message_rows: list[tuple[object, ...]] = []
+    for row in merged_message_rows:
+        nid = row[native_idx]
+        if nid is None or nid not in matched_native_ids:
+            recomputed_message_rows.append(row)
+            continue
+        message_id = merged_message_ids[nid]
+        final_blocks = final_blocks_by_message.get(message_id, [])
+        row_list = list(row)
+        row_list[has_tool_use_idx] = (
+            1 if any(b[b_idx["block_type"]] == BlockType.TOOL_USE.value for b in final_blocks) else 0
+        )
+        row_list[has_thinking_idx] = (
+            1 if any(b[b_idx["block_type"]] == BlockType.THINKING.value for b in final_blocks) else 0
+        )
+        row_list[message_content_hash_idx] = _message_content_hash_from_rows(
+            session_id,
+            nid,
+            cast(int, row_list[position_idx]),
+            cast(int, row_list[variant_idx] or 0),
+            cast("str | None", row_list[role_idx]),
+            cast("str | None", row_list[message_type_idx]),
+            cast("str | None", row_list[material_origin_idx]),
+            cast("str | None", row_list[user_context_text_idx]),
+            cast("str | None", row_list[stop_reason_idx]),
+            final_blocks,
+            b_idx,
+        )
+        recomputed_message_rows.append(tuple(row_list))
+
+    # --- Capture sidecar projection rows for restoration after the incoming
+    # rebuild (PR review P1 write.py:2433) ---
+    carry_forward = _ProjectionCarryForward(
+        captured=_capture_session_projection_rows(conn, session_id),
+        block_id_remap=block_id_remap,
+        live_message_ids=live_message_ids,
+    )
+
+    return recomputed_message_rows, merged_block_rows, carry_forward
 
 
 def _replace_full_session_messages_and_blocks(
@@ -2487,8 +2907,16 @@ def _replace_full_session_messages_and_blocks(
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
     prepared: PreparedSessionRows | None = None,
-) -> None:
+) -> _ProjectionCarryForward | None:
     """Replace one session's messages/blocks wholesale.
+
+    Returns the ``_ProjectionCarryForward`` payload computed by
+    ``_union_with_existing_rows`` (or ``None`` when nothing was unioned), so
+    the caller (``write_parsed_session_to_archive``) can restore
+    ``attachment_refs``/``paste_spans`` after ITS OWN later rebuild of those
+    two tables -- they are written outside this function, in the shared
+    merge_append/full-replace tail, so this function cannot restore them
+    itself without running before they even exist.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) skips this function's
     own scoped derived-index refresh and its ``action_pairs`` refresh entirely -- see
@@ -2571,7 +2999,7 @@ def _replace_full_session_messages_and_blocks(
     # polylogue-geop: compute the field-path union against whatever is
     # currently stored *before* any delete below removes it. Must run ahead
     # of the FTS/base-table deletes -- both messages and blocks are read here.
-    unioned_message_rows, unioned_block_rows = _union_with_existing_rows(
+    unioned_message_rows, unioned_block_rows, carry_forward = _union_with_existing_rows(
         conn,
         session_id,
         list(prepared.message_rows)
@@ -2700,6 +3128,17 @@ def _replace_full_session_messages_and_blocks(
                 (FTS_BULK_SESSION_WRITE_GUARD,),
             )
             add_timing("fts_guard_clear", t0)
+
+    # NOTE: restoration of captured projection rows (attachment_refs/
+    # paste_spans/file_edits/web_content_constructs) deliberately does NOT
+    # happen here. attachment_refs/paste_spans are rebuilt by the CALLER
+    # after this function returns (they live in the shared merge_append/
+    # full-replace tail in ``write_parsed_session_to_archive``, not in this
+    # function), so restoring now -- before that rebuild has even run --
+    # would restore into empty tables and then risk being clobbered if that
+    # later rebuild does its own session-scoped delete. The caller restores
+    # once, after all four tables are rebuilt. See this function's docstring.
+    return carry_forward
 
 
 def _refresh_session_counts(conn: sqlite3.Connection, session_id: str) -> None:
