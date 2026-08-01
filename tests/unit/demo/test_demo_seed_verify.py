@@ -566,3 +566,114 @@ async def test_seed_demo_archive_grants_self_heal_to_a_genuinely_fresh_root(tmp_
 
     second = await seed_demo_archive(archive_root, force=False)
     assert second.healed_tiers == ("index.db",)
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_revokes_self_heal_once_a_demo_only_root_gains_real_content(
+    tmp_path: Path,
+) -> None:
+    """A demo-only root that later gains real content loses self-heal eligibility.
+
+    Guards polylogue-dl6af gap 1: the ownership manifest's ``demo_only: true``
+    bit was previously treated as PERMANENT proof of exclusive demo
+    ownership. If an operator seeds the zero-friction demo against a fresh
+    default root and then starts using that same root normally -- real
+    sessions accumulate through ordinary ingest -- the manifest still says
+    ``demo_only: true`` forever. A later ``demo seed`` hitting schema drift
+    must not trust that historical bit alone and self-heal by moving aside
+    the now-real ``source.db``/``user.db``.
+
+    ANTI-VACUITY: exercises the real ``seed_demo_archive`` entry point twice,
+    with a real (non-demo) session inserted directly into the index tier in
+    between -- mirroring an operator's normal-use ingest, not a test-only
+    reimplementation. Reverting ``_archive_root_is_demo_owned`` to trust the
+    historical ``demo_only`` bit without revalidating against the recorded
+    ``demo_session_ids`` baseline makes this test fail: the second call
+    would self-heal (``healed_tiers == ("index.db",)``) instead of raising
+    the original unhandled schema-mismatch ``RuntimeError``, and the
+    ``index.db.stale-*`` backup would appear on disk.
+    """
+
+    from tests.infra.storage_records import SessionBuilder
+
+    archive_root = tmp_path / "archive"
+
+    first = await seed_demo_archive(archive_root, force=True)
+    assert first.healed_tiers == ()
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is True
+    assert manifest["demo_session_ids"]
+
+    # Normal use: a real session lands in the same root through ordinary
+    # ingest, independent of anything the demo seeder wrote.
+    SessionBuilder(archive_root / "index.db", "real-session-after-seed").provider("claude-code").save()
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="move it aside and rebuild the archive root"):
+        await seed_demo_archive(archive_root, force=True)
+
+    assert not list(archive_root.glob("index.db.stale-*"))
+
+
+@pytest.mark.asyncio
+async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tmp_path: Path) -> None:
+    """A missing/unreadable index.db must never authorize moving aside real durable content.
+
+    Guards polylogue-dl6af gap 2: ``index.db`` is explicitly the rebuildable
+    tier (this repo's "Schema regimes" doc) and can legitimately be absent
+    on a real archive -- e.g. right after ``polylogue ops reset --index``,
+    before the daemon has rebuilt it. Classifying that absence as "0
+    sessions" (proof of emptiness) let the first-touch ownership manifest
+    record ``demo_only: true`` for a root whose durable tiers (``source.db``,
+    ``user.db``) already held real content, which would then authorize
+    self-heal to move that real content aside on a later schema mismatch.
+
+    ANTI-VACUITY: the production entry point exercised is
+    ``polylogue.demo.seed.seed_demo_archive`` with ``explicit_root=True``
+    (bypassing the separate default-root collision guard so this test
+    isolates the ownership-manifest predicate specifically). Reverting
+    ``_archive_root_has_real_content`` to trust ``_archive_tier_session_count``
+    (index-only) alone makes this test fail: the manifest would record
+    ``demo_only: true`` instead of ``false``.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True)
+
+    # Populate only the durable tiers with real content; deliberately never
+    # create index.db, mirroring a root whose rebuildable tier was reset or
+    # never rebuilt.
+    initialize_archive_database(archive_root / "source.db", ArchiveTier.SOURCE)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "real-raw-0",
+                "claude-code-session",
+                "real-session-0",
+                "/real/source/path",
+                0,
+                b"\x00" * 32,
+                1,
+                0,
+            ),
+        )
+        conn.commit()
+    assert not (archive_root / "index.db").exists()
+
+    seed = await seed_demo_archive(archive_root, force=True, explicit_root=True)
+
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is False
+    assert seed.healed_tiers == ()

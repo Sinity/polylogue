@@ -304,3 +304,51 @@ def test_demo_tour_plain_output_reports_artifacts(tmp_path: Path) -> None:
     assert "First result: 3.200s" in result.output
     assert "Report:" in result.output
     run.assert_called_once()
+
+
+def test_demo_seed_blank_archive_root_env_still_triggers_collision_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POLYLOGUE_ARCHIVE_ROOT="" must not disarm the default-root collision guard.
+
+    Guards polylogue-dl6af gap 3: ``polylogue.paths.archive_root()`` itself
+    treats an empty or whitespace-only ``POLYLOGUE_ARCHIVE_ROOT`` as unset
+    and falls back to the ambient ``polylogue.toml``/XDG default, but the
+    CLI's own "was an explicit root given" check previously asked only
+    whether the env var was a *member* of ``os.environ`` -- true even for an
+    empty string. That let ``POLYLOGUE_ARCHIVE_ROOT="" polylogue demo seed``
+    believe it had received an explicit override (disarming the
+    polylogue-o3a1t collision guard) while the resolved root actually fell
+    through to the live fallback archive -- exactly the collision the guard
+    exists to catch.
+
+    ANTI-VACUITY: the production code exercised is
+    ``polylogue.cli.commands.demo._root_is_explicit`` via a real ``polylogue
+    demo seed`` CLI invocation with ``POLYLOGUE_ARCHIVE_ROOT=""`` and no
+    ``--root``. Reverting that function to
+    ``root is not None or "POLYLOGUE_ARCHIVE_ROOT" in os.environ`` makes this
+    test fail: the seed would succeed (exit 0) instead of raising, and
+    synthetic demo content would land in the real fallback archive.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    # No --root, no POLYLOGUE_ARCHIVE_ROOT override: this is exactly where
+    # archive_root()'s own XDG default resolution lands, matching the
+    # _clear_polylogue_env autouse fixture's XDG_DATA_HOME.
+    fallback_archive_root = tmp_path / "xdg-data" / "polylogue"
+    initialize_active_archive_root(fallback_archive_root)
+    SessionBuilder(fallback_archive_root / "index.db", "real-session").provider("claude-code").save()
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "")
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["demo", "seed", "--format", "json"])
+
+    assert result.exit_code != 0
+    assert "real ingested session" in result.output
+    assert not (fallback_archive_root / "demo-fixture-world-source").exists()
+    assert not (fallback_archive_root / "demo-archive-ownership.json").exists()
