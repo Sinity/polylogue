@@ -3292,6 +3292,106 @@ class TestSearchQueryContracts:
         assert "predicate_zeroed_set" in codes
         assert "fts_structured_disagreement" in codes
 
+    def test_zero_hit_field_syntax_query_gets_the_same_miss_diagnostics(
+        self, search_workspace: SearchWorkspace
+    ) -> None:
+        """A field-syntax-only query (no bare text term) that misses gets diagnostics too.
+
+        polylogue-hlww: ``repo:doesnotexist`` compiles to zero free-text
+        ``query_terms`` (``_query_text`` returns ``""``), which used to route
+        through the plain browse/list ``_emit_list`` -> ``_emit_rows`` path
+        with no ``_emit_no_results`` call at all -- zero bytes of stdout,
+        exit 0, no ``diagnostics`` key even with ``--why``, indistinguishable
+        from the query being silently dropped. This exercises the production
+        ``execute_archive_query`` -> ``_execute_archive_query_stdout`` list
+        branch: removing the ``_emit_list_miss_if_field_syntax`` call (or its
+        ``raw_query.strip()`` guard) restores the old silent zero-byte
+        output and this assertion on ``payload["diagnostics"]`` fails with a
+        ``KeyError``/``JSONDecodeError`` instead.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "find", "repo:doesnotexist-nonexistent-repo", "-f", "json"],
+        )
+
+        assert result.exit_code == 2, result.output
+        assert result.output.strip(), "field-syntax miss must not render zero bytes"
+        payload = json.loads(result.output)
+        assert payload["mode"] == "list"
+        assert payload["items"] == []
+        codes = [reason["code"] for reason in payload["diagnostics"]["reasons"]]
+        assert codes, "field-syntax miss must carry the same shared miss-diagnosis reasons as a search miss"
+
+    def test_zero_hit_field_syntax_and_bare_text_share_exit_code_and_plain_message(
+        self, search_workspace: SearchWorkspace
+    ) -> None:
+        """Bare-text and field-syntax zero-hit queries must be indistinguishable in shape.
+
+        Before the fix, ``find "nonexistent term"`` (bare text, ``mode:
+        search``) exited 2 with a ``No sessions matched.`` /
+        ``Why this may have missed:`` block in plain mode, while
+        ``find "repo:x"`` (field-syntax-only, ``mode: list``) exited 0 with
+        literally no stdout -- a cold caller piping either through a shell
+        script could not tell "ran fine, zero matches" from "silently
+        misrouted" for the field-syntax shape. Pin both zero-hit shapes to
+        the same exit code and the same non-empty plain-mode message so that
+        regression is a single, direct assertion rather than two separate
+        exit-code contracts that could silently drift apart again.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        runner = CliRunner()
+        bare_text = runner.invoke(cli, ["--plain", "--no-daemon", "find", "zzz-nonexistent-term-zzz"])
+        field_syntax = runner.invoke(cli, ["--plain", "--no-daemon", "find", "repo:doesnotexist-nonexistent-repo"])
+
+        assert bare_text.exit_code == 2, bare_text.output
+        assert field_syntax.exit_code == 2, field_syntax.output
+        assert bare_text.exit_code == field_syntax.exit_code
+
+        for result in (bare_text, field_syntax):
+            assert result.output.strip(), result.output
+            assert "No sessions matched" in result.output
+            assert "Why this may have missed:" in result.output
+
+    def test_field_syntax_query_past_the_last_page_is_exhausted_not_a_miss(
+        self, search_workspace: SearchWorkspace
+    ) -> None:
+        """An offset beyond a REAL match count is valid empty pagination, not a miss.
+
+        ``repo:polylogue`` matches (at least) one session (``run-hit``).
+        Requesting an offset past the last row asks for the page past the
+        last match: the page itself is empty, but the query genuinely
+        matched, so this must render the normal empty-page envelope (exit 0,
+        real nonzero total, no fabricated ``total: 0``) rather than routing
+        through the same miss diagnostics an actual zero-match query gets.
+        """
+        from polylogue.cli import cli
+
+        del search_workspace
+        matched = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "find", "repo:polylogue", "-f", "json"],
+        )
+        assert matched.exit_code == 0, matched.output
+        real_total = json.loads(matched.output)["total"]
+        assert real_total > 0, "fixture must have at least one repo:polylogue match for this test to be meaningful"
+
+        result = CliRunner().invoke(
+            cli,
+            ["--plain", "--no-daemon", "find", "repo:polylogue", "--offset", str(real_total), "-f", "json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["mode"] == "list"
+        assert payload["items"] == []
+        assert payload["total"] == real_total
+        assert "diagnostics" not in payload
+
     def test_debug_timing_keeps_query_output_on_stdout(
         self, search_workspace: SearchWorkspace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
