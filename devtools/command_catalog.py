@@ -680,6 +680,36 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace merge-gate",
+        "workspace",
+        "Structural pre-merge safety check: fresh local-verification receipt + no late review comments.",
+        "devtools.merge_gate",
+        use_when=(
+            "Immediately before squash-merging any PR in a merge train, replacing coordinator memory "
+            "(grace-period comment polling, remembering to run the broader local test suite CI skips "
+            'per-PR) with a check that fails closed. `record <PR> --command "..."` requires the current '
+            "checkout to already be the PR's exact head commit with a clean tree (it refuses otherwise), "
+            "runs a local verification "
+            "command, and persists a receipt flagging commands that look like they skip tests (e.g. "
+            "`verify --quick`). `check <PR>` polls review comments across a real grace window (default "
+            "3x20s, covering CodeRabbit's 30-60s late-arrival window) and BLOCKs unless a receipt exists "
+            "for the CURRENT head sha within a freshness window with exit_code 0, and no review comment's "
+            "created_at is newer than the head commit's timestamp unless explicitly `ack`'d for that exact "
+            "head sha. Motivated by two 2026-08-01 incidents: PR #3502 merged before CodeRabbit's findings "
+            "posted, and PR #3517 nearly merged with a 43-test regression no CI check or review comment "
+            "ever flagged -- plus review findings on this tool itself (recording from an unrelated "
+            "checkout, a --quick example that would have missed its own motivating regression, a single "
+            "comment snapshot instead of a grace-period poll, and no way to triage a false-positive late "
+            "comment without an empty commit)."
+        ),
+        examples=(
+            'devtools workspace merge-gate record 3517 --command "devtools verify"',
+            "devtools workspace merge-gate check 3517",
+            "devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1",
+            'devtools workspace merge-gate ack 3517 123456789 --reason "already fixed upstream, false positive"',
+        ),
+    ),
+    CommandSpec(
         "workspace merge-conductor",
         "workspace",
         "Mechanical-conflict triage for the PR merge train (dry-run by default).",

@@ -233,6 +233,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace mandate-continuity-replay` | Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
+| `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
