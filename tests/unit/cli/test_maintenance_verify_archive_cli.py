@@ -32,7 +32,7 @@ def test_verify_archive_cli_json_reports_every_registered_check(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["blocking"] is False
     names = {check["name"] for check in payload["checks"]}
     assert names == {
@@ -64,7 +64,7 @@ def test_verify_archive_cli_exits_nonzero_on_schema_drift(
     )
 
     assert result.exit_code == 1
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert payload["blocking"] is True
     tier_check = next(check for check in payload["checks"] if check["name"] == "tier-schema")
     assert tier_check["status"] == "error"
@@ -91,7 +91,7 @@ def test_verify_archive_cli_restricts_to_selected_checks(
     )
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     names = {check["name"] for check in payload["checks"]}
     assert names == {"tier-schema", "counts-summary"}
 
@@ -121,7 +121,7 @@ def test_verify_archive_cli_strict_fails_on_warning(
         ["--plain", "ops", "maintenance", "verify-archive", "--check", "planner-stats", "--output-format", "json"],
     )
     assert default_result.exit_code == 0, default_result.output
-    payload = json.loads(default_result.output)
+    payload = json.loads(default_result.stdout)
     assert payload["checks"][0]["status"] == "warning"
 
     strict_result = cli_runner.invoke(

@@ -145,8 +145,23 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
 
 
 @click.group("maintenance")
-def maintenance_group() -> None:
-    """Preview and run maintenance backfill operations."""
+@click.pass_context
+def maintenance_group(ctx: click.Context) -> None:
+    """Preview and run maintenance backfill operations.
+
+    Prints the resolved archive root and its provenance (env override /
+    config file / default) before dispatching to any subcommand -- see
+    ``_shared.print_archive_root_provenance`` (polylogue-l1qg). This runs
+    for every real subcommand invocation, including ``--help`` on a
+    subcommand, but not for ``maintenance``/``maintenance --help`` on their
+    own (no subcommand resolves, so there is nothing to warn about yet).
+    """
+    from polylogue.cli.commands.maintenance._shared import print_archive_root_provenance
+    from polylogue.cli.shared.types import AppEnv
+
+    env = ctx.obj
+    if isinstance(env, AppEnv):
+        print_archive_root_provenance(env)
 
 
 for _cli_name, _submodule, _attr, _short_help in _COMMANDS:
