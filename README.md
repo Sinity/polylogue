@@ -185,14 +185,16 @@ polylogue find 'actions where tool:shell AND command:pytest' then read
 
 ### MCP
 
-`polylogue-mcp` exposes the archive over stdio. It is read-only by default.
-Write access requires an explicitly configured role and remains subject to
-authorization and confirmation rules.
+`polylogue-mcp` exposes the archive over stdio. It is read-only by default and
+takes no CLI flags. Write, judge, and maintenance capability are each an
+independent `polylogue.toml` `[mcp]` opt-in (or `POLYLOGUE_MCP_*_ENABLED` env
+var) resolved at server startup, and remain subject to authorization and
+confirmation rules.
 
 ```json
 {
   "mcpServers": {
-    "polylogue": { "command": "polylogue-mcp", "args": ["--role", "read"] }
+    "polylogue": { "command": "polylogue-mcp" }
   }
 }
 ```

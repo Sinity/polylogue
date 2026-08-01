@@ -21,10 +21,10 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 10` |
-| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 35` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 15` |
+| `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 53` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 4` |
-| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 6` |
+| `user.py` | `user.db` | `USER_SCHEMA_VERSION = 10` |
 | `ops.py` | `ops.db` | `OPS_SCHEMA_VERSION = 1` |
 
 There is no single global "schema version" number. Each tier is versioned and
@@ -226,14 +226,18 @@ pair a use block with a same-id result block from another session.
 
 ## Full-text search
 
-`index.db` carries three FTS5 virtual tables, all using the `unicode61`
-tokenizer (no porter stemmer in this SQLite build):
+`index.db` carries four FTS5 virtual tables. `messages_fts`,
+`session_work_events_fts`, and `threads_fts` use the `unicode61` tokenizer (no
+porter stemmer in this SQLite build); `blocks_command_trigram` uses the
+`trigram` tokenizer to accelerate substring/`LIKE`-style lookups over tool
+command/detail text:
 
 | Virtual table | Indexes |
 |---------------|---------|
 | `messages_fts` | Block `search_text` (text + tool name + command/path), contentless (`content=''`, `contentless_delete=1`) |
 | `session_work_events_fts` | Work-event search text |
 | `threads_fts` | Thread search text |
+| `blocks_command_trigram` | `tool_use` block `tool_detail_text`, external-content (`content='blocks'`), `tokenize='trigram'` |
 
 `messages_fts` is kept in sync with `blocks` by the `messages_fts_ai/ad/au`
 triggers. During bulk ingest these triggers are suspended for performance and

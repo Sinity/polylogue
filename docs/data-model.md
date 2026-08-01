@@ -16,7 +16,8 @@ ambiguous.
 Public read surfaces are keyed by **`origin`** (the `Origin` enum in
 `polylogue/core/enums.py`): `claude-code-session`, `claude-ai-export`,
 `chatgpt-export`, `codex-session`, `gemini-cli-session`, `aistudio-drive`,
-`hermes-session`, `antigravity-session`, `unknown-export`. The provider-wire
+`hermes-session`, `antigravity-session`, `beads-issue`, `grok-export`,
+`unknown-export`. The provider-wire
 `Provider` enum (`chatgpt`, `claude-code`, …) is retained only at the
 parsing/schema boundary and is not the public filter token. Filter and query
 surfaces use `origin`.
