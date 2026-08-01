@@ -64,6 +64,11 @@ def seed_command(
     if output_format == "json":
         click.echo(json.dumps(payload, sort_keys=True))
         return
+    healed_note = (
+        f"  Self-healed: {', '.join(result.healed_tiers)} (stale schema moved aside and rebuilt)\n"
+        if result.healed_tiers
+        else ""
+    )
     env.ui.console.print(
         "[bold green]Demo archive ready[/bold green]\n"
         f"  Archive root: {result.archive_root}\n"
@@ -71,6 +76,7 @@ def seed_command(
         f"  Sessions:     {result.session_count}\n"
         f"  Messages:     {result.message_count}\n"
         f"  Overlays:     {'yes' if result.overlays_seeded else 'no'}\n"
+        f"{healed_note}"
         "  Verify:       polylogue demo verify"
     )
 

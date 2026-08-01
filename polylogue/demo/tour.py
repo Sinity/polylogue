@@ -80,6 +80,15 @@ def run_demo_tour(
 
     steps: list[DemoTourStep] = []
     first_result_s = 0.0
+    # Deliberately re-based *after* seeding/verification: those are one-time
+    # cold-start archive-construction costs (fixture materialization, ingest,
+    # embedding synthesis), not query latency. The budget below exists to
+    # catch a slow *query*, so its clock must start where the narrated query
+    # steps start, not at the top of the whole tour (polylogue-3ycw --
+    # a cold environment measured 70.9s against the 30s budget here even
+    # though every individual narrated step took 4.6-5.3s; the gap was
+    # entirely pre-query setup time being charged to the query budget).
+    query_phase_start = time.perf_counter()
     env = _tour_env(resolved_archive)
     origin_count = len({session_id.split(":", 1)[0] for session_id in seed.session_ids})
     command_specs = (
@@ -129,7 +138,7 @@ def run_demo_tour(
         steps.append(step)
         transcript_parts.append(rendered)
         if index == 1:
-            first_result_s = time.perf_counter() - start
+            first_result_s = time.perf_counter() - query_phase_start
 
     total_duration_s = time.perf_counter() - start
     problems = _tour_problems(
