@@ -559,8 +559,11 @@ async def test_provider_filter_exclusion_disjoint(
 
     result = await SessionFilter(archive_root=root).origin(*include_origins).exclude_origin(*exclude_origins).list()
 
-    for session in result:
-        assert session.origin not in exclude_origins
+    # Exact set equality, not just "nothing excluded showed up": a loop-only
+    # `not in exclude_origins` check passes vacuously if .list() regresses to
+    # return [] for every case, including the intentionally-empty
+    # contradictory case -- that total-failure mode must fail here.
+    assert {session.origin for session in result} == set(include_origins) - set(exclude_origins)
 
 
 # =============================================================================
@@ -842,10 +845,11 @@ class TestSessionFilterCombinedFilters:
             .list()
         )
         # filter_repo_advanced has 2 chatgpt-export + 1 codex-session session left
-        # after excluding all 4 claude-ai-export sessions; cardinality guard so a
-        # regression that empties the filter (total-failure mode) can't hide behind
-        # an unreached loop body.
-        assert len(result) >= 1
+        # after excluding all 4 claude-ai-export sessions; exact count so a
+        # regression that empties the filter (total-failure mode), or one that
+        # returns the wrong subset at the right size, can't hide behind an
+        # unreached loop body.
+        assert len(result) == 3
         assert all(c.origin != "claude-ai-export" for c in result)
         for conv in result:
             assert "quantum" not in conv.tags
@@ -859,10 +863,10 @@ class TestSessionFilterCombinedFilters:
             .list()
         )
         # filter_repo_advanced has 4 claude-ai-export sessions and none of them are
-        # tagged "simple" (only the codex session is), so this must be non-empty;
-        # cardinality guard so a regression that empties the filter can't hide
-        # behind an unreached loop body.
-        assert len(result) >= 1
+        # tagged "simple" (only the codex session is), so this must return all 4;
+        # exact count so a regression that empties the filter can't hide behind
+        # an unreached loop body.
+        assert len(result) == 4
         assert all(c.origin == "claude-ai-export" for c in result)
         for conv in result:
             assert "simple" not in conv.tags
@@ -875,9 +879,9 @@ class TestSessionFilterCombinedFilters:
             .list()
         )
         # filter_repo_advanced has 1 codex-session session left after excluding all
-        # claude-ai-export and chatgpt-export sessions; cardinality guard so a
-        # regression that empties the filter can't hide behind an unreached loop body.
-        assert len(result) >= 1
+        # claude-ai-export and chatgpt-export sessions; exact count so a regression
+        # that empties the filter can't hide behind an unreached loop body.
+        assert len(result) == 1
         for conv in result:
             assert conv.origin not in ("claude-ai-export", "chatgpt-export")
 

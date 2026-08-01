@@ -178,7 +178,7 @@ def test_loads_malformed_json_never_silent(text: str) -> None:
     """
     try:
         result = core_json.loads(text)
-    except Exception:
+    except core_json.JSONDecodeError:
         pass  # Expected for malformed input
     else:
         # Valid JSON 'null' legitimately parses to None; every other successful
