@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import gzip
 import json
 import threading
@@ -568,7 +569,23 @@ class SchemaRegistry:
         element = package.element(element_kind)
         if element is None or element.schema_file is None:
             return None
-        path = self._provider_dir(provider_token) / "versions" / package.version / "elements" / element.schema_file
+        return self._read_local_element_schema_file(provider_token, package.version, element.schema_file)
+
+    def _read_local_element_schema_file(
+        self,
+        provider_token: str,
+        package_version: str,
+        schema_file: str,
+    ) -> PublicSchemaDocument | None:
+        """Read one element schema file given an already-resolved package/element.
+
+        Split out of ``_load_local_element_schema`` so a caller that already
+        holds the catalog and the resolved package/element (e.g.
+        ``_existing_provider_element_schemas``'s loop) reads the schema file
+        directly instead of re-loading and re-parsing the whole catalog JSON
+        per element/version.
+        """
+        path = self._provider_dir(provider_token) / "versions" / package_version / "elements" / schema_file
         if not path.exists():
             return None
         return _read_gzip_json_dict(path)
@@ -593,11 +610,7 @@ class SchemaRegistry:
             for element in package.elements:
                 if element.schema_file is None:
                     continue
-                existing = self._load_local_element_schema(
-                    provider_token,
-                    version=package.version,
-                    element_kind=element.element_kind,
-                )
+                existing = self._read_local_element_schema_file(provider_token, package.version, element.schema_file)
                 if existing is None:
                     continue
                 prior = merged_by_kind.get(element.element_kind)
@@ -607,6 +620,67 @@ class SchemaRegistry:
                     else existing
                 )
         return merged_by_kind
+
+    @staticmethod
+    def _annotate_merged_schema_node(
+        merged: PublicSchemaDocument,
+        *,
+        existing: PublicSchemaDocument | None,
+        candidate: PublicSchemaDocument | None,
+    ) -> PublicSchemaDocument:
+        """Recursively reattach ``x-polylogue-*`` annotations onto a structurally merged node.
+
+        ``merge_observed_structure_schemas`` merges only structural keywords
+        (``type``/``properties``/``items``/``additionalProperties`` --
+        its own docstring says "without retaining property history"), so
+        every node of the merged tree comes back with no annotation overlay
+        at all, not just the root. This walks ``merged``/``existing``/
+        ``candidate`` in parallel by matching property name / items /
+        additionalProperties position, preferring the candidate's freshly
+        computed annotations at each node and falling back to the existing
+        package's annotations for that same node when the candidate didn't
+        recompute one (e.g. this run observed the field's type again but
+        didn't rerun semantic-role/format/frequency/distribution inference).
+        """
+        result: PublicSchemaDocument = dict(merged)
+        existing = existing or {}
+        candidate = candidate or {}
+        for key, value in existing.items():
+            if key.startswith("x-polylogue-") and key not in candidate:
+                result[key] = value
+        for key, value in candidate.items():
+            if key.startswith("x-polylogue-"):
+                result[key] = value
+
+        merged_properties = json_document(merged.get("properties"))
+        if merged_properties:
+            existing_properties = json_document(existing.get("properties"))
+            candidate_properties = json_document(candidate.get("properties"))
+            result["properties"] = {
+                name: SchemaRegistry._annotate_merged_schema_node(
+                    json_document(child),
+                    existing=json_document(existing_properties.get(name)) or None,
+                    candidate=json_document(candidate_properties.get(name)) or None,
+                )
+                for name, child in merged_properties.items()
+            }
+
+        merged_items = json_document(merged.get("items"))
+        if merged_items:
+            result["items"] = SchemaRegistry._annotate_merged_schema_node(
+                merged_items,
+                existing=json_document(existing.get("items")) or None,
+                candidate=json_document(candidate.get("items")) or None,
+            )
+
+        merged_additional = json_document(merged.get("additionalProperties"))
+        if merged_additional:
+            result["additionalProperties"] = SchemaRegistry._annotate_merged_schema_node(
+                merged_additional,
+                existing=json_document(existing.get("additionalProperties")) or None,
+                candidate=json_document(candidate.get("additionalProperties")) or None,
+            )
+        return result
 
     @staticmethod
     def _merge_element_schema_with_existing(
@@ -633,16 +707,14 @@ class SchemaRegistry:
         from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
 
         merged = json_document(merge_observed_structure_schemas([json_document(existing), candidate]))
-        # Structural merge owns type/properties/items only; provenance and
-        # the x-polylogue-* annotation overlay come from the candidate (this
-        # run's fresh observation), falling back to the existing package so
-        # the merge never drops an annotation the candidate simply didn't
-        # recompute.
-        for key, value in existing.items():
-            if key.startswith("x-polylogue-") and key not in candidate:
-                merged[key] = value
+        # Structural merge owns type/properties/items/additionalProperties
+        # only; the x-polylogue-* annotation overlay is reattached node by
+        # node (not just at the document root) by
+        # _annotate_merged_schema_node, preferring the candidate's fresh
+        # annotations with the existing package's as fallback.
+        merged = SchemaRegistry._annotate_merged_schema_node(merged, existing=existing, candidate=candidate)
         for key, value in candidate.items():
-            if key.startswith("x-polylogue-") or key in ("$schema", "title"):
+            if key in ("$schema", "title"):
                 merged[key] = value
         return merged
 
@@ -656,6 +728,14 @@ class SchemaRegistry:
     ) -> None:
         provider_token = _provider_token(provider)
         existing_element_schemas = self._existing_provider_element_schemas(provider_token)
+        existing_catalog = self._load_local_catalog(provider_token)
+        existing_elements_by_version: dict[str, dict[str, SchemaElementManifest]] = {}
+        if existing_catalog is not None:
+            for existing_package in existing_catalog.packages:
+                existing_elements_by_version[existing_package.version] = {
+                    element.element_kind: element for element in existing_package.elements
+                }
+
         prepared_packages: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
         for package in catalog.packages:
             element_schemas = package_schemas.get(package.version)
@@ -667,6 +747,32 @@ class SchemaRegistry:
                 )
                 for element_kind, schema in element_schemas.items()
             }
+
+            # A thinner regeneration window can observe zero samples for an
+            # element kind this same version previously committed, so that
+            # kind is absent from `element_schemas` entirely and the merge
+            # loop above never runs for it. Carry it forward unmerged
+            # (pass-through) instead of letting it vanish from the
+            # destructive versions/-tree rewrite below -- the same
+            # destructive-loss bug class ov5r fixed, narrower: whole missing
+            # element kinds rather than narrowed types within an observed
+            # kind. Scoped to kinds this SAME version previously carried
+            # (matching get_element_schema/package.element()'s per-version
+            # lookup) -- a kind that only ever lived on a version this
+            # regeneration dropped entirely is a separate, out-of-scope loss
+            # class (a whole retired version, not a kind within a version).
+            carried_elements = list(package.elements)
+            for element_kind, prior_manifest in existing_elements_by_version.get(package.version, {}).items():
+                if element_kind in element_schemas:
+                    continue
+                carried_schema = existing_element_schemas.get(element_kind)
+                if carried_schema is None:
+                    continue
+                merged_element_schemas[element_kind] = carried_schema
+                carried_elements.append(prior_manifest)
+            if len(carried_elements) != len(package.elements):
+                package = dataclasses.replace(package, elements=carried_elements)
+
             workload_profile = (
                 package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
             )
@@ -695,6 +801,12 @@ class SchemaRegistry:
                 element_schemas=element_schemas,
                 workload_profile=workload_profile,
             )
+        # Persist the (possibly element-carry-forward-augmented) packages,
+        # not the caller's original `catalog.packages` -- otherwise a carried
+        # forward element's schema file is written to disk but the saved
+        # manifest never lists it, so get_element_schema/package.element()
+        # still can't find it.
+        catalog = dataclasses.replace(catalog, packages=[package for package, _, _ in prepared_packages])
         self.save_package_catalog(catalog)
 
     def _single_element_package(
