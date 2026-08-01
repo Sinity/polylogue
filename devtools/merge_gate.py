@@ -17,24 +17,39 @@ A coordinator merging dozens of PRs across a few hours cannot reliably repeat
 either habit purely from memory every single time. This command turns both
 into something that fails closed instead of silently not happening:
 
-  - ``record``: run (or accept the exit code of) a local verification command
-    against a PR branch's current HEAD commit, and persist a receipt keyed to
-    that exact sha under ``.cache/verify/merge-gate/pr-<N>.json``.
-  - ``check``: BLOCK unless a receipt exists for the PR's *current* head sha
-    (not a stale one from an earlier push), was recorded within a freshness
-    window, and had exit code 0 -- AND no review comment's ``created_at`` is
-    newer than that head commit's ``committedDate``. Late-arriving comments
-    are printed explicitly rather than requiring a human to eyeball two
-    timestamps; a push after the last recorded receipt is a hard block, not
-    an advisory.
+  - ``record``: run a local verification command against a PR branch's
+    current HEAD commit, and persist a receipt keyed to that exact sha under
+    ``.cache/verify/merge-gate/pr-<N>.json``. Refuses to record unless the
+    CURRENT git checkout is clean and its ``HEAD`` matches the PR's fetched
+    ``headRefOid`` -- otherwise the receipt would attest to code that was
+    never actually tested (review-caught gap: recording from an unrelated
+    checkout, e.g. master or a stale worktree, previously produced a receipt
+    that ``check`` would accept).
+  - ``check``: polls PR review comments across a real grace window (default
+    3 rounds x 20s, covering the 30-60s late-arrival window from incident 1)
+    before deciding. BLOCKs unless a receipt exists for the PR's *current*
+    head sha (not a stale one from an earlier push), was recorded within a
+    freshness window, had exit code 0, and its command actually looks like it
+    ran tests (a bare ``--quick`` profile is flagged, not silently accepted --
+    review-caught gap: the documented example used exactly the profile that
+    would have missed the PR #3517 regression). No review comment's
+    ``created_at`` may be newer than the head commit's ``committedDate``
+    unless it has been explicitly acknowledged via ``ack`` for this exact
+    head sha (review-caught gap: without ``ack``, a stale-forever comparison
+    made even a reviewed false positive permanently unmergeable without an
+    empty commit).
 
-This does not replace judgment about *what* a late comment means -- it makes
-the presence of an unverified late signal impossible to merge past silently.
+This does not replace judgment about *what* a late comment means -- ``ack``
+still requires a human/agent to have actually read it and decided it's not
+actionable. It makes the presence of an unverified late signal impossible to
+merge past silently, and impossible to permanently paper over without an
+explicit, current-head-scoped decision.
 
 Usage:
-    devtools workspace merge-gate record 3517 --command "devtools verify --quick"
+    devtools workspace merge-gate record 3517 --command "devtools verify"
     devtools workspace merge-gate check 3517
-    devtools workspace merge-gate check 3517 --json --max-age-s 7200
+    devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1
+    devtools workspace merge-gate ack 3517 <comment-id> --reason "false positive, already fixed upstream"
 """
 
 from __future__ import annotations
@@ -51,6 +66,15 @@ from typing import Any
 
 _RECEIPT_DIR = Path(".cache/verify/merge-gate")
 _DEFAULT_MAX_AGE_S = 3600
+_DEFAULT_POLL_ROUNDS = 3
+_DEFAULT_POLL_INTERVAL_S = 20
+# Heuristic: profiles that explicitly skip tests (see CLAUDE.md -- `devtools
+# verify --quick` is format+lint+mypy+render, no pytest). Not exhaustive; a
+# command containing neither this nor an obvious test-runner name still gets
+# flagged as an advisory, since the whole point is not trusting a plausible-
+# looking command string without comment.
+_TEST_SKIPPING_MARKERS: tuple[str, ...] = ("verify --quick", "verify --lab")
+_LOOKS_LIKE_TESTS_MARKERS: tuple[str, ...] = ("test", "pytest", "verify --all")
 
 
 def _gh_json(args: list[str]) -> Any:
@@ -58,6 +82,18 @@ def _gh_json(args: list[str]) -> Any:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip()[:300] or f"gh {' '.join(args)} failed")
     return json.loads(result.stdout)
+
+
+def _git_head_sha() -> str | None:
+    result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _git_is_clean() -> bool:
+    result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, timeout=15)
+    return result.returncode == 0 and not result.stdout.strip()
 
 
 @dataclass
@@ -74,9 +110,38 @@ def _receipt_path(pr: int) -> Path:
     return _RECEIPT_DIR / f"pr-{pr}.json"
 
 
+def _ack_path(pr: int) -> Path:
+    return _RECEIPT_DIR / f"pr-{pr}-acks.json"
+
+
+def _command_skips_tests(command: str) -> bool:
+    lowered = command.lower()
+    if any(marker in lowered for marker in _TEST_SKIPPING_MARKERS):
+        return True
+    return not any(marker in lowered for marker in _LOOKS_LIKE_TESTS_MARKERS)
+
+
 def cmd_record(pr: int, command: str) -> int:
     info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid,headRefName"])
     head_sha = info["headRefOid"]
+
+    local_head = _git_head_sha()
+    if local_head != head_sha:
+        print(
+            f"REFUSING to record: current checkout HEAD ({local_head[:8] if local_head else '?'}) does not "
+            f"match PR #{pr}'s head ({head_sha[:8]}). Check out the PR's exact commit (in an isolated worktree "
+            "if other work is in progress elsewhere) before recording -- a receipt attesting to the wrong "
+            "checkout is worse than no receipt.",
+            file=sys.stderr,
+        )
+        return 2
+    if not _git_is_clean():
+        print(
+            "REFUSING to record: current checkout has uncommitted changes. The receipt must attest to "
+            "exactly the PR's committed content, not a locally-modified tree.",
+            file=sys.stderr,
+        )
+        return 2
 
     argv = shlex.split(command)
     started = time.time()
@@ -88,6 +153,7 @@ def cmd_record(pr: int, command: str) -> int:
         "head_sha": head_sha,
         "branch": info["headRefName"],
         "command": command,
+        "skips_tests": _command_skips_tests(command),
         "exit_code": result.returncode,
         "duration_s": duration_s,
         "recorded_at": time.time(),
@@ -98,13 +164,54 @@ def cmd_record(pr: int, command: str) -> int:
     _receipt_path(pr).write_text(json.dumps(receipt, indent=2))
 
     print(f"recorded receipt for PR #{pr} @ {head_sha[:8]}: exit={result.returncode} ({duration_s}s)")
+    if receipt["skips_tests"]:
+        print(
+            f"  advisory: command {command!r} does not look like it ran tests -- `check` will flag this",
+            file=sys.stderr,
+        )
     if result.returncode != 0:
         print(result.stdout[-2000:])
         print(result.stderr[-2000:], file=sys.stderr)
     return result.returncode
 
 
-def cmd_check(pr: int, *, max_age_s: int, as_json: bool) -> int:
+def cmd_ack(pr: int, comment_id: int, *, reason: str) -> int:
+    info = _gh_json(["pr", "view", str(pr), "--json", "headRefOid"])
+    head_sha = info["headRefOid"]
+
+    ack_path = _ack_path(pr)
+    acks: dict[str, Any] = json.loads(ack_path.read_text()) if ack_path.exists() else {}
+    acks[str(comment_id)] = {"head_sha": head_sha, "reason": reason, "acked_at": time.time()}
+    _RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
+    ack_path.write_text(json.dumps(acks, indent=2))
+    print(f"acknowledged comment {comment_id} on PR #{pr} @ {head_sha[:8]}: {reason}")
+    return 0
+
+
+def _fetch_review_comments(pr: int) -> list[dict[str, Any]] | None:
+    try:
+        result: list[dict[str, Any]] = _gh_json(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"])
+    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
+        return None
+    return result
+
+
+def _poll_stable_comments(pr: int, *, rounds: int, interval_s: int) -> list[dict[str, Any]] | None:
+    """Poll review comments repeatedly so a comment posted 30-60s after CI
+    goes green (the PR #3502 incident) is observed rather than missed by a
+    single snapshot taken too early."""
+    last: list[dict[str, Any]] | None = None
+    for round_index in range(max(1, rounds)):
+        comments = _fetch_review_comments(pr)
+        if comments is None:
+            return None
+        last = comments
+        if round_index < rounds - 1:
+            time.sleep(interval_s)
+    return last
+
+
+def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int, as_json: bool) -> int:
     verdict = GateVerdict(pr=pr, ok=True)
 
     try:
@@ -165,31 +272,44 @@ def cmd_check(pr: int, *, max_age_s: int, as_json: bool) -> int:
             if receipt.get("exit_code", 1) != 0:
                 verdict.ok = False
                 verdict.reasons.append(f"receipt exit_code is {receipt.get('exit_code')}, not 0")
+            if receipt.get("skips_tests"):
+                verdict.reasons.append(
+                    f"advisory: receipt command {receipt.get('command')!r} does not look like it ran tests "
+                    "-- confirm this PR genuinely needs no test coverage before merging"
+                )
 
-    try:
-        review_comments = _gh_json(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"])
-    except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
+    review_comments = _poll_stable_comments(pr, rounds=poll_rounds, interval_s=poll_interval_s)
+    if review_comments is None:
         verdict.ok = False
-        verdict.reasons.append(f"could not fetch review comments: {exc}")
+        verdict.reasons.append("could not fetch review comments after polling")
         review_comments = []
+
+    ack_path = _ack_path(pr)
+    acks: dict[str, Any] = json.loads(ack_path.read_text()) if ack_path.exists() else {}
 
     if head_committed_at:
         for comment in review_comments:
             created_at = comment.get("created_at", "")
-            if created_at > head_committed_at:
-                verdict.late_comments.append(
-                    {
-                        "path": comment.get("path"),
-                        "line": comment.get("line"),
-                        "created_at": created_at,
-                        "body_head": (comment.get("body") or "")[:200],
-                    }
-                )
+            if created_at <= head_committed_at:
+                continue
+            comment_id = comment.get("id")
+            ack = acks.get(str(comment_id))
+            if ack is not None and ack.get("head_sha") == head_sha:
+                continue  # explicitly triaged for this exact head sha
+            verdict.late_comments.append(
+                {
+                    "id": comment_id,
+                    "path": comment.get("path"),
+                    "line": comment.get("line"),
+                    "created_at": created_at,
+                    "body_head": (comment.get("body") or "")[:200],
+                }
+            )
         if verdict.late_comments:
             verdict.ok = False
             verdict.reasons.append(
-                f"{len(verdict.late_comments)} review comment(s) posted after the head commit "
-                f"({head_committed_at}) -- read and triage before merging"
+                f"{len(verdict.late_comments)} unacknowledged review comment(s) posted after the head commit "
+                f"({head_committed_at}) -- read and `ack` (if not actionable) or fix before merging"
             )
     elif review_comments:
         verdict.reasons.append("could not determine head commit timestamp; late-comment check skipped")
@@ -206,7 +326,9 @@ def _emit(verdict: GateVerdict, as_json: bool) -> None:
     for reason in verdict.reasons:
         print(f"  - {reason}")
     for late in verdict.late_comments:
-        print(f"    late comment [{late['path']}:{late['line']}] {late['created_at']}: {late['body_head']}")
+        print(
+            f"    late comment id={late['id']} [{late['path']}:{late['line']}] {late['created_at']}: {late['body_head']}"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -215,20 +337,33 @@ def main(argv: list[str] | None = None) -> int:
 
     record_p = sub.add_parser("record", help="Run local verification against a PR's current head and persist a receipt")
     record_p.add_argument("pr", type=int)
-    record_p.add_argument(
-        "--command", required=True, help="Local verification command to run, e.g. 'devtools verify --quick'"
-    )
+    record_p.add_argument("--command", required=True, help="Local verification command to run, e.g. 'devtools verify'")
 
     check_p = sub.add_parser("check", help="Decide whether a PR is safe to merge right now")
     check_p.add_argument("pr", type=int)
     check_p.add_argument("--max-age-s", type=int, default=_DEFAULT_MAX_AGE_S)
+    check_p.add_argument("--poll-rounds", type=int, default=_DEFAULT_POLL_ROUNDS)
+    check_p.add_argument("--poll-interval-s", type=int, default=_DEFAULT_POLL_INTERVAL_S)
     check_p.add_argument("--json", action="store_true", dest="as_json")
+
+    ack_p = sub.add_parser("ack", help="Acknowledge a specific review comment as triaged for the current head sha")
+    ack_p.add_argument("pr", type=int)
+    ack_p.add_argument("comment_id", type=int)
+    ack_p.add_argument("--reason", required=True, help="Why this comment does not block merging")
 
     args = parser.parse_args(argv)
 
     if args.action == "record":
         return cmd_record(args.pr, args.command)
-    return cmd_check(args.pr, max_age_s=args.max_age_s, as_json=args.as_json)
+    if args.action == "ack":
+        return cmd_ack(args.pr, args.comment_id, reason=args.reason)
+    return cmd_check(
+        args.pr,
+        max_age_s=args.max_age_s,
+        poll_rounds=args.poll_rounds,
+        poll_interval_s=args.poll_interval_s,
+        as_json=args.as_json,
+    )
 
 
 if __name__ == "__main__":
