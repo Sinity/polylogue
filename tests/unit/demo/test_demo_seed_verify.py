@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -8,8 +9,18 @@ import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.config import load_polylogue_config
-from polylogue.demo import apply_demo_post_ingest_augmentation, seed_demo_archive, verify_demo_archive
-from polylogue.demo.seed import demo_source_specs, materialize_demo_source
+from polylogue.demo import (
+    DemoSeedTargetUnsafeError,
+    apply_demo_post_ingest_augmentation,
+    seed_demo_archive,
+    verify_demo_archive,
+)
+from polylogue.demo.seed import (
+    DEMO_OWNERSHIP_MANIFEST_FILENAME,
+    DEMO_SOURCE_DIRNAME,
+    demo_source_specs,
+    materialize_demo_source,
+)
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
@@ -378,3 +389,291 @@ async def test_seed_demo_archive_forces_sequential_parse_workers(
 
     assert captured.get("parse_workers") == 1
     assert result.session_count == len(DEMO_SESSION_IDS)
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_self_heals_a_stale_schema_on_a_demo_owned_root(tmp_path: Path) -> None:
+    """Re-seeding a demo archive whose index.db predates the current schema self-heals.
+
+    Reproduces polylogue-3ycw: ``demo seed`` documented as the safe,
+    private-data-free onboarding path failed outright with
+    ``RuntimeError: index.db schema version N is not the current index tier
+    version M; move it aside and rebuild the archive root`` and no
+    self-heal, even though a demo archive's tiers hold only synthetic
+    fixture content this exact command regenerates every run.
+
+    ANTI-VACUITY: the production caller exercised is
+    ``polylogue.demo.seed.seed_demo_archive`` (imported directly, no
+    test-local reimplementation). Deleting the
+    ``_self_heal_stale_demo_archive_tiers`` call from ``seed_demo_archive``
+    (or deleting that helper's move-aside-and-reinitialize body) makes this
+    exact test fail with the original unhandled ``RuntimeError`` instead of
+    seeding successfully a second time.
+    """
+
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True)
+
+    # Roll index.db's schema version back, as if this demo archive had been
+    # seeded by an older Polylogue release whose index tier version was lower
+    # than the current code's.
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    seed = await seed_demo_archive(archive_root, force=False)
+
+    assert seed.healed_tiers == ("index.db",)
+    assert seed.session_count == len(DEMO_SESSION_IDS)
+    assert seed.construct_coverage
+    assert all(row.ok for row in seed.construct_coverage)
+
+    verify = verify_demo_archive(archive_root)
+    assert verify.ok is True
+
+    stale_backups = list(archive_root.glob("index.db.stale-*"))
+    assert len(stale_backups) == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_refuses_the_default_root_collision(tmp_path: Path) -> None:
+    """Demo seed refuses to write synthetic content into a root holding real sessions.
+
+    Guards polylogue-o3a1t: ``demo seed``'s default archive-root resolution
+    shares ``archive_root()``/``polylogue.toml`` with the live daemon, so an
+    operator or agent who forgets ``--root`` can have it resolve straight to
+    their live production archive. ``demo seed`` adds rows rather than
+    refusing to run against existing content, so without this guard the
+    collision would silently seed synthetic fixture sessions into a real
+    archive.
+
+    ANTI-VACUITY: the production entry point exercised is
+    ``polylogue.demo.seed.seed_demo_archive`` with ``explicit_root=False``
+    (what the CLI passes when neither ``--root`` nor
+    ``POLYLOGUE_ARCHIVE_ROOT`` was given). Deleting the
+    ``_guard_demo_seed_target`` call from ``seed_demo_archive`` makes this
+    test fail by seeding successfully instead of raising.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
+
+    with pytest.raises(DemoSeedTargetUnsafeError, match="real ingested session"):
+        await seed_demo_archive(archive_root, force=False, explicit_root=False)
+
+    # Nothing was touched: no demo fixture source, no ownership manifest.
+    assert not (archive_root / DEMO_SOURCE_DIRNAME).exists()
+    assert not (archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).exists()
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_explicit_root_bypasses_the_collision_guard(tmp_path: Path) -> None:
+    """An operator-supplied --root/POLYLOGUE_ARCHIVE_ROOT is never second-guessed.
+
+    Guards the "no friction for the deliberate/CI/cloud path" half of
+    polylogue-o3a1t: passing ``explicit_root=True`` (what the CLI passes for
+    an explicit ``--root`` flag or a ``POLYLOGUE_ARCHIVE_ROOT`` override)
+    must seed successfully even against a root that already holds real
+    content, because the caller took explicit responsibility for that root.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
+
+    seed = await seed_demo_archive(archive_root, force=False, explicit_root=True)
+
+    assert seed.session_count == len(DEMO_SESSION_IDS) + 1
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_never_self_heals_a_root_that_held_real_content(tmp_path: Path) -> None:
+    """A root holding real content when first seeded never becomes self-heal eligible.
+
+    Guards polylogue-wyvio: the prior fix (PR #3515) gated self-heal on
+    ``DEMO_SOURCE_DIRNAME``'s mere presence, which only proves "a demo seed
+    touched this root at some point" -- not that the root's tiers are
+    exclusively synthetic. A root that already held real content (here,
+    reached via an explicit ``--force`` override past the polylogue-o3a1t
+    guard, mirroring an operator who deliberately or accidentally pointed
+    demo seed at a real archive) must never become eligible for self-heal,
+    even after being reseeded, so a later schema mismatch cannot authorize
+    moving aside real (potentially durable/irreplaceable) tier data.
+
+    ANTI-VACUITY: exercises the real ``seed_demo_archive`` entry point twice
+    (matching the exact sequence an operator would hit) and asserts on the
+    real ``_self_heal_stale_demo_archive_tiers`` outcome (``healed_tiers``)
+    and on-disk side effects (no ``.stale-`` backup file written). Reverting
+    ``_archive_root_is_demo_owned`` to trust ``DEMO_SOURCE_DIRNAME`` alone
+    makes this test fail: the second call would then self-heal instead of
+    raising.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
+
+    # Force past the o3a1t guard, exactly like an operator who consciously
+    # (or via the pre-fix collision bug) seeded demo content into this root.
+    first = await seed_demo_archive(archive_root, force=True)
+    assert first.healed_tiers == ()
+    assert (archive_root / DEMO_SOURCE_DIRNAME).exists()  # legacy marker persists
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="move it aside and rebuild the archive root"):
+        await seed_demo_archive(archive_root, force=True)
+
+    # Nothing was moved aside: the mixed-content root's tiers are untouched,
+    # despite the legacy demo-source-directory marker being present.
+    assert not list(archive_root.glob("index.db.stale-*"))
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is False
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_grants_self_heal_to_a_genuinely_fresh_root(tmp_path: Path) -> None:
+    """A brand-new root is recorded demo-only on first seed and stays self-heal eligible.
+
+    Complements the mixed-content test above: an empty/nonexistent root has
+    no real content to protect, so the ownership manifest records
+    ``demo_only: true`` and self-heal keeps working across repeated
+    reseeds, exactly like before the polylogue-wyvio fix.
+    """
+
+    archive_root = tmp_path / "archive"
+
+    first = await seed_demo_archive(archive_root, force=True)
+    assert first.healed_tiers == ()
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is True
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    second = await seed_demo_archive(archive_root, force=False)
+    assert second.healed_tiers == ("index.db",)
+
+
+@pytest.mark.asyncio
+async def test_seed_demo_archive_revokes_self_heal_once_a_demo_only_root_gains_real_content(
+    tmp_path: Path,
+) -> None:
+    """A demo-only root that later gains real content loses self-heal eligibility.
+
+    Guards polylogue-dl6af gap 1: the ownership manifest's ``demo_only: true``
+    bit was previously treated as PERMANENT proof of exclusive demo
+    ownership. If an operator seeds the zero-friction demo against a fresh
+    default root and then starts using that same root normally -- real
+    sessions accumulate through ordinary ingest -- the manifest still says
+    ``demo_only: true`` forever. A later ``demo seed`` hitting schema drift
+    must not trust that historical bit alone and self-heal by moving aside
+    the now-real ``source.db``/``user.db``.
+
+    ANTI-VACUITY: exercises the real ``seed_demo_archive`` entry point twice,
+    with a real (non-demo) session inserted directly into the index tier in
+    between -- mirroring an operator's normal-use ingest, not a test-only
+    reimplementation. Reverting ``_archive_root_is_demo_owned`` to trust the
+    historical ``demo_only`` bit without revalidating against the recorded
+    ``demo_session_ids`` baseline makes this test fail: the second call
+    would self-heal (``healed_tiers == ("index.db",)``) instead of raising
+    the original unhandled schema-mismatch ``RuntimeError``, and the
+    ``index.db.stale-*`` backup would appear on disk.
+    """
+
+    from tests.infra.storage_records import SessionBuilder
+
+    archive_root = tmp_path / "archive"
+
+    first = await seed_demo_archive(archive_root, force=True)
+    assert first.healed_tiers == ()
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is True
+    assert manifest["demo_session_ids"]
+
+    # Normal use: a real session lands in the same root through ordinary
+    # ingest, independent of anything the demo seeder wrote.
+    SessionBuilder(archive_root / "index.db", "real-session-after-seed").provider("claude-code").save()
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="move it aside and rebuild the archive root"):
+        await seed_demo_archive(archive_root, force=True)
+
+    assert not list(archive_root.glob("index.db.stale-*"))
+
+
+@pytest.mark.asyncio
+async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tmp_path: Path) -> None:
+    """A missing/unreadable index.db must never authorize moving aside real durable content.
+
+    Guards polylogue-dl6af gap 2: ``index.db`` is explicitly the rebuildable
+    tier (this repo's "Schema regimes" doc) and can legitimately be absent
+    on a real archive -- e.g. right after ``polylogue ops reset --index``,
+    before the daemon has rebuilt it. Classifying that absence as "0
+    sessions" (proof of emptiness) let the first-touch ownership manifest
+    record ``demo_only: true`` for a root whose durable tiers (``source.db``,
+    ``user.db``) already held real content, which would then authorize
+    self-heal to move that real content aside on a later schema mismatch.
+
+    ANTI-VACUITY: the production entry point exercised is
+    ``polylogue.demo.seed.seed_demo_archive`` with ``explicit_root=True``
+    (bypassing the separate default-root collision guard so this test
+    isolates the ownership-manifest predicate specifically). Reverting
+    ``_archive_root_has_real_content`` to trust ``_archive_tier_session_count``
+    (index-only) alone makes this test fail: the manifest would record
+    ``demo_only: true`` instead of ``false``.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir(parents=True)
+
+    # Populate only the durable tiers with real content; deliberately never
+    # create index.db, mirroring a root whose rebuildable tier was reset or
+    # never rebuilt.
+    initialize_archive_database(archive_root / "source.db", ArchiveTier.SOURCE)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index,
+                blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "real-raw-0",
+                "claude-code-session",
+                "real-session-0",
+                "/real/source/path",
+                0,
+                b"\x00" * 32,
+                1,
+                0,
+            ),
+        )
+        conn.commit()
+    assert not (archive_root / "index.db").exists()
+
+    seed = await seed_demo_archive(archive_root, force=True, explicit_root=True)
+
+    manifest = json.loads((archive_root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text())
+    assert manifest["demo_only"] is False
+    assert seed.healed_tiers == ()

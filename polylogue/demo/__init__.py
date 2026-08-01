@@ -15,6 +15,7 @@ from .receipts import (
 from .script import render_demo_script
 from .seed import (
     DEMO_SOURCE_DIRNAME,
+    DemoSeedTargetUnsafeError,
     apply_demo_post_ingest_augmentation,
     demo_source_specs,
     materialize_demo_source,
@@ -33,6 +34,7 @@ __all__ = [
     "CompletionClaimExperimentResult",
     "DemoReceiptsResult",
     "DemoSeedResult",
+    "DemoSeedTargetUnsafeError",
     "DemoTourResult",
     "DemoTourStep",
     "DemoVerifyResult",

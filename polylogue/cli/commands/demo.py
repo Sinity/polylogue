@@ -13,6 +13,7 @@ import click
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.errors import DatabaseError
 from polylogue.demo import (
+    DemoSeedTargetUnsafeError,
     inspect_completion_claims,
     inspect_demo_receipts,
     render_completion_claims,
@@ -23,6 +24,35 @@ from polylogue.demo import (
     verify_demo_archive,
 )
 from polylogue.paths import archive_root
+
+
+def _root_is_explicit(root: Path | None) -> bool:
+    """Return whether the archive root came from an explicit operator override.
+
+    True only for a ``--root`` CLI flag or a non-empty, non-whitespace-only
+    ``POLYLOGUE_ARCHIVE_ROOT`` environment variable -- never for the ambient
+    ``archive_root()`` default (``polylogue.toml``/XDG fallback), which is
+    exactly the resolution chain the live daemon shares (polylogue-o3a1t).
+    Gates ``demo seed``'s default-root safety guard: an explicit override is
+    the operator's own consent and is never second-guessed.
+
+    ``polylogue.paths.archive_root()`` itself treats an empty or
+    whitespace-only ``POLYLOGUE_ARCHIVE_ROOT`` as unset and falls through to
+    ``polylogue.toml``/XDG resolution (``polylogue/paths/_roots.py``:
+    ``os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()``). Checking mere
+    membership in ``os.environ`` here disagreed with that: an operator or
+    agent running ``POLYLOGUE_ARCHIVE_ROOT="" polylogue demo seed`` would
+    have this function report "explicit root given" (disarming the
+    collision guard) while the actual resolved root silently fell through to
+    the live fallback archive -- the exact collision the guard exists to
+    catch, bypassed by an empty string (polylogue-dl6af gap 3). Stripping
+    before checking truthiness keeps this in lockstep with
+    ``archive_root()``'s own emptiness rule.
+    """
+
+    if root is not None:
+        return True
+    return bool(os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip())
 
 
 @click.group("demo")
@@ -59,11 +89,26 @@ def seed_command(
     """Create a ready-to-query deterministic demo archive."""
 
     resolved_root = (root or archive_root()).expanduser().resolve()
-    result = asyncio.run(seed_demo_archive(resolved_root, force=force, with_overlays=with_overlays))
+    try:
+        result = asyncio.run(
+            seed_demo_archive(
+                resolved_root,
+                force=force,
+                with_overlays=with_overlays,
+                explicit_root=_root_is_explicit(root),
+            )
+        )
+    except DemoSeedTargetUnsafeError as exc:
+        raise click.ClickException(str(exc)) from exc
     payload = result.to_payload()
     if output_format == "json":
         click.echo(json.dumps(payload, sort_keys=True))
         return
+    healed_note = (
+        f"  Self-healed: {', '.join(result.healed_tiers)} (stale schema moved aside and rebuilt)\n"
+        if result.healed_tiers
+        else ""
+    )
     env.ui.console.print(
         "[bold green]Demo archive ready[/bold green]\n"
         f"  Archive root: {result.archive_root}\n"
@@ -71,6 +116,7 @@ def seed_command(
         f"  Sessions:     {result.session_count}\n"
         f"  Messages:     {result.message_count}\n"
         f"  Overlays:     {'yes' if result.overlays_seeded else 'no'}\n"
+        f"{healed_note}"
         "  Verify:       polylogue demo verify"
     )
 
@@ -125,7 +171,7 @@ def receipts_command(
 ) -> None:
     """Compare a demo assistant claim with structural tool evidence."""
 
-    has_configured_root = root is not None or "POLYLOGUE_ARCHIVE_ROOT" in os.environ
+    has_configured_root = _root_is_explicit(root)
     if root is not None:
         resolved_root = root.expanduser().resolve()
     elif has_configured_root:
@@ -135,7 +181,17 @@ def receipts_command(
 
     should_seed = (not has_configured_root) if seed is None else seed
     if should_seed:
-        asyncio.run(seed_demo_archive(resolved_root, force=force, with_overlays=False))
+        try:
+            asyncio.run(
+                seed_demo_archive(
+                    resolved_root,
+                    force=force,
+                    with_overlays=False,
+                    explicit_root=has_configured_root,
+                )
+            )
+        except DemoSeedTargetUnsafeError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     if completion_claims_only:
         try:
