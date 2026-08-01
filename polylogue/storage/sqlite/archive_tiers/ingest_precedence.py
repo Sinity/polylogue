@@ -166,8 +166,31 @@ def revision_authority_refuses_write(
     Two independent refusals, checked in order:
 
     - an ACCEPTED revision-authority head already exists for this
-      ``session_id`` (``raw_revision_heads``) -- some other raw in this
-      cohort already won, so this write is redundant, never authoritative.
+      ``session_id`` (``raw_revision_heads``) for a *different* raw than the
+      one being written -- some other raw in this cohort already won, so
+      this write is redundant, never authoritative. A write whose own
+      ``raw_id`` **is** the accepted head is never refused here: it is the
+      winning raw attempting to (re)establish its own content, not a
+      competing/losing raw trying to overwrite the winner (polylogue-buq8/
+      i415/lkos: ``raw_revision_heads`` can be populated by a bookkeeping-
+      only backfill pass -- e.g. ``backfill_historical_revision_evidence``
+      recomputing authority for pre-governance sessions -- that records
+      *which* raw is authoritative without re-running message extraction
+      against it. Before this fix, that left a session's original,
+      pre-governance ``sessions``/``messages`` rows -- possibly written by a
+      long-since-fixed parser bug, an interrupted write, or any other
+      historical defect -- permanently frozen: every later ingest tick for
+      the very raw the backfill just named authoritative hit this same
+      unconditional "governed, skip" branch and could never re-parse or
+      correct it. Measured live: 11 ``codex-session`` rows with
+      ``message_count=0`` despite 996 KB-3.3 MB of real ``event_msg``/
+      ``response_item`` content in the raw bytes, each one's
+      ``raw_revision_heads.accepted_raw_id`` equal to its own ``sessions.
+      raw_id`` -- direct reproduction against the live raw bytes confirms
+      the current parser already extracts the real messages correctly, so
+      the content loss was never in ``sources/`` parsing; it was this gate
+      refusing to let a corrective write through for a raw that was already
+      "won").
     - this raw's own recorded membership decision for this
       ``provider_session_id`` is ``'ambiguous'`` -- ``classify_membership_
       revisions`` genuinely refused to arbitrate a winner for this cohort,
@@ -185,11 +208,11 @@ def revision_authority_refuses_write(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_revision_heads'"
     ).fetchone()
     if has_revision_heads is not None:
-        governed = conn.execute(
-            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
+        governed_row = conn.execute(
+            "SELECT accepted_raw_id FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
             (session_id,),
         ).fetchone()
-        if governed is not None:
+        if governed_row is not None and str(governed_row[0]) != raw_id:
             return True
     if source_conn is None or not raw_id:
         return False
