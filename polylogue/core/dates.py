@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import dateparser
-
 
 def utc_now() -> datetime:
     """Return the query-time UTC clock through one patchable seam."""
@@ -35,6 +33,8 @@ def parse_date(date_str: str) -> datetime | None:
         >>> parse_date("yesterday")  # doctest: +SKIP
         datetime(2026, 1, 22, ..., tzinfo=timezone.utc)
     """
+    import dateparser  # Deferred: ~0.26s import (timezone tables) off the CLI query path.
+
     settings = {
         "PREFER_DATES_FROM": "past",  # Default to past dates for "last week"
         "RETURN_AS_TIMEZONE_AWARE": True,  # Return UTC-aware for comparison with timestamps

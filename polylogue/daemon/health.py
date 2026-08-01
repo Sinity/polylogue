@@ -681,9 +681,9 @@ def _check_schema_drift_medium() -> HealthAlert:
     """
     now = datetime.now(UTC).isoformat()
     try:
-        from polylogue.cli.commands.status import _schema_drift_status
+        from polylogue.insights.schema_drift import schema_drift_status
 
-        drift = _schema_drift_status(_active_health_db_path().parent, now_ms=int(datetime.now(UTC).timestamp() * 1000))
+        drift = schema_drift_status(_active_health_db_path().parent, now_ms=int(datetime.now(UTC).timestamp() * 1000))
         if not drift.get("available"):
             return HealthAlert(
                 check_name="schema_drift",

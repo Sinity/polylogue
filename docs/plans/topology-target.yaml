@@ -1035,7 +1035,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2494
+    loc: 2428
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -2100,6 +2100,10 @@ files:
     loc: 474
     target: polylogue/insights/run_projection.py
     owner: stable
+  - path: polylogue/insights/schema_drift.py
+    loc: 89
+    target: polylogue/insights/schema_drift.py
+    owner: stable
   - path: polylogue/insights/session_analytics.py
     loc: 274
     target: polylogue/insights/session_analytics.py
@@ -2262,7 +2266,7 @@ files:
     target: polylogue/material_protocol/v1/manifest.py
     owner: stable
   - path: polylogue/material_protocol/v1/origin_vocab.py
-    loc: 82
+    loc: 84
     target: polylogue/material_protocol/v1/origin_vocab.py
     owner: stable
   - path: polylogue/material_protocol/v1/records.py
@@ -2718,7 +2722,7 @@ files:
     target: polylogue/scenarios/workload.py
     owner: stable
   - path: polylogue/schemas/__init__.py
-    loc: 9
+    loc: 35
     target: polylogue/schemas/__init__.py
     owner: stable
   - path: polylogue/schemas/audit/__init__.py
@@ -3012,7 +3016,7 @@ files:
     target: polylogue/schemas/registry.py
     owner: stable
   - path: polylogue/schemas/runtime_registry.py
-    loc: 872
+    loc: 1097
     target: polylogue/schemas/runtime_registry.py
     owner: stable
   - path: polylogue/schemas/sampling.py
@@ -4188,7 +4192,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2913
+    loc: 2922
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py

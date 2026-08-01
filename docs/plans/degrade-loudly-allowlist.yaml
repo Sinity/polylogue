@@ -322,6 +322,22 @@ entries:
   reason: 'Returns {"checked": False, "reason": str(exc), "surfaces": {}} -- an already-typed signal.
     Extracted from polylogue/cli/commands/status.py (polylogue-ogn1 layering fix); pre-existing
     behavior, unchanged by the move.'
+- path: polylogue/insights/schema_drift.py
+  function: <module>.schema_drift_status
+  exceptions:
+  - Error
+  occurrence: 0
+  reason: 'Returns {"available": False, "reason": str(exc)} -- an already-typed signal.
+    Extracted from polylogue/cli/commands/status.py (import-tax fix); pre-existing
+    behavior, unchanged by the move.'
+- path: polylogue/insights/schema_drift.py
+  function: <module>.schema_drift_status
+  exceptions:
+  - Error
+  occurrence: 1
+  reason: 'Returns {"available": False, "reason": str(exc)} -- an already-typed signal.
+    Extracted from polylogue/cli/commands/status.py (import-tax fix); pre-existing
+    behavior, unchanged by the move.'
 - path: polylogue/storage/artifacts/inspection.py
   function: <module>._hermes_state_db_schema_version
   exceptions:

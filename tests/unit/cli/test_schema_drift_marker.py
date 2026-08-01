@@ -31,7 +31,7 @@ def test_marker_silent_when_sentinel_unavailable(
 ) -> None:
     _patch_active_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "polylogue.cli.commands.status._schema_drift_status",
+        "polylogue.insights.schema_drift.schema_drift_status",
         lambda *a, **kw: {"available": False},
     )
     _emit_schema_drift_marker()
@@ -46,7 +46,7 @@ def test_marker_silent_when_all_origins_ok(
 ) -> None:
     _patch_active_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "polylogue.cli.commands.status._schema_drift_status",
+        "polylogue.insights.schema_drift.schema_drift_status",
         lambda *a, **kw: {
             "available": True,
             "since_ms": 1_700_000_000_000,
@@ -65,7 +65,7 @@ def test_marker_prints_to_stderr_when_worst_origin_is_risky(
 ) -> None:
     _patch_active_db(monkeypatch, tmp_path)
     monkeypatch.setattr(
-        "polylogue.cli.commands.status._schema_drift_status",
+        "polylogue.insights.schema_drift.schema_drift_status",
         lambda *a, **kw: {
             "available": True,
             "since_ms": 1_700_000_000_000,
@@ -96,3 +96,37 @@ def test_marker_never_raises_on_unexpected_error(
     _emit_schema_drift_marker()  # must not raise
     captured = capsys.readouterr()
     assert captured.err == ""
+
+
+@pytest.mark.uses_real_clock("subprocess wall-clock is incidental; asserts module graph only")
+def test_drift_marker_import_path_stays_light() -> None:
+    """The drift marker's import path must not pull heavy subsystems.
+
+    ``_emit_schema_drift_marker`` runs on every ``polylogue`` invocation, so its
+    dependency module (``polylogue.insights.schema_drift``) is a hot cold-start path.
+    Regression contract for the ~1s/invocation taxes measured 2026-08-01:
+    ``polylogue.schemas`` eagerly importing ``validator`` (the whole provider
+    parser universe via ``sources.dispatch``), and ``cli.commands.status``
+    (readiness/repair stack) being imported just for the drift derivation.
+    """
+    import subprocess
+    import sys
+
+    forbidden = (
+        "polylogue.sources.dispatch",
+        "polylogue.schemas.validator",
+        "polylogue.readiness",
+        "polylogue.storage.repair",
+        "polylogue.cli.commands.status",
+    )
+    code = (
+        "import sys\n"
+        "import polylogue.insights.schema_drift\n"
+        "import polylogue.schemas.drift_sentinel\n"
+        "import polylogue.storage.sqlite.archive_tiers.revision_governance\n"
+        f"loaded = [m for m in {forbidden!r} if m in sys.modules]\n"
+        "print(','.join(loaded) if loaded else 'CLEAN')\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "CLEAN", f"heavy modules leaked into light import path: {result.stdout.strip()}"

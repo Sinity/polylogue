@@ -528,12 +528,12 @@ def _emit_schema_drift_marker() -> None:
         from datetime import UTC, datetime
         from time import time as _now
 
-        from polylogue.cli.commands.status import _schema_drift_status
+        from polylogue.insights.schema_drift import schema_drift_status
         from polylogue.paths import archive_root
         from polylogue.storage.archive_identity import resolve_active_index_path
 
         active_db = resolve_active_index_path(archive_root())
-        drift = _schema_drift_status(active_db.parent, now_ms=int(_now() * 1000))
+        drift = schema_drift_status(active_db.parent, now_ms=int(_now() * 1000))
         if not drift.get("available"):
             return
         origins = [item for item in (drift.get("origins") or []) if isinstance(item, dict)]

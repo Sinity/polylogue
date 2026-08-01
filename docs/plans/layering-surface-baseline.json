@@ -487,16 +487,6 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/status.py",
-    "import": "polylogue.storage.sqlite.archive_tiers"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/status.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/status.py",
     "import": "polylogue.storage.sqlite.archive_tiers.types"
   },
   {
@@ -1448,11 +1438,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/status.py",
     "import": "polylogue.storage.repair"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/status.py",
-    "import": "polylogue.storage.sqlite.archive_tiers"
   },
   {
     "target": "polylogue/daemon",
