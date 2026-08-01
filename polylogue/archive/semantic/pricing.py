@@ -335,6 +335,11 @@ def _normalize_model(model: str) -> str:
     lowered = lowered.removeprefix("anthropic/")
     lowered = lowered.removeprefix("google/")
     lowered = lowered.removeprefix("gemini/")
+    # aistudio-drive's parser stores the raw Gemini API resource-path model
+    # identifier verbatim (e.g. "models/gemini-2.5-pro") -- strip the
+    # "models/" resource-path segment so it normalizes to the same catalog
+    # key as gemini-cli-session's bare form (polylogue-6j9c).
+    lowered = lowered.removeprefix("models/")
     # Canonicalize trailing date snapshots to the base model so cost rollups
     # don't fragment by release date (e.g. gpt-4o-2024-08-06 -> gpt-4o,
     # claude-opus-4-8-20260101 -> claude-opus-4-8). Done before the exact-match

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -14,7 +15,8 @@ from polylogue.archive.semantic.pricing import (
     estimate_session_cost,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd, get_credit_rate
-from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words
+from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words_split
+from polylogue.core.enums import Role
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
@@ -87,6 +89,16 @@ def compute_session_cost(
     per_model: dict[str, SessionCostBreakdown] = (
         _per_model_from_model_usage(model_usage) if model_usage else _per_model_from_messages(session)
     )
+    if model_usage and not any(breakdown.total_tokens for breakdown in per_model.values()):
+        # session_model_usage carries model identity but no real usage
+        # counters for every row (e.g. chatgpt-export/claude-ai-export
+        # exports, which don't carry provider token counters -- see
+        # docs/cost-model.md's estimate-only disposition for those origins).
+        # Fall back to the text-length heuristic over messages instead of
+        # reporting a hollow zero-token "reported" breakdown (polylogue-9kjtc).
+        message_based = _per_model_from_messages(session)
+        if message_based:
+            per_model = message_based
 
     breakdowns: list[SessionCostBreakdown] = []
     total_api = 0.0
@@ -94,6 +106,8 @@ def compute_session_cost(
     total_sub = 0.0
     agg_confidence = "reported"
     has_estimates = False
+    has_reported = False
+    has_unknown = False
 
     for _key, breakdown in sorted(per_model.items()):
         norm = breakdown.normalized_model
@@ -143,11 +157,38 @@ def compute_session_cost(
         total_sub += sub_equivalent
         if updated.confidence == "estimated":
             has_estimates = True
+        elif updated.confidence == "reported":
+            has_reported = True
+        elif updated.confidence == "unknown":
+            has_unknown = True
 
     if not breakdowns:
         agg_confidence = "unknown"
+    elif has_unknown and (has_reported or has_estimates):
+        # A mixed session -- e.g. one model with genuine provider-reported or
+        # estimated tokens alongside another model whose only evidence is a
+        # zero-token _seed_session_model_usage_rows() skeleton row -- must not
+        # read as a clean "reported"/"estimated" aggregate. Some of the
+        # session's cost is real evidence and some of it is unaccounted for,
+        # which is exactly what "partial" means (polylogue-3b607 P2: without
+        # this branch, has_reported=True from the genuine row silently
+        # overrode the fact that another per-model breakdown was separately
+        # marked unknown).
+        agg_confidence = "partial"
     elif has_estimates:
         agg_confidence = "estimated"
+    elif not has_reported:
+        # Every breakdown is a model-identity-only fact with no real token
+        # evidence and no text-length estimate to fall back on -- honest
+        # disposition is "unknown", not "reported" (polylogue-9kjtc).
+        agg_confidence = "unknown"
+
+    if agg_confidence == "reported":
+        cost_provenance = "provider_reported"
+    elif agg_confidence == "unknown":
+        cost_provenance = "unknown"
+    else:
+        cost_provenance = "mixed"
 
     return SessionCostSummary(
         total_input_tokens=sum(b.input_tokens for b in breakdowns),
@@ -157,7 +198,7 @@ def compute_session_cost(
         total_api_cost_usd=round(total_api, 6),
         total_credit_cost=round(total_credit, 2),
         total_subscription_equivalent_usd=round(total_sub, 6),
-        cost_provenance="provider_reported" if agg_confidence == "reported" else "mixed",
+        cost_provenance=cost_provenance,
         cost_confidence=agg_confidence,
         tokenizer_version=TOKENIZER_VERSION,
         price_snapshot_version=_PRICE_SNAPSHOT_VERSION,
@@ -168,9 +209,16 @@ def compute_session_cost(
 def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict[str, SessionCostBreakdown]:
     """Build the per-model breakdown seed from canonical ``session_model_usage`` rows.
 
-    Every row is provider-reported evidence by construction (the row would not
-    exist without an ingested usage event or message token sum), so this never
-    falls back to the word-count heuristic path the message walk uses.
+    A row's existence proves a model-identity fact (an ingested usage event or
+    message asserted this model was used), but not that the row carries real
+    usage *counts* -- some origins (chatgpt-export, claude-ai-export) write a
+    row with a real ``model_name`` and zero token counters because their
+    exports don't carry provider token counters at all. Only rows whose
+    aggregated tokens are actually nonzero are labelled ``reported``/
+    ``provider_reported``; a model-identity-only row with no real token
+    evidence is labelled ``unknown``/``unknown`` instead, so it can't be
+    mistaken for a provider that genuinely reported and billed zero
+    (polylogue-9kjtc).
     """
     per_model: dict[str, SessionCostBreakdown] = {}
     for row in model_usage:
@@ -196,6 +244,9 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
             confidence="reported",
             provenance="provider_reported",
         )
+    for key, breakdown in per_model.items():
+        if breakdown.total_tokens == 0:
+            per_model[key] = breakdown.model_copy(update={"confidence": "unknown", "provenance": "unknown"})
     return per_model
 
 
@@ -207,11 +258,32 @@ def _per_model_from_messages(session: Session) -> dict[str, SessionCostBreakdown
     per-message ``input_tokens``/``output_tokens`` fields are sparse-to-absent
     for Codex, which is why this path historically undercounted Codex sessions
     by ~1000x when it was the only source (polylogue-r7p6).
+
+    Two things this must get right for the estimate-only path (polylogue-3b607,
+    fixing bugs introduced by polylogue-9kjtc):
+
+    - Messages with no per-message declared model (routine for ChatGPT/Claude
+      web *user* turns -- only the assistant turn carries ``model_slug``) fall
+      back to the session's dominant declared model instead of an unpriced
+      "unknown" bucket. This reuses the same Counter/``most_common`` dominant-
+      model pattern ``pricing.py``'s ``_session_level_estimate`` uses, rather
+      than inventing a new heuristic.
+    - Estimated word-count tokens are classified by the message's role: user/
+      human turns are ``input_tokens``, assistant turns are ``output_tokens``.
+      Dumping everything into ``input_tokens`` regardless of role systematically
+      understated cost, since output tokens are typically priced higher.
     """
     per_model: dict[str, SessionCostBreakdown] = {}
 
+    model_counts: Counter[str] = Counter()
     for message in session.messages:
-        model_name = _get_message_model_name(message)
+        declared_model = _get_message_model_name(message)
+        if declared_model:
+            model_counts[declared_model] += 1
+    dominant_model_name = model_counts.most_common(1)[0][0] if model_counts else None
+
+    for message in session.messages:
+        model_name = _get_message_model_name(message) or dominant_model_name
         norm_model = _normalize_model(model_name) if model_name else None
         key = norm_model or "unknown"
 
@@ -227,12 +299,17 @@ def _per_model_from_messages(session: Session) -> dict[str, SessionCostBreakdown
         if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
             per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
         elif word_count > 0:
-            est = estimate_tokens_from_words(word_count)
+            is_assistant_turn = getattr(message, "role", None) == Role.ASSISTANT
+            est = estimate_tokens_from_words_split(
+                input_words=0 if is_assistant_turn else word_count,
+                output_words=word_count if is_assistant_turn else 0,
+            )
             per_model[key] = SessionCostBreakdown(
                 normalized_model=per_model[key].normalized_model,
                 provider_model_name=per_model[key].provider_model_name,
                 input_tokens=per_model[key].input_tokens + est.input_tokens,
-                total_tokens=per_model[key].total_tokens + est.input_tokens,
+                output_tokens=per_model[key].output_tokens + est.output_tokens,
+                total_tokens=per_model[key].total_tokens + est.total_tokens,
                 confidence="estimated",
                 provenance="heuristic_estimated",
             )

@@ -242,6 +242,29 @@ def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() ->
     assert estimate_cost(1000, 500, "openai/gpt-4o-2024-08-06") == pytest.approx(0.0075)
 
 
+def test_aistudio_drive_resource_path_model_prices_like_bare_form() -> None:
+    """polylogue-6j9c: aistudio-drive's parser stores the raw Gemini API
+    resource-path model identifier verbatim (e.g. ``models/gemini-2.5-pro``,
+    see ``tests/unit/sources/test_gemini_drive_normalization_laws.py``), while
+    gemini-cli-session uses the bare form for the same catalog model. Before
+    the fix, ``_normalize_model`` never stripped ``models/`` and the
+    resource-path form failed both the exact-match and prefix-fallback catalog
+    lookups, so ``estimate_cost`` silently returned $0.0 for real,
+    substantial aistudio-drive token usage (105.7M tokens measured on the live
+    archive) despite the catalog carrying a real rate for the underlying
+    model.
+    """
+    from polylogue.archive.semantic.pricing import PRICING
+
+    assert _normalize_model("models/gemini-2.5-pro") == _normalize_model("gemini-2.5-pro")
+    assert _normalize_model("models/gemini-2.5-pro") in PRICING
+
+    bare_cost = estimate_cost(1_000_000, 1_000_000, "gemini-2.5-pro")
+    resource_path_cost = estimate_cost(1_000_000, 1_000_000, "models/gemini-2.5-pro")
+    assert resource_path_cost == pytest.approx(bare_cost)
+    assert resource_path_cost > 0.0
+
+
 def test_current_opus_flagships_are_priced_not_zero() -> None:
     """Opus 4.7/4.8 must be priced (regression: they fell through to $0).
 
