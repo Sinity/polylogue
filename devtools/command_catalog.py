@@ -1720,6 +1720,30 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace beads-state-report --json",
         ),
     ),
+    CommandSpec(
+        "workspace trajectory-report",
+        "workspace",
+        "Self-contained HTML velocity/trajectory report over git + PR + bead history.",
+        "devtools.trajectory_report",
+        use_when=(
+            "Answer 'is this project accelerating or plateauing, and what does a "
+            "typical week/day look like?' as a real time-axis view: weekly volume "
+            "across commits, squash-merge PR events (recovered offline from (#N) "
+            "subjects on the first-parent line), and bead created/closed series; "
+            "rolling 7d/28d momentum with an explicit last-28d-vs-prior verdict; "
+            "hour-by-weekday rhythm; data-derived day-character classes (quiet/"
+            "organic/heavy/campaign) with burstiness (Gini, top-decile day share); "
+            "per-area weekly file-touch small multiples; and a PR-vs-bead-closure "
+            "coupling scatter. Complements, never duplicates, `workspace "
+            "backlog-calibration` (duration/discovery models) and `workspace "
+            "beads-state-report` (point-in-time population census)."
+        ),
+        examples=(
+            "devtools workspace trajectory-report",
+            "devtools workspace trajectory-report --out /tmp/trajectory.html",
+            "devtools workspace trajectory-report --fresh --json",
+        ),
+    ),
 )
 
 COMMANDS: dict[str, CommandSpec] = {spec.name: spec for spec in COMMAND_SPECS}
