@@ -603,8 +603,8 @@ def _message_attachments(item: Mapping[str, object], message_id: str) -> list[Pa
         if isinstance(value, list):
             raw_attachments.extend(value)
     attachments: list[ParsedAttachment] = []
-    for index, meta in enumerate(raw_attachments, start=1):
-        attachment = attachment_from_meta(meta, message_id, index)
+    for meta in raw_attachments:
+        attachment = attachment_from_meta(meta, message_id)
         if attachment is not None:
             attachments.append(attachment)
     return attachments

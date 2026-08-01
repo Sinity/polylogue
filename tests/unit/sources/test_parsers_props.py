@@ -380,7 +380,7 @@ def test_timestamp_normalization_handles_milliseconds(epoch_ms: int) -> None:
     )
 )
 def test_attachment_extraction_preserves_metadata(attachment_meta: AttachmentMeta) -> None:
-    result = attachment_from_meta(attachment_meta, "msg-1", 1)
+    result = attachment_from_meta(attachment_meta, "msg-1")
 
     assert result is not None
     assert result.provider_attachment_id == attachment_meta["id"]

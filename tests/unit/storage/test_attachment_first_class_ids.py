@@ -174,7 +174,6 @@ def test_parser_parity_claude_code_codex_attachment_has_typed_upload_origin() ->
             "mime_type": "text/plain",
         },
         message_id="msg-1",
-        index=0,
     )
     assert attachment is not None
     assert attachment.provider_attachment_id == "att-1"
