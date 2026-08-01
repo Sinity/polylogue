@@ -334,6 +334,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         with_unit_fields=with_unit_fields,
         with_unit_windows=with_unit_windows,
         query=query,
+        raw_query=raw_query,
         limit=limit,
         offset=page_offset,
         output_format=output_format,
@@ -843,6 +844,19 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 print_url=bool(params.get("print_url")),
             )
             return
+        _emit_list_miss_if_field_syntax(
+            env,
+            items=page_summaries,
+            raw_query=raw_query,
+            compiled_spec=compiled_spec,
+            why=bool(params.get("why")),
+            output_format=output_format,
+            origin=origin,
+            limit=limit,
+            offset=page_offset,
+            root=filter_kwargs["root"],
+            typo_hint=typo_hint,
+        )
         _emit_list(
             page_summaries,
             total=(
@@ -1058,6 +1072,7 @@ def _try_emit_daemon_session_page(
     with_unit_fields: dict[str, tuple[str, ...]],
     with_unit_windows: Mapping[str, WithUnitWindow],
     query: str,
+    raw_query: str,
     limit: int,
     offset: int,
     output_format: str,
@@ -1127,6 +1142,20 @@ def _try_emit_daemon_session_page(
         )
         return True
     if isinstance(payload.get("items"), list):
+        daemon_items = cast(list[object], payload.get("items"))
+        _emit_list_miss_if_field_syntax(
+            env,
+            items=daemon_items,
+            raw_query=raw_query,
+            compiled_spec=compiled_spec,
+            why=bool(params.get("why")),
+            output_format=output_format,
+            origin=origin,
+            limit=limit,
+            offset=offset,
+            root=True,
+            typo_hint=typo_hint,
+        )
         _emit_daemon_list_payload(
             payload,
             limit=limit,
@@ -2271,6 +2300,65 @@ def _search_miss_diagnostics(
         logger.exception("_search_miss_diagnostics: diagnose_query_miss failed")
         return None
     return QueryMissDiagnosticsPayload.from_diagnostics(raw_diagnostics)
+
+
+def _list_no_results_envelope(
+    *,
+    origin: str | None,
+    limit: int,
+    offset: int,
+    root: bool | None,
+) -> dict[str, object]:
+    return {
+        "mode": "list",
+        "origin": origin,
+        "items": [],
+        "total": 0,
+        "total_unit": session_count_unit_label(root),
+        "limit": limit,
+        "offset": offset,
+        "next_offset": None,
+        "next_cursor": None,
+    }
+
+
+def _emit_list_miss_if_field_syntax(
+    env: AppEnv,
+    *,
+    items: Sequence[object],
+    raw_query: str,
+    compiled_spec: SessionQuerySpec,
+    why: bool,
+    output_format: str,
+    origin: str | None,
+    limit: int,
+    offset: int,
+    root: bool | None,
+    typo_hint: str | None,
+) -> None:
+    """Route a zero-row list-mode page through the shared miss diagnostics.
+
+    List/browse mode is deliberately silent-success (exit 0, no message) when
+    the request carried no query expression at all -- "show me everything,
+    there is nothing" per the ``mode: list`` contract just above. But a
+    field-syntax-only query expression (e.g. ``repo:polylogue``, ``since:7d``
+    with no bare text term) compiles down to an empty ``query`` string and
+    used to fall through to this same silent-success rendering: zero bytes of
+    stdout, exit 0, no diagnostics, even with ``--why`` -- indistinguishable
+    from the query being silently misrouted (polylogue-hlww). ``raw_query``
+    being non-empty here means the user typed *some* query expression (it
+    just had no free-text residue after field-syntax compilation), so treat
+    that case as a miss like a lexical search: the shared
+    ``Why this may have missed:`` block, exit 2.
+    """
+    if items or not raw_query.strip():
+        return
+    _emit_no_results(
+        _list_no_results_envelope(origin=origin, limit=limit, offset=offset, root=root),
+        output_format=output_format,
+        typo_hint=typo_hint,
+        diagnostics=_search_miss_diagnostics(env, compiled_spec, why=why),
+    )
 
 
 def _emit_search(
