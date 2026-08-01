@@ -194,6 +194,43 @@ def _single_package_catalog(provider: str, version: str, element_kind: str) -> S
     )
 
 
+def _two_element_package_catalog(
+    provider: str, version: str, anchor_kind: str, other_kind: str
+) -> SchemaPackageCatalog:
+    return SchemaPackageCatalog(
+        provider=provider,
+        packages=[
+            SchemaVersionPackage(
+                provider=provider,
+                version=version,
+                anchor_kind=anchor_kind,
+                default_element_kind=anchor_kind,
+                first_seen="2026-08-01T00:00:00Z",
+                last_seen="2026-08-01T00:00:00Z",
+                bundle_scope_count=0,
+                sample_count=1,
+                elements=[
+                    SchemaElementManifest(
+                        element_kind=anchor_kind,
+                        schema_file=f"{anchor_kind}.schema.json.gz",
+                        sample_count=1,
+                        artifact_count=1,
+                    ),
+                    SchemaElementManifest(
+                        element_kind=other_kind,
+                        schema_file=f"{other_kind}.schema.json.gz",
+                        sample_count=1,
+                        artifact_count=1,
+                    ),
+                ],
+            )
+        ],
+        default_version=version,
+        latest_version=version,
+        recommended_version=version,
+    )
+
+
 class TestReplaceProviderPackagesMonotonicity:
     """Guards ``SchemaRegistry.replace_provider_packages`` -- the code path every
     full-corpus ``devtools schema-generate`` run writes through
@@ -299,3 +336,151 @@ class TestReplaceProviderPackagesMonotonicity:
         declared_type = timestamp["type"]
         observed = set(declared_type) if isinstance(declared_type, list) else {declared_type}
         assert observed == {"string", "number"}
+
+
+class TestMergeElementSchemaAnnotationPreservation:
+    """Guards nested ``x-polylogue-*`` annotation survival across
+    ``SchemaRegistry.replace_provider_packages`` regenerations (polylogue-46kg
+    P1, found by automated review on PR #3502 minutes after merge).
+
+    ``merge_observed_structure_schemas`` (``schemas/generation/dynamic_keys.py``)
+    merges only structural keywords (``type``/``properties``/``items``/
+    ``additionalProperties``) -- its own docstring says "without retaining
+    property history". The prior ``_merge_element_schema_with_existing``
+    restored ``x-polylogue-*`` annotations only at the document root after
+    merging, so every regeneration stripped freshly-computed *nested*
+    annotations (semantic role, format, frequency, observed distribution)
+    from property-level nodes.
+
+    Anti-vacuity: reverting
+    ``SchemaRegistry._merge_element_schema_with_existing`` to restore
+    ``x-polylogue-*`` keys only at the document root (dropping the recursive
+    ``_annotate_merged_schema_node`` walk into ``properties``) makes both
+    tests below fail -- the nested ``user_id``/``value`` property's
+    annotation is stripped by the structural merge and never restored.
+    """
+
+    def test_nested_annotation_survives_when_fresh_pass_recomputes_no_annotation(
+        self, tmp_registry: SchemaRegistry
+    ) -> None:
+        annotated_schema: JSONDocument = {
+            "type": "object",
+            "properties": {
+                "user_id": {
+                    "type": "string",
+                    "x-polylogue-semantic-role": "identifier",
+                }
+            },
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-annotation",
+            _single_package_catalog("regen-annotation", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": annotated_schema}},
+        )
+
+        # A subsequent regeneration re-observes the same property's type but
+        # its annotation pass didn't recompute a semantic role this time --
+        # e.g. a narrower sample window that never re-derived it.
+        unannotated_schema: JSONDocument = {
+            "type": "object",
+            "properties": {"user_id": {"type": "string"}},
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-annotation",
+            _single_package_catalog("regen-annotation", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": unannotated_schema}},
+        )
+
+        merged = tmp_registry.get_schema("regen-annotation", version="v1")
+        assert merged is not None
+        user_id = cast("dict[str, Any]", cast("dict[str, Any]", merged["properties"])["user_id"])
+        assert user_id.get("x-polylogue-semantic-role") == "identifier"
+
+    def test_nested_annotation_fresh_value_wins_over_stale_existing(self, tmp_registry: SchemaRegistry) -> None:
+        stale_schema: JSONDocument = {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "x-polylogue-semantic-role": "identifier",
+                }
+            },
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-annotation-update",
+            _single_package_catalog("regen-annotation-update", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": stale_schema}},
+        )
+
+        # This regeneration DOES carry a fresh, different annotation for the
+        # same nested property -- the fresh value must win, not the stale one.
+        updated_schema: JSONDocument = {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "x-polylogue-semantic-role": "timestamp",
+                }
+            },
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-annotation-update",
+            _single_package_catalog("regen-annotation-update", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": updated_schema}},
+        )
+
+        merged = tmp_registry.get_schema("regen-annotation-update", version="v1")
+        assert merged is not None
+        value = cast("dict[str, Any]", cast("dict[str, Any]", merged["properties"])["value"])
+        assert value.get("x-polylogue-semantic-role") == "timestamp"
+
+
+class TestReplaceProviderPackagesCarriesForwardUnobservedElementKinds:
+    """Guards ``SchemaRegistry.replace_provider_packages`` against dropping a
+    whole element kind when a thinner regeneration observes zero samples for
+    it (polylogue-46kg P2, found by automated review on PR #3502 minutes
+    after merge).
+
+    This is the same destructive-loss bug class ``ov5r``
+    (``TestReplaceProviderPackagesMonotonicity`` above) fixed, just narrower:
+    a whole element kind absent from ``element_schemas.items()`` for a
+    version never enters the merge loop at all, so the destructive
+    ``versions/`` delete-and-rewrite drops it entirely -- afterward
+    ``get_element_schema(..., element_kind=<old kind>)`` silently returns
+    ``None``.
+
+    Anti-vacuity: removing the ``existing_elements_by_version`` carry-forward
+    loop in ``replace_provider_packages`` (or the fix that persists the
+    carry-forward-augmented packages via ``dataclasses.replace(catalog, ...)``
+    instead of the caller's original ``catalog.packages``) makes this test
+    fail -- ``"tool_result"`` vanishes from the second run's manifest/elements
+    directory.
+    """
+
+    def test_kind_absent_from_fresh_observation_window_is_carried_forward(self, tmp_registry: SchemaRegistry) -> None:
+        message_schema: JSONDocument = {"type": "object", "properties": {"text": {"type": "string"}}}
+        tool_result_schema: JSONDocument = {"type": "object", "properties": {"exit_code": {"type": "integer"}}}
+        tmp_registry.replace_provider_packages(
+            "regen-kind-drop",
+            _two_element_package_catalog("regen-kind-drop", "v1", "message", "tool_result"),
+            {"v1": {"message": message_schema, "tool_result": tool_result_schema}},
+        )
+        assert tmp_registry.get_element_schema("regen-kind-drop", version="v1", element_kind="tool_result") is not None
+
+        # A thinner regeneration window observes zero tool_result samples
+        # this pass (e.g. a corpus subset with no tool calls) -- the fresh
+        # catalog and package_schemas mapping for this version now mention
+        # only "message".
+        tmp_registry.replace_provider_packages(
+            "regen-kind-drop",
+            _single_package_catalog("regen-kind-drop", "v1", "message"),
+            {"v1": {"message": message_schema}},
+        )
+
+        carried = tmp_registry.get_element_schema("regen-kind-drop", version="v1", element_kind="tool_result")
+        assert carried is not None
+        properties = cast("dict[str, Any]", carried["properties"])
+        assert properties["exit_code"]["type"] == "integer"
+
+        # "message" itself is untouched and still resolvable.
+        assert tmp_registry.get_element_schema("regen-kind-drop", version="v1", element_kind="message") is not None
