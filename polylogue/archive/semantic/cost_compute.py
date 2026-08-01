@@ -87,6 +87,16 @@ def compute_session_cost(
     per_model: dict[str, SessionCostBreakdown] = (
         _per_model_from_model_usage(model_usage) if model_usage else _per_model_from_messages(session)
     )
+    if model_usage and not any(breakdown.total_tokens for breakdown in per_model.values()):
+        # session_model_usage carries model identity but no real usage
+        # counters for every row (e.g. chatgpt-export/claude-ai-export
+        # exports, which don't carry provider token counters -- see
+        # docs/cost-model.md's estimate-only disposition for those origins).
+        # Fall back to the text-length heuristic over messages instead of
+        # reporting a hollow zero-token "reported" breakdown (polylogue-9kjtc).
+        message_based = _per_model_from_messages(session)
+        if message_based:
+            per_model = message_based
 
     breakdowns: list[SessionCostBreakdown] = []
     total_api = 0.0
@@ -94,6 +104,7 @@ def compute_session_cost(
     total_sub = 0.0
     agg_confidence = "reported"
     has_estimates = False
+    has_reported = False
 
     for _key, breakdown in sorted(per_model.items()):
         norm = breakdown.normalized_model
@@ -143,11 +154,25 @@ def compute_session_cost(
         total_sub += sub_equivalent
         if updated.confidence == "estimated":
             has_estimates = True
+        elif updated.confidence == "reported":
+            has_reported = True
 
     if not breakdowns:
         agg_confidence = "unknown"
     elif has_estimates:
         agg_confidence = "estimated"
+    elif not has_reported:
+        # Every breakdown is a model-identity-only fact with no real token
+        # evidence and no text-length estimate to fall back on -- honest
+        # disposition is "unknown", not "reported" (polylogue-9kjtc).
+        agg_confidence = "unknown"
+
+    if agg_confidence == "reported":
+        cost_provenance = "provider_reported"
+    elif agg_confidence == "unknown":
+        cost_provenance = "unknown"
+    else:
+        cost_provenance = "mixed"
 
     return SessionCostSummary(
         total_input_tokens=sum(b.input_tokens for b in breakdowns),
@@ -157,7 +182,7 @@ def compute_session_cost(
         total_api_cost_usd=round(total_api, 6),
         total_credit_cost=round(total_credit, 2),
         total_subscription_equivalent_usd=round(total_sub, 6),
-        cost_provenance="provider_reported" if agg_confidence == "reported" else "mixed",
+        cost_provenance=cost_provenance,
         cost_confidence=agg_confidence,
         tokenizer_version=TOKENIZER_VERSION,
         price_snapshot_version=_PRICE_SNAPSHOT_VERSION,
@@ -168,9 +193,16 @@ def compute_session_cost(
 def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict[str, SessionCostBreakdown]:
     """Build the per-model breakdown seed from canonical ``session_model_usage`` rows.
 
-    Every row is provider-reported evidence by construction (the row would not
-    exist without an ingested usage event or message token sum), so this never
-    falls back to the word-count heuristic path the message walk uses.
+    A row's existence proves a model-identity fact (an ingested usage event or
+    message asserted this model was used), but not that the row carries real
+    usage *counts* -- some origins (chatgpt-export, claude-ai-export) write a
+    row with a real ``model_name`` and zero token counters because their
+    exports don't carry provider token counters at all. Only rows whose
+    aggregated tokens are actually nonzero are labelled ``reported``/
+    ``provider_reported``; a model-identity-only row with no real token
+    evidence is labelled ``unknown``/``unknown`` instead, so it can't be
+    mistaken for a provider that genuinely reported and billed zero
+    (polylogue-9kjtc).
     """
     per_model: dict[str, SessionCostBreakdown] = {}
     for row in model_usage:
@@ -196,6 +228,9 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
             confidence="reported",
             provenance="provider_reported",
         )
+    for key, breakdown in per_model.items():
+        if breakdown.total_tokens == 0:
+            per_model[key] = breakdown.model_copy(update={"confidence": "unknown", "provenance": "unknown"})
     return per_model
 
 
