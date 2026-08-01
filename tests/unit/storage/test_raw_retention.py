@@ -930,6 +930,159 @@ def test_superseded_raw_cleanup_keeps_blob_with_remaining_protected_reference(tm
     )
 
 
+def test_superseded_raw_cleanup_prunes_orphaned_raw_authority_plans(tmp_path: Path) -> None:
+    """polylogue-i3zo: retention's raw delete must not leak raw_authority_plans,
+    but must never corrupt the immutable census ledger doing so.
+
+    ``raw_authority_plans.input_raw_ids_json`` references raws by JSON string,
+    not FK, so deleting a raw here does not cascade-clean a plan naming it. A
+    plan whose every input raw is gone AND which no census still references is
+    safe to prune outright. But a plan a census still references must be left
+    fully alone: ``raw_authority_censuses.plan_count`` / ``post_plan_count``
+    are immutable per-census totals ``read_raw_authority_census`` uses
+    verbatim for its reported total AND to decide whether pagination has more
+    pages (chatgpt-codex-connector's review on the first version of this fix,
+    PR #3530, flagged that an earlier draft deleted census-membership rows
+    without adjusting those counts, making the total lie and, once a census's
+    rows were all removed, making ``next_query_handle`` reissue forever since
+    the offset advanced by zero). This test proves both halves against the
+    real production entry point, :func:`cleanup_superseded_raw_snapshots`:
+
+    * a plan with zero census references and all-missing inputs is pruned;
+    * a plan a census still references is left untouched even though its
+      only input raw is also superseded-and-deleted, and the census's own
+      ``plan_count`` / actual surviving ``raw_authority_census_plans`` row
+      count for it stay mutually consistent before and after the purge (the
+      ledger-consistency proof the review asked for);
+    * the same holds for a plan referenced only by an unresolved blocker
+      (the durable-obligation case ``prune_raw_authority_census_history``
+      already protects, defended here too even though structurally a
+      blocker should never exist without a paired census_plans row).
+    """
+    db_path = tmp_path / "source.db"
+    source = tmp_path / "rollout.jsonl"
+    source.write_text('{"type":"message"}\n', encoding="utf-8")
+    blob_store = BlobStore(tmp_path / "blob")
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    _ensure_archive_source_schema(conn)
+    conn.execute(
+        """CREATE TABLE raw_authority_plans (
+            plan_id TEXT PRIMARY KEY,
+            input_raw_ids_json TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_censuses (
+            census_id TEXT PRIMARY KEY,
+            plan_count INTEGER NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_census_plans (
+            census_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_census_post_plans (
+            census_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE raw_authority_blockers (
+            blocker_id TEXT PRIMARY KEY,
+            plan_id TEXT NOT NULL,
+            census_id TEXT NOT NULL,
+            resolved_at_ms INTEGER
+        )"""
+    )
+
+    # Three superseded (about-to-be-deleted) raws, plus one that survives.
+    old_free, old_free_size = _write_blob(blob_store, b"old-free")
+    old_census, old_census_size = _write_blob(blob_store, b"old-census")
+    old_blocker, old_blocker_size = _write_blob(blob_store, b"old-blocker")
+    full_new, full_new_size = _write_blob(blob_store, b"full-new")
+    for raw_id, blob_hash, size, ts in (
+        (old_free, old_free, old_free_size, 1_000),
+        (old_census, old_census, old_census_size, 1_100),
+        (old_blocker, old_blocker, old_blocker_size, 1_200),
+        (full_new, full_new, full_new_size, 2_000),
+    ):
+        _insert_archive_raw_session(
+            conn,
+            raw_id=raw_id,
+            source_path=source,
+            source_index=0,
+            blob_hash=blob_hash,
+            blob_size=size,
+            acquired_at_ms=ts,
+        )
+
+    # plan-free-orphan: all inputs gone, zero census/blocker references -> pruned.
+    # plan-census-orphan: all inputs gone, but still a live census_plans member -> untouched.
+    # plan-blocker-orphan: all inputs gone, no census_plans row but an unresolved
+    #   blocker still names it -> untouched (defensive; structurally shouldn't
+    #   happen, but the guard must hold regardless).
+    # plan-kept: its input raw survives -> untouched (not even an orphan candidate).
+    conn.execute(
+        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-free-orphan', ?)",
+        (f'["{old_free}"]',),
+    )
+    conn.execute(
+        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-census-orphan', ?)",
+        (f'["{old_census}"]',),
+    )
+    conn.execute(
+        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-blocker-orphan', ?)",
+        (f'["{old_blocker}"]',),
+    )
+    conn.execute(
+        "INSERT INTO raw_authority_plans (plan_id, input_raw_ids_json) VALUES ('plan-kept', ?)",
+        (f'["{full_new}"]',),
+    )
+    conn.execute("INSERT INTO raw_authority_censuses (census_id, plan_count) VALUES ('census-a', 1)")
+    conn.execute(
+        "INSERT INTO raw_authority_census_plans (census_id, plan_id) VALUES ('census-a', 'plan-census-orphan')"
+    )
+    conn.execute(
+        "INSERT INTO raw_authority_blockers (blocker_id, plan_id, census_id, resolved_at_ms) "
+        "VALUES ('blk-1', 'plan-blocker-orphan', 'census-a', NULL)"
+    )
+    conn.commit()
+
+    def _census_ledger_consistent() -> bool:
+        header_count = int(
+            conn.execute("SELECT plan_count FROM raw_authority_censuses WHERE census_id = 'census-a'").fetchone()[0]
+        )
+        actual_count = int(
+            conn.execute("SELECT COUNT(*) FROM raw_authority_census_plans WHERE census_id = 'census-a'").fetchone()[0]
+        )
+        return header_count == actual_count
+
+    assert _census_ledger_consistent()  # 1 header count == 1 actual row, before the purge
+
+    candidates = superseded_raw_snapshot_candidates(conn, limit=100)
+    assert {candidate.raw_id for candidate in candidates} == {old_free, old_census, old_blocker}
+
+    result = cleanup_superseded_raw_snapshots(conn, dry_run=False, blob_store=blob_store)
+    assert result.deleted_raw_count == 3
+    assert result.deleted_orphaned_authority_plan_count == 1  # only plan-free-orphan
+
+    remaining_plans = {str(row[0]) for row in conn.execute("SELECT plan_id FROM raw_authority_plans").fetchall()}
+    assert remaining_plans == {"plan-census-orphan", "plan-blocker-orphan", "plan-kept"}
+
+    # Ledger consistency (the review's explicit ask): plan_count still matches
+    # the actual surviving raw_authority_census_plans rows for census-a --
+    # nothing this purge did touched census/blocker rows, so pagination over
+    # census-a would still terminate correctly and report a truthful total.
+    assert _census_ledger_consistent()
+    assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers WHERE resolved_at_ms IS NULL").fetchone()[0] == 1
+
+
 def test_archive_cleanup_compacts_append_snapshot_without_session_events(tmp_path: Path) -> None:
     # Archive file-set cleanup simply compacts the superseded append snapshot.
     db_path = tmp_path / "source.db"

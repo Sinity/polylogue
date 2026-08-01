@@ -5769,6 +5769,11 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
         if result.skipped_referenced_count
         else ""
     )
+    orphaned_plan_detail = (
+        f"; pruned {result.deleted_orphaned_authority_plan_count:,} orphaned raw-authority plan(s)"
+        if result.deleted_orphaned_authority_plan_count
+        else ""
+    )
     return _repair_result(
         "superseded_raw_snapshots",
         repaired_count=result.deleted_raw_count,
@@ -5776,7 +5781,8 @@ def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> Re
         detail=(
             f"Deleted {result.deleted_raw_count:,} raw rows and {result.deleted_blob_count:,} blob files "
             f"({result.deleted_blob_bytes:,} bytes)"
-            f"{skipped_detail}" + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
+            f"{skipped_detail}{orphaned_plan_detail}"
+            + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
         ),
     )
 
