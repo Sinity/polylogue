@@ -50,6 +50,20 @@ from .models import DemoSeedResult
 
 DEMO_SOURCE_DIRNAME = "demo-fixture-world-source"
 
+# Written once, on the first call that ever touches a given archive root,
+# recording a *permanent* determination of whether that root already held
+# real ingested content at that moment. This is the sole predicate self-heal
+# eligibility trusts (see ``_archive_root_is_demo_owned`` below) -- unlike
+# ``DEMO_SOURCE_DIRNAME``'s presence, which only proves "a demo seed touched
+# this root at some point" and can persist unconditionally on a root that
+# held real content when first (accidentally or forcibly) seeded
+# (polylogue-wyvio).
+DEMO_OWNERSHIP_MANIFEST_FILENAME = "demo-archive-ownership.json"
+
+
+class DemoSeedTargetUnsafeError(RuntimeError):
+    """Raised when 'demo seed' would write synthetic content over a real archive."""
+
 
 @contextmanager
 def _pushd(path: Path) -> Iterator[None]:
@@ -87,22 +101,125 @@ def materialize_demo_source(root: Path, *, force: bool = False) -> Path:
     return source_root
 
 
-def _archive_root_is_demo_owned(root: Path) -> bool:
-    """Return whether *root* already holds a prior demo seed's fixture source.
+def _archive_tier_session_count(root: Path) -> int:
+    """Return the number of sessions already present in *root*'s index tier.
 
-    ``DEMO_SOURCE_DIRNAME`` is written exclusively by :func:`materialize_demo_source`
-    and by nothing else in the codebase -- in particular the live daemon
-    (``polylogued run``) never creates it. Its presence *before* this call is
-    therefore strong, retroactive-compatible evidence that ``root``'s tier
-    databases hold only synthetic demo content this same command is about to
-    regenerate, never real archive data. This is the gate that makes
-    :func:`_self_heal_stale_demo_archive_tiers` safe to call unconditionally
-    for demo seeding while never touching a live/foreign archive that
-    happens to be at the resolved root (e.g. an operator forgot ``--root``
-    and ``archive_root()`` fell through to the configured production root).
+    Returns ``0`` when the tier database does not exist, or does not yet
+    have a ``sessions`` table, rather than raising -- a genuinely fresh or
+    nonexistent root reads the same as an empty one. Both the default-root
+    safety guard (:func:`_guard_demo_seed_target`) and the ownership
+    manifest (:func:`_record_demo_ownership_if_undetermined`) use this as
+    the sole "does this root already hold real ingested content" signal.
     """
 
-    return (root / DEMO_SOURCE_DIRNAME).exists()
+    index_db = root / "index.db"
+    if not index_db.exists():
+        return 0
+    try:
+        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    except sqlite3.Error:
+        return 0
+
+
+def _archive_root_has_real_content(root: Path) -> bool:
+    """Return whether *root* already holds any real ingested session."""
+
+    return _archive_tier_session_count(root) > 0
+
+
+def _guard_demo_seed_target(root: Path, *, explicit_root: bool, force: bool) -> None:
+    """Refuse to seed synthetic demo content into what looks like a real archive.
+
+    ``demo seed``'s default archive-root resolution shares
+    ``polylogue.paths.archive_root()`` (``POLYLOGUE_ARCHIVE_ROOT``, then
+    ``polylogue.toml``, then the XDG default) with the live daemon: an
+    operator or agent who runs ``polylogue demo seed`` with no ``--root``
+    can have it silently resolve to their live production archive
+    (polylogue-o3a1t). ``demo seed`` *adds* demo sessions rather than
+    refusing to run against existing content, so that collision seeds
+    synthetic fixture rows directly into a real archive.
+
+    This guard fires only for the genuinely dangerous case: no explicit
+    ``--root``/``POLYLOGUE_ARCHIVE_ROOT`` override was given, ``--force``
+    was not passed, the resolved root is not already a dedicated demo
+    archive, and it already holds real ingested content. A brand-new or
+    empty root -- a fresh operator machine, CI, a cloud sandbox -- is
+    unaffected: there is nothing there to protect, so the default
+    resolution keeps working with zero friction.
+    """
+
+    if explicit_root or force:
+        return
+    if _archive_root_is_demo_owned(root):
+        return
+    session_count = _archive_tier_session_count(root)
+    if session_count == 0:
+        return
+    raise DemoSeedTargetUnsafeError(
+        f"'polylogue demo seed' resolved its archive root to {root} through the default "
+        "archive_root()/polylogue.toml resolution chain (no --root and no "
+        "POLYLOGUE_ARCHIVE_ROOT override), and that root already holds "
+        f"{session_count} real ingested session(s) with no demo-archive marker present. "
+        "Refusing to write synthetic demo fixture content into what looks like a live "
+        "archive. Re-run with an explicit '--root <path>' pointed at a scratch/demo "
+        "location, or pass '--force' to proceed against this exact root anyway."
+    )
+
+
+def _read_demo_ownership_manifest(root: Path) -> dict[str, object] | None:
+    manifest_path = root / DEMO_OWNERSHIP_MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return None
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _record_demo_ownership_if_undetermined(root: Path) -> None:
+    """Permanently record, on first touch, whether *root* held real content.
+
+    Called unconditionally at the top of :func:`seed_demo_archive`, before
+    that call's own writes could change the answer, and only ever writes
+    once per root -- an existing manifest is never overwritten. A root that
+    already held real ingested content the very first time a demo seed
+    touched it (whether by the default-root collision this guards against,
+    or a deliberate ``--force`` override) is permanently recorded as
+    ``demo_only: false`` and can never regain self-heal eligibility merely
+    by being reseeded again later; its schema mismatches keep raising
+    loudly, exactly like a foreign/live root does (polylogue-wyvio).
+    """
+
+    manifest_path = root / DEMO_OWNERSHIP_MANIFEST_FILENAME
+    if manifest_path.exists():
+        return
+    demo_only = not _archive_root_has_real_content(root)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"demo_only": demo_only, "recorded_at_ms": int(time.time() * 1000)}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _archive_root_is_demo_owned(root: Path) -> bool:
+    """Return whether self-heal is authorized to move aside *root*'s stale tiers.
+
+    Trusts only the recorded ownership manifest (see
+    :func:`_record_demo_ownership_if_undetermined`) -- proof this exact root
+    held no real content the very first time a demo seed touched it -- never
+    ``DEMO_SOURCE_DIRNAME``'s presence alone. The fixture-source-directory
+    marker only proves "a demo seed touched this root at some point"; it
+    persists unconditionally, including on a root that already held real
+    content when first seeded, and trusting it alone would authorize moving
+    aside (and silently discarding) real, potentially durable/irreplaceable
+    tier data -- including ``user.db``'s unified assertions/corrections/saved
+    queries -- on a later schema mismatch (polylogue-wyvio).
+    """
+
+    manifest = _read_demo_ownership_manifest(root)
+    return manifest is not None and manifest.get("demo_only") is True
 
 
 def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
@@ -1348,8 +1465,22 @@ async def seed_demo_archive(
     *,
     force: bool = False,
     with_overlays: bool = False,
+    explicit_root: bool = False,
 ) -> DemoSeedResult:
-    """Materialize, ingest, and optionally overlay the deterministic demo archive."""
+    """Materialize, ingest, and optionally overlay the deterministic demo archive.
+
+    ``explicit_root`` must be ``True`` only when the caller resolved
+    *archive_root* from an explicit, operator-provided override (a CLI
+    ``--root`` flag or a ``POLYLOGUE_ARCHIVE_ROOT`` environment variable) --
+    never from an ambient/config-file default. It disarms
+    :func:`_guard_demo_seed_target`'s default-root safety check (see that
+    function for the hazard it closes, polylogue-o3a1t) but never affects
+    the separate, permanent self-heal ownership determination recorded by
+    :func:`_record_demo_ownership_if_undetermined` (polylogue-wyvio).
+    """
+
+    _guard_demo_seed_target(archive_root, explicit_root=explicit_root, force=force)
+    _record_demo_ownership_if_undetermined(archive_root)
 
     healed_tiers: tuple[str, ...] = ()
     if _archive_root_is_demo_owned(archive_root):
@@ -1394,7 +1525,9 @@ async def seed_demo_archive(
 
 
 __all__ = [
+    "DEMO_OWNERSHIP_MANIFEST_FILENAME",
     "DEMO_SOURCE_DIRNAME",
+    "DemoSeedTargetUnsafeError",
     "apply_demo_post_ingest_augmentation",
     "demo_source_specs",
     "materialize_demo_source",

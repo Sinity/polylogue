@@ -50,7 +50,14 @@ def run_demo_tour(
     transcript_parts: list[str] = []
 
     seed_start = time.perf_counter()
-    seed = asyncio.run(seed_demo_archive(resolved_archive, force=True, with_overlays=True))
+    seed = asyncio.run(
+        seed_demo_archive(
+            resolved_archive,
+            force=True,
+            with_overlays=True,
+            explicit_root=archive_root is not None,
+        )
+    )
     seed_duration = time.perf_counter() - seed_start
     seed_passed = sum(row.ok for row in seed.construct_coverage)
     transcript_parts.append(
