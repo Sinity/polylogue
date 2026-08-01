@@ -10,7 +10,7 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
 from polylogue.core.payload_coercion import optional_string
 from polylogue.logging import get_logger
@@ -616,6 +616,42 @@ def _claude_code_grouped_record_specs(
     return specs
 
 
+#  bd polylogue-t5lg: rank a chunk's own resolved title the same way
+# ``_parse_code_records`` ranks candidates within a single pass (custom-title
+# > ai-title > agent-name > first-human-message heuristic > raw id), so that
+# merging streamed chunks of one huge session can never *regress* a stronger
+# title found in one chunk in favor of a weaker one that happened to resolve
+# in an earlier chunk. ``title_source``/``title_confidence`` alone collapse
+# custom-title and ai-title into the same (ORIGIN, 1.0) pair, so a small
+# ref-prefix tie-break preserves the exact within-chunk ordering across
+# chunks too.
+_CLAUDE_CODE_TITLE_REF_PRIORITY: dict[str, int] = {
+    "claude-agent-name:": 0,
+    "claude-ai-title:": 1,
+    "claude-custom-title:": 2,
+}
+
+
+def _claude_code_title_rank(session: ParsedSession) -> tuple[int, float, int]:
+    source_rank = (
+        {
+            TitleSource.UNKNOWN: 0,
+            TitleSource.HEURISTIC: 1,
+            TitleSource.ORIGIN: 2,
+        }.get(session.title_source, 0)
+        if session.title_source is not None
+        else 0
+    )
+    confidence = session.title_confidence or 0.0
+    ref_bonus = 0
+    if session.title_ref:
+        for prefix, bonus in _CLAUDE_CODE_TITLE_REF_PRIORITY.items():
+            if session.title_ref.startswith(prefix):
+                ref_bonus = bonus
+                break
+    return (source_rank, confidence, ref_bonus)
+
+
 def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
     """Merge repeated provider-native sessions produced by streaming chunks."""
 
@@ -653,9 +689,24 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
 
         created_values = [value for value in (existing.created_at, session.created_at) if value]
         updated_values = [value for value in (existing.updated_at, session.updated_at) if value]
+        # bd polylogue-t5lg: pick the chunk with the stronger title EVIDENCE
+        # (title_source/title_confidence, ranked identically to the
+        # single-pass parser's own precedence), not merely "whichever chunk
+        # resolved a non-raw-id title first". The old rule froze the first
+        # chunk's title (even a weak heuristic guess) permanently once it was
+        # non-UUID, silently discarding a stronger ai-title/custom-title
+        # sidecar record that only appeared in a later chunk of the same
+        # huge streamed session -- see the chunk-merge regression this bead
+        # measured on the live archive. All four title fields move together
+        # so title_source/title_ref/title_confidence never point at a
+        # different chunk's evidence than the title text they describe.
+        title_winner = existing if _claude_code_title_rank(existing) >= _claude_code_title_rank(session) else session
         merged[session.provider_session_id] = existing.model_copy(
             update={
-                "title": existing.title if existing.title != existing.provider_session_id else session.title,
+                "title": title_winner.title,
+                "title_source": title_winner.title_source,
+                "title_ref": title_winner.title_ref,
+                "title_confidence": title_winner.title_confidence,
                 "created_at": min(created_values) if created_values else None,
                 "parent_session_provider_id": (
                     existing.parent_session_provider_id or session.parent_session_provider_id

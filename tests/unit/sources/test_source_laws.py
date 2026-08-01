@@ -43,6 +43,7 @@ from polylogue.sources.decoders import (
 )
 from polylogue.sources.dispatch import (
     detect_provider,
+    merge_parsed_session_chunks,
     parse_drive_payload,
     parse_payload,
     parse_stream_payload,
@@ -1709,6 +1710,79 @@ def test_claude_code_stream_chunk_merge_preserves_git_branch_from_either_chunk()
 
     session_one = next(session for session in sessions if session.provider_session_id == "session-1")
     assert session_one.git_branch == "feature/perf/pipeline-quality-consolidation"
+
+
+def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_chunk() -> None:
+    """bd polylogue-t5lg: a huge Claude Code session split across streamed
+    chunks must not freeze a weakly-resolved title (the first-human-message
+    heuristic) permanently just because it happened to resolve in an
+    earlier chunk and was already a non-raw-id string. A later chunk's
+    stronger provider-supplied evidence (an ``ai-title`` sidecar record,
+    TitleSource.ORIGIN/confidence 1.0) must win over an earlier chunk's
+    TitleSource.HEURISTIC/confidence 0.5 guess -- and title_source/title_ref/
+    title_confidence must describe the SAME evidence as the winning title
+    text, never a stale mix pulled from a different chunk.
+
+    This reproduces the live-archive regression this bead measured: raw
+    JSONL files large enough to stream in multiple chunks kept a UUID or
+    heuristic title even though the file plainly contains a later ``ai-title``
+    record, because the pre-fix merge rule was "keep whichever chunk
+    resolved a non-UUID title FIRST", not "keep the strongest evidence".
+    """
+    early_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="Fix the flaky retry loop",
+        title_source=TitleSource.HEURISTIC,
+        title_ref="message:u-1",
+        title_confidence=0.5,
+        messages=[],
+    )
+    later_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="Recover what was lost",
+        title_source=TitleSource.ORIGIN,
+        title_ref="claude-ai-title:session-1",
+        title_confidence=1.0,
+        messages=[],
+    )
+
+    merged = merge_parsed_session_chunks([early_chunk, later_chunk])
+
+    assert len(merged) == 1
+    assert merged[0].title == "Recover what was lost"
+    assert merged[0].title_source is TitleSource.ORIGIN
+    assert merged[0].title_ref == "claude-ai-title:session-1"
+    assert merged[0].title_confidence == 1.0
+
+
+def test_merge_parsed_session_chunks_keeps_stronger_earlier_title_over_weaker_later_chunk() -> None:
+    """Inverse direction: a later chunk with no title evidence at all (still
+    a bare provider id) must not clobber an earlier chunk's already-resolved,
+    stronger ``ai-title`` evidence."""
+    early_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="Recover what was lost",
+        title_source=TitleSource.ORIGIN,
+        title_ref="claude-ai-title:session-1",
+        title_confidence=1.0,
+        messages=[],
+    )
+    later_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="session-1",
+        messages=[],
+    )
+
+    merged = merge_parsed_session_chunks([early_chunk, later_chunk])
+
+    assert merged[0].title == "Recover what was lost"
+    assert merged[0].title_source is TitleSource.ORIGIN
+    assert merged[0].title_ref == "claude-ai-title:session-1"
+    assert merged[0].title_confidence == 1.0
 
 
 def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
