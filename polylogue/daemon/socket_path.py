@@ -36,6 +36,14 @@ def archive_scope_key(archive_root: Path | str) -> str:
     return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
 
 
+# Linux's sockaddr_un.sun_path is a 108-byte buffer that must hold a
+# NUL-terminated path, leaving 107 usable bytes. A long-but-legal
+# XDG_RUNTIME_DIR (some container/CI setups produce one) plus the scoped
+# ``polylogue/<key>/daemon.sock`` suffix can exceed that -- bind() then fails
+# with OSError: AF_UNIX path too long.
+_AF_UNIX_PATH_MAX = 107
+
+
 def daemon_socket_path(archive_root: Path | str, *, runtime_dir: str | None = None) -> Path:
     """Return the archive-scoped per-user UDS path without creating it.
 
@@ -44,10 +52,22 @@ def daemon_socket_path(archive_root: Path | str, *, runtime_dir: str | None = No
     the resolved ``archive_root_path`` the daemon runtime starts with), so
     the path a CLI probe computes always matches the path the corresponding
     daemon actually bound.
+
+    Falls back to a deliberately short, still per-user, still archive-scoped
+    location when ``runtime_dir`` (or ``XDG_RUNTIME_DIR``) is long enough
+    that the scoped path would exceed the AF_UNIX ``sun_path`` limit -- the
+    fallback keeps the archive-scoping property (two archives still never
+    collide) rather than reintroducing the original single-socket bug.
     """
 
+    key = archive_scope_key(archive_root)
     base = Path(runtime_dir or os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "polylogue"
-    return base / archive_scope_key(archive_root) / "daemon.sock"
+    candidate = base / key / "daemon.sock"
+    if len(str(candidate)) <= _AF_UNIX_PATH_MAX:
+        return candidate
+
+    fallback_dir = Path(f"/tmp/polylogue-{os.getuid()}")
+    return fallback_dir / f"{key}.sock"
 
 
 __all__ = ["archive_scope_key", "daemon_socket_path"]

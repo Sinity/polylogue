@@ -59,12 +59,16 @@ def test_archive_scope_key_stable_for_same_root(tmp_path: Path) -> None:
     assert archive_scope_key(root) == archive_scope_key(str(root) + "/")
 
 
-def test_daemon_socket_path_differs_by_archive_root(tmp_path: Path) -> None:
+def test_daemon_socket_path_differs_by_archive_root(tmp_path: Path, _short_runtime_dir: Path) -> None:
     from polylogue.daemon.socket_path import daemon_socket_path
 
     root_a = tmp_path / "archive-a"
     root_b = tmp_path / "archive-b"
-    runtime_dir = str(tmp_path / "runtime")
+    # A dedicated short runtime dir, not one derived from ``tmp_path``:
+    # pytest's own basetemp naming can exceed the AF_UNIX length budget on
+    # its own, which would spuriously exercise the long-path fallback below
+    # rather than the plain archive-scoped path this test targets.
+    runtime_dir = str(_short_runtime_dir)
 
     path_a = daemon_socket_path(root_a, runtime_dir=runtime_dir)
     path_b = daemon_socket_path(root_b, runtime_dir=runtime_dir)
@@ -75,13 +79,41 @@ def test_daemon_socket_path_differs_by_archive_root(tmp_path: Path) -> None:
     assert path_a.parent.parent == path_b.parent.parent == Path(runtime_dir) / "polylogue"
 
 
-def test_daemon_socket_path_same_for_same_archive_root(tmp_path: Path) -> None:
+def test_daemon_socket_path_same_for_same_archive_root(tmp_path: Path, _short_runtime_dir: Path) -> None:
     from polylogue.daemon.socket_path import daemon_socket_path
 
     root = tmp_path / "archive"
-    runtime_dir = str(tmp_path / "runtime")
+    runtime_dir = str(_short_runtime_dir)
 
     assert daemon_socket_path(root, runtime_dir=runtime_dir) == daemon_socket_path(root, runtime_dir=runtime_dir)
+
+
+def test_daemon_socket_path_stays_under_af_unix_limit_for_long_runtime_dir(tmp_path: Path) -> None:
+    """P2 finding on PR #3526: a moderately long ``XDG_RUNTIME_DIR`` plus the
+    scoped ``polylogue/<key>/daemon.sock`` suffix can exceed the AF_UNIX
+    ``sun_path`` limit (107 usable bytes), which previously made
+    ``bind()`` raise ``OSError: AF_UNIX path too long`` -- a regression the
+    archive-scoping fix itself introduced for long runtime dirs. The path
+    must always fit, and must still be archive-scoped (no reintroducing the
+    original single-socket collision as the escape hatch).
+    """
+
+    from polylogue.daemon.socket_path import daemon_socket_path
+
+    # A 73-character runtime dir is the exact reproduction size the review
+    # comment cited as producing a 108-byte (over the limit) scoped path.
+    long_runtime_dir = "/tmp/" + ("x" * 68)
+    assert len(long_runtime_dir) == 73
+
+    root_a = tmp_path / "archive-a"
+    root_b = tmp_path / "archive-b"
+
+    path_a = daemon_socket_path(root_a, runtime_dir=long_runtime_dir)
+    path_b = daemon_socket_path(root_b, runtime_dir=long_runtime_dir)
+
+    assert len(str(path_a)) <= 107
+    assert len(str(path_b)) <= 107
+    assert path_a != path_b
 
 
 @pytest.fixture
