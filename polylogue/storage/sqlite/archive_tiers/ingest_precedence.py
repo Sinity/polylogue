@@ -142,6 +142,73 @@ def browser_capture_precedence(
     return "replace" if incoming_owns_browser_merge else "default"
 
 
+def revision_authority_refuses_write(
+    conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection | None,
+    *,
+    session_id: str,
+    raw_id: str,
+    provider_session_id: str,
+) -> bool:
+    """The ONE revision-authority refusal gate for a retained-raw session write.
+
+    Consolidated from two independently hand-maintained copies of the exact
+    same two checks (polylogue-c737: PR #3397 fixed
+    ``ArchiveStore._write_parsed_precedence_result``
+    (``revision_governance.py``), then PR #3398 had to separately re-apply
+    the identical fix to the daemon batch-ingest path's ``_write_session``
+    (``pipeline/services/ingest_batch/_core.py``) -- "the signature of
+    duplicated semantics rather than a missing check". polylogue-aggz
+    Invariant 2 makes this the only implementation; both write paths call it
+    before falling through to their own freshness/browser-capture precedence
+    logic, and neither may reimplement it locally.
+
+    Two independent refusals, checked in order:
+
+    - an ACCEPTED revision-authority head already exists for this
+      ``session_id`` (``raw_revision_heads``) -- some other raw in this
+      cohort already won, so this write is redundant, never authoritative.
+    - this raw's own recorded membership decision for this
+      ``provider_session_id`` is ``'ambiguous'`` -- ``classify_membership_
+      revisions`` genuinely refused to arbitrate a winner for this cohort,
+      and falling through to ordinary freshness comparison would silently
+      pick one anyway by last-writer-wins -- exactly the "never silently
+      choose between branches" invariant this gate exists to enforce.
+
+    ``source_conn`` may be ``None`` only when the caller genuinely has no
+    source.db handle (a synthetic index-only harness); a real batch ingest
+    or governed raw-parsed write always opens one, so the membership-
+    ambiguity leg runs there. ``raw_id`` empty/falsy also skips that leg
+    (there is no raw to look up membership for).
+    """
+    has_revision_heads = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_revision_heads'"
+    ).fetchone()
+    if has_revision_heads is not None:
+        governed = conn.execute(
+            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        if governed is not None:
+            return True
+    if source_conn is None or not raw_id:
+        return False
+    has_memberships = source_conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_session_memberships'"
+    ).fetchone()
+    if has_memberships is None:
+        return False
+    ambiguous_membership = source_conn.execute(
+        """
+        SELECT 1 FROM raw_session_memberships
+        WHERE raw_id = ? AND provider_session_id = ? AND decision = 'ambiguous'
+        LIMIT 1
+        """,
+        (raw_id, provider_session_id),
+    ).fetchone()
+    return ambiguous_membership is not None
+
+
 def stored_message_count(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = ?",
@@ -285,6 +352,7 @@ __all__ = [
     "browser_capture_precedence",
     "record_capture_gap_event",
     "record_source_outage_events",
+    "revision_authority_refuses_write",
     "session_has_parser_ingest_flag",
     "stored_message_count",
 ]

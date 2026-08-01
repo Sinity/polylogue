@@ -130,6 +130,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     browser_capture_precedence,
     record_capture_gap_event,
     record_source_outage_events,
+    revision_authority_refuses_write,
     session_has_parser_ingest_flag,
     should_skip_stale_replace,
     stored_message_count,
@@ -261,59 +262,13 @@ def _write_parsed_precedence_result(
             content_changed=True,
             counts=store._write_counts(session),
         )
-    governed = store._conn.execute(
-        "SELECT 1 FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
-        (session_id,),
-    ).fetchone()
-    if governed is not None:
-        return ArchiveRawParsedWriteResult(
-            raw_id=raw_id,
-            session_id=session_id,
-            content_changed=False,
-            counts=store._skipped_counts(session),
-        )
-    # polylogue-c737: ``governed`` above only catches a logical
-    # identity with an ACCEPTED revision-authority head
-    # (``raw_revision_heads``, populated by
-    # ``apply_raw_membership_classification``/``apply_raw_revision_replay``
-    # only when a cohort has a winner). A cohort that ``classify_
-    # membership_revisions`` refused to arbitrate -- genuinely
-    # ``raw_session_memberships.decision = 'ambiguous'`` -- never gets an
-    # accepted head, so ``governed`` stays ``None`` here even though this
-    # raw's own identity is recorded authority debt. Falling through to
-    # the ordinary browser-capture-precedence/freshness logic below then
-    # writes this raw's session unconditionally on its next parse --
-    # last-writer-wins, exactly the "never silently choose between
-    # branches" invariant this whole subsystem exists to enforce, and
-    # the fidelity-losing side of an aistudio-drive ambiguous pair reaches
-    # the index every time this reparses (measured live: 28 cohorts, 641
-    # attachments reported unfetched despite the bytes existing in the
-    # blob store). Refuse this raw explicitly instead of relying on an
-    # absent head to imply "unclaimed, free to write".
-    #
-    # Scoped to the membership being written, not to the raw. One retained
-    # raw routinely lowers to many sessions -- a Claude Code transcript and
-    # its subagent sidechains, a bundle member set -- and those sessions are
-    # arbitrated independently. Measured on the live archive: 295 raws carry
-    # a mix of decisions, together holding 489 sessions whose own membership
-    # is NOT ambiguous, and one raw carries 106 memberships. A raw-scoped
-    # predicate suppresses every one of those sessions as soon as a single
-    # sibling membership is ambiguous, which trades a fidelity downgrade for
-    # outright absence -- a worse failure, and one that would have landed at
-    # the next full rebuild.
-    ambiguous_membership = (
-        store._ensure_source_conn()
-        .execute(
-            """
-            SELECT 1 FROM raw_session_memberships
-            WHERE raw_id = ? AND provider_session_id = ? AND decision = 'ambiguous'
-            LIMIT 1
-            """,
-            (raw_id, session.provider_session_id),
-        )
-        .fetchone()
-    )
-    if ambiguous_membership is not None:
+    if revision_authority_refuses_write(
+        store._conn,
+        store._ensure_source_conn(),
+        session_id=session_id,
+        raw_id=raw_id,
+        provider_session_id=session.provider_session_id,
+    ):
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
