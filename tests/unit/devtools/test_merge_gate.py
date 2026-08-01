@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from devtools import merge_gate
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _fake_run(
@@ -18,18 +19,25 @@ def _fake_run(
     dirty: bool = False,
     poll_rounds: list[list[dict[str, object]]] | None = None,
 ) -> object:
-    """``comments`` is returned on every poll round unless ``poll_rounds`` gives
-    an explicit per-round sequence (for testing the multi-round poll itself)."""
+    """``comments`` (inline review comments) is returned on every poll round
+    unless ``poll_rounds`` gives an explicit per-round sequence (for testing
+    the multi-round poll itself). Issue comments and review bodies are always
+    empty here -- covered separately in the normalization tests below."""
     comment_rounds: list[list[dict[str, object]]] = poll_rounds if poll_rounds is not None else [comments]
-    call_count = {"api": 0}
+    call_count = {"round": 0}
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        joined = " ".join(cmd)
         if cmd[:3] == ["gh", "pr", "view"]:
             return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
-        if cmd[:2] == ["gh", "api"]:
-            round_index = min(call_count["api"], len(comment_rounds) - 1)
-            call_count["api"] += 1
-            return MagicMock(returncode=0, stdout=json.dumps(comment_rounds[round_index]), stderr="")
+        if "/issues/" in joined and "/comments" in joined:
+            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
+        if "/pulls/" in joined and "/reviews" in joined:
+            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
+        if "/pulls/" in joined and "/comments" in joined:
+            round_index = min(call_count["round"], len(comment_rounds) - 1)
+            call_count["round"] += 1
+            return MagicMock(returncode=0, stdout=json.dumps([comment_rounds[round_index]]), stderr="")
         if cmd[:2] == ["git", "rev-parse"]:
             return MagicMock(returncode=0, stdout=local_head_sha + "\n", stderr="")
         if cmd[:2] == ["git", "status"]:
@@ -286,12 +294,85 @@ def test_check_blocks_when_pr_is_not_open(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert exit_code == 1
 
 
-def test_check_blocks_when_receipt_older_than_max_age(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_check_blocks_when_receipt_older_than_max_age(
+    frozen_clock: FrozenClock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.chdir(tmp_path)
     _record(monkeypatch, _base_pr_view())
 
+    frozen_clock.advance(7200)
     monkeypatch.setattr(subprocess, "run", _fake_run(_base_pr_view(), []))
-    exit_code = merge_gate.cmd_check(42, max_age_s=-1, poll_rounds=1, poll_interval_s=0, as_json=False)
+    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+
+    assert exit_code == 1
+
+
+def test_check_blocks_when_receipt_exit_code_is_nonzero(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, [], local_exit=1, local_head_sha="abc123"))
+    merge_gate.cmd_record(42, "devtools test x")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+
+    assert exit_code == 1
+
+
+def test_check_blocks_when_merge_state_status_is_dirty(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view)
+
+    pr_view["mergeStateStatus"] = "DIRTY"
+    monkeypatch.setattr(subprocess, "run", _fake_run(pr_view, []))
+    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+
+    assert exit_code == 1
+
+
+def test_check_blocks_when_comment_polling_fails(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view)
+
+    def _run_with_broken_api(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
+        if cmd[:2] == ["gh", "api"]:
+            return MagicMock(returncode=1, stdout="", stderr="rate limited")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run_with_broken_api)
+    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+
+    assert exit_code == 1
+
+
+def test_check_catches_a_late_review_body_not_just_inline_comments(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Review summaries and issue-level comments carry findings too -- a gate
+    that only watches inline diff comments misses them."""
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view(committed_date="2026-08-01T12:00:00Z")
+    _record(monkeypatch, pr_view)
+
+    def _run_with_late_review(cmd: list[str], **kwargs: object) -> MagicMock:
+        joined = " ".join(cmd)
+        if cmd[:3] == ["gh", "pr", "view"]:
+            return MagicMock(returncode=0, stdout=json.dumps(pr_view), stderr="")
+        if "/pulls/" in joined and "/reviews" in joined:
+            late_review = [{"id": 999, "submitted_at": "2026-08-01T12:10:00Z", "body": "Request changes: real bug"}]
+            return MagicMock(returncode=0, stdout=json.dumps([late_review]), stderr="")
+        if "/issues/" in joined and "/comments" in joined:
+            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
+        if "/pulls/" in joined and "/comments" in joined:
+            return MagicMock(returncode=0, stdout=json.dumps([[]]), stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", _run_with_late_review)
+    exit_code = merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
 
     assert exit_code == 1
 

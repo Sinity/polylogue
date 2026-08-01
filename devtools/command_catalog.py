@@ -687,8 +687,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Immediately before squash-merging any PR in a merge train, replacing coordinator memory "
             "(grace-period comment polling, remembering to run the broader local test suite CI skips "
-            'per-PR) with a check that fails closed. `record <PR> --command "..."` checks out the '
-            "PR's exact head commit (refuses on any mismatch or dirty tree), runs a local verification "
+            'per-PR) with a check that fails closed. `record <PR> --command "..."` requires the current '
+            "checkout to already be the PR's exact head commit with a clean tree (it refuses otherwise), "
+            "runs a local verification "
             "command, and persists a receipt flagging commands that look like they skip tests (e.g. "
             "`verify --quick`). `check <PR>` polls review comments across a real grace window (default "
             "3x20s, covering CodeRabbit's 30-60s late-arrival window) and BLOCKs unless a receipt exists "

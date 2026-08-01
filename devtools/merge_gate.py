@@ -74,7 +74,7 @@ _DEFAULT_POLL_INTERVAL_S = 20
 # flagged as an advisory, since the whole point is not trusting a plausible-
 # looking command string without comment.
 _TEST_SKIPPING_MARKERS: tuple[str, ...] = ("verify --quick", "verify --lab")
-_LOOKS_LIKE_TESTS_MARKERS: tuple[str, ...] = ("test", "pytest", "verify --all")
+_LOOKS_LIKE_TESTS_MARKERS: tuple[str, ...] = ("test", "pytest", "verify --all", "devtools verify")
 
 
 def _gh_json(args: list[str]) -> Any:
@@ -82,6 +82,38 @@ def _gh_json(args: list[str]) -> Any:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip()[:300] or f"gh {' '.join(args)} failed")
     return json.loads(result.stdout)
+
+
+def _gh_json_paginated(args: list[str]) -> list[Any]:
+    """Like ``_gh_json`` but follows pagination -- the GitHub REST list
+    endpoints cap at 30-100 items per page, and a PR with more review comments
+    than that would otherwise silently hide later (possibly late-arriving)
+    ones from the late-comment check. ``--slurp`` wraps every page's own JSON
+    array into one outer array, which this then flattens."""
+    result = subprocess.run(["gh", *args, "--paginate", "--slurp"], capture_output=True, text=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip()[:300] or f"gh {' '.join(args)} --paginate failed")
+    pages = json.loads(result.stdout)
+    items: list[Any] = []
+    for page in pages:
+        if isinstance(page, list):
+            items.extend(page)
+        else:
+            items.append(page)
+    return items
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    """Return the parsed object, or None when the file is absent, unreadable,
+    truncated, or not a JSON object (a hand edit or an interrupted write must
+    not raise a traceback out of a merge-safety check)."""
+    if not path.exists():
+        return None
+    try:
+        loaded = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
 
 
 def _git_head_sha() -> str | None:
@@ -144,8 +176,15 @@ def cmd_record(pr: int, command: str) -> int:
         return 2
 
     argv = shlex.split(command)
+    if not argv:
+        print("REFUSING to record: --command is empty after shell splitting.", file=sys.stderr)
+        return 2
     started = time.time()
-    result = subprocess.run(argv, capture_output=True, text=True)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        print(f"REFUSING to record: could not run {command!r}: {exc}", file=sys.stderr)
+        return 2
     duration_s = round(time.time() - started, 2)
 
     receipt = {
@@ -180,7 +219,17 @@ def cmd_ack(pr: int, comment_id: int, *, reason: str) -> int:
     head_sha = info["headRefOid"]
 
     ack_path = _ack_path(pr)
-    acks: dict[str, Any] = json.loads(ack_path.read_text()) if ack_path.exists() else {}
+    if ack_path.exists():
+        acks = _read_json_object(ack_path)
+        if acks is None:
+            print(
+                f"REFUSING to ack: {ack_path} exists but is unreadable/corrupt -- fix or remove it by hand "
+                "first, rather than silently losing prior acknowledgements.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        acks = {}
     acks[str(comment_id)] = {"head_sha": head_sha, "reason": reason, "acked_at": time.time()}
     _RECEIPT_DIR.mkdir(parents=True, exist_ok=True)
     ack_path.write_text(json.dumps(acks, indent=2))
@@ -189,11 +238,51 @@ def cmd_ack(pr: int, comment_id: int, *, reason: str) -> int:
 
 
 def _fetch_review_comments(pr: int) -> list[dict[str, Any]] | None:
+    """Combine every top-level review signal the late-comment check should
+    see: inline diff comments, issue-level PR comments, and review bodies
+    (a review's own summary text is a separate object from its line
+    comments -- see GitHub's REST API docs). All three are normalized to a
+    common shape (id, created_at, path, line, body) and empty-bodied entries
+    (e.g. an APPROVE review with no summary text) are dropped -- they carry
+    no signal for triage."""
+    normalized: list[dict[str, Any]] = []
     try:
-        result: list[dict[str, Any]] = _gh_json(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"])
+        inline = _gh_json_paginated(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/comments"])
+        for item in inline:
+            normalized.append(
+                {
+                    "id": item.get("id"),
+                    "created_at": item.get("created_at", ""),
+                    "path": item.get("path"),
+                    "line": item.get("line"),
+                    "body": item.get("body") or "",
+                }
+            )
+        issue_comments = _gh_json_paginated(["api", f"repos/{{owner}}/{{repo}}/issues/{pr}/comments"])
+        for item in issue_comments:
+            normalized.append(
+                {
+                    "id": item.get("id"),
+                    "created_at": item.get("created_at", ""),
+                    "path": None,
+                    "line": None,
+                    "body": item.get("body") or "",
+                }
+            )
+        reviews = _gh_json_paginated(["api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"])
+        for item in reviews:
+            normalized.append(
+                {
+                    "id": item.get("id"),
+                    "created_at": item.get("submitted_at", ""),
+                    "path": None,
+                    "line": None,
+                    "body": item.get("body") or "",
+                }
+            )
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError):
         return None
-    return result
+    return [comment for comment in normalized if comment["body"].strip()]
 
 
 def _poll_stable_comments(pr: int, *, rounds: int, interval_s: int) -> list[dict[str, Any]] | None:
@@ -245,18 +334,18 @@ def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int
         verdict.reasons.append(f"mergeStateStatus is {mss!r} (expected CLEAN/UNSTABLE/UNKNOWN)")
 
     commits = info.get("commits") or []
-    head_commit = commits[-1] if commits else None
+    head_commit = next((commit for commit in commits if commit.get("oid") == head_sha), None)
     head_committed_at = head_commit.get("committedDate") if head_commit else None
 
     receipt_path = _receipt_path(pr)
-    if not receipt_path.exists():
+    receipt = _read_json_object(receipt_path)
+    if receipt is None:
         verdict.ok = False
         verdict.reasons.append(
-            f"no local verification receipt found at {receipt_path} -- run "
+            f"no local verification receipt found (or it is unreadable) at {receipt_path} -- run "
             f'`devtools workspace merge-gate record {pr} --command "..."` against the current head first'
         )
     else:
-        receipt = json.loads(receipt_path.read_text())
         verdict.receipt = receipt
         if receipt.get("head_sha") != head_sha:
             verdict.ok = False
@@ -284,8 +373,7 @@ def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int
         verdict.reasons.append("could not fetch review comments after polling")
         review_comments = []
 
-    ack_path = _ack_path(pr)
-    acks: dict[str, Any] = json.loads(ack_path.read_text()) if ack_path.exists() else {}
+    acks = _read_json_object(_ack_path(pr)) or {}
 
     if head_committed_at:
         for comment in review_comments:
@@ -311,8 +399,12 @@ def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int
                 f"{len(verdict.late_comments)} unacknowledged review comment(s) posted after the head commit "
                 f"({head_committed_at}) -- read and `ack` (if not actionable) or fix before merging"
             )
-    elif review_comments:
-        verdict.reasons.append("could not determine head commit timestamp; late-comment check skipped")
+    else:
+        verdict.ok = False
+        verdict.reasons.append(
+            "could not determine the head commit timestamp, so the late-comment check cannot run -- "
+            "refusing to report OK"
+        )
 
     _emit(verdict, as_json)
     return 0 if verdict.ok else 1
