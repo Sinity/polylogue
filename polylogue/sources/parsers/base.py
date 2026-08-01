@@ -20,6 +20,7 @@ from .base_support import (
     attachment_from_meta,
     content_blocks_from_segments,
     extract_messages_from_list,
+    text_blocks_prose,
 )
 
 __all__ = [
@@ -37,4 +38,5 @@ __all__ = [
     "content_blocks_from_segments",
     "extract_messages_from_list",
     "attachment_from_meta",
+    "text_blocks_prose",
 ]

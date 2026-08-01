@@ -87,6 +87,33 @@ def _make_db_with_messages(db_path: Path) -> str:
     return conv_id
 
 
+def _make_db_with_multi_block_message(db_path: Path) -> str:
+    """One message with two TEXT blocks at distinct positions.
+
+    Regresses the P2 finding on PR #3525: ``message_prose_sql`` wrapped
+    ``GROUP_CONCAT`` around a *correlated scalar* subquery. Every real
+    caller LEFT JOINs ``blocks`` (fanning a multi-block message out into
+    one outer row per block) and relies on ``message_prose_sql`` itself to
+    do the aggregation; a scalar subquery evaluated once per fanned-out row
+    silently returned only the first TEXT block, dropping every other one.
+    """
+    conv_id = "conv-multi-block-1"
+    builder = SessionBuilder(db_path, conv_id)
+    builder.provider("chatgpt").title("Multi-block backfill test")
+    builder.add_message(
+        message_id="multi-1",
+        role="assistant",
+        text="first block",
+        message_type="message",
+        blocks=[
+            {"type": "text", "text": "first block"},
+            {"type": "text", "text": "second block"},
+        ],
+    )
+    builder.save()
+    return conv_id
+
+
 def _make_config(workspace_env: dict[str, Path], db_path: Path) -> Config:
     """Create a minimal Config for tests."""
     return Config(
@@ -296,3 +323,31 @@ class TestMessageTypeBackfill:
         assert proto_msg.is_context_dump is False
         assert plain_msg.is_context_dump is False
         assert plain_msg.is_protocol_artifact is False
+
+    def test_backfill_prose_reconstruction_includes_every_text_block(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The prose the backfill classifies from must contain every TEXT
+        block of a message, not just the first (PR #3525 P2 finding).
+
+        Regression for a bug in ``message_prose_sql``: it wrapped
+        ``GROUP_CONCAT`` around a correlated *scalar* subquery. Every real
+        caller (including this backfill's own query) LEFT JOINs ``blocks``
+        to filter/order by block columns, fanning a multi-block message out
+        into multiple outer rows -- the scalar subquery was evaluated once
+        per fanned-out row and returned the same single (first) block's text
+        every time, so ``GROUP_CONCAT`` never saw the other blocks at all.
+        """
+        from polylogue.storage.message_type_backfill import _message_text_by_id_sql
+
+        db_path = db_setup(workspace_env)
+        _make_db_with_multi_block_message(db_path)
+
+        with open_index_db(db_path) as conn:
+            row = conn.execute(
+                f"{_message_text_by_id_sql()} HAVING m.message_id = "
+                "(SELECT message_id FROM messages WHERE native_id = 'multi-1')"
+            ).fetchone()
+
+        assert row is not None
+        assert row[1] == "first block\nsecond block"

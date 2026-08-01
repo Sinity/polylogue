@@ -16,6 +16,31 @@ from .base_models import (
 )
 
 
+def text_blocks_prose(blocks: Sequence[ParsedContentBlock]) -> str | None:
+    """Join only TEXT-type block text, in position order, with ``\\n``.
+
+    This is the parse-time twin of
+    ``polylogue.storage.embeddings.materialization.message_prose_sql``
+    (``block_types=("text",)``, ``separator="'\\n'"``), which is what
+    ``polylogue.storage.message_type_backfill`` and
+    ``count_unclassified_message_type_sync`` use to re-derive
+    ``classify_text_message_type``'s input from already-persisted rows.
+
+    Anything that folds THINKING/TOOL_USE/TOOL_RESULT segments into the
+    same string handed to ``classify_text_message_type`` (e.g. a combined
+    "full record text" built before blocks are split apart) sees markers
+    the backfill's persisted-block reconstruction never will, and vice
+    versa -- a systematic, silent divergence between ingest-time and
+    backfill-time ``message_type`` classification (bd polylogue-c831).
+    Callers that classify a message's runtime-artifact type from its text
+    must build that text from the message's own already-split
+    ``ParsedContentBlock`` list via this helper, not from a separately
+    reconstructed "all segment types" string.
+    """
+    parts = [block.text for block in blocks if block.type is BlockType.TEXT and block.text]
+    return "\n".join(parts) if parts else None
+
+
 def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
     """Convert raw API content (str, list, dict) to ParsedContentBlock list."""
     if isinstance(content, str):
