@@ -67,8 +67,15 @@ _ANTI_VACUITY_CONTRACT = (
 _HAZARDS = (
     "commit every logical chunk (worktree auto-clean destroys uncommitted work)",
     "never cd to the main checkout",
+    "run EVERY command synchronously in your own foreground turn -- never launch a "
+    "background job and idle-wait on it across turns (2026-08-01: three lanes stalled for "
+    "multiple turns each waiting on backgrounded devtools test runs)",
     "`bd` reimports .beads/issues.jsonl on every invocation -- run "
     "`bd export -o .beads/issues.jsonl` after every bead write, do not commit that file in this lane",
+    "a worktree's .beads/issues.jsonl is frozen at its branch point: once the worktree ages, "
+    "ANY bd invocation or git-checkout hook inside it can reimport the stale file and revert "
+    "live bead state (polylogue-2ara; 2026-08-01 incident reverted 5+ coordinator writes twice) "
+    "-- prefer no bd writes from lane worktrees at all; report bead-state changes to the coordinator",
     "adding any module under polylogue/ requires "
     "`devtools render topology-projection && devtools render topology-status`",
     "no `git stash` (refs/stash is shared across worktrees)",
@@ -270,11 +277,43 @@ def _find_prior_art(
     return hits
 
 
+def _recent_master_commits(repo_root: Path, paths: list[str], days: int = 7, limit: int = 15) -> list[str]:
+    """Commits on the default-branch tip touching any footprint path in the last N days.
+
+    This is the prior-satisfaction signal the per-path footprint listing buries:
+    on 2026-08-01 a dispatched lane (polylogue-2cuv) burned most of its budget
+    re-investigating a bead whose core ask had already been merged earlier the
+    same session. Aggregating recent-master churn across the whole footprint in
+    one loud list makes "is this already done?" the first question, not a
+    late discovery.
+    """
+    if not paths:
+        return []
+    ref = "origin/master"
+    if (
+        subprocess.run(["git", "rev-parse", "--verify", ref], capture_output=True, text=True, cwd=repo_root).returncode
+        != 0
+    ):
+        ref = "HEAD"
+    result = subprocess.run(
+        ["git", "log", f"--since={days} days ago", "--format=%h %ad %s", "--date=short", ref, "--", *paths],
+        capture_output=True,
+        text=True,
+        cwd=repo_root,
+    )
+    if result.returncode != 0:
+        return []
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    return lines[:limit]
+
+
 def _render_markdown(
     lane_ids: list[str],
     records: list[BeadRecord],
     footprint: list[FootprintEvidence],
     prior_art: list[PriorArtHit],
+    recent_commits: list[str] | None = None,
+    recent_days: int = 7,
 ) -> str:
     lines: list[str] = []
     lines.append(f"# Lane brief: {', '.join(lane_ids)}")
@@ -339,6 +378,22 @@ def _render_markdown(
         lines.append("No closed beads found mentioning the same file paths.")
     lines.append("")
 
+    lines.append(f"## Recently merged on master (footprint overlap, last {recent_days} days)")
+    lines.append("")
+    if recent_commits:
+        lines.append(
+            f"**PRIOR-SATISFACTION CHECK:** {len(recent_commits)} recent master commit(s) touched "
+            "this lane's footprint. Read them BEFORE implementing -- the bead's core ask may "
+            "already be satisfied by one of these merges. If it is, report that honestly and "
+            "stop; do not re-implement."
+        )
+        lines.append("")
+        for commit in recent_commits:
+            lines.append(f"- {commit}")
+    else:
+        lines.append("No master commits touched the extracted footprint paths in this window.")
+    lines.append("")
+
     lines.append("## Measured baseline")
     lines.append("")
     lines.append("<!-- DISPATCHER MUST FILL -->")
@@ -390,6 +445,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="/realm/tmp",
         help="Scratch dir for the bd export used for prior-art scanning (default: /realm/tmp)",
     )
+    parser.add_argument(
+        "--recent-days",
+        type=int,
+        default=7,
+        metavar="N",
+        help="Window for the recently-merged footprint-overlap section (default: 7)",
+    )
     args = parser.parse_args(argv)
 
     repo_root = _repo_root()
@@ -404,8 +466,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     export_records = _load_bd_export(repo_root, tmpdir)
     exclude_ids = {r.id for r in records}
     prior_art = _find_prior_art(export_records, paths, exclude_ids)
+    recent_commits = _recent_master_commits(repo_root, paths, days=args.recent_days)
 
-    brief = _render_markdown(list(args.bead_ids), records, footprint, prior_art)
+    brief = _render_markdown(
+        list(args.bead_ids),
+        records,
+        footprint,
+        prior_art,
+        recent_commits=recent_commits,
+        recent_days=args.recent_days,
+    )
 
     if args.out:
         Path(args.out).write_text(brief)

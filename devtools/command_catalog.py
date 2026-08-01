@@ -660,6 +660,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace verify-worktree",
+        "workspace",
+        "Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch.",
+        "devtools.verify_worktree",
+        use_when=(
+            "Immediately after spawning a worktree-isolated agent lane (and before trusting its "
+            "reported diff), confirm the claimed working directory is a real LINKED git worktree "
+            "-- not the main checkout (the 2026-08-01 isolation-escape incident left ~1700 "
+            "uncommitted lines in the coordinator's live tree because no such check existed) -- "
+            "and optionally that the expected branch is checked out. Also reports advisory "
+            "hazards: uncommitted changes (worktree auto-cleanup destroys them) and a stale "
+            ".beads/issues.jsonl whose reimport can time-machine live bead state (polylogue-2ara)."
+        ),
+        examples=(
+            "devtools workspace verify-worktree /realm/project/polylogue/.claude/worktrees/agent-abc",
+            "devtools workspace verify-worktree /realm/worktrees/lane-x --expect-branch feature/x/y",
+            "devtools workspace verify-worktree /realm/worktrees/lane-x --json --strict",
+        ),
+    ),
+    CommandSpec(
         "workspace merge-conductor",
         "workspace",
         "Mechanical-conflict triage for the PR merge train (dry-run by default).",
