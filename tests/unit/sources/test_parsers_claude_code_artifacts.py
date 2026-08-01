@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import MaterialOrigin, Role
+from polylogue.core.enums import BlockType, MaterialOrigin, Role
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
@@ -151,6 +151,55 @@ def test_parse_code_classifies_runtime_artifacts() -> None:
     # !isMeta, no toolUseResult, no non-human origin.
     assert by_id["prompt-1"].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert result.title == "Actual user prompt."
+
+
+def test_parse_code_classifies_message_type_from_text_blocks_only() -> None:
+    """bd polylogue-c831: ``message_type`` must be classified from the
+    message's own TEXT-block-only prose, not a combined string that also
+    folds in THINKING segment content.
+
+    A THINKING block that happens to contain a `<file path=...>` line (a
+    CONTEXT marker) must not leak into classifying an assistant reply whose
+    own TEXT block carries no such marker. Before the fix, ingest-time
+    classification ran ``classify_text_message_type`` over
+    ``extract_message_text``'s combined multi-segment string (THINKING text
+    included), while ``storage.message_type_backfill`` re-derives the same
+    row's classification from only the persisted TEXT-type ``blocks`` rows
+    -- a silent, systematic divergence between the two paths. This asserts
+    they now agree by construction: the ingest-time verdict is exactly what
+    re-running the classifier against the persisted TEXT block would
+    produce.
+    """
+    result = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "mixed-1",
+                "sessionId": "sess-1",
+                "timestamp": 1704067200,
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": 'irrelevant reasoning\n<file path="foo.py">\nold content\n</file>',
+                        },
+                        {"type": "text", "text": "Here is my actual reply."},
+                    ],
+                },
+            },
+        ],
+        "fallback",
+    )
+
+    assert len(result.messages) == 1
+    message = result.messages[0]
+    text_blocks = [block.text for block in message.blocks if block.type is BlockType.TEXT and block.text]
+    assert text_blocks == ["Here is my actual reply."]
+    # Ingest-time classification must match what re-running the classifier
+    # against exactly that persisted TEXT prose would produce -- MESSAGE,
+    # not CONTEXT (the marker only lives in the THINKING block).
+    assert message.message_type is MessageType.MESSAGE
 
 
 def test_parse_code_preserves_tool_result_reclassification_material_origin() -> None:
