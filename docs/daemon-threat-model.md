@@ -38,7 +38,7 @@ redaction, `/api/sources` paths, and `OPTIONS` handling, see
 ## Threats
 
 ### Local process reading the API
-- **Risk**: Any process on the machine can `curl http://127.0.0.1:8765/api/...`
+- **Risk**: Any process on the machine can `curl http://127.0.0.1:8766/api/...`
 - **Mitigation**: Loopback binding limits exposure to the local machine. This is the same trust model as `localhost` databases, dev servers, and CLI tools.
 - **Residual**: Processes running as the same user can read the SQLite archive directly anyway.
 

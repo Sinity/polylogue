@@ -317,16 +317,45 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   it requires either preserving the JSON column or promoting the eight
   provenance keys (`hermes_state.py`) to typed columns, a follow-up decision
   left to polylogue-c3ip.
-- Index schema version 45 (folded into the same version as the
-  `delegation_facts` identity-join rewrite below) resolves the polylogue-c3ip
-  follow-up: `session_provider_usage_events.payload_json` is dropped and its
+- Index schema version 46 (polylogue-2qx.4) lands an "unread-wire" batch of
+  parser-sourced columns/tables in one bump rather than one per origin:
+  `messages.stop_reason` (608,608 live Claude assistant messages carry this
+  on the wire, versus three derived-outcome columns that guess the same fact
+  85-99% `unknown`); `blocks.tool_result_outcome_unknown_reason`
+  (distinguishes "provider emitted nothing" / "parser distrusts it" /
+  "parser doesn't read this origin's field" instead of one flat `NULL`);
+  `sessions.display_name` (subagent slug display name) and
+  `sessions.run_settings_json` (per-session provider run config, e.g.
+  AI Studio/Drive temperature/topP/topK, kept as JSON rather than coupling
+  the schema to one provider); `session_links.parent_tool_use_block_id` (the
+  real join-key column replacing `delegation_facts`' cardinality-gated
+  ordinal dispatch<->child pairing, 842,819 live records); the new
+  `file_edits` table (structured diff evidence from Claude Code Edit/Write
+  tool calls: 105,123 structured diffs, 92,313 pre-edit captures, previously
+  100% discarded); and the new `session_refs` table (tracker-agnostic PR/
+  issue references, 20,702 occurrences). Every value depends on parser
+  semantics to populate honestly, so this is `SEMANTIC_REPARSE` like v42/
+  v44/v45 — existing index tiers must be rebuilt from source evidence
+  (`polylogue ops reset --index && polylogued run`).
+- Index schema version 45 resolves two independent changes folded into one
+  bump: `session_provider_usage_events.payload_json` is dropped and its
   eight billing-provenance keys (`estimated_cost_usd`, `actual_cost_usd`,
   `cost_status`, `cost_source`, `pricing_version`, `billing_provider`,
   `billing_base_url`, `billing_mode`) become nullable typed columns on the
-  same table. `_reextract_provider_usage_tail_db`
+  same table (the polylogue-c3ip follow-up). `_reextract_provider_usage_tail_db`
   (`storage/sqlite/archive_tiers/write.py`) reads the typed columns directly
   instead of `json_extract(payload_json, ...)`. Only 104 of 4,030,168 live
-  rows carried any of these keys, all Hermes-sourced.
+  rows carried any of these keys, all Hermes-sourced. The same bump also
+  carries `delegation_facts_source`'s identity-join rewrite (polylogue-1vpm.7):
+  pairing a Task dispatch to its resolved child session stops using
+  cardinality-gated ordinal position (rank N dispatch <-> rank N child) and
+  instead joins on identity — a trivial 1:1 cohort, or, non-trivially,
+  provider-asserted content equality between the dispatch's own instruction
+  text and the child's first turn. `ambiguous` is retired from the
+  `mapping_state` vocabulary. `delegation_facts` is a materialized table, not
+  a view, so a plain `REPLACE_TABLE` fast-forward cannot re-derive values from
+  the new join logic; existing index tiers must be rebuilt from source
+  evidence.
 - Index schema version 41 stops materializing `tool_input`/`output_text` text
   copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
   join/rank/outcome columns for a paired `tool_use`/`tool_result` block

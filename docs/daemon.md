@@ -426,8 +426,9 @@ Envelope shape:
 }
 ```
 
-The backend uses a bounded 5-second per-attempt timeout and a single retry on
-transient failure (network error or HTTP 5xx). 4xx responses are treated as
+The backend uses a bounded 5-second per-attempt timeout and up to two retries
+(three attempts total, exponential backoff starting at 0.5s) on transient
+failure (network error or HTTP 5xx). 4xx responses are treated as
 permanent client errors and are not retried. Persistent failure surfaces
 through the existing periodic-loop catch boundary in
 `polylogue/daemon/cli.py`; it does not crash the daemon. Dedup and
@@ -517,12 +518,14 @@ These run automatically inside the daemon process:
 | FTS startup check | Once at startup | Rebuilds the FTS index if messages exist but aren't indexed (covers gaps from pre-daemon data) |
 | Judgment automation | Configurable (default 1 hour), off by default | Judges auto-judgeable assertion candidates per policy and escalates the residue; see [Judgment Automation](#judgment-automation) below. |
 
-Health check tier and interval are configurable via `polylogue.toml`:
+Health check tier and interval are configurable via `polylogue.toml` (the
+`[health]` table's `check_interval_s`/`check_tiers` keys back the
+`health_check_interval_s`/`health_check_tiers` config attributes):
 
 ```toml
 [health]
-health_check_interval_s = 300
-health_check_tiers = "fast"
+check_interval_s = 300
+check_tiers = "fast"
 ```
 
 ### Judgment Automation
