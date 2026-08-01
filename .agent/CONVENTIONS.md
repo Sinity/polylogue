@@ -71,8 +71,23 @@ bead's cited facts against master before coding.
 
 ## Execution Tactics
 
-- **Async where the harness allows**: long test runs and imports go to
-  background execution; do light work (reads, bead edits) while they run.
+- **Async is coordinator-only.** An interactive/coordinator session may
+  background long test runs and imports and do light work while they run.
+  Dispatched lane agents (worktree subagents) must run every command
+  synchronously in their own foreground turn — never launch a background job
+  and idle-wait on it across turns (2026-08-01: three lanes each stalled for
+  multiple turns "waiting for the background job", burning wall-clock and
+  coordinator attention until manually interrupted).
+- **Dispatch hygiene (coordinator).** Immediately after spawning a
+  worktree-isolated lane, run
+  `devtools workspace verify-worktree <path> --expect-branch <branch>` before
+  trusting anything the lane reports — a 2026-08-01 dispatch silently ran in
+  the main checkout and left ~1700 uncommitted lines in the live tree. The
+  same check warns when the worktree's frozen `.beads/issues.jsonl` has gone
+  stale relative to the main checkout (any bd invocation or checkout hook in
+  that worktree can then time-machine live bead state — polylogue-2ara);
+  prefer lanes that make no bd writes at all, reporting bead-state changes
+  back to the coordinator instead.
 - **Serial heavy, parallel light.** Serialize anything sharing the pytest
   temp DBs (`/realm/tmp/polylogue-pytest`) or the archive DB; parallel tool
   calls are for reads/searches only.

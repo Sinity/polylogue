@@ -120,6 +120,7 @@ def test_render_markdown_includes_all_mandatory_sections() -> None:
         "## Scope",
         "## Footprint (verified)",
         "## Prior art",
+        "## Recently merged on master (footprint overlap, last 7 days)",
         "## Measured baseline",
         "## Non-goals",
         "## Anti-vacuity contract",
@@ -135,6 +136,46 @@ def test_render_markdown_reports_not_found_bead() -> None:
     md = lane_brief._render_markdown(["polylogue-missing"], [record], [], [])
     assert "polylogue-missing -- NOT FOUND" in md
     assert "not found" in md
+
+
+def test_render_markdown_prior_satisfaction_warning_lists_recent_commits() -> None:
+    record = lane_brief.BeadRecord(id="polylogue-a", found=True, priority=1, issue_type="task", title="T")
+    md = lane_brief._render_markdown(
+        ["polylogue-a"],
+        [record],
+        [],
+        [],
+        recent_commits=["abc1234 2026-08-01 feat: already did the thing (#3480)"],
+    )
+    assert "PRIOR-SATISFACTION CHECK" in md
+    assert "abc1234 2026-08-01 feat: already did the thing (#3480)" in md
+
+
+def test_recent_master_commits_finds_footprint_churn(tmp_path: Path) -> None:
+    def _git(*args: str) -> None:
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", str(tmp_path), *args],
+            check=True,
+            capture_output=True,
+        )
+
+    _git("init", "-b", "master")
+    target = tmp_path / "devtools" / "lane_brief.py"
+    target.parent.mkdir()
+    target.write_text("x = 1\n")
+    _git("add", "devtools/lane_brief.py")
+    _git("commit", "-m", "touch footprint file", "--no-gpg-sign")
+
+    hits = lane_brief._recent_master_commits(tmp_path, ["devtools/lane_brief.py"], days=3650)
+    assert len(hits) == 1
+    assert "touch footprint file" in hits[0]
+    assert lane_brief._recent_master_commits(tmp_path, [], days=3650) == []
+
+
+def test_hazards_forbid_background_waits_and_worktree_bd_writes() -> None:
+    joined = " ".join(lane_brief._HAZARDS)
+    assert "foreground" in joined
+    assert "polylogue-2ara" in joined
 
 
 def test_main_writes_brief_to_out_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
