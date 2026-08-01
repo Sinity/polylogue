@@ -1902,6 +1902,65 @@ def test_write_session_still_refuses_a_different_raw_than_the_accepted_head(tmp_
     assert dict(stored) == {"raw_id": "raw-winner", "message_count": 1}
 
 
+def test_write_session_refuses_when_a_parallel_head_accepts_a_different_raw(tmp_path: Path) -> None:
+    """P2 bot finding on PR #3527: with more than one ``raw_revision_heads``
+    row for the same ``session_id`` (historical drift or an interrupted
+    repair -- ``storage/repair.py``'s ``parallel_session_heads`` shape), the
+    refusal decision must not depend on which row a bare ``LIMIT 1``
+    happened to select. Two heads for this session: one already accepts
+    the incoming raw, the other accepts a different raw -- the write must
+    still be refused, regardless of which row is inserted (and therefore
+    selected) first.
+
+    Mutation that fails this: reverting to ``SELECT accepted_raw_id ...
+    LIMIT 1`` and comparing only that single arbitrary row.
+    """
+    with open_connection(tmp_path / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('codex:parallel-a','codex-session:parallel','raw-incoming','sr',?,'byte',1,0,1)",
+            (b"\x0b" * 32,),
+        )
+        conn.execute(
+            "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
+            "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
+            "acquisition_generation, decided_at_ms) VALUES "
+            "('codex:parallel-b','codex-session:parallel','raw-other','sr',?,'byte',1,0,1)",
+            (b"\x0c" * 32,),
+        )
+        conn.commit()
+
+        incoming = _session_data(
+            "codex-session:parallel",
+            content_hash="hash-incoming",
+            raw_id="raw-incoming",
+            message_tuples=[
+                _message_tuple(
+                    "msg-incoming",
+                    "codex-session:parallel",
+                    role="user",
+                    text="incoming content",
+                    content_hash="hash-incoming-msg",
+                    sort_key=1.0,
+                )
+            ],
+        )
+        changed, counts = _write_session(conn, incoming)
+        conn.commit()
+
+        stored = conn.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?",
+            ("codex-session:parallel",),
+        ).fetchone()
+
+    assert changed is False
+    assert counts["skipped_sessions"] == 1
+    # Refused before ever inserting: this was the session's first write attempt.
+    assert stored is None
+
+
 def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Path) -> None:
     """``_write_session`` -- the daemon's default batch-ingest write path,
     used for most non-drive origins -- must refuse a session whose OWN

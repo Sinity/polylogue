@@ -208,11 +208,20 @@ def revision_authority_refuses_write(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_revision_heads'"
     ).fetchone()
     if has_revision_heads is not None:
-        governed_row = conn.execute(
-            "SELECT accepted_raw_id FROM raw_revision_heads WHERE session_id = ? LIMIT 1",
-            (session_id,),
+        # Historical drift or an interrupted repair can leave more than one
+        # raw_revision_heads row for a session (storage/repair.py's
+        # ``parallel_session_heads`` shape). A bare ``LIMIT 1`` examined an
+        # arbitrary one of those rows, so an incoming raw matching whichever
+        # row happened to be selected was allowed through even when a
+        # different parallel head accepted another raw -- and the same write
+        # could be refused or allowed depending on row order alone. Checking
+        # for the *existence* of any head that names a different raw makes
+        # the refusal decision independent of row order.
+        conflicting_head = conn.execute(
+            "SELECT 1 FROM raw_revision_heads WHERE session_id = ? AND accepted_raw_id != ? LIMIT 1",
+            (session_id, raw_id),
         ).fetchone()
-        if governed_row is not None and str(governed_row[0]) != raw_id:
+        if conflicting_head is not None:
             return True
     if source_conn is None or not raw_id:
         return False
