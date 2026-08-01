@@ -2462,7 +2462,16 @@ def test_full_replace_without_attachments_does_not_refresh_all_attachment_counts
     assert replace_changes < 80
 
 
-def test_full_replace_refreshes_removed_attachment_ref_counts(tmp_path: Path) -> None:
+def test_full_replace_sweeps_removed_attachment_that_loses_its_last_ref(tmp_path: Path) -> None:
+    """polylogue-w06b: a full replace that drops an attachment's owning
+    message must not leave a ref-less ``attachments`` row behind. Before the
+    fix, ``_write_attachments`` recomputed ``ref_count = 0`` for the removed
+    attachment but never deleted the row, so it survived permanently
+    unreachable from any session/message read path (1,858 such orphans,
+    including 1,783 with real acquired bytes, were found live in
+    production). The row must now be gone entirely, not merely
+    zero-ref-counted.
+    """
     conn = _connect(tmp_path / "index.db")
     att1 = ParsedAttachment(
         provider_attachment_id="att-1",
@@ -2498,7 +2507,7 @@ def test_full_replace_refreshes_removed_attachment_ref_counts(tmp_path: Path) ->
     att2_id = archive_tier_write._attachment_id(session_id, att2)
     write_parsed_session_to_archive(conn, replacement)
 
-    assert conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", (att2_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT 1 FROM attachments WHERE attachment_id = ?", (att2_id,)).fetchone() is None
     assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (att2_id,)).fetchone()[0] == 0
 
 

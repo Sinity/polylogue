@@ -152,15 +152,21 @@ def attachment_acquisition_debt_command(sample_limit: int, output_format: str) -
         return
 
     click.echo("Attachment acquisition debt")
-    click.echo(f"Total attachments: {report.total_attachments:,}")
-    click.echo(f"Acquired:          {report.acquired_count:,}")
-    click.echo(f"Unavailable:       {report.unavailable_count:,}")
-    click.echo(f"Unfetched:         {report.unfetched_count:,} (honest floor, not missing blobs)")
-    click.echo(f"Acquired missing:  {report.acquired_missing_blob_count:,} (genuine debt)")
-    click.echo(f"Status:            {'ok' if report.ok else 'debt-present'}")
+    click.echo(f"Total attachments:   {report.total_attachments:,}")
+    click.echo(f"Acquired:            {report.acquired_count:,}")
+    click.echo(f"  reachable:         {report.acquired_reachable_count:,} (queryable via a session/message)")
+    click.echo(f"  unreachable:       {report.acquired_unreachable_count:,} (no attachment_refs row -- unqueryable)")
+    click.echo(f"Unavailable:         {report.unavailable_count:,}")
+    click.echo(f"Unfetched:           {report.unfetched_count:,} (honest floor, not missing blobs)")
+    click.echo(f"Acquired missing:    {report.acquired_missing_blob_count:,} (genuine debt)")
+    click.echo(f"Status:              {'ok' if report.ok else 'debt-present'}")
     if report.acquired_missing_blob_sample:
         click.echo("Sample attachment ids with a missing blob file:")
         for attachment_id in report.acquired_missing_blob_sample:
+            click.echo(f"  {attachment_id}")
+    if report.acquired_unreachable_sample:
+        click.echo("Sample attachment ids acquired but unreachable (no attachment_refs row):")
+        for attachment_id in report.acquired_unreachable_sample:
             click.echo(f"  {attachment_id}")
 
 
