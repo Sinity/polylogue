@@ -69,6 +69,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 # constructs/calls one of these imports it locally at first use.
 if TYPE_CHECKING:
     from polylogue.archive.stats import ArchiveStats
+    from polylogue.core.protocols import VectorProvider
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
         ArchiveSessionSummary,
@@ -84,6 +85,27 @@ if TYPE_CHECKING:
         SearchCursor,
     )
 
+
+def __getattr__(name: str) -> object:
+    """PEP 562 lazy module attribute for ``ArchiveStore``.
+
+    ``ArchiveStore`` is otherwise only referenced as a (never-evaluated,
+    ``from __future__ import annotations``) type annotation in this module,
+    so its heavy import chain stays deferred on the daemon fast path
+    (polylogue-g3jk). But several tests patch
+    ``polylogue.cli.archive_query.ArchiveStore.open_existing`` by dotted
+    string path — a function-local import binds a name that shadows this
+    module's own attribute and is invisible to that patch target, so the
+    class must remain resolvable as a real module attribute on demand
+    without being imported eagerly at module load time.
+    """
+    if name == "ArchiveStore":
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        return ArchiveStore
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 logger = get_logger(__name__)
 
 _PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit")
@@ -93,6 +115,21 @@ _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_FAST_PATH_TIMEOUT_S = 0.75
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 _TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
+
+
+def create_vector_provider(config: Config, *, db_path: Path) -> VectorProvider | None:
+    """Lazy module-level indirection so tests can patch this name.
+
+    A function-local ``from ... import create_vector_provider`` would bind a
+    local variable that shadows this module attribute, so
+    ``unittest.mock.patch("polylogue.cli.archive_query.create_vector_provider")``
+    would never reach the real call sites below. Keeping the deferred import
+    inside a persistent module-level function preserves both the patch seam
+    and the daemon-fast-path import-cost deferral (polylogue-g3jk).
+    """
+    from polylogue.storage.search_providers import create_vector_provider as _create_vector_provider
+
+    return _create_vector_provider(config, db_path=db_path)
 
 
 def _object_int(value: object) -> int:
@@ -928,7 +965,7 @@ def _query_hits(
     session_id: str | None,
     filter_kwargs: _ArchiveFilterKwargs,
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
-    from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
+    from polylogue.storage.search_providers import reciprocal_rank_fusion
 
     # polylogue-yla8.1 split-root contract: config.db_path always names a
     # concrete index.db (explicit override or resolved active generation).
