@@ -598,7 +598,7 @@ class TestAttachmentFromMeta:
     def test_attachment_from_meta_basic(self) -> None:
         """Creates ParsedAttachment from minimal metadata."""
         meta = {"id": "att123", "name": "file.txt"}
-        result = attachment_from_meta(meta, "msg1", 0)
+        result = attachment_from_meta(meta, "msg1")
 
         assert result is not None
         assert isinstance(result, ParsedAttachment)
@@ -614,7 +614,7 @@ class TestAttachmentFromMeta:
             "mimeType": "application/pdf",
             "size": 1024,
         }
-        result = attachment_from_meta(meta, "msg2", 1)
+        result = attachment_from_meta(meta, "msg2")
 
         assert result is not None
         assert result.provider_attachment_id == "att456"
@@ -626,7 +626,7 @@ class TestAttachmentFromMeta:
     def test_attachment_from_meta_missing_id(self) -> None:
         """Generates fallback ID when id is missing but name exists."""
         meta = {"name": "image.png"}
-        result = attachment_from_meta(meta, "msg3", 2)
+        result = attachment_from_meta(meta, "msg3")
 
         assert result is not None
         assert result.provider_attachment_id.startswith("att-")
@@ -634,69 +634,69 @@ class TestAttachmentFromMeta:
 
     def test_attachment_from_meta_empty_dict(self) -> None:
         """Returns None for empty metadata dict."""
-        result = attachment_from_meta({}, "msg4", 0)
+        result = attachment_from_meta({}, "msg4")
         assert result is None
 
     def test_attachment_from_meta_not_dict(self) -> None:
         """Returns None when meta is not a dict."""
-        result = attachment_from_meta("not_a_dict", "msg5", 0)
+        result = attachment_from_meta("not_a_dict", "msg5")
         assert result is None
 
-        result = attachment_from_meta(None, "msg6", 0)
+        result = attachment_from_meta(None, "msg6")
         assert result is None
 
     def test_attachment_from_meta_alternative_id_fields(self) -> None:
         """Recognizes alternative ID field names."""
         meta1 = {"file_id": "file123", "name": "doc.txt"}
-        result1 = _require_attachment(attachment_from_meta(meta1, "msg", 0))
+        result1 = _require_attachment(attachment_from_meta(meta1, "msg"))
         assert result1.provider_attachment_id == "file123"
 
         meta2 = {"fileId": "file456", "name": "doc.txt"}
-        result2 = _require_attachment(attachment_from_meta(meta2, "msg", 0))
+        result2 = _require_attachment(attachment_from_meta(meta2, "msg"))
         assert result2.provider_attachment_id == "file456"
 
         meta3 = {"uuid": "uuid789", "name": "doc.txt"}
-        result3 = _require_attachment(attachment_from_meta(meta3, "msg", 0))
+        result3 = _require_attachment(attachment_from_meta(meta3, "msg"))
         assert result3.provider_attachment_id == "uuid789"
 
     def test_attachment_from_meta_alternative_name_fields(self) -> None:
         """Recognizes alternative name field names."""
         meta = {"id": "att", "filename": "report.docx"}
-        result = _require_attachment(attachment_from_meta(meta, "msg", 0))
+        result = _require_attachment(attachment_from_meta(meta, "msg"))
         assert result.name == "report.docx"
 
     def test_attachment_from_meta_size_conversion(self) -> None:
         """Converts size from string to int."""
         meta1 = {"id": "att", "name": "file", "size": "2048"}
-        result1 = _require_attachment(attachment_from_meta(meta1, "msg", 0))
+        result1 = _require_attachment(attachment_from_meta(meta1, "msg"))
         assert result1.size_bytes == 2048
 
         meta2 = {"id": "att", "name": "file", "size_bytes": 4096}
-        result2 = _require_attachment(attachment_from_meta(meta2, "msg", 0))
+        result2 = _require_attachment(attachment_from_meta(meta2, "msg"))
         assert result2.size_bytes == 4096
 
         meta3 = {"id": "att", "name": "file", "sizeBytes": "8192"}
-        result3 = _require_attachment(attachment_from_meta(meta3, "msg", 0))
+        result3 = _require_attachment(attachment_from_meta(meta3, "msg"))
         assert result3.size_bytes == 8192
 
     def test_attachment_from_meta_invalid_size(self) -> None:
         """Handles invalid size gracefully."""
         meta = {"id": "att", "name": "file", "size": "invalid"}
-        result = _require_attachment(attachment_from_meta(meta, "msg", 0))
+        result = _require_attachment(attachment_from_meta(meta, "msg"))
         assert result.size_bytes is None
 
     def test_attachment_from_meta_mime_type_variations(self) -> None:
         """Recognizes different mime_type field names."""
         meta1 = {"id": "att", "name": "file", "mimeType": "text/plain"}
-        result1 = _require_attachment(attachment_from_meta(meta1, "msg", 0))
+        result1 = _require_attachment(attachment_from_meta(meta1, "msg"))
         assert result1.mime_type == "text/plain"
 
         meta2 = {"id": "att", "name": "file", "mime_type": "image/jpeg"}
-        result2 = _require_attachment(attachment_from_meta(meta2, "msg", 0))
+        result2 = _require_attachment(attachment_from_meta(meta2, "msg"))
         assert result2.mime_type == "image/jpeg"
 
         meta3 = {"id": "att", "name": "file", "content_type": "application/json"}
-        result3 = _require_attachment(attachment_from_meta(meta3, "msg", 0))
+        result3 = _require_attachment(attachment_from_meta(meta3, "msg"))
         assert result3.mime_type == "application/json"
 
     def test_parsed_attachment_sanitizes_edge_case_name_and_path(self) -> None:

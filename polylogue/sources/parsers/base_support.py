@@ -204,17 +204,34 @@ def _make_attachment_id(seed: str) -> str:
     return f"att-{hash_text(seed)[:12]}"
 
 
-def attachment_from_meta(meta: object, message_id: str | None, index: int) -> ParsedAttachment | None:
+def attachment_from_meta(meta: object, message_id: str | None) -> ParsedAttachment | None:
     if not isinstance(meta, dict):
         return None
     attachment_id = (
         meta.get("id") or meta.get("file_id") or meta.get("fileId") or meta.get("uuid") or meta.get("file_uuid")
     )
     name = meta.get("name") or meta.get("filename") or meta.get("file_name")
+    mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type") or meta.get("file_type")
     if not attachment_id:
         if not name:
             return None
-        seed = f"{message_id or 'msg'}:{name}:{index}"
+        # polylogue-hith: identity must be a property of the attachment
+        # itself, not of its position in whichever bucket ("attachments" vs
+        # "files") or order the export happened to walk them in. `index` used
+        # to be part of this seed, so re-ordering an export's attachment list
+        # -- observed happening between vintages of the SAME conversation --
+        # minted a different id for the same physical attachment even though
+        # nothing about it changed. `mime_type` is included instead: it is
+        # read directly from the export's own metadata (never lazily
+        # acquired the way `size`/inline bytes can be), so it adds real
+        # disambiguation without reintroducing acquisition-state instability.
+        # Two un-identified attachments sharing both name and mime_type on
+        # the same message are genuinely indistinguishable from the metadata
+        # available here; collapsing them to one identity is the honest
+        # outcome of that, not a regression -- see polylogue-hith for the
+        # full trade-off discussion (a real-id-havingness axis is a separate,
+        # unfixed failure mode filed as a follow-up there).
+        seed = f"{message_id or 'msg'}:{name}:{mime_type or ''}"
         attachment_id = _make_attachment_id(seed)
     size_raw = meta.get("size") or meta.get("size_bytes") or meta.get("sizeBytes") or meta.get("file_size")
     size_bytes = None
@@ -223,7 +240,6 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
             size_bytes = int(size_raw)
         except ValueError:
             size_bytes = None
-    mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type") or meta.get("file_type")
     inline_bytes = None
     extracted_content = meta.get("extracted_content")
     if isinstance(extracted_content, str):

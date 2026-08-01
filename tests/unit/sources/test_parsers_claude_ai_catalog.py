@@ -230,6 +230,47 @@ def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:
     assert session.attachments[1].inline_bytes is None
 
 
+def test_claude_ai_synthetic_attachment_id_is_stable_across_list_reordering() -> None:
+    """polylogue-hith: two export vintages of the SAME conversation can walk
+    a message's ``attachments``/``files`` arrays in a different order (the
+    16/40 sampled cohorts where message content/order matched exactly but
+    attachment identities were disjoint). Neither attachment here carries a
+    real provider id, so both fall back to synthesis; the synthesized id
+    must depend only on the attachment's own fields (anchoring message,
+    name, mime type), never on where it sits in the merged list.
+    """
+
+    def _payload(*, reordered: bool) -> dict[str, Any]:
+        first = {"name": "alpha.txt", "file_type": "text/plain"}
+        second = {"name": "beta.txt", "file_type": "text/plain"}
+        attachments = [second, first] if reordered else [first, second]
+        return {
+            "uuid": "claude-order",
+            "name": "Order sensitivity",
+            "chat_messages": [
+                {
+                    "uuid": "m1",
+                    "sender": "assistant",
+                    "text": "reply",
+                    "created_at": "2026-06-01T00:00:01Z",
+                    "attachments": attachments,
+                }
+            ],
+        }
+
+    forward = parse_ai(_payload(reordered=False), "fallback")
+    reversed_order = parse_ai(_payload(reordered=True), "fallback")
+
+    forward_ids = {att.name: att.provider_attachment_id for att in forward.attachments}
+    reversed_ids = {att.name: att.provider_attachment_id for att in reversed_order.attachments}
+
+    assert forward_ids.keys() == {"alpha.txt", "beta.txt"}
+    # Same attachment, same identity, regardless of list order.
+    assert forward_ids == reversed_ids
+    # Distinct attachments (different names) still mint distinct identities.
+    assert forward_ids["alpha.txt"] != forward_ids["beta.txt"]
+
+
 def test_claude_ai_tool_use_segment_captures_web_tool_evidence() -> None:
     """Per-block timing, MCP integration identity, and approval-gate fields
     on a ``tool_use``/``tool_result`` segment were read nowhere before --

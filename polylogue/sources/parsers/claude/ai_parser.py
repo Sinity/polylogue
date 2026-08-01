@@ -119,7 +119,7 @@ def _resolve_claude_ai_title(
 _DESIGN_KNOWN_BLOCK_TYPES = frozenset({"text", "thinking", "tool_call", "error", "user_interjection"})
 
 
-def _design_attachment_from_meta(meta: object, message_id: str, index: int) -> ParsedAttachment | None:
+def _design_attachment_from_meta(meta: object, message_id: str) -> ParsedAttachment | None:
     """Adapt a Design attachment record onto the shared attachment builder.
 
     Design attachments carry inline text under ``content`` (not the shared
@@ -135,7 +135,7 @@ def _design_attachment_from_meta(meta: object, message_id: str, index: int) -> P
     content = shimmed.get("content")
     if isinstance(content, str) and "extracted_content" not in shimmed:
         shimmed["extracted_content"] = content
-    attachment = attachment_from_meta(shimmed, message_id, index)
+    attachment = attachment_from_meta(shimmed, message_id)
     if attachment is None:
         return None
     attachment_type = meta.get("type")
@@ -344,8 +344,8 @@ def _design_user_message(
 
     attachments: list[ParsedAttachment] = []
     raw_attachments = content_payload.get("attachments")
-    for index, meta in enumerate(raw_attachments if isinstance(raw_attachments, list) else [], start=1):
-        attachment = _design_attachment_from_meta(meta, message_uuid, index)
+    for meta in raw_attachments if isinstance(raw_attachments, list) else []:
+        attachment = _design_attachment_from_meta(meta, message_uuid)
         if attachment is not None:
             attachments.append(attachment)
 
@@ -543,8 +543,8 @@ def _merge_session_attachments(
         value = payload.get(key)
         if isinstance(value, list):
             top_level.extend(value)
-    for index, meta in enumerate(top_level, start=1):
-        attachment = attachment_from_meta(meta, None, index)
+    for meta in top_level:
+        attachment = attachment_from_meta(meta, None)
         if attachment is not None:
             attachments.append(attachment)
 
