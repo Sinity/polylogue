@@ -953,6 +953,8 @@ def test_attachment_acquisition_debt_cli_reports_clean_empty_archive(
     assert payload["ok"] is True
     assert payload["total_attachments"] == 0
     assert payload["acquired_missing_blob_count"] == 0
+    assert payload["acquired_reachable_count"] == 0
+    assert payload["acquired_unreachable_count"] == 0
 
 
 def test_attachment_acquisition_debt_cli_plain_output_distinguishes_unfetched_from_debt(
@@ -967,9 +969,9 @@ def test_attachment_acquisition_debt_cli_plain_output_distinguishes_unfetched_fr
 
     assert result.exit_code == 0
     assert "Attachment acquisition debt" in result.output
-    assert "Unfetched:         0 (honest floor, not missing blobs)" in result.output
-    assert "Acquired missing:  0 (genuine debt)" in result.output
-    assert "Status:            ok" in result.output
+    assert "Unfetched:           0 (honest floor, not missing blobs)" in result.output
+    assert "Acquired missing:    0 (genuine debt)" in result.output
+    assert "Status:              ok" in result.output
 
 
 def test_blob_reference_recovery_plan_cli_writes_raw_backed_manifest(

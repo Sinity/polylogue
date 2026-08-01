@@ -285,6 +285,8 @@ def test_scan_attachment_acquisition_debt_never_counts_unfetched_as_missing(
     assert report.unfetched_count == 1
     assert report.acquired_count == 0
     assert report.acquired_missing_blob_count == 0
+    assert report.acquired_unreachable_count == 0
+    assert report.acquired_reachable_count == 0
     assert report.ok is True
 
 
@@ -328,7 +330,57 @@ def test_scan_attachment_acquisition_debt_flags_acquired_row_with_missing_blob_f
     assert report.acquired_missing_blob_count == 1
     assert report.acquired_missing_blob_sample == (expected_attachment_id,)
     assert report.unfetched_count == 0
+    # Missing blob bytes is a distinct dimension from reachability: this
+    # attachment still has its attachment_refs row, it's just missing bytes.
+    assert report.acquired_unreachable_count == 0
+    assert report.acquired_reachable_count == 1
     assert report.ok is False
+
+
+def test_scan_attachment_acquisition_debt_flags_acquired_row_with_no_attachment_ref(tmp_path: Path) -> None:
+    """polylogue-w06b: an acquired attachment row with zero attachment_refs
+    rows is unreachable from every session/message read path even though its
+    bytes are genuinely on disk -- ``acquisition_status='acquired'`` alone
+    overstates real coverage. The writer path no longer produces such rows
+    (see test_archive_tiers_write.py's
+    test_full_replace_sweeps_removed_attachment_that_loses_its_last_ref), but
+    the scanner must still classify one correctly if it's ever found (e.g. in
+    an archive ingested before that fix landed).
+    """
+
+    index_db = tmp_path / "index.db"
+    store = BlobStore(tmp_path / "blob")
+    payload = b"orphaned but genuinely fetched bytes"
+    blob_hash, blob_size = store.write_from_bytes(payload)
+
+    conn = sqlite3.connect(index_db)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.INDEX)
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
+        ) VALUES (?, ?, ?, ?, ?, 'acquired', 0)
+        """,
+        ("orphan-att-1", "orphan.txt", "text/plain", blob_size, bytes.fromhex(blob_hash)),
+    )
+    conn.commit()
+    conn.close()
+
+    report = scan_attachment_acquisition_debt(index_db, store=store, sample_size=5)
+
+    assert report.total_attachments == 1
+    assert report.acquired_count == 1
+    assert report.acquired_missing_blob_count == 0  # bytes ARE on disk
+    assert report.acquired_unreachable_count == 1
+    assert report.acquired_unreachable_sample == ("orphan-att-1",)
+    assert report.acquired_reachable_count == 0
+    # `ok` only tracks missing blob bytes (a distinct dimension) -- bytes ARE
+    # present on disk here, so `ok` stays True even though the row is
+    # unreachable. Reachability debt is its own signal
+    # (acquired_unreachable_count), deliberately not folded into `ok`.
+    assert report.ok is True
 
 
 def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -> None:

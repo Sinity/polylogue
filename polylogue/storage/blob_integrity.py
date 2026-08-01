@@ -1930,6 +1930,14 @@ class AttachmentAcquisitionDebtReport:
     never fetched, not a broken reference -- and must never be conflated
     with missing referenced blobs. Only an ``acquired`` row whose blob file
     is absent from the store is genuine attachment acquisition debt.
+
+    ``acquisition_status='acquired'`` alone overstates real coverage
+    (polylogue-w06b): it says bytes were fetched, not that anything can
+    read them back. ``acquired_unreachable_count``/``acquired_reachable_count``
+    split the ``acquired`` bucket by whether the attachment also has at
+    least one ``attachment_refs`` row -- without one it cannot be returned
+    by any session/message read path (``get_attachments``, MCP get/read,
+    CLI ``read --view``).
     """
 
     total_attachments: int
@@ -1938,16 +1946,32 @@ class AttachmentAcquisitionDebtReport:
     acquired_missing_blob_sample: tuple[str, ...]
     unavailable_count: int
     unfetched_count: int
+    # polylogue-w06b: `acquisition_status='acquired'` alone overstates real
+    # coverage -- an attachment row with zero `attachment_refs` rows cannot
+    # be surfaced through any session/message read path (`get_attachments`,
+    # MCP get/read, CLI read --view all INNER JOIN attachment_refs). Track
+    # the reachable subset separately so this report can't be read as "N
+    # attachments are queryable" when it means "N attachments have bytes on
+    # disk somewhere, most of which nothing can ever reach".
+    acquired_unreachable_count: int
+    acquired_unreachable_sample: tuple[str, ...]
 
     @property
     def ok(self) -> bool:
         return self.acquired_missing_blob_count == 0
+
+    @property
+    def acquired_reachable_count(self) -> int:
+        return self.acquired_count - self.acquired_unreachable_count
 
     def to_dict(self) -> dict[str, object]:
         return {
             "ok": self.ok,
             "total_attachments": self.total_attachments,
             "acquired_count": self.acquired_count,
+            "acquired_reachable_count": self.acquired_reachable_count,
+            "acquired_unreachable_count": self.acquired_unreachable_count,
+            "acquired_unreachable_sample": list(self.acquired_unreachable_sample),
             "acquired_missing_blob_count": self.acquired_missing_blob_count,
             "acquired_missing_blob_sample": list(self.acquired_missing_blob_sample),
             "unavailable_count": self.unavailable_count,
@@ -1976,6 +2000,21 @@ def scan_attachment_acquisition_debt(
         acquired_rows = conn.execute(
             "SELECT attachment_id, blob_hash FROM attachments WHERE acquisition_status = 'acquired'"
         ).fetchall()
+        # polylogue-w06b: an `acquired` attachment with no `attachment_refs`
+        # row is unreachable from every session/message read path -- track it
+        # as its own dimension, distinct from "bytes missing from the blob
+        # store" (acquired_missing_blob_count, below).
+        unreachable_rows = conn.execute(
+            """
+            SELECT a.attachment_id AS attachment_id
+            FROM attachments a
+            WHERE a.acquisition_status = 'acquired'
+              AND NOT EXISTS (
+                  SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id
+              )
+            ORDER BY a.attachment_id
+            """
+        ).fetchall()
 
     missing_sample: list[str] = []
     missing_count = 0
@@ -1990,6 +2029,8 @@ def scan_attachment_acquisition_debt(
         if len(missing_sample) < sample_size:
             missing_sample.append(str(row["attachment_id"]))
 
+    unreachable_sample = tuple(str(row["attachment_id"]) for row in unreachable_rows[:sample_size])
+
     return AttachmentAcquisitionDebtReport(
         total_attachments=sum(status_counts.values()),
         acquired_count=status_counts.get("acquired", 0),
@@ -1997,6 +2038,8 @@ def scan_attachment_acquisition_debt(
         acquired_missing_blob_sample=tuple(missing_sample),
         unavailable_count=status_counts.get("unavailable", 0),
         unfetched_count=status_counts.get("unfetched", 0),
+        acquired_unreachable_count=len(unreachable_rows),
+        acquired_unreachable_sample=unreachable_sample,
     )
 
 

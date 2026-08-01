@@ -2927,6 +2927,23 @@ def _write_attachments(
         """,
         tuple(sorted(affected_attachment_ids)),
     )
+    # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
+    # can no longer be matched to a message via `by_native_message_id`, e.g.
+    # the owning message became a duplicate-native-id exclusion or dropped
+    # out of this ingest's message set) drops a previously-written
+    # attachment_refs row for `refresh_attachment_ids` without this
+    # function ever writing a replacement ref. The ref_count UPDATE above
+    # correctly reflects that as 0, but nothing previously swept the now
+    # ref-less `attachments` row -- it survived, unreachable from any
+    # session/message read path (get_attachments/get_attachments_batch both
+    # INNER JOIN attachment_refs), while still reporting
+    # acquisition_status='acquired' and real fetched bytes. Sweep it here,
+    # mirroring the identical cleanup `prune_attachments` and
+    # `delete_session_sql` already perform after their own ref deletions.
+    conn.execute(
+        f"DELETE FROM attachments WHERE ref_count <= 0 AND attachment_id IN ({placeholders})",
+        tuple(sorted(affected_attachment_ids)),
+    )
 
 
 def _session_attachment_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
