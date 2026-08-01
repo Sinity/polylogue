@@ -242,6 +242,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
+| `devtools workspace verify-worktree` | Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |
 
 <!-- END GENERATED: devtools-command-catalog -->
