@@ -540,6 +540,112 @@ class SchemaRegistry:
                     f"Package {package.provider}/{package.version} has a non-JSON workload profile"
                 ) from exc
 
+    def _load_local_element_schema(
+        self,
+        provider_token: str,
+        *,
+        version: str,
+        element_kind: str | None,
+    ) -> PublicSchemaDocument | None:
+        """Load an element schema strictly from this registry's own storage root.
+
+        Mirrors ``_load_local_catalog``'s no-bundled-fallback guarantee: a
+        caller merging against "the committed prior schema"
+        (``replace_provider_packages``) must not silently pull in an
+        unrelated version from the bundled ``SCHEMA_DIR`` tree when
+        ``storage_root`` is isolated (e.g. a test's ``tmp_path``, or a
+        ``devtools schema-generate`` run pointed at a scratch output dir).
+        """
+        catalog = self._load_local_catalog(provider_token)
+        if catalog is None:
+            return None
+        resolved_version = _resolved_package_version(catalog, version)
+        if resolved_version is None:
+            return None
+        package = catalog.package(resolved_version)
+        if package is None:
+            return None
+        element = package.element(element_kind)
+        if element is None or element.schema_file is None:
+            return None
+        path = self._provider_dir(provider_token) / "versions" / package.version / "elements" / element.schema_file
+        if not path.exists():
+            return None
+        return _read_gzip_json_dict(path)
+
+    def _existing_provider_element_schemas(self, provider_token: str) -> dict[str, PublicSchemaDocument]:
+        """Collect every element schema already committed for this provider, by element_kind.
+
+        Collected across *all* existing versions (not just ``default``) so a
+        full-corpus regeneration guarded by ``replace_provider_packages`` can
+        never narrow a leaf path or type union that any previously committed
+        version observed -- the same monotonic-merge guarantee
+        ``promote_cluster``/``_merge_with_promoted_schema`` already provide
+        for the other promotion surface (``tooling_registry.py``).
+        """
+        catalog = self._load_local_catalog(provider_token)
+        if catalog is None:
+            return {}
+        from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
+
+        merged_by_kind: dict[str, PublicSchemaDocument] = {}
+        for package in catalog.packages:
+            for element in package.elements:
+                if element.schema_file is None:
+                    continue
+                existing = self._load_local_element_schema(
+                    provider_token,
+                    version=package.version,
+                    element_kind=element.element_kind,
+                )
+                if existing is None:
+                    continue
+                prior = merged_by_kind.get(element.element_kind)
+                merged_by_kind[element.element_kind] = (
+                    json_document(merge_observed_structure_schemas([json_document(prior), existing]))
+                    if prior is not None
+                    else existing
+                )
+        return merged_by_kind
+
+    @staticmethod
+    def _merge_element_schema_with_existing(
+        existing: PublicSchemaDocument | None,
+        candidate: PublicSchemaDocument,
+    ) -> PublicSchemaDocument:
+        """Union ``candidate`` with a previously committed element schema.
+
+        Same monotonic-merge contract as
+        ``SchemaRegistryToolingMixin._merge_with_promoted_schema``: a
+        provider package records what the provider has been *observed* to
+        emit across every corpus this registry has ever scanned, so a fresh
+        full-corpus regeneration may only ever broaden it, never replace it
+        outright. Without this, a thinner or differently-shaped sample
+        window (fewer sessions, a narrower clustering pass, a corpus subset)
+        silently drops fields and narrows type unions that an earlier run
+        legitimately observed -- measured on 2026-08-01: claude-code lost
+        722 of 944 typed leaf paths, codex narrowed ``timestamp`` from
+        ``["number", "string"]`` back to ``["string"]``, in a single
+        `devtools schema-generate` run with no merge against history.
+        """
+        if existing is None:
+            return candidate
+        from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
+
+        merged = json_document(merge_observed_structure_schemas([json_document(existing), candidate]))
+        # Structural merge owns type/properties/items only; provenance and
+        # the x-polylogue-* annotation overlay come from the candidate (this
+        # run's fresh observation), falling back to the existing package so
+        # the merge never drops an annotation the candidate simply didn't
+        # recompute.
+        for key, value in existing.items():
+            if key.startswith("x-polylogue-") and key not in candidate:
+                merged[key] = value
+        for key, value in candidate.items():
+            if key.startswith("x-polylogue-") or key in ("$schema", "title"):
+                merged[key] = value
+        return merged
+
     def replace_provider_packages(
         self,
         provider: str,
@@ -549,20 +655,27 @@ class SchemaRegistry:
         package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
     ) -> None:
         provider_token = _provider_token(provider)
+        existing_element_schemas = self._existing_provider_element_schemas(provider_token)
         prepared_packages: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
         for package in catalog.packages:
             element_schemas = package_schemas.get(package.version)
             if element_schemas is None:
                 raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
+            merged_element_schemas: ElementSchemaMap = {
+                element_kind: self._merge_element_schema_with_existing(
+                    existing_element_schemas.get(element_kind), schema
+                )
+                for element_kind, schema in element_schemas.items()
+            }
             workload_profile = (
                 package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
             )
             self._preflight_package_write(
                 package,
-                element_schemas=element_schemas,
+                element_schemas=merged_element_schemas,
                 workload_profile=workload_profile,
             )
-            prepared_packages.append((package, element_schemas, workload_profile))
+            prepared_packages.append((package, merged_element_schemas, workload_profile))
 
         provider_dir = self._provider_dir(provider_token)
         provider_dir.mkdir(parents=True, exist_ok=True)

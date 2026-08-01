@@ -21,6 +21,7 @@ import pytest
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
+from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
 
 
@@ -162,3 +163,139 @@ class TestPromoteClusterElementKindResolution:
         observed_count = schema["x-polylogue-observed-artifact-count"]
         assert isinstance(observed_count, int)
         assert observed_count >= 10_000
+
+
+def _single_package_catalog(provider: str, version: str, element_kind: str) -> SchemaPackageCatalog:
+    return SchemaPackageCatalog(
+        provider=provider,
+        packages=[
+            SchemaVersionPackage(
+                provider=provider,
+                version=version,
+                anchor_kind=element_kind,
+                default_element_kind=element_kind,
+                first_seen="2026-08-01T00:00:00Z",
+                last_seen="2026-08-01T00:00:00Z",
+                bundle_scope_count=0,
+                sample_count=1,
+                elements=[
+                    SchemaElementManifest(
+                        element_kind=element_kind,
+                        schema_file=f"{element_kind}.schema.json.gz",
+                        sample_count=1,
+                        artifact_count=1,
+                    )
+                ],
+            )
+        ],
+        default_version=version,
+        latest_version=version,
+        recommended_version=version,
+    )
+
+
+class TestReplaceProviderPackagesMonotonicity:
+    """Guards ``SchemaRegistry.replace_provider_packages`` -- the code path every
+    full-corpus ``devtools schema-generate`` run writes through
+    (``persist_generated_provider_bundle`` -> ``replace_provider_packages`` in
+    ``polylogue/schemas/generation/workflow.py``). Reproduces, at unit scale,
+    the 2026-08-01 measured incident (polylogue-ov5r): a real full-corpus
+    ``devtools schema-generate`` run against the live archive lost 722 of 944
+    typed leaf paths for claude-code and narrowed codex's ``timestamp`` union
+    from ``["number", "string"]`` back to ``["string"]`` -- because
+    ``replace_provider_packages`` deleted the provider's entire ``versions/``
+    tree and rewrote it from the fresh generation with no merge against the
+    committed prior schema.
+
+    Anti-vacuity: deleting the
+    ``_merge_element_schema_with_existing``/``_existing_provider_element_schemas``
+    call in ``SchemaRegistry.replace_provider_packages``
+    (``polylogue/schemas/runtime_registry.py``), or reverting
+    ``replace_provider_packages`` to write ``package_schemas`` directly instead
+    of the merged map, makes every test below fail: the second
+    ``replace_provider_packages`` call would then simply overwrite the first
+    package instead of unioning into it.
+    """
+
+    def test_regen_observing_a_subset_of_known_fields_does_not_lose_them(self, tmp_registry: SchemaRegistry) -> None:
+        wide_schema: JSONDocument = {
+            "type": "object",
+            "properties": {
+                "kept": {"type": "string"},
+                "dropped_in_thin_regen": {"type": "integer"},
+            },
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-subset",
+            _single_package_catalog("regen-subset", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": wide_schema}},
+        )
+
+        # A subsequent full-corpus regeneration observes only a subset of the
+        # previously known fields -- e.g. a differently-shaped sample window,
+        # exactly the scenario that dropped 722/944 claude-code leaf paths.
+        thin_schema: JSONDocument = {"type": "object", "properties": {"kept": {"type": "string"}}}
+        tmp_registry.replace_provider_packages(
+            "regen-subset",
+            _single_package_catalog("regen-subset", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": thin_schema}},
+        )
+
+        merged = tmp_registry.get_schema("regen-subset", version="v1")
+        assert merged is not None
+        properties = cast("dict[str, Any]", merged["properties"])
+        assert "dropped_in_thin_regen" in properties
+        assert properties["dropped_in_thin_regen"]["type"] == "integer"
+
+    def test_regen_observing_genuinely_new_fields_gains_them(self, tmp_registry: SchemaRegistry) -> None:
+        old_schema: JSONDocument = {"type": "object", "properties": {"kept": {"type": "string"}}}
+        tmp_registry.replace_provider_packages(
+            "regen-new-field",
+            _single_package_catalog("regen-new-field", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": old_schema}},
+        )
+
+        new_schema: JSONDocument = {
+            "type": "object",
+            "properties": {"kept": {"type": "string"}, "newly_observed": {"type": "boolean"}},
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-new-field",
+            _single_package_catalog("regen-new-field", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": new_schema}},
+        )
+
+        merged = tmp_registry.get_schema("regen-new-field", version="v1")
+        assert merged is not None
+        properties = cast("dict[str, Any]", merged["properties"])
+        assert "newly_observed" in properties
+        assert properties["newly_observed"]["type"] == "boolean"
+
+    def test_regen_type_unions_only_grow_never_narrow(self, tmp_registry: SchemaRegistry) -> None:
+        """The exact codex incident, reproduced against replace_provider_packages directly."""
+        wide_schema: JSONDocument = {
+            "type": "object",
+            "properties": {"timestamp": {"type": ["string", "number"]}},
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-union",
+            _single_package_catalog("regen-union", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": wide_schema}},
+        )
+
+        narrow_schema: JSONDocument = {
+            "type": "object",
+            "properties": {"timestamp": {"type": "string"}},
+        }
+        tmp_registry.replace_provider_packages(
+            "regen-union",
+            _single_package_catalog("regen-union", "v1", "session_record_stream"),
+            {"v1": {"session_record_stream": narrow_schema}},
+        )
+
+        merged = tmp_registry.get_schema("regen-union", version="v1")
+        assert merged is not None
+        timestamp = cast("dict[str, Any]", cast("dict[str, Any]", merged["properties"])["timestamp"])
+        declared_type = timestamp["type"]
+        observed = set(declared_type) if isinstance(declared_type, list) else {declared_type}
+        assert observed == {"string", "number"}
