@@ -120,7 +120,7 @@ files:
     owner: stable
     cross_cut: { api: sync }
   - path: polylogue/api/sync/bridge.py
-    loc: 59
+    loc: 15
     target: polylogue/api/sync/bridge.py
     owner: stable
     cross_cut: { api: sync }
@@ -819,7 +819,7 @@ files:
     target: polylogue/cli/__main__.py
     owner: stable
   - path: polylogue/cli/archive_query.py
-    loc: 2859
+    loc: 2902
     target: polylogue/cli/archive_query.py
     owner: stable
   - path: polylogue/cli/click_app.py
@@ -1035,7 +1035,7 @@ files:
     target: polylogue/cli/commands/scan_secrets.py
     owner: stable
   - path: polylogue/cli/commands/status.py
-    loc: 2428
+    loc: 2494
     target: polylogue/cli/commands/status.py
     owner: stable
   - path: polylogue/cli/commands/status_diagnostics.py
@@ -1075,7 +1075,7 @@ files:
     target: polylogue/cli/parser_diagnostics.py
     owner: stable
   - path: polylogue/cli/query.py
-    loc: 115
+    loc: 123
     target: polylogue/cli/query.py
     owner: stable
   - path: polylogue/cli/query_actions.py
@@ -1289,7 +1289,7 @@ files:
     target: polylogue/cli/shared/schema_rendering_results.py
     owner: stable
   - path: polylogue/cli/shared/types.py
-    loc: 134
+    loc: 150
     target: polylogue/cli/shared/types.py
     owner: stable
   - path: polylogue/cli/shell_completion_values.py
@@ -1361,6 +1361,11 @@ files:
   - path: polylogue/core/assertions.py
     loc: 160
     target: polylogue/core/assertions.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/async_bridge.py
+    loc: 73
+    target: polylogue/core/async_bridge.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/common.py
@@ -2100,10 +2105,6 @@ files:
     loc: 474
     target: polylogue/insights/run_projection.py
     owner: stable
-  - path: polylogue/insights/schema_drift.py
-    loc: 89
-    target: polylogue/insights/schema_drift.py
-    owner: stable
   - path: polylogue/insights/session_analytics.py
     loc: 274
     target: polylogue/insights/session_analytics.py
@@ -2490,7 +2491,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 1973
+    loc: 1930
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_memory.py
@@ -2722,7 +2723,7 @@ files:
     target: polylogue/scenarios/workload.py
     owner: stable
   - path: polylogue/schemas/__init__.py
-    loc: 35
+    loc: 9
     target: polylogue/schemas/__init__.py
     owner: stable
   - path: polylogue/schemas/audit/__init__.py
@@ -3231,7 +3232,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1711
+    loc: 1762
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -4172,7 +4173,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
-    loc: 290
+    loc: 358
     target: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/ops.py
@@ -4192,7 +4193,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2922
+    loc: 2868
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py

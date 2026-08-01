@@ -15,7 +15,7 @@ from contextvars import ContextVar
 from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
-from typing import Any, NoReturn, TypeVar, cast
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
@@ -24,7 +24,6 @@ import click
 from typing_extensions import NotRequired, TypedDict
 
 from polylogue.archive.message.types import validate_message_type_filter
-from polylogue.archive.query.attached_units import fetch_attached_units
 from polylogue.archive.query.expression import (
     QueryUnitSource,
     WithUnitWindow,
@@ -44,11 +43,8 @@ from polylogue.archive.query.spec import (
     session_count_unit_label,
 )
 from polylogue.archive.query.transaction import archive_read_context
-from polylogue.archive.query.unit_results import query_unit_rows, query_unit_session_filters
-from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_contracts import QueryOutputSpec
 from polylogue.cli.query_feedback import maybe_subcommand_typo_hint
-from polylogue.cli.query_output import deliver_query_output
 from polylogue.cli.query_output_contracts import QueryOutputDocument
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.helpers import load_effective_config
@@ -57,38 +53,40 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
-from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
-from polylogue.storage.sqlite.archive_tiers.archive import (
-    ArchiveSessionSearchHit,
-    ArchiveSessionSummary,
-    ArchiveStore,
-)
-from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveMessageRow,
-    ArchiveSessionEnvelope,
-    archive_message_display_text,
-)
-from polylogue.surfaces.payloads import (
-    SEARCH_CURSOR_VERSION,
-    InvalidSearchCursorError,
-    MutationOperation,
-    MutationResultPayload,
-    QueryMissDiagnosticsPayload,
-    SearchCursor,
-    SessionListRowPayload,
-    SessionSearchHitPayload,
-    SessionSearchMatchPayload,
-    SessionSummaryPayload,
-    TargetRefPayload,
-    decode_search_cursor,
-    model_json_document,
-    reader_anchor,
-    reader_message_actions,
-)
+
+# The names below are used only as type annotations across this module (never
+# constructed/called at the module's own top level) except at the specific
+# call sites noted, which import them locally. Each backing module is heavy
+# (ArchiveStore's chain alone costs ~2.2s of import time: schemas/validator ->
+# sources/dispatch -> the whole provider-parser universe, plus surfaces.payloads'
+# pydantic models). Importing them unconditionally here meant every CLI query
+# invocation paid that cost even when the daemon fast path
+# (``_try_emit_daemon_session_page``) served the request over UDS and never
+# touched ArchiveStore, search_providers, or the local emit/mutation renderers
+# at all (polylogue-g3jk). `from __future__ import annotations` (top of file)
+# means annotation-only uses below never evaluate these names at runtime, so
+# TYPE_CHECKING-gating them here is safe; each function that actually
+# constructs/calls one of these imports it locally at first use.
+if TYPE_CHECKING:
+    from polylogue.archive.stats import ArchiveStats
+    from polylogue.storage.sqlite.archive_tiers.archive import (
+        ArchiveSessionSearchHit,
+        ArchiveSessionSummary,
+        ArchiveStore,
+    )
+    from polylogue.storage.sqlite.archive_tiers.write import (
+        ArchiveMessageRow,
+        ArchiveSessionEnvelope,
+    )
+    from polylogue.surfaces.payloads import (
+        MutationOperation,
+        QueryMissDiagnosticsPayload,
+        SearchCursor,
+    )
 
 logger = get_logger(__name__)
 
-_PageRow = TypeVar("_PageRow", ArchiveSessionSummary, ArchiveSessionSearchHit)
+_PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit")
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
@@ -176,6 +174,8 @@ def execute_archive_query(env: AppEnv, request: RootModeRequest) -> None:
         if output.destination_labels() == ("stdout",) or request.params.get("stream"):
             _execute_archive_query_stdout(env, request)
             return
+        from polylogue.cli.query_output import deliver_query_output
+
         rendered = io.StringIO()
         with redirect_stdout(rendered):
             _execute_archive_query_stdout(env, request)
@@ -496,6 +496,8 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 )
                 return
             if query and not session_ids:
+                from polylogue.archive.stats import ArchiveStats
+
                 _emit_stats(
                     ArchiveStats(total_sessions=0, total_messages=0),
                     output_format=output_format,
@@ -926,6 +928,8 @@ def _query_hits(
     session_id: str | None,
     filter_kwargs: _ArchiveFilterKwargs,
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
+    from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
+
     # polylogue-yla8.1 split-root contract: config.db_path always names a
     # concrete index.db (explicit override or resolved active generation).
     archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
@@ -1629,6 +1633,8 @@ def _emit_degraded_daemon_search_payload(
 def _decode_cursor(token: str | None) -> SearchCursor | None:
     if token is None:
         return None
+    from polylogue.surfaces.payloads import InvalidSearchCursorError, decode_search_cursor
+
     try:
         cursor = decode_search_cursor(token)
     except InvalidSearchCursorError as exc:
@@ -1651,6 +1657,8 @@ def _paginate_rows(
 
 def _build_cursor(row: ArchiveSessionSummary | ArchiveSessionSearchHit, *, rank: int, retrieval_lane: str) -> str:
     import base64
+
+    from polylogue.surfaces.payloads import SEARCH_CURSOR_VERSION, SearchCursor
 
     cursor = SearchCursor(
         v=SEARCH_CURSOR_VERSION,
@@ -1690,6 +1698,8 @@ def _emit_stream(
     output_format: str,
     message_limit: int | None,
 ) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
+
     messages = envelope.messages[:message_limit] if message_limit is not None else envelope.messages
     payload = _session_payload(
         ArchiveSessionEnvelope(
@@ -1908,6 +1918,8 @@ def _emit_missing_archive_empty_read(
         )
         return True
     if params.get("stats_only"):
+        from polylogue.archive.stats import ArchiveStats
+
         _emit_stats(
             ArchiveStats(total_sessions=0, total_messages=0),
             output_format=output_format,
@@ -2020,6 +2032,8 @@ def _emit_stats_by(
 
 
 def _emit_mutation(changed: int, *, operation: MutationOperation) -> None:
+    from polylogue.surfaces.payloads import MutationResultPayload
+
     click.echo(
         MutationResultPayload(status="ok", operation=operation, affected_count=changed).to_json(exclude_none=True)
     )
@@ -2032,6 +2046,8 @@ def _emit_user_mutations(
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
 ) -> None:
+    from polylogue.surfaces.payloads import MutationResultPayload
+
     changes: dict[str, int] = {}
     if metadata_to_set:
         changes["metadata"] = archive.set_user_metadata(session_ids, metadata_to_set)
@@ -2070,6 +2086,7 @@ def _emit_delete(
     """
     from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
     from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.surfaces.payloads import MutationResultPayload
 
     dry_run = bool(params.get("dry_run"))
     force = bool(params.get("force"))
@@ -2170,6 +2187,8 @@ def _inject_attached_units(
 
     if not with_units or archive is None or not items:
         return
+    from polylogue.archive.query.attached_units import fetch_attached_units
+
     attached = fetch_attached_units(
         archive, session_ids, with_units, unit_fields=with_unit_fields, unit_windows=with_unit_windows
     )
@@ -2264,6 +2283,7 @@ def _search_miss_diagnostics(
     diagnosis must never turn a legitimate zero-hit result into an error.
     """
     from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.surfaces.payloads import QueryMissDiagnosticsPayload
 
     try:
         raw_diagnostics = run_coroutine_sync(env.polylogue.diagnose_query_miss(spec, full=why))
@@ -2500,6 +2520,8 @@ def _emit_unit_source_rows(
     output_format: str,
     fields: str | None,
 ) -> None:
+    from polylogue.archive.query.unit_results import query_unit_rows
+
     envelope_model = query_unit_rows(
         archive,
         source,
@@ -2527,6 +2549,8 @@ def _unit_source_display_name(source: QueryUnitSource) -> str:
 
 
 def _unit_source_session_filters(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
+    from polylogue.archive.query.unit_results import query_unit_session_filters
+
     filters = dict(filter_kwargs)
     filters.pop("since_session_id", None)
     return query_unit_session_filters(**filters)
@@ -2658,6 +2682,13 @@ def _summary_payload(
     child_refs: tuple[str, ...] | None = None,
     continuation: str | None = None,
 ) -> dict[str, object]:
+    from polylogue.surfaces.payloads import (
+        SessionListRowPayload,
+        TargetRefPayload,
+        model_json_document,
+        reader_anchor,
+    )
+
     return cast(
         "dict[str, object]",
         model_json_document(
@@ -2689,6 +2720,16 @@ def _hit_payload(
     summary: ArchiveSessionSummary,
     retrieval_lane: str,
 ) -> dict[str, object]:
+    from polylogue.surfaces.payloads import (
+        SessionSearchHitPayload,
+        SessionSearchMatchPayload,
+        SessionSummaryPayload,
+        TargetRefPayload,
+        model_json_document,
+        reader_anchor,
+        reader_message_actions,
+    )
+
     return cast(
         "dict[str, object]",
         model_json_document(
@@ -2799,6 +2840,8 @@ def _session_summary_text(envelope: ArchiveSessionEnvelope) -> str:
         lines.append(f"- created: {envelope.created_at or 'unknown'}  updated: {envelope.updated_at or 'unknown'}")
 
     def _first_authored_text(candidates: Iterable[ArchiveMessageRow]) -> str:
+        from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
+
         for message in candidates:
             if message.role not in ("user", "assistant"):
                 continue
