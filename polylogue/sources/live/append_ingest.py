@@ -107,6 +107,13 @@ def _ingest_append_plans_archive(
                         source_path=str(plan.path),
                         source_index=-1,
                         acquired_at_ms=acquired_at_ms,
+                        # polylogue-u19l: persist the resolved provider
+                        # session identity as sidecar metadata instead of
+                        # splicing a synthetic session_meta record into the
+                        # hashed/stored payload (batch.py's
+                        # _append_payload_for_provider), so the stored blob
+                        # stays a literal slice of the live file.
+                        native_id=plan.native_id_hint,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
                     t0 = time.perf_counter()
@@ -146,11 +153,19 @@ def _ingest_append_plans_archive(
                         failed.append(plan)
                         continue
                     t0 = time.perf_counter()
+                    # polylogue-u19l: prefer the resolved provider session
+                    # identity over the bare filename stem. For Codex this is
+                    # the ONLY thing that made the synthetic session_meta
+                    # header (formerly spliced into plan.payload) necessary
+                    # in the first place -- the parser falls back to
+                    # ``fallback_id`` exactly when its own record stream
+                    # carries no session_meta of its own, which is always
+                    # true for an append delta.
                     sessions = require_positive_conversational_evidence(
                         parse_payload(
                             provider,
                             payloads,
-                            plan.path.stem,
+                            plan.native_id_hint or plan.path.stem,
                             source_path=str(plan.path),
                         ),
                         provider=provider,

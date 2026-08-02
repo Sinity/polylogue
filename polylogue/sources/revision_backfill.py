@@ -1747,10 +1747,20 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     seemingly harmless live replay helper from reintroducing ``read_all()``
     for Codex/Claude JSONL evidence.
     """
-    provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
+    # polylogue-u19l: an append-kind raw's own record stream may carry no
+    # self-describing identity of its own (a Codex append delta has no
+    # session_meta record) -- recover the identity hint recorded at write
+    # time (``sources/live/batch.py``'s ``_append_payload_for_provider`` /
+    # ``write_raw_payload``'s ``native_id``) and use it as the parser's
+    # fallback_id instead of the bare filename stem. Historical rows
+    # (written before this) have no recorded native_id and fall through to
+    # the unchanged stem-based fallback -- their stored bytes still carry
+    # the synthetic session_meta line that made this unnecessary for them.
+    fallback_id_override = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
     if is_stream_record_provider(source_path, str(provider)):
         with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
-            return _parse_stream(stream_provider, payload, stream_path)
+            return _parse_stream(stream_provider, payload, stream_path, fallback_id_override=fallback_id_override)
     _provider, eager_payload, _source_path, _eager_kind = archive.raw_revision_material(raw_id)
     payload_path = archive.blob_path_for_hash(blob_hash) if provider is Provider.HERMES else None
     return _parse_one(
@@ -1759,6 +1769,7 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         source_path,
         payload_path=payload_path,
         archive_root=archive.archive_root,
+        fallback_id_override=fallback_id_override,
     )
 
 
@@ -2434,6 +2445,7 @@ def _parse_one(
     *,
     payload_path: Path | None = None,
     archive_root: Path | None = None,
+    fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
     # polylogue-9ykn: replay must apply the same positive-conversational-
     # evidence gate the live ingest paths apply, on top of the path/shape
@@ -2442,7 +2454,14 @@ def _parse_one(
     # JSONL file with no path rule) yet still parse to zero real messages
     # (e.g. a file containing only file-history-snapshot records).
     return require_positive_conversational_evidence(
-        _parse_one_raw(provider, payload, source_path, payload_path=payload_path, archive_root=archive_root),
+        _parse_one_raw(
+            provider,
+            payload,
+            source_path,
+            payload_path=payload_path,
+            archive_root=archive_root,
+            fallback_id_override=fallback_id_override,
+        ),
         provider=provider,
         source_path=source_path,
     )
@@ -2455,9 +2474,10 @@ def _parse_one_raw(
     *,
     payload_path: Path | None = None,
     archive_root: Path | None = None,
+    fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
     source_name = Path(source_path).name
-    fallback_id = Path(source_path).stem
+    fallback_id = fallback_id_override or Path(source_path).stem
     if is_stream_record_provider(source_path, str(provider)):
         records = list(_iter_json_stream(BytesIO(payload), source_name))
         if _is_declared_non_session_artifact(provider, source_path, sample=records[:64]):
@@ -2516,21 +2536,33 @@ def _sqlite_payload_path(
         temp_path.unlink(missing_ok=True)
 
 
-def _parse_stream(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
+def _parse_stream(
+    provider: Provider,
+    payload: BinaryIO,
+    source_path: str,
+    *,
+    fallback_id_override: str | None = None,
+) -> list[ParsedSession]:
     # polylogue-9ykn: see ``_parse_one``'s comment -- the same positive-
     # conversational-evidence gate applies to the streaming replay path.
     return require_positive_conversational_evidence(
-        _parse_stream_raw(provider, payload, source_path),
+        _parse_stream_raw(provider, payload, source_path, fallback_id_override=fallback_id_override),
         provider=provider,
         source_path=source_path,
     )
 
 
-def _parse_stream_raw(provider: Provider, payload: BinaryIO, source_path: str) -> list[ParsedSession]:
+def _parse_stream_raw(
+    provider: Provider,
+    payload: BinaryIO,
+    source_path: str,
+    *,
+    fallback_id_override: str | None = None,
+) -> list[ParsedSession]:
     if _is_declared_non_session_artifact(provider, source_path):
         return []
     source_name = Path(source_path).name
-    fallback_id = Path(source_path).stem
+    fallback_id = fallback_id_override or Path(source_path).stem
     stream = _iter_json_stream(payload, source_name)
     # Multi-GiB Claude Code JSONL must stay memory-bounded (module docstring:
     # "a memory-bounded streaming path exists for multi-GiB Claude Code

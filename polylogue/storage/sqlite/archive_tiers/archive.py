@@ -196,6 +196,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_membership_retired_full_revision_siblings,
     raw_membership_selection_components,
     raw_membership_selection_components_sync,
+    raw_native_id,
     raw_payload_sizes,
     raw_revision_acquired_at_ms,
     raw_revision_descriptor,
@@ -1873,6 +1874,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         source_index: int = 0,
         raw_id: str | None = None,
+        native_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
     ) -> str:
@@ -1885,9 +1887,13 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             source_index=source_index,
             raw_id=raw_id,
+            native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
         )
+
+    def raw_native_id(self, raw_id: str) -> str | None:
+        return raw_native_id(self, raw_id)
 
     def write_hook_event(
         self,
