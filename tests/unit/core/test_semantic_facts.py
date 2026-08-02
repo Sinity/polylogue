@@ -260,6 +260,58 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.wall_duration_ms == 240000
 
 
+def test_build_session_profile_derives_terminal_state_from_stop_reason_refusal() -> None:
+    # polylogue-cuxz.8: a text-only assistant turn with no tool activity and
+    # no structural error signal used to fall back to "unknown" -- the
+    # dominant value for 85% of session_profiles.terminal_state. The
+    # provider's own stop_reason on that exact turn is real evidence and
+    # must be consulted before giving up.
+    session = make_conv(
+        id="conv-refusal",
+        origin=Provider.CLAUDE_CODE,
+        title="Refused",
+        messages=[
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Do something unsafe."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="I can't help with that.",
+                stop_reason="refusal",
+            ),
+        ],
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.terminal_state == "refused"
+    assert profile.terminal_state_method == "stop_reason"
+    assert profile.terminal_state_evidence["stop_reason"] == "refusal"
+
+
+def test_build_session_profile_derives_terminal_state_from_stop_reason_max_tokens() -> None:
+    session = make_conv(
+        id="conv-truncated",
+        origin=Provider.CLAUDE_CODE,
+        title="Truncated",
+        messages=[
+            make_msg(id="u1", role="user", origin=Provider.CLAUDE_CODE, text="Write a very long essay."),
+            make_msg(
+                id="a1",
+                role="assistant",
+                origin=Provider.CLAUDE_CODE,
+                text="Once upon a time",
+                stop_reason="max_tokens",
+            ),
+        ],
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.terminal_state == "truncated"
+    assert profile.terminal_state_method == "stop_reason"
+
+
 def test_build_session_profile_sums_paired_provider_tool_windows() -> None:
     start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
     end = datetime(2026, 5, 24, 10, 12, tzinfo=timezone.utc)

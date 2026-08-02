@@ -17,7 +17,7 @@ from polylogue.archive.semantic.timing import compute_session_timing, compute_to
 from polylogue.archive.session.attribution import extract_attribution
 from polylogue.archive.session.extraction import extract_work_events
 from polylogue.archive.session.models import SessionAnalysis, SessionProfile
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, StopReason
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
@@ -291,6 +291,10 @@ TERMINAL_STATE_METHODS = frozenset(
         "action_outcome",  # actions-view tool_result_is_error outcome
         "event_status",  # typed status key on a provider tool-call event
         "last_message_role",  # last meaningful message's authored role
+        # polylogue-cuxz.8: the provider's own message.stop_reason on the last
+        # assistant turn (refusal/max_tokens) -- structural, not a keyword
+        # guess, since it is read directly off the wire record.
+        "stop_reason",
         "no_signal",  # no structural evidence in either direction
         "bounded_materialization",  # large-session degraded fallback row (rebuild.py)
     }
@@ -429,6 +433,29 @@ def _terminal_state(
                 0.78,
                 {"action_id": latest_error_action_id, "evidence_class": latest_error_action_evidence_class},
                 "action_outcome",
+            )
+        # polylogue-cuxz.8: before giving up, consult the provider's own
+        # terminal signal for this exact turn (Anthropic ``stop_reason``).
+        # Only the two values that are unambiguous claims about how the turn
+        # ended are used -- REFUSAL and MAX_TOKENS are structurally distinct
+        # from a normal completion regardless of tool activity. TOOL_USE and
+        # STOP_SEQUENCE are deliberately not claimed here: TOOL_USE is
+        # already fully covered by the pending/action-outcome structural
+        # checks above, and STOP_SEQUENCE alone doesn't distinguish a clean
+        # stop from a truncation the way MAX_TOKENS unambiguously does.
+        if last.stop_reason == StopReason.REFUSAL.value:
+            return (
+                "refused",
+                0.85,
+                {"message_id": last.message_id, "stop_reason": last.stop_reason, "evidence_class": "raw_evidence"},
+                "stop_reason",
+            )
+        if last.stop_reason == StopReason.MAX_TOKENS.value:
+            return (
+                "truncated",
+                0.85,
+                {"message_id": last.message_id, "stop_reason": last.stop_reason, "evidence_class": "raw_evidence"},
+                "stop_reason",
             )
         # The prose _ERROR_MARKERS scan and its clean_finish complement were
         # deleted per the polylogue-ve9z ladder decision (measured at 50.5%

@@ -232,6 +232,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message
                 "metadata": _maybe_parse_json_object(block.metadata),
                 "tool_result_is_error": block.tool_result_is_error,
                 "tool_result_exit_code": block.tool_result_exit_code,
+                "tool_result_outcome_unknown_reason": block.tool_result_outcome_unknown_reason,
             }.items()
             if value is not None
         }
@@ -260,6 +261,7 @@ def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message
         branch_index=message.variant_index,
         is_active_path=message.is_active_path,
         parent_id=message.parent_message_id,
+        stop_reason=message.stop_reason,
     )
 
 

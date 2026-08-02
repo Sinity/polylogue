@@ -33,6 +33,13 @@ class MessageSemanticFacts:
     actions: tuple[Action, ...]
     tool_category_counts: dict[str, int]
     reasoning_traces: tuple[ReasoningTrace, ...]
+    # Provider-reported terminal signal for this turn (Anthropic
+    # ``message.stop_reason``: end_turn/tool_use/max_tokens/stop_sequence/
+    # refusal/pause_turn). None means unreported/not-applicable -- never a
+    # guessed happy-path default. polylogue-cuxz.8: this is what lets
+    # _terminal_state (archive/session/runtime.py) classify a refused or
+    # truncated turn from real evidence instead of falling back to unknown.
+    stop_reason: str | None = None
 
     @property
     def affected_paths(self) -> tuple[str, ...]:
