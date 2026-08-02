@@ -6063,6 +6063,35 @@ def repair_session_insights(
     When ``session_ids`` is given, the rebuild is narrowed to that
     set instead of touching the full archive — used by the maintenance
     planner to honor :class:`MaintenanceScopeFilter.session_ids`.
+
+    KEEP-WITH-REASON (polylogue-ygfwa): this mutate path is *not*
+    fully redundant with the daemon's automatic convergence mechanisms
+    (the per-ingest ``make_insights_stage`` ``ConvergenceStage`` and the
+    periodic ``convergence_debt`` retry loop in ``daemon/cli.py``). Both
+    automatic mechanisms only ever call ``rebuild_session_insights_sync``
+    (per-session profile/work_events/phases). Neither one ever calls
+    ``refresh_session_insight_aggregates_sync`` — the archive-wide,
+    non-per-session-scoped refresh of thread materialization
+    (``threads``/``thread_sessions``), tag rollups
+    (``session_tag_rollups``), and provider-day aggregates. This
+    function is the *only* caller of
+    ``refresh_session_insight_aggregates_sync`` in the codebase (verified
+    by grep across ``daemon/`` and the rest of the tree, 2026-08-02): it
+    runs that refresh whenever ``_session_insight_aggregate_debt_count``
+    (``missing_thread_materialization_count``, ``stale_thread_count``,
+    ``orphan_thread_count``, ``stale_tag_rollup_count``,
+    ``stale_day_summary_count``) is nonzero. So a bump to
+    ``SESSION_INSIGHT_MATERIALIZER_VERSION`` (or any other event that
+    stales thread/tag-rollup aggregates archive-wide) leaves those
+    aggregates stale forever unless something calls this manual repair
+    path — the daemon has no automatic route to clear that debt. This
+    function is also reused directly (not via the doctor CLI) by
+    ``maintenance/rebuild_index.py``'s terminal stage to materialize
+    insights for a freshly built *inactive* generation before promotion,
+    a scenario the daemon (which only ever touches the live/active
+    generation) cannot reach at all. Do not remove the mutate path
+    without first giving thread/tag-rollup/day-summary aggregate
+    staleness its own automatic convergence mechanism.
     """
     from polylogue.api.archive import _rebuild_archive_session_insights
     from polylogue.paths import archive_root as _resolve_archive_root
