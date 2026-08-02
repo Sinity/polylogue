@@ -2,13 +2,24 @@
 set -euo pipefail
 
 repo="${POLYLOGUE_REPO:-/realm/project/polylogue}"
-archive_root="${POLYLOGUE_ARCHIVE_ROOT:-/home/sinity/.local/share/polylogue}"
+# This script generates a *committed, public* demo packet. It must never
+# silently fall back to an operator's live archive -- POLYLOGUE_ARCHIVE_ROOT
+# is required, not defaulted, so a bare invocation fails loudly instead of
+# quietly regenerating the packet from private data (polylogue-0bgr).
+if [ -z "${POLYLOGUE_ARCHIVE_ROOT:-}" ]; then
+  echo "regenerate.sh: POLYLOGUE_ARCHIVE_ROOT must be set explicitly to a" >&2
+  echo "seeded fixture archive (see 'polylogue demo seed --root ...'); this" >&2
+  echo "script refuses to guess a default to avoid regenerating this" >&2
+  echo "public demo packet from a live/private archive." >&2
+  exit 1
+fi
+archive_root="$POLYLOGUE_ARCHIVE_ROOT"
 demo_root="$repo/.agent/demos/attachment-acquisition-census"
 mkdir -p "$demo_root"
 cd "$repo"
 
 reconcile_json="$(POLYLOGUE_ARCHIVE_ROOT="$archive_root" POLYLOGUE_FORCE_PLAIN=1 \
-  .venv/bin/polylogue ops maintenance attachment-acquisition-debt --output-format json)"
+  polylogue ops maintenance attachment-acquisition-debt --output-format json)"
 echo "$reconcile_json" > "$demo_root/reconcile-attachment-acquisition-debt.json"
 
 python3 - "$demo_root" "$archive_root" "$reconcile_json" <<'PY'

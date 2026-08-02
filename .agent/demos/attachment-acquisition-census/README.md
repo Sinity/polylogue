@@ -1,24 +1,36 @@
 # Attachment Acquisition Census
 
-Read-only census over the active archive (polylogue-83u.6): how much
-attachment evidence is actually backed by bytes, and where is the
-recoverable gap, broken down by origin and `acquisition_status`.
+A read-only census methodology, over the deterministic seeded demo archive
+(`polylogue demo seed`): how much attachment evidence is actually backed by
+bytes, and where is the recoverable gap, broken down by origin and
+`acquisition_status`.
 
-This is the sizing input for the acquisition beads in the 83u program
-(polylogue-83u.2 Drive/zip/local byte acquisition, polylogue-83u.3 live
-browser-capture upload interception) and the honesty check on any
+This is the sizing methodology behind the acquisition beads in the 83u
+program (polylogue-83u.2 Drive/zip/local byte acquisition, polylogue-83u.3
+live browser-capture upload interception) and the honesty check on any
 "attachments preserved" claim: `unfetched` is the honest, expected floor
 (bytes were never fetched — source-deleted, pre-install, provider-expiry —
 not a defect), while `missing_blob_ref_count` (an `acquired` row whose blob
 file is actually absent from the store) is the one genuinely actionable
 debt class.
 
+**This packet is a private-data-free methodology demo, not a live-archive
+report.** The actual operator-archive census for the 83u program (real
+byte counts, real per-origin totals) is tracked as bead notes on
+polylogue-83u, not committed here — this shelf commits only the reusable
+census methodology, run against a synthetic fixture.
+
 ## Regenerating
 
 ```bash
-POLYLOGUE_ARCHIVE_ROOT=/home/sinity/.local/share/polylogue \
+polylogue demo seed --root ./demo-archive --force --with-overlays
+POLYLOGUE_ARCHIVE_ROOT="$PWD/demo-archive" \
   bash .agent/demos/attachment-acquisition-census/regenerate.sh
 ```
+
+`regenerate.sh` requires `POLYLOGUE_ARCHIVE_ROOT` to be set explicitly — it
+refuses to run with no archive root configured, so it can never silently
+fall back to an operator's live archive (polylogue-0bgr).
 
 Opens `source.db`/`index.db` read-only (`mode=ro`); never mutates the
 archive. Cross-checks its totals against
@@ -36,15 +48,11 @@ records `reconciliation.totals_match` in `census.json`.
   global (non-origin-broken-down) CLI diagnostic this census reconciles
   against.
 
-## Baseline (2026-07-08)
+## Fixture run
 
-7,390 attachments total; 967 acquired (0 missing blob files — clean);
-6,423 unfetched. The unfetched byte volume is heavily concentrated in
-`chatgpt-export` (13.4GB declared, 0 acquired) — the largest single
-re-acquisition opportunity in the archive, and the natural first target
-once polylogue-83u.2/83u.3 land. See `ANALYSIS.md` for the full
-per-origin table.
-
-Re-run this census after 83u.2/83u.3 ship to produce the "after" half of
-the before/after pair required by this bead's AC; write the delta back
-into the parent epic (polylogue-83u) as closing evidence.
+Against the deterministic demo archive, the census finds 1 attachment
+total (1 acquired, 0 missing blob refs, reconciled against
+`attachment-acquisition-debt`) — see `census.json`/`ANALYSIS.md` for the
+full breakdown. This demonstrates the methodology, cross-check, and output
+shape; it carries no evidentiary weight about the real archive's
+acquisition backlog.

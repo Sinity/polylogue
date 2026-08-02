@@ -25,6 +25,8 @@ better demo supersedes them.
 - `basic-usage` — Basic Usage — The Features Actually Work
   - readme: `basic-usage/README.md`
   - files: 11 (11 readable)
+- `d1-receipts` — D1 Receipts
+  - files: 9 (6 readable)
 - `d4-behavioral-archaeology` — D4 Behavioral Archaeology
   - files: 9 (6 readable)
 - `uplift-two-arm` — Handoff-Pack Uplift Experiment

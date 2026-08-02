@@ -3,15 +3,15 @@
   "root": ".agent/demos",
   "input_closure": {
     "mode": "git-tracked",
-    "included_count": 86,
+    "included_count": 95,
     "excluded_count": 0,
     "exclusion_reason_counts": {},
     "exclusion_samples": "bounded samples are emitted in the command JSON payload"
   },
   "packaging": "Use devtools workspace read-package for portable readable bundles; this helper only writes indexes.",
   "curation_policy": "This is not append-only. Keep the best current demos here; replace, consolidate, or move stale demos out.",
-  "file_count": 86,
-  "readable_count": 76,
+  "file_count": 95,
+  "readable_count": 82,
   "files": [
     {
       "path": "_packet-contract-stub/NON-CLAIMS.md",
@@ -60,27 +60,27 @@
     },
     {
       "path": "agent-affordance-usage/README.md",
-      "bytes": 4295,
+      "bytes": 2951,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/affordance-usage.report.json",
-      "bytes": 81388,
+      "bytes": 45710,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/archive-origin-counts.csv",
-      "bytes": 181,
+      "bytes": 167,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/evidence-kind-counts.csv",
-      "bytes": 154,
+      "bytes": 1,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/family-counts.csv",
-      "bytes": 135,
+      "bytes": 1,
       "readable": true
     },
     {
@@ -90,32 +90,32 @@
     },
     {
       "path": "agent-affordance-usage/recent-7d-tool-counts.csv",
-      "bytes": 1545,
+      "bytes": 1,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/summary.json",
-      "bytes": 6084,
+      "bytes": 2276,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/surface-classification-summary.csv",
-      "bytes": 188,
+      "bytes": 134,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/surface-inventory.csv",
-      "bytes": 18576,
+      "bytes": 15387,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-by-origin.csv",
-      "bytes": 1657,
+      "bytes": 1,
       "readable": true
     },
     {
       "path": "agent-affordance-usage/tool-counts.csv",
-      "bytes": 1545,
+      "bytes": 1,
       "readable": true
     },
     {
@@ -125,47 +125,47 @@
     },
     {
       "path": "agent-forensics/README.md",
-      "bytes": 4262,
+      "bytes": 4813,
       "readable": true
     },
     {
       "path": "agent-forensics/current/archive-workload.json",
-      "bytes": 39954,
+      "bytes": 19828,
       "readable": true
     },
     {
       "path": "agent-forensics/current/cost-rollups-timeout.txt",
-      "bytes": 172,
+      "bytes": 637,
       "readable": true
     },
     {
       "path": "agent-forensics/current/coverage-origin.json",
-      "bytes": 9196,
+      "bytes": 8675,
       "readable": true
     },
     {
       "path": "agent-forensics/current/summary.json",
-      "bytes": 6145,
+      "bytes": 5451,
       "readable": true
     },
     {
       "path": "agent-forensics/current/usage-headline-all.json",
-      "bytes": 35061,
+      "bytes": 68551,
       "readable": true
     },
     {
       "path": "agent-forensics/current/usage-headline-claude-code.json",
-      "bytes": 13811,
+      "bytes": 31714,
       "readable": true
     },
     {
       "path": "agent-forensics/current/usage-headline-codex.json",
-      "bytes": 13669,
+      "bytes": 16763,
       "readable": true
     },
     {
       "path": "agent-forensics/current/usage-timeline-month-origin-model.json",
-      "bytes": 316289,
+      "bytes": 5540,
       "readable": true
     },
     {
@@ -215,27 +215,27 @@
     },
     {
       "path": "attachment-acquisition-census/ANALYSIS.md",
-      "bytes": 1370,
+      "bytes": 953,
       "readable": true
     },
     {
       "path": "attachment-acquisition-census/README.md",
-      "bytes": 2257,
+      "bytes": 2691,
       "readable": true
     },
     {
       "path": "attachment-acquisition-census/census.json",
-      "bytes": 12985,
+      "bytes": 1292,
       "readable": true
     },
     {
       "path": "attachment-acquisition-census/reconcile-attachment-acquisition-debt.json",
-      "bytes": 259,
+      "bytes": 356,
       "readable": true
     },
     {
       "path": "attachment-acquisition-census/regenerate.sh",
-      "bytes": 7687,
+      "bytes": 8286,
       "readable": false
     },
     {
@@ -260,7 +260,7 @@
     },
     {
       "path": "basic-usage/05-cost-usage.json",
-      "bytes": 45406,
+      "bytes": 53777,
       "readable": true
     },
     {
@@ -270,7 +270,7 @@
     },
     {
       "path": "basic-usage/07-mcp-roundtrip.json",
-      "bytes": 2092,
+      "bytes": 2390,
       "readable": true
     },
     {
@@ -280,7 +280,7 @@
     },
     {
       "path": "basic-usage/08-status-health.txt",
-      "bytes": 1237,
+      "bytes": 1306,
       "readable": true
     },
     {
@@ -292,6 +292,51 @@
       "path": "basic-usage/README.md",
       "bytes": 10109,
       "readable": true
+    },
+    {
+      "path": "d1-receipts/NON-CLAIMS.md",
+      "bytes": 550,
+      "readable": true
+    },
+    {
+      "path": "d1-receipts/PROMPT.md",
+      "bytes": 3513,
+      "readable": true
+    },
+    {
+      "path": "d1-receipts/checks.json",
+      "bytes": 1012,
+      "readable": true
+    },
+    {
+      "path": "d1-receipts/evidence.ndjson",
+      "bytes": 3735,
+      "readable": false
+    },
+    {
+      "path": "d1-receipts/finding.yaml",
+      "bytes": 651,
+      "readable": true
+    },
+    {
+      "path": "d1-receipts/packet.json",
+      "bytes": 7452,
+      "readable": true
+    },
+    {
+      "path": "d1-receipts/queries.ndjson",
+      "bytes": 1432,
+      "readable": false
+    },
+    {
+      "path": "d1-receipts/report.md",
+      "bytes": 9186,
+      "readable": true
+    },
+    {
+      "path": "d1-receipts/run.log",
+      "bytes": 5131,
+      "readable": false
     },
     {
       "path": "d4-behavioral-archaeology/NON-CLAIMS.md",
@@ -340,7 +385,7 @@
     },
     {
       "path": "registry.json",
-      "bytes": 983,
+      "bytes": 1268,
       "readable": true
     },
     {

@@ -11,6 +11,7 @@
       "anti-demo-multi-source-reconstruction",
       "attachment-acquisition-census",
       "basic-usage",
+      "d1-receipts",
       "d4-behavioral-archaeology",
       "uplift-two-arm"
     ]
@@ -28,9 +29,9 @@
       "caveat_fields": [
         "caveats"
       ],
-      "archive_root": "/home/sinity/.local/share/polylogue",
-      "index_schema_version": 24,
-      "timestamp": "2026-07-05T08:42:39.982266+00:00",
+      "archive_root": "/path/to/demo-archive",
+      "index_schema_version": 54,
+      "timestamp": "2026-08-02T13:51:38.483581+00:00",
       "coverage": {
         "claim": true,
         "non_claim": true,
@@ -42,19 +43,20 @@
       "demo": "agent-forensics/current",
       "summary_path": "agent-forensics/current/summary.json",
       "artifact": "agent-forensics",
-      "claim": "Polylogue can regenerate a current v24 longitudinal agent-usage forensics packet over the live archive using product analysis surfaces, with provenance-separated token/cost lanes and explicit physical-vs-logical token grains.",
-      "non_claim": "This packet is not provider billing truth, not an LLM judgment of failure follow-up behavior, and not a resurrected standalone forensics script; it reads the current archive through product commands and points structured-failure follow-up to the current claim-vs-evidence packet.",
+      "claim": "Polylogue can regenerate a current v54 longitudinal agent-usage forensics packet over a deterministic seeded fixture archive using product analysis surfaces, with provenance-separated token/cost lanes and explicit physical-vs-logical token grains.",
+      "non_claim": "This packet is not provider billing truth, not an LLM judgment of failure follow-up behavior, not a resurrected standalone forensics script, and not evidence about the operator's real archive; it reads the deterministic demo archive through the same product commands used against a live archive, and points structured-failure follow-up to the current claim-vs-evidence packet.",
       "proof_fields": [
         "command_proofs",
         "proof_fields"
       ],
       "caveat_fields": [
         "caveat_fields",
+        "fixture_scale_caveat",
         "usage_headline_caveats"
       ],
-      "archive_root": "/home/sinity/.local/share/polylogue",
-      "index_schema_version": 24,
-      "timestamp": "2026-07-05T07:36:52Z",
+      "archive_root": "/path/to/demo-archive",
+      "index_schema_version": 54,
+      "timestamp": "2026-08-02T13:52:20Z",
       "coverage": {
         "claim": true,
         "non_claim": true,
