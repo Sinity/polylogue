@@ -71,10 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    privacy_config = build_schema_privacy_config(
-        privacy=args.privacy,
-        privacy_config_path=args.privacy_config,
-    )
+    try:
+        privacy_config = build_schema_privacy_config(
+            privacy=args.privacy,
+            privacy_config_path=args.privacy_config,
+        )
+    except ValueError as exc:
+        print(f"schema-commit: {exc}", file=sys.stderr)
+        return 1
     output_dir = args.output_dir if args.output_dir is not None else DEFAULT_OUTPUT_DIR
 
     result = commit_provider_schema(

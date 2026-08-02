@@ -25,6 +25,19 @@ def types_by_path(schema: Any, path: str = "") -> dict[str, frozenset[str]]:
     in ``after`` -- see ``narrowed_paths`` for the comparison helper.
     """
     found: dict[str, frozenset[str]] = {}
+
+    def merge(other: dict[str, frozenset[str]]) -> None:
+        # A union (anyOf/oneOf) or a list of schemas can contribute distinct
+        # type sets for the SAME path from different branches -- e.g. an
+        # anyOf of {"type": "string"} and {"type": "number"} both project to
+        # this node's own path. A plain dict.update() would let the last
+        # branch silently overwrite an earlier branch's types at that path,
+        # which could hide a real narrowing (the earlier-committed union
+        # member's type would vanish from `found` even though it's still
+        # legitimately part of this schema). Union the sets instead.
+        for other_path, other_types in other.items():
+            found[other_path] = found.get(other_path, frozenset()) | other_types
+
     if isinstance(schema, dict):
         declared = schema.get("type")
         if isinstance(declared, str):
@@ -35,10 +48,10 @@ def types_by_path(schema: Any, path: str = "") -> dict[str, frozenset[str]]:
             if not isinstance(value, (dict, list)):
                 continue
             structural = key in _STRUCTURAL_KEYS
-            found.update(types_by_path(value, path if structural else f"{path}.{key}"))
+            merge(types_by_path(value, path if structural else f"{path}.{key}"))
     elif isinstance(schema, list):
         for entry in schema:
-            found.update(types_by_path(entry, path))
+            merge(types_by_path(entry, path))
     return found
 
 

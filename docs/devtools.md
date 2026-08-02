@@ -65,7 +65,7 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab projections` | Inspect the unified projection inventory that feeds runtime coverage, generated docs, and control-plane maps. |
 | `devtools lab smoke` | Run direct archive and reader smoke sets outside the archive CLI. |
 | `devtools lab schema audit` | Check committed schema package quality gates without presenting them as normal archive usage. |
-| `devtools lab schema commit` | Actually regenerate and write polylogue/schemas/providers/<provider>/versions/... from the live archive -- 'lab schema generate' only ever previews and never writes committed package files. |
+| `devtools lab schema commit` | Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live archive -- 'lab schema generate' only ever previews and never writes committed package files. |
 | `devtools lab schema compare` | Review schema package drift between committed versions in the lab surface. |
 | `devtools lab schema explain` | Inspect schema package annotations, semantic roles, and review evidence from the lab surface. |
 | `devtools lab schema generate` | Refresh provider schema package artifacts from archive observations outside the archive CLI. |

@@ -1574,7 +1574,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Persist a real full-corpus schema generation into committed provider packages.",
         "devtools.schema_commit",
         use_when=(
-            "Actually regenerate and write polylogue/schemas/providers/<provider>/versions/... from the live "
+            "Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live "
             "archive -- 'lab schema generate' only ever previews and never writes committed package files."
         ),
         examples=(

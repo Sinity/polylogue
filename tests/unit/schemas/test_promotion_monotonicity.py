@@ -43,6 +43,21 @@ def test_merging_a_thin_window_cannot_narrow_a_union() -> None:
     assert set(timestamp["type"]) == {"string", "number"}
 
 
+def test_types_by_path_unions_anyof_branches_at_the_same_path() -> None:
+    """CodeRabbit finding on PR #3538: found.update() overwrote an earlier
+    anyOf branch's types at a shared path instead of merging them, so a
+    later schema keeping only the last branch's type wouldn't register as
+    narrowed even though the earlier branch's type was really lost."""
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "value": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+        },
+    }
+    types = _types_by_path(schema)
+    assert types[".value"] == frozenset({"string", "number"})
+
+
 def test_merging_cannot_drop_a_field_the_package_already_carried() -> None:
     """173 fields vanished in the real incident; absence from a window is not evidence of removal."""
     promoted: JSONDocument = {
