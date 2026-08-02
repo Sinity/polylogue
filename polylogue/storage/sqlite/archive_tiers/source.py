@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 19
+SOURCE_SCHEMA_VERSION = 20
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -185,6 +185,37 @@ CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_raw_membership_writeback_receipts_promoted_at
 ON raw_membership_writeback_receipts(promoted_at_ms);
+
+-- v20 (polylogue-lb39z, Phase 1 item 3): one immutable receipt per
+-- raw_sessions row promoted out of quarantine because its own claimed
+-- [append_start_offset:append_end_offset) byte range was proven directly
+-- against its live source file's current bytes -- the membershipless
+-- append-chain-backfill population (a row stuck quarantined with no
+-- raw_session_memberships row at all because its predecessor is itself
+-- unresolved, so the normal _promote_contiguous_append_evidence cascade can
+-- never reach it). Reuses revision_authority_evidence=
+-- 'live_source_verification_v1' (the proof mechanism is identical to
+-- polylogue-u19l's); this table's own existence records the distinct target
+-- population. See polylogue.storage.raw_append_chain_backfill +
+-- polylogue.maintenance.raw_append_chain_backfill_apply.
+CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
+    raw_id                           TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    logical_source_key                TEXT,
+    source_path                      TEXT NOT NULL,
+    blob_hash                        BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size                        INTEGER NOT NULL CHECK(blob_size >= 0),
+    append_start_offset              INTEGER NOT NULL CHECK(append_start_offset >= 0),
+    append_end_offset                INTEGER NOT NULL CHECK(append_end_offset > append_start_offset),
+    matched_after_codex_header_strip INTEGER NOT NULL CHECK(matched_after_codex_header_strip IN (0, 1)),
+    previous_revision_authority      TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    compared_at_ms                    INTEGER NOT NULL CHECK(compared_at_ms >= 0),
+    tool_version                      TEXT NOT NULL,
+    backup_manifest_path              TEXT NOT NULL,
+    detail                            TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_append_chain_backfill_receipts_compared_at
+ON raw_append_chain_backfill_receipts(compared_at_ms);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither

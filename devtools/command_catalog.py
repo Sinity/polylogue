@@ -1512,6 +1512,29 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "lab policy raw-authority-frontier-executability",
+        "verification lab",
+        "Verify every raw-authority frontier state has a reachable actuator.",
+        "devtools.verify_raw_authority_frontier_executability",
+        use_when=(
+            "polylogue-w32w / polylogue-lb39z (Phase 1, item 4): "
+            "RawAuthorityFrontierItem.__post_init__ raises if a CONSTRUCTED item pairs a "
+            "dispatched actuator (_APPLY_DISPATCHED_ACTUATORS) with a non-executable state "
+            "(_EXECUTABLE_STATES) -- but that only fires when a test or live classification "
+            "actually builds one; a new frontier state or re-paired actuator can ship an "
+            "unexercised branch that stays silent until it accumulates against real archive "
+            "data (the original defect: 4,174 blockers demanding an unreachable actuator, "
+            "undetected for weeks). This lint statically enumerates every literal "
+            "(state, actuator) construction site in polylogue/storage/raw_reconciler.py "
+            "(_item(...) and _StrategyOverride(...) calls) and re-checks the same invariant "
+            "at review time, independent of test coverage."
+        ),
+        examples=(
+            "devtools lab policy raw-authority-frontier-executability",
+            "devtools lab policy raw-authority-frontier-executability --json",
+        ),
+    ),
+    CommandSpec(
         "lab policy backlog-hygiene",
         "verification lab",
         "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
