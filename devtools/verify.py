@@ -1779,6 +1779,13 @@ def build_verify_steps(
                 # failure surfaces as an unqueryable live archive rather than
                 # as a test failure.
                 ("lab policy schema-versioning", _devtools_cmd("lab policy schema-versioning")),
+                # Static, archive-independent, sub-second: catches the gap the
+                # schema-versioning gate above cannot see -- a parser/classifier
+                # changing what it accepts for identical input bytes with no
+                # version bump at all (polylogue-gucv; PR #3428 is the
+                # concrete case that shipped green against the version-keyed
+                # gate above).
+                ("lab policy classifier-fingerprints", _devtools_cmd("lab policy classifier-fingerprints")),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.
