@@ -717,8 +717,14 @@ def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yiel
     assert len(sessions) == 1
     total_messages = len(sessions[0].messages)
     assert total_messages > 0, "long multi-session_meta Codex rollout must not parse to zero messages"
-    # 20 turns * (user + assistant + function_call use/output + custom_tool_call use/output)
-    assert total_messages == 20 * 6
+    # 20 turns * (user + assistant + function_call use/output + custom_tool_call
+    # use/output + reasoning). #3447 (polylogue-vf9x) started materializing
+    # every Codex `reasoning` response_item as its own THINKING-block message
+    # (previously read only by the generic session_event compactor, which
+    # never surfaced it as content) -- even one with an empty `summary` and
+    # no `content` still produces a message (block text=None) so the fact
+    # that the model reasoned here survives.
+    assert total_messages == 20 * 7
 
 
 def test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records(
