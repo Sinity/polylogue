@@ -663,6 +663,7 @@ def _check_capture_coverage_medium() -> HealthAlert:
             consecutive_failures=_record_failure("capture_coverage", severity == HealthSeverity.OK),
         )
     except Exception as exc:
+        logger.warning("capture_coverage: check failed", exc_info=True)
         return HealthAlert(
             check_name="capture_coverage",
             tier=HealthTier.MEDIUM,
