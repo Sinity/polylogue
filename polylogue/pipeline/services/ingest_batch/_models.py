@@ -79,6 +79,14 @@ class _IngestBatchSummary:
             "skipped_messages": 0,
             "skipped_attachments": 0,
             "skipped_session_events": 0,
+            # polylogue-rujy AC4: bytes this batch pushed through the
+            # content-addressed blob store for Claude Code tool-result
+            # sidecar text (see _preacquire_sidecar_blobs). "new" is bytes
+            # whose hash didn't already exist in the store; "dedup" is bytes
+            # whose hash was already present (the write was a free no-op).
+            "sidecar_blob_bytes_new": 0,
+            "sidecar_blob_bytes_dedup": 0,
+            "sidecar_blobs_written": 0,
         }
     )
     changed_counts: dict[str, int] = field(
