@@ -554,6 +554,7 @@ def upsert_ingest_cursor(
     failure_count: int = 0,
     next_retry_at: str | None = None,
     excluded: bool = False,
+    deferred_end_offset: int | None = None,
 ) -> None:
     """Create or refresh one cursor row in ``ingest_cursor``."""
     conn.execute(
@@ -575,9 +576,10 @@ def upsert_ingest_cursor(
             failure_count,
             next_retry_at,
             excluded,
+            deferred_end_offset,
             updated_at_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (source_path) DO UPDATE SET
             origin = excluded.origin,
             stat_size = excluded.stat_size,
@@ -594,6 +596,7 @@ def upsert_ingest_cursor(
             failure_count = excluded.failure_count,
             next_retry_at = excluded.next_retry_at,
             excluded = excluded.excluded,
+            deferred_end_offset = excluded.deferred_end_offset,
             updated_at_ms = excluded.updated_at_ms
         """,
         (
@@ -613,6 +616,7 @@ def upsert_ingest_cursor(
             failure_count,
             next_retry_at,
             1 if excluded else 0,
+            deferred_end_offset,
             updated_at_ms,
         ),
     )

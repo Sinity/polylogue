@@ -152,6 +152,7 @@ def _ensure_ops_runtime_columns(conn: sqlite3.Connection) -> None:
         "failure_count": "INTEGER NOT NULL DEFAULT 0 CHECK(failure_count >= 0)",
         "next_retry_at": "TEXT",
         "excluded": "INTEGER NOT NULL DEFAULT 0 CHECK(excluded IN (0, 1))",
+        "deferred_end_offset": "INTEGER",
     }
     for name, definition in additions.items():
         if name not in existing:

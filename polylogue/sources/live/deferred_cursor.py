@@ -19,7 +19,29 @@ def record_deferred_append_cursor(
     cursor: CursorRecord | None,
     parser_fingerprint: str,
     source_name: str,
+    deferred_end_offset: int | None,
 ) -> int:
+    """Persist cursor state for an append that was not applied this pass.
+
+    ``deferred_end_offset`` (polylogue-hat0) records the end of the byte
+    range durably captured (raw written + revision bound in source.db) but
+    still awaiting authority resolution -- distinct from ``byte_offset``,
+    which only advances once a plan is actually applied. Callers MUST pass
+    it explicitly, deciding one of:
+
+    - A real quarantined/ambiguous append was just deferred by
+      ``ingest_append_plans``: pass the plan's own ``last_complete_newline``
+      to mark this exact range as pending.
+    - No new authority-relevant append happened this pass (e.g. the file
+      merely lacks a complete trailing newline yet): pass the *existing*
+      ``cursor.deferred_end_offset`` through unchanged so a prior pending
+      marker is not silently cleared.
+
+    Without this distinction, ``_append_plan``'s next observation cannot
+    tell "this exact range was already captured and is pending" apart from
+    "the file genuinely grew further", and re-mints an identical duplicate
+    raw row on every watcher tick forever.
+    """
     if cursor is None:
         return 0
     try:
@@ -50,5 +72,6 @@ def record_deferred_append_cursor(
         next_retry_at=cursor.next_retry_at,
         excluded=bool(cursor.excluded),
         allow_backward=True,
+        deferred_end_offset=deferred_end_offset,
     )
     return tail_bytes

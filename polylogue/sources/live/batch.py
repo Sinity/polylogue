@@ -580,12 +580,21 @@ class LiveBatchProcessor:
                 failed_paths.append(str(plan.path))
                 cursor_fingerprint_read_bytes += self._record_failed_cursor(plan.path)
             for plan in append_result.deferred:
+                # polylogue-hat0: this plan's bytes are already durably
+                # written and revision-bound in source.db (write_raw_payload
+                # ran before the quarantined/ambiguous classification), just
+                # not yet accepted into the replay chain. Mark exactly this
+                # range as the pending-authority frontier so the next
+                # observation of an unchanged file recognizes there is
+                # nothing new to capture instead of re-mining an identical
+                # duplicate raw row forever.
                 cursor_fingerprint_read_bytes += record_deferred_append_cursor(
                     self._cursor,
                     plan.path,
                     cursor=self._cursor.get_record(plan.path),
                     parser_fingerprint=self._current_parser_fingerprint(),
                     source_name=plan.source_name,
+                    deferred_end_offset=plan.last_complete_newline,
                 )
                 deferred_paths.append(plan.path)
 
@@ -596,12 +605,18 @@ class LiveBatchProcessor:
             cursor = cursor_records.get(path)
             append_plan = self._append_plan(path, cursor=cursor) if self._can_ingest_appends_directly() else None
             if isinstance(append_plan, _DeferredAppend):
+                # No new authority-relevant append happened this pass (no
+                # complete trailing newline yet, or -- polylogue-hat0 --
+                # _append_plan itself recognized an already-pending deferred
+                # range with no growth past it). Preserve any existing
+                # pending-authority marker unchanged rather than clearing it.
                 cursor_fingerprint_read_bytes += record_deferred_append_cursor(
                     self._cursor,
                     path,
                     cursor=cursor,
                     parser_fingerprint=self._current_parser_fingerprint(),
                     source_name=self._source_name_for(path),
+                    deferred_end_offset=cursor.deferred_end_offset if cursor is not None else None,
                 )
                 deferred_paths.append(path)
             elif append_plan is None:
@@ -2866,6 +2881,26 @@ class LiveBatchProcessor:
                     return None
                 if cursor.st_ino is not None and cursor.st_ino != stat.st_ino:
                     return None
+                if (
+                    cursor.deferred_end_offset is not None
+                    and stat.st_size <= cursor.deferred_end_offset
+                    and cursor.mtime_ns is not None
+                    and stat.st_mtime_ns == cursor.mtime_ns
+                ):
+                    # polylogue-hat0: an earlier pass already durably wrote
+                    # and revision-bound a raw for this exact byte range
+                    # (start_offset..deferred_end_offset), but its authority
+                    # was quarantined/ambiguous and it is still pending
+                    # resolution. The file is byte-for-byte and mtime
+                    # identical to that attempt -- there is nothing new to
+                    # capture. Replanning here would re-mint an identical
+                    # duplicate raw row and re-defer forever, on every single
+                    # watcher tick, without ever advancing. Wait for either
+                    # genuine growth past the already-captured window (the
+                    # ``stat.st_size <= cursor.deferred_end_offset`` guard
+                    # above no longer holds) or authority resolving through
+                    # another path.
+                    return _DEFER_APPEND
                 start_offset = max(cursor.byte_offset, 0)
                 append_window = min(stat.st_size - start_offset, _MAX_APPEND_PLAN_PAYLOAD_BYTES)
                 handle.seek(start_offset)
