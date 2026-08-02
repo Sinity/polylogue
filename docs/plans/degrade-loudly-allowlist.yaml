@@ -432,30 +432,42 @@ entries:
   occurrence: 0
   reason: Narrow probe; False ("index not present/versioned") is the fail-safe direction.
 - path: polylogue/storage/repair.py
-  function: <module>._run_sql_repair
+  function: <module>.repair_empty_sessions
   exceptions:
   - Exception
   occurrence: 0
   reason: 'Returns _repair_result(..., success=False, detail=f"Repair failed: {exc}") -- an already-typed
-    signal, the established pattern for every repair_* function in this file.'
+    signal, the established pattern for every repair_* function in this file (formerly the
+    shared _run_sql_repair helper, inlined here on polylogue-ne6k since the empty-session
+    predicate is no longer pure SQL).'
+- path: polylogue/storage/repair.py
+  function: <module>._raw_artifact_positively_fails_classification
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'Classification failure is not itself an error worth surfacing here: absence of
+    positive evidence (including a raw artifact that fails to decode/classify) always means
+    "retain", the same fail-safe direction as every other predicate in this function. The
+    caller (repair_empty_sessions) already surfaces any real repair-level failure through its
+    own typed _repair_result.'
 - path: polylogue/storage/repair.py
   function: <module>.repair_orphaned_attachments
   exceptions:
   - Exception
   occurrence: 0
-  reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
+  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
 - path: polylogue/storage/repair.py
   function: <module>.repair_orphaned_messages
   exceptions:
   - Exception
   occurrence: 0
-  reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
+  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
 - path: polylogue/storage/repair.py
   function: <module>.repair_session_insights
   exceptions:
   - Exception
   occurrence: 0
-  reason: 'See _run_sql_repair: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
+  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
 - path: polylogue/storage/sqlite/archive_tiers/archive.py
   function: <module>._ensure_read_runtime_indexes
   exceptions:

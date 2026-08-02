@@ -5206,28 +5206,27 @@ def has_orphaned_messages_sync(conn: sqlite3.Connection) -> bool:
 
 
 def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
-    """Count session rows that are debris: no messages AND no acquired bytes.
+    """Count session rows that are debris: no messages AND a raw artifact the
+    current classifier positively refuses to admit as a session.
 
-    This deliberately does NOT count every message-less session. A session can
-    be legitimately empty, and the 2026-07-22 hook-inflation postmortem
-    explicitly chose to retain the genuinely-empty sessions that survived
-    de-inflation. Counting those here would report healthy rows as debt and
-    invite an operator to "repair" them away.
-
-    Measured on the live archive 2026-07-29: 874 message-less sessions, all
-    874 carrying a non-empty ``raw_id``. Under the old blanket predicate this
-    reported 874 rows of phantom debt; under the provenance-aware one it
-    reports 0, which is the truth.
+    This deliberately does NOT count every message-less session, and it does
+    NOT use ``raw_id IS NULL`` as the discriminator either (both were tried
+    and refuted -- see polylogue-ne6k). A session can be legitimately empty
+    (the 2026-07-22 hook-inflation postmortem explicitly chose to retain ~832
+    such sessions after de-inflation), and measured on the live archive
+    2026-07-29/31, every one of the 5,257 message-less sessions carries a
+    non-empty ``raw_id`` -- so "no acquired bytes" cannot separate the 4,945+
+    genuine phantoms (``<agent>.meta`` sidecars, misclassified non-transcript
+    artifacts) from the rest. The only discriminator that has evidence behind
+    it is WHAT THE ACQUIRED ARTIFACT IS: re-running each candidate's raw bytes
+    through the same ``classify_artifact``/``inspect_raw_artifact`` pipeline
+    live ingest uses, and counting only the ones it still refuses.
 
     Kept in lockstep with ``repair_empty_sessions``: the counter and the
     deleter must agree, or the report says one thing and the repair does
-    another.
+    another (both call ``_empty_session_debris_session_ids``).
     """
-    return int(
-        conn.execute(
-            f"SELECT COUNT(*) FROM sessions s WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='s')}"
-        ).fetchone()[0]
-    )
+    return len(_empty_session_debris_session_ids(conn))
 
 
 def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
@@ -5520,52 +5519,6 @@ def preview_counts_from_archive_debt(
 
 
 # ---------------------------------------------------------------------------
-# Generic SQL repair helper
-# ---------------------------------------------------------------------------
-
-
-def _run_sql_repair(
-    target_name: str,
-    *,
-    count_sql: str,
-    action_sql: str | None,
-    dry_run: bool,
-    conn: sqlite3.Connection,
-) -> RepairResult:
-    try:
-        count = conn.execute(count_sql).fetchone()[0]
-        if dry_run:
-            return _repair_result(
-                target_name,
-                repaired_count=count,
-                success=True,
-                detail=f"Would: {count} rows affected" if count else "Would: No issues found",
-            )
-        if action_sql:
-            result = conn.execute(action_sql)
-            conn.commit()
-            return _repair_result(
-                target_name,
-                repaired_count=result.rowcount,
-                success=True,
-                detail=f"Repaired {result.rowcount} rows" if result.rowcount else "No repairs needed",
-            )
-        return _repair_result(
-            target_name,
-            repaired_count=0,
-            success=True,
-            detail="No action SQL provided",
-        )
-    except Exception as exc:
-        return _repair_result(
-            target_name,
-            repaired_count=0,
-            success=False,
-            detail=f"Repair failed: {exc}",
-        )
-
-
-# ---------------------------------------------------------------------------
 # Cleanup repairs (orphans, empty sessions, attachments)
 # ---------------------------------------------------------------------------
 
@@ -5631,36 +5584,143 @@ def preview_orphaned_messages(*, count: int) -> RepairResult:
     )
 
 
-#: A session is debris only when it has no messages AND no acquired bytes
-#: behind it. "No messages" alone is not evidence of corruption: a session can
-#: be legitimately empty (a browser-capture stub, a conversation opened and
-#: never used), and the 2026-07-22 hook-inflation postmortem explicitly chose
-#: to RETAIN the genuinely-empty sessions that survived de-inflation.
-#:
-#: Measured on the live archive 2026-07-29: 874 sessions have zero messages,
-#: and ALL 874 carry a non-empty ``raw_id`` -- every one has real acquired
-#: bytes. Zero lack provenance. So the old blanket predicate
-#: (``NOT EXISTS (messages)``) would have deleted 874 legitimately-acquired
-#: sessions and zero pieces of debris: a pure data-loss operation with no
-#: upside, one explicit ``--cleanup`` away from the live archive.
-#:
-#: ``raw_id`` is the provenance signal because it names the retained source
-#: bytes; a session carrying one can always be re-materialized by replay,
-#: which is precisely what makes it not debris.
-_EMPTY_SESSION_DEBRIS_PREDICATE = (
-    "NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = {alias}.session_id) "
-    "AND ({alias}.raw_id IS NULL OR {alias}.raw_id = '')"
-)
+def _sibling_source_db_path(conn: sqlite3.Connection) -> Path | None:
+    """Return the ``source.db`` sibling of the index-tier file backing *conn*.
+
+    Both tiers always live side by side under the same archive root
+    (``storage/archive_identity.py``). Reading ``PRAGMA database_list``
+    instead of threading a path parameter keeps this usable both from
+    ``repair_empty_sessions`` (which opens its own index connection) and from
+    ``count_empty_sessions_sync`` (called with a caller-supplied, possibly
+    read-only, connection in ``maintenance/preview.py``).
+    """
+    for _seq, name, file in conn.execute("PRAGMA database_list"):
+        if name == "main" and file:
+            return Path(file).parent / "source.db"
+    return None
+
+
+def _empty_session_message_less_candidates(conn: sqlite3.Connection) -> list[tuple[str, str | None]]:
+    """Return ``(session_id, raw_id)`` for every session with zero messages."""
+    return [
+        (row["session_id"], row["raw_id"])
+        for row in conn.execute(
+            """
+            SELECT s.session_id AS session_id, s.raw_id AS raw_id
+            FROM sessions s
+            WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
+            """
+        ).fetchall()
+    ]
+
+
+def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_id: str | None) -> bool:
+    """Return ``True`` only when *raw_id* resolves to source bytes that the
+    CURRENT ``classify_artifact``/``inspect_raw_artifact`` pipeline positively
+    refuses to admit as a session (``parse_as_session is False``).
+
+    Absence of positive evidence always means "retain": a missing/empty
+    ``raw_id``, a ``raw_sessions`` row that no longer exists (e.g. GC'd), or
+    an inspection failure all return ``False`` here rather than being treated
+    as debris by default. This is deliberately conservative in the opposite
+    direction from both predicates tried and refuted on polylogue-ne6k
+    (blanket "no messages", and "``raw_id IS NULL``"): a row can only be
+    deleted by *positive* evidence that the artifact behind it is not a
+    session, mirroring the ``looks_like_code`` fix in
+    ``sources/parsers/claude/code_detection.py`` (polylogue-9ykn/gvgi) that
+    requires a genuine record-envelope marker rather than a weak location- or
+    absence-based guess.
+    """
+    if not raw_id:
+        return False
+    row = conn.execute("SELECT * FROM source.raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    if row is None:
+        return False
+
+    from polylogue.storage.artifacts.inspection import inspect_raw_artifact
+    from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
+
+    try:
+        record = _row_to_raw_session(row)
+        observation = inspect_raw_artifact(record)
+    except Exception:
+        # Cannot classify -> no positive evidence -> retain.
+        return False
+    return not observation.parse_as_session
+
+
+def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
+    """Return ``session_id``s for message-less sessions whose raw artifact
+    positively fails the current record-shape classifier.
+
+    Shared by ``count_empty_sessions_sync`` and ``repair_empty_sessions`` so
+    the reported debt and the deleted rows can never diverge (polylogue-ne6k).
+    """
+    candidates = _empty_session_message_less_candidates(conn)
+    if not candidates:
+        return []
+    source_db = _sibling_source_db_path(conn)
+    if source_db is None or not source_db.exists():
+        # No source tier reachable -> no way to obtain positive evidence for
+        # any candidate -> retain all of them.
+        return []
+    conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+    try:
+        return [
+            session_id
+            for session_id, raw_id in candidates
+            if _raw_artifact_positively_fails_classification(conn, raw_id)
+        ]
+    finally:
+        conn.execute("DETACH DATABASE source")
 
 
 def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:
-    with _open_archive_index_connection() as conn:
-        return _run_sql_repair(
+    """Delete message-less sessions whose raw artifact positively fails the
+    current record-shape classifier.
+
+    See ``_raw_artifact_positively_fails_classification`` and
+    ``count_empty_sessions_sync`` for why "no messages" alone, and
+    "``raw_id IS NULL``", are both insufficient predicates -- both were tried
+    and refuted on polylogue-ne6k. A session with no messages is retained
+    unless its raw artifact, re-run through the live classification pipeline,
+    is itself refused as a session.
+    """
+    del config
+    try:
+        with _open_archive_index_connection() as conn:
+            session_ids = _empty_session_debris_session_ids(conn)
+            if dry_run:
+                return _repair_result(
+                    "empty_sessions",
+                    repaired_count=len(session_ids),
+                    success=True,
+                    detail=(f"Would: {len(session_ids)} rows affected" if session_ids else "Would: No issues found"),
+                )
+            if not session_ids:
+                return _repair_result(
+                    "empty_sessions",
+                    repaired_count=0,
+                    success=True,
+                    detail="No repairs needed",
+                )
+            conn.executemany(
+                "DELETE FROM sessions WHERE session_id = ?",
+                [(session_id,) for session_id in session_ids],
+            )
+            conn.commit()
+            return _repair_result(
+                "empty_sessions",
+                repaired_count=len(session_ids),
+                success=True,
+                detail=f"Repaired {len(session_ids)} rows",
+            )
+    except Exception as exc:
+        return _repair_result(
             "empty_sessions",
-            count_sql=(f"SELECT COUNT(*) FROM sessions c WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='c')}"),
-            action_sql=(f"DELETE FROM sessions WHERE {_EMPTY_SESSION_DEBRIS_PREDICATE.format(alias='sessions')}"),
-            dry_run=dry_run,
-            conn=conn,
+            repaired_count=0,
+            success=False,
+            detail=f"Repair failed: {exc}",
         )
 
 

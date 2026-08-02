@@ -31,15 +31,68 @@ def _position(native_id: str) -> int:
     return int.from_bytes(hashlib.sha256(native_id.encode()).digest()[:4], "big")
 
 
-def _insert_session(conn: sqlite3.Connection, session_id: str, source_name: str = "test", title: str = "Test") -> None:
+def _insert_session(
+    conn: sqlite3.Connection,
+    session_id: str,
+    source_name: str = "test",
+    title: str = "Test",
+    raw_id: str | None = None,
+) -> None:
     """Helper to insert a session with all required fields."""
     content_hash = hashlib.sha256(f"{source_name}:{session_id}".encode()).digest()
     conn.execute(
         """
-        INSERT INTO sessions (native_id, origin, title, content_hash)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (session_id, TEST_ORIGIN, title, content_hash),
+        (session_id, TEST_ORIGIN, raw_id, title, content_hash),
+    )
+
+
+def _write_raw_artifact(archive_root: Path, *, native_id: str, source_path: str, content: bytes) -> str:
+    """Write blob bytes plus a matching ``raw_sessions`` row; return the raw_id.
+
+    ``repair_empty_sessions`` (polylogue-ne6k) re-classifies each message-less
+    session's raw artifact through the live ``classify_artifact`` pipeline, so
+    a session that should be treated as debris (or retained) in these tests
+    needs a *real* raw artifact behind it, not just a bare ``raw_id`` string.
+    """
+    from polylogue.storage.blob_store import BlobStore
+
+    store = BlobStore(archive_root / "blob")
+    raw_id, blob_size = store.write_from_bytes(content)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, 0, ?, ?, 1)
+            """,
+            (raw_id, TEST_ORIGIN, native_id, source_path, bytes.fromhex(raw_id), blob_size),
+        )
+        conn.commit()
+    return raw_id
+
+
+def _write_debris_raw(archive_root: Path, native_id: str) -> str:
+    """An ``agent-*.meta.json`` sidecar: the genuinely-phantom artifact class
+    (4,945 of the 5,257 empty sessions on the live archive, polylogue-ne6k)."""
+    return _write_raw_artifact(
+        archive_root,
+        native_id=native_id,
+        source_path=f"agent-{native_id}.meta.json",
+        content=f'{{"agentType":"general-purpose","agentId":"{native_id}"}}'.encode(),
+    )
+
+
+def _write_legit_raw(archive_root: Path, native_id: str) -> str:
+    """A genuine record the current classifier still admits as a session --
+    the shape the 2026-07-22 hook-inflation postmortem retained ~832 of."""
+    return _write_raw_artifact(
+        archive_root,
+        native_id=native_id,
+        source_path=f"{native_id}.jsonl",
+        content=f'{{"type":"summary","sessionId":"{native_id}"}}\n'.encode(),
     )
 
 
@@ -215,7 +268,14 @@ class TestRepairOrphanedMessages:
 
 
 class TestRepairEmptySessions:
-    """Tests for repair_empty_sessions function."""
+    """Tests for repair_empty_sessions function.
+
+    polylogue-ne6k: a message-less session is deleted only when its raw
+    artifact positively fails the live ``classify_artifact`` pipeline (an
+    ``agent-*.meta.json`` sidecar phantom, here). A session with no messages
+    but a raw artifact the classifier still admits as a session (a genuinely
+    empty conversation), or with no raw provenance at all, must be retained.
+    """
 
     def test_clean_state_no_empty_sessions(self, cli_workspace: CliWorkspace) -> None:
         """repair_empty_sessions should return 0 when no empty convos exist."""
@@ -239,16 +299,19 @@ class TestRepairEmptySessions:
         assert result.success is True
 
     def test_empty_sessions_found_and_deleted(self, cli_workspace: CliWorkspace) -> None:
-        """repair_empty_sessions should find and delete empty sessions."""
+        """repair_empty_sessions deletes sessions whose raw artifact positively
+        fails classification (the agent-*.meta.json phantom shape)."""
         from polylogue.config import get_config
         from polylogue.storage.repair import repair_empty_sessions
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
+        archive_root = cli_workspace["archive_root"]
+        raw_1 = _write_debris_raw(archive_root, "empty-1")
+        raw_2 = _write_debris_raw(archive_root, "empty-2")
         with connection_context(None) as conn:
-            # Create empty sessions (no messages)
-            _insert_session(conn, "empty-1")
-            _insert_session(conn, "empty-2")
+            _insert_session(conn, "empty-1", raw_id=raw_1)
+            _insert_session(conn, "empty-2", raw_id=raw_2)
             conn.commit()
 
         # Act
@@ -264,6 +327,53 @@ class TestRepairEmptySessions:
             remaining = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             assert remaining == 0
 
+    def test_empty_sessions_retains_legitimately_empty_session(self, cli_workspace: CliWorkspace) -> None:
+        """A message-less session whose raw artifact the classifier still
+        admits as a session must survive -- this is the exact shape the
+        2026-07-22 hook-inflation postmortem retained ~832 of, and the exact
+        shape the old blanket predicate would have deleted (polylogue-ne6k)."""
+        from polylogue.config import get_config
+        from polylogue.storage.repair import repair_empty_sessions
+        from polylogue.storage.sqlite.connection import connection_context
+
+        config = get_config()
+        archive_root = cli_workspace["archive_root"]
+        legit_raw = _write_legit_raw(archive_root, "legit-empty")
+        debris_raw = _write_debris_raw(archive_root, "phantom")
+        with connection_context(None) as conn:
+            _insert_session(conn, "legit-empty", raw_id=legit_raw)
+            _insert_session(conn, "phantom", raw_id=debris_raw)
+            conn.commit()
+
+        result = repair_empty_sessions(config, dry_run=False)
+
+        assert result.repaired_count == 1
+
+        with connection_context(None) as conn:
+            remaining = {row[0] for row in conn.execute("SELECT native_id FROM sessions").fetchall()}
+            assert remaining == {"legit-empty"}
+
+    def test_empty_sessions_retains_no_provenance_session(self, cli_workspace: CliWorkspace) -> None:
+        """A message-less session with no raw_id at all has no positive
+        evidence either way and must be retained, not treated as debris by
+        default (the refuted 'raw_id IS NULL = debris' direction, polylogue-ne6k)."""
+        from polylogue.config import get_config
+        from polylogue.storage.repair import repair_empty_sessions
+        from polylogue.storage.sqlite.connection import connection_context
+
+        config = get_config()
+        with connection_context(None) as conn:
+            _insert_session(conn, "no-provenance", raw_id=None)
+            conn.commit()
+
+        result = repair_empty_sessions(config, dry_run=False)
+
+        assert result.repaired_count == 0
+
+        with connection_context(None) as conn:
+            remaining = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            assert remaining == 1
+
     def test_empty_sessions_dry_run_counts_but_doesnt_delete(self, cli_workspace: CliWorkspace) -> None:
         """repair_empty_sessions with dry_run=True should count but not delete."""
         from polylogue.config import get_config
@@ -271,8 +381,10 @@ class TestRepairEmptySessions:
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
+        archive_root = cli_workspace["archive_root"]
+        raw_1 = _write_debris_raw(archive_root, "empty-1")
         with connection_context(None) as conn:
-            _insert_session(conn, "empty-1")
+            _insert_session(conn, "empty-1", raw_id=raw_1)
             conn.commit()
 
         # Act
@@ -294,8 +406,10 @@ class TestRepairEmptySessions:
         from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
+        archive_root = cli_workspace["archive_root"]
+        raw_1 = _write_debris_raw(archive_root, "empty-1")
         with connection_context(None) as conn:
-            _insert_session(conn, "empty-1")
+            _insert_session(conn, "empty-1", raw_id=raw_1)
             conn.commit()
 
         # First repair
