@@ -171,6 +171,27 @@ def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _ingest_attempt_source_paths(source_path: object, source_paths_json: object) -> list[str]:
+    """Return the distinct source paths one ``ingest_attempts`` row covered.
+
+    ``source_paths_json`` is the authoritative multi-path record (a batch
+    attempt can span several files); ``source_path`` is the older
+    single-path column, kept as a fallback for rows/callers that never
+    populate the JSON list.
+    """
+    paths: list[str] = []
+    if isinstance(source_paths_json, str) and source_paths_json.strip():
+        try:
+            decoded = json.loads(source_paths_json)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, list):
+            paths.extend(str(item) for item in decoded if isinstance(item, str) and item)
+    if not paths and isinstance(source_path, str) and source_path:
+        paths.append(source_path)
+    return paths
+
+
 def _epoch_ms(value: str | None) -> int | None:
     if value is None:
         return None
@@ -313,10 +334,32 @@ class CursorStore:
             conn.close()
 
     def _mark_interrupted_ops_attempts(self) -> None:
+        """Stamp dangling 'running' attempts interrupted and register retry debt.
+
+        A daemon crash/restart mid-batch leaves ``ingest_attempts`` rows stuck
+        at ``status = 'running'``. This unconditionally sweeps them to
+        ``interrupted`` on the next ``CursorStore`` initialization, but until
+        polylogue-61jg the trail ended there: nothing registered the affected
+        source paths as retryable ``convergence_debt``, so validation/parse
+        for the interrupted batch waited for an accidental future touch (a
+        later unrelated re-acquire of the same path) instead of being driven
+        by the daemon's own convergence loop. Reading each affected attempt's
+        ``source_paths_json`` *before* the sweep and recording one
+        ``raw_parse_recovery`` debt row per distinct path closes that gap
+        using the same durable, restart-surviving retry substrate every other
+        convergence stage already uses (see
+        ``daemon.convergence_stages.make_raw_parse_recovery_stage``).
+        """
         now_ms = _epoch_ms(datetime.now(UTC).isoformat())
+        interrupted_source_paths: list[str] = []
 
         def write() -> None:
             with self._connect_ops() as conn:
+                rows = conn.execute(
+                    "SELECT source_path, source_paths_json FROM ingest_attempts WHERE status = 'running'"
+                ).fetchall()
+                for source_path, source_paths_json in rows:
+                    interrupted_source_paths.extend(_ingest_attempt_source_paths(source_path, source_paths_json))
                 conn.execute(
                     """
                     UPDATE ingest_attempts
@@ -332,6 +375,13 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
+        for source_path in dict.fromkeys(interrupted_source_paths):
+            self.record_convergence_debt(
+                stage="raw_parse_recovery",
+                subject_type="source_path",
+                subject_id=source_path,
+                error="daemon stopped before completing this ingest attempt",
+            )
 
     @staticmethod
     def _write_cursor_record_on_conn(conn: sqlite3.Connection, record: CursorRecord) -> None:
