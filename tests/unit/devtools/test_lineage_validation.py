@@ -37,7 +37,8 @@ def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
                 git_branch TEXT,
                 git_repository_url TEXT,
                 provider_project_ref TEXT,
-                message_count INTEGER DEFAULT 0
+                message_count INTEGER DEFAULT 0,
+                reported_cost_usd REAL
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -90,7 +91,8 @@ def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
                 occurred_at_ms INTEGER,
                 paste_boundary TEXT,
                 duration_ms INTEGER,
-                parent_message_id TEXT
+                parent_message_id TEXT,
+                stop_reason TEXT
             );
             CREATE TABLE blocks (
                 block_id TEXT,
@@ -104,6 +106,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False) -> Path:
                 language TEXT,
                 tool_result_is_error INTEGER,
                 tool_result_exit_code INTEGER,
+                tool_result_outcome_unknown_reason TEXT,
                 position INTEGER
             );
             INSERT INTO sessions(session_id, native_id, origin, title, root_session_id, branch_type, message_count)
