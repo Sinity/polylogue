@@ -220,7 +220,20 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # raw evidence recovers the corrected identity split. `polylogue ops reset
 # --index && polylogued run` is required; deliberately NOT executed by this
 # declaration.
-INDEX_SCHEMA_VERSION = 53
+INDEX_SCHEMA_VERSION = 54
+
+# PR #3537: tightened `claude.looks_like_ai` (polylogue/sources/parsers/
+# claude/ai_parser.py) to require at least one `chat_messages` entry
+# carrying a role/sender field plus a text/content field, instead of
+# accepting a bare (even empty) `chat_messages` key -- the same
+# positive-evidence-required shape as PR #3428's `looks_like_code` fix.
+# This moves the classifier's decision boundary for identical input
+# bytes: some payloads previously admitted as claude-ai-export sessions
+# are now refused. SEMANTIC_REPARSE, not a free fast-forward: only
+# re-parsing already-acquired raw evidence applies the corrected
+# admission decision to existing rows. `polylogue ops reset --index &&
+# polylogued run` is required; deliberately NOT executed by this
+# declaration.
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

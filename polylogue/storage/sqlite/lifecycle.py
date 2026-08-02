@@ -660,6 +660,19 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # this declaration.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=54,
+        # PR #3537: tightened claude.looks_like_ai (sources/parsers/claude/
+        # ai_parser.py) to require a genuine chat_messages entry (role/sender
+        # + text/content) rather than a bare chat_messages key -- see
+        # INDEX_SCHEMA_VERSION's v54 comment (archive_tiers/index.py) for the
+        # full writeup. Moves the classifier's admission decision for
+        # already-acquired raw evidence, so it requires re-parsing, not a
+        # clone-safe fast-forward. SEMANTIC_REPARSE routes through `polylogue
+        # ops reset --index && polylogued run`, deliberately NOT executed by
+        # this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

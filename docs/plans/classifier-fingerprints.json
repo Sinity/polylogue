@@ -137,11 +137,12 @@
       }
     },
     "polylogue/sources/parsers/claude/ai_parser.py:looks_like_ai": {
-      "fingerprint": "e5886ec01e23439d5a02ce5515e80de2695c483cd0fe2f0e843c52d504debaa9",
+      "fingerprint": "d30a5251e41ab079c8465c6892bd3124bcdd634a352edfaaf3b4c3faf21d080d",
       "covered_by": {
-        "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "kind": "semantic_reparse_version",
+        "reason": "PR #3537 tightened looks_like_ai to require positive chat_messages evidence (role/sender+text/content), same shape as PR #3428's looks_like_code fix",
+        "ref": "polylogue-t0ta",
+        "version": 54
       }
     },
     "polylogue/sources/parsers/claude/ai_parser.py:looks_like_claude_design": {
