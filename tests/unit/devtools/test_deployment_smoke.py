@@ -814,8 +814,8 @@ def test_deployment_smoke_accepts_materialized_browser_capture_at_latest_mtime(t
 
 
 def test_deployment_smoke_accepts_legacy_spooled_id_normalized_by_index(tmp_path: Path) -> None:
-    legacy_id = "chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806"
-    native_id = "6a232355-ac3c-83eb-a93d-9c70697bfc18"
+    legacy_id = "chatgpt:2fcf01f9-beb1-474f-bd1c-84e1bec712ca:9f658806"
+    native_id = "2fcf01f9-beb1-474f-bd1c-84e1bec712ca"
     capture = _write_spooled_capture(tmp_path, provider_session_id=legacy_id)
     _create_browser_source_db(
         tmp_path,

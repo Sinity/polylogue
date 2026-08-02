@@ -271,7 +271,7 @@ No existing test or helper is deleted. No production schema migration is introdu
 
 This revision provides reusable support for the terminal gate but does not satisfy the following live requirements:
 
-- recovery of coordinator `cf0c6474-da22-44be-af3e-666037aa5ea4` and run `wf_54d4fb2e-841` from the operator's authorized archive;
+- recovery of coordinator `db4a1f9d-585a-4fe0-a90e-d40814018dd3` and run `wf_54d4fb2e-841` from the operator's authorized archive;
 - real run-state/journal/metadata/source-ref membership proof rather than synthetic markers;
 - git, PR, Beads, and other effect evidence;
 - explicit model, material, call, attempt, session, claim, and effect scope distinctions;

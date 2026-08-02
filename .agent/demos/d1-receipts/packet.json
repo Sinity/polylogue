@@ -14,7 +14,7 @@
     ]
   },
   "claim": {
-    "statement": "session_refs resolves PR #3282 to claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc, and 3 of 4 checked PR-body claims are supported by that session's own recorded blocks; the fourth is correctly scored not_supported rather than assumed.",
+    "statement": "session_refs resolves PR #3282 to claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39, and 3 of 4 checked PR-body claims are supported by that session's own recorded blocks; the fourth is correctly scored not_supported rather than assumed.",
     "declared_before_execution": true,
     "scope": "one real merged PR (Sinity/polylogue#3282) and its session_refs-resolved authoring/dispatch session, on the live archive at /realm/db/polylogue",
     "status": "supported",
@@ -121,7 +121,7 @@
     "private_data": true,
     "commands": [
       "sqlite3 \"file:/realm/db/polylogue/index.db?mode=ro\" \"SELECT session_id, repo, ref_number, url FROM session_refs WHERE kind='pull_request' AND repo='Sinity/polylogue' AND ref_number=3282\"",
-      "polylogue find \"id:claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc\" then read --view correlation --format json",
+      "polylogue find \"id:claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39\" then read --view correlation --format json",
       "gh pr view 3282 --repo Sinity/polylogue --json body"
     ]
   },

@@ -545,6 +545,6 @@ migration decision the dead-code evidence doesn't by itself compel.
   findings — the method is validated against a known-true result in each case.
 - No product code, schema, or bead state was modified to produce this
   artifact. Scratch scripts used for the table-matrix extraction are at
-  `/tmp/claude-1000/-realm-project-polylogue/3b0038ec-234c-44b8-bb88-fe222b44fe0f/scratchpad/{extract_tables.py,classify_tables_v2.py,results_v2.json,final_matrix.txt}`
+  `/tmp/claude-1000/-realm-project-polylogue/1bb3ece3-52b5-41ba-8cf9-9bf40c9aa6f2/scratchpad/{extract_tables.py,classify_tables_v2.py,results_v2.json,final_matrix.txt}`
   (session-scoped, not committed — the bead's AC #5 for a re-runnable devtools
   lane is a separate follow-up, not satisfied by this scratch copy).

@@ -657,17 +657,17 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
             return None
 
         def resolve_session_id(self, token: str) -> str:
-            assert token == "chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1"
+            assert token == "chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
             return token
 
         def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
             raise AssertionError("exact id: refs must not fall through to FTS")
 
         def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
-            assert session_id == "chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1"
+            assert session_id == "chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
             return ArchiveSessionEnvelope(
                 session_id=session_id,
-                native_id="6a49af33-d698-83ed-a11f-8750f19027e1",
+                native_id="72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb",
                 origin="chatgpt-export",
                 title="Captured ChatGPT session",
                 active_leaf_message_id=None,
@@ -684,7 +684,7 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
             env,
             {
                 "archive": True,
-                "query": ("id:chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1",),
+                "query": ("id:chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb",),
                 "output_format": "json",
             },
         )
@@ -692,7 +692,7 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["mode"] == "session"
-    assert payload["session_id"] == "chatgpt-export:6a49af33-d698-83ed-a11f-8750f19027e1"
+    assert payload["session_id"] == "chatgpt-export:72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
     assert payload["messages"] == []
 
 
@@ -707,7 +707,7 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
     config = MagicMock()
     config.archive_root = archive_root
     env = _make_env(repo=MagicMock(), config=config)
-    native_id = "6a49af33-d698-83ed-a11f-8750f19027e1"
+    native_id = "72aa7ed5-4c0f-42b9-b5c0-138d23a0d1cb"
 
     class FakeArchiveStore:
         def __enter__(self) -> FakeArchiveStore:

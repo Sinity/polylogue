@@ -7049,7 +7049,7 @@ index 54ef5e0b2b7bbd22891e3f2c66d761eabc4bb4e2..06a5fd3b7ac16ee67692af9d96e646dc
 -            "refs": ["session:coordinator", "run:wf-1", "commit:abc123", "bead:xyz"],
 -            "calls": 8,
 -            "answer": {
--                "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
+-                "coordinator_session": "db4a1f9d-585a-4fe0-a90e-d40814018dd3",
 -                "run_ref": "wf_54d4fb2e-841",
 -                "workflow_invocations": 4,
 -                "call_keys": 50,
@@ -7128,7 +7128,7 @@ index 54ef5e0b2b7bbd22891e3f2c66d761eabc4bb4e2..06a5fd3b7ac16ee67692af9d96e646dc
  
 -    assert result["classification"] == "pass"
 -    assert result["expected_answer"] == {
--        "coordinator_session": "cf0c6474-da22-44be-af3e-666037aa5ea4",
+-        "coordinator_session": "db4a1f9d-585a-4fe0-a90e-d40814018dd3",
 -        "run_ref": "wf_54d4fb2e-841",
 -        "workflow_invocations": 4,
 -        "call_keys": 50,

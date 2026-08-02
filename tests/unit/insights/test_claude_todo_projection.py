@@ -26,7 +26,7 @@ from polylogue.insights.measurement.registered_metrics import (
 )
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
-_SESSION_A = "005aeeae-bd21-4a4c-b928-e9ee5f6b8394"
+_SESSION_A = "138e259e-435f-4259-8c68-dbd5aa9f9837"
 _SESSION_B = "0092150d-6b81-43f9-85e2-ceeb2d1c8773"
 _AGENT_B = "00afa7b1-f546-425e-95dc-d1a7093b09d2"
 

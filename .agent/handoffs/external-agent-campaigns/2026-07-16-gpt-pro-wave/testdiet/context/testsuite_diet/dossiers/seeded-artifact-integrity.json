@@ -84737,7 +84737,7 @@
           "tests/conftest.py"
         ],
         "duration_s": 0.0032469309953739867,
-        "nodeid": "tests/unit/sources/test_browser_capture.py::test_browser_capture_normalizes_legacy_synthetic_dom_session_ids[chatgpt-chatgpt-6a232355-ac3c-83eb-a93d-9c70697bfc18-20105879-0-6a232355-ac3c-83eb-a93d-9c70697bfc18]"
+        "nodeid": "tests/unit/sources/test_browser_capture.py::test_browser_capture_normalizes_legacy_synthetic_dom_session_ids[chatgpt-chatgpt-2fcf01f9-beb1-474f-bd1c-84e1bec712ca-20105879-0-2fcf01f9-beb1-474f-bd1c-84e1bec712ca]"
       },
       {
         "dependencies": [
@@ -84751,7 +84751,7 @@
           "tests/conftest.py"
         ],
         "duration_s": 0.0031417549907928333,
-        "nodeid": "tests/unit/sources/test_browser_capture.py::test_browser_capture_normalizes_legacy_synthetic_dom_session_ids[chatgpt-chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806-6a232355-ac3c-83eb-a93d-9c70697bfc18]"
+        "nodeid": "tests/unit/sources/test_browser_capture.py::test_browser_capture_normalizes_legacy_synthetic_dom_session_ids[chatgpt-chatgpt:2fcf01f9-beb1-474f-bd1c-84e1bec712ca:9f658806-2fcf01f9-beb1-474f-bd1c-84e1bec712ca]"
       },
       {
         "dependencies": [

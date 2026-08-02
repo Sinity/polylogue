@@ -489,7 +489,7 @@ def test_browser_capture_raw_chatgpt_normalizes_legacy_synthetic_fallback_id() -
     payload = _capture_payload()
     session = payload["session"]
     assert isinstance(session, dict)
-    session["provider_session_id"] = "chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806"
+    session["provider_session_id"] = "chatgpt:2fcf01f9-beb1-474f-bd1c-84e1bec712ca:9f658806"
     payload["raw_provider_payload"] = {
         "title": "Native ChatGPT title",
         "current_node": "assistant-node",
@@ -511,7 +511,7 @@ def test_browser_capture_raw_chatgpt_normalizes_legacy_synthetic_fallback_id() -
     parsed = parse_payload(Provider.CHATGPT, payload, "file-fallback")
 
     assert len(parsed) == 1
-    assert parsed[0].provider_session_id == "6a232355-ac3c-83eb-a93d-9c70697bfc18"
+    assert parsed[0].provider_session_id == "2fcf01f9-beb1-474f-bd1c-84e1bec712ca"
 
 
 def test_browser_capture_prefers_raw_claude_ai_payload_when_present() -> None:
@@ -684,7 +684,7 @@ def test_browser_capture_supports_claude_ai_provider() -> None:
 @pytest.mark.parametrize(
     ("provider", "legacy_id", "expected_id"),
     [
-        ("chatgpt", "chatgpt:6a232355-ac3c-83eb-a93d-9c70697bfc18:9f658806", "6a232355-ac3c-83eb-a93d-9c70697bfc18"),
+        ("chatgpt", "chatgpt:2fcf01f9-beb1-474f-bd1c-84e1bec712ca:9f658806", "2fcf01f9-beb1-474f-bd1c-84e1bec712ca"),
         (
             "claude-ai",
             "claude-ai:6a590003-3e69-4eb7-aed3-fbb75fb800c0:ce1a9248",
@@ -697,8 +697,8 @@ def test_browser_capture_supports_claude_ai_provider() -> None:
         ),
         (
             "chatgpt",
-            "chatgpt-6a232355-ac3c-83eb-a93d-9c70697bfc18-20105879-0",
-            "6a232355-ac3c-83eb-a93d-9c70697bfc18",
+            "chatgpt-2fcf01f9-beb1-474f-bd1c-84e1bec712ca-20105879-0",
+            "2fcf01f9-beb1-474f-bd1c-84e1bec712ca",
         ),
         (
             "chatgpt",

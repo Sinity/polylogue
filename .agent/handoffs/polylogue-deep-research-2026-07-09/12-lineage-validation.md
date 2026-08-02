@@ -225,8 +225,8 @@ enforces the enum domain).
 Capture **NOW** (pre-re-ingest) the full stored transcript text for a fixed sample
 of soon-to-be-normalized children, then after re-ingest compose them and compare.
 Sample IDs to snapshot now (all currently store the full replay):
-- `codex-session:019d4eea-48bb-7912-a446-3c0dfdfd530f` (62,776 msgs, parent 019d1c2a)
-- `codex-session:019d4efc-a707-76b2-a2fb-701862c664f5` (62,774 msgs)
+- `codex-session:32e18116-364b-478a-b5f7-c9e7fd1b2a58` (62,776 msgs, parent 019d1c2a)
+- `codex-session:440c874a-fdd2-4df0-b33e-7ce16ff20199` (62,774 msgs)
 - 3-5 `agent-acompact-*` subagents (`native_id LIKE '%agent-acompact-%'`)
 - a few `spawned-fresh` Claude subagents (must be byte-identical, no parent prepend)
 ```python

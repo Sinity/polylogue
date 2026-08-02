@@ -24,19 +24,19 @@ The sensible split is:
 
 Most relevant captures:
 
-- `6a2ea930-87a8-83eb-adb7-4cf38ccaa6a3-05bdfeaa1571.json`
+- `c5d57917-72ed-46ce-bf84-abd0b815d3f0-05bdfeaa1571.json`
   - `AAA Provisional central planning center for polylogue and sinex`
   - 3475 turns; central strategic session.
-- `6a2d9333-347c-83ed-b8ef-ff3cf99f1d78-cef138c6c70f.json`
+- `9e737d7b-4e40-48fd-a231-c550de1b8245-cef138c6c70f.json`
   - `Analyze Chatlog Against Projects`
   - 1708 turns; broad repo/project analysis.
-- `6a232355-ac3c-83eb-a93d-9c70697bfc18-ed8cb11eeb05.json`
+- `2fcf01f9-beb1-474f-bd1c-84e1bec712ca-ed8cb11eeb05.json`
   - `Analysis and Report Request`
   - 577 turns.
-- `6a398eb4-15ac-83eb-b987-9a0ef2596eb7-c857dc95533d.json`
+- `37856346-389e-4e6b-bfb0-795a13d251b3-c857dc95533d.json`
   - `High Lifetime Token Use`
   - 297 turns.
-- `6a3ae33a-ca4c-83ed-986e-d717099436a9-49f8112b86c3.json`
+- `4c551436-b69c-45d2-82a3-14de7de07326-49f8112b86c3.json`
   - `Lynchpin Structure Overview`
   - 86 turns.
 - Short but important lane receipts:

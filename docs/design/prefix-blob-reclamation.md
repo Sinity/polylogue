@@ -91,15 +91,15 @@ growth than Claude Code's transcript capture does.
 
 | Reclaimable | Members | Origin | Path |
 |---:|---:|---|---|
-| 7.91 GB (3.80GB bucket A + 4.11GB bucket B) | 391 | codex-session | `.../2026/07/12/rollout-...-019f5562-33d8-7cf2-becc-d8cabc96e894.jsonl` |
-| 2.49 GB | 6 | codex-session | `.../2026/06/29/rollout-...-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl` |
-| 2.13 GB | 101 | codex-session | `.../2026/07/12/rollout-...-019f579a-9800-7542-ab6e-b6a90d81026a.jsonl` |
+| 7.91 GB (3.80GB bucket A + 4.11GB bucket B) | 391 | codex-session | `.../2026/07/12/rollout-...-a3768434-df98-4079-a1ef-e1675c72c7a8.jsonl` |
+| 2.49 GB | 6 | codex-session | `.../2026/06/29/rollout-...-cd30b1bd-e614-4c5a-be51-7605b3504ccf.jsonl` |
+| 2.13 GB | 101 | codex-session | `.../2026/07/12/rollout-...-dc722ef1-338f-4523-9700-da25eaa82ceb.jsonl` |
 | 778 MB | 54 | claude-code-session | `.../projects/-realm-project-polylogue/22155309-....jsonl` |
-| 625 MB | 53 | codex-session | `.../2026/07/13/rollout-...-019f59ac-a602-7ca0-872f-db5ba6a93070.jsonl` |
+| 625 MB | 53 | codex-session | `.../2026/07/13/rollout-...-3199535f-32cb-4306-89bf-b5d2329fa2ba.jsonl` |
 | 518 MB | 25 | claude-code-session | `.../projects/-realm-project-polylogue/3b0038ec-....jsonl` |
-| 370 MB | 28 | codex-session | `.../2026/07/13/rollout-...-019f5a33-fbf0-7592-b6b5-1879838b5079.jsonl` |
-| 361 MB | 7 | codex-session | `.../2026/07/14/rollout-...-019f6295-ae1d-7d81-aab0-a5927ae3de6f.jsonl` |
-| 235 MB | 22 | codex-session | `.../2026/07/13/rollout-...-019f58fd-62b7-7d63-8cf0-b1a8616602f1.jsonl` |
+| 370 MB | 28 | codex-session | `.../2026/07/13/rollout-...-fcca0f3c-dd5f-4470-a251-7231553e9163.jsonl` |
+| 361 MB | 7 | codex-session | `.../2026/07/14/rollout-...-25bb426a-995b-490d-9ae6-9854042464db.jsonl` |
+| 235 MB | 22 | codex-session | `.../2026/07/13/rollout-...-085678ff-b89e-49bf-a5fe-b374cc36163e.jsonl` |
 | 197 MB | 20 | claude-code-session | `.../projects/-realm-project-sinex/29c9c033-....jsonl` |
 
 The single biggest cohort (one live Codex rollout, still growing) alone

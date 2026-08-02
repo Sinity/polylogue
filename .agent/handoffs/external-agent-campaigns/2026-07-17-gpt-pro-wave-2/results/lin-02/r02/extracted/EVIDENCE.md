@@ -57,7 +57,7 @@ Current title: **Prove mandate recovery through real agent continuity replays**.
 Material acceptance requirements include:
 
 - all seven `t8t` flows as real MCP walks;
-- sparse recovery of coordinator `cf0c6474-da22-44be-af3e-666037aa5ea4` and run `wf_54d4fb2e-841`;
+- sparse recovery of coordinator `db4a1f9d-585a-4fe0-a90e-d40814018dd3` and run `wf_54d4fb2e-841`;
 - exactly 129 coordinator children partitioned into 91 target-run attempts and 38 other children;
 - four Workflow invocations, 50 call keys, 91 attempts, 65 result records, 49 completed keys, one unresolved key, and one final structured result;
 - membership proof from run state/journal/metadata/invocations/source refs, not `parent_session_id` alone;

@@ -11,7 +11,7 @@ from polylogue.sources.parsers.claude.todos import (
     session_and_agent_id_from_filename,
 )
 
-_SESSION_ID = "005aeeae-bd21-4a4c-b928-e9ee5f6b8394"
+_SESSION_ID = "138e259e-435f-4259-8c68-dbd5aa9f9837"
 _AGENT_ID = "0092150d-6b81-43f9-85e2-ceeb2d1c8773"
 
 

@@ -876,7 +876,7 @@
       "queued_file_count": 1,
       "read_amplification": 0.0,
       "source_paths": [
-        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl"
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-cd8bbde8-d867-4654-9672-b9cf869995a7.jsonl"
       ],
       "source_payload_read_bytes": 49825,
       "stage_timings_s": {
@@ -938,7 +938,7 @@
       "queued_file_count": 13699,
       "read_amplification": 0.0,
       "source_paths": [
-        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl"
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-cd30b1bd-e614-4c5a-be51-7605b3504ccf.jsonl"
       ],
       "source_payload_read_bytes": 11493,
       "stage_timings_s": {
@@ -996,7 +996,7 @@
       "queued_file_count": 1,
       "read_amplification": 0.0,
       "source_paths": [
-        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl"
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-cd8bbde8-d867-4654-9672-b9cf869995a7.jsonl"
       ],
       "source_payload_read_bytes": 94657,
       "stage_timings_s": {
@@ -1058,7 +1058,7 @@
       "queued_file_count": 13699,
       "read_amplification": 0.0,
       "source_paths": [
-        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl"
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-cd30b1bd-e614-4c5a-be51-7605b3504ccf.jsonl"
       ],
       "source_payload_read_bytes": 18921,
       "stage_timings_s": {
@@ -1116,7 +1116,7 @@
       "queued_file_count": 1,
       "read_amplification": 0.0,
       "source_paths": [
-        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl"
+        "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-cd8bbde8-d867-4654-9672-b9cf869995a7.jsonl"
       ],
       "source_payload_read_bytes": 13644,
       "stage_timings_s": {
@@ -1176,7 +1176,7 @@
       "orphan_raw_count": 18,
       "raw_count": 19,
       "session_count": 1,
-      "source_path": "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-019f12b5-1a85-7b42-858e-44eccf8469dc.jsonl",
+      "source_path": "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-28-06-cd30b1bd-e614-4c5a-be51-7605b3504ccf.jsonl",
       "storage_route": "archive_file_set",
       "total_blob_bytes": 2523369313
     },
@@ -1188,7 +1188,7 @@
       "orphan_raw_count": 14,
       "raw_count": 15,
       "session_count": 1,
-      "source_path": "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-019f12b5-fc19-7110-b069-4f49a78da82d.jsonl",
+      "source_path": "/home/sinity/.codex/sessions/2026/06/29/rollout-2026-06-29T11-29-04-cd8bbde8-d867-4654-9672-b9cf869995a7.jsonl",
       "storage_route": "archive_file_set",
       "total_blob_bytes": 431478053
     }

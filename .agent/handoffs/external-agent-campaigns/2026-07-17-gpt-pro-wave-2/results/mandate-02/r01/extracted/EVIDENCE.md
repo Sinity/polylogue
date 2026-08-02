@@ -47,7 +47,7 @@ A note reports seven deterministic continuity scenarios and independent fixture-
 
 State: open, P0.
 
-The terminal gate depends on `polylogue-1vpm.6.2`, `polylogue-2qx.2`, `polylogue-t8t`, `polylogue-z9gh.3`, and `polylogue-z9gh.9.1`. Its exact census requires coordinator `cf0c6474-da22-44be-af3e-666037aa5ea4`, run `wf_54d4fb2e-841`, four invocations, 50 calls, 91 attempt transcripts, 65 results over 49 completed keys, one unresolved key, final structured result, and exclusion of 38 unrelated child sessions. No admitted raw incident corpus was supplied for executing that proof.
+The terminal gate depends on `polylogue-1vpm.6.2`, `polylogue-2qx.2`, `polylogue-t8t`, `polylogue-z9gh.3`, and `polylogue-z9gh.9.1`. Its exact census requires coordinator `db4a1f9d-585a-4fe0-a90e-d40814018dd3`, run `wf_54d4fb2e-841`, four invocations, 50 calls, 91 attempt transcripts, 65 results over 49 completed keys, one unresolved key, final structured result, and exclusion of 38 unrelated child sessions. No admitted raw incident corpus was supplied for executing that proof.
 
 ## Fixture evidence in this patch
 
