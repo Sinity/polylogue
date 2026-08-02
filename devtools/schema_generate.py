@@ -1,4 +1,10 @@
-"""Generate provider schema packages from the devtools surface."""
+"""Generate provider schema packages from the devtools surface.
+
+This command previews a schema generation only -- it never writes to
+``polylogue/schemas/providers/``. To actually persist a full-corpus
+generation into the committed package files, use
+``devtools lab schema commit`` (``devtools/schema_commit.py``).
+"""
 
 from __future__ import annotations
 

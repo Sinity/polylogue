@@ -2875,7 +2875,7 @@ files:
     target: polylogue/schemas/generation/support.py
     owner: stable
   - path: polylogue/schemas/generation/workflow.py
-    loc: 121
+    loc: 123
     target: polylogue/schemas/generation/workflow.py
     owner: stable
   - path: polylogue/schemas/generation/workload_profiles.py
@@ -2968,12 +2968,16 @@ files:
     loc: 265
     target: polylogue/schemas/operator/annotations.py
     owner: stable
+  - path: polylogue/schemas/operator/commit.py
+    loc: 163
+    target: polylogue/schemas/operator/commit.py
+    owner: stable
   - path: polylogue/schemas/operator/inference.py
-    loc: 361
+    loc: 372
     target: polylogue/schemas/operator/inference.py
     owner: stable
   - path: polylogue/schemas/operator/models.py
-    loc: 347
+    loc: 415
     target: polylogue/schemas/operator/models.py
     owner: stable
   - path: polylogue/schemas/operator/registry.py
@@ -2993,7 +2997,7 @@ files:
     target: polylogue/schemas/operator/verification.py
     owner: stable
   - path: polylogue/schemas/operator/workflow.py
-    loc: 55
+    loc: 59
     target: polylogue/schemas/operator/workflow.py
     owner: stable
   - path: polylogue/schemas/packages.py
@@ -3117,6 +3121,10 @@ files:
   - path: polylogue/schemas/tooling_registry.py
     loc: 348
     target: polylogue/schemas/tooling_registry.py
+    owner: stable
+  - path: polylogue/schemas/type_narrowing.py
+    loc: 71
+    target: polylogue/schemas/type_narrowing.py
     owner: stable
   - path: polylogue/schemas/validation/__init__.py
     loc: 1

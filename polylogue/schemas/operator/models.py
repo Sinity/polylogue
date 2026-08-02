@@ -345,3 +345,71 @@ class SchemaPayloadResolveResult:
     @property
     def is_resolved(self) -> bool:
         return self.resolution is not None
+
+
+@dataclass(frozen=True)
+class SchemaCommitRequest:
+    """Request to commit (or dry-run) a real full-corpus schema generation.
+
+    ``privacy_config`` takes the same ``JSONDocument | None`` payload shape as
+    ``SchemaInferRequest.privacy_config`` (converted internally via
+    ``privacy_config_from_payload``), so CLI callers can build it the same way
+    ``devtools lab schema generate`` already does.
+    """
+
+    provider: str
+    output_dir: Path
+    db_path: Path | None = None
+    max_samples: int | None = None
+    privacy_config: JSONDocument | None = None
+    full_corpus: bool = True
+    dry_run: bool = False
+
+
+@dataclass(frozen=True)
+class SchemaVersionCommitReport:
+    """What happened to a single package version during a commit."""
+
+    version: str
+    status: str  # "new" | "changed" | "unchanged"
+    sample_count: int
+    narrowed_paths: tuple[str, ...] = field(default_factory=tuple)
+    added_paths: tuple[str, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> JSONDocument:
+        return {
+            "version": self.version,
+            "status": self.status,
+            "sample_count": self.sample_count,
+            "narrowed_paths": list(self.narrowed_paths),
+            "added_paths": list(self.added_paths),
+        }
+
+
+@dataclass(frozen=True)
+class SchemaCommitResult:
+    """Before/after report for a real (or dry-run) schema commit."""
+
+    provider: str
+    generation: GenerationResult
+    versions: tuple[SchemaVersionCommitReport, ...]
+    dry_run: bool
+
+    @property
+    def success(self) -> bool:
+        return self.generation.success
+
+    @property
+    def narrowed(self) -> bool:
+        """True if any previously-committed leaf type was lost or narrowed."""
+        return any(report.narrowed_paths for report in self.versions)
+
+    def to_dict(self) -> JSONDocument:
+        return {
+            "provider": self.provider,
+            "success": self.success,
+            "narrowed": self.narrowed,
+            "dry_run": self.dry_run,
+            "sample_count": self.generation.sample_count,
+            "versions": [report.to_dict() for report in self.versions],
+        }

@@ -23,26 +23,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
-
-
-def _types_by_path(schema: Any, path: str = "") -> dict[str, frozenset[str]]:
-    """Every typed node in a schema, keyed by structural path."""
-    found: dict[str, frozenset[str]] = {}
-    if isinstance(schema, dict):
-        declared = schema.get("type")
-        if isinstance(declared, str):
-            found[path] = frozenset({declared})
-        elif isinstance(declared, list):
-            found[path] = frozenset(item for item in declared if isinstance(item, str))
-        for key, value in schema.items():
-            if not isinstance(value, (dict, list)):
-                continue
-            structural = key in ("properties", "items", "additionalProperties", "anyOf", "oneOf", "allOf")
-            found.update(_types_by_path(value, path if structural else f"{path}.{key}"))
-    elif isinstance(schema, list):
-        for entry in schema:
-            found.update(_types_by_path(entry, path))
-    return found
+from polylogue.schemas.type_narrowing import types_by_path as _types_by_path
 
 
 def test_merging_a_thin_window_cannot_narrow_a_union() -> None:
@@ -60,6 +41,21 @@ def test_merging_a_thin_window_cannot_narrow_a_union() -> None:
 
     timestamp = cast("dict[str, Any]", cast("dict[str, Any]", merged["properties"])["timestamp"])
     assert set(timestamp["type"]) == {"string", "number"}
+
+
+def test_types_by_path_unions_anyof_branches_at_the_same_path() -> None:
+    """CodeRabbit finding on PR #3538: found.update() overwrote an earlier
+    anyOf branch's types at a shared path instead of merging them, so a
+    later schema keeping only the last branch's type wouldn't register as
+    narrowed even though the earlier branch's type was really lost."""
+    schema: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "value": {"anyOf": [{"type": "string"}, {"type": "number"}]},
+        },
+    }
+    types = _types_by_path(schema)
+    assert types[".value"] == frozenset({"string", "number"})
 
 
 def test_merging_cannot_drop_a_field_the_package_already_carried() -> None:

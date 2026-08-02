@@ -88,6 +88,7 @@ pipeline.
 3. **Register the detector** in `polylogue/sources/dispatch.py` at the
    appropriate priority level
 4. **Add a provider schema bundle** under `polylogue/schemas/providers/`
-   (run `devtools lab schema generate` to bootstrap)
+   (run `devtools lab schema generate` to preview, `devtools lab schema commit`
+   to actually write the committed package files)
 5. **Update schema inference** if the new provider introduces novel content
    block types or message structures
