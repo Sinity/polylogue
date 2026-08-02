@@ -46,8 +46,46 @@ CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG = "capture:claude-account-memory"
 logger = get_logger(__name__)
 
 
+#: Role-shaped keys ``normalize_chat_messages``/``_raw_role`` themselves read
+#: (``common.py:_raw_role``): ``sender``/``role`` directly, or ``author.role``.
+_CLAUDE_AI_MESSAGE_ROLE_KEYS = ("sender", "role", "author")
+#: Content-shaped keys a genuine chat turn carries one of.
+_CLAUDE_AI_MESSAGE_CONTENT_KEYS = ("text", "content")
+
+
+def _chat_message_node_shape_is_plausible(item: object) -> bool:
+    """Positive structural evidence for one claude.ai ``chat_messages`` entry.
+
+    Mirrors the Claude Code envelope-marker fix (#3428,
+    ``code_detection.py:looks_like_code``): a bare ``chat_messages`` key is
+    not sufficient evidence on its own that a payload is a claude.ai export --
+    require at least one entry shaped like a real chat turn (a role/sender
+    field alongside a text/content field), matching what
+    ``normalize_chat_messages``/``_raw_role`` themselves read.
+    """
+    if not isinstance(item, Mapping):
+        return False
+    has_role = any(key in item for key in _CLAUDE_AI_MESSAGE_ROLE_KEYS)
+    has_content = any(key in item for key in _CLAUDE_AI_MESSAGE_CONTENT_KEYS)
+    return has_role and has_content
+
+
 def looks_like_ai(payload: object) -> bool:
-    return isinstance(payload, dict) and isinstance(payload.get("chat_messages"), list)
+    """Detect the claude.ai conversation-export shape.
+
+    Tightened (fail-closed acquisition sweep, sibling fix to #3428): a bare
+    ``chat_messages: []`` -- or a list whose entries don't resemble a real
+    chat turn -- used to be accepted on the strength of the key's mere
+    presence, the same "guess and proceed" shape #3428 closed for Claude
+    Code's bare ``type`` check. This now requires at least one entry with
+    positive structural evidence (see ``_chat_message_node_shape_is_plausible``).
+    """
+    if not isinstance(payload, dict):
+        return False
+    chat_messages = payload.get("chat_messages")
+    if not isinstance(chat_messages, list) or not chat_messages:
+        return False
+    return any(_chat_message_node_shape_is_plausible(item) for item in chat_messages)
 
 
 def looks_like_claude_design(payload: object) -> bool:

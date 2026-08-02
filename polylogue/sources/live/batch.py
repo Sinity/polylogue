@@ -2931,6 +2931,23 @@ class LiveBatchProcessor:
             identity = self._existing_provider_session_id(path)
             if identity is None:
                 return None
+            # A Codex append-mode delta is the file's tail bytes only -- the
+            # real `session_meta` header that carries native-session identity
+            # was already consumed by an earlier full/append observation and
+            # is not part of this delta. `identity` is recovered from durable
+            # evidence (`_existing_provider_session_id`: the archived
+            # session's own native id, or this file's own previously-read
+            # `session_meta` line) before hashing, never guessed, and is
+            # returned as a sidecar hint instead of being spliced into the
+            # hashed bytes (polylogue-u19l) -- see this method's docstring.
+            logger.info(
+                "codex_append_identity_resolved_as_sidecar_hint",
+                path=str(path),
+                identity=identity,
+                reason="append-mode delta lacks its own session_meta header; "
+                "identity recovered from archived session / prior session_meta "
+                "line and carried as native_id_hint, not spliced into hashed bytes",
+            )
             return payload, identity
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(path, payload):
             return None

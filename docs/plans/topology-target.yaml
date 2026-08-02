@@ -330,7 +330,7 @@ files:
     owner: archive-query
     reason: archive-domain query semantics
   - path: polylogue/archive/query/archive_execution.py
-    loc: 716
+    loc: 718
     target: polylogue/archive/query/archive_execution.py
     owner: archive-query
     reason: archive-domain query semantics
@@ -566,12 +566,12 @@ files:
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/facts.py
-    loc: 499
+    loc: 503
     target: polylogue/archive/semantic/facts.py
     owner: archive-semantic
     reason: archive-domain semantics
   - path: polylogue/archive/semantic/models.py
-    loc: 152
+    loc: 159
     target: polylogue/archive/semantic/models.py
     owner: archive-semantic
     reason: archive-domain semantics
@@ -674,7 +674,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session/runtime.py
-    loc: 652
+    loc: 679
     target: polylogue/archive/session/runtime.py
     owner: archive-session
     reason: archive-domain semantics
@@ -3240,7 +3240,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1762
+    loc: 1828
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3311,12 +3311,16 @@ files:
     loc: 29
     target: polylogue/sources/live/_lag_sample_ddl.py
     owner: stable
+  - path: polylogue/sources/live/acquisition_log.py
+    loc: 248
+    target: polylogue/sources/live/acquisition_log.py
+    owner: stable
   - path: polylogue/sources/live/append_ingest.py
     loc: 304
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 3174
+    loc: 3191
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3376,7 +3380,7 @@ files:
     target: polylogue/sources/live/tool_result_sidecars.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 1470
+    loc: 1499
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
@@ -3425,7 +3429,7 @@ files:
     target: polylogue/sources/parsers/claude/__init__.py
     owner: stable
   - path: polylogue/sources/parsers/claude/ai_parser.py
-    loc: 672
+    loc: 710
     target: polylogue/sources/parsers/claude/ai_parser.py
     owner: stable
   - path: polylogue/sources/parsers/claude/code_detection.py
@@ -3569,7 +3573,7 @@ files:
     target: polylogue/sources/source_acquisition.py
     owner: stable
   - path: polylogue/sources/source_acquisition_components.py
-    loc: 499
+    loc: 533
     target: polylogue/sources/source_acquisition_components.py
     owner: stable
   - path: polylogue/sources/source_parsing.py
@@ -3873,7 +3877,7 @@ files:
     target: polylogue/storage/insights/topology/derivation.py
     owner: stable
   - path: polylogue/storage/live_source_reconciliation.py
-    loc: 315
+    loc: 317
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/message_type_backfill.py
@@ -4205,7 +4209,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2911
+    loc: 2909
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -4249,7 +4253,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/user_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/write.py
-    loc: 6751
+    loc: 6764
     target: polylogue/storage/sqlite/archive_tiers/write.py
     owner: stable
   - path: polylogue/storage/sqlite/async_sqlite.py

@@ -29,6 +29,7 @@ from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import drain_hook_event_spool, hook_spool_root, pending_hook_spool_dir
+from polylogue.sources.live.acquisition_log import log_unclaimed_file
 from polylogue.sources.live.batch import LiveBatchEventEmitter, LiveBatchProcessor, fingerprint_file
 from polylogue.sources.live.batch_support import (
     _archive_blob_exists,
@@ -117,6 +118,22 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "wal_bytes_after_checkpoint_max", 0) / 1e6,
         getattr(metrics, "wal_busy_pages_total", 0),
     )
+
+
+def _log_unclaimed_catch_up_candidate(path: Path, *, source_name: str, reason: str) -> None:
+    """Log one file the catch-up scan reached but no source suffix accepted.
+
+    Best-effort ``stat`` for size/mtime -- a file that vanished between the
+    ``os.walk`` listing and this call is still worth a log record (it WAS
+    seen and unclaimed), just without size/mtime detail.
+    """
+    try:
+        stat_result = path.stat()
+        size: int | None = stat_result.st_size
+        mtime: float | None = stat_result.st_mtime
+    except OSError:
+        size, mtime = None, None
+    log_unclaimed_file(path=path, size=size, mtime=mtime, reason=reason, source_name=source_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -477,6 +494,18 @@ class LiveWatcher:
                 for filename in filenames:
                     path = Path(directory) / filename
                     if not source.accepts(path):
+                        # Unclaimed-file sweep (mission item 2): a file this
+                        # source's own root walk reached but whose suffix no
+                        # detector is configured to accept at all. Logged here
+                        # -- the real catch-up scan, run at daemon startup and
+                        # on every periodic sweep -- rather than only from a
+                        # standalone diagnostic, so the record exists whether
+                        # or not an operator remembers to run one.
+                        _log_unclaimed_catch_up_candidate(
+                            path,
+                            source_name=source.name,
+                            reason=f"suffix not in watched set {source.suffixes} for source {source.name!r}",
+                        )
                         continue
                     try:
                         stat = path.stat()

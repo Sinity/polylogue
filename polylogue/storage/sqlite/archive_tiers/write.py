@@ -96,6 +96,9 @@ class ArchiveBlockRow:
     # Keystone structured tool-result outcome (schema v16). NULL = unknown.
     tool_result_is_error: int | None = None
     tool_result_exit_code: int | None = None
+    # Why the keystone outcome above is unresolved (schema v46). NULL when the
+    # outcome IS known, never "unknown of unknown" (polylogue-cuxz.8).
+    tool_result_outcome_unknown_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +138,10 @@ class ArchiveMessageRow:
     # rows retain their original source session when a prefix-sharing child is
     # composed, so inherited evidence is not guessed from position.
     source_session_id: str | None = None
+    # Provider-reported terminal signal for this turn (schema v46, Anthropic
+    # ``message.stop_reason``). None means unreported/not-applicable, never a
+    # guessed happy-path default (polylogue-cuxz.8).
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1244,7 +1251,7 @@ def read_archive_session_envelope(
         """
         SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
                message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
-               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id
+               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id, stop_reason
         FROM messages
         WHERE session_id = ?
         ORDER BY position, variant_index
@@ -1256,7 +1263,8 @@ def read_archive_session_envelope(
         block_rows = conn.execute(
             """
             SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-                   tool_input, language, tool_result_is_error, tool_result_exit_code
+                   tool_input, language, tool_result_is_error, tool_result_exit_code,
+                   tool_result_outcome_unknown_reason
             FROM blocks
             WHERE message_id = ?
             ORDER BY position
@@ -1285,6 +1293,7 @@ def read_archive_session_envelope(
                         language=block["language"],
                         tool_result_is_error=block["tool_result_is_error"],
                         tool_result_exit_code=block["tool_result_exit_code"],
+                        tool_result_outcome_unknown_reason=block["tool_result_outcome_unknown_reason"],
                     )
                     for block in block_rows
                 ),
@@ -1300,6 +1309,7 @@ def read_archive_session_envelope(
                 parent_message_id=message["parent_message_id"],
                 attachments=tuple(attachments_by_message.get(message["message_id"], ())),
                 source_session_id=str(session["session_id"]),
+                stop_reason=message["stop_reason"],
             )
         )
 
@@ -1417,6 +1427,7 @@ def _row_to_archive_message(
         parent_message_id=row["parent_message_id"],
         attachments=attachments,
         source_session_id=session_id,
+        stop_reason=row["stop_reason"],
     )
 
 
@@ -1447,7 +1458,7 @@ def _fetch_message_window(
         f"""
         SELECT message_id, native_id, role, position, variant_index, is_active_path, is_active_leaf,
                message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
-               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id
+               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id, stop_reason
         FROM messages
         WHERE session_id = ?{upto_clause}
         ORDER BY position, variant_index
@@ -1462,7 +1473,8 @@ def _fetch_message_window(
     block_rows = conn.execute(
         f"""
         SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-               tool_input, language, tool_result_is_error, tool_result_exit_code
+               tool_input, language, tool_result_is_error, tool_result_exit_code,
+               tool_result_outcome_unknown_reason
         FROM blocks
         WHERE message_id IN ({placeholders})
         ORDER BY message_id, position
@@ -1484,6 +1496,7 @@ def _fetch_message_window(
                 language=block["language"],
                 tool_result_is_error=block["tool_result_is_error"],
                 tool_result_exit_code=block["tool_result_exit_code"],
+                tool_result_outcome_unknown_reason=block["tool_result_outcome_unknown_reason"],
             )
         )
     attachment_rows = conn.execute(
