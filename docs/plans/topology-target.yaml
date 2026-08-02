@@ -3658,6 +3658,10 @@ files:
     loc: 58
     target: polylogue/storage/artifacts/views.py
     owner: stable
+  - path: polylogue/storage/attachment_relink.py
+    loc: 374
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/backup_attestation.py
     loc: 181
     target: polylogue/storage/backup_attestation.py
@@ -3941,7 +3945,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7286
+    loc: 7326
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper

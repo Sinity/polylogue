@@ -5956,11 +5956,48 @@ def preview_stale_supersession_receipts(*, count: int) -> RepairResult:
     )
 
 
+def _relink_orphaned_attachments_best_effort(config: Config, index_conn: sqlite3.Connection) -> int:
+    """polylogue-w06b: try to recover ref-less ``attachments`` rows by
+    re-parsing ``source.db`` raw sessions before the destructive cleanup
+    below deletes them irrecoverably.
+
+    ``attachments`` carries no session/message linkage of its own -- once a
+    ref-less row is deleted, whatever real evidence could have relinked it
+    (the raw bytes still sitting in ``source.db``) is not consulted again by
+    anything downstream. Attempting a relink first is the only way this
+    repair can avoid silently discarding recoverable, already-acquired
+    attachment bytes (1,783 of the 1,858 orphans this bead's forensics found
+    were `acquired`, 440MB of real content) forever.
+
+    Never raises and never blocks the cleanup below: a missing source tier
+    (e.g. a fixture/demo archive with no ``source.db``) or any re-parse
+    failure just means 0 relinked, not a repair failure -- the destructive
+    cleanup still runs on whatever remains ref-less afterward.
+    """
+    from polylogue.storage.attachment_relink import relink_orphaned_attachments
+
+    archive_root = _raw_materialization_archive_root(config)
+    source_db_path = archive_root / "source.db"
+    if not source_db_path.is_file():
+        return 0
+    try:
+        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
+            result = relink_orphaned_attachments(index_conn, source_conn, archive_root=archive_root, dry_run=False)
+        return result.relinked_count
+    except Exception as exc:
+        logger.warning(
+            "orphaned-attachment relink attempt failed, proceeding to delete-only cleanup: %s", exc, exc_info=True
+        )
+        return 0
+
+
 def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
     try:
         with _open_archive_index_connection() as conn:
             if dry_run:
                 return preview_orphaned_attachments(count=count_orphaned_attachments_sync(conn))
+
+            relinked_count = _relink_orphaned_attachments_best_effort(config, conn)
 
             ref_result = conn.execute(
                 "DELETE FROM attachment_refs WHERE message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = attachment_refs.message_id)"
@@ -5981,9 +6018,12 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
             total = refs_deleted + conv_refs_deleted + atts_deleted
             return _repair_result(
                 "orphaned_attachments",
-                repaired_count=total,
+                repaired_count=total + relinked_count,
                 success=True,
-                detail=f"Cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
+                detail=(
+                    f"Relinked {relinked_count} recoverable attachment(s) via raw re-parse; "
+                    f"cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments"
+                ),
             )
     except Exception as exc:
         return _repair_result(
