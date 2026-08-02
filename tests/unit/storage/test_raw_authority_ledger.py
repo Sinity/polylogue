@@ -1707,3 +1707,101 @@ def test_census_retention_keeps_the_newest_censuses_readable(tmp_path: Path, mon
         surviving = {str(row[0]) for row in conn.execute("SELECT DISTINCT census_id FROM raw_authority_census_plans")}
 
     assert surviving == {receipts[-1].census_id, receipts[-2].census_id}
+
+
+def test_census_plan_rows_prune_past_retention_even_with_an_unresolved_blocker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-z7ko/f4z9: the obligation guard used to pin an ENTIRE
+    census's plan-row snapshot for as long as ANY blocker on it stayed
+    unresolved, however far outside the retention window it fell. Live
+    evidence (source.db, 2026-07-31): ``RAW_AUTHORITY_CENSUS_PLAN_RETENTION``
+    is 8, yet 41 of the most recent ~112 censuses (sequence 820-932) still
+    held plan rows, because a structurally permanent obligation -- e.g. a
+    quarantined raw with no logical source key to refine against -- never
+    resolves, and continuous live ingestion keeps minting fresh ones, each
+    anchoring whichever census first observed it. Result: 709,264 rows and
+    ~870 MiB in a *durable* tier, growing ~100k rows/hour, with
+    ``fixed_point`` never reaching 1 on any of 256 censuses ever run.
+
+    The fix: a blocker's own ``expected_json``/``observed_json`` columns
+    already carry a complete, self-contained snapshot of the plan and its
+    evidence (``_reconcile_frontier_obligations``), and
+    ``resolve_raw_authority_blocker`` reads that plus the census-independent
+    ``raw_authority_plans`` table -- never
+    ``raw_authority_census_plans``/``_post_plans``. So plan-row DETAIL no
+    longer needs to survive for an unresolved blocker to stay resolvable;
+    only the census HEADER does (a real FK: ``raw_authority_blockers``
+    references ``raw_authority_censuses(census_id)``).
+
+    Simulates the permanent-obligation shape directly: one durable,
+    unresolved blocker planted on the very first of nine census passes.
+    Proves plan-row detail for that first census prunes on the ordinary
+    count-based window like any other, the blocker itself is never
+    silently marked resolved, and its census HEADER survives (the FK it
+    actually needs).
+    """
+    monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(tmp_path, native_id="pinned", source_path="pinned.jsonl", acquired_at_ms=1)
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
+
+    first_receipt = record_raw_authority_census(
+        tmp_path,
+        (plan,),
+        selected_plan_ids=set(),
+        mode="dry_run",
+        quiescent=True,
+        scope={"test": "pin-origin"},
+        residual={},
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_authority_blockers (
+                blocker_id, plan_id, census_id, reason, expected_json,
+                observed_json, created_at_ms
+            ) VALUES (?, ?, ?, ?, '{}', '{}', 1)
+            """,
+            (
+                "raw-authority-blocker:permanently-pinned",
+                plan.plan_id,
+                first_receipt.census_id,
+                "quarantined-raw refinement strategy proved this raw ineligible: a structurally permanent fact",
+            ),
+        )
+        conn.commit()
+
+    for index in range(8):
+        record_raw_authority_census(
+            tmp_path,
+            (plan,),
+            selected_plan_ids=set(),
+            mode="dry_run",
+            quiescent=True,
+            scope={"test": f"pin-followup-{index}"},
+            residual={},
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        surviving_plan_censuses = {
+            str(row[0]) for row in conn.execute("SELECT DISTINCT census_id FROM raw_authority_census_plans")
+        }
+        blocker_resolved_at = conn.execute(
+            "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?",
+            ("raw-authority-blocker:permanently-pinned",),
+        ).fetchone()[0]
+        header_row = conn.execute(
+            "SELECT 1 FROM raw_authority_censuses WHERE census_id = ?", (first_receipt.census_id,)
+        ).fetchone()
+
+    # Never silently cleared -- this is the failure mode the old guard was
+    # (over-)protecting against, and it must still not happen.
+    assert blocker_resolved_at is None
+    # Its census HEADER survives -- the real FK obligation.
+    assert header_row is not None
+    # But the plan-row DETAIL for that census prunes like everyone else's,
+    # bounded to the retention window regardless of the still-open blocker.
+    assert first_receipt.census_id not in surviving_plan_censuses
+    assert len(surviving_plan_censuses) == 2

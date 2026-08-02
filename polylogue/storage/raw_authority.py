@@ -904,23 +904,38 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
     plan_rows = 0
     if plan_floor_row is not None:
         floor = int(plan_floor_row[0])
-        # A census carrying an UNRESOLVED blocker is a live durable obligation,
-        # not history: `unresolved_raw_authority_blockers()` and readiness both
-        # read it, an operator may already hold its blocker id, and
-        # `resolve_raw_authority_blocker()` needs its plan row as evidence.
-        # Pruning it would silently report the obligation as cleared. Retain
-        # the whole census -- plans, post-plans, blockers -- until every
-        # blocker on it is resolved, however far it falls outside the window.
+        # polylogue-z7ko/f4z9: this window used to also require every
+        # blocker on a census to be resolved before its plan-row DETAIL
+        # could be dropped -- but that detail is not where blocker evidence
+        # lives. `_reconcile_frontier_obligations` snapshots the full plan
+        # into the blocker row itself (`expected_json`/`observed_json`), and
+        # `resolve_raw_authority_blocker` reads that plus the census-
+        # independent `raw_authority_plans` table (kept alive for as long as
+        # any blocker references it, regardless of this window -- see
+        # `raw_retention._delete_orphaned_raw_authority_plans`). Neither
+        # touches `raw_authority_census_plans`/`_post_plans` at all, so
+        # gating THIS window on blocker resolution bought nothing but an
+        # unbounded pin: a structurally permanent obligation (e.g. a
+        # quarantined raw with no logical source key to refine against)
+        # never resolves, and live ingestion keeps minting new ones
+        # continuously, each anchoring whichever census first observed it --
+        # not just one census, an ever-growing set of them (measured live:
+        # 41 of the most recent ~112 censuses stuck holding plan rows,
+        # ~100k rows/hour, fixed_point=0 on all 256 censuses ever run).
+        # Plan-row detail is a per-pass browsing/audit convenience (the
+        # per-census inspection pager), not the durable obligation record,
+        # so it prunes on the count-based window alone, unconditionally.
+        # Already-*resolved* blockers tied to a pruned census are cleaned up
+        # here too, since nothing needs them once their census ages out;
+        # still-unresolved ones are left alone -- deleting those would be
+        # the actual "silently report the obligation as cleared" bug this
+        # guard was trying to avoid, and the header window below still
+        # retains their census (a real FK, not a convenience) until they
+        # resolve.
         stale = [
             str(row[0])
             for row in conn.execute(
-                """
-                SELECT census_id FROM raw_authority_censuses
-                WHERE sequence_no < ?
-                  AND census_id NOT IN (
-                      SELECT census_id FROM raw_authority_blockers WHERE resolved_at_ms IS NULL
-                  )
-                """,
+                "SELECT census_id FROM raw_authority_censuses WHERE sequence_no < ?",
                 (floor,),
             )
         ]
@@ -929,7 +944,7 @@ def prune_raw_authority_census_history(conn: sqlite3.Connection) -> tuple[int, i
             for statement in (
                 "DELETE FROM raw_authority_census_plans WHERE census_id = ?",
                 "DELETE FROM raw_authority_census_post_plans WHERE census_id = ?",
-                "DELETE FROM raw_authority_blockers WHERE census_id = ?",
+                "DELETE FROM raw_authority_blockers WHERE census_id = ? AND resolved_at_ms IS NOT NULL",
             ):
                 cursor = conn.executemany(statement, ((census,) for census in chunk))
                 plan_rows += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
