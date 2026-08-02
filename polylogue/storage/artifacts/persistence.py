@@ -10,6 +10,7 @@ durably stores the subset of columns it declares (#1743).
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.runtime import ArtifactObservationRecord
@@ -66,6 +67,39 @@ def materialize_artifact_observations(
     return records
 
 
+def materialize_artifact_observations_for_raw_ids(
+    conn: sqlite3.Connection,
+    raw_ids: Sequence[str],
+) -> list[ArtifactObservationRecord]:
+    """Inspect and persist ``raw_artifacts`` rows for exactly the given raw ids.
+
+    Scoped sibling of :func:`materialize_artifact_observations` for callers
+    that already know precisely which raw rows they care about (e.g. a
+    targeted phantom-session sweep) and want to avoid paying for a full
+    ``raw_sessions`` census just to refresh a handful of rows. Unknown raw
+    ids are silently skipped (no row to inspect); duplicates are de-duplicated.
+    """
+    unique_ids = list(dict.fromkeys(raw_ids))
+    if not unique_ids:
+        return []
+    conn.row_factory = sqlite3.Row
+    records: list[ArtifactObservationRecord] = []
+    for batch_start in range(0, len(unique_ids), 250):
+        batch = unique_ids[batch_start : batch_start + 250]
+        placeholders = ",".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT rowid AS raw_rowid, * FROM raw_sessions WHERE raw_id IN ({placeholders})",
+            batch,
+        ).fetchall()
+        for row in rows:
+            raw_record = _row_to_raw_session(row)
+            observation = inspect_raw_artifact(raw_record)
+            _upsert_artifact_observation(conn, observation)
+            records.append(observation)
+        conn.commit()
+    return records
+
+
 def ensure_artifact_observations(
     conn: sqlite3.Connection,
     *,
@@ -77,4 +111,8 @@ def ensure_artifact_observations(
     return len(materialize_artifact_observations(conn))
 
 
-__all__ = ["ensure_artifact_observations", "materialize_artifact_observations"]
+__all__ = [
+    "ensure_artifact_observations",
+    "materialize_artifact_observations",
+    "materialize_artifact_observations_for_raw_ids",
+]
