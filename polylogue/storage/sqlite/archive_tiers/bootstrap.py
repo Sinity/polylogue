@@ -89,6 +89,7 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
 
         _ensure_ops_runtime_columns(conn)
         _ensure_ops_cursor_lag_sample_columns(conn)
+        _ensure_ops_ingest_attempt_outcome_columns(conn)
         ensure_embedding_catchup_run_outcome_columns(conn)
     if tier is ArchiveTier.INDEX:
         from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
@@ -130,6 +131,35 @@ def _ensure_ops_runtime_columns(conn: sqlite3.Connection) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_ingest_cursor_attention
         ON ingest_cursor(failure_count, excluded, source_path)
+        """
+    )
+
+
+def _ensure_ops_ingest_attempt_outcome_columns(conn: sqlite3.Connection) -> None:
+    """Ensure disposable OPS-tier ingest attempts carry a typed disposition (polylogue-cnu3).
+
+    Pre-existing rows (written before this vocabulary existed) get
+    ``outcome_code='legacy_unknown'`` via the column default -- never
+    guess-classified into a real outcome (AC4).
+    """
+    from polylogue.core.enums import IngestOutcome
+    from polylogue.storage.sqlite.archive_tiers.common import check
+
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_attempts)")}
+    additions = {
+        "outcome_code": f"TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check('outcome_code', IngestOutcome)})",
+        "retryable": "INTEGER CHECK(retryable IN (0, 1))",
+        "evidence_ref": "TEXT",
+        "diagnostic": "TEXT",
+        "remediation": "TEXT",
+    }
+    for name, definition in additions.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE ingest_attempts ADD COLUMN {name} {definition}")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_ingest_attempts_outcome_code
+        ON ingest_attempts(outcome_code, started_at_ms)
         """
     )
 

@@ -49,6 +49,12 @@ from polylogue.core.metrics import (
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
+from polylogue.pipeline.ingest_outcomes import (
+    IngestAttemptDisposition,
+    classify_archive_write_exception,
+    legacy_unknown_disposition,
+    success_disposition,
+)
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
@@ -469,6 +475,12 @@ class LiveBatchProcessor:
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
         succeeded_paths: set[Path] = set()
+        # polylogue-cnu3: the most severe structural disposition this batch
+        # hit, if any. Set at each terminal except-clause below by
+        # classifying the real caught exception's type (never by
+        # text-matching the ``error`` string). ``None`` at the end means the
+        # batch completed cleanly.
+        attempt_disposition: IngestAttemptDisposition | None = None
         ingest_worker_count_max = 0
         full_ingest_aggregate = LiveFullIngestAggregate()
         cursor_records = self._cursor.get_records(paths)
@@ -655,6 +667,7 @@ class LiveBatchProcessor:
                         new_session_touches.append((source_name, session_id))
                 except SchemaVersionMismatchError as exc:
                     handle_schema_version_mismatch(source_name, exc)
+                    attempt_disposition = classify_archive_write_exception(exc)
                     # Account for every queued path in this source group, not
                     # only the current progress chunk — later chunks would
                     # hit the same structural error with no information gain.
@@ -677,6 +690,7 @@ class LiveBatchProcessor:
                     break
                 except DatabaseError as exc:
                     handle_structural_database_error(source_name, exc)
+                    attempt_disposition = classify_archive_write_exception(exc)
                     for path in grouped_paths:
                         failed_paths.append(str(path))
                     self._record_attempt_progress(
@@ -699,6 +713,7 @@ class LiveBatchProcessor:
                         # group without advancing or excluding its cursors.
                         raise
                     logger.warning("live.watcher: batch failed for %s: %s", source_name, exc)
+                    attempt_disposition = classify_archive_write_exception(exc)
                     for path in source_paths:
                         failed_paths.append(str(path))
                         cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
@@ -854,11 +869,28 @@ class LiveBatchProcessor:
             stale_cursor_write_count=stale_cursor_write_count,
             stage_payload=summary_stage_payload,
         )
+        if attempt_disposition is not None:
+            final_disposition = attempt_disposition
+        elif not retry_paths:
+            final_disposition = success_disposition()
+        else:
+            # Per-record failures (validation/corrupt-input/unsupported-shape)
+            # are already classified where they occur -- see
+            # ``ingest_worker.py``'s ``IngestRecordResult.outcome_code`` --
+            # but aggregating them up to this attempt-level row is deferred
+            # follow-up work (polylogue-cnu3 PR body). Reporting SUCCESS here
+            # would be dishonest given ``retry_paths`` is non-empty, so this
+            # falls back to the explicit "not yet classified" bucket rather
+            # than guessing.
+            final_disposition = legacy_unknown_disposition(
+                diagnostic=f"{len(retry_paths)} path(s) failed without a batch-level exception"
+            )
         self._cursor.finish_ingest_attempt(
             attempt_id,
             status="completed" if not retry_paths else "completed_with_failures",
             phase="completed",
             error="; ".join(retry_paths[:3]) if retry_paths else None,
+            disposition=final_disposition,
         )
         return metrics
 

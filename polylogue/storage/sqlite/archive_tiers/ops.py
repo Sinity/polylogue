@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import get_args
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
@@ -47,7 +47,17 @@ CREATE TABLE IF NOT EXISTS ingest_attempts (
     parsed_raw_count       INTEGER NOT NULL DEFAULT 0 CHECK(parsed_raw_count >= 0),
     materialized_count     INTEGER NOT NULL DEFAULT 0 CHECK(materialized_count >= 0),
     error_message          TEXT,
-    source_paths_json      TEXT NOT NULL DEFAULT '[]'
+    source_paths_json      TEXT NOT NULL DEFAULT '[]',
+    -- polylogue-cnu3: typed, structurally-classified disposition -- never
+    -- guessed from ``error_message`` text. ``outcome_code`` defaults to
+    -- ``legacy_unknown`` so every pre-existing row (written before this
+    -- vocabulary existed) stays honestly queryable as unclassified rather
+    -- than silently guessed into a real class (AC4).
+    outcome_code           TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check("outcome_code", IngestOutcome)}),
+    retryable              INTEGER CHECK(retryable IN (0, 1)),
+    evidence_ref           TEXT,
+    diagnostic             TEXT,
+    remediation            TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_status
@@ -55,6 +65,17 @@ ON ingest_attempts(status, heartbeat_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_storage_route
 ON ingest_attempts(storage_route);
+
+-- polylogue-cnu3: idx_ingest_attempts_outcome_code is deliberately NOT
+-- declared here. This DDL block reruns verbatim on every same-version
+-- reopen of an existing disposable ops.db (see initialize_archive_tier's
+-- OPS reapply path), including archives created before ``outcome_code``
+-- existed -- an unconditional ``CREATE INDEX ... ON
+-- ingest_attempts(outcome_code, ...)`` would raise "no such column" on
+-- those, since ``IF NOT EXISTS`` only guards the index name, not whether
+-- the referenced column exists yet. The index is created instead by
+-- ``_ensure_ops_ingest_attempt_outcome_columns`` (bootstrap.py), which
+-- runs its ALTER TABLE ADD COLUMN step first.
 
 CREATE TABLE IF NOT EXISTS convergence_debt (
     debt_id        TEXT PRIMARY KEY,

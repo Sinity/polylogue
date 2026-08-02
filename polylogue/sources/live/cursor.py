@@ -21,6 +21,7 @@ from typing import Any, cast
 
 from polylogue.core.enums import Origin
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.convergence_debt_retry import (
     convergence_debt_retry_at,
     retry_is_future,
@@ -799,24 +800,65 @@ class CursorStore:
         status: str,
         phase: str,
         error: str | None = None,
+        disposition: IngestAttemptDisposition | None = None,
     ) -> bool:
-        """Mark an ingest attempt complete or failed."""
+        """Mark an ingest attempt complete or failed.
+
+        ``disposition`` (polylogue-cnu3) is the typed, structurally-classified
+        outcome for this attempt -- e.g. :func:`classify_archive_write_exception`
+        for an exception escaping the archive-write boundary, or
+        :func:`success_disposition` for a clean completion. Omitting it leaves
+        the row's ``outcome_code`` at whatever ``begin``/``update_ingest_attempt``
+        already wrote (defaulting to ``legacy_unknown``).
+        """
         now_ms = _required_epoch_ms(datetime.now(UTC).isoformat())
 
         def write() -> None:
             with self._connect_ops() as conn:
-                conn.execute(
-                    """
-                    UPDATE ingest_attempts
-                    SET heartbeat_at_ms = ?,
-                        finished_at_ms = ?,
-                        status = ?,
-                        phase = ?,
-                        error_message = ?
-                    WHERE attempt_id = ?
-                    """,
-                    (now_ms, now_ms, _archive_attempt_status(status), phase, error, attempt_id),
-                )
+                if disposition is not None and _table_has_column(conn, "ingest_attempts", "outcome_code"):
+                    retryable = disposition.retryable
+                    conn.execute(
+                        """
+                        UPDATE ingest_attempts
+                        SET heartbeat_at_ms = ?,
+                            finished_at_ms = ?,
+                            status = ?,
+                            phase = ?,
+                            error_message = ?,
+                            outcome_code = ?,
+                            retryable = ?,
+                            evidence_ref = ?,
+                            diagnostic = ?,
+                            remediation = ?
+                        WHERE attempt_id = ?
+                        """,
+                        (
+                            now_ms,
+                            now_ms,
+                            _archive_attempt_status(status),
+                            phase,
+                            error,
+                            disposition.outcome_code,
+                            None if retryable is None else (1 if retryable else 0),
+                            disposition.evidence_ref,
+                            disposition.diagnostic,
+                            disposition.remediation,
+                            attempt_id,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE ingest_attempts
+                        SET heartbeat_at_ms = ?,
+                            finished_at_ms = ?,
+                            status = ?,
+                            phase = ?,
+                            error_message = ?
+                        WHERE attempt_id = ?
+                        """,
+                        (now_ms, now_ms, _archive_attempt_status(status), phase, error, attempt_id),
+                    )
                 conn.commit()
 
         return best_effort_cursor_write("live ingest attempt finish", write)

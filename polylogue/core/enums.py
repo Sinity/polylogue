@@ -413,6 +413,72 @@ class ValidationStatus(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+class IngestOutcome(PolylogueStrEnum):
+    """Closed, typed disposition for one ``ingest_attempts`` row (polylogue-cnu3).
+
+    Before this enum, ``ingest_attempts.error_message`` was free-form text, so
+    a basic OriginSpec question ("how often did strict validation reject real
+    input?") required re-grepping logs and source. Each member is a distinct,
+    structurally-detected outcome -- never derived by text-matching against
+    ``error_message`` -- so it stays queryable without guessing.
+
+    ``SUCCESS``: the attempt completed (including a no-op idempotent
+    re-ingest of unchanged content).
+    ``VALIDATION_REJECTED``: strict schema validation (or a provider parser's
+    own structural validator, e.g. a ``pydantic.ValidationError``) rejected
+    the input.
+    ``UNSUPPORTED_SHAPE``: the artifact was recognized but is not admitted
+    for session parsing by policy (e.g. a non-session artifact kind), or
+    parsing produced no materializable sessions.
+    ``CORRUPT_INPUT``: the raw bytes could not be decoded as the expected
+    payload shape (empty blob, undecodable JSON/UTF-8).
+    ``TRANSIENT_ERROR``: a retryable infrastructure failure (SQLite
+    lock/busy contention) at the archive-write boundary.
+    ``PARSER_DEFECT``: an unexpected exception from parsing/transform that
+    is not one of the above structurally-detected classes -- a real bug
+    bucket, not a guess.
+    ``LEGACY_UNKNOWN``: a historical row written before this vocabulary
+    existed, or a code path not yet classified. Never guess-assigned; rows
+    default here and stay here until a real classification is added.
+
+    Deliberately deferred to follow-up work (not yet members, so no attempt
+    can look falsely covered by them): ``MATERIALIZATION_FAILED``/
+    index-failure and ``CANCELED`` (AC2's remaining two classes) -- the
+    daemon convergence layer that would emit them needs its own wiring pass.
+    """
+
+    SUCCESS = "success"
+    VALIDATION_REJECTED = "validation_rejected"
+    UNSUPPORTED_SHAPE = "unsupported_shape"
+    CORRUPT_INPUT = "corrupt_input"
+    TRANSIENT_ERROR = "transient_error"
+    PARSER_DEFECT = "parser_defect"
+    LEGACY_UNKNOWN = "legacy_unknown"
+
+    @classmethod
+    def from_string(cls, value: str | IngestOutcome) -> IngestOutcome:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
+#: Retryability for each :class:`IngestOutcome`. ``True`` means the daemon's
+#: retry policy may safely loop on it; ``False`` means looping would just
+#: repeat the same rejection; ``None`` (only ``LEGACY_UNKNOWN``) means the
+#: historical row carries no retryability evidence at all. A retryable
+#: outcome must never be reported terminal, and a non-retryable defect must
+#: never be silently retried forever (polylogue-cnu3 AC3).
+INGEST_OUTCOME_RETRYABLE: dict[IngestOutcome, bool | None] = {
+    IngestOutcome.SUCCESS: False,
+    IngestOutcome.VALIDATION_REJECTED: False,
+    IngestOutcome.UNSUPPORTED_SHAPE: False,
+    IngestOutcome.CORRUPT_INPUT: False,
+    IngestOutcome.TRANSIENT_ERROR: True,
+    IngestOutcome.PARSER_DEFECT: False,
+    IngestOutcome.LEGACY_UNKNOWN: None,
+}
+
+
 class ValidationMode(PolylogueStrEnum):
     """Configured raw-schema validation strictness."""
 
