@@ -336,7 +336,11 @@ def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) 
     routed_root.mkdir()
     initialize_archive_database(routed_root / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(routed_root / "index.db", ArchiveTier.INDEX)
-    raw_id, raw_size = BlobStore(routed_root / "blob").write_from_bytes(b'{"mapping":{"routed":{}}}')
+    raw_id, raw_size = BlobStore(routed_root / "blob").write_from_bytes(
+        b'{"mapping":{"routed":{"id":"routed","message":{"id":"m1","author":{"role":"user"},'
+        b'"content":{"content_type":"text","parts":["hi"]}},"parent":null,"children":[]}},'
+        b'"current_node":"routed"}'
+    )
     with sqlite3.connect(routed_root / "source.db") as source_conn:
         source_conn.execute(
             """
@@ -1208,8 +1212,16 @@ def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     blob_store = BlobStore(tmp_path / "blob")
-    first_raw_id, first_size = blob_store.write_from_bytes(b'{"mapping":{"first":{}}}')
-    second_raw_id, second_size = blob_store.write_from_bytes(b'{"mapping":{"second":{}}}')
+    first_raw_id, first_size = blob_store.write_from_bytes(
+        b'{"mapping":{"first":{"id":"first","message":{"id":"m1","author":{"role":"user"},'
+        b'"content":{"content_type":"text","parts":["hi"]}},"parent":null,"children":[]}},'
+        b'"current_node":"first"}'
+    )
+    second_raw_id, second_size = blob_store.write_from_bytes(
+        b'{"mapping":{"second":{"id":"second","message":{"id":"m1","author":{"role":"user"},'
+        b'"content":{"content_type":"text","parts":["hi"]}},"parent":null,"children":[]}},'
+        b'"current_node":"second"}'
+    )
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.executemany(
@@ -1453,7 +1465,11 @@ def test_raw_materialization_execute_limits_authority_selection(
         raw_ids = [
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=f'{{"type":"session_meta","payload":{{"id":"execute-{index}"}}}}\n'.encode(),
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"execute-{index}"}}}}\n'
+                    '{"type":"response_item","payload":{"type":"message","role":"user",'
+                    '"content":[{"type":"input_text","text":"hi"}]}}\n'
+                ).encode(),
                 source_path=f"execute-{index}.jsonl",
                 acquired_at_ms=index + 1,
             )
@@ -1740,7 +1756,11 @@ def test_raw_materialization_uses_authority_substrate_not_legacy_ingest_stage(
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"authority-substrate"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"authority-substrate"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+            ),
             source_path="authority-substrate.jsonl",
             acquired_at_ms=1,
         )
@@ -1770,7 +1790,11 @@ def test_raw_materialization_reports_authority_progress_and_payload_size(
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"progress"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"progress"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+            ),
             source_path="progress.jsonl",
             acquired_at_ms=1,
         )
@@ -2113,7 +2137,11 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
         raw_ids = [
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=f'{{"type":"session_meta","payload":{{"id":"independent-{index}"}}}}\n'.encode(),
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"independent-{index}"}}}}\n'
+                    '{"type":"response_item","payload":{"type":"message","role":"user",'
+                    '"content":[{"type":"input_text","text":"hi"}]}}\n'
+                ).encode(),
                 source_path=f"independent-{index}.jsonl",
                 acquired_at_ms=index,
             )
@@ -2227,6 +2255,8 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
                 payload=(
                     f'{{"type":"session_meta","payload":{{"id":"session-{index}",'
                     '"timestamp":"2026-07-15T00:00:00Z"}}}}\n'
+                    '{"type":"response_item","payload":{"type":"message","role":"user",'
+                    '"content":[{"type":"input_text","text":"hi"}]}}\n'
                 ).encode(),
                 source_path=f"session-{index}.jsonl",
                 acquired_at_ms=index + 1,
@@ -2400,7 +2430,11 @@ def test_raw_materialization_isolates_failed_component_and_continues_batch(
         raw_ids = [
             archive.write_raw_payload(
                 provider=Provider.CODEX,
-                payload=f'{{"type":"session_meta","payload":{{"id":"session-{index}"}}}}\n'.encode(),
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"session-{index}"}}}}\n'
+                    '{"type":"response_item","payload":{"type":"message","role":"user",'
+                    '"content":[{"type":"input_text","text":"hi"}]}}\n'
+                ).encode(),
                 source_path=f"session-{index}.jsonl",
                 acquired_at_ms=index + 1,
             )
@@ -2438,7 +2472,11 @@ def test_raw_materialization_transient_failure_retries_with_same_plan_id_then_su
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"transient-target"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"transient-target"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+            ),
             source_path="transient-target.jsonl",
             acquired_at_ms=1,
         )
@@ -2558,7 +2596,11 @@ def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"conservation"}}\n',
+            payload=(
+                b'{"type":"session_meta","payload":{"id":"conservation"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+            ),
             source_path="conservation.jsonl",
             acquired_at_ms=1,
         )
@@ -2615,6 +2657,8 @@ def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: P
                 payload=(
                     f'{{"type":"session_meta","payload":{{"id":"independent-{index}",'
                     '"timestamp":"2026-07-15T00:00:00Z"}}}}\n'
+                    '{"type":"response_item","payload":{"type":"message","role":"user",'
+                    '"content":[{"type":"input_text","text":"hi"}]}}\n'
                 ).encode(),
                 source_path=f"independent-{index}.jsonl",
                 acquired_at_ms=100 + index,
