@@ -10,7 +10,8 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
 ROUTE_OBSERVATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
@@ -634,8 +635,15 @@ def record_ingest_attempt(
     source_paths_json: str = "[]",
     storage_route: str | None = None,
     attempt_id: str | None = None,
+    disposition: IngestAttemptDisposition | None = None,
 ) -> str:
-    """Create or replace one ``ingest_attempts`` row and return its ``attempt_id``."""
+    """Create or replace one ``ingest_attempts`` row and return its ``attempt_id``.
+
+    ``disposition`` (polylogue-cnu3) is the typed, structurally-classified
+    outcome for this attempt. Omitting it (legacy callers) writes
+    ``outcome_code='legacy_unknown'`` with unknown retryability -- never a
+    guessed real class (AC4).
+    """
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
     has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
@@ -647,6 +655,31 @@ def record_ingest_attempt(
         else ""
     )
     route_params: tuple[object, ...] = (storage_route,) if has_storage_route else ()
+
+    has_outcome_code = _table_has_column(conn, "ingest_attempts", "outcome_code")
+    outcome_column = (
+        "outcome_code, retryable, evidence_ref, diagnostic, remediation,\n            " if has_outcome_code else ""
+    )
+    outcome_value = "?, ?, ?, ?, ?, " if has_outcome_code else ""
+    outcome_update = (
+        "outcome_code = excluded.outcome_code,\n            "
+        "retryable = excluded.retryable,\n            "
+        "evidence_ref = excluded.evidence_ref,\n            "
+        "diagnostic = excluded.diagnostic,\n            "
+        "remediation = excluded.remediation,\n            "
+        if has_outcome_code
+        else ""
+    )
+    outcome_code = disposition.outcome_code if disposition is not None else IngestOutcome.LEGACY_UNKNOWN.value
+    retryable = disposition.retryable if disposition is not None else None
+    evidence_ref = disposition.evidence_ref if disposition is not None else None
+    diagnostic = disposition.diagnostic if disposition is not None else None
+    remediation = disposition.remediation if disposition is not None else None
+    retryable_int = None if retryable is None else (1 if retryable else 0)
+    outcome_params: tuple[object, ...] = (
+        (outcome_code, retryable_int, evidence_ref, diagnostic, remediation) if has_outcome_code else ()
+    )
+
     conn.execute(
         f"""
         INSERT INTO ingest_attempts (
@@ -656,6 +689,7 @@ def record_ingest_attempt(
             status,
             phase,
             {route_column}
+            {outcome_column}
             started_at_ms,
             heartbeat_at_ms,
             finished_at_ms,
@@ -664,13 +698,14 @@ def record_ingest_attempt(
             error_message,
             source_paths_json
         )
-        VALUES (?, ?, ?, ?, ?, {route_value}?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, {route_value}{outcome_value}?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (attempt_id) DO UPDATE SET
             source_path = excluded.source_path,
             origin = excluded.origin,
             status = excluded.status,
             phase = excluded.phase,
             {route_update}
+            {outcome_update}
             started_at_ms = excluded.started_at_ms,
             heartbeat_at_ms = excluded.heartbeat_at_ms,
             finished_at_ms = excluded.finished_at_ms,
@@ -686,6 +721,7 @@ def record_ingest_attempt(
             status,
             phase,
             *route_params,
+            *outcome_params,
             started_at_ms,
             heartbeat_at_ms,
             finished_at_ms,

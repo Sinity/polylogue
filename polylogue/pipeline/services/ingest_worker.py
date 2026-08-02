@@ -23,10 +23,20 @@ from polylogue.archive.artifact_taxonomy import ArtifactClassification, Artifact
 from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.decode import RawPayloadEnvelope
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
-from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
+from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.pipeline.ingest_outcomes import (
+    IngestAttemptDisposition,
+    classify_decode_exception,
+    classify_parse_exception,
+    corrupt_input_disposition,
+    parser_defect_disposition,
+    success_disposition,
+    unsupported_shape_disposition,
+    validation_rejected_disposition,
+)
 from polylogue.schemas.drift_sentinel import SchemaDriftObservation
 from polylogue.sources.assembly import SidecarData
 from polylogue.sources.decoders import _iter_json_stream
@@ -85,6 +95,13 @@ class IngestRecordResult:
     source_name: str | None = None
     serialized_size_bytes: int | None = None
     schema_drift: SchemaDriftObservation | None = None
+    # polylogue-cnu3: typed disposition for this raw record's acquire/parse
+    # outcome, classified structurally (exception type / artifact policy),
+    # never by text-matching ``error``/``validation_error`` above.
+    outcome_code: str = IngestOutcome.SUCCESS.value
+    retryable: bool | None = False
+    evidence_ref: str | None = None
+    remediation: str | None = None
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -198,7 +215,10 @@ def _record_result(
     sessions: list[SessionWritePayload] | None = None,
     include_source_name: bool = False,
     schema_drift: SchemaDriftObservation | None = None,
+    disposition: IngestAttemptDisposition | None = None,
 ) -> IngestRecordResult:
+    if disposition is None:
+        disposition = success_disposition() if error is None else None
     return _finalize_result(
         IngestRecordResult(
             raw_id=context.raw_record.raw_id,
@@ -210,6 +230,10 @@ def _record_result(
             sessions=sessions or [],
             source_name=context.source_name if include_source_name else None,
             schema_drift=schema_drift,
+            outcome_code=(disposition.outcome_code if disposition is not None else IngestOutcome.LEGACY_UNKNOWN.value),
+            retryable=(disposition.retryable if disposition is not None else None),
+            evidence_ref=(disposition.evidence_ref if disposition is not None else None),
+            remediation=(disposition.remediation if disposition is not None else None),
         ),
         measure_serialized_size=context.measure_serialized_size,
     )
@@ -627,6 +651,7 @@ def _materialize_parsed_sessions(
             validation_error=validation.validation_error,
             parse_error=error,
             error=error,
+            disposition=unsupported_shape_disposition(evidence_ref="empty_parsed_sessions", diagnostic=error),
         )
 
     session_payloads: list[SessionWritePayload] = []
@@ -654,6 +679,9 @@ def _materialize_parsed_sessions(
                 validation_status=validation.status,
                 parse_error=f"transform: {exc}",
                 error=f"transform: {exc}",
+                disposition=parser_defect_disposition(
+                    evidence_ref=f"transform:{type(exc).__name__}", diagnostic=str(exc)
+                ),
             )
 
     return _record_result(
@@ -688,6 +716,9 @@ def _run_parse_plan(
             parse_error=validation.parse_error,
             error=validation.validation_error,
             schema_drift=validation.schema_drift,
+            disposition=validation_rejected_disposition(
+                evidence_ref="schema_validation_strict", diagnostic=validation.validation_error
+            ),
         )
 
     try:
@@ -702,6 +733,7 @@ def _run_parse_plan(
             validation_status=validation.status,
             parse_error=f"parse: {exc}",
             error=f"parse: {exc}",
+            disposition=classify_parse_exception(exc),
         )
 
     return _materialize_parsed_sessions(
@@ -763,6 +795,7 @@ def ingest_record(
             validation_error=error,
             parse_error=error,
             error=error,
+            disposition=corrupt_input_disposition(evidence_ref="blob_size==0", diagnostic=error),
         )
 
     if is_stream_record_provider(raw_record.source_path, stored_payload_provider or raw_record.source_name):
@@ -792,6 +825,7 @@ def ingest_record(
             validation_error=f"decode: {exc}",
             parse_error=f"decode: {exc}",
             error=f"decode: {exc}",
+            disposition=classify_decode_exception(exc),
         )
 
     return _run_parse_plan(context, _build_envelope_parse_plan(context, envelope))
