@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fast pre-commit gate: format + lint only.
+# Fast pre-commit gate: secret-candidate scan (all staged files) + format +
+# lint (staged *.py).
 # Installed automatically by the devshell (shellHook in flake.nix).
 #
 # Worktree-escape detector (#1211):
@@ -47,6 +48,24 @@ if [ "$git_dir_abs" != "$git_common_dir_abs" ]; then
         echo "pre-commit: worktree escape override active (POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1)" >&2
         ;;
     esac
+  fi
+fi
+
+# Secret-candidate scan over ALL staged file types (polylogue-t9xd,
+# leak-surfaces L5/L11: the format/lint checks below only ever covered
+# staged *.py -- nothing scanned staged content of any kind for
+# credential-shaped spans). Runs before the Python-only block below so a
+# commit that stages no .py files (e.g. only docs/config/fixtures) is still
+# scanned. Warn-only by default; POLYLOGUE_SECRET_SCAN_BLOCK=1 makes a
+# finding fail the commit. See polylogue/security/precommit_scan.py.
+mapfile -d '' staged_all < <(git diff --cached --name-only -z --diff-filter=ACMR)
+if [ "${#staged_all[@]}" -gt 0 ]; then
+  if command -v python3 >/dev/null 2>&1 && python3 -c "import polylogue.security.secret_scan" >/dev/null 2>&1; then
+    if ! python3 -m polylogue.security.precommit_scan "${staged_all[@]}"; then
+      exit 1
+    fi
+  else
+    echo "pre-commit: secret-scan: polylogue not importable in this environment, skipping content scan" >&2
   fi
 fi
 
