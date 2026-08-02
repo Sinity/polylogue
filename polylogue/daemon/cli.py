@@ -105,6 +105,26 @@ _RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS = 1
 # does not meaningfully extend the writer hold.
 _RAW_MATERIALIZATION_PARSE_STAGE_WARM_LIMIT = 64
 _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
+# polylogue-de2a: declared, enforced ceiling on how long ONE ordinary trickle
+# pass may hold the process-wide writer coordinator. Live evidence showed
+# ``_RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT`` alone did not bound hold
+# time -- a 16-64 component cap still produced measured holds of 187-210s,
+# because per-component cost (parse, replay, then a full FTS/action-pairs/
+# delegation-facts rebuild) dominates, not component count. Other maintenance
+# actors (FTS merge, session insights, convergence debt retry) want a 60s
+# cadence; a 20s ceiling here means the write coordinator's existing
+# maintenance-priority admission (PR #3289) bounds worst-case queued-actor
+# wait to roughly "this pass's remaining budget + at most one more
+# already-queued, equally-bounded ingest hold" instead of an unbounded
+# multi-minute wait. ``repair_raw_materialization`` checks this budget only
+# between components, at a point it already commits and requeries candidates
+# -- a real transaction-boundary checkpoint, not a mid-write yield -- and
+# always completes at least one component regardless of the budget, so a
+# single slower-than-budget component still makes forward progress. Not
+# applied to the whale pass (`_run_raw_materialization_whale_pass_once`),
+# whose entire purpose is converging one oversized, resource-blocked
+# component in a single pass once the ordinary conveyor is quiescent.
+_RAW_MATERIALIZATION_MAX_PASS_SECONDS = 20.0
 # polylogue-t93b: escalation-tier envelope for the whale pass. A component
 # permanently resource-blocked at the ordinary fast-path limit above
 # converges through a dedicated, single-component pass at this wider
@@ -1177,6 +1197,7 @@ def _drain_raw_materialization_once(
             raw_artifact_limit=limit,
             max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
             prefetch_cache=prefetch_cache,
+            max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
         )
     finally:
         _close_raw_materialization_fts(config.archive_root / "index.db")

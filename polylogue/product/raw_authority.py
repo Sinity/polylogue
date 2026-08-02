@@ -91,6 +91,7 @@ def repair_materialization(
     max_payload_bytes: int,
     prefetch_cache: RawParsePrefetchCache | None = None,
     raw_artifact_id: str | None = None,
+    max_pass_seconds: float | None = None,
 ) -> Any:
     """Run one bounded raw source->index convergence pass.
 
@@ -104,6 +105,14 @@ def repair_materialization(
     daemon's escalation-tier whale pass uses this to converge one
     resource-blocked component at a time under a widened ``max_payload_bytes``
     envelope instead of re-scanning the whole archive-wide backlog.
+
+    ``max_pass_seconds`` (polylogue-de2a, default ``None`` = unbounded) bounds
+    this call's own wall-clock duration so a caller running it under a
+    process-wide writer lock (the daemon's trickle conveyor) has a declared,
+    enforced ceiling on how long it can hold that lock in one call,
+    independent of ``raw_artifact_limit`` -- see
+    ``polylogue.storage.repair.repair_raw_materialization`` for why a fixed
+    component count alone did not bound hold time in practice.
     """
     from polylogue.storage.repair import repair_raw_materialization
 
@@ -114,6 +123,7 @@ def repair_materialization(
         max_payload_bytes=max_payload_bytes,
         prefetch_cache=prefetch_cache,
         raw_artifact_id=raw_artifact_id,
+        max_pass_seconds=max_pass_seconds,
     )
 
 
