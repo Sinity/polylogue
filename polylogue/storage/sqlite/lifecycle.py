@@ -705,6 +705,26 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # (`polylogue ops reset --index && polylogued run`).
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=57,
+        # polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, a
+        # brand-new table with no rows on any existing archive -- see
+        # INDEX_SCHEMA_VERSION's v57 comment (archive_tiers/index.py).
+        # Same shape as v33's `insight_materialization` new-table delta.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY, DerivedDeltaClass.INDEX_ONLY),
+        operations=(
+            FastForwardOperation(
+                name="v57-agent-meta-sidecar-purge-receipts",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "agent_meta_sidecar_purge_receipts"),),
+            ),
+            FastForwardOperation(
+                name="v57-agent-meta-sidecar-purge-receipts",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_agent_meta_sidecar_purge_receipts_purged_at"),),
+            ),
+        ),
+    ),
 )
 
 
