@@ -112,7 +112,7 @@ class HistoricalRawRevisionStream:
 class HistoricalRevisionDecision:
     raw_id: str
     authority: RawRevisionAuthority
-    relation: Literal["baseline", "predecessor", "ambiguous"]
+    relation: Literal["baseline", "predecessor", "ambiguous", "duplicate"]
     predecessor_raw_id: str | None = None
 
 
@@ -121,80 +121,166 @@ def append_source_revision(predecessor_revision: str, payload_hash: str) -> str:
     return sha256(f"{predecessor_revision}\0{payload_hash}".encode()).hexdigest()
 
 
-def classify_historical_full_revisions(
-    revisions: list[HistoricalRawRevision],
-) -> list[HistoricalRevisionDecision]:
-    """Prove a unique byte-prefix chain; quarantine every ambiguous cohort.
+def _classify_deduped_nodes(
+    node_ids: list[str],
+    sizes: dict[str, int],
+    is_prefix: Callable[[str, str], bool],
+) -> dict[str, HistoricalRevisionDecision]:
+    """Prove a byte-prefix DAG over already-deduplicated (distinct-content) nodes.
 
-    Acquisition time, source path, provider timestamps, and raw-id ordering are
-    intentionally absent. Equal or divergent payloads do not establish which
-    capture is newer.
+    Implements I4/I5 (polylogue-lb39z): a divergence quarantines only the
+    genuinely-divergent suffix, never a proven prefix chain or an unrelated
+    sibling that happens to share a cohort with it.
+
+    ``is_prefix(parent, child)`` must only be evaluated for pairs where
+    ``sizes[parent] < sizes[child]`` (the caller guarantees this so streamed
+    implementations can skip same-size/reverse-size comparisons entirely).
+
+    A node is only ever classified ``BYTE_PROVEN`` if it sits on a single,
+    unbranched path back to the cohort's one true root: every ancestor,
+    including the node itself, has exactly one maximal parent candidate and
+    is the sole child of that parent. The moment a node's parent has more
+    than one child (a fork) or a node has more than one incomparable maximal
+    parent (an ambiguous parent set), that node -- and everything built on
+    top of it -- is quarantined, while everything already proven up to that
+    point (including the fork point itself) is left alone. If the cohort has
+    zero or more than one root (no shared ancestor at all, e.g. two
+    unrelated same-size captures), there is no anchor to localize from and
+    the whole cohort is quarantined, matching prior behavior for that case.
     """
-    if not revisions:
-        return []
-    by_id = {revision.raw_id: revision for revision in revisions}
+    ordered = sorted(node_ids, key=lambda raw_id: (sizes[raw_id], raw_id))
     parents: dict[str, list[str]] = {}
-    children: dict[str, list[str]] = {raw_id: [] for raw_id in by_id}
-    for child in revisions:
+    children: dict[str, list[str]] = {raw_id: [] for raw_id in ordered}
+    for child in ordered:
         candidates = [
-            parent.raw_id
-            for parent in revisions
-            if parent.raw_id != child.raw_id
-            and len(parent.payload) < len(child.payload)
-            and child.payload.startswith(parent.payload)
+            parent
+            for parent in ordered
+            if parent != child and sizes[parent] < sizes[child] and is_prefix(parent, child)
         ]
-        maximal = [
-            candidate
-            for candidate in candidates
-            if not any(
-                candidate != other
-                and len(by_id[candidate].payload) < len(by_id[other].payload)
-                and by_id[other].payload.startswith(by_id[candidate].payload)
-                for other in candidates
-            )
-        ]
-        parents[child.raw_id] = maximal
+        # Prefix is transitive: if parent1 and parent2 are both prefixes of
+        # child and sizes[parent1] < sizes[parent2], then parent1 is
+        # necessarily a prefix of parent2 (parent1's bytes equal child's
+        # first N bytes, which equal parent2's first N bytes since parent2
+        # is itself a prefix of child of length >= N). Candidates therefore
+        # form a totally ordered chain and the unique maximal element is
+        # simply the largest one -- no further is_prefix comparisons (and
+        # their streamed blob re-reads) are needed here.
+        maximal = [max(candidates, key=lambda raw_id: (sizes[raw_id], raw_id))] if candidates else []
+        parents[child] = maximal
         for parent in maximal:
-            children[parent].append(child.raw_id)
-    roots = [raw_id for raw_id, parent_ids in parents.items() if not parent_ids]
-    leaves = [raw_id for raw_id, child_ids in children.items() if not child_ids]
-    unique_chain = (
-        len(roots) == 1
-        and len(leaves) == 1
-        and all(len(parent_ids) <= 1 for parent_ids in parents.values())
-        and all(len(child_ids) <= 1 for child_ids in children.values())
-    )
-    if not unique_chain:
-        return [
-            HistoricalRevisionDecision(
-                raw_id=revision.raw_id, authority=RawRevisionAuthority.QUARANTINED, relation="ambiguous"
+            children[parent].append(child)
+
+    roots = [raw_id for raw_id in ordered if not parents[raw_id]]
+    if len(roots) != 1:
+        return {
+            raw_id: HistoricalRevisionDecision(
+                raw_id=raw_id, authority=RawRevisionAuthority.QUARANTINED, relation="ambiguous"
             )
-            for revision in revisions
-        ]
+            for raw_id in ordered
+        }
     root = roots[0]
-    decisions: list[HistoricalRevisionDecision] = []
-    current: str | None = root
-    while current is not None:
-        predecessor: str | None = parents[current][0] if parents[current] else None
-        relation: Literal["baseline", "predecessor"] = "baseline" if not parents[current] else "predecessor"
-        decisions.append(
-            HistoricalRevisionDecision(
-                raw_id=current,
+    clean: dict[str, bool] = {root: True}
+    for raw_id in ordered:
+        if raw_id == root:
+            continue
+        parent_set = parents[raw_id]
+        if len(parent_set) != 1:
+            clean[raw_id] = False
+            continue
+        (parent,) = parent_set
+        clean[raw_id] = clean.get(parent, False) and len(children[parent]) == 1
+
+    decisions: dict[str, HistoricalRevisionDecision] = {}
+    for raw_id in ordered:
+        if clean.get(raw_id, False):
+            parent_set = parents[raw_id]
+            predecessor = parent_set[0] if parent_set else None
+            relation: Literal["baseline", "predecessor"] = "baseline" if predecessor is None else "predecessor"
+            decisions[raw_id] = HistoricalRevisionDecision(
+                raw_id=raw_id,
                 authority=RawRevisionAuthority.BYTE_PROVEN,
                 relation=relation,
                 predecessor_raw_id=predecessor,
             )
-        )
-        current = children[current][0] if children[current] else None
+        else:
+            decisions[raw_id] = HistoricalRevisionDecision(
+                raw_id=raw_id, authority=RawRevisionAuthority.QUARANTINED, relation="ambiguous"
+            )
     return decisions
 
 
-def _stream_size(revision: HistoricalRawRevisionStream) -> int:
+def classify_historical_full_revisions(
+    revisions: list[HistoricalRawRevision],
+) -> list[HistoricalRevisionDecision]:
+    """Prove a unique byte-prefix chain; quarantine only the divergent suffix.
+
+    Acquisition time, source path, provider timestamps, and raw-id ordering are
+    intentionally absent. Equal or divergent payloads do not establish which
+    capture is newer.
+
+    I4 (polylogue-lb39z): byte-identical captures of one source are one
+    evidence node observed twice, not competing revisions -- they are
+    collapsed onto a single representative (the lexicographically smallest
+    ``raw_id``) before the chain proof runs, and every non-representative
+    duplicate mirrors its representative's verdict with ``relation=
+    "duplicate"``. Output order matches input size order (ascending, ties
+    broken by ``raw_id``), preserving the existing "first is oldest, last is
+    head" contract relied on by callers such as
+    ``classify_untyped_full_revision_groups``.
+    """
+    if not revisions:
+        return []
+    groups: dict[bytes, list[HistoricalRawRevision]] = {}
+    for revision in revisions:
+        groups.setdefault(revision.payload, []).append(revision)
+    representative_payload: dict[str, bytes] = {}
+    members_of: dict[str, list[str]] = {}
+    for payload, members in groups.items():
+        representative = min(members, key=lambda revision: revision.raw_id)
+        representative_payload[representative.raw_id] = payload
+        members_of[representative.raw_id] = sorted(member.raw_id for member in members)
+
+    def is_prefix(parent: str, child: str) -> bool:
+        return representative_payload[child].startswith(representative_payload[parent])
+
+    sizes = {raw_id: len(payload) for raw_id, payload in representative_payload.items()}
+    rep_decisions = _classify_deduped_nodes(list(representative_payload), sizes, is_prefix)
+    return _expand_duplicate_decisions(rep_decisions, members_of, sizes)
+
+
+def _expand_duplicate_decisions(
+    rep_decisions: dict[str, HistoricalRevisionDecision],
+    members_of: dict[str, list[str]],
+    rep_sizes: dict[str, int],
+) -> list[HistoricalRevisionDecision]:
+    size_by_raw_id: dict[str, int] = {}
+    decision_by_raw_id: dict[str, HistoricalRevisionDecision] = {}
+    for representative_id, member_ids in members_of.items():
+        rep_decision = rep_decisions[representative_id]
+        decision_by_raw_id[representative_id] = rep_decision
+        size_by_raw_id[representative_id] = rep_sizes[representative_id]
+        for member_id in member_ids:
+            if member_id == representative_id:
+                continue
+            decision_by_raw_id[member_id] = HistoricalRevisionDecision(
+                raw_id=member_id,
+                authority=rep_decision.authority,
+                relation="duplicate",
+                predecessor_raw_id=None,
+            )
+            size_by_raw_id[member_id] = rep_sizes[representative_id]
+    ordered_ids = sorted(decision_by_raw_id, key=lambda raw_id: (size_by_raw_id[raw_id], raw_id))
+    return [decision_by_raw_id[raw_id] for raw_id in ordered_ids]
+
+
+def _stream_size_and_hash(revision: HistoricalRawRevisionStream) -> tuple[int, str]:
     size = 0
+    digest = sha256()
     with revision.open_payload() as handle:
         while chunk := handle.read(1024 * 1024):
             size += len(chunk)
-    return size
+            digest.update(chunk)
+    return size, digest.hexdigest()
 
 
 def _stream_is_prefix(
@@ -220,45 +306,42 @@ def _stream_is_prefix(
 def classify_historical_full_revision_streams(
     revisions: list[HistoricalRawRevisionStream],
 ) -> list[HistoricalRevisionDecision]:
-    """Stream the same unique-prefix proof as the eager byte classifier."""
+    """Stream the same dedup-first, localized-ambiguity proof, without eager payloads.
+
+    Each stream is read exactly once to learn its true size and content hash
+    (never trusting the caller-supplied ``payload_size`` alone); streams whose
+    hash matches are byte-identical duplicates and are collapsed per I4 before
+    any prefix comparison runs. Prefix comparisons between distinct-content
+    representatives are themselves streamed (``_stream_is_prefix``), so no
+    full payload is ever held in memory at once.
+    """
     if not revisions:
         return []
-    actual_sizes = {revision.raw_id: _stream_size(revision) for revision in revisions}
-    ordered = sorted(revisions, key=lambda revision: (actual_sizes[revision.raw_id], revision.raw_id))
-    if len({actual_sizes[revision.raw_id] for revision in ordered}) != len(ordered):
-        return [
-            HistoricalRevisionDecision(
-                raw_id=revision.raw_id, authority=RawRevisionAuthority.QUARANTINED, relation="ambiguous"
-            )
-            for revision in revisions
-        ]
-    decisions: list[HistoricalRevisionDecision] = []
-    previous: HistoricalRawRevisionStream | None = None
-    for current in ordered:
-        predecessor = previous.raw_id if previous is not None else None
-        if previous is not None and not _stream_is_prefix(
-            previous,
-            current,
-            parent_size=actual_sizes[previous.raw_id],
-            child_size=actual_sizes[current.raw_id],
-        ):
-            return [
-                HistoricalRevisionDecision(
-                    raw_id=revision.raw_id, authority=RawRevisionAuthority.QUARANTINED, relation="ambiguous"
-                )
-                for revision in revisions
-            ]
-        relation: Literal["baseline", "predecessor"] = "baseline" if predecessor is None else "predecessor"
-        decisions.append(
-            HistoricalRevisionDecision(
-                raw_id=current.raw_id,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-                relation=relation,
-                predecessor_raw_id=predecessor,
-            )
+    size_and_hash = {revision.raw_id: _stream_size_and_hash(revision) for revision in revisions}
+    by_hash: dict[str, list[HistoricalRawRevisionStream]] = {}
+    for revision in revisions:
+        _, digest = size_and_hash[revision.raw_id]
+        by_hash.setdefault(digest, []).append(revision)
+
+    representative_stream: dict[str, HistoricalRawRevisionStream] = {}
+    representative_size: dict[str, int] = {}
+    members_of: dict[str, list[str]] = {}
+    for members in by_hash.values():
+        representative = min(members, key=lambda revision: revision.raw_id)
+        representative_stream[representative.raw_id] = representative
+        representative_size[representative.raw_id] = size_and_hash[representative.raw_id][0]
+        members_of[representative.raw_id] = sorted(member.raw_id for member in members)
+
+    def is_prefix(parent: str, child: str) -> bool:
+        return _stream_is_prefix(
+            representative_stream[parent],
+            representative_stream[child],
+            parent_size=representative_size[parent],
+            child_size=representative_size[child],
         )
-        previous = current
-    return decisions
+
+    rep_decisions = _classify_deduped_nodes(list(representative_stream), representative_size, is_prefix)
+    return _expand_duplicate_decisions(rep_decisions, members_of, representative_size)
 
 
 __all__ = [
