@@ -28,7 +28,7 @@
     "result": "pass",
     "triggered": false
   },
-  "first_result_s": 8.54,
+  "first_result_s": 2.284,
   "non_claims": [
     "The deterministic tour does not establish field prevalence, production scale, or provider completeness.",
     "The deterministic tour does not establish memory uplift, invoice accuracy, selective deletion, or the Sinex backend.",
@@ -350,6 +350,7 @@
         "ok": true
       }
     ],
+    "healed_tiers": [],
     "message_count": 71,
     "overlays_seeded": true,
     "session_count": 19,
@@ -384,7 +385,7 @@
         "demo",
         "receipts"
       ],
-      "duration_s": 2.44,
+      "duration_s": 2.284,
       "exit_code": 0,
       "name": "claim versus receipt",
       "output_path": "command-output/01-claim-versus-receipt.txt"
@@ -395,7 +396,7 @@
         "polylogue",
         "actions where is_error:true | group by tool | count"
       ],
-      "duration_s": 2.767,
+      "duration_s": 3.266,
       "exit_code": 0,
       "name": "failed actions aggregate",
       "output_path": "command-output/02-failed-actions-aggregate.txt"
@@ -410,7 +411,7 @@
         "--view",
         "chronicle"
       ],
-      "duration_s": 2.826,
+      "duration_s": 2.776,
       "exit_code": 0,
       "name": "composed lineage",
       "output_path": "command-output/03-composed-lineage.txt"
@@ -422,13 +423,13 @@
         "analyze",
         "--facets"
       ],
-      "duration_s": 2.73,
+      "duration_s": 2.88,
       "exit_code": 0,
       "name": "archive facets",
       "output_path": "command-output/04-archive-facets.txt"
     }
   ],
-  "total_duration_s": 16.865,
+  "total_duration_s": 17.456,
   "transcript_path": "transcript.txt",
   "verify": {
     "absolute_path_leaks": [],
