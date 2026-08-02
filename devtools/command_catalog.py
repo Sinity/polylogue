@@ -956,6 +956,47 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace attachment-reacquisition",
+        "workspace",
+        "Classify historically-unfetched attachments for a source-backed backfill.",
+        "devtools.attachment_reacquisition_report",
+        use_when=(
+            "polylogue-pfdf: before backfilling the 79%-unfetched attachments backlog, get a "
+            "read-only classification of how many are recoverable by re-parsing their still-"
+            "durable raw_sessions payload with today's parser (e.g. attachments whose "
+            "extracted_content the parser didn't extract until 60d93b618), how many are "
+            "structurally unrecoverable (ChatGPT sandbox_file Code Interpreter output), and how "
+            "many remain undetermined (most commonly Drive/OAuth attachments needing a live "
+            "authenticated fetch this classifier never performs). Never mutates state."
+        ),
+        examples=(
+            "devtools workspace attachment-reacquisition",
+            "devtools workspace attachment-reacquisition --json",
+            "devtools workspace attachment-reacquisition --raw-row-limit 20000 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
+        "workspace attachment-reacquisition-apply",
+        "workspace",
+        "Backfill acquisition for historically-unfetched attachments.",
+        "devtools.attachment_reacquisition_apply",
+        use_when=(
+            "polylogue-pfdf: act on the classifier's report -- publish freshly re-derived bytes "
+            "for every 'reacquirable' attachment and mark every 'unrecoverable' attachment "
+            "acquisition_status='unavailable' (distinct from 'unfetched'). Default is dry-run; "
+            "--apply requires --manifest-path (immutable JSONL receipt) and --backup-manifest "
+            "pointing at a verified index-tier backup (polylogue backup --output-dir <dir> "
+            "--verify). 'undetermined' attachments are never touched."
+        ),
+        examples=(
+            "devtools workspace attachment-reacquisition-apply",
+            "devtools workspace attachment-reacquisition-apply --json",
+            "devtools workspace attachment-reacquisition-apply --apply "
+            "--manifest-path /realm/staging/attachment-reacquisition-manifest.jsonl "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace raw-membership-writeback-apply",
         "workspace",
         "Propagate already-decided membership verdicts onto raw_sessions.revision_authority.",

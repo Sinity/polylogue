@@ -222,6 +222,8 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace antigravity-phantom-purge-apply` | Delete antigravity brain-metadata phantom sessions and reclassify their raw rows. |
 | `devtools workspace antigravity-phantom-sweep` | List antigravity-session rows that are brain-metadata phantom fragments. |
 | `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
+| `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
+| `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
 | `devtools workspace backlog-calibration` | Measured lead-time/discovery/staleness distributions over the bead corpus. |
 | `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
