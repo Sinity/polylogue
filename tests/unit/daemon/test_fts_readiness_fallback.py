@@ -214,3 +214,32 @@ def test_single_session_defer_does_not_falsely_zero_archive_wide_coverage(tmp_pa
     assert fts["message_indexed_count"] == indexed
     assert fts["message_indexable_count"] == indexed
     assert fts["coverage_pct"] == 100.0
+
+
+def test_genuinely_empty_archive_reports_coverage_as_unmeasured_not_exact(tmp_path: Path) -> None:
+    """polylogue-oitx: a freshly initialized, genuinely empty archive has a
+    zero-denominator coverage_pct (0 indexable rows). ``invariant_ready``
+    only proves triggers/tables exist -- it is not evidence of measured
+    coverage, so this must report ``None`` (unmeasured), never a fabricated
+    ``100.0``/``0.0`` derived from ``invariant_ready`` alone.
+    """
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+
+    fts = fts_readiness_info(db, exact=False)
+
+    assert fts["message_indexable_count"] == 0
+    assert fts["message_indexed_count"] == 0
+    assert fts["coverage_pct"] is None
+
+
+def test_genuinely_empty_archive_reports_coverage_as_unmeasured_exact(tmp_path: Path) -> None:
+    """Same as above, through the exact (invariant-snapshot) path."""
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+
+    fts = fts_readiness_info(db, exact=True)
+
+    assert fts["message_indexable_count"] == 0
+    assert fts["message_indexed_count"] == 0
+    assert fts["coverage_pct"] is None

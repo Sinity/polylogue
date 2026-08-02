@@ -136,7 +136,9 @@ class EmbeddingMetricState(TypedDict):
     pending_sessions: int
     failed_sessions: int
     embedded_messages: int
-    coverage_percent: float
+    # None when no sessions are eligible for embedding -- a genuine
+    # measurement gap, not a measured percentage (polylogue-oitx).
+    coverage_percent: float | None
     status: str
     retrieval_ready: int
     latest_status: str | None
@@ -808,9 +810,21 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
 
     embedded_messages = _embedding_message_count(conn, status_table=status_table, meta_table=meta_table)
     eligible_sessions = embedded_sessions + pending_sessions
-    coverage_percent = (
-        embedded_sessions / eligible_sessions * 100 if eligible_sessions > 0 else (100.0 if total_sessions > 0 else 0.0)
-    )
+    coverage_percent: float | None
+    if eligible_sessions > 0:
+        coverage_percent = embedded_sessions / eligible_sessions * 100
+    elif total_sessions > 0:
+        # Sessions exist, but none are eligible for embedding (e.g. the
+        # embedding schema branch was never queried) -- this is a genuine
+        # measurement gap, not "fully embedded". Report unmeasured (None,
+        # emitted as NaN on the Prometheus gauge) rather than a fabricated
+        # 100.0 that an alerting pipeline would read as healthy
+        # (polylogue-oitx).
+        coverage_percent = None
+    else:
+        # No sessions at all: there is nothing to embed, and ``status``
+        # below reports "empty" for this case.
+        coverage_percent = 0.0
     if total_sessions <= 0 and pending_sessions <= 0 and embedded_messages <= 0:
         status = "empty"
     elif pending_sessions <= 0:
@@ -897,12 +911,16 @@ def _emit_embedding_metrics(lines: list[str], state: EmbeddingMetricState) -> No
         metric_type="gauge",
         samples=[({"state": "embedded"}, int(state["embedded_messages"]))],
     )
+    coverage_percent = state["coverage_percent"]
     _emit_metric(
         lines,
         name="polylogue_embedding_coverage_percent",
-        help_text="Percent of sessions with current embeddings.",
+        help_text=(
+            "Percent of sessions with current embeddings. NaN when no sessions "
+            "are eligible for embedding (a measurement gap, not 0% or 100%)."
+        ),
         metric_type="gauge",
-        samples=[(None, float(state["coverage_percent"]))],
+        samples=[(None, float("nan") if coverage_percent is None else float(coverage_percent))],
     )
     current_status = str(state["status"])
     _emit_metric(
