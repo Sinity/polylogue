@@ -181,65 +181,83 @@ def _looks_like_gemini_mapping(record: PayloadRecord) -> bool:
     return drive.looks_like(record)
 
 
-def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
+def _detect_provider_from_record_evidence(record: PayloadRecord) -> tuple[Provider | None, str]:
+    """Detect a provider from a single record, tagging the deciding evidence.
+
+    Sole implementation of the record-level detector order; ``_detect_provider_from_record``
+    below is a thin wrapper that discards the evidence label, so this is the
+    single source of truth -- there is no separate "logging" copy of the
+    decision tree that can silently drift from the real one (observability
+    gap fix, mission item 1).
+    """
     if browser_capture.looks_like(record):
         session = record.get("session")
         provider = session.get("provider") if isinstance(session, dict) else None
-        return Provider.from_string(provider if isinstance(provider, str) else None)
+        return Provider.from_string(provider if isinstance(provider, str) else None), "browser_capture.looks_like"
     # Local-agent JSON session documents share enough generic message keys with
     # Claude Code that they must be recognized before broader validators.
     if local_agent.looks_like_gemini_cli(record):
-        return Provider.GEMINI_CLI
+        return Provider.GEMINI_CLI, "local_agent.looks_like_gemini_cli"
     if hermes_state.looks_like_state_db_payload(record):
-        return Provider.HERMES
+        return Provider.HERMES, "hermes_state.looks_like_state_db_payload"
     if hermes_verification.looks_like_verification_evidence_db_payload(record):
-        return Provider.HERMES
+        return Provider.HERMES, "hermes_verification.looks_like_verification_evidence_db_payload"
     if hermes_spans.looks_like_atif_payload(record):
-        return Provider.HERMES
+        return Provider.HERMES, "hermes_spans.looks_like_atif_payload"
     if hermes_spans.looks_like_atof_payload(record):
-        return Provider.HERMES
+        return Provider.HERMES, "hermes_spans.looks_like_atof_payload"
     if local_agent.looks_like_hermes(record):
-        return Provider.HERMES
+        return Provider.HERMES, "local_agent.looks_like_hermes"
     if antigravity.looks_like_markdown_export(record):
-        return Provider.ANTIGRAVITY
+        return Provider.ANTIGRAVITY, "antigravity.looks_like_markdown_export"
     if antigravity.looks_like_brain_metadata(record, None):
-        return Provider.ANTIGRAVITY
+        return Provider.ANTIGRAVITY, "antigravity.looks_like_brain_metadata"
     if beads.looks_like(record):
-        return Provider.BEADS
+        return Provider.BEADS, "beads.looks_like"
     # Specific type-level checks first (Codex uses Pydantic validation;
     # Claude Code uses a dict-key/type shape check, not Pydantic, despite
     # ClaudeCodeRecord existing as a separate typed parse-time model), then
     # weaker dict-key checks (ChatGPT, Claude AI, Gemini).
     if codex.looks_like([dict(record)]):
-        return Provider.CODEX
+        return Provider.CODEX, "codex.looks_like (pydantic record validation)"
     if claude.looks_like_code([dict(record)]):
-        return Provider.CLAUDE_CODE
+        return Provider.CLAUDE_CODE, "claude.looks_like_code (envelope marker, #3428)"
     # A single record here may be an intentionally partial ChatGPT fragment
     # (e.g. one line of a streamed JSONL sniff), not a whole assembled
     # export document, so this uses the fragment-level check rather than
     # ``chatgpt.looks_like``'s document-identity requirements (polylogue-t0ta).
     if chatgpt.looks_like_fragment(record):
-        return Provider.CHATGPT
+        return Provider.CHATGPT, "chatgpt.looks_like_fragment (mapping node shape)"
     # Claude Design (bd polylogue-tbun) checked before the general claude.ai
     # detector: its shape (messages + project, no chat_messages, camelCase
     # contentBlocks) is a distinct, tighter product signature -- not a
     # claude.ai variant.
     if claude.looks_like_claude_design(record):
-        return Provider.CLAUDE_DESIGN
+        return Provider.CLAUDE_DESIGN, "claude.looks_like_claude_design"
     if claude.looks_like_claude_memories(record):
-        return Provider.CLAUDE_AI
+        return Provider.CLAUDE_AI, "claude.looks_like_claude_memories"
     if claude.looks_like_ai(record):
-        return Provider.CLAUDE_AI
+        return Provider.CLAUDE_AI, "claude.looks_like_ai (non-empty plausible chat_messages)"
     if grok.looks_like_export(record):
-        return Provider.GROK
+        return Provider.GROK, "grok.looks_like_export"
     if _looks_like_gemini_mapping(record):
-        return Provider.GEMINI
-    return None
+        return Provider.GEMINI, "drive.looks_like (chunkedPrompt/chunks)"
+    return None, "no detector matched (single record)"
 
 
-def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None:
+def _detect_provider_from_record(record: PayloadRecord) -> Provider | None:
+    return _detect_provider_from_record_evidence(record)[0]
+
+
+def _detect_provider_from_sequence_evidence(payloads: PayloadSequence) -> tuple[Provider | None, str]:
+    """Detect a provider from a payload sequence, tagging the deciding evidence.
+
+    Sole implementation of the sequence-level detector order; see
+    ``_detect_provider_from_record_evidence`` for the equivalent single-record
+    rationale.
+    """
     if not payloads:
-        return None
+        return None, "empty sequence"
 
     first_record = _payload_record(payloads[0])
     if first_record is not None:
@@ -259,56 +277,84 @@ def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None
         if local_agent.looks_like_gemini_cli(first_record) and (
             len(payloads) == 1 or not isinstance(first_record.get("messages"), list)
         ):
-            return Provider.GEMINI_CLI
+            return Provider.GEMINI_CLI, "local_agent.looks_like_gemini_cli (stub record)"
         if browser_capture.looks_like(first_record):
-            return _detect_provider_from_record(first_record)
+            provider, evidence = _detect_provider_from_record_evidence(first_record)
+            return provider, f"sequence[0] browser_capture.looks_like -> {evidence}"
         if hermes_spans.looks_like_atof_payload(first_record):
-            return Provider.HERMES
+            return Provider.HERMES, "hermes_spans.looks_like_atof_payload (sequence[0])"
         if beads.looks_like(first_record):
-            return Provider.BEADS
+            return Provider.BEADS, "beads.looks_like (sequence[0])"
         # The first record of a *sequence* is a whole assembled document
         # (e.g. one conversation from a ChatGPT bundle array), not a
         # partial per-line fragment, so this uses the strict document-level
         # check rather than ``looks_like_fragment`` (polylogue-t0ta).
         if chatgpt.looks_like(first_record):
-            return Provider.CHATGPT
+            return Provider.CHATGPT, "chatgpt.looks_like (sequence[0] whole-document)"
         if isinstance(first_record.get("chat_messages"), list):
-            return Provider.CLAUDE_AI
+            return Provider.CLAUDE_AI, "sequence[0] chat_messages dict-key present"
         # Claude AI account memory export (memories.json, bd polylogue-zng9)
         # arrives as a bare top-level JSON array of one-per-account records.
         if claude.looks_like_claude_memories(first_record):
-            return Provider.CLAUDE_AI
+            return Provider.CLAUDE_AI, "claude.looks_like_claude_memories (sequence[0])"
         if claude.looks_like_claude_design(first_record):
-            return Provider.CLAUDE_DESIGN
+            return Provider.CLAUDE_DESIGN, "claude.looks_like_claude_design (sequence[0])"
         if grok.looks_like_export(first_record):
-            return Provider.GROK
+            return Provider.GROK, "grok.looks_like_export (sequence[0])"
         if _looks_like_gemini_mapping(first_record):
-            return Provider.GEMINI
+            return Provider.GEMINI, "drive.looks_like (sequence[0])"
 
     if claude.looks_like_code(payloads):
-        return Provider.CLAUDE_CODE
+        return Provider.CLAUDE_CODE, "claude.looks_like_code (record stream envelope markers)"
     if codex.looks_like(payloads):
-        return Provider.CODEX
-    return None
+        return Provider.CODEX, "codex.looks_like (pydantic record stream validation)"
+    return None, "no detector matched (sequence)"
+
+
+def _detect_provider_from_sequence(payloads: PayloadSequence) -> Provider | None:
+    return _detect_provider_from_sequence_evidence(payloads)[0]
+
+
+def detect_provider_evidence(payload: object, path: object | None = None) -> tuple[Provider | None, str]:
+    """Infer provider from payload shape, plus the evidence that decided it.
+
+    ``detect_provider`` is a thin wrapper over this function that discards the
+    evidence label for existing call sites; use this variant wherever the
+    deciding rule needs to be surfaced (acquisition logging, ``import
+    explain``-style diagnostics).
+    """
+    del path
+
+    if record := _payload_record(payload):
+        return _detect_provider_from_record_evidence(record)
+    payloads = _payload_sequence(payload)
+    if payloads is not None:
+        return _detect_provider_from_sequence_evidence(payloads)
+    return None, "payload is not a JSON document or sequence"
 
 
 def detect_provider(payload: object, path: object | None = None) -> Provider | None:
     """Infer provider from payload shape. Path is accepted for surface compatibility."""
-    del path
-
-    if record := _payload_record(payload):
-        return _detect_provider_from_record(record)
-    payloads = _payload_sequence(payload)
-    return _detect_provider_from_sequence(payloads) if payloads is not None else None
+    return detect_provider_evidence(payload, path)[0]
 
 
-def _detect_provider_from_raw_bytes(
+def detect_provider_from_raw_bytes_evidence(
     raw_bytes: bytes,
     stream_name: str,
     fallback_provider: Provider,
     *,
     truncated_tail_ok: bool = False,
-) -> Provider:
+) -> tuple[Provider, str]:
+    """Detect a provider from a raw byte prefix, plus the evidence that decided it.
+
+    Sole implementation of the raw-bytes detection path; ``_detect_provider_from_raw_bytes``
+    is a thin wrapper that discards the evidence label. Used directly by the
+    production per-file acquisition log
+    (``source_acquisition_components.read_plain_source_file``) and by the
+    unclaimed-file sweep's real shape check (``sources.live.acquisition_log.
+    default_file_claim_check``) so both surfaces report the same rule a real
+    ingest would have used, not an approximation.
+    """
     jsonl_like = _is_jsonl_stream_name(stream_name)
     text = None if jsonl_like else _decode_json_bytes(raw_bytes)
     if text is not None:
@@ -317,13 +363,13 @@ def _detect_provider_from_raw_bytes(
         except json.JSONDecodeError:
             payload = None
         else:
-            detected = detect_provider(payload)
+            detected, evidence = detect_provider_evidence(payload)
             if detected is not None:
-                return detected
+                return detected, evidence
 
     stream_bytes = _trim_jsonl_detection_prefix(raw_bytes, stream_name) if truncated_tail_ok else raw_bytes
     if not stream_bytes:
-        return fallback_provider
+        return fallback_provider, "empty byte stream after trimming; used fallback_provider"
     try:
         stream = _iter_json_stream(BytesIO(stream_bytes), stream_name)
         payloads = list(islice(stream, 32)) if jsonl_like else list(stream)
@@ -341,9 +387,27 @@ def _detect_provider_from_raw_bytes(
             error_type=type(exc).__name__,
             error=str(exc),
         )
-        return fallback_provider
+        return fallback_provider, f"stream decode error ({type(exc).__name__}: {exc}); used fallback_provider"
 
-    return detect_provider(payloads) or fallback_provider
+    detected, evidence = detect_provider_evidence(payloads)
+    if detected is None:
+        return fallback_provider, f"{evidence}; used fallback_provider"
+    return detected, evidence
+
+
+def _detect_provider_from_raw_bytes(
+    raw_bytes: bytes,
+    stream_name: str,
+    fallback_provider: Provider,
+    *,
+    truncated_tail_ok: bool = False,
+) -> Provider:
+    return detect_provider_from_raw_bytes_evidence(
+        raw_bytes,
+        stream_name,
+        fallback_provider,
+        truncated_tail_ok=truncated_tail_ok,
+    )[0]
 
 
 def _is_jsonl_stream_name(stream_name: str) -> bool:
@@ -1754,6 +1818,8 @@ __all__ = [
     "LoweredPayloadSpec",
     "_detect_provider_from_raw_bytes",
     "detect_provider",
+    "detect_provider_evidence",
+    "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",
     "is_stream_record_provider",
     "parse_drive_payload",

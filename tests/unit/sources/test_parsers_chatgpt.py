@@ -85,7 +85,24 @@ PROVIDER_FORMAT_DETECTION_CASES: list[ProviderDetectionCase] = [
     ({}, False, chatgpt_looks_like, "ChatGPT: missing mapping"),
     (None, False, chatgpt_looks_like, "ChatGPT: None input"),
     # Claude AI
-    ({"chat_messages": []}, True, looks_like_ai, "Claude AI: chat_messages"),
+    (
+        {"chat_messages": []},
+        False,
+        looks_like_ai,
+        "Claude AI: empty chat_messages refused (no positive turn evidence, tightened sibling of #3428)",
+    ),
+    (
+        {"chat_messages": [{"foo": "bar"}]},
+        False,
+        looks_like_ai,
+        "Claude AI: chat_messages entries without role+content shape refused",
+    ),
+    (
+        {"chat_messages": [{"sender": "human", "text": "hi"}]},
+        True,
+        looks_like_ai,
+        "Claude AI: chat_messages entry with role+content shape accepted",
+    ),
     ({}, False, looks_like_ai, "Claude AI: missing chat_messages"),
     (None, False, looks_like_ai, "Claude AI: None"),
     # Claude Code

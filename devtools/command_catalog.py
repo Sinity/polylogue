@@ -1256,6 +1256,25 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy schema-versioning", "devtools lab policy schema-versioning --json"),
     ),
     CommandSpec(
+        "lab policy classifier-fingerprints",
+        "verification lab",
+        "Verify parser/classifier decision-boundary changes are declared as reparse-requiring or acknowledged.",
+        "devtools.verify_classifier_fingerprints",
+        use_when=(
+            "Catch the gap `lab policy schema-versioning` cannot see (polylogue-gucv): a parser/classifier "
+            "under polylogue/sources/ or polylogue/archive/artifact_taxonomy/ (looks_like*/classify_artifact* "
+            "functions) changes what it accepts for identical input bytes without any INDEX_SCHEMA_VERSION "
+            "bump at all, so already-indexed rows go silently stale with no signal a reparse was needed "
+            "(PR #3428 shipped exactly this, green, against the version-keyed gate)."
+        ),
+        examples=(
+            "devtools lab policy classifier-fingerprints",
+            "devtools lab policy classifier-fingerprints --json",
+            "devtools lab policy classifier-fingerprints --ack polylogue/sources/parsers/foo.py:looks_like_x "
+            "--reason 'only tightens a shape that never validly matched' --ref polylogue-abcd",
+        ),
+    ),
+    CommandSpec(
         "lab policy backlog-hygiene",
         "verification lab",
         "Verify Beads backlog structure invariants (.beads/issues.jsonl).",

@@ -2903,6 +2903,26 @@ class LiveBatchProcessor:
                 {"type": "session_meta", "payload": {"id": identity}},
                 separators=(",", ":"),
             ).encode()
+            # Declared, evidenced transform (mission item: fix or log the
+            # Codex synthetic-header injection, previously silent). A Codex
+            # append-mode delta is the file's tail bytes only -- the real
+            # `session_meta` header that carries native-session identity was
+            # already consumed by an earlier full/append observation and is
+            # not part of this delta. Without re-synthesizing it here, the
+            # delta payload would parse with no identity at all and either
+            # fall back to a path-derived id (breaking continuity with the
+            # session this file's earlier bytes already established) or be
+            # rejected outright. `identity` is recovered from durable
+            # evidence (`_existing_provider_session_id`: the archived
+            # session's own native id, or this file's own previously-read
+            # `session_meta` line) before hashing, never guessed.
+            logger.info(
+                "codex_append_synthetic_session_meta_injected",
+                path=str(path),
+                identity=identity,
+                reason="append-mode delta lacks its own session_meta header; "
+                "identity recovered from archived session / prior session_meta line",
+            )
             return session_meta + b"\n" + payload
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(path, payload):
             return None

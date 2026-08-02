@@ -147,6 +147,9 @@ class SemanticSessionMessageLike(SemanticMessageLike, Protocol):
     @property
     def is_substantive(self) -> bool: ...
 
+    @property
+    def stop_reason(self) -> str | None: ...
+
 
 class SemanticSummaryLike(Protocol):
     @property
@@ -261,6 +264,7 @@ def build_message_semantic_facts(
         actions=actions,
         tool_category_counts=sorted_counts(dict(tool_category_counts)),
         reasoning_traces=reasoning_traces,
+        stop_reason=message.stop_reason,
     )
     add_timing("facts.message_construct", t0)
     return facts

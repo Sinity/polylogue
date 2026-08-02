@@ -142,6 +142,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy backlog-hygiene` | Verify Beads backlog structure invariants (.beads/issues.jsonl). |
 | `devtools lab policy bead-graph` | Bead-graph invariant lint over live `bd` state (cycles, wave labels/inversions, missing AC). |
 | `devtools lab policy campaign-archive-boundaries` | Verify devtools synthetic benchmark/scale campaigns route through ArchiveLocation. |
+| `devtools lab policy classifier-fingerprints` | Verify parser/classifier decision-boundary changes are declared as reparse-requiring or acknowledged. |
 | `devtools lab policy demo-packet-registry` | Verify every registered 212 demo has a conforming Demo Finding Packet. |
 | `devtools lab policy demo-tour-freshness` | Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts. |
 | `devtools lab policy docs-drift` | Verify checkable factual claims in the Reference-docs table against current source. |
