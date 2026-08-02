@@ -54,7 +54,6 @@ They are not a proof ledger or end-user archive workflow.
 | `devtools lab policy demo-tour-freshness` | Catch drift between what `polylogue demo tour` actually emits at runtime (transcript, report, per-step command output, recording tape) and the committed copies under docs/examples/demo-tour/, modulo an explicit wall-clock-duration mask (polylogue-3tl.17). Runs the real tour (~10s), so it lives in the lab tier rather than --quick. |
 | `devtools lab policy docs-drift` | Catch doc-vs-code drift in the hand-maintained Reference-docs table (CLAUDE.md): a backtick-quoted file path that no longer exists, a '<Tier> schema version N' claim ahead of the tier's current constant, or a watchlisted table name renamed to a different current name (e.g. `artifact_observations` renamed to `raw_artifacts`) still asserted as current (polylogue-9e5.13). |
 | `devtools lab policy insight-honesty` | Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and polylogue.insights.rigor's contract matrix/exemption list never drift apart (9e5.28) -- a registered product with neither a RigorContract nor a RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` instead of showing as uncovered. |
-| `devtools lab policy raw-authority-frontier-executability` | polylogue-w32w / polylogue-lb39z (Phase 1, item 4): RawAuthorityFrontierItem.__post_init__ raises if a CONSTRUCTED item pairs a dispatched actuator (_APPLY_DISPATCHED_ACTUATORS) with a non-executable state (_EXECUTABLE_STATES) -- but that only fires when a test or live classification actually builds one; a new frontier state or re-paired actuator can ship an unexercised branch that stays silent until it accumulates against real archive data (the original defect: 4,174 blockers demanding an unreachable actuator, undetected for weeks). This lint statically enumerates every literal (state, actuator) construction site in polylogue/storage/raw_reconciler.py (_item(...) and _StrategyOverride(...) calls) and re-checks the same invariant at review time, independent of test coverage. |
 | `devtools lab policy schema-versioning` | Enforce the policy boundary documented in docs/internals.md § 'Schema Versioning Model'. Durable tiers use explicit additive migrations with a backup gate; derived tiers are rebuilt or blue-green replaced from source evidence. |
 | `devtools lab policy timestamp-doctrine` | Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need an explicit additive migration to fix later -- catching it before merge is orders cheaper than a copy-forward migration after. |
 | `devtools lab provider completeness` | Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage before claiming a provider/importer mode is product-ready. |
@@ -148,7 +147,9 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy demo-tour-freshness` | Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts. |
 | `devtools lab policy docs-drift` | Verify checkable factual claims in the Reference-docs table against current source. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
+| `devtools lab policy position-derived-identity` | Verify no parser mints cross-revision comparison identity from positional/index data. |
 | `devtools lab policy raw-authority-frontier-executability` | Verify every raw-authority frontier state has a reachable actuator. |
+| `devtools lab policy raw-payload-hash-purity` | Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools lab probe bead-pr-reconciliation` | Surface beads whose referenced PR merged but the bead is still open. |
@@ -216,6 +217,10 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools demo real-slice-screen` | Read-only extraction + privacy screening of a candidate real-archive session slice. |
 | `devtools workspace affordance-usage` | Analyze agent affordance/tool usage from archive tool-use rows. |
+| `devtools workspace agent-meta-sidecar-purge-apply` | Purge agent-*.meta.json subagent-sidecar phantom sessions from index.db. |
+| `devtools workspace agent-meta-sidecar-sweep` | Find agent-*.meta.json subagent-sidecar phantom sessions (message_count=0). |
+| `devtools workspace antigravity-phantom-purge-apply` | Delete antigravity brain-metadata phantom sessions and reclassify their raw rows. |
+| `devtools workspace antigravity-phantom-sweep` | List antigravity-session rows that are brain-metadata phantom fragments. |
 | `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
 | `devtools workspace backlog-calibration` | Measured lead-time/discovery/staleness distributions over the bead corpus. |
 | `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
@@ -241,7 +246,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace mandate-continuity-replay` | Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
-| `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
