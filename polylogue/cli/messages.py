@@ -329,6 +329,54 @@ def run_session_file_edits(
     run_coroutine_sync(_run())
 
 
+def run_session_web_content_constructs(
+    env: AppEnv,
+    request: RootModeRequest,
+    *,
+    session_id: str,
+    output_format: str = "json",
+) -> None:
+    """Execute the web-content verb.
+
+    Renders typed web-export constructs (polylogue-kktg): search queries/
+    results, canvas documents, content references, image results, async
+    tasks, selected sources, token budgets, and voice notes projected from
+    ChatGPT/Claude web payloads -- persisted on every ingest into the
+    dedicated ``web_content_constructs`` table but, before this view,
+    reachable only through an orphan-integrity DELETE sweep or a demo
+    smoke-probe COUNT(*), never a real reader.
+    """
+    from polylogue.api import Polylogue
+
+    async def _run() -> None:
+        async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
+            constructs = await api.get_web_content_constructs(session_id)
+
+            if constructs is None:
+                env.ui.error(f"Session not found: {session_id}")
+                return
+
+            payload = {
+                "session_id": session_id,
+                "total": len(constructs),
+                "web_content_constructs": constructs,
+            }
+
+            if output_format == "json":
+                import json as _json
+
+                # Machine output uses raw stdout so Rich markup never rewrites
+                # JSON bytes and read-view delivery can capture file/clipboard
+                # targets consistently.
+                click.echo(_json.dumps(payload, indent=2))
+            else:
+                import yaml
+
+                click.echo(yaml.dump(payload))
+
+    run_coroutine_sync(_run())
+
+
 def run_session_agent_policies(
     env: AppEnv,
     request: RootModeRequest,
@@ -379,4 +427,5 @@ __all__ = [
     "run_session_agent_policies",
     "run_session_events",
     "run_session_file_edits",
+    "run_session_web_content_constructs",
 ]

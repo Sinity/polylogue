@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.core.enums import BlockType, Provider, Role
+from polylogue.core.enums import BlockType, Provider, Role, WebConstructType
 from polylogue.sources.parsers.base import (
     ParsedContentBlock,
     ParsedFileEdit,
     ParsedMessage,
     ParsedSession,
     ParsedSessionRef,
+    ParsedWebConstruct,
 )
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -399,6 +400,100 @@ async def test_session_refs_empty_for_session_without_refs(tmp_path: Path) -> No
         await repo.close()
 
     assert refs == []
+
+
+async def test_web_content_constructs_round_trip_search_result(tmp_path: Path) -> None:
+    """web_content_constructs (polylogue-kktg): a 155k+-row relation with no prior reader.
+
+    Fails if the writer stops resolving/inserting ``web_content_constructs``
+    rows (a revert of ``_write_web_constructs``), or if
+    ``repository.get_web_content_constructs`` stops reading them back.
+    """
+    backend = SQLiteBackend(db_path=tmp_path / "web-content.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        session_id = await ingest_session(
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="web-content-1",
+                title="Web content session",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        position=0,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TEXT,
+                                text="Searching the web",
+                                web_constructs=[
+                                    ParsedWebConstruct(
+                                        construct_type=WebConstructType.SEARCH_QUERY,
+                                        query="polylogue archive",
+                                    ),
+                                    ParsedWebConstruct(
+                                        construct_type=WebConstructType.SEARCH_RESULT,
+                                        title="Polylogue",
+                                        url="https://example.com/polylogue",
+                                        text="A local AI chat archiver",
+                                        rank=1,
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+            backend=backend,
+        )
+        constructs = await repo.get_web_content_constructs(session_id)
+        search_results = await repo.get_web_content_constructs(session_id, construct_type="search_result")
+    finally:
+        await repo.close()
+
+    assert len(constructs) == 2
+    by_type = {c.construct_type: c for c in constructs}
+    query_construct = by_type["search_query"]
+    assert query_construct.session_id == session_id
+    assert query_construct.query == "polylogue archive"
+    assert query_construct.message_id == f"{session_id}:m1"
+    assert query_construct.block_id == f"{session_id}:m1:0"
+
+    result_construct = by_type["search_result"]
+    assert result_construct.title == "Polylogue"
+    assert result_construct.url == "https://example.com/polylogue"
+    assert result_construct.text == "A local AI chat archiver"
+    assert result_construct.rank == 1
+
+    assert len(search_results) == 1
+    assert search_results[0].construct_type == "search_result"
+
+
+async def test_web_content_constructs_empty_for_session_without_constructs(tmp_path: Path) -> None:
+    backend = SQLiteBackend(db_path=tmp_path / "web-content-empty.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        session_id = await ingest_session(
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="no-web-content",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="hi",
+                        position=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hi")],
+                    ),
+                ],
+            ),
+            backend=backend,
+        )
+        constructs = await repo.get_web_content_constructs(session_id)
+    finally:
+        await repo.close()
+
+    assert constructs == []
 
 
 async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_path: Path) -> None:

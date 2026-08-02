@@ -169,3 +169,81 @@ def test_read_view_agent_policies_surfaces_sandbox_facts(
     assert policy["approval_policy"] == "never"
     assert policy["sandbox_policy"] == "danger-full-access"
     assert policy["network_policy"] == "true"
+
+
+def test_read_view_web_content_surfaces_search_constructs(
+    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``read --view web-content`` (polylogue-kktg).
+
+    ``web_content_constructs`` holds 155k+ live rows written every ingest
+    from the ChatGPT/Claude parsers, but before this view had no production
+    reader at all: every existing SELECT against it exists only to DELETE
+    orphans or as a demo smoke-probe COUNT(*). This exercises the real
+    ``read --view web-content`` verb end to end.
+    """
+    from polylogue.core.enums import BlockType, Provider, Role, WebConstructType
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedWebConstruct
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    archive_root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+
+    with ArchiveStore(archive_root) as archive_db:
+        parsed = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="cli-web-content-1",
+            title="CLI web-content view session",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.ASSISTANT,
+                    position=0,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TEXT,
+                            text="Searching the web",
+                            web_constructs=[
+                                ParsedWebConstruct(
+                                    construct_type=WebConstructType.SEARCH_RESULT,
+                                    title="Polylogue",
+                                    url="https://example.com/polylogue",
+                                    text="A local AI chat archiver",
+                                    rank=1,
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        archive_db.write_raw_and_parsed(
+            parsed,
+            payload=b'{"raw": "chatgpt payload"}',
+            source_path="/tmp/raw.jsonl",
+            acquired_at_ms=1735689600000,
+        )
+
+    session_id = "chatgpt-export:cli-web-content-1"
+
+    result = cli_runner.invoke(
+        click_cli,
+        ["--plain", "--id", session_id, "read", "--view", "web-content", "-f", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["total"] == 1
+    construct = payload["web_content_constructs"][0]
+    assert construct["construct_type"] == "search_result"
+    assert construct["title"] == "Polylogue"
+    assert construct["url"] == "https://example.com/polylogue"
+    assert construct["rank"] == 1
+
+    missing = cli_runner.invoke(
+        click_cli,
+        ["--plain", "--id", "chatgpt-export:does-not-exist", "read", "--view", "web-content"],
+        catch_exceptions=False,
+    )
+    assert "not found" in missing.output.lower()

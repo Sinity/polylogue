@@ -91,6 +91,7 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_session_events",
         "get_file_edits",
         "get_agent_policies",
+        "get_web_content_constructs",
     }
 )
 

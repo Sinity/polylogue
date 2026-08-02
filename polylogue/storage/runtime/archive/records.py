@@ -343,6 +343,49 @@ class SessionRefRecord(BaseModel):
         return v
 
 
+class WebContentConstructRecord(BaseModel):
+    """One ``web_content_constructs`` row (polylogue-kktg).
+
+    Typed web-export constructs projected out of ChatGPT/Claude web
+    payloads -- search queries/results, canvas documents, content
+    references, image results, async tasks, selected sources, token
+    budgets, voice notes (``core.enums.WebConstructType``). Written every
+    ingest (``archive_tiers/write.py::_write_web_constructs``) but had no
+    reader above the storage layer before this record/query pair.
+    """
+
+    construct_id: str
+    session_id: SessionId
+    message_id: MessageId
+    block_id: str
+    position: int
+    provider: str
+    construct_type: str
+    provider_key: str | None = None
+    title: str | None = None
+    url: str | None = None
+    text: str | None = None
+    source_id: str | None = None
+    group_id: str | None = None
+    group_title: str | None = None
+    query: str | None = None
+    asset_pointer: str | None = None
+    mime_type: str | None = None
+    status: str | None = None
+    task_id: str | None = None
+    task_type: str | None = None
+    rank: int | None = None
+    start_index: int | None = None
+    end_index: int | None = None
+
+    @field_validator("construct_id", "session_id", "message_id", "block_id", "provider", "construct_type")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+
 class SessionCommitRecord(BaseModel):
     """One ``session_commits`` row (polylogue-cijx.3): the repo checkout's
     HEAD commit at the moment this session was captured, as the provider's

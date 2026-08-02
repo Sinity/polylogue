@@ -846,6 +846,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         policy facts (e.g. Codex ``agent_policy`` events) recorded on the
         session's own timeline.
 
+        ``projection="web-content"`` returns typed web-export constructs
+        captured from ChatGPT/Claude web payloads for the session -- search
+        queries/results, canvas documents, content references, image
+        results, async tasks, selected sources, token budgets, and voice
+        notes (polylogue-kktg).
+
         ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
         for a configured subscription plan (the standalone ``cost_outlook``
         MCP tool retired by the six-tool cutover, #3095/polylogue-t46.8, has
@@ -889,6 +895,19 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
                 return hooks.json_payload(
                     MCPRootPayload(root={"session_id": session_id, "total": len(policies), "agent_policies": policies})
+                )
+            if projection == "web-content" and session_id is not None:
+                constructs = await hooks.get_polylogue().get_web_content_constructs(session_id)
+                if constructs is None:
+                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
+                return hooks.json_payload(
+                    MCPRootPayload(
+                        root={
+                            "session_id": session_id,
+                            "total": len(constructs),
+                            "web_content_constructs": constructs,
+                        }
+                    )
                 )
             return hooks.json_payload(await hooks.get_polylogue().resolve_ref(normalized))
 
