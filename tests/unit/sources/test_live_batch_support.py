@@ -2056,8 +2056,9 @@ def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
     assert isinstance(append_blob_hash, str)
     from polylogue.storage.blob_store import BlobStore
 
-    append_identity = b'{"type":"session_meta","payload":{"id":"hot-growth"}}\n'
-    assert BlobStore(tmp_path / "blob").read_all(append_blob_hash.lower()) == (append_identity + appended_during_parse)
+    # polylogue-u19l: append payloads are stored as literal live-file bytes --
+    # no synthetic session_meta header spliced in ahead of them.
+    assert BlobStore(tmp_path / "blob").read_all(append_blob_hash.lower()) == appended_during_parse
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
             ("captured",),
