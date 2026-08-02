@@ -40,6 +40,30 @@ state and are historical.
 
 ### 1. Process-pool machinery + spawn workarounds
 
+**Status (2026-08-02, polylogue-iiu6r audit / polylogue-gzyqk): reinvestigated,
+STILL NEEDED — this row's "deletable once phase (b) lands" framing is stale.**
+Phase (b) (polylogue-dcz5, the 3.14t free-threaded daemon deploy) has landed,
+and it is true that the *one* call site this row explicitly names —
+`_parse_unique_retained_raws` in `polylogue/sources/revision_backfill.py`
+(`parallel_threads_effective()`-gated) — was retired; the module's own
+docstring now speaks of "the retired process-pool alternative" in past tense.
+But `process_pool_context()`/`process_pool_executor()`/`terminate_process_pool()`
+remain live, **unconditional** (not gated on `parallel_threads_effective()`)
+call sites in three other places: `polylogue/pipeline/services/ingest_batch/_core.py:1053`
+(initial ingest-record decode/validate/transform),
+`polylogue/pipeline/services/validation_flow.py:185` (schema validation — its
+own code comment cites a measured `Threads(24)=160MB/s` vs `Process(8)=605MB/s`,
+a 3.7x win independent of the GIL/free-threaded-build argument this row
+originally used to justify deletion), and
+`polylogue/pipeline/services/archive_ingest.py:279` (source file-walk ingest).
+None of the three is conditioned on the free-threaded build, so the 3.14t
+deploy does not collapse them the way this row predicted. Deleting
+`process_pool.py` today would break all three. The text below is the
+original design-time reasoning and is retained for history; treat its
+"what makes it deletable" / "which phase deletes it" claims as superseded by
+this status line until each of the three remaining call sites is itself
+re-justified or migrated.
+
 **What it is:** `polylogue/pipeline/services/process_pool.py` — the shared
 `ProcessPoolExecutor` helpers used by every CPU-bound parse dispatch on a
 standard (GIL) build:
@@ -115,6 +139,25 @@ to a single-core sequential parse, which is what made a full index rebuild a
 width, retargeted at thread-pool sizing.
 
 ### 3. The 64 MiB daemon parse envelope narrowing
+
+**Status (2026-08-02, polylogue-iiu6r audit / polylogue-gzyqk): reinvestigated,
+STILL NEEDED — the "becomes redundant with the budget" premise below no
+longer holds.** The premise's precondition did land (`daemon_parse_stage_split`
+confirmed gone from `polylogue/config.py`; the parse-stage warmer always
+runs per the 2026-07-29 update note at the top of this document), but a new
+consumer was added after this row was written: `polylogue/storage/repair.py`'s
+`raw_materialization_whale_pass_candidate` (polylogue-t93b) now threads this
+exact constant through as its `ordinary_max_payload_bytes` parameter — the
+boundary that distinguishes the daemon's ordinary trickle-conveyor envelope
+from its escalation-tier "whale pass" for otherwise-permanently-blocked
+oversized components. That is a fairness-tiering capability unrelated to
+`DaemonParseStage`'s in-flight-parsed-bytes budget (`daemon_parse_stage_max_inflight_bytes()`
+described below); deleting the constant would collapse the ordinary/whale
+distinction the whale pass depends on. The text below is the original
+design-time reasoning and is retained for history; its "what makes it
+deletable" / "which phase deletes it" claims are superseded by this status
+line unless/until the whale pass is redesigned to source its ordinary-envelope
+boundary from somewhere else.
 
 **What it is:** `_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024`
 (`polylogue/daemon/cli.py:89`), threaded as `max_payload_bytes` into every
@@ -285,17 +328,6 @@ re-scans `raw_sessions` joined against `index_tier.sessions`/
 (`polylogue/storage/repair.py:3758` onward) — an O(backlog size) query
 repeated every daemon tick regardless of how much of the backlog actually
 changed since the previous tick.
-||||||| b64a074e5
-**What it is:** `repair_raw_materialization`
-(`polylogue/storage/repair.py:5695`) recomputes its FULL candidate set from
-scratch via `_raw_materialization_candidate_ids()` up to twice per call:
-once at entry (`polylogue/storage/repair.py:5783`) and again after the
-census loop, to re-check what's still uncensused
-(`polylogue/storage/repair.py:5844`). Each call re-scans `raw_sessions`
-joined against `index_tier.sessions`/`raw_revision_applications`/
-`raw_membership_census` (`polylogue/storage/repair.py:3618` onward) — an
-O(backlog size) query repeated every daemon tick regardless of how much of
-the backlog actually changed since the previous tick.
 
 **Second attempt (polylogue-iy3n, 2026-07-29) — also reverted, and it identifies the failure as STRUCTURAL rather than a tuning problem.**
 
