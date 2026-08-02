@@ -1,4 +1,15 @@
-"""Blob garbage collection: ``blob-gc`` and ``gc-history``."""
+"""``maintenance blob-gc``: inspect reclaimable blobs. ``gc-history``: audit past passes.
+
+Read-only by design (automagic-invariants, polylogue-gd6v/4jsk/cfvvt): daemon
+convergence (``periodic_blob_gc_check``, ``polylogue/daemon/blob_gc_periodic.py``)
+already reclaims eligible, aged-out, unreferenced blobs automatically in
+bounded batches (200 blobs every 900s through the write coordinator) since
+PR #3286. A manual mutate/apply path here would be exactly the redundant
+"demoted to break-glass" surface the 2026-07-19 ruling forbids rather than
+deletes -- the same reasoning PR #3286 applied to
+``embedding-orphan-reconcile``'s own ``--yes`` removal in that same change.
+This command stays a pure dry-run preview.
+"""
 
 from __future__ import annotations
 
@@ -19,12 +30,7 @@ from polylogue.paths import archive_root, render_root
     type=int,
     default=100,
     show_default=True,
-    help="Maximum number of eligible blobs to delete or preview.",
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="Actually delete eligible blobs. Without this flag the command is a dry-run preview.",
+    help="Maximum number of eligible blobs to preview.",
 )
 @click.option(
     "--output-format",
@@ -34,10 +40,11 @@ from polylogue.paths import archive_root, render_root
     show_default=True,
     help="Output format.",
 )
-def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
-    """Preview or run lease-safe blob garbage collection.
+def blob_gc_command(max_batch: int, output_format: str) -> None:
+    """Preview lease-safe blob garbage collection. Read-only.
 
-    The default is a dry-run report. Pass ``--yes`` to reclaim eligible blobs.
+    Daemon convergence (``periodic_blob_gc_check``) reclaims eligible blobs
+    automatically in bounded batches; this command is diagnostic preview only.
     """
     from polylogue.storage.blob_gc import run_blob_gc_report
 
@@ -51,12 +58,12 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
         config.db_path,
         config.archive_root / "blob",
         max_batch=max_batch,
-        dry_run=not yes,
+        dry_run=True,
     )
     payload = {
         "ok": True,
         "mode": "blob_gc",
-        "mutates": bool(yes),
+        "mutates": False,
         **result.to_dict(),
     }
 
@@ -64,14 +71,12 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
         click.echo(json.dumps(payload, indent=2, sort_keys=True))
         return
 
-    action = "would delete" if result.dry_run else "deleted"
-    affected = result.would_delete_count if result.dry_run else result.deleted_count
-    click.echo("Blob GC dry-run" if result.dry_run else "Blob GC")
+    click.echo("Blob GC dry-run (inspect, read-only)")
     click.echo(f"Archive DB: {result.db_path}")
     click.echo(f"Blob root:  {result.blob_dir}")
     click.echo(f"Candidates: {result.candidate_count:,}")
     click.echo(f"Inspected:  {result.inspected_count:,}")
-    click.echo(f"Result:     {action} {affected:,} blob(s)")
+    click.echo(f"Result:     would delete {result.would_delete_count:,} blob(s)")
     click.echo(
         "Skipped:    "
         f"referenced={result.skipped_referenced:,} "
@@ -79,10 +84,6 @@ def blob_gc_command(max_batch: int, yes: bool, output_format: str) -> None:
         f"missing={result.skipped_missing:,} "
         f"unlink_error={result.skipped_unlink_error:,}"
     )
-    if not result.dry_run:
-        click.echo(f"Reclaimed:  {result.reclaimed_bytes:,} byte(s)")
-        if result.generation_id is not None:
-            click.echo(f"Generation: {result.generation_id}")
 
 
 @click.command("gc-history")

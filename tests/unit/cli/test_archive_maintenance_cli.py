@@ -792,34 +792,27 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
     assert "referenced=0 reserved=0 missing=0 unlink_error=0" in result.output
 
 
-def test_blob_gc_cli_yes_deletes_and_records_generation(
+def test_blob_gc_cli_has_no_mutate_flag(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
-    blob_hash = "cc" + "3" * 62
-    candidate = _write_gc_candidate(cli_workspace, blob_hash)
-
+    """Read-only by design (automagic-invariants, polylogue-gd6v/4jsk/cfvvt): daemon
+    convergence (``periodic_blob_gc_check``) already reclaims eligible blobs
+    automatically in bounded batches, so a manual apply path would be a
+    redundant, doctrine-forbidden break-glass surface -- the same treatment
+    PR #3286 applied to ``embedding-orphan-reconcile`` in the same change.
+    """
     result = cli_runner.invoke(
         cli,
-        ["--plain", "ops", "maintenance", "blob-gc", "--yes", "--output-format", "json"],
-        catch_exceptions=False,
+        ["--plain", "ops", "maintenance", "blob-gc", "--yes"],
     )
 
-    assert result.exit_code == 0
-    payload = json.loads(result.stdout)
-    assert payload["mutates"] is True
-    assert payload["dry_run"] is False
-    assert payload["would_delete_count"] == 0
-    assert payload["deleted_count"] == 1
-    assert payload["reclaimed_bytes"] == len(b"gc candidate")
-    assert payload["generation_written"] is True
-    assert str(payload["generation_id"]).startswith("gc-")
-    assert not candidate.exists()
-
-    history = read_gc_history(cli_workspace["archive_root"] / "index.db", limit=1)
-    assert len(history) == 1
-    assert history[0].generation_id == payload["generation_id"]
-    assert history[0].reclaimed_count == 1
+    # See test_embedding_orphan_reconcile_cli_has_no_mutate_flag: Click's
+    # CliRunner surfaces a rejected/unknown option as SystemExit(2), so exit
+    # code 2 plus the option name in the rejection message is the stable
+    # contract to assert on.
+    assert result.exit_code == 2
+    assert "--yes" in result.output
 
 
 def test_blob_publications_cli_requires_confirmation_to_abandon(
