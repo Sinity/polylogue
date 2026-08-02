@@ -115,3 +115,21 @@ beads, gotchas → `bd remember`. `.agent/demos/` is a curated shelf, not a
 dump. The tracked `.agent` surface stays small (this file, README, scripts,
 demos, reports, task-history, tools, archive); everything else is ignored
 live state. New tracked files get a deliberate `.gitignore` allowlist entry.
+
+## Fixture Identifier Hygiene
+
+This repo is **public**. Never commit a real session/conversation identifier
+(Codex/Claude Code/ChatGPT/etc. UUID or native id) from the operator's live
+archive into `tests/`, `docs/`, or `.agent/` — even as a bare id with no
+transcript text attached, and even inside handoff/demo evidence bundles.
+Test fixtures, doc examples, and demo receipts must use freshly generated
+synthetic UUIDs (`python3 -c "import uuid; print(uuid.uuid4())"` or
+equivalent) that do not resolve against the live archive. Before adding a new
+fixture id, or copying one out of a real ingest/debug session, generate a
+fresh one rather than reusing what you saw on screen. If you discover a real
+id already committed at tip, replace it in place (keeping any paired
+assertions consistent) rather than leaving it — polylogue-b629 is the
+precedent (17+ live-archive identifiers found across tests/docs/.agent
+2026-07-31, fixed by wholesale synthetic-id substitution across the affected
+files; see that bead's history before deciding whether an occurrence is real
+or already-synthetic).

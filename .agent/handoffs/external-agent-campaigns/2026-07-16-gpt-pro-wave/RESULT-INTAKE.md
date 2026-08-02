@@ -50,7 +50,7 @@ ambient data and is intentionally neither committed nor treated as a provider
 export. The raw package and its ledger checksum are the durable campaign copy.
 
 The live archive does already contain a captured ChatGPT conversation for the
-agent-manual follow-up, `chatgpt-export:6a59b873-f1c4-83eb-90b6-66a7dd6c9569`.
+agent-manual follow-up, `chatgpt-export:fd275381-f187-4d6f-a560-20c4fd14fcba`.
 Its attachments/turn state are searchable, but the downloaded result-package
 contents are not: an exact archive search for `beads-03-mcp-read-migration-r01.zip`
 returned no session. This is the concrete current limitation owned by

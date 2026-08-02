@@ -455,7 +455,7 @@ def test_missing_provider_raises() -> None:
                 "timestamp": "2026-03-13T12:02:43.171Z",
                 "type": "session_meta",
                 "payload": {
-                    "id": "019ce713-cf30-7aa1-832b-cd953aa7c7ec",
+                    "id": "848f576c-bce6-4726-b3d2-d67c0d5055c7",
                     "source": {"subagent": "review"},
                 },
             },
@@ -466,11 +466,11 @@ def test_missing_provider_raises() -> None:
                 "timestamp": "2026-03-13T12:02:43.171Z",
                 "type": "session_meta",
                 "payload": {
-                    "id": "019ce713-cf30-7aa1-832b-cd953aa7c7ec",
+                    "id": "848f576c-bce6-4726-b3d2-d67c0d5055c7",
                     "source": {
                         "subagent": {
                             "thread_spawn": {
-                                "parent_thread_id": "019ce441-45ad-7df2-8d64-fcf9db69002f",
+                                "parent_thread_id": "717d33ee-b687-4d06-8a73-2c2acf4a6f49",
                                 "depth": 1,
                                 "agent_nickname": "Cicero",
                                 "agent_role": None,

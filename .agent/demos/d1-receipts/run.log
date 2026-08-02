@@ -2,11 +2,11 @@
 $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT session_id, repo, ref_number, url FROM session_refs \
    WHERE kind='pull_request' AND repo='Sinity/polylogue' AND ref_number=3282"
-claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc|Sinity/polylogue|3282|https://github.com/Sinity/polylogue/pull/3282
+claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39|Sinity/polylogue|3282|https://github.com/Sinity/polylogue/pull/3282
 
 === 2. cross-check through the CLI's own correlation surface (production read path) ===
 $ POLYLOGUE_ARCHIVE_ROOT=/realm/db/polylogue POLYLOGUE_FORCE_PLAIN=1 \
-  polylogue find "id:claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc" \
+  polylogue find "id:claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39" \
   then read --view correlation --format json
 (pr_refs excerpt, one of six duplicate-window matches; source=typed_session_ref proves the
  typed session_refs evidence resolved this, not the regex heuristic)
@@ -34,7 +34,7 @@ $ gh pr view 3282 --repo Sinity/polylogue --json body
 === 4. tool_name distribution over this session's tool_use blocks (merge-conductor finding) ===
 $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT tool_name, count(*) FROM blocks \
-   WHERE session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND block_type='tool_use' GROUP BY tool_name ORDER BY 2 DESC"
 Bash|53
 Read|3
@@ -43,7 +43,7 @@ Read|3
 $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT tr.text FROM blocks tu JOIN blocks tr \
    ON tr.tool_id=tu.tool_id AND tr.block_type='tool_result' AND tr.session_id=tu.session_id \
-   WHERE tu.session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE tu.session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND tu.tool_input LIKE '%devtools verify --quick%'"
 (tail of the structured run-JSON result)
     {
@@ -86,7 +86,7 @@ $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
 $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT tr.text FROM blocks tu JOIN blocks tr \
    ON tr.tool_id=tu.tool_id AND tr.block_type='tool_result' AND tr.session_id=tu.session_id \
-   WHERE tu.session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE tu.session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND tu.tool_input LIKE '%test_rebuild_index_bulk_build.py tests/unit/storage/test_planner_statistics_seed.py tests/unit/storage/test_revision_replay.py%'"
 2 workers [123 items]
 ........................................................................ [ 58%]
@@ -97,7 +97,7 @@ ok (12.2s)
 === 7. negative control: the 7-file devtools test invocation (claim 4) ===
 $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT count(*) FROM blocks \
-   WHERE session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND block_type='tool_use' AND tool_input LIKE '%test_live_batch_support.py%' \
    AND tool_input NOT LIKE '%gh pr create%'"
 0
@@ -108,6 +108,6 @@ $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
 $ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT tr.text FROM blocks tu JOIN blocks tr \
    ON tr.tool_id=tu.tool_id AND tr.block_type='tool_result' AND tr.session_id=tu.session_id \
-   WHERE tu.session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE tu.session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND tu.tool_input LIKE '%gh pr create%'"
 https://github.com/Sinity/polylogue/pull/3282

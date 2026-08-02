@@ -37,8 +37,8 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 
-_THREAD_ID = "019c9c3e-c526-7e50-bf8d-366e75c3c9dd"
-_CHILD_THREAD_ID = "019c9c3f-e940-7bb3-ab27-db2d3662eaa3"
+_THREAD_ID = "66c7b83d-1b42-43a5-977c-870299c489a6"
+_CHILD_THREAD_ID = "449dd1eb-ea3d-4710-925b-7398a78fe3a7"
 _CODEX_SESSION_ID = f"codex-session:{_THREAD_ID}"
 
 

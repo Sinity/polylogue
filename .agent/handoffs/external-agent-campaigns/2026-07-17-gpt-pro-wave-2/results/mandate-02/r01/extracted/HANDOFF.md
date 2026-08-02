@@ -188,7 +188,7 @@ Fixtures/tests:
 The terminal gate still requires all of the following, none of which this synthetic substrate package claims to execute:
 
 1. Run all seven `polylogue-t8t` continuity flows as real MCP walks.
-2. From sparse repository/time/parallel-agent clues, find coordinator `cf0c6474-da22-44be-af3e-666037aa5ea4` and run `wf_54d4fb2e-841`; distinguish four Workflow invocations from one resumed run; reconstruct 50 call keys, 91 attempt transcripts, 65 result records over 49 completed keys, one unresolved key, and the final structured result; exclude the coordinator's other 38 child sessions.
+2. From sparse repository/time/parallel-agent clues, find coordinator `db4a1f9d-585a-4fe0-a90e-d40814018dd3` and run `wf_54d4fb2e-841`; distinguish four Workflow invocations from one resumed run; reconstruct 50 call keys, 91 attempt transcripts, 65 result records over 49 completed keys, one unresolved key, and the final structured result; exclude the coordinator's other 38 child sessions.
 3. Distinguish model, material, call, attempt, and effect scopes, citing git, PR, and Beads observations with uncertainty.
 4. Prove paging is lossless, cancellation stops work, and measured latency/memory satisfy declared SLOs.
 5. Prove a cold model succeeds from MCP schemas, errors, and catalog evidence alone.

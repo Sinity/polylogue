@@ -1561,8 +1561,8 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
 
     root = tmp_path / "sessions"
     root.mkdir()
-    path = root / "rollout-2026-05-16T13-50-17-019e309f-7614-7381-a8ac-f9080f304ee6.jsonl"
-    original = b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n'
+    path = root / "rollout-2026-05-16T13-50-17-5370dcbb-87a9-446b-954f-be2a1df29915.jsonl"
+    original = b'{"type":"session_meta","payload":{"id":"5370dcbb-87a9-446b-954f-be2a1df29915"}}\n'
     appended = b'{"type":"event_msg","payload":{"message":"new"}}\n'
     path.write_bytes(original + appended)
     index_db = tmp_path / "index.db"
@@ -1588,7 +1588,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "019e309f-7614-7381-a8ac-f9080f304ee6",
+                "5370dcbb-87a9-446b-954f-be2a1df29915",
                 "codex-session",
                 raw_id,
                 "hot session",
@@ -1629,7 +1629,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
     # carried instead as a sidecar hint (persisted to raw_sessions.native_id
     # and used to override the parser's fallback_id on replay).
     assert plan.payload == appended
-    assert plan.native_id_hint == "019e309f-7614-7381-a8ac-f9080f304ee6"
+    assert plan.native_id_hint == "5370dcbb-87a9-446b-954f-be2a1df29915"
 
 
 def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Path) -> None:
@@ -1639,8 +1639,8 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
 
     root = tmp_path / "sessions"
     root.mkdir()
-    path = root / "rollout-2026-05-16T13-50-17-019e309f-7614-7381-a8ac-f9080f304ee6.jsonl"
-    original = b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n'
+    path = root / "rollout-2026-05-16T13-50-17-5370dcbb-87a9-446b-954f-be2a1df29915.jsonl"
+    original = b'{"type":"session_meta","payload":{"id":"5370dcbb-87a9-446b-954f-be2a1df29915"}}\n'
     appended = b'{"type":"event_msg","payload":{"message":"new"}}\n'
     path.write_bytes(original + appended)
     index_db = tmp_path / "index.db"
@@ -1666,7 +1666,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
             ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                "019e309f-7614-7381-a8ac-f9080f304ee6",
+                "5370dcbb-87a9-446b-954f-be2a1df29915",
                 "codex-session",
                 raw_id,
                 "hot session",
@@ -1703,7 +1703,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
     assert isinstance(plan, _AppendPlan)
     # polylogue-u19l: literal live-file bytes, identity carried as a hint.
     assert plan.payload == appended
-    assert plan.native_id_hint == "019e309f-7614-7381-a8ac-f9080f304ee6"
+    assert plan.native_id_hint == "5370dcbb-87a9-446b-954f-be2a1df29915"
     assert processor._latest_raw_fingerprint(path) == raw_id
     with cursor._connect() as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None

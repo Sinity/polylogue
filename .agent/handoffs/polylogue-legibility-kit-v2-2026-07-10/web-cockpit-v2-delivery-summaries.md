@@ -1,6 +1,6 @@
 # Web Evidence Cockpit v2 — GPT-Pro fork delivery summaries (recovered from capture)
 
-Source: chatgpt conversation 6a5112f3-7798-83eb-b1ee-96ef29477c12, captured 2026-07-10.
+Source: chatgpt conversation 09950f3d-ec9d-435d-8473-742008e4038a, captured 2026-07-10.
 The package FILES are unrecoverable (sandbox container dead); these are the final
 delivery messages describing what was built. Treat as design input, not authority.
 

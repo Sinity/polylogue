@@ -54,7 +54,7 @@ def test_codex_dense_reasoning_and_tool_call_rollout_yields_messages() -> None:
             "timestamp": "2025-10-19T05:04:30.400Z",
             "type": "session_meta",
             "payload": {
-                "id": "0199fada-d8bd-7fc0-997b-d23d3a6849c7",
+                "id": "357c7da6-8703-4ba3-8f70-f5f253571c12",
                 "timestamp": "2025-10-19T05:04:30.397Z",
                 "cwd": "/repo",
                 "originator": "codex_cli_rs",
@@ -148,7 +148,7 @@ def test_codex_dense_reasoning_and_tool_call_rollout_yields_messages() -> None:
         },
     ]
 
-    session = parse_codex(records, "0199fada-d8bd-7fc0-997b-d23d3a6849c7")
+    session = parse_codex(records, "357c7da6-8703-4ba3-8f70-f5f253571c12")
 
     assert session.messages, (
         f"Expected non-empty messages from a dense response_item stream with real "

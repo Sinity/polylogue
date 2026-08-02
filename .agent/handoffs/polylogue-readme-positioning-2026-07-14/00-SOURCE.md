@@ -1,7 +1,7 @@
 # Source
 
 External design study conducted in ChatGPT (o-series Pro, "Great GitHub READMEs" session,
-2026-07-13, chatgpt.com/c/6a54dd7c-756c-83eb-88b6-66cc8f61f0d4), NOT authoritative — verify
+2026-07-13, chatgpt.com/c/59712d7f-ec29-494d-b3c4-5fe3fcb8cc2f), NOT authoritative — verify
 every claim against live source before acting, per repo convention. Two turns:
 
 1. Research pass on great open-source READMEs (10 example repos + synthesis: 4-question

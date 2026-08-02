@@ -2823,7 +2823,7 @@ def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
     assert todos.root != claude.root
     assert todos.root.name == "todos"
     assert todos.suffixes == (".json",)
-    assert todos.accepts(todos.root / "005aeeae-bd21-4a4c-b928-e9ee5f6b8394.json")
+    assert todos.accepts(todos.root / "138e259e-435f-4259-8c68-dbd5aa9f9837.json")
 
 
 def test_browser_capture_spool_is_default_json_source(

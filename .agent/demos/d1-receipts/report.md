@@ -16,7 +16,7 @@ that have no matching evidence marked as such, not silently trusted.
 ## Corpus
 
 The live archive (`/realm/db/polylogue`, read-only), scoped to one session:
-`claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc`, resolved via
+`claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39`, resolved via
 `session_refs WHERE kind='pull_request' AND repo='Sinity/polylogue' AND
 ref_number=3282`. This is the real, merged PR
 [Sinity/polylogue#3282](https://github.com/Sinity/polylogue/pull/3282)
@@ -122,7 +122,7 @@ sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
 
 # 2. cross-check through the CLI's own correlation surface
 POLYLOGUE_ARCHIVE_ROOT=/realm/db/polylogue POLYLOGUE_FORCE_PLAIN=1 \
-  polylogue find "id:claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc" \
+  polylogue find "id:claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39" \
   then read --view correlation --format json
 
 # 3. fetch the live PR body
@@ -131,20 +131,20 @@ gh pr view 3282 --repo Sinity/polylogue --json body
 # 4. tool_name distribution (merge-conductor finding)
 sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT tool_name, count(*) FROM blocks \
-   WHERE session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND block_type='tool_use' GROUP BY tool_name ORDER BY 2 DESC"
 
 # 5. the devtools verify --quick evidence (claim 2)
 sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT tr.text FROM blocks tu JOIN blocks tr \
    ON tr.tool_id=tu.tool_id AND tr.block_type='tool_result' AND tr.session_id=tu.session_id \
-   WHERE tu.session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE tu.session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND tu.tool_input LIKE '%devtools verify --quick%'"
 
 # 6. the negative-control count (claim 4 -- must return 0)
 sqlite3 "file:/realm/db/polylogue/index.db?mode=ro" \
   "SELECT count(*) FROM blocks \
-   WHERE session_id='claude-code-session:5ecdb160-495a-4d9b-b80a-3a24886af8cc' \
+   WHERE session_id='claude-code-session:28407f0f-4f30-4508-b29b-1fd0bc301a39' \
    AND block_type='tool_use' AND tool_input LIKE '%test_live_batch_support.py%' \
    AND tool_input NOT LIKE '%gh pr create%'"
 ```

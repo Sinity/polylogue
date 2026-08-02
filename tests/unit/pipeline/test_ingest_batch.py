@@ -86,7 +86,7 @@ def _float_value(value: object) -> float:
 def test_worker_normalization_preserves_raw_row_archive_origin() -> None:
     parsed = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_session_id="315bcba7-700a-4c0e-b318-ab86d8636376",
+        provider_session_id="a6216592-1a36-4748-9198-64b8db6ec05b",
         title="Session",
         messages=[],
     )
@@ -97,7 +97,7 @@ def test_worker_normalization_preserves_raw_row_archive_origin() -> None:
     )
 
     assert str(make_session_id("claude-code-session", normalized.provider_session_id)) == (
-        "claude-code-session:315bcba7-700a-4c0e-b318-ab86d8636376"
+        "claude-code-session:a6216592-1a36-4748-9198-64b8db6ec05b"
     )
     assert normalized.source_name == Provider.CLAUDE_CODE
     assert parsed.source_name == Provider.CLAUDE_CODE
@@ -1966,7 +1966,7 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
     the raw as authoritative without re-running message extraction against
     it. Direct reproduction of ``parse_stream_payload`` against the exact
     live raw bytes of the flagship sample (native_id
-    ``0199fada-d8bd-7fc0-997b-d23d3a6849c7``) confirms the current codex
+    ``357c7da6-8703-4ba3-8f70-f5f253571c12``) confirms the current codex
     parser already extracts 1,496 real messages correctly -- the content
     loss was never a parser defect in ``sources/``. It was
     ``revision_authority_refuses_write``'s ``governed`` check refusing

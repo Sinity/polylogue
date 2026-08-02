@@ -163,7 +163,7 @@ none of which represent trustworthy live per-thread cumulative usage:
    model-usage event was ever recorded against them either).
 3. **Implausible billion-scale outliers** — a handful of rows (e.g. `5246862413`, `4908442169`,
    `1287786830`) are physically impossible as a single thread's token count. Notably, subagent
-   worker threads sharing one `parent_thread_id` (`019cbcef-7ec3-70b2-a556-8456f0ec2741`, agents
+   worker threads sharing one `parent_thread_id` (`55e0a6ca-a174-4470-a4e0-42d1703f51f5`, agents
    "Sartre"/"Aquinas"/"Ptolemy") carry near-identical billion-scale values
    (`1287786830`/`1234079262`/`1235152917`/`1236327061`) — evidence `tokens_used` on these rows
    is a **parent/account-level cumulative counter snapshotted onto the child row**, i.e. a

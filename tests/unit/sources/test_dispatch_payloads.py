@@ -480,7 +480,7 @@ def test_chatgpt_bundle_skips_metadata_sibling_but_keeps_conversation(caplog: py
     """
     feedback_sibling = {
         "content": "{}",
-        "conversation_id": "68dac6b3-cc64-8326-9aff-fa3d358c03e2",
+        "conversation_id": "ef879bbe-892d-4e53-ad7d-71f3be5cb6b0",
         "id": "92b8bc4f-7a47-45e6-8c66-df59bf9e6797",
         "rating": "thumbs_up",
     }
@@ -790,14 +790,14 @@ def test_require_positive_conversational_evidence_refuses_claude_ai_export_conve
     zero-message sessions.
     """
     payload = {
-        "uuid": "ff9f9372-0ce1-40de-b890-0db7ab7d6917",
+        "uuid": "e1189896-b622-47d3-bde2-2d268e9cc854",
         "name": "An empty conversation",
         "summary": "",
         "created_at": "2026-07-13T01:19:06.077895Z",
         "updated_at": "2026-07-13T01:19:06.077895Z",
         "chat_messages": [],
     }
-    parsed = parse_payload(Provider.CLAUDE_AI, payload, "ff9f9372-0ce1-40de-b890-0db7ab7d6917")
+    parsed = parse_payload(Provider.CLAUDE_AI, payload, "e1189896-b622-47d3-bde2-2d268e9cc854")
     assert len(parsed) == 1
     assert parsed[0].messages == []
 

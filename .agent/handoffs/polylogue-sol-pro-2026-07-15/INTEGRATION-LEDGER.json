@@ -53,9 +53,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57e0b9-b3fc-83ed-9e7a-9fcf172698a3",
+        "id": "c00722bf-8b45-4c6b-b2c1-9a681a9742b4",
         "title": "Implementation-grade Handoff",
-        "url": "https://chatgpt.com/c/6a57e0b9-b3fc-83ed-9e7a-9fcf172698a3"
+        "url": "https://chatgpt.com/c/c00722bf-8b45-4c6b-b2c1-9a681a9742b4"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PRs #2913, #2918, #2919, #2926, and #2928; current master removed campaign-specific product concepts.",
@@ -113,9 +113,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57f420-1bb0-83ed-8205-6cf85427736f",
+        "id": "359c6eb0-e344-4bd5-92e7-dd2b62bb5278",
         "title": "Lineage order independence",
-        "url": "https://chatgpt.com/c/6a57f420-1bb0-83ed-8205-6cf85427736f"
+        "url": "https://chatgpt.com/c/359c6eb0-e344-4bd5-92e7-dd2b62bb5278"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PR #2922, merge b55f3fd9697083d44466613091604a21c7324ae6.",
@@ -153,9 +153,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57fc1e-0cec-83eb-b0e9-bcaea3e722b8",
+        "id": "42a7002a-0096-44e9-8406-c9e4085e2e28",
         "title": "Definition closure graph",
-        "url": "https://chatgpt.com/c/6a57fc1e-0cec-83eb-b0e9-bcaea3e722b8"
+        "url": "https://chatgpt.com/c/42a7002a-0096-44e9-8406-c9e4085e2e28"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Current polylogue-9e5.31.1 is open and explicitly awaits the DeclarationSpec kernel polylogue-o21.1.",
@@ -203,9 +203,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57f377-2000-83ed-9567-bc875a00a61a",
+        "id": "691b1a31-0d68-4857-a1ff-dbe8e3186db2",
         "title": "Provider-native identity",
-        "url": "https://chatgpt.com/c/6a57f377-2000-83ed-9567-bc875a00a61a"
+        "url": "https://chatgpt.com/c/691b1a31-0d68-4857-a1ff-dbe8e3186db2"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Current generic BrowserAction transport in PR #2928 and CaptureJob bead design own the executable form.",
@@ -267,9 +267,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57fba2-0ffc-83ed-8d59-59e703412080",
+        "id": "352075df-7d02-4130-a0fb-700b1f25ab8f",
         "title": "Continuity oracles",
-        "url": "https://chatgpt.com/c/6a57fba2-0ffc-83ed-8d59-59e703412080"
+        "url": "https://chatgpt.com/c/352075df-7d02-4130-a0fb-700b1f25ab8f"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PR #2922 records that the patch covered two of seven routes and introduced a competing scenario seam.",
@@ -335,9 +335,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57f4d4-2000-83eb-a721-0e6363e958c0",
+        "id": "f9d4f8be-db12-4bbb-8a09-d919abeb0730",
         "title": "Bounded query transaction A",
-        "url": "https://chatgpt.com/c/6a57f4d4-2000-83eb-a721-0e6363e958c0"
+        "url": "https://chatgpt.com/c/f9d4f8be-db12-4bbb-8a09-d919abeb0730"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Current polylogue-z9gh.1 owns a shared execution-control layer; no current-master executor exists.",
@@ -397,9 +397,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57f4d4-2000-83eb-a721-0e6363e958c0",
+        "id": "f9d4f8be-db12-4bbb-8a09-d919abeb0730",
         "title": "Bounded query transaction B",
-        "url": "https://chatgpt.com/c/6a57f4d4-2000-83eb-a721-0e6363e958c0"
+        "url": "https://chatgpt.com/c/f9d4f8be-db12-4bbb-8a09-d919abeb0730"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Same conversation and semantic target; canonical shared transaction is polylogue-z9gh.1/.9.",
@@ -440,9 +440,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a580996-4d8c-83eb-b1d4-8226a72bf21d",
+        "id": "d6a3e964-360d-4483-a3f3-fc7c1a4e3d99",
         "title": "Stable receiver pairing",
-        "url": "https://chatgpt.com/c/6a580996-4d8c-83eb-b1d4-8226a72bf21d"
+        "url": "https://chatgpt.com/c/d6a3e964-360d-4483-a3f3-fc7c1a4e3d99"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PRs #2926/#2928 landed identity/pairing diagnostics; two-profile proof remains open in polylogue-jlme.5.",
@@ -482,9 +482,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a580989-2a80-83ed-8fdf-1f24543905d7",
+        "id": "e36ae2d4-ad57-40d4-9391-14bcb2edc740",
         "title": "Destructive-operation authorization (early)",
-        "url": "https://chatgpt.com/c/6a580989-2a80-83ed-8fdf-1f24543905d7"
+        "url": "https://chatgpt.com/c/e36ae2d4-ad57-40d4-9391-14bcb2edc740"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Later MutationTransaction package 76a1279fe519 is the canonical iteration.",
@@ -523,9 +523,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a58079b-0f70-83eb-af7e-7ab72440c8eb",
+        "id": "90fe5ad3-c405-4575-8c68-c03f58fe3fe0",
         "title": "Query discovery A",
-        "url": "https://chatgpt.com/c/6a58079b-0f70-83eb-af7e-7ab72440c8eb"
+        "url": "https://chatgpt.com/c/90fe5ad3-c405-4575-8c68-c03f58fe3fe0"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Current polylogue-z9gh.3 remains open and depends on the unified query lane.",
@@ -577,9 +577,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a580976-03d0-83eb-af6a-eb745db5ac0c",
+        "id": "90fcc4f3-cf61-4914-93b7-94f999f43dee",
         "title": "Query discovery B",
-        "url": "https://chatgpt.com/c/6a580976-03d0-83eb-af6a-eb745db5ac0c"
+        "url": "https://chatgpt.com/c/90fcc4f3-cf61-4914-93b7-94f999f43dee"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Semantic duplicate/alternative of 073651c8d9b3; same owner and no separate registry allowed.",
@@ -626,9 +626,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a581170-10cc-83eb-ba33-c7199fbe3d2f",
+        "id": "e33767ac-3a56-4c24-b4e3-2051e81fb2af",
         "title": "Raw-authority repair",
-        "url": "https://chatgpt.com/c/6a581170-10cc-83eb-ba33-c7199fbe3d2f"
+        "url": "https://chatgpt.com/c/e33767ac-3a56-4c24-b4e3-2051e81fb2af"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PR #2923, merge 81142d1dce7d8e896ef340783ab943cdf59143f6.",
@@ -663,9 +663,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a580da1-1854-83ed-acd3-aaf72bc35dc9",
+        "id": "0672cbb7-2a31-4ce6-bb9a-43e4a86518be",
         "title": "Selective action/delegation",
-        "url": "https://chatgpt.com/c/6a580da1-1854-83ed-acd3-aaf72bc35dc9"
+        "url": "https://chatgpt.com/c/0672cbb7-2a31-4ce6-bb9a-43e4a86518be"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Patch was placeholder-heavy and did not establish a production execution route.",
@@ -1161,9 +1161,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a5823b5-15f4-83ed-8432-768e9452b460",
+        "id": "0945d92d-8a16-4b34-b5f2-0e66ebc80a66",
         "title": "Named-source freshness implementation",
-        "url": "https://chatgpt.com/c/6a5823b5-15f4-83ed-8432-768e9452b460"
+        "url": "https://chatgpt.com/c/0945d92d-8a16-4b34-b5f2-0e66ebc80a66"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PR #2924 merge b6c78adfcd666358307daf64ac97e8d695a8b854.",
@@ -1220,9 +1220,9 @@
         "8ecc34ecc"
       ],
       "conversation": {
-        "id": "6a57f545-56a0-83eb-b961-e81c7d030e70",
+        "id": "5c439b93-e119-48fd-b630-9ce44cd45cf8",
         "title": "Durable CaptureJobs",
-        "url": "https://chatgpt.com/c/6a57f545-56a0-83eb-b961-e81c7d030e70"
+        "url": "https://chatgpt.com/c/5c439b93-e119-48fd-b630-9ce44cd45cf8"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Published preservation branch feature/integration/capture-job-authority (ba340c71a, 8ecc34ecc); current master only has opaque per-extension backfill mirrors. Fresh-master comparison found unsafe fallback account scope paired:<provider> in browser adapter, so it cannot prove exact-scope profile-loss adoption.",
@@ -1271,9 +1271,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a57f60c-1c74-83ed-81e0-94e1072a7eb0",
+        "id": "e26809fb-ea94-4d78-91f3-fa187b710fe0",
         "title": "Sinex publication convergence",
-        "url": "https://chatgpt.com/c/6a57f60c-1c74-83ed-81e0-94e1072a7eb0"
+        "url": "https://chatgpt.com/c/e26809fb-ea94-4d78-91f3-fa187b710fe0"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PR #2925 merge 36001d023b2cfe793cb19fdd7c42a87597356f48; deployment transport remains polylogue-303r.2.2/coordinator scope.",
@@ -1326,9 +1326,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a5823b5-15f4-83ed-8432-768e9452b460",
+        "id": "0945d92d-8a16-4b34-b5f2-0e66ebc80a66",
         "title": "Named-source freshness design",
-        "url": "https://chatgpt.com/c/6a5823b5-15f4-83ed-8432-768e9452b460"
+        "url": "https://chatgpt.com/c/0945d92d-8a16-4b34-b5f2-0e66ebc80a66"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "Same conversation; canonical implementation merged as PR #2924.",
@@ -1362,9 +1362,9 @@
       ],
       "commits": [],
       "conversation": {
-        "id": "6a582757-0bcc-83ed-99aa-b36f86a9ba50",
+        "id": "543c6e1f-af1c-4850-9b03-558f51050b08",
         "title": "Receiver pairing runtime identity",
-        "url": "https://chatgpt.com/c/6a582757-0bcc-83ed-99aa-b36f86a9ba50"
+        "url": "https://chatgpt.com/c/543c6e1f-af1c-4850-9b03-558f51050b08"
       },
       "corpus": "polylogue-sol-pro-2026-07-15",
       "current_master_evidence": "PR #2926/#2928 pairing work and polylogue-jlme.5 retain residual multi-profile proof.",
