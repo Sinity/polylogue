@@ -2218,6 +2218,10 @@ files:
     loc: 109
     target: polylogue/maintenance/raw_authority_reset.py
     owner: stable
+  - path: polylogue/maintenance/raw_live_source_reconciliation_apply.py
+    loc: 282
+    target: polylogue/maintenance/raw_live_source_reconciliation_apply.py
+    owner: stable
   - path: polylogue/maintenance/rebuild_index.py
     loc: 1093
     target: polylogue/maintenance/rebuild_index.py
@@ -3909,7 +3913,7 @@ files:
     target: polylogue/storage/insights/topology/derivation.py
     owner: stable
   - path: polylogue/storage/live_source_reconciliation.py
-    loc: 317
+    loc: 351
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/message_type_backfill.py
@@ -4253,7 +4257,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 475
+    loc: 499
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py

@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,acquisition_generation  INTEGER CHECK(acquisition_generation >= 0)
     ,revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
         CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))
+    ,revision_authority_evidence TEXT
+        CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_origin
@@ -138,6 +140,28 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
     censused_at_ms     INTEGER NOT NULL CHECK(censused_at_ms >= 0),
     detail             TEXT NOT NULL DEFAULT ''
 ) STRICT;
+
+-- v17 (polylogue-u19l): one immutable receipt per raw_sessions row promoted
+-- out of quarantine by live-source-verification (see
+-- polylogue.storage.live_source_reconciliation +
+-- polylogue.maintenance.raw_live_source_reconciliation_apply). Records what
+-- was compared, what matched, when, by which tool version, and against
+-- which verified backup manifest -- never edited after being written.
+CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
+    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    verdict                     TEXT NOT NULL CHECK(verdict IN ('exact_match', 'codex_header_strip_match')),
+    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    source_path                 TEXT NOT NULL,
+    blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
+    compared_at_ms              INTEGER NOT NULL CHECK(compared_at_ms >= 0),
+    tool_version                TEXT NOT NULL,
+    backup_manifest_path        TEXT NOT NULL,
+    detail                      TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_live_source_reconciliation_receipts_compared_at
+ON raw_live_source_reconciliation_receipts(compared_at_ms);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither

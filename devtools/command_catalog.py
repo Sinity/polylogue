@@ -936,6 +936,26 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-live-source-reconciliation-apply",
+        "workspace",
+        "Promote quarantined raw evidence proven correct by live-source verification.",
+        "devtools.raw_live_source_reconciliation_apply",
+        use_when=(
+            "polylogue-u19l: act on the classifier's report -- promote ONLY exact_match / "
+            "codex_header_strip_match quarantined raw_sessions rows to revision_authority="
+            "'byte_proven' (never diverged/source_missing). Default is dry-run; --apply "
+            "requires --backup-manifest pointing at a verified source-tier backup "
+            "(polylogue backup --output-dir <dir> --verify). Writes an immutable per-row "
+            "receipt; never runs blob GC or VACUUM -- that is a separate, later step."
+        ),
+        examples=(
+            "devtools workspace raw-live-source-reconciliation-apply",
+            "devtools workspace raw-live-source-reconciliation-apply --json",
+            "devtools workspace raw-live-source-reconciliation-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace unknown-export-reclassification",
         "workspace",
         "Re-run the fixed browser-capture provider probe against stored unknown-export rows.",
