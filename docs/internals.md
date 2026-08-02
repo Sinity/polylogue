@@ -174,7 +174,19 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   batched before a live rebuild so the active archive is not reset repeatedly.
 - `devtools lab policy schema-versioning` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
-  derived-tier upgrade helpers remain forbidden.
+  derived-tier upgrade helpers remain forbidden. **This check is keyed to
+  `INDEX_SCHEMA_VERSION` and cannot see parser/classifier drift** -- a
+  `looks_like*`/`classify_artifact*` function under `polylogue/sources/` or
+  `polylogue/archive/artifact_taxonomy/` can change what it accepts for
+  identical input bytes with no version bump at all, running this lint green
+  while already-indexed rows silently go stale (polylogue-gucv; PR #3428 is
+  the confirmed case). `devtools lab policy classifier-fingerprints`
+  (`devtools/verify_classifier_fingerprints.py`) closes that gap: it AST-
+  fingerprints every in-scope classifier function against a committed
+  manifest (`docs/plans/classifier-fingerprints.json`) and fails on
+  undeclared drift, requiring either a `SEMANTIC_REPARSE`-declared version
+  bump or an explicit `acknowledged_safe` justification recorded in the
+  manifest.
 
 - User schema version 7 adds durable content-addressed `queries`, mutable
   `query_names`, promoted `result_sets`/`result_set_members`, and planner

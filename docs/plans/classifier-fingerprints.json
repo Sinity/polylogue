@@ -1,0 +1,292 @@
+{
+  "functions": {
+    "polylogue/archive/artifact_taxonomy/runtime.py:classify_artifact": {
+      "fingerprint": "e2c3110262b968d54943e91403e7c2fde02d9f893e6738f3900ebcee77f625c1",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/runtime.py:classify_artifact_path": {
+      "fingerprint": "10f54d1827fdca585985cf3180e54c27098de26121530076e51a26cef7b2de24",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_beads_interaction": {
+      "fingerprint": "ca8524db458408ef6a18bcc4a4f91d811e436fa9d2fdd7f6a109d9c602343c35",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_hook_event": {
+      "fingerprint": "9f5c4061bae7c70195d55fcd8d02a461009f62a11cd082ed6eb8e47bc3ca34f8",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_hook_event_stream": {
+      "fingerprint": "03fdb9a9d03cda22fc81907e765ecd2bff30a8d3c0e07270c139e062cd4a056a",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_message_entry": {
+      "fingerprint": "797d7d85a75d45baf5cbda223f081ede31e9c086c52525ff37d594c52f204075",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_record_entry": {
+      "fingerprint": "99a3dbdeb5b420b5e9059d965f6e8749860d7d9b637fdb0bf9efcbb369f69784",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "PR #3428 (ab8a92c1a) tightened this without an INDEX_SCHEMA_VERSION bump; retroactively acknowledged. Existing misclassified rows tracked by the repair pass.",
+        "ref": "polylogue-zqph"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_record_stream": {
+      "fingerprint": "f717bdffdfd50a5aefa11d0f9a5c147bfa5e71a1bd57973c6dd2b25141db6ed1",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_session_document": {
+      "fingerprint": "3c0e09f04a43fbae1b84a8b08a0659fe723714548c31a0b89cb1612757664844",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/antigravity.py:looks_like_brain_metadata": {
+      "fingerprint": "5e80c04e8f9e78920d1bbbd16d1698a330e6e3ccdc2373ae4b9f17fefa144e3a",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/antigravity.py:looks_like_markdown_export": {
+      "fingerprint": "90525b09e2883d8b3093a20ae5f0ae12bc4040d3ab6f763fa794fceb44e8f920",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/beads.py:looks_like": {
+      "fingerprint": "9608a73247813b989ac6e857c374eea112d8f0f342da376a23530cd5ba293079",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/browser_capture.py:looks_like": {
+      "fingerprint": "7b6ca34dac7d1d9a9ca4ddade693396d217a07288e5d1c442f7e56a7cbae9aeb",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/chatgpt.py:looks_like": {
+      "fingerprint": "01785fab9f2de11eda09cf4ed017bacc8f427987962e5f79b72b8c783b9e48fc",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/chatgpt.py:looks_like_fragment": {
+      "fingerprint": "382354bf93637c22bfcec6fc80b9f09b7f040687b97cdd7b1b5ab0c5aefefdb1",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/chatgpt_codex_sidecar.py:looks_like": {
+      "fingerprint": "273bc13adae90435566dc75ef802a83beae650e03894a2146e44e897394dc8d9",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/claude/__init__.py:looks_like_ai": {
+      "fingerprint": "4f2c5a0787adfe9647e40238d43efbe035ae87645fb7b2de2201d4bd460d5499",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/claude/ai_parser.py:looks_like_ai": {
+      "fingerprint": "e5886ec01e23439d5a02ce5515e80de2695c483cd0fe2f0e843c52d504debaa9",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/claude/ai_parser.py:looks_like_claude_design": {
+      "fingerprint": "bd03581f209d7ade36485652ccb863d1652adf05abc8b14332cebcd25ce8779e",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/claude/ai_parser.py:looks_like_claude_memories": {
+      "fingerprint": "a6c6a33039f82b0329eb88c54a7614be7881068812e4e030f1b55bcb610ced5f",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/claude/code_detection.py:looks_like_code": {
+      "fingerprint": "ed3bdb0d2d5414198aba472a62e0ae466307eefb84a728103ad3d7c96324b734",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "PR #3428 (ab8a92c1a) tightened this without an INDEX_SCHEMA_VERSION bump; retroactively acknowledged. Existing misclassified rows tracked by the repair pass.",
+        "ref": "polylogue-zqph"
+      }
+    },
+    "polylogue/sources/parsers/codex.py:looks_like": {
+      "fingerprint": "d552a69c42b30ac6eca88642668d53d1005cf884b6547f7c7839c0b740d09852",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/codex_state.py:looks_like_state_db_payload": {
+      "fingerprint": "9b053731eba94db843149fc65f7ceb1766db882d1a122784489b5b115a39eb93",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/drive.py:looks_like": {
+      "fingerprint": "181729c514fdd5b45ede6223c4093caf7c90d3d2dd84673838f33b8e141dbe76",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/drive.py:looks_like_chunk": {
+      "fingerprint": "3ba252b8c1f859e351ee54eb6651e8d96d1f8b757df9fd260aed7aad37f4ed49",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/grok.py:looks_like_conversation": {
+      "fingerprint": "330f18d22cf6faf5d56bc7b5e051f70036720d9f2b803693b01ed0b00b7afbe3",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/grok.py:looks_like_export": {
+      "fingerprint": "de586e71c6bebdb4f703e33a7754c32c3600098ec100e6ffbfdea83ab2d8eb07",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/hermes_spans.py:looks_like_atif_payload": {
+      "fingerprint": "c8297259d89eec1adec78f5f229ad252d0accefc81d53e04ba916f77c06bb0cb",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/hermes_spans.py:looks_like_atof_payload": {
+      "fingerprint": "41b75f1be8f76d56f5d46104c371ea55ce1867744c97d65ee64a95c77e155649",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/hermes_state.py:looks_like_state_db_path": {
+      "fingerprint": "afbeb93cabf5d6f6e41e2bac0c9d19919e46c01b720fa190b94ae4659a1e5d0f",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/hermes_state.py:looks_like_state_db_payload": {
+      "fingerprint": "0d4ab96a369419e5487fe1a80b6df03eec779527121dd8ed6d0c3084409a869b",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/hermes_verification.py:looks_like_verification_evidence_db_path": {
+      "fingerprint": "afbeb93cabf5d6f6e41e2bac0c9d19919e46c01b720fa190b94ae4659a1e5d0f",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/hermes_verification.py:looks_like_verification_evidence_db_payload": {
+      "fingerprint": "a639334d5ba5ca66247f53ea40944271b5893139ae794a25cfed4b5272e540a3",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/local_agent.py:looks_like_gemini_cli": {
+      "fingerprint": "7fc8e19b0ba0058d8fb1b8606ad4560e810ecf0b4c7356b191b9152e507bff9c",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/local_agent.py:looks_like_hermes": {
+      "fingerprint": "1bc55fdde8189754f9b69c8ddd4f77735e514625e7b1c8486f18fa932246c9ea",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/sqlite_snapshot.py:looks_like_sqlite_bytes": {
+      "fingerprint": "7227970ea3a74e682e66b15727a477325ab759563a407e633e3c38957748b487",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
+        "ref": "polylogue-gucv"
+      }
+    }
+  }
+}
