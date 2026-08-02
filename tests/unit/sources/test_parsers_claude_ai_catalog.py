@@ -363,10 +363,12 @@ def test_claude_ai_conversation_summary_persists_as_event() -> None:
     assert session.title_confidence == 1.0
 
 
-def test_claude_ai_no_provider_title_falls_back_to_id_as_unknown() -> None:
+def test_claude_ai_no_provider_title_falls_back_to_id_with_no_title_source() -> None:
     """No ``title``/``name`` field at all: fall back to the session id, and
-    mark the provenance UNKNOWN rather than silently ORIGIN or unset --
-    there is no provider curation backing this text."""
+    leave title_source None (polylogue-5dfu: NULL is the sole "no title
+    evidence" state; TitleSource.UNKNOWN was a redundant second spelling of
+    it) rather than silently ORIGIN -- there is no provider curation backing
+    this text."""
     payload = {
         "uuid": "claude-4",
         "chat_messages": [
@@ -377,7 +379,7 @@ def test_claude_ai_no_provider_title_falls_back_to_id_as_unknown() -> None:
     session = parse_ai(payload, "fallback")
 
     assert session.title == "claude-4"
-    assert session.title_source == TitleSource.UNKNOWN
+    assert session.title_source is None
     assert session.title_ref is None
     assert session.title_confidence is None
 

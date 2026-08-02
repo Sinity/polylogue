@@ -1900,8 +1900,10 @@ def _parse_code_records(
             title_source = TitleSource.ORIGIN
             title_ref = f"claude-custom-title:{composed_session_id}"
             title_confidence = 1.0
-    if title_source is None:
-        title_source = TitleSource.UNKNOWN
+    # polylogue-5dfu: leave title_source as None (not a TitleSource.UNKNOWN
+    # sentinel) when no branch above resolved a title -- NULL already means
+    # "no title evidence" for this nullable column, and TitleSource.UNKNOWN
+    # was a redundant second spelling of the same fact.
 
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,

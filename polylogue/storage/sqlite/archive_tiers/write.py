@@ -567,9 +567,30 @@ def write_parsed_session_to_archive(
                     active_leaf_message_id = excluded.active_leaf_message_id,
                     title = COALESCE(excluded.title, sessions.title),
                     session_kind = excluded.session_kind,
-                    title_source = COALESCE(excluded.title_source, sessions.title_source),
-                    title_ref = COALESCE(excluded.title_ref, sessions.title_ref),
-                    title_confidence = COALESCE(excluded.title_confidence, sessions.title_confidence),
+                    -- Plain overwrite, NOT COALESCE (polylogue-0cn3): title_source/
+                    -- title_ref/title_confidence are a purely derived provenance
+                    -- triple -- every parser branch that sets one of the three sets
+                    -- all three together (see e.g. code_parser.py's title heuristic
+                    -- chain), and no durable/user-authored path ever writes them
+                    -- (no rename verb exists on any surface). A COALESCE here was a
+                    -- ratchet: once a weaker parser stored title_source='unknown'
+                    -- (a definite, non-NULL verdict), a later run of an *improved*
+                    -- parser over the same content-hash-unchanged session would
+                    -- never reach this UPDATE at all (the ingest batch's
+                    -- content-hash idempotency check skips re-write entirely), and
+                    -- even a batch that DID reach this UPDATE would have its better
+                    -- verdict silently discarded by COALESCE picking the stale
+                    -- 'unknown' only if excluded happened to be NULL -- which the
+                    -- classification triple never is once cijx.4 made UNKNOWN an
+                    -- explicit member rather than a Python None. Recomputing the
+                    -- whole triple on every write is what actually lets a rebuild
+                    -- (`polylogue ops reset --index && polylogued run`, the
+                    -- documented remedy for a SEMANTIC_REPARSE-class parser fix)
+                    -- re-evaluate every session instead of some subset staying
+                    -- frozen at their first-ever verdict.
+                    title_source = excluded.title_source,
+                    title_ref = excluded.title_ref,
+                    title_confidence = excluded.title_confidence,
                     display_name = COALESCE(excluded.display_name, sessions.display_name),
                     run_settings_json = COALESCE(excluded.run_settings_json, sessions.run_settings_json),
                     -- Plain overwrite, NOT COALESCE like run_settings_json above:
@@ -582,10 +603,26 @@ def write_parsed_session_to_archive(
                     git_repository_url = excluded.git_repository_url,
                     commit_hash = excluded.commit_hash,
                     provider_project_ref = excluded.provider_project_ref,
+                    -- title/display_name/run_settings_json/instructions_text keep
+                    -- their COALESCE (polylogue-0cn3 sibling audit): each is
+                    -- sometimes genuinely omitted on a given write (e.g. an
+                    -- append-only delta batch, or an origin whose parser doesn't
+                    -- populate that field for this content) without that omission
+                    -- meaning "clear the prior value" -- unlike the classification
+                    -- triple above, no producer treats a bare Python None as an
+                    -- authoritative "recomputed and confirmed absent" verdict for
+                    -- these columns, so preserving the last real value on a NULL
+                    -- write is correct, not a stale-verdict ratchet.
                     instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
                     reported_duration_ms = excluded.reported_duration_ms,
                     reported_cost_usd = excluded.reported_cost_usd,
                     content_hash = excluded.content_hash,
+                    -- Reversed COALESCE (existing wins over excluded), unlike every
+                    -- other column above: created_at_ms is a durable observed fact
+                    -- (the session's real creation time), not a re-derivable
+                    -- classification, so it is correctly ratcheted once set --
+                    -- included in the polylogue-0cn3 sibling audit as the one
+                    -- column that legitimately never moves.
                     created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
                     updated_at_ms = CASE
                         WHEN ? THEN excluded.updated_at_ms

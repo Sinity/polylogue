@@ -3591,9 +3591,6 @@ def test_title_source_roundtrip(tmp_path: Path) -> None:
     for title_source, expected in (
         (TitleSource.ORIGIN, "origin"),
         (TitleSource.HEURISTIC, "heuristic"),
-        (TitleSource.UNKNOWN, "unknown"),
-        (TitleSource.PATH, "path"),
-        (TitleSource.USER, "user"),
     ):
         session = ParsedSession(
             source_name=Provider.CODEX,

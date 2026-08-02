@@ -32,7 +32,7 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType
+from polylogue.archive.topology.edge import TopologyEdgeType
 from polylogue.core.enums import Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
@@ -66,6 +66,10 @@ def _parse_single(source_name: str, source_path: Path) -> ParsedSession:
 
 
 def _fetch_edges(db_path: Path) -> list[sqlite3.Row]:
+    # 'resolved'/'unresolved' below are test-only derived labels, not
+    # TopologyEdgeStatus members (polylogue-5dfu: that enum only declares the
+    # two markers the ``status`` column actually stores, REPAIRED/QUARANTINED
+    # -- resolvedness is a read-time derivation from resolved_dst_session_id).
     with open_connection(db_path) as conn:
         cursor = conn.execute(
             """
@@ -136,7 +140,7 @@ class TestTopologyEdgeUnresolvedAC:
         edge = edges[0]
         assert edge["dst_session_native_id"] == "missing-parent-sess"
         assert edge["link_type"] == TopologyEdgeType.SUBAGENT.value
-        assert edge["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edge["status"] == "unresolved"
         assert edge["dst_session_id"] is None
 
     @pytest.mark.asyncio
@@ -158,7 +162,7 @@ class TestTopologyEdgeUnresolvedAC:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         assert edges[0]["link_type"] == TopologyEdgeType.SIDECHAIN.value
-        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edges[0]["status"] == "unresolved"
 
     @pytest.mark.asyncio
     async def test_codex_continuation_parent_absent_unresolved(
@@ -179,7 +183,7 @@ class TestTopologyEdgeUnresolvedAC:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         assert edges[0]["link_type"] == TopologyEdgeType.CONTINUATION.value
-        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edges[0]["status"] == "unresolved"
         assert edges[0]["dst_session_native_id"] == "missing-codex-parent"
 
     @pytest.mark.asyncio
@@ -220,7 +224,7 @@ class TestTopologyEdgeUnresolvedAC:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         assert edges[0]["link_type"] == TopologyEdgeType.BRANCH.value
-        assert edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert edges[0]["status"] == "resolved"
         assert edges[0]["dst_session_id"] == parent_id
 
         with open_connection(db_path) as conn:
@@ -255,7 +259,7 @@ class TestTopologyEdgeUnresolvedAC:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         assert edges[0]["link_type"] == TopologyEdgeType.FORK.value
-        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edges[0]["status"] == "unresolved"
 
 
 class TestTopologyEdgeFastPathPreserved:
@@ -297,7 +301,7 @@ class TestTopologyEdgeFastPathPreserved:
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
         edge = edges[0]
-        assert edge["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert edge["status"] == "resolved"
         assert edge["dst_session_id"] == parent_session_id
 
 
@@ -321,7 +325,7 @@ class TestTopologyEdgeOutOfOrderResolve:
 
             edges_before = _fetch_edges(db_path)
             assert len(edges_before) == 1
-            assert edges_before[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+            assert edges_before[0]["status"] == "unresolved"
             assert edges_before[0]["dst_session_id"] is None
 
             # Now the parent lands.
@@ -341,7 +345,7 @@ class TestTopologyEdgeOutOfOrderResolve:
         # The edge should flip; there should still be one row for the child.
         child_edges = [e for e in edges_after if e["src_session_id"] == child_cid]
         assert len(child_edges) == 1
-        assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert child_edges[0]["status"] == "resolved"
         assert child_edges[0]["dst_session_id"] == parent_session_id
 
         # Slice B (#1259 / #866): the late-arriving parent now backfills
@@ -377,7 +381,7 @@ class TestTopologyEdgeIdempotency:
 
         edges = _fetch_edges(db_path)
         assert len(edges) == 1
-        assert edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert edges[0]["status"] == "unresolved"
 
 
 class TestTopologyLateParentRepair:
@@ -483,7 +487,7 @@ class TestTopologyLateParentRepair:
         edges_after = _fetch_edges(db_path)
         child_edges = [e for e in edges_after if e["src_session_id"] == child_cid]
         assert len(child_edges) == 1
-        assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert child_edges[0]["status"] == "resolved"
         assert child_edges[0]["dst_session_id"] == parent_session_id
 
         with open_connection(db_path) as conn:
@@ -526,7 +530,7 @@ class TestTopologyLateParentRepair:
         edges = _fetch_edges(db_path)
         child_edges = [e for e in edges if e["src_session_id"] == child_cid]
         assert len(child_edges) == 1
-        assert child_edges[0]["status"] == TopologyEdgeStatus.UNRESOLVED.value
+        assert child_edges[0]["status"] == "unresolved"
         assert child_edges[0]["dst_session_id"] is None
 
         with open_connection(db_path) as conn:
@@ -574,7 +578,7 @@ class TestTopologyLateParentRepair:
         edges = _fetch_edges(db_path)
         repaired = [e for e in edges if e["src_session_id"] in (child_a, child_b)]
         assert len(repaired) == 2
-        assert all(e["status"] == TopologyEdgeStatus.RESOLVED.value for e in repaired)
+        assert all(e["status"] == "resolved" for e in repaired)
         assert all(e["dst_session_id"] == parent_session_id for e in repaired)
 
         with open_connection(db_path) as conn:
@@ -682,7 +686,7 @@ class TestTopologyLateParentRepair:
         edges = _fetch_edges(db_path)
         child_edges = [e for e in edges if e["src_session_id"] == child_session_id]
         assert len(child_edges) == 1
-        assert child_edges[0]["status"] == TopologyEdgeStatus.RESOLVED.value
+        assert child_edges[0]["status"] == "resolved"
         assert child_edges[0]["dst_session_id"] == parent_session_id
 
         with open_connection(db_path) as conn:

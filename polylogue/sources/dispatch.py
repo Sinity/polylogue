@@ -697,9 +697,11 @@ _CLAUDE_CODE_TITLE_REF_PRIORITY: dict[str, int] = {
 
 
 def _claude_code_title_rank(session: ParsedSession) -> tuple[int, float, int]:
+    # polylogue-5dfu: no TitleSource.UNKNOWN entry -- a None title_source
+    # (no title evidence) and a session.title_source that has no listed
+    # entry both fall through to the same rank-0 default via .get().
     source_rank = (
         {
-            TitleSource.UNKNOWN: 0,
             TitleSource.HEURISTIC: 1,
             TitleSource.ORIGIN: 2,
         }.get(session.title_source, 0)

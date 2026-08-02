@@ -296,13 +296,23 @@ class SemanticBlockType(PolylogueStrEnum):
 
 
 class TitleSource(PolylogueStrEnum):
-    """Classification for how a session's title was derived."""
+    """Classification for how a session's title was derived.
+
+    polylogue-5dfu: this used to also carry ``USER`` and ``UNKNOWN``.
+    ``USER`` had no producer anywhere (write- or read-time) -- deleted.
+    ``UNKNOWN`` was a second, redundant spelling of "no title evidence" on an
+    already-nullable column (every read site branching on ``title_source``
+    treated ``NULL`` and ``'unknown'`` identically) -- deleted in favor of
+    ``NULL`` alone. ``PATH`` looks unused the same way at a glance (nothing
+    ever *stores* it in ``sessions.title_source``), but it has a genuine
+    read-time producer: ``archive_tiers/archive.py``'s ``_summary_from_row``
+    assigns it whenever a session has neither a real provider title nor a
+    display name, synthesizing a structural label instead -- kept.
+    """
 
     ORIGIN = "origin"
     PATH = "path"
     HEURISTIC = "heuristic"
-    USER = "user"
-    UNKNOWN = "unknown"
 
 
 class BranchType(PolylogueStrEnum):
@@ -315,7 +325,21 @@ class BranchType(PolylogueStrEnum):
 
 
 class LinkType(PolylogueStrEnum):
-    """Archive cross-session edge vocabulary."""
+    """Archive cross-session edge vocabulary.
+
+    polylogue-5dfu: ``REPAIRED`` was deleted -- it duplicated
+    ``TopologyEdgeStatus.REPAIRED`` (same string, different column/meaning:
+    a link *type* vs. a link's exceptional *status*) and had no producer,
+    fixture, or doc reference anywhere. ``FORK`` and ``RESUME`` look equally
+    unused from a live-archive row count alone (both are 0 rows today) but
+    each has a concrete, named producer: ``FORK`` is emitted by
+    ``sources/parsers/hermes_state.py``'s ``_branch_type`` whenever a Hermes
+    session's ``model_config._branched_from`` is set (real code, just never
+    yet hit by an ingested Hermes session); ``RESUME`` is the "resume
+    lineage edge" cross-repo fixture documented in
+    ``docs/material-protocol-v1.md`` -- Sinex (``sinex-4j2.1.1``) is expected
+    to emit it over the material-protocol-v1 wire once that side lands.
+    """
 
     CONTINUATION = "continuation"
     SIDECHAIN = "sidechain"
@@ -323,14 +347,22 @@ class LinkType(PolylogueStrEnum):
     BRANCH = "branch"
     FORK = "fork"
     RESUME = "resume"
-    REPAIRED = "repaired"
 
 
 class TopologyEdgeStatus(PolylogueStrEnum):
-    """Closed lifecycle vocabulary for topology/session-link edges."""
+    """Exceptional-marker vocabulary for a ``session_links`` row's ``status``.
 
-    UNRESOLVED = "unresolved"
-    RESOLVED = "resolved"
+    polylogue-5dfu: this used to declare 4 members
+    (unresolved/resolved/repaired/quarantined) while the DDL ``CHECK`` and
+    ``queries/session_links.py``'s ``_status_value`` projection both already
+    narrowed it to 2 -- ``UNRESOLVED``/``RESOLVED`` were never actually
+    stored, because resolvedness is already carried by
+    ``resolved_dst_session_id IS NOT NULL`` and neither member was ever
+    constructed anywhere outside a Pydantic field default. Narrowed to match
+    what the column actually stores: an exceptional marker recording *why*
+    an edge needed intervention, not the ordinary resolved/unresolved state.
+    """
+
     REPAIRED = "repaired"
     QUARANTINED = "quarantined"
 

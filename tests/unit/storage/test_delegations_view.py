@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-from polylogue.archive.topology.edge import TopologyEdgeRecord, TopologyEdgeStatus
+from polylogue.archive.topology.edge import TopologyEdgeRecord
 from polylogue.core.enums import LinkType as TopologyEdgeType
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
@@ -644,7 +644,6 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
         dst_origin=Origin.CODEX_SESSION,
         dst_native_id="parent",
         link_type=TopologyEdgeType.SUBAGENT,
-        status=TopologyEdgeStatus.UNRESOLVED,
     )
     asyncio.run(upsert_session_links(adapter, [edge]))  # type: ignore[arg-type]
     resolved_count = asyncio.run(

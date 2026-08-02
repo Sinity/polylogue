@@ -720,11 +720,13 @@ carries the original provider-native parent id. The same table also carries the
   `(src_session_id, dst_origin, dst_native_id, link_type)`.
   Re-ingesting the same child is idempotent.
 - **Closed enums:** `polylogue/core/enums.py` owns `LinkType`
-  (continuation / sidechain / subagent / branch / fork / resume / repaired),
+  (continuation / sidechain / subagent / branch / fork / resume),
   re-exported as `TopologyEdgeType` from
   `polylogue/archive/topology/edge.py`, and `TopologyEdgeStatus`
-  (unresolved / resolved / repaired / quarantined). `quarantined` marks a link
-  the topology reducer dropped to break a cycle.
+  (repaired / quarantined -- polylogue-5dfu narrowed this from 4 declared
+  members to the 2 the `status` column ever stores; resolvedness is already
+  carried by `resolved_dst_session_id IS NOT NULL`, not a status value).
+  `quarantined` marks a link the topology reducer dropped to break a cycle.
 - **Resolve:** every session save runs `resolve_session_links_for_session`
   (`polylogue/storage/sqlite/queries/session_links.py`) so that an out-of-order
   child's edge flips to `resolved` the moment its parent's native id appears in

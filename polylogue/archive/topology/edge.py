@@ -56,7 +56,11 @@ class TopologyEdgeRecord(BaseModel):
     resolved_dst_session_id: SessionId | None = None
     evidence_json: str = "[]"
     confidence: float = 1.0
-    status: TopologyEdgeStatus = TopologyEdgeStatus.UNRESOLVED
+    # polylogue-5dfu: None (not a TopologyEdgeStatus.UNRESOLVED sentinel) is
+    # the pre-resolution default -- resolvedness is already carried by
+    # resolved_dst_session_id, so this field only ever needs to record the
+    # two exceptional markers a resolver assigns (REPAIRED/QUARANTINED).
+    status: TopologyEdgeStatus | None = None
     observed_at: str = Field(default_factory=_now_isoformat)
     resolved_at: str | None = None
     # polylogue-2qx.4 (v46): the parent-session tool_use block that

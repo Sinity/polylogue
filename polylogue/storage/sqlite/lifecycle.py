@@ -673,6 +673,23 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # this declaration.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=55,
+        # polylogue-0cn3 / polylogue-5dfu: derived-tier vocabulary cleanup --
+        # see INDEX_SCHEMA_VERSION's v55 comment (archive_tiers/index.py) for
+        # the full writeup. Drops the title_source/title_ref/title_confidence
+        # COALESCE ratchet in write.py's session upsert, deletes
+        # TitleSource.UNKNOWN/USER and LinkType.REPAIRED, and narrows
+        # TopologyEdgeStatus from 4 declared members to the 2 ever storable
+        # (REPAIRED/QUARANTINED). A live archive can carry
+        # title_source='unknown' or link_type='repaired' rows the narrowed
+        # CHECKs would reject on a plain copy-forward, and the write path's
+        # title_source computation genuinely changes (no longer ever
+        # recomputes 'unknown') -- SEMANTIC_REPARSE, not a free fast-forward.
+        # `polylogue ops reset --index && polylogued run` is required,
+        # deliberately NOT executed by this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
