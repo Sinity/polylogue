@@ -22,7 +22,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import decoders as _decoders
 from .decoders import _zip_entry_provider_hint
-from .dispatch import GROUP_PROVIDERS, _detect_provider_from_raw_bytes, detect_provider
+from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
@@ -302,7 +302,24 @@ def make_split_entry_raw_data(
 
 
 def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
-    """Stream one non-ZIP source file into the blob store."""
+    """Stream one non-ZIP source file into the blob store.
+
+    This is the real per-file production acquisition entry point for the
+    daemon watcher / ``ingest_batch`` pipeline (every non-ZIP file a
+    ``WatchSource`` accepts passes through here). It emits one structured
+    ``file_acquisition_decision`` log record (see
+    ``polylogue.sources.live.acquisition_log``) per file, carrying the
+    detected origin (or ``UNRECOGNIZED``), the specific detector evidence
+    that decided it, and elapsed detect-stage time -- the per-file
+    observability trail that was previously missing entirely.
+    """
+    # Deferred import: ``polylogue.sources.live`` (package ``__init__``) pulls
+    # in ``batch.py``, which imports this module at module level -- a
+    # module-level import here would be circular (same hazard documented on
+    # ``dispatch._join_claude_code_sidecars``).
+    from .live.acquisition_log import AcquisitionStageTimings, log_file_acquisition_decision
+
+    stage_timings = AcquisitionStageTimings()
     sqlite_path = is_sqlite_path(context.path)
     original_source_path = original_sqlite_source_path(context.path) if sqlite_path else None
     if (context.provider_hint is Provider.HERMES or original_source_path is not None) and sqlite_path:
@@ -311,10 +328,12 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             source_name=context.source.name,
             source_path=str(context.path),
         )
-        snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
-        blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
-        publication_id = snapshot.blob_publication_receipt_id
-        detected_provider = Provider.HERMES
+        with stage_timings.stage("detect"):
+            snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
+            blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+            publication_id = snapshot.blob_publication_receipt_id
+            detected_provider = Provider.HERMES
+            detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
         blob_hash, blob_size = stream_path_to_blob(
             context.blob_store,
@@ -323,14 +342,16 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             source_name=context.source.name,
         )
         prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
-        detected_provider = _detect_provider_from_raw_bytes(
-            prefix,
-            context.path.name,
-            context.provider_hint,
-            truncated_tail_ok=blob_size > len(prefix),
-        )
-        if detected_provider is Provider.UNKNOWN and context.source.name == "browser-capture":
-            detected_provider = _stream_browser_capture_provider(context.blob_store, blob_hash)
+        with stage_timings.stage("detect"):
+            detected_provider, detection_evidence = detect_provider_from_raw_bytes_evidence(
+                prefix,
+                context.path.name,
+                context.provider_hint,
+                truncated_tail_ok=blob_size > len(prefix),
+            )
+            if detected_provider is Provider.UNKNOWN and context.source.name == "browser-capture":
+                detected_provider = _stream_browser_capture_provider(context.blob_store, blob_hash)
+                detection_evidence = "browser_capture provider recovered from spool metadata"
         from polylogue.storage.blob_publication import publication_receipt_id
 
         publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -341,6 +362,19 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         provider_hint=detected_provider,
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
+    )
+    try:
+        file_mtime_epoch: float | None = context.path.stat().st_mtime
+    except OSError:
+        file_mtime_epoch = None
+    log_file_acquisition_decision(
+        path=context.path,
+        size=blob_size,
+        mtime=file_mtime_epoch,
+        source_name=context.source.name,
+        origin=str(detected_provider) if detected_provider is not Provider.UNKNOWN else None,
+        evidence=detection_evidence,
+        stage_timings=stage_timings,
     )
     return raw_data_record(
         source_path=str(original_source_path or context.path),
