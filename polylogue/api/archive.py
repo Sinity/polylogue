@@ -3430,6 +3430,10 @@ class PolylogueArchiveMixin:
                         kind=claim.kind,
                         body_text=claim.body_text,
                         target_ref=claim.target_ref,
+                        author_kind=claim.author_kind,
+                        author_ref=claim.author_ref,
+                        status=claim.status,
+                        context_policy=claim.context_policy,
                         evidence_ref_texts=claim.evidence_refs,
                     )
                     if token_budget is not None and token_total + segment.token_estimate > token_budget:
