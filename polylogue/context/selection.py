@@ -10,16 +10,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any
 
-from polylogue.core.timestamps import parse_archive_datetime
-from polylogue.mcp.archive_support import archive_index_active_paths, archive_query_filters
-from polylogue.storage.sqlite.archive_tiers.archive import (
-    ArchiveSessionSearchHit,
-    ArchiveSessionSummary,
-    ArchiveStore,
-)
+from polylogue.mcp.archive_support import archive_index_active_paths
 
 if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -41,17 +34,6 @@ class ContextImageSelection:
     match_strategy: str
     relaxed_filters: tuple[str, ...] = ()
     query_total: int = 0
-
-
-class ArchiveContextImageFilters(TypedDict):
-    origins: tuple[str, ...]
-    excluded_origins: tuple[str, ...]
-    tags: tuple[str, ...]
-    excluded_tags: tuple[str, ...]
-    repo_names: tuple[str, ...]
-    cwd_prefix: str | None
-    since_ms: int | None
-    until_ms: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,88 +177,3 @@ def archive_context_image_active(
         archive_root=archive_root,
         db_anchor_path=db_anchor_path,
     )
-
-
-def query_archive_context_image(
-    archive: ArchiveStore,
-    spec: SessionQuerySpec,
-    *,
-    default_limit: int,
-) -> list[SimpleNamespace]:
-    """Project archive sessions into the context-image summary surface."""
-    query = " ".join(spec.query_terms).strip()
-    kwargs = archive_context_image_filters(spec)
-    if query:
-        rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = list(
-            archive.search_summaries(
-                query,
-                limit=spec.limit or default_limit,
-                offset=spec.offset,
-                sort="date",
-                reverse=spec.reverse,
-                **kwargs,
-            )
-        )
-    else:
-        rows = list(
-            archive.list_summaries(
-                limit=spec.limit or default_limit,
-                offset=spec.offset,
-                sort="date",
-                reverse=spec.reverse,
-                **kwargs,
-            )
-        )
-
-    summaries: list[ArchiveSessionSummary] = []
-    for row in dedupe_archive_context_image_rows(rows):
-        if isinstance(row, ArchiveSessionSearchHit):
-            try:
-                summaries.append(archive.read_summary(row.session_id))
-            except KeyError:
-                continue
-        else:
-            summaries.append(row)
-    return [archive_context_image_summary(row) for row in summaries]
-
-
-def archive_context_image_filters(spec: SessionQuerySpec) -> ArchiveContextImageFilters:
-    filters = archive_query_filters(spec)
-    return {
-        "origins": filters["origins"],
-        "excluded_origins": filters["excluded_origins"],
-        "tags": filters["tags"],
-        "excluded_tags": filters["excluded_tags"],
-        "repo_names": filters["repo_names"],
-        "cwd_prefix": filters["cwd_prefix"],
-        "since_ms": filters["since_ms"],
-        "until_ms": filters["until_ms"],
-    }
-
-
-def archive_context_image_summary(row: ArchiveSessionSummary) -> SimpleNamespace:
-    return SimpleNamespace(
-        id=row.session_id,
-        origin=row.origin,
-        title=row.title,
-        display_title=row.title,
-        created_at=parse_archive_datetime(row.created_at),
-        updated_at=parse_archive_datetime(row.updated_at),
-        message_count=row.message_count,
-        messages=(),
-        tool_use_count=0,
-    )
-
-
-def dedupe_archive_context_image_rows(
-    rows: list[ArchiveSessionSummary | ArchiveSessionSearchHit],
-) -> list[ArchiveSessionSummary | ArchiveSessionSearchHit]:
-    deduped: list[ArchiveSessionSummary | ArchiveSessionSearchHit] = []
-    seen: set[str] = set()
-    for row in rows:
-        session_id = row.session_id
-        if session_id in seen:
-            continue
-        seen.add(session_id)
-        deduped.append(row)
-    return deduped

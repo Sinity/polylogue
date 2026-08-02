@@ -2127,15 +2127,6 @@ def _normal_read_text(messages: Sequence[Message]) -> str:
     return "\n\n".join(f"{_role_value(message)}: {message.text or ''}" for message in messages)
 
 
-def _message_text_fragments(message: Message) -> Iterable[str]:
-    if message.text:
-        yield message.text
-    for block in message.blocks:
-        text = _block_text(block)
-        if text:
-            yield text
-
-
 def _block_ref(session: Session, message: Message, block_index: int, block: Mapping[str, object]) -> TransformRawRef:
     return TransformRawRef(
         session_id=str(session.id),

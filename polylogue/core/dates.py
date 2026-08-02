@@ -47,15 +47,3 @@ def parse_date(date_str: str) -> datetime | None:
         # Ensure result is always UTC-aware
         result = result.replace(tzinfo=timezone.utc)
     return result
-
-
-def format_date_iso(dt: datetime) -> str:
-    """Format datetime as ISO string compatible with storage layer.
-
-    Args:
-        dt: datetime to format
-
-    Returns:
-        ISO 8601 formatted string (YYYY-MM-DD HH:MM:SS)
-    """
-    return dt.strftime("%Y-%m-%d %H:%M:%S")

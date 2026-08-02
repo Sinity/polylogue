@@ -313,12 +313,6 @@ WEBUI_ORIGIN_BADGE_TOKENS: dict[ThemeMode, dict[Origin, tuple[str, str]]] = {
 }
 
 
-def webui_theme_tokens(mode: ThemeMode) -> dict[str, str]:
-    """Return one complete WebUI theme token mapping for generation."""
-
-    return {**WEBUI_SHARED_TOKENS, **WEBUI_THEME_TOKENS[mode]}
-
-
 # =============================================================================
 # Thinking / reasoning block styling
 # =============================================================================

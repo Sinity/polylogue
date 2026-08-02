@@ -20,12 +20,6 @@ if TYPE_CHECKING:
     from polylogue.ui import UI
 
 
-def _lazy_ui() -> UI:
-    from polylogue.ui import UI as _UI
-
-    return _UI(plain=True)
-
-
 def _lazy_services(runtime: ResolvedRuntimeConfig | None) -> RuntimeServices:
     from polylogue.services import build_runtime_services
 

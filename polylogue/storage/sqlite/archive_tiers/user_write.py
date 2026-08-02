@@ -126,10 +126,6 @@ def _immediate_user_write_transaction(conn: sqlite3.Connection) -> Iterator[None
         conn.execute(f"RELEASE {savepoint}")
 
 
-def _default_context_policy() -> dict[str, JSONValue]:
-    return dict(ASSERTION_DEFAULT_CONTEXT_POLICY)
-
-
 def _normalize_assertion_kind(kind: str | AssertionKind) -> AssertionKind:
     return AssertionKind.from_string(kind)
 
@@ -177,18 +173,6 @@ def _normalize_assertion_context_policy(
 
 def _now_ms() -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
-
-
-def _read_payload_text(value: str | None) -> dict[str, object]:
-    if not value:
-        return {}
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    if isinstance(parsed, dict):
-        return dict(parsed)
-    return {}
 
 
 def _json_dumps(payload: dict[str, object] | None) -> str:
@@ -1030,12 +1014,6 @@ def read_archive_workspace_envelope(conn: sqlite3.Connection, name: str) -> Arch
         created_at_ms=assertion.created_at_ms,
         updated_at_ms=assertion.updated_at_ms,
     )
-
-
-def _read_mirrored_assertion(conn: sqlite3.Connection, assertion_id: str) -> ArchiveAssertionEnvelope | None:
-    if not _table_exists(conn, "assertions"):
-        return None
-    return read_assertion_envelope(conn, assertion_id)
 
 
 def _split_target_ref(target_ref: str) -> tuple[str, str]:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from polylogue.schemas.operator.annotations import collect_annotation_summary
 from polylogue.schemas.operator.commit import (
     commit_provider_schema as _commit_provider_schema,
 )
@@ -21,7 +20,6 @@ from polylogue.schemas.operator.inference import (
 from polylogue.schemas.operator.inference import (
     promote_schema_cluster as _promote_schema_cluster,
 )
-from polylogue.schemas.operator.models import SchemaAnnotationSummary
 from polylogue.schemas.operator.resolution import (
     explain_schema as _explain_schema,
 )
@@ -53,7 +51,3 @@ run_schema_verification = _run_schema_verification
 run_artifact_coverage = _run_artifact_coverage
 list_artifact_observations = _list_artifact_observations
 list_artifact_cohorts = _list_artifact_cohorts
-
-
-def _collect_annotation_summary(schema: dict[str, object]) -> SchemaAnnotationSummary:
-    return collect_annotation_summary(schema)

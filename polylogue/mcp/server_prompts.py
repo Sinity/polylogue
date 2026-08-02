@@ -29,7 +29,6 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveSessionEnvelope
 
 
 class ErrorContextPayload(TypedDict):
@@ -141,22 +140,6 @@ def _code_snippet_payload(block: MCPFencedCodeBlock, session_id: str) -> Extract
         "code": block.get("code", ""),
         "session": session_id[:20],
     }
-
-
-def _archive_prompt_session(session: ArchiveSessionEnvelope) -> PromptSession:
-    return PromptSession(
-        id=session.session_id,
-        origin=session.origin,
-        display_title=session.title or "(untitled)",
-        messages=tuple(
-            PromptMessage(
-                role=message.role,
-                text="\n\n".join(block.text for block in message.blocks if block.text),
-                timestamp=message.occurred_at,
-            )
-            for message in session.messages
-        ),
-    )
 
 
 def _archive_prompt_session_page(archive: ArchiveStore, session_id: str, *, limit: int = 20) -> PromptSession:

@@ -530,42 +530,6 @@ def resolve_model_identity(
     )
 
 
-def _usage_payload(value: object) -> CostUsagePayload:
-    usage = _record(value)
-    input_tokens = _coerce_int(
-        usage.get("input_tokens")
-        or usage.get("prompt_tokens")
-        or usage.get("inputTokenCount")
-        or usage.get("promptTokenCount")
-    )
-    output_tokens = _coerce_int(
-        usage.get("output_tokens")
-        or usage.get("completion_tokens")
-        or usage.get("outputTokenCount")
-        or usage.get("candidatesTokenCount")
-    )
-    cache_read_tokens = _coerce_int(
-        usage.get("cache_read_tokens")
-        or usage.get("cache_read_input_tokens")
-        or usage.get("cached_tokens")
-        or usage.get("cachedContentTokenCount")
-    )
-    cache_write_tokens = _coerce_int(
-        usage.get("cache_write_tokens")
-        or usage.get("cache_creation_input_tokens")
-        or usage.get("cache_creation_tokens")
-    )
-    explicit_total = _coerce_int(usage.get("total_tokens") or usage.get("totalTokenCount"))
-    total = explicit_total or input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-    return CostUsagePayload(
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-        total_tokens=total,
-    )
-
-
 def _token_usage_payload(tokens: TokenUsage | None) -> CostUsagePayload:
     if tokens is None:
         return CostUsagePayload()

@@ -193,21 +193,6 @@ def _json_str_list(value: object) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
 
 
-def _precious_archive_tiers(root: Path) -> dict[str, Path]:
-    return {
-        "source": root / "source.db",
-        "user": root / "user.db",
-        "embeddings": root / "embeddings.db",
-    }
-
-
-def _omitted_archive_tiers(root: Path) -> dict[str, Path]:
-    return {
-        "index": root / "index.db",
-        "ops": root / "ops.db",
-    }
-
-
 def _all_archive_tiers(root: Path) -> dict[str, Path]:
     return {
         "source": root / "source.db",
@@ -239,11 +224,6 @@ def _optional_profile_tiers(profile: BackupProfile) -> set[str]:
     if profile == "rebuildable_cache_exclude":
         return {"embeddings"}
     return set()
-
-
-def _profile_omitted_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:
-    included = set(_profile_archive_tiers(root, profile))
-    return {tier: path for tier, path in _all_archive_tiers(root).items() if tier not in included}
 
 
 def _archive_layout_present(root: Path) -> bool:

@@ -68,18 +68,6 @@ class _LazyChoice(click.Choice):  # type: ignore[type-arg]
         return "TEXT"
 
 
-def _load_message_types() -> list[str]:
-    from polylogue.archive.message.types import MessageType
-
-    return [m.value for m in MessageType]
-
-
-def _load_material_origins() -> list[str]:
-    from polylogue.core.enums import MaterialOrigin
-
-    return [m.value for m in MaterialOrigin]
-
-
 def _load_retrieval_lanes() -> list[str]:
     from polylogue.archive.query.spec import QUERY_RETRIEVAL_LANES
 

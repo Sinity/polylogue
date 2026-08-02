@@ -35,8 +35,6 @@ from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
     QuerySpecError,
     SessionQuerySpec,
-    normalize_action_sequence,
-    normalize_action_terms,
     parse_query_date,
     resolve_default_root_filter,
     session_count_unit_label,
@@ -1832,10 +1830,6 @@ def _optional_str(value: object) -> str | None:
     return text or None
 
 
-def _tags(value: object) -> tuple[str, ...]:
-    return _csv_tokens(value)
-
-
 def _csv_tokens(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -1874,20 +1868,6 @@ def _metadata_pairs(value: object) -> tuple[tuple[str, str], ...]:
 
 def _tool_tokens(value: object) -> tuple[str, ...]:
     return tuple(token.lower() for token in _csv_tokens(value))
-
-
-def _action_tokens(field: str, value: object) -> tuple[str, ...]:
-    try:
-        return normalize_action_terms(field, value)
-    except QuerySpecError as exc:
-        raise click.UsageError(f"invalid {exc.field}: {exc.value}") from exc
-
-
-def _action_sequence_tokens(value: object) -> tuple[str, ...]:
-    try:
-        return normalize_action_sequence("action_sequence", value)
-    except QuerySpecError as exc:
-        raise click.UsageError(f"invalid {exc.field}: {exc.value}") from exc
 
 
 def _message_type(value: object) -> str | None:

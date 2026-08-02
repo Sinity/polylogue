@@ -15,17 +15,6 @@ def format_count_mapping(counts: dict[str, int]) -> str:
     return ", ".join(f"{key}={value:,}" for key, value in sorted(counts.items()))
 
 
-def format_semantic_metric_summary(metric_summary: dict[str, dict[str, int]]) -> str:
-    return ", ".join(
-        (
-            f"{metric}(preserved={counts.get('preserved', 0):,}, "
-            f"declared_loss={counts.get('declared_loss', 0):,}, "
-            f"critical_loss={counts.get('critical_loss', 0):,})"
-        )
-        for metric, counts in sorted(metric_summary.items())
-    )
-
-
 def parse_schema_samples(raw: str) -> int | None:
     value = raw.strip().lower()
     if value == "all":
