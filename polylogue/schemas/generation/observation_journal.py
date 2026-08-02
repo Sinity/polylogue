@@ -19,10 +19,13 @@ from types import FrameType
 from typing import Literal, NoReturn, Self, overload
 
 from polylogue.core.json import JSONDocument, JSONDocumentList, JSONValue, json_document
+from polylogue.logging import get_logger
 from polylogue.paths import cache_home
 from polylogue.schemas.generation.models import _ProfileSummary, _UnitMembership
 from polylogue.schemas.observation import SchemaUnit
 from polylogue.schemas.observation_models import ObservationTerminalStatus
+
+logger = get_logger(__name__)
 
 _JOURNAL_FORMAT = 1
 _DEFAULT_STALE_AGE_S = 24 * 60 * 60
@@ -38,6 +41,20 @@ _SCOPE_KEY_SQL = (
     "COALESCE(bundle_scope, raw_id, source_path, "
     "profile_family_id || ':' || artifact_kind || ':' || exact_structure_id)"
 )
+
+
+class RecordStreamDecodeError(Exception):
+    """A raw record stream failed to decode partway through ``append_unit``.
+
+    Full-corpus record-granularity units wrap an on-disk JSONL file that is
+    only decoded lazily, one line at a time, as it is actually consumed here.
+    A provider export can legally contain a byte sequence that is not valid
+    UTF-8 partway through an otherwise-well-formed file. This is caught,
+    logged, and recorded as an explicit ``decode_failed`` terminal outcome
+    (see ``docs/daemon-threat-model.md`` fail-loud-and-log direction, #3537) --
+    it is never a silent skip, and it never aborts the whole generation run:
+    only this one raw artifact's remaining contribution is dropped.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +185,7 @@ class ObservationJournal:
         self._pending_unit_count = 0
         self._pending_payload_bytes = 0
         self._previous_signal_handlers: dict[signal.Signals, object] = {}
+        self.last_appended_sample_count = 0
 
     def _record_pending_write(self, payload_bytes: int = 0) -> None:
         """Bound one private WAL transaction without changing observations.
@@ -323,7 +341,21 @@ class ObservationJournal:
         return cls(path=path, connection=connection)
 
     def append_unit(self, unit: SchemaUnit, *, retain_cluster_payload: bool = True) -> int:
-        """Append one canonical unit and its independently replayable samples."""
+        """Append one canonical unit and its independently replayable samples.
+
+        ``unit.schema_samples`` may be a lazy, replayable view over an on-disk
+        record stream (full-corpus record-granularity mode): it is decoded
+        exactly once here, in this single enumeration, rather than being
+        touched by an upfront ``len()`` call as well. The row's
+        ``schema_sample_count`` is filled in from the count this loop
+        observes directly and reconciled with one indexed ``UPDATE`` after the
+        loop, instead of a second full rescan of the same content.
+
+        Raises :class:`RecordStreamDecodeError` if the record stream fails to
+        decode partway through -- the partially-written unit and its rows are
+        rolled back and a ``decode_failed`` terminal is recorded so the loss
+        is explicit and attributable, never a silent skip.
+        """
         cluster_payload_json = _canonical_json(unit.cluster_payload if retain_cluster_payload else {})
         profile_tokens_json = _canonical_json(list(unit.profile_tokens))
         cursor = self._connection.execute(
@@ -344,7 +376,7 @@ class ObservationJournal:
                 unit.observed_at,
                 unit.exact_structure_id,
                 profile_tokens_json,
-                len(unit.schema_samples),
+                0,
             ),
         )
         if cursor.lastrowid is None:
@@ -366,13 +398,46 @@ class ObservationJournal:
             sample_rows.clear()
             sample_payload_bytes = 0
 
-        for position, sample in enumerate(unit.schema_samples):
-            sample_json = _canonical_json(sample)
-            sample_rows.append((position, sample_json))
-            sample_payload_bytes += len(sample_json)
-            if len(sample_rows) >= _SAMPLE_INSERT_BATCH_ROWS or sample_payload_bytes >= _SAMPLE_INSERT_BATCH_BYTES:
-                write_sample_batch()
+        try:
+            position = -1
+            for position, sample in enumerate(unit.schema_samples):
+                sample_json = _canonical_json(sample)
+                sample_rows.append((position, sample_json))
+                sample_payload_bytes += len(sample_json)
+                if len(sample_rows) >= _SAMPLE_INSERT_BATCH_ROWS or sample_payload_bytes >= _SAMPLE_INSERT_BATCH_BYTES:
+                    write_sample_batch()
+        except UnicodeDecodeError:
+            logger.exception(
+                "Record stream failed to decode partway through raw_id=%s source_path=%s; "
+                "dropping this artifact's remaining schema-inference contribution",
+                unit.raw_id,
+                unit.source_path,
+            )
+            # This connection never enables ``PRAGMA foreign_keys``, so the
+            # ``samples`` table's ``ON DELETE CASCADE`` does not fire here;
+            # without an explicit delete, orphaned sample rows survive under
+            # this unit_id and collide with a later unit that reuses the same
+            # rowid (SQLite reuses the max deleted rowid for a plain
+            # ``INTEGER PRIMARY KEY``, which is not declared ``AUTOINCREMENT``).
+            self._connection.execute("DELETE FROM samples WHERE unit_id = ?", (unit_id,))
+            self._connection.execute("DELETE FROM units WHERE unit_id = ?", (unit_id,))
+            if unit.raw_id is not None:
+                self.record_terminal(
+                    raw_id=unit.raw_id,
+                    status="decode_failed",
+                    artifact_kind=unit.artifact_kind,
+                    source_path=unit.source_path,
+                    reason="record_stream_decode_failed",
+                )
+            raise RecordStreamDecodeError(
+                f"Record stream decode failed for raw_id={unit.raw_id!r} source_path={unit.source_path!r}"
+            ) from None
         write_sample_batch()
+        self._connection.execute(
+            "UPDATE units SET schema_sample_count = ? WHERE unit_id = ?",
+            (position + 1, unit_id),
+        )
+        self.last_appended_sample_count = position + 1
         self._pending_unit_count += 1
         self._record_pending_write(len(cluster_payload_json) + len(profile_tokens_json))
         return unit_id
@@ -386,10 +451,23 @@ class ObservationJournal:
         source_path: str | None,
         reason: str | None,
     ) -> None:
-        """Record exactly one terminal inclusion/exclusion outcome for an artifact."""
+        """Record one artifact's terminal inclusion/exclusion outcome.
+
+        ``INSERT OR IGNORE`` because a record-granularity artifact's
+        ``schema_samples`` is a lazy, replayable stream: the raw-row iterator
+        in ``sampling_db.py`` yields a unit and optimistically records
+        ``included`` only once it resumes past that ``yield`` -- which, by
+        the generator execution model, is strictly *after* the consumer
+        (this run's ``for unit in observed_units`` loop) has already fully
+        consumed the unit via :meth:`append_unit`. A decode failure
+        discovered during that real consumption therefore always records
+        its ``decode_failed`` terminal first; the producer's later,
+        overly-optimistic ``included`` call for the same ``raw_id`` must not
+        clobber it, so the first recorded outcome wins.
+        """
         self._connection.execute(
             """
-            INSERT INTO artifact_terminals(raw_id, status, artifact_kind, source_path, reason)
+            INSERT OR IGNORE INTO artifact_terminals(raw_id, status, artifact_kind, source_path, reason)
             VALUES (?, ?, ?, ?, ?)
             """,
             (raw_id, status, artifact_kind, source_path, reason),
@@ -398,8 +476,18 @@ class ObservationJournal:
             sum(len(value.encode("utf-8")) for value in (raw_id, artifact_kind, source_path, reason) if value)
         )
 
-    def observe_profile_summary(self, unit: SchemaUnit, *, dominant_keys: Sequence[str]) -> None:
-        """Merge one profile observation into a disk-backed exact summary."""
+    def observe_profile_summary(
+        self, unit: SchemaUnit, *, dominant_keys: Sequence[str], schema_sample_count: int
+    ) -> None:
+        """Merge one profile observation into a disk-backed exact summary.
+
+        ``schema_sample_count`` must be the caller's already-known sample
+        count for ``unit`` (e.g. from :meth:`append_unit`'s return-side
+        effect). This method used to call ``len(unit.schema_samples)``
+        itself, which for a lazy full-corpus record stream forced a
+        complete, independent rescan of the backing file on top of the one
+        ``append_unit`` already performs.
+        """
         profile_tokens_json = _canonical_json(list(unit.profile_tokens))
         self._connection.execute(
             """
@@ -415,7 +503,7 @@ class ObservationJournal:
                 unit.artifact_kind,
                 profile_tokens_json,
                 _canonical_json(list(dominant_keys)[:20]),
-                len(unit.schema_samples),
+                schema_sample_count,
             ),
         )
         if unit.source_path:
@@ -1228,5 +1316,6 @@ __all__ = [
     "JournalMemberships",
     "ObservationTerminal",
     "ObservationTerminalStatus",
+    "RecordStreamDecodeError",
     "recover_stale_journals",
 ]
