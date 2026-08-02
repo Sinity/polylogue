@@ -766,6 +766,8 @@ def _record_outcome(summary: _IngestBatchSummary, ir: IngestRecordResult) -> Non
             summary.max_result_raw_id = ir.raw_id
     if ir.schema_drift is not None:
         summary.schema_drift_observations.append(ir.schema_drift)
+    if ir.sessions_unenriched:
+        summary.counts["sessions_unenriched"] += 1
 
 
 def _observe_current_rss(summary: _IngestBatchSummary) -> None:
@@ -1441,8 +1443,19 @@ def _resolve_codex_sidecar_snapshots(
             try:
                 discovered = cast("dict[str, dict[str, str]]", spec.discover_sidecars([Path(source_path)]))
             except Exception:
+                # polylogue-azf7: a transient discovery failure (disk I/O,
+                # malformed sidecar this instant) must NOT be persisted as a
+                # snapshot. read_earliest_history_sidecar_for_path freezes
+                # the FIRST row ever written for (origin, source_path)
+                # (polylogue-ih67 AC#3/4); persisting {} here would freeze a
+                # permanently empty snapshot and no later successful
+                # discovery would ever be recorded or replayed again. Use
+                # the empty result for THIS ingest only and leave no
+                # snapshot behind, so the next ingest attempt still sees
+                # "no snapshot yet" and retries discovery from disk.
                 logger.exception("codex sidecar discovery failed for %s", source_path)
-                discovered = {}
+                resolved[source_path] = {}
+                continue
             resolved[source_path] = discovered
             try:
                 write_history_sidecar(

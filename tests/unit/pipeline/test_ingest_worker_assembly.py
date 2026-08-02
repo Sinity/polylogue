@@ -135,6 +135,45 @@ def test_canonical_ingest_message_fallback_without_sidecars(blob_store: BlobStor
     assert title_source == TitleSource.HEURISTIC.value
 
 
+def test_on_demand_enrichment_failure_is_counted_not_only_logged(
+    blob_store: BlobStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sibling of polylogue-azf7's frozen-snapshot bug (ingest_worker.py path).
+
+    When ``_resolve_codex_sidecar_snapshots`` hasn't run for a record (e.g. a
+    direct ``ingest_record`` call bypassing the batch orchestrator, as here),
+    ``_enrich_parsed_sessions`` discovers sidecars on demand. A raised
+    exception there used to be swallowed into a log line with sessions
+    silently kept unenriched and no trace in the returned result. The record
+    still reports ``error is None`` (it succeeds), but must now flag
+    ``sessions_unenriched=True`` so a batch summary can count it.
+    """
+    from polylogue.sources import assembly_codex
+
+    session_id = "eeee1111-2222-3333-4444-555566667777"
+    content = _codex_stream(session_id, "please fix the ingest bug")
+    rollout = _codex_runtime_root(tmp_path, session_id, content)
+    (rollout.parents[2] / "session_index.jsonl").write_text(
+        json.dumps({"id": session_id, "thread_name": "Ingest bug hunt"}) + "\n",
+        encoding="utf-8",
+    )
+
+    def raising_discover(self: object, paths: object) -> object:
+        raise OSError("simulated transient disk error during on-demand discovery")
+
+    monkeypatch.setattr(assembly_codex.CodexAssemblySpec, "discover_sidecars", raising_discover)
+
+    record = _record(blob_store, content, source_path=str(rollout))
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
+
+    assert result.error is None
+    assert result.sessions, "expected the record to still materialize, just unenriched"
+    assert result.sessions_unenriched is True
+    # Unenriched: falls back to the parsed-content heuristic, not the
+    # sidecar thread name that discovery would otherwise have supplied.
+    assert result.sessions[0].parsed_session.title != "Ingest bug hunt"
+
+
 def test_runtime_schema_registry_singleton_is_race_safe_under_concurrent_first_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
