@@ -3638,6 +3638,10 @@ files:
     target: polylogue/storage/__init__.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/antigravity_phantom_sweep.py
+    loc: 133
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/archive_identity.py
     loc: 464
     target: TBD
@@ -3664,7 +3668,7 @@ files:
     target: polylogue/storage/artifacts/inspection.py
     owner: stable
   - path: polylogue/storage/artifacts/persistence.py
-    loc: 80
+    loc: 118
     target: polylogue/storage/artifacts/persistence.py
     owner: stable
   - path: polylogue/storage/artifacts/queries.py

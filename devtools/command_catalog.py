@@ -1016,6 +1016,46 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace antigravity-phantom-sweep",
+        "workspace",
+        "List antigravity-session rows that are brain-metadata phantom fragments.",
+        "devtools.antigravity_phantom_sweep_report",
+        use_when=(
+            "polylogue-eo81 / polylogue-msia: every antigravity-session row (116/116, "
+            "measured 2026-07-31) is a 1-message fragment materialized from a "
+            "*.md.metadata.json sidecar under ~/.gemini/antigravity/brain/, tagged "
+            "degraded:brain-metadata-fragment at ingest time (PR #1856). Real "
+            "conversation content lives in conversations/*.pb, acquired separately by "
+            "PR #3441. This read-only report lists the phantom candidates and their "
+            "raw payload; never mutates index.db or source.db."
+        ),
+        examples=(
+            "devtools workspace antigravity-phantom-sweep",
+            "devtools workspace antigravity-phantom-sweep --json",
+            "devtools workspace antigravity-phantom-sweep --limit 200 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
+        "workspace antigravity-phantom-purge-apply",
+        "workspace",
+        "Delete antigravity brain-metadata phantom sessions and reclassify their raw rows.",
+        "devtools.antigravity_phantom_purge_apply",
+        use_when=(
+            "polylogue-eo81 / polylogue-msia: act on the sweep's report by deleting the "
+            "flagged sessions (ArchiveStore.delete_sessions -- rebuild-safe, since PR "
+            "#3441's ingest-side content classifier already refuses "
+            "*.md.metadata.json as session content) and persisting a scoped "
+            "raw_artifacts classification for their raw rows "
+            "(materialize_artifact_observations_for_raw_ids). Default is dry-run; "
+            "--apply performs both writes."
+        ),
+        examples=(
+            "devtools workspace antigravity-phantom-purge-apply",
+            "devtools workspace antigravity-phantom-purge-apply --json",
+            "devtools workspace antigravity-phantom-purge-apply --apply",
+        ),
+    ),
+    CommandSpec(
         "workspace unknown-export-reclassification",
         "workspace",
         "Re-run the fixed browser-capture provider probe against stored unknown-export rows.",
