@@ -69,6 +69,12 @@ class LiveBatchMetrics:
     # batch's own file-count caps -- never a proxy for the full archive.
     new_sessions: tuple[tuple[str, str], ...] = ()
     updated_sessions: tuple[tuple[str, str], ...] = ()
+    # polylogue-11cg9: True when a declared ``max_pass_seconds`` budget cut
+    # this batch short -- some queued full-ingest paths were left entirely
+    # unattempted (not succeeded, not failed) so the single writer hold this
+    # batch took could not grow unbounded. They remain ordinary backlog for
+    # the next catch-up scan or watch tick.
+    time_budget_exceeded: bool = False
 
     def to_payload(self) -> dict[str, object]:
         read_amplification = (
@@ -124,6 +130,7 @@ class LiveBatchMetrics:
             "updated_sessions": [
                 {"source_name": source_name, "session_id": sid} for source_name, sid in self.updated_sessions
             ],
+            "time_budget_exceeded": self.time_budget_exceeded,
         }
 
 

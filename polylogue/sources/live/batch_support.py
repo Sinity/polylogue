@@ -187,6 +187,11 @@ class _FullIngestResult:
     # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
     # emit identity-scoped SSE events instead of an unscoped aggregate.
     changed_session_ids: tuple[str, ...] = ()
+    # polylogue-11cg9: True when a declared ``max_pass_seconds`` budget cut
+    # this group short of its full input. Paths left out of both
+    # ``succeeded`` and ``failed`` in that case were never attempted this
+    # pass -- they remain ordinary backlog for the caller's next tick.
+    time_budget_exceeded: bool = False
 
 
 def _full_ingest_result_from_summary(
@@ -201,6 +206,7 @@ def _full_ingest_result_from_summary(
     captured_content_hashes: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
+    time_budget_exceeded: bool = False,
 ) -> _FullIngestResult:
     error = getattr(summary, "wal_checkpoint_error", None) if summary is not None else None
     return _FullIngestResult(
@@ -230,6 +236,7 @@ def _full_ingest_result_from_summary(
         wal_checkpoint_mode=str(getattr(summary, "wal_checkpoint_mode", "none")) if summary is not None else "none",
         wal_checkpoint_error=str(error) if error is not None else None,
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
+        time_budget_exceeded=time_budget_exceeded,
     )
 
 
