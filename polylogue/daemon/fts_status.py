@@ -349,11 +349,15 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
         "invariant_ready": invariant_ready,
         "message_indexed_count": block_indexed_rows,
         "message_indexable_count": block_source_rows,
-        "coverage_pct": (
-            round((block_indexed_rows / block_source_rows) * 100, 1)
-            if block_source_rows > 0
-            else (100.0 if invariant_ready else 0.0)
-        ),
+        # source_rows == 0 means there is nothing to index -- a genuine,
+        # vacuously-true "fully covered" state. invariant_ready alone is
+        # NOT evidence of coverage: it only proves triggers/tables exist,
+        # so reporting 100.0 whenever it happens to be true (regardless of
+        # source_rows) fabricates a measured percentage for an unmeasured
+        # branch (polylogue-oitx). Report None ("not applicable / unknown")
+        # instead; consumers already render that explicitly (polylogue-roax,
+        # cli/commands/status.py's null-coverage handling).
+        "coverage_pct": (round((block_indexed_rows / block_source_rows) * 100, 1) if block_source_rows > 0 else None),
         "coverage_exact": effective_exact,
         "surfaces": {"messages_fts": blocks},
     }
@@ -384,7 +388,9 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
 def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object]:
     surfaces = {surface.name: _surface_payload(surface) for surface in snapshot.surfaces}
     messages = snapshot.messages
-    coverage_pct = round((messages.indexed_rows / messages.source_rows) * 100, 1) if messages.source_rows > 0 else 100.0
+    # source_rows == 0 is a zero-denominator case -- report unmeasured
+    # (None) rather than a fabricated 100.0 (polylogue-oitx).
+    coverage_pct = round((messages.indexed_rows / messages.source_rows) * 100, 1) if messages.source_rows > 0 else None
     return {
         "messages_ready": messages.ready,
         "session_work_events_ready": snapshot.session_work_events.ready,
@@ -514,10 +520,12 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
         "invariant_ready": invariant_ready,
         "message_indexed_count": message_indexed_rows,
         "message_indexable_count": message_source_rows,
+        # message_source_rows == 0 is a zero-denominator case -- report
+        # unmeasured (None) rather than deriving a fabricated 100.0/0.0 from
+        # invariant_ready, which only proves tables/triggers exist and is
+        # not evidence of coverage (polylogue-oitx).
         "coverage_pct": (
-            round((message_indexed_rows / message_source_rows) * 100, 1)
-            if message_source_rows > 0
-            else (100.0 if invariant_ready else 0.0)
+            round((message_indexed_rows / message_source_rows) * 100, 1) if message_source_rows > 0 else None
         ),
         "coverage_exact": False,
         "surfaces": surfaces,

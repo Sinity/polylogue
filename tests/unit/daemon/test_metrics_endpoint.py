@@ -960,6 +960,58 @@ class TestFormatMetricsReadsArchiveState:
         assert 'polylogue_embedding_status_state{status="none"} 1' in body
         assert "polylogue_embedding_retrieval_ready 0" in body
 
+    def test_embedding_coverage_percent_is_nan_when_no_sessions_are_eligible(self, tmp_path: Path) -> None:
+        """polylogue-oitx: sessions exist but none are eligible for embedding
+        (no ``embedding_status``/``message_embeddings_meta`` table and no
+        ``messages`` table to derive pending state from) -- a genuine
+        measurement gap, e.g. the embedding schema branch was never queried.
+        Before the fix this fabricated ``100.0`` (read as "fully embedded"
+        by a dashboard/alert) instead of the real "not yet measurable" state.
+        """
+        db = tmp_path / "archive.db"
+        with sqlite3.connect(db) as conn:
+            conn.executescript("""
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL DEFAULT 'codex-session',
+                    message_count INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO sessions VALUES ('s1', 'codex-session', 1);
+            """)
+
+        body = format_metrics(db)
+
+        assert 'polylogue_embedding_sessions{state="total"} 1' in body
+        assert 'polylogue_embedding_sessions{state="pending"} 0' in body
+        assert "polylogue_embedding_coverage_percent NaN" in body
+
+    def test_embedding_coverage_percent_reports_real_full_coverage(self, tmp_path: Path) -> None:
+        """A genuinely fully-embedded archive must still report a real 100.0,
+        not be swept into the unmeasured/NaN case by the zero-denominator fix.
+        """
+        db = tmp_path / "archive.db"
+        with sqlite3.connect(db) as conn:
+            conn.executescript("""
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    origin TEXT NOT NULL DEFAULT 'codex-session',
+                    message_count INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE embedding_status (
+                    session_id TEXT PRIMARY KEY,
+                    needs_reindex INTEGER NOT NULL,
+                    error_message TEXT
+                );
+                INSERT INTO sessions VALUES ('s1', 'codex-session', 1);
+                INSERT INTO embedding_status VALUES ('s1', 0, NULL);
+            """)
+
+        body = format_metrics(db)
+
+        assert 'polylogue_embedding_sessions{state="total"} 1' in body
+        assert 'polylogue_embedding_sessions{state="embedded"} 1' in body
+        assert "polylogue_embedding_coverage_percent 100.0" in body
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler integration — mirrors test_health_contract.py harness

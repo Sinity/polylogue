@@ -2104,7 +2104,12 @@ def test_fts_readiness_rejects_zero_count_ready_freshness_when_source_has_rows(t
 
     assert readiness["messages_ready"] is False
     assert readiness["invariant_ready"] is False
-    assert readiness["coverage_pct"] == 0.0
+    # source_rows==0 here is a zero-denominator (unmeasured) reading, not a
+    # genuine "0% indexed" measurement -- the freshness record's counts are
+    # untrusted precisely because the source actually has rows (see
+    # freshness_state below), so coverage_pct must report unmeasured (None)
+    # rather than fabricate 0.0 or 100.0 (polylogue-oitx).
+    assert readiness["coverage_pct"] is None
     surfaces = readiness["surfaces"]
     assert isinstance(surfaces, dict)
     messages = surfaces["messages_fts"]
