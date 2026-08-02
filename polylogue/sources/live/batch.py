@@ -2670,11 +2670,13 @@ class LiveBatchProcessor:
         sole source of truth for which raw is the accepted head.
 
         Only a ``revision_kind='full'`` accepted head is resynthesized. An
-        append-kind head's stored raw payload is not guaranteed
-        byte-identical to the live file at that offset (Codex append plans
-        inject a synthetic ``session_meta`` line ahead of the real delta via
-        ``_append_payload_for_provider``), so it cannot stand in for a
-        verified file-byte prefix -- and reusing a *stale* full baseline
+        append-kind head's stored raw payload is not reliably byte-identical
+        to the live file at that offset: historical Codex append rows (from
+        before polylogue-u19l) had a synthetic ``session_meta`` line
+        injected ahead of the real delta by ``_append_payload_for_provider``,
+        and this code path cannot cheaply tell an old row from a new one, so
+        it cannot stand in for a verified file-byte prefix -- and reusing a
+        *stale* full baseline
         behind an already-accepted append chain would create a second
         sibling append candidate at the same offset, making
         ``plan_revision_replay`` mark the whole chain ambiguous. Declining
@@ -2870,9 +2872,10 @@ class LiveBatchProcessor:
             return None
         if _file_observation(final_stat) != _file_observation(stat):
             return _DEFER_APPEND
-        append_payload = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
-        if append_payload is None:
+        append_result = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
+        if append_result is None:
             return None
+        append_payload, native_id_hint = append_result
         tail_hash = sha256(complete_payload).hexdigest()
         return _AppendPlan(
             path=path,
@@ -2891,42 +2894,64 @@ class LiveBatchProcessor:
             ctime_ns=stat.st_ctime_ns,
             accepted_prefix_hash=accepted_prefix_hash,
             authority_bytes_read=last_complete_newline,
+            native_id_hint=native_id_hint,
         )
 
-    def _append_payload_for_provider(self, path: Path, source_name: str, payload: bytes) -> bytes | None:
+    def _append_payload_for_provider(
+        self, path: Path, source_name: str, payload: bytes
+    ) -> tuple[bytes, str | None] | None:
+        """Return the literal append payload plus an optional identity hint.
+
+        polylogue-u19l: this used to prepend a synthetic ``session_meta``
+        line ahead of ``payload`` for Codex before hashing/storing it, so the
+        raw row could self-describe its provider session id on independent
+        replay. That made the stored blob architecturally never a literal
+        byte-slice of the live file, which permanently defeats a live-source
+        byte-identity re-verification check (see
+        ``storage/raw_retention.py``'s live-source-verification plan) even
+        when the live file is completely untouched.
+
+        Now the identity is resolved here exactly as before, but returned as
+        a sidecar hint instead of being spliced into the hashed bytes.
+        Callers persist it to ``raw_sessions.native_id`` (``_AppendPlan.
+        native_id_hint`` -> ``append_ingest.py``) and pass it back as the
+        parser's ``fallback_id`` at replay time
+        (``revision_backfill.parse_retained_raw_sessions``), which is exactly
+        equivalent for Codex: ``_parse_records`` only ever falls back to
+        ``fallback_id`` when the payload carries no ``session_meta`` record
+        of its own -- true for every append delta -- so the resolved
+        identity still wins in precisely the same cases it used to.
+
+        Historical rows written before this change still carry the
+        synthetic header in their stored bytes; this function only affects
+        NEW writes going forward, per polylogue-u19l's scope.
+        """
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         if provider is Provider.CODEX:
             identity = self._existing_provider_session_id(path)
             if identity is None:
                 return None
-            session_meta = json_dumps(
-                {"type": "session_meta", "payload": {"id": identity}},
-                separators=(",", ":"),
-            ).encode()
-            # Declared, evidenced transform (mission item: fix or log the
-            # Codex synthetic-header injection, previously silent). A Codex
-            # append-mode delta is the file's tail bytes only -- the real
-            # `session_meta` header that carries native-session identity was
-            # already consumed by an earlier full/append observation and is
-            # not part of this delta. Without re-synthesizing it here, the
-            # delta payload would parse with no identity at all and either
-            # fall back to a path-derived id (breaking continuity with the
-            # session this file's earlier bytes already established) or be
-            # rejected outright. `identity` is recovered from durable
+            # A Codex append-mode delta is the file's tail bytes only -- the
+            # real `session_meta` header that carries native-session identity
+            # was already consumed by an earlier full/append observation and
+            # is not part of this delta. `identity` is recovered from durable
             # evidence (`_existing_provider_session_id`: the archived
             # session's own native id, or this file's own previously-read
-            # `session_meta` line) before hashing, never guessed.
+            # `session_meta` line) before hashing, never guessed, and is
+            # returned as a sidecar hint instead of being spliced into the
+            # hashed bytes (polylogue-u19l) -- see this method's docstring.
             logger.info(
-                "codex_append_synthetic_session_meta_injected",
+                "codex_append_identity_resolved_as_sidecar_hint",
                 path=str(path),
                 identity=identity,
                 reason="append-mode delta lacks its own session_meta header; "
-                "identity recovered from archived session / prior session_meta line",
+                "identity recovered from archived session / prior session_meta "
+                "line and carried as native_id_hint, not spliced into hashed bytes",
             )
-            return session_meta + b"\n" + payload
+            return payload, identity
         if provider is Provider.CLAUDE_CODE and not self._claude_code_tail_matches_existing_identity(path, payload):
             return None
-        return payload
+        return payload, None
 
     def _existing_provider_session_id(self, path: Path) -> str | None:
         identity = self._existing_archive_session_native_id(path)

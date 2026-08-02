@@ -452,10 +452,21 @@ def write_raw_payload(
     acquired_at_ms: int,
     source_index: int = 0,
     raw_id: str | None = None,
+    native_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     revision: RawRevisionEnvelope | None = None,
 ) -> str:
-    """Commit raw bytes before attempting to parse or index them."""
+    """Commit raw bytes before attempting to parse or index them.
+
+    ``native_id``, when known, records the provider session identity this
+    raw evidence belongs to (polylogue-u19l: used by Codex append-mode live
+    captures, whose record stream has no ``session_meta`` of its own to
+    self-describe it). It is sidecar metadata, not part of the hashed
+    payload, so replay (``sources/revision_backfill.py``'s
+    ``parse_retained_raw_sessions``) can recover the same identity it was
+    written with without the identity ever having been spliced into the
+    stored bytes.
+    """
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
     if blob_publication_receipt_id is None:
@@ -471,6 +482,7 @@ def write_raw_payload(
         payload=payload,
         acquired_at_ms=acquired_at_ms,
         raw_id=raw_id,
+        native_id=native_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
         manage_transaction=True,
@@ -1208,6 +1220,26 @@ def raw_revision_descriptor(
         RawRevisionKind(str(row[4])),
         int(row[5]),
     )
+
+
+def raw_native_id(store: RawRevisionGovernanceHost, raw_id: str) -> str | None:
+    """Return the identity hint recorded for a raw revision, if any.
+
+    polylogue-u19l: populated for Codex append-mode captures whose own
+    record stream carries no ``session_meta`` of its own (an append delta),
+    so replay can recover the provider session identity without it having
+    been spliced into the hashed/stored payload bytes (see
+    ``write_raw_payload``'s ``native_id`` and ``sources/live/batch.py``'s
+    ``_append_payload_for_provider``). ``None`` for every raw row that
+    doesn't carry one, including all historical rows written before this.
+    """
+    row = (
+        store._ensure_source_conn().execute("SELECT native_id FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    )
+    if row is None:
+        return None
+    value = row[0]
+    return value if isinstance(value, str) and value.strip() else None
 
 
 @contextmanager

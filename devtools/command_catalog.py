@@ -917,6 +917,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-live-source-reconciliation",
+        "workspace",
+        "Classify quarantined raw evidence against its live source file's current bytes.",
+        "devtools.raw_live_source_reconciliation_report",
+        use_when=(
+            "polylogue-u19l: before deciding whether to act on the ~59GB of quarantined "
+            "raw_sessions rows, get a read-only classification of how much of it is still "
+            "directly re-verifiable against still-present live source files -- no "
+            "revision-graph reasoning required. Never mutates authority state or blobs; "
+            "acting on 'reconcilable' rows is a separate, explicitly operator-authorized step."
+        ),
+        examples=(
+            "devtools workspace raw-live-source-reconciliation",
+            "devtools workspace raw-live-source-reconciliation --json",
+            "devtools workspace raw-live-source-reconciliation --limit 500 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
         "workspace temporal-read-profile",
         "workspace",
         "Measure read --view temporal phase timings on the active archive.",

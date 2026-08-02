@@ -127,6 +127,14 @@ class _AppendPlan:
     ctime_ns: int | None = None
     accepted_prefix_hash: str | None = None
     authority_bytes_read: int = 0
+    # polylogue-u19l: the resolved provider session identity for this append,
+    # when the provider's own record stream cannot self-describe it (Codex
+    # append deltas have no ``session_meta`` record of their own). Carried as
+    # sidecar metadata -- persisted to ``raw_sessions.native_id`` and used to
+    # override the replay ``fallback_id`` -- instead of being injected into
+    # the hashed/stored payload bytes, so the stored blob stays a literal
+    # slice of the live file. ``None`` for providers/plans that don't need it.
+    native_id_hint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

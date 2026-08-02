@@ -1624,8 +1624,12 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
 
     assert isinstance(plan, _AppendPlan)
     assert plan.start_offset == len(original)
-    assert plan.payload.startswith(b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n')
-    assert plan.payload.endswith(appended)
+    # polylogue-u19l: the stored/hashed payload is now the literal live-file
+    # bytes -- no synthetic session_meta header spliced in. The identity is
+    # carried instead as a sidecar hint (persisted to raw_sessions.native_id
+    # and used to override the parser's fallback_id on replay).
+    assert plan.payload == appended
+    assert plan.native_id_hint == "019e309f-7614-7381-a8ac-f9080f304ee6"
 
 
 def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Path) -> None:
@@ -1697,8 +1701,9 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
     plan = processor._append_plan(path)
 
     assert isinstance(plan, _AppendPlan)
-    assert plan.payload.startswith(b'{"type":"session_meta","payload":{"id":"019e309f-7614-7381-a8ac-f9080f304ee6"}}\n')
-    assert plan.payload.endswith(appended)
+    # polylogue-u19l: literal live-file bytes, identity carried as a hint.
+    assert plan.payload == appended
+    assert plan.native_id_hint == "019e309f-7614-7381-a8ac-f9080f304ee6"
     assert processor._latest_raw_fingerprint(path) == raw_id
     with cursor._connect() as conn:
         assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone() is None
@@ -1883,8 +1888,9 @@ def test_live_append_chain_survives_post_ingest_compaction(
     assert results[0].full_file_count == 1
     assert results[0].succeeded_file_count == 1
     assert all(result.append_file_count == 1 for result in results[1:])
-    append_identity = b'{"type":"session_meta","payload":{"id":"append-v1"}}\n'
-    assert published_payloads == [payload, *(append_identity + chunk for chunk in append_chunks)]
+    # polylogue-u19l: append payloads are now published as literal live-file
+    # bytes -- no synthetic session_meta header spliced in ahead of them.
+    assert published_payloads == [payload, *append_chunks]
     if not protect_chain:
         # Accepted index receipts make later appends independent of whether
         # the compactor currently retains their predecessor payloads.
@@ -2050,8 +2056,9 @@ def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
     assert isinstance(append_blob_hash, str)
     from polylogue.storage.blob_store import BlobStore
 
-    append_identity = b'{"type":"session_meta","payload":{"id":"hot-growth"}}\n'
-    assert BlobStore(tmp_path / "blob").read_all(append_blob_hash.lower()) == (append_identity + appended_during_parse)
+    # polylogue-u19l: append payloads are stored as literal live-file bytes --
+    # no synthetic session_meta header spliced in ahead of them.
+    assert BlobStore(tmp_path / "blob").read_all(append_blob_hash.lower()) == appended_during_parse
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
             ("captured",),
