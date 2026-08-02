@@ -166,7 +166,12 @@ def test_generic_sqlite_lookalike_is_not_claimed_as_hermes(blob_store: BlobStore
 
     observation = inspect_raw_artifact(_record(blob_store, snapshot, raw_id="hermes:profile-a:lookalike"))
 
-    assert observation.support_status is ArtifactSupportStatus.DECODE_FAILED
-    assert observation.artifact_kind == "unknown"
+    # #3576 (polylogue-hbtj2) added a shared magic-byte chokepoint that
+    # positively refuses a recognized-but-unclaimed binary payload before any
+    # JSON/JSONL decode is attempted -- a generic SQLite lookalike is now
+    # classified as a recognized (if unparsed) binary database, not merely an
+    # incidental decode failure the old code fell through to.
+    assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+    assert observation.artifact_kind == "binary_database"
     assert observation.resolved_package_version is None
     assert observation.classification_reason != "Hermes state.db SQLite archive marker"

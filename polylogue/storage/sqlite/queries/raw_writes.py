@@ -45,8 +45,8 @@ async def save_raw_session(
             validated_at_ms, validation_status, validation_error, validation_drift_count,
             validation_mode, detection_warnings_json, logical_source_key, revision_kind,
             source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
-            append_end_offset, acquisition_generation, revision_authority
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            append_end_offset, acquisition_generation, revision_authority, revision_authority_evidence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.raw_id,
@@ -77,6 +77,16 @@ async def save_raw_session(
             record.revision.append_end_offset if record.revision else None,
             record.revision.acquisition_generation if record.revision else None,
             record.revision.authority.value if record.revision else "quarantined",
+            # revision_authority_evidence (migration 017) is never computed at
+            # initial-write time -- it is only ever populated later by a
+            # dedicated, explicitly operator-invoked maintenance actuator
+            # (raw_live_source_reconciliation_apply.py /
+            # raw_append_chain_backfill_apply.py) re-verifying the raw
+            # against still-present live source bytes. This is `INSERT OR
+            # IGNORE`, so binding NULL here for a brand-new row is correct
+            # and a duplicate-key insert attempt never overwrites an
+            # already-recorded verification verdict.
+            None,
         ),
     )
     inserted = bool(cursor.rowcount > 0)

@@ -4444,7 +4444,10 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
         await archive.close()
 
 
-@pytest.mark.frozen_clock_modules("polylogue.storage.sqlite.archive_tiers.archive")
+@pytest.mark.frozen_clock_modules(
+    "polylogue.storage.sqlite.archive_tiers.archive",
+    "polylogue.storage.sqlite.archive_tiers.revision_governance",
+)
 async def test_archive_tiers_api_raw_artifacts_read_source_tier(tmp_path: Path, frozen_clock: FrozenClock) -> None:
     """Raw artifact facade reads ``source.db`` rows and their parse-lifecycle timestamp.
 

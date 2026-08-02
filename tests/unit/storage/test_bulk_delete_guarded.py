@@ -224,7 +224,7 @@ def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_p
             """
             INSERT INTO delegation_facts (
                 delegation_id, parent_session_id, mapping_state, result_status, parent_origin
-            ) VALUES (?, ?, 'mapped', 'ok', 'codex-session')
+            ) VALUES (?, ?, 'resolved', 'ok', 'codex-session')
             """,
             (f"deleg-{session_ids[0]}", session_ids[0]),
         )
