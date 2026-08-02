@@ -147,6 +147,8 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy demo-tour-freshness` | Verify a freshly-run demo tour matches the committed docs/examples/demo-tour/ evidence artifacts. |
 | `devtools lab policy docs-drift` | Verify checkable factual claims in the Reference-docs table against current source. |
 | `devtools lab policy insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
+| `devtools lab policy position-derived-identity` | Verify no parser mints cross-revision comparison identity from positional/index data. |
+| `devtools lab policy raw-payload-hash-purity` | Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
 | `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools lab probe bead-pr-reconciliation` | Surface beads whose referenced PR merged but the bead is still open. |

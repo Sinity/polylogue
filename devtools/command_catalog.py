@@ -1475,6 +1475,43 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "lab policy raw-payload-hash-purity",
+        "verification lab",
+        "Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing.",
+        "devtools.verify_raw_payload_hash_purity",
+        use_when=(
+            "Prevent a regression of polylogue-u19l's confirmed bug: sources/live/batch.py used to prepend a "
+            "synthetic session_meta header onto every Codex append capture before hashing/storing it, so the "
+            "stored blob was never a literal byte-slice of the live file, permanently defeating live-source "
+            "byte-identity verification for ~59GB of raw rows. Statically forbids concatenating a synthesized "
+            "literal (bytes/str constant, f-string, json.dumps()/.encode() result) onto captured bytes anywhere "
+            "in the raw-capture write-path modules (WRITE_PATH_MODULES)."
+        ),
+        examples=("devtools lab policy raw-payload-hash-purity", "devtools lab policy raw-payload-hash-purity --json"),
+    ),
+    CommandSpec(
+        "lab policy position-derived-identity",
+        "verification lab",
+        "Verify no parser mints cross-revision comparison identity from positional/index data.",
+        "devtools.verify_position_derived_identity",
+        use_when=(
+            "Prevent a regression of polylogue-hith/qkuq's already-fixed attachment-id bug (a synthetic id "
+            "seeded partly by array index was unstable across export vintages that reorder/insert entries, "
+            "manufacturing false divergence in revision-authority membership comparison) and catch new "
+            "occurrences of the same shape (polylogue-gysk3 found the identical hazard still live for "
+            "provider_message_id, the sole input to message_identity_hash). Statically scans "
+            "polylogue/sources/parsers/ for an identity-bearing field constructed from an f-string/format/"
+            "concatenation referencing a loop index/position variable, either inline or via a local variable."
+        ),
+        examples=(
+            "devtools lab policy position-derived-identity",
+            "devtools lab policy position-derived-identity --json",
+            "devtools lab policy position-derived-identity --ack "
+            "'polylogue/sources/parsers/foo.py:parse:provider_message_id' "
+            "--reason 'tracked in polylogue-xxxx, not fixed inline' --ref polylogue-xxxx",
+        ),
+    ),
+    CommandSpec(
         "lab policy backlog-hygiene",
         "verification lab",
         "Verify Beads backlog structure invariants (.beads/issues.jsonl).",
