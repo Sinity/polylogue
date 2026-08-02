@@ -538,7 +538,7 @@ files:
     target: polylogue/archive/resume_routing.py
     owner: stable
   - path: polylogue/archive/revision_authority.py
-    loc: 274
+    loc: 357
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
@@ -947,7 +947,7 @@ files:
     target: polylogue/cli/commands/maintenance/_backup_plan.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_gc.py
-    loc: 161
+    loc: 162
     target: polylogue/cli/commands/maintenance/_blob_gc.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_integrity.py
@@ -2226,6 +2226,10 @@ files:
   - path: polylogue/maintenance/raw_live_source_reconciliation_apply.py
     loc: 286
     target: polylogue/maintenance/raw_live_source_reconciliation_apply.py
+    owner: stable
+  - path: polylogue/maintenance/raw_membership_writeback_apply.py
+    loc: 220
+    target: polylogue/maintenance/raw_membership_writeback_apply.py
     owner: stable
   - path: polylogue/maintenance/rebuild_index.py
     loc: 1093
@@ -3926,7 +3930,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/message_type_backfill.py
-    loc: 244
+    loc: 252
     target: polylogue/storage/message_type_backfill.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3950,6 +3954,10 @@ files:
     owner: stable
   - path: polylogue/storage/raw_authority.py
     loc: 2295
+    target: TBD
+    owner: storage-domain
+  - path: polylogue/storage/raw_membership_writeback.py
+    loc: 124
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
@@ -4254,7 +4262,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2909
+    loc: 2917
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -4266,7 +4274,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 515
+    loc: 538
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
