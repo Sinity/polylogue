@@ -489,7 +489,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -577,8 +577,8 @@ def test_source_publication_backfill_requires_verified_backup(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 9
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 18
-        assert result.applied_versions == (10, 11, 12, 13, 14, 15, 16, 17, 18)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 19
+        assert result.applied_versions == (10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {
@@ -732,8 +732,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 18
-        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 19
+        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -894,7 +894,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -952,7 +952,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """
@@ -1021,13 +1021,14 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 13
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 18
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 19
         # v13 -> current also picks up migrations 015 (polylogue-hord), 016
-        # (polylogue-buns), and 017 (polylogue-byw3y), all added after this
-        # test -- a v13 fixture migrating to "current" is exactly the shape a
-        # real archive frozen at v13 would go through.
-        assert result.applied_versions == (14, 15, 16, 17, 18)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 18
+        # (polylogue-buns), 017 (polylogue-byw3y), 018 (polylogue-u19l), and
+        # 019 (polylogue-lb39z), all added after this test -- a v13 fixture
+        # migrating to "current" is exactly the shape a real archive frozen
+        # at v13 would go through.
+        assert result.applied_versions == (14, 15, 16, 17, 18, 19)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 19
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" in indexes_after
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
@@ -1088,9 +1089,9 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 14
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 18
-        assert result.applied_versions == (15, 16, 17, 18)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 18
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 19
+        assert result.applied_versions == (15, 16, 17, 18, 19)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 19
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
         plan = conn.execute(

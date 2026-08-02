@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 18
+SOURCE_SCHEMA_VERSION = 19
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -162,6 +162,29 @@ CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_raw_live_source_reconciliation_receipts_compared_at
 ON raw_live_source_reconciliation_receipts(compared_at_ms);
+
+-- v19 (polylogue-lb39z, Phase 1 item 2): one immutable receipt per
+-- raw_sessions row promoted out of quarantine because its membership
+-- pipeline verdict (raw_session_memberships.decision) was already decided
+-- but never written back to revision_authority. See
+-- polylogue.storage.raw_membership_writeback +
+-- polylogue.maintenance.raw_membership_writeback_apply.
+CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
+    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    logical_source_key          TEXT NOT NULL,
+    provider_session_id         TEXT NOT NULL,
+    membership_decision         TEXT NOT NULL CHECK(membership_decision IN (
+                                    'applied', 'superseded_equivalent', 'superseded_prefix'
+                                )),
+    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
+    tool_version                TEXT NOT NULL,
+    backup_manifest_path        TEXT NOT NULL,
+    detail                      TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_membership_writeback_receipts_promoted_at
+ON raw_membership_writeback_receipts(promoted_at_ms);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither
