@@ -179,6 +179,54 @@ def test_archive_probe_exceptions_log_and_fail_toward_work(
     assert all(value is True for value in warning_exc_info)
 
 
+def test_source_tier_attach_failure_fails_open_not_closed(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """polylogue-co8b regression: a broken ``source.db`` must surface as
+    needs-work, not as a silent "nothing to do".
+
+    ``index.db`` (the derived tier) never carries ``raw_sessions`` itself, so
+    every embed/insights probe must attach ``source.db`` through
+    ``_schema_archive_session_ids_for_source_paths`` to resolve a source path
+    to its session ids. Before the fix, a ``sqlite3.Error`` from that attach
+    (e.g. a corrupt/unreadable ``source.db``) was swallowed *inside* that
+    helper and turned into a clean ``{path: []}`` result -- the outer probes
+    (``_archive_insights_check`` etc.) never saw an exception, computed "no
+    sessions for this path", and reported no work needed. Real pending
+    embedding/insights work for that path was silently dropped with no
+    ``convergence_debt`` row and no retry, forever, until the daemon
+    restarted onto a healthy ``source.db``.
+
+    This drives the real production convergence stage (``make_insights_stage``
+    from ``daemon/convergence_stages.py``), not a mock of the attach helper,
+    so it fails if a future change reintroduces the swallow anywhere in the
+    real call path.
+    """
+    archive_db = tmp_path / "index.db"
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+
+    # Corrupt source.db in place: the file still exists (passing the
+    # `.exists()` gate in `_ensure_source_tier_attached`) but ATTACH DATABASE
+    # against it raises `sqlite3.DatabaseError` ("file is not a database").
+    source_db = archive_db.with_name("source.db")
+    source_db.write_bytes(b"not a real sqlite database file, deliberately corrupted for polylogue-co8b")
+
+    with pytest.raises(sqlite3.Error):
+        with sqlite3.connect(archive_db) as conn:
+            stages._schema_archive_session_ids_for_source_paths(conn, [source_path], archive_root=tmp_path)
+
+    stage = make_insights_stage(archive_db)
+    with caplog.at_level("WARNING"):
+        assert stage.check(source_path) is True
+        assert stage.check_many is not None
+        assert stage.check_many([source_path]) == {source_path}
+
+    assert "convergence freshness probe" in caplog.text
+    assert "treating as needs-work" in caplog.text
+
+
 def _main_db_path(conn: sqlite3.Connection) -> Path:
     row = conn.execute("PRAGMA database_list").fetchone()
     return Path(str(row[2]))

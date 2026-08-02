@@ -1333,15 +1333,23 @@ def _schema_archive_session_ids_for_source_paths(
     raw_table = "raw_sessions"
     if not _table_exists(conn, "raw_sessions"):
         raw_table = "source_tier.raw_sessions"
-        try:
-            if not _ensure_source_tier_attached(conn, archive_root=archive_root):
-                return {path: [] for path in normalized_paths}
-        except sqlite3.Error:
-            # Swallowed here, one level below the stage's own check/execute
-            # logging (the 1xc.11 fix), so the outer probe never sees this
-            # failure and can't log it either.
-            logger.warning("archive convergence: failed to attach source tier", exc_info=True)
+        if not _ensure_source_tier_attached(conn, archive_root=archive_root):
             return {path: [] for path in normalized_paths}
+        # Deliberately let sqlite3.Error from the attach above propagate
+        # instead of swallowing it into an empty result here (polylogue-co8b):
+        # every caller of this helper (_archive_embed_check[_many],
+        # _archive_insights_check[_many], _sinex_session_ids_for_paths) wraps
+        # its own call in a broad try/except that fails OPEN -- "treating as
+        # needs-work" -- matching every other freshness probe in this file.
+        # Swallowing the error here instead made the outer probe see a clean
+        # `{path: []}` result and conclude there was nothing to do, silently
+        # disabling embed/insights convergence for the affected source paths
+        # with no convergence_debt row and no counter, only a log line. The
+        # existing false_means_pending -> convergence_debt retry path already
+        # bounds the resulting "fires every tick" concern: a genuinely
+        # persistent attach failure surfaces as repeated execute() failures,
+        # which convergence_debt retries with its own backoff rather than
+        # busy-looping here.
     result: dict[Path, list[str]] = {path: [] for path in normalized_paths}
     paths_by_text = {str(path): path for path in normalized_paths}
     placeholders = ", ".join("?" for _ in normalized_paths)
