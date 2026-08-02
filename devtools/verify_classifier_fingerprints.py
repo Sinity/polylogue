@@ -23,6 +23,16 @@ already indexed under the old classification stayed silently stale with no
 signal that a reparse was ever needed (see ``polylogue-gucv``, ``-9ykn``,
 ``-zqph``).
 
+A classification decision does not have to live in a function body at all.
+``polylogue/sources/origin_specs.py``'s ``OriginSpec.artifact_rules`` is a
+declarative table -- each ``OriginArtifactRule`` names a ``parse_policy``
+(``"session"`` / ``"fact"`` / ``"raw-only"``) for a native path family. PR
+#3088 changed ``parse_as_session`` for four Claude Workflow artifact kinds by
+editing this table, not a function, with no ``INDEX_SCHEMA_VERSION`` bump
+(retroactively declared by polylogue-lzh8 as the missing v48 delta). A lint
+that only fingerprints function ASTs is structurally blind to this table, so
+it is fingerprinted too (polylogue-qs4b).
+
 What this lint checks
 ----------------------
 
@@ -30,12 +40,20 @@ What this lint checks
    ``polylogue/archive/artifact_taxonomy/`` whose name matches
    ``looks_like*`` or ``classify_artifact*`` -- the naming convention this
    codebase already uses for a payload-shape/acceptance decision (grepped
-   directly; see the functions this module's own tests pin).
+   directly; see the functions this module's own tests pin) -- **and** every
+   ``OriginArtifactRule`` entry in ``polylogue.sources.origin_specs.ORIGIN_SPECS``,
+   keyed by ``origin:kind``.
 
-2. Fingerprint each one: a SHA-256 hash of its AST (leading docstring
-   excluded, line/column attributes excluded by construction), so
-   reformatting, comment edits, and docstring rewrites do not trip the gate,
-   but any change to the function's actual logic does.
+2. Fingerprint each one:
+
+   * A function gets a SHA-256 hash of its AST (leading docstring excluded,
+     line/column attributes excluded by construction), so reformatting,
+     comment edits, and docstring rewrites do not trip the gate, but any
+     change to the function's actual logic does.
+   * An ``OriginArtifactRule`` gets a SHA-256 hash of its classification-
+     relevant fields (``path_pattern``, ``parse_policy``, ``parser_path``,
+     ``coverage_role``, ``path_suffixes``) as canonical JSON. ``fidelity_note``
+     is prose documentation, excluded the same way a docstring is.
 
 3. Compare against the committed manifest
    (``docs/plans/classifier-fingerprints.json``). A function whose current
@@ -56,27 +74,31 @@ What this lint checks
      acceptance criteria call for when a reparse is judged unnecessary --
      it must still be an explicit, attributable decision, not silence.
 
-4. A function that disappears from source without its manifest entry being
-   removed (an orphaned entry), or a newly added classifier function with no
-   manifest entry at all, both fail -- the manifest must track exactly the
-   live set of classification-relevant functions.
+4. A function or artifact rule that disappears from source without its
+   manifest entry being removed (an orphaned entry), or a newly added one with
+   no manifest entry at all, both fail -- the manifest must track exactly the
+   live set of classification-relevant surfaces.
 
 Scope and false-positive discipline
 ------------------------------------
 
-Only functions matching the ``looks_like*`` / ``classify_artifact*`` naming
-convention under the two classification directories are in scope. An
-unrelated refactor elsewhere in ``polylogue/sources/`` (a parser's message
-mapping, cost accounting, attachment handling, ...) never touches a function
-this lint fingerprints, so it never fires. Renaming, reformatting, or
-re-documenting a classifier function without changing its AST shape also
-does not fire (docstrings are stripped before hashing; ``ast.dump`` already
-omits source positions). The known residual false-positive source is a
-behaviour-preserving *local* refactor inside a classifier function itself
-(e.g. renaming a local variable) -- accepted deliberately, because these
-functions are small, rarely touched, and the cost of one extra
-``--ack``/``--semantic-reparse`` run is far lower than another silent
-phantom-classification incident.
+In scope: functions matching the ``looks_like*`` / ``classify_artifact*``
+naming convention under the two classification directories, and every
+``OriginArtifactRule`` reachable from ``ORIGIN_SPECS``. An unrelated refactor
+elsewhere in ``polylogue/sources/`` (a parser's message mapping, cost
+accounting, attachment handling, ...) never touches either surface, so it
+never fires. Renaming, reformatting, or re-documenting a classifier function
+without changing its AST shape also does not fire (docstrings are stripped
+before hashing; ``ast.dump`` already omits source positions); editing an
+artifact rule's ``fidelity_note`` alone does not fire for the same reason.
+Adding a brand-new ``OriginSpec`` (a new origin, no rules yet) does not fire
+either -- an empty ``artifact_rules`` tuple contributes nothing to fingerprint.
+The known residual false-positive sources are a behaviour-preserving *local*
+refactor inside a classifier function itself (e.g. renaming a local variable),
+and reordering an artifact rule's ``path_suffixes`` tuple (JSON-serialized as
+a list, so order is part of the hash) -- both accepted deliberately, because
+the cost of one extra ``--ack``/``--semantic-reparse`` run is far lower than
+another silent phantom-classification incident.
 
 Wired into ``devtools verify`` directly (like the schema-versioning lane) --
 static, archive-independent, sub-second.
@@ -95,6 +117,7 @@ from pathlib import Path
 from typing import Literal, TypedDict
 
 from devtools import repo_root as _get_root
+from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule, OriginSpec
 from polylogue.storage.sqlite.lifecycle import INDEX_DELTA_DECLARATIONS, DerivedDeltaClass
 
 ROOT = _get_root()
@@ -102,6 +125,7 @@ CLASSIFICATION_ROOTS: tuple[Path, ...] = (
     ROOT / "polylogue" / "sources",
     ROOT / "polylogue" / "archive" / "artifact_taxonomy",
 )
+ORIGIN_SPECS_PATH = ROOT / "polylogue" / "sources" / "origin_specs.py"
 MANIFEST_PATH = ROOT / "docs" / "plans" / "classifier-fingerprints.json"
 
 _NAME_PATTERN = re.compile(r"^(looks_like\w*|classify_artifact\w*)$")
@@ -161,6 +185,52 @@ def collect_classifier_functions(roots: tuple[Path, ...] = CLASSIFICATION_ROOTS)
                         fingerprint=_fingerprint_function(node),
                     )
     return found
+
+
+def _fingerprint_artifact_rule(rule: OriginArtifactRule) -> str:
+    """Hash an ``OriginArtifactRule``'s classification-relevant fields.
+
+    ``fidelity_note`` is prose documentation and is excluded, mirroring
+    docstring exclusion for functions. Everything else here decides how a
+    native artifact path is admitted and dispatched: changing any of it for
+    an identical path is the same class of undeclared drift a function
+    fingerprint catches.
+    """
+    payload = {
+        "path_pattern": rule.path_pattern,
+        "parse_policy": rule.parse_policy,
+        "parser_path": rule.parser_path,
+        "coverage_role": rule.coverage_role,
+        "path_suffixes": list(rule.path_suffixes),
+    }
+    dump = json.dumps(payload, sort_keys=True)
+    return hashlib.sha256(dump.encode("utf-8")).hexdigest()
+
+
+def collect_origin_artifact_rules(
+    specs: tuple[OriginSpec, ...] = ORIGIN_SPECS,
+) -> dict[str, ClassifierFunction]:
+    """Return every declared ``OriginArtifactRule``, keyed by ``origin:kind``."""
+    found: dict[str, ClassifierFunction] = {}
+    rel = ORIGIN_SPECS_PATH.relative_to(ROOT).as_posix()
+    for spec in specs:
+        for rule in spec.artifact_rules:
+            qualname = f"{rel}:artifact_rule:{spec.origin.value}:{rule.kind}"
+            found[qualname] = ClassifierFunction(
+                qualname=qualname,
+                path=ORIGIN_SPECS_PATH,
+                lineno=0,
+                fingerprint=_fingerprint_artifact_rule(rule),
+            )
+    return found
+
+
+def collect_all_classification_surfaces(
+    roots: tuple[Path, ...] = CLASSIFICATION_ROOTS,
+    specs: tuple[OriginSpec, ...] = ORIGIN_SPECS,
+) -> dict[str, ClassifierFunction]:
+    """Every fingerprinted classification surface: functions plus artifact rules."""
+    return {**collect_classifier_functions(roots), **collect_origin_artifact_rules(specs)}
 
 
 CoveredByKind = Literal["semantic_reparse_version", "acknowledged_safe"]
@@ -276,7 +346,7 @@ def compute_drift_report(
     manifest: dict[str, ManifestEntry] | None = None,
 ) -> DriftReport:
     if current is None:
-        current = collect_classifier_functions()
+        current = collect_all_classification_surfaces()
     if manifest is None:
         manifest = load_manifest()
 
@@ -309,14 +379,14 @@ def compute_drift_report(
 
 def _format_report(report: DriftReport) -> str:
     lines = [
-        f"classification functions missing a manifest entry: {len(report.missing)}",
-        f"stale manifest entries (function no longer exists): {len(report.orphaned)}",
-        f"classification functions with undeclared fingerprint drift: {len(report.drifted)}",
+        f"classification surfaces missing a manifest entry: {len(report.missing)}",
+        f"stale manifest entries (surface no longer exists): {len(report.orphaned)}",
+        f"classification surfaces with undeclared fingerprint drift: {len(report.drifted)}",
         f"manifest entries with an invalid covered_by declaration: {len(report.invalid_covered_by)}",
     ]
     if report.missing:
         lines.append("")
-        lines.append("New classification functions with no manifest entry:")
+        lines.append("New classification surfaces (function or artifact rule) with no manifest entry:")
         for qualname in report.missing:
             lines.append(f"  {qualname}")
         lines.append(
@@ -324,14 +394,14 @@ def _format_report(report: DriftReport) -> str:
         )
     if report.orphaned:
         lines.append("")
-        lines.append("Manifest entries whose function no longer exists (remove them):")
+        lines.append("Manifest entries whose surface no longer exists (remove them):")
         for qualname in report.orphaned:
             lines.append(f"  {qualname}")
         lines.append(f"  Fix: edit {MANIFEST_PATH.relative_to(ROOT)} and delete the stale entry.")
     if report.drifted:
         lines.append("")
         lines.append(
-            "Classification functions whose logic changed without a declared reparse "
+            "Classification surfaces whose logic changed without a declared reparse "
             "or acknowledgment (a parser/classifier decision boundary moved for identical "
             "input bytes -- see devtools/verify_classifier_fingerprints.py's module docstring):"
         )
@@ -356,9 +426,9 @@ def _format_report(report: DriftReport) -> str:
 
 
 def _cmd_ack(qualname: str, *, reason: str, ref: str, semantic_reparse_version: int | None) -> int:
-    current = collect_classifier_functions()
+    current = collect_all_classification_surfaces()
     if qualname not in current:
-        print(f"error: {qualname!r} is not a currently discovered classification function", file=sys.stderr)
+        print(f"error: {qualname!r} is not a currently discovered classification surface", file=sys.stderr)
         return 2
     manifest = load_manifest()
     covered_by = CoveredBy(

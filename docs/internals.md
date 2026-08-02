@@ -180,10 +180,19 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `polylogue/archive/artifact_taxonomy/` can change what it accepts for
   identical input bytes with no version bump at all, running this lint green
   while already-indexed rows silently go stale (polylogue-gucv; PR #3428 is
-  the confirmed case). `devtools lab policy classifier-fingerprints`
-  (`devtools/verify_classifier_fingerprints.py`) closes that gap: it AST-
-  fingerprints every in-scope classifier function against a committed
-  manifest (`docs/plans/classifier-fingerprints.json`) and fails on
+  the confirmed case). The same blindness applies to a purely declarative
+  admission table: `origin_specs.py`'s `OriginSpec.artifact_rules` sets a
+  `parse_policy` (`session`/`fact`/`raw-only`) per native path family with no
+  function body at all, and PR #3088 changed `parse_as_session` for four
+  Claude Workflow artifact kinds by editing that table with no version bump
+  (retroactively declared as the missing v48 delta by polylogue-lzh8;
+  polylogue-qs4b). `devtools lab policy classifier-fingerprints`
+  (`devtools/verify_classifier_fingerprints.py`) closes both gaps: it
+  fingerprints every in-scope `looks_like*`/`classify_artifact*` function
+  (AST hash, docstring excluded) **and** every `OriginArtifactRule` in
+  `ORIGIN_SPECS` (hash of `path_pattern`/`parse_policy`/`parser_path`/
+  `coverage_role`/`path_suffixes`, `fidelity_note` excluded) against a
+  committed manifest (`docs/plans/classifier-fingerprints.json`) and fails on
   undeclared drift, requiring either a `SEMANTIC_REPARSE`-declared version
   bump or an explicit `acknowledged_safe` justification recorded in the
   manifest.

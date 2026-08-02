@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from devtools import verify_classifier_fingerprints as vcf
+from polylogue.sources.origin_specs import OriginArtifactRule
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.lifecycle import index_delta_declaration_report
 
 _CLAUDE_CODE_QUALNAME = "polylogue/sources/parsers/claude/code_detection.py:looks_like_code"
 _RECORD_ENTRY_QUALNAME = "polylogue/archive/artifact_taxonomy/support.py:looks_like_record_entry"
@@ -165,6 +168,104 @@ def test_covered_by_reason_and_ref_shape_are_validated() -> None:
 
     good = vcf.CoveredBy(kind="acknowledged_safe", reason="a long enough explanation of safety", ref="polylogue-abcd")
     assert vcf._validate_covered_by(good) is None
+
+
+def test_collect_origin_artifact_rules_covers_claude_code_workflow_kinds() -> None:
+    """Anti-vacuity: the artifact-rule table (not just functions) is fingerprinted."""
+    rules = vcf.collect_origin_artifact_rules()
+    assert rules, "expected at least one OriginArtifactRule to be discovered"
+    for qualname in rules:
+        assert qualname.startswith("polylogue/sources/origin_specs.py:artifact_rule:")
+    assert "polylogue/sources/origin_specs.py:artifact_rule:claude-code-session:agent_transcript" in rules
+
+
+def test_artifact_rule_fingerprint_changes_when_parse_policy_changes() -> None:
+    """The #3088 failure shape: parse_policy drift for identical bytes must move the hash."""
+    rule_a = OriginArtifactRule(
+        kind="agent_transcript",
+        path_pattern=r"subagents/.*\.jsonl$",
+        parse_policy="session",
+        parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+        coverage_role="attempt_transcript",
+        fidelity_note="Attempt transcript is a session only when linked to a run.",
+        path_suffixes=(".jsonl",),
+    )
+    rule_b = OriginArtifactRule(
+        kind="agent_transcript",
+        path_pattern=r"subagents/.*\.jsonl$",
+        parse_policy="fact",
+        parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+        coverage_role="attempt_transcript",
+        fidelity_note="Attempt transcript is a session only when linked to a run.",
+        path_suffixes=(".jsonl",),
+    )
+    assert vcf._fingerprint_artifact_rule(rule_a) != vcf._fingerprint_artifact_rule(rule_b)
+
+
+def test_artifact_rule_fingerprint_ignores_fidelity_note_changes() -> None:
+    """fidelity_note is prose documentation, stripped the same way a docstring is."""
+    rule_a = OriginArtifactRule(
+        kind="agent_transcript",
+        path_pattern=r"subagents/.*\.jsonl$",
+        parse_policy="session",
+        parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+        coverage_role="attempt_transcript",
+        fidelity_note="Original wording.",
+        path_suffixes=(".jsonl",),
+    )
+    rule_b = OriginArtifactRule(
+        kind="agent_transcript",
+        path_pattern=r"subagents/.*\.jsonl$",
+        parse_policy="session",
+        parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+        coverage_role="attempt_transcript",
+        fidelity_note="A totally different, reworded explanation.",
+        path_suffixes=(".jsonl",),
+    )
+    assert vcf._fingerprint_artifact_rule(rule_a) == vcf._fingerprint_artifact_rule(rule_b)
+
+
+def test_gate_would_have_caught_pr_3088_artifact_rule_drift_regression() -> None:
+    """Historical regression check (polylogue-qs4b verification requirement).
+
+    Reconstructs the manifest state as if this gate had existed before PR
+    #3088 changed ``parse_as_session`` for Claude Workflow artifact kinds by
+    editing ``OriginArtifactRule.parse_policy`` in ``origin_specs.py`` with
+    no ``INDEX_SCHEMA_VERSION`` bump (retroactively declared as the missing
+    v48 delta by polylogue-lzh8). Asserts the gate flags undeclared drift
+    when a rule's ``parse_policy`` is mutated for identical input bytes,
+    proving this lint -- unlike ``devtools lab policy schema-versioning`` --
+    would have failed such a PR green.
+    """
+    qualname = "polylogue/sources/origin_specs.py:artifact_rule:claude-code-session:agent_transcript"
+    current = vcf.collect_origin_artifact_rules()
+    assert qualname in current
+
+    mutated_rule = OriginArtifactRule(
+        kind="agent_transcript",
+        path_pattern=r"(?:^|/)subagents/(?:[^/]+/)*agent-[^/]+\.(?:jsonl|ndjson)$",
+        parse_policy="fact",
+        parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
+        coverage_role="attempt_transcript",
+        fidelity_note="Attempt transcript is a session only when provider workflow evidence links it to a run.",
+        path_suffixes=(".jsonl", ".ndjson"),
+    )
+    stale_fingerprint = vcf._fingerprint_artifact_rule(mutated_rule)
+    assert current[qualname].fingerprint != stale_fingerprint, (
+        "the live rule's parse_policy is expected to differ from the mutated ('fact') one"
+    )
+
+    manifest = dict(vcf.load_manifest())
+    manifest[qualname] = vcf.ManifestEntry(fingerprint=stale_fingerprint, covered_by=manifest[qualname].covered_by)
+
+    report = vcf.compute_drift_report(current=vcf.collect_all_classification_surfaces(), manifest=manifest)
+    assert qualname in report.drifted
+    assert report.ok is False
+
+    # And devtools lab policy schema-versioning genuinely does not see this class of
+    # change -- the whole point of this bead: only the fingerprint gate catches it.
+    schema_report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
+    assert schema_report["ok"] is True
 
 
 def test_gate_would_have_caught_pr_3428_classifier_drift_regression() -> None:
