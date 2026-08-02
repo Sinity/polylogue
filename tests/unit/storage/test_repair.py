@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
@@ -2145,6 +2146,69 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
         repaired_per_pass.append(result.repaired_count)
     assert repaired_per_pass == [5, 5, 5, 5, 5]
     assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=5).success is True
+
+
+def test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_progress(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """polylogue-de2a: a per-pass wall-clock budget must stop a single call
+    from replaying every selected component, even when ``raw_artifact_limit``
+    alone would admit them all in one call -- live evidence showed the
+    component count limit did not bound hold time (188s+ holds at a 16-64
+    component cap). The budget must be checked only *between* components (so
+    at least one always completes, guaranteeing forward progress) and must
+    leave the rest as ordinary candidates for the next call, not lost or
+    corrupted work.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    raw_count = 3
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_ids = [
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=(
+                    f'{{"type":"session_meta","payload":{{"id":"budget-{index}",'
+                    '"timestamp":"2026-07-11T00:00:00Z"}}}}\n'
+                    '{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
+                    f'[{{"type":"input_text","text":"budget {index}"}}]}}}}\n'
+                ).encode(),
+                source_path=f"budget-{index}.jsonl",
+                acquired_at_ms=index,
+            )
+            for index in range(raw_count)
+        ]
+    assert raw_ids
+
+    config = _config(tmp_path)
+    _complete_bounded_raw_census(config, limit=raw_count)
+
+    # A monotonic clock that always advances well past any small budget after
+    # its very first read -- deterministic regardless of exactly how many
+    # ``time.monotonic()`` calls happen elsewhere in the pass, since the
+    # first call establishes the pass start and every later call already
+    # clears a 1-second budget.
+    elapsed = iter(float(step) * 100.0 for step in range(1000))
+    monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
+
+    bounded = repair_mod.repair_raw_materialization(
+        config,
+        raw_artifact_limit=raw_count,
+        max_pass_seconds=1.0,
+    )
+    assert bounded.repaired_count == 1
+    assert bounded.metrics["raw_materialization_executed_count"] == 1.0
+    assert bounded.metrics["raw_materialization_time_budget_exceeded"] == 1.0
+    assert bounded.metrics["raw_materialization_remaining_candidate_count"] == float(raw_count - 1)
+    assert bounded.success is False
+
+    monkeypatch.undo()
+    remainder = repair_mod.repair_raw_materialization(config, raw_artifact_limit=raw_count)
+    assert remainder.repaired_count == raw_count - 1
+    assert remainder.success is True
 
 
 def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(

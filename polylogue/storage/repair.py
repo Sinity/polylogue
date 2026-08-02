@@ -6120,6 +6120,7 @@ def repair_raw_materialization(
     commit_batch_size: int | None = None,
     progress_callback: ProgressCallback | None = None,
     prefetch_cache: RawParsePrefetchCache | None = None,
+    max_pass_seconds: float | None = None,
 ) -> RepairResult:
     """Converge retained raws through typed per-session revision authority.
 
@@ -6152,14 +6153,39 @@ def repair_raw_materialization(
     ``backfill_historical_revision_evidence`` call further down: that call's
     own parse cost (``_ParsedSessionSpill.for_raw`` over already-typed
     cohorts) is a different, smaller-scope code path left for a later phase.
+
+    ``max_pass_seconds`` (polylogue-de2a, default ``None`` = unbounded, byte-
+    for-byte unchanged for existing callers) bounds this call's own wall-clock
+    duration -- and therefore the writer-coordinator hold a caller runs it
+    under -- independently of ``raw_artifact_limit``. Live evidence showed a
+    16-64 component limit alone did not bound hold time: per-component cost
+    (parse, replay, then a full FTS/action-pairs/delegation-facts rebuild) is
+    itself long enough that a modest component count still produced 188s+
+    holds. Both the CENSUS loop and the REPLAY loop check elapsed time only
+    *between* components, at the same point they already commit and requery
+    candidates -- a genuine transaction-boundary checkpoint, not a mid-write
+    yield (a mid-hold SQLite transaction cannot safely release the write lock
+    without releasing the real DB-level lock). Each loop always completes at
+    least one component before checking the budget, so a single
+    slower-than-budget component still makes forward progress instead of
+    stalling. Any component left unattempted this call remains a candidate
+    for the caller's next call, identically to how ``raw_artifact_limit``
+    already truncates the selected set.
     """
     if max_payload_bytes < 1:
         raise ValueError("max_payload_bytes must be positive")
+    if max_pass_seconds is not None and max_pass_seconds <= 0:
+        raise ValueError("max_pass_seconds must be positive when provided")
     if ingest_workers is None:
         from polylogue.pipeline.services.process_pool import resolve_parse_worker_count
 
         ingest_workers = resolve_parse_worker_count()
     commit_batch_size = _resolve_raw_authority_commit_batch_size(commit_batch_size)
+    pass_started_monotonic = time.monotonic()
+
+    def _pass_deadline_exceeded() -> bool:
+        return max_pass_seconds is not None and (time.monotonic() - pass_started_monotonic) >= max_pass_seconds
+
     archive_root = _raw_materialization_archive_root(config)
     recovered_censuses = recover_interrupted_raw_authority_censuses(archive_root)
     for recovered_census_id, recovered_scope in recovered_censuses:
@@ -6225,6 +6251,14 @@ def repair_raw_materialization(
             if not uncensused_raw_ids.intersection(component):
                 continue
             if census_components_attempted >= census_component_limit:
+                break
+            if census_components_attempted > 0 and _pass_deadline_exceeded():
+                logger.info(
+                    "raw materialization: census phase yielding at time-budget checkpoint "
+                    "(max_pass_seconds=%.1f) after %d component(s)",
+                    max_pass_seconds,
+                    census_components_attempted,
+                )
                 break
             census_components_attempted += 1
             seed = _raw_materialization_component_seed(candidates, component)
@@ -6700,10 +6734,44 @@ def repair_raw_materialization(
             planner_conn.commit()
 
     executable_raw_ids = raw_ids
-    metrics["raw_materialization_executed_count"] = float(len(executable_raw_ids))
+    metrics["raw_materialization_selected_for_execution_count"] = float(len(executable_raw_ids))
     replay_parts: list[RevisionBackfillResult] = []
     execution_outcomes: list[RawReplayPlanOutcome] = []
-    for plan, raw_id in zip(executable_plans, executable_raw_ids, strict=True):
+    components_attempted = 0
+    time_budget_exceeded = False
+    plan_raw_pairs = list(zip(executable_plans, executable_raw_ids, strict=True))
+    for index, (plan, raw_id) in enumerate(plan_raw_pairs):
+        if components_attempted > 0 and _pass_deadline_exceeded():
+            time_budget_exceeded = True
+            deferred = plan_raw_pairs[index:]
+            logger.info(
+                "raw materialization: replay phase yielding at time-budget checkpoint "
+                "(max_pass_seconds=%.1f) after %d/%d selected component(s); "
+                "%d component(s) carried forward to the next pass",
+                max_pass_seconds,
+                components_attempted,
+                len(plan_raw_pairs),
+                len(deferred),
+            )
+            # ``finalize_raw_authority_census`` below is fail-closed on every
+            # SELECTED plan having a recorded outcome -- unlike
+            # ``raw_artifact_limit`` truncation (which keeps a plan out of
+            # ``selected_plan_ids`` in the first place), the plans skipped
+            # here were already recorded as selected by the
+            # ``record_raw_authority_census`` call above this loop, so each
+            # one needs an explicit RETRYABLE outcome, not a silent gap.
+            for deferred_plan, _deferred_raw_id in deferred:
+                outcome = RawReplayPlanOutcome(
+                    deferred_plan.plan_id,
+                    deferred_plan.input_raw_ids,
+                    RawReplayPlanStatus.RETRYABLE,
+                    f"raw materialization time budget ({max_pass_seconds:.1f}s) exceeded before this component's turn",
+                    "retry this unchanged plan on the next bounded pass",
+                )
+                record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
+                execution_outcomes.append(outcome)
+            break
+        components_attempted += 1
         component = plan.input_raw_ids
         try:
             part = backfill_historical_revision_evidence(
@@ -6841,6 +6909,9 @@ def repair_raw_materialization(
     )
     metrics.update(
         {
+            "raw_materialization_executed_count": float(components_attempted),
+            "raw_materialization_pass_seconds": time.monotonic() - pass_started_monotonic,
+            "raw_materialization_time_budget_exceeded": 1.0 if time_budget_exceeded else 0.0,
             "raw_materialization_scanned_raw_count": float(replay.scanned),
             "raw_materialization_classified_full_count": float(replay.classified_full),
             "raw_materialization_replayed_logical_source_count": float(replay.replayed_logical_sources),

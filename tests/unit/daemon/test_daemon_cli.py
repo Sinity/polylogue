@@ -548,6 +548,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         max_payload_bytes: int,
         prefetch_cache: object = None,
         raw_artifact_id: str | None = None,
+        max_pass_seconds: float | None = None,
     ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
@@ -557,6 +558,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["max_payload_bytes"] = max_payload_bytes
         calls["prefetch_cache"] = prefetch_cache
         calls["raw_artifact_id"] = raw_artifact_id
+        calls["max_pass_seconds"] = max_pass_seconds
         return FakeResult()
 
     def fake_recover(config: Config) -> tuple[str, ...]:
@@ -587,6 +589,10 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     assert counts.repaired_sessions == 7
     assert counts.executed_plans == 3
     assert order == ["restore", "recover-frontier", "materialize", "frontier"]
+    # polylogue-de2a: the ordinary trickle pass must always request a
+    # declared, enforced per-call wall-clock ceiling on the writer hold --
+    # a component-count limit alone did not bound observed hold time.
+    assert calls["max_pass_seconds"] == daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS
 
     order.clear()
     daemon_cli._drain_raw_materialization_once(limit=11, recover=False)
@@ -606,6 +612,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "recover_archive_root": tmp_path / "archive",
         "frontier_archive_root": tmp_path / "archive",
         "frontier_limit": 8,
+        "max_pass_seconds": daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS,
     }
 
 
