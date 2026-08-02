@@ -504,6 +504,10 @@ files:
     target: polylogue/archive/query/unit_results.py
     owner: archive-query
     reason: archive-domain query semantics
+  - path: polylogue/archive/raw_authority_verdict.py
+    loc: 75
+    target: polylogue/archive/raw_authority_verdict.py
+    owner: stable
   - path: polylogue/archive/raw_materialization.py
     loc: 173
     target: polylogue/archive/raw_materialization.py
@@ -1389,7 +1393,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/enums.py
-    loc: 717
+    loc: 762
     target: polylogue/core/enums.py
     owner: core-primitive
     reason: core primitive
@@ -1641,7 +1645,7 @@ files:
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1582
+    loc: 1583
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -3070,7 +3074,7 @@ files:
     target: polylogue/schemas/sampling.py
     owner: stable
   - path: polylogue/schemas/sampling_db.py
-    loc: 467
+    loc: 490
     target: polylogue/schemas/sampling_db.py
     owner: stable
   - path: polylogue/schemas/sampling_sessions.py
@@ -3692,7 +3696,7 @@ files:
     target: polylogue/storage/artifacts/views.py
     owner: stable
   - path: polylogue/storage/attachment_reacquisition.py
-    loc: 641
+    loc: 647
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/attachment_relink.py
@@ -3976,6 +3980,10 @@ files:
     loc: 2295
     target: TBD
     owner: storage-domain
+  - path: polylogue/storage/raw_authority_verdict_projection.py
+    loc: 107
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/raw_membership_writeback.py
     loc: 124
     target: TBD
@@ -3990,7 +3998,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7355
+    loc: 7381
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper

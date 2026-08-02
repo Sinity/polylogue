@@ -685,6 +685,50 @@ class AssertionVisibility(PolylogueStrEnum):
         return cls(str(value).strip().lower())
 
 
+class RawAuthorityVerdict(PolylogueStrEnum):
+    """Closed 5-value verdict vocabulary for raw-capture authority (polylogue-w6hql).
+
+    Phase 2 of the raw-authority redesign: this is the single small vocabulary
+    that downstream consumers (blob-GC invariant checks, operator surfaces)
+    should read instead of reaching into the fragmented multi-table
+    bookkeeping (``raw_authority_blockers``/``raw_authority_censuses``/
+    ``raw_authority_census_plans``/``raw_authority_post_plans``/
+    ``raw_authority_parser_census``/``raw_membership_census``). It is derived
+    -- via :func:`polylogue.archive.raw_authority_verdict.derive_raw_authority_verdict`
+    -- from the existing, already-proven per-raw evidence
+    (:class:`polylogue.archive.revision_authority.HistoricalRevisionDecision`),
+    not a new source of truth: it does not replace ``raw_sessions.revision_authority``
+    (``asserted``/``byte_proven``/``quarantined``, the byte-provenance axis) or
+    the fragmented tables' write paths, which remain in place this phase.
+
+    - ``VERIFIED``: proven (byte_proven) head of a multi-revision cohort --
+      nothing supersedes it and at least one other revision of the same
+      logical source exists (otherwise it would be ``SOLE_COPY``).
+    - ``SUPERSEDED``: proven, but a later revision (chain successor) or a
+      byte-identical duplicate representative has taken its place as the
+      cohort's current evidence.
+    - ``SOLE_COPY``: the only captured revision of its logical source --
+      trivially authoritative because there is nothing to compare against.
+    - ``DIVERGED``: the cohort could not be reduced to a single proven chain
+      (a byte-prefix fork, multiple incomparable roots, or any other
+      condition that leaves this raw quarantined).
+    - ``UNCHECKED``: no revision-authority classification has run over this
+      raw yet (``revision_authority='asserted'``, the pre-governance default).
+    """
+
+    VERIFIED = "verified"
+    SUPERSEDED = "superseded"
+    SOLE_COPY = "sole-copy"
+    DIVERGED = "diverged"
+    UNCHECKED = "unchecked"
+
+    @classmethod
+    def from_string(cls, value: str | RawAuthorityVerdict) -> RawAuthorityVerdict:
+        if isinstance(value, cls):
+            return value
+        return cls(str(value).strip().lower())
+
+
 __all__ = [
     "AssertionKind",
     "AssertionStatus",
@@ -700,6 +744,7 @@ __all__ = [
     "PlanStage",
     "PolylogueStrEnum",
     "Provider",
+    "RawAuthorityVerdict",
     "Role",
     "SemanticBlockType",
     "SessionRefKind",
