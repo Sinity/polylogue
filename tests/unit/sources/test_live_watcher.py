@@ -1221,7 +1221,12 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     root = tmp_path / "sessions"
     root.mkdir()
     source_path = root / "session.jsonl"
-    source_path.write_text('{"type":"session_meta","payload":{"id":"s"}}\n', encoding="utf-8")
+    source_path.write_text(
+        '{"type":"session_meta","payload":{"id":"s"}}\n'
+        '{"type":"response_item","payload":{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hello"}]}}\n',
+        encoding="utf-8",
+    )
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
