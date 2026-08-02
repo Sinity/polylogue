@@ -1,5 +1,5 @@
 {
-  "archive_root": "/home/sinity/.local/share/polylogue",
+  "archive_root": "/path/to/demo-archive",
   "detail_level": "headline",
   "coverage_matrix": [
     {
@@ -125,109 +125,202 @@
   ],
   "model_rollup_grain": "physical_session",
   "model_rollup_usage": {
-    "input_tokens": 8812395779,
-    "output_tokens": 573781865,
-    "cached_input_tokens": 214048950528,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cached_input_tokens": 0,
     "cache_write_tokens": 0,
     "reasoning_output_tokens": 0,
-    "total_tokens": 223435128172
+    "total_tokens": 0
   },
   "logical_model_rollup_grain": "logical_session_model_high_water",
   "logical_model_rollup_usage": {
-    "input_tokens": 4609727637,
-    "output_tokens": 335726015,
-    "cached_input_tokens": 134212333056,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cached_input_tokens": 0,
     "cache_write_tokens": 0,
     "reasoning_output_tokens": 0,
-    "total_tokens": 139157786708
+    "total_tokens": 0
   },
   "pricing_catalog_provenance": "litellm-model-prices-vendored+polylogue-curated-overrides",
   "pricing_catalog_effective_date": "2026-06-27",
-  "pricing_lanes": [
-    {
-      "provenance": "priced",
-      "row_count": 106,
-      "session_count": 97,
-      "matched_model_row_count": 106,
-      "unmatched_model_row_count": 0,
-      "usage": {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cached_input_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_output_tokens": 0,
-        "total_tokens": 0
-      },
-      "stored_cost_usd": 0.0,
-      "catalog_api_equivalent_usd": 0.0,
-      "caveats": []
-    },
-    {
-      "provenance": "origin_reported",
-      "row_count": 2406,
-      "session_count": 2376,
-      "matched_model_row_count": 2404,
-      "unmatched_model_row_count": 2,
-      "usage": {
-        "input_tokens": 8812395779,
-        "output_tokens": 573781865,
-        "cached_input_tokens": 214048950528,
-        "cache_write_tokens": 0,
-        "reasoning_output_tokens": 0,
-        "total_tokens": 223435128172
-      },
-      "stored_cost_usd": 0.0,
-      "catalog_api_equivalent_usd": 96985.471705,
-      "caveats": [
-        "missing_price"
-      ]
-    }
-  ],
+  "pricing_lanes": [],
   "pricing_grain": "physical_session",
-  "logical_pricing_lanes": [
-    {
-      "provenance": "priced",
-      "row_count": 103,
-      "session_count": 95,
-      "matched_model_row_count": 103,
-      "unmatched_model_row_count": 0,
-      "usage": {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "cached_input_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_output_tokens": 0,
-        "total_tokens": 0
-      },
-      "stored_cost_usd": 0.0,
-      "catalog_api_equivalent_usd": 0.0,
-      "caveats": []
-    },
-    {
-      "provenance": "origin_reported",
-      "row_count": 2210,
-      "session_count": 2194,
-      "matched_model_row_count": 2208,
-      "unmatched_model_row_count": 2,
-      "usage": {
-        "input_tokens": 4609727637,
-        "output_tokens": 335726015,
-        "cached_input_tokens": 134212333056,
-        "cache_write_tokens": 0,
-        "reasoning_output_tokens": 0,
-        "total_tokens": 139157786708
-      },
-      "stored_cost_usd": 0.0,
-      "catalog_api_equivalent_usd": 63582.395037,
-      "caveats": [
-        "missing_price"
-      ]
-    }
-  ],
+  "logical_pricing_lanes": [],
   "logical_pricing_grain": "logical_session_model_high_water",
-  "stored_provider_priced_usd": 0.0,
-  "catalog_api_equivalent_usd": 96985.471705,
-  "logical_catalog_api_equivalent_usd": 63582.395037,
+  "stored_provider_priced_usd": 0,
+  "catalog_api_equivalent_usd": null,
+  "catalog_priced_subtotal_usd": 0,
+  "logical_catalog_api_equivalent_usd": null,
+  "logical_catalog_priced_subtotal_usd": 0,
+  "subscription_credit_catalog_provenance": "polylogue-curated-claude-code-subscription-v1",
+  "subscription_credit_catalog_effective_date": "2026-05-07",
+  "subscription_credit_usd": 0,
+  "logical_subscription_credit_usd": 0,
+  "observed_at": "2026-08-02T13:52:31.038402+00:00",
+  "exact_total_tokens_evidence": {
+    "family": "usage.pricing_lane_exact_total_tokens",
+    "fact_ref": "insight:provider-usage:physical-exact-total-tokens:total",
+    "value_state": "unknown",
+    "value": null,
+    "measurement_authority": [],
+    "weakest_measurement_authority": null,
+    "evidence_refs": [],
+    "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
+    "temporal": {
+      "observed_at": "2026-08-02T13:52:31.038402+00:00",
+      "time_source": null,
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "inferred-partial",
+    "coverage": {
+      "intended_frame": "physical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 0,
+      "observed_count": 0,
+      "supported_count": 0,
+      "complete": false,
+      "coverage_ratio": null,
+      "intended_refs": [],
+      "observed_refs": [],
+      "exclusions": []
+    },
+    "freshness": {
+      "state": "unavailable",
+      "evaluated_at": "2026-08-02T13:52:31.038402+00:00",
+      "cause": "no-freshness-evidence",
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [],
+    "conflicts": []
+  },
+  "catalog_api_equivalent_evidence": {
+    "family": "usage.pricing_lane_catalog_api_equivalent_cost",
+    "fact_ref": "insight:provider-usage:physical-catalog-api-equivalent-cost:total",
+    "value_state": "unknown",
+    "value": null,
+    "measurement_authority": [],
+    "weakest_measurement_authority": null,
+    "evidence_refs": [],
+    "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
+    "temporal": {
+      "observed_at": "2026-08-02T13:52:31.038402+00:00",
+      "time_source": null,
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "inferred-partial",
+    "coverage": {
+      "intended_frame": "physical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 0,
+      "observed_count": 0,
+      "supported_count": 0,
+      "complete": false,
+      "coverage_ratio": null,
+      "intended_refs": [],
+      "observed_refs": [],
+      "exclusions": []
+    },
+    "freshness": {
+      "state": "unavailable",
+      "evaluated_at": "2026-08-02T13:52:31.038402+00:00",
+      "cause": "no-freshness-evidence",
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [],
+    "conflicts": []
+  },
+  "logical_exact_total_tokens_evidence": {
+    "family": "usage.pricing_lane_exact_total_tokens",
+    "fact_ref": "insight:provider-usage:logical-exact-total-tokens:total",
+    "value_state": "unknown",
+    "value": null,
+    "measurement_authority": [],
+    "weakest_measurement_authority": null,
+    "evidence_refs": [],
+    "definition_ref": "insight:usage-lane-exact-total-tokens:v1",
+    "temporal": {
+      "observed_at": "2026-08-02T13:52:31.038402+00:00",
+      "time_source": null,
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "inferred-partial",
+    "coverage": {
+      "intended_frame": "logical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 0,
+      "observed_count": 0,
+      "supported_count": 0,
+      "complete": false,
+      "coverage_ratio": null,
+      "intended_refs": [],
+      "observed_refs": [],
+      "exclusions": []
+    },
+    "freshness": {
+      "state": "unavailable",
+      "evaluated_at": "2026-08-02T13:52:31.038402+00:00",
+      "cause": "no-freshness-evidence",
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [],
+    "conflicts": []
+  },
+  "logical_catalog_api_equivalent_evidence": {
+    "family": "usage.pricing_lane_catalog_api_equivalent_cost",
+    "fact_ref": "insight:provider-usage:logical-catalog-api-equivalent-cost:total",
+    "value_state": "unknown",
+    "value": null,
+    "measurement_authority": [],
+    "weakest_measurement_authority": null,
+    "evidence_refs": [],
+    "definition_ref": "insight:usage-lane-catalog-api-equivalent-cost:v1",
+    "temporal": {
+      "observed_at": "2026-08-02T13:52:31.038402+00:00",
+      "time_source": null,
+      "time_confidence": "unknown",
+      "frame_start": null,
+      "frame_end": null
+    },
+    "enumeration": "inferred-partial",
+    "coverage": {
+      "intended_frame": "logical provider usage pricing lanes",
+      "grain": "pricing_lane",
+      "denominator": "session_model_usage rows in the declared lane",
+      "intended_count": 0,
+      "observed_count": 0,
+      "supported_count": 0,
+      "complete": false,
+      "coverage_ratio": null,
+      "intended_refs": [],
+      "observed_refs": [],
+      "exclusions": []
+    },
+    "freshness": {
+      "state": "unavailable",
+      "evaluated_at": "2026-08-02T13:52:31.038402+00:00",
+      "cause": "no-freshness-evidence",
+      "last_good_at": null,
+      "last_good_evidence_refs": []
+    },
+    "calibrated_confidence": null,
+    "contributions": [],
+    "conflicts": []
+  },
   "origins": [
     {
       "origin": "codex-session",
@@ -241,21 +334,21 @@
       "cumulative_semantics": "Codex total_token_usage is cumulative and session-global; rollups take the latest total per session to avoid double-counting.",
       "cache_semantics": "cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
       "rebuild_guidance": "rebuild index.db from source.db/raw archives so usage events and rollups are materialized from source evidence",
-      "session_count": 2606,
-      "message_count": 2226227,
-      "transcript_word_count": 298041978,
-      "raw_session_count": 2646,
-      "raw_parse_error_count": 13,
-      "acquired_not_materialized_count": 24,
+      "session_count": 7,
+      "message_count": 30,
+      "transcript_word_count": 229,
+      "raw_session_count": 7,
+      "raw_parse_error_count": 0,
+      "acquired_not_materialized_count": 0,
       "provider_event_session_count": 0,
       "provider_event_count": 0,
       "token_count_event_count": 0,
       "message_usage_event_count": 0,
       "zero_token_event_count": 0,
       "missing_model_event_count": 0,
-      "multi_model_session_count": 88,
-      "priced_model_row_count": 106,
-      "origin_reported_model_row_count": 2406,
+      "multi_model_session_count": 0,
+      "priced_model_row_count": 0,
+      "origin_reported_model_row_count": 0,
       "estimated_model_row_count": 0,
       "stale_rollup_session_count": 0,
       "provider_request_usage": {
@@ -276,31 +369,28 @@
       },
       "model_rollup_grain": "physical_session",
       "model_rollup_usage": {
-        "input_tokens": 8812395779,
-        "output_tokens": 573781865,
-        "cached_input_tokens": 214048950528,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
         "cache_write_tokens": 0,
         "reasoning_output_tokens": 0,
-        "total_tokens": 223435128172
+        "total_tokens": 0
       },
       "logical_model_rollup_grain": "logical_session_model_high_water",
       "logical_model_rollup_usage": {
-        "input_tokens": 4609727637,
-        "output_tokens": 335726015,
-        "cached_input_tokens": 134212333056,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cached_input_tokens": 0,
         "cache_write_tokens": 0,
         "reasoning_output_tokens": 0,
-        "total_tokens": 139157786708
+        "total_tokens": 0
       },
       "sample_missing_model_sessions": [],
       "sample_zero_token_sessions": [],
       "sample_acquired_not_materialized_raw_ids": [],
       "sample_stale_rollup_sessions": [],
       "caveats": [
-        "some sessions have no provider usage event rows; transcript words and model rollups cover different evidence",
-        "raw rows without parse errors are acquired but not materialized; usage coverage is incomplete until index.db is rebuilt",
-        "some raw rows have parse errors; usage telemetry in those rows is unavailable until parsing succeeds",
-        "multi-model sessions are present; inspect per-model rows before treating totals as one model"
+        "some sessions have no provider usage event rows; transcript words and model rollups cover different evidence"
       ]
     }
   ],
