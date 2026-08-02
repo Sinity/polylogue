@@ -168,7 +168,6 @@ def _seed_edge(
         dst_origin=dst_origin,
         dst_native_id=dst_native_id,
         link_type=link_type,
-        status=TopologyEdgeStatus.UNRESOLVED,
     )
     asyncio.run(upsert_session_links(_AsyncSqliteAdapter(conn), [edge]))  # type: ignore[arg-type]
 
@@ -211,13 +210,14 @@ def _fetch_edge_status(conn: sqlite3.Connection, src_session_id: str) -> tuple[s
         (_sid(src_session_id),),
     ).fetchone()
     assert row is not None
+    # "resolved"/"unresolved" here are test-only derived labels (polylogue-5dfu:
+    # TopologyEdgeStatus no longer has UNRESOLVED/RESOLVED members -- neither
+    # was ever storable in this column, since resolvedness is already carried
+    # by resolved_dst_session_id) computed the same way production code
+    # derives it: a NULL status column plus a resolved parent means resolved.
     status = row["status"]
     if status is None and row["evidence_json"] == "[]":
-        status = (
-            TopologyEdgeStatus.RESOLVED.value
-            if _fetch_parent(conn, src_session_id)
-            else TopologyEdgeStatus.UNRESOLVED.value
-        )
+        status = "resolved" if _fetch_parent(conn, src_session_id) else "unresolved"
     return str(status), row["evidence_json"]
 
 
@@ -443,7 +443,7 @@ class TestDiamondDagNoFalsePositive:
 
         for child in ("conv-B", "conv-C"):
             status, _ = _fetch_edge_status(cycle_db, child)
-            assert status == TopologyEdgeStatus.RESOLVED.value
+            assert status == "resolved"
             assert _fetch_parent(cycle_db, child) == _sid("conv-D")
 
 
@@ -500,7 +500,7 @@ class TestSiblingNotQuarantined:
         cycle_status, _ = _fetch_edge_status(cycle_db, "conv-cycle")
         clean_status, _ = _fetch_edge_status(cycle_db, "conv-clean")
         assert cycle_status == TopologyEdgeStatus.QUARANTINED.value
-        assert clean_status == TopologyEdgeStatus.RESOLVED.value
+        assert clean_status == "resolved"
         assert _fetch_parent(cycle_db, "conv-cycle") is None
         assert _fetch_parent(cycle_db, "conv-clean") == _sid("conv-X")
 

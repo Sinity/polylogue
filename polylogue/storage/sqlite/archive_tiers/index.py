@@ -16,7 +16,9 @@ from polylogue.core.enums import (
     SessionKind,
     SessionRefKind,
     StopReason,
+    TitleSource,
     ToolResultUnknownReason,
+    TopologyEdgeStatus,
     WebConstructType,
 )
 from polylogue.storage.fts.sql import (
@@ -220,7 +222,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # raw evidence recovers the corrected identity split. `polylogue ops reset
 # --index && polylogued run` is required; deliberately NOT executed by this
 # declaration.
-INDEX_SCHEMA_VERSION = 54
+INDEX_SCHEMA_VERSION = 55
 
 # PR #3537: tightened `claude.looks_like_ai` (polylogue/sources/parsers/
 # claude/ai_parser.py) to require at least one `chat_messages` entry
@@ -234,6 +236,46 @@ INDEX_SCHEMA_VERSION = 54
 # admission decision to existing rows. `polylogue ops reset --index &&
 # polylogued run` is required; deliberately NOT executed by this
 # declaration.
+#
+# polylogue-0cn3 / polylogue-5dfu: v55 bundles a derived-tier vocabulary
+# cleanup across two related columns:
+#  - sessions.title_source/title_ref/title_confidence drop the COALESCE
+#    ratchet in write.py's session upsert (`= excluded.X` instead of
+#    `COALESCE(excluded.X, sessions.X)`) -- a purely derived provenance
+#    triple should always reflect the current parse, not preserve a stale
+#    verdict. TitleSource.UNKNOWN is also deleted: it was a second, redundant
+#    spelling of "no title evidence" on an already-nullable column (every
+#    read site branching on title_source already treated NULL and 'unknown'
+#    identically), so parsers now leave title_source unset instead of
+#    stamping UNKNOWN. TitleSource.USER is deleted too (zero producers,
+#    write- or read-time). TitleSource.PATH is KEPT despite also having zero
+#    *write*-time producers: archive_tiers/archive.py's `_summary_from_row`
+#    assigns it live at read time whenever a session has neither a real
+#    title nor a display name.
+#  - session_links.link_type drops LinkType.REPAIRED (zero producers, and a
+#    same-string collision with the unrelated TopologyEdgeStatus.REPAIRED on
+#    the `status` column of the same table). FORK and RESUME are kept
+#    despite also being 0 rows live: FORK has a real producer
+#    (sources/parsers/hermes_state.py's `_branch_type`, just never yet hit
+#    by an ingested session) and RESUME is the documented cross-repo
+#    "resume lineage edge" fixture in docs/material-protocol-v1.md, expected
+#    from the Sinex side (sinex-4j2.1.1) once implemented.
+#  - session_links.status (TopologyEdgeStatus) narrows from 4 declared
+#    members to the 2 the DDL CHECK and `_status_value` already only ever
+#    stored (REPAIRED/QUARANTINED) -- UNRESOLVED/RESOLVED were never
+#    constructed outside a Pydantic field default; resolvedness is already
+#    carried by resolved_dst_session_id IS NOT NULL.
+# Both title_source's CHECK and status's CHECK are also switched from a
+# hand-written literal IN (...) list to the generated `nullable_check()`
+# form, closing the CLAUDE.md-documented drift gap ("most hand-written
+# CHECK(col IN (...)) lists ... still have no generator tie"). A live archive
+# can carry `title_source='unknown'` today (14,915 rows measured against
+# index.db user_version=46 before this bead's fix) or `link_type='repaired'`
+# rows the new, narrower CHECKs would reject on a plain copy-forward, and
+# the write-path behavior for title_source genuinely changes (no longer
+# ever recomputes 'unknown') -- SEMANTIC_REPARSE, not a free fast-forward.
+# `polylogue ops reset --index && polylogued run` is required; deliberately
+# NOT executed by this declaration.
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -348,7 +390,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     active_leaf_message_id  TEXT,
     title                   TEXT,
     session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)}),
-    title_source            TEXT CHECK(title_source IN ('origin', 'path', 'heuristic', 'user', 'unknown') OR title_source IS NULL),
+    -- polylogue-5dfu: NULL is already the "no title evidence" state for a
+    -- nullable column; TitleSource.UNKNOWN was a redundant second spelling of
+    -- the same fact (every read site that branches on title_source treats
+    -- NULL and 'unknown' identically -- see archive.py's has_real_title
+    -- check), so the enum was collapsed to only the members a producer
+    -- actually assigns and this CHECK is now generated from it like the
+    -- other enum-backed columns instead of hand-listing the values.
+    title_source            TEXT CHECK({nullable_check("title_source", TitleSource)}),
     -- Specific provenance beyond TitleSource's coarse strategy label: which
     -- exact evidence row won (e.g. "codex-thread-name:<id>",
     -- "codex-history:<id>", "message:<provider_message_id>") plus a 0..1
@@ -970,7 +1019,16 @@ CREATE TABLE IF NOT EXISTS session_links (
     -- composition (the cascade fires before the re-INSERT) — see #2467 audit.
     branch_point_message_id TEXT,
     inheritance             TEXT CHECK(inheritance IN ('prefix-sharing', 'spawned-fresh') OR inheritance IS NULL),
-    status                  TEXT CHECK(status IN ('repaired', 'quarantined') OR status IS NULL),
+    -- polylogue-5dfu: TopologyEdgeStatus used to declare 4 members
+    -- (unresolved/resolved/repaired/quarantined) while only 2 were ever
+    -- storable here -- unresolved/resolved is already carried by
+    -- resolved_dst_session_id IS NOT NULL, so those two members were never
+    -- assigned anywhere outside a Pydantic field default. Narrowed the enum
+    -- to the two exception markers a resolver actually writes and generated
+    -- this CHECK from it, replacing the hand-written literal list that had
+    -- silently drifted out of sync with `_status_value`'s narrower runtime
+    -- projection.
+    status                  TEXT CHECK({nullable_check("status", TopologyEdgeStatus)}),
     -- polylogue-2qx.4 (v46): the parent-session tool_use block that
     -- dispatched this child (Claude Code parentToolUseID, 842,819 records /
     -- 185,982 distinct dispatch ids on the wire). This IS the delegation

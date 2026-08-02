@@ -22,12 +22,11 @@ def _timestamp_ms(value: str | None) -> int | None:
     return int(parsed.timestamp() * 1000)
 
 
-def _status_value(status: TopologyEdgeStatus) -> str | None:
-    if status is TopologyEdgeStatus.QUARANTINED:
-        return TopologyEdgeStatus.QUARANTINED.value
-    if status is TopologyEdgeStatus.REPAIRED:
-        return TopologyEdgeStatus.REPAIRED.value
-    return None
+def _status_value(status: TopologyEdgeStatus | None) -> str | None:
+    # polylogue-5dfu: TopologyEdgeStatus now only has the two members this
+    # column ever stores (REPAIRED/QUARANTINED), so no narrowing is needed
+    # beyond passing the value (or its absence) straight through.
+    return status.value if status is not None else None
 
 
 async def upsert_session_links(

@@ -328,7 +328,9 @@ class TestSessionLevelMetadata:
         }
         session = _parse(payload, "no-title")
         assert session.title == "no-title"
-        assert session.title_source == "unknown"
+        # polylogue-5dfu: None, not TitleSource.UNKNOWN -- NULL already means
+        # "no title evidence" on this nullable column.
+        assert session.title_source is None
 
     def test_provider_session_id_uses_id_field_then_fallback(self) -> None:
         payload: JSONDocument = {

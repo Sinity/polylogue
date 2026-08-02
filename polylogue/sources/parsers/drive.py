@@ -409,10 +409,12 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         attachments.extend(chunk_attachments)
 
     title_val = payload.get("title")
-    title_source: TitleSource = TitleSource.ORIGIN
+    title_source: TitleSource | None = TitleSource.ORIGIN
     if not title_val:
         title_val = payload.get("displayName")
-        title_source = TitleSource.ORIGIN if title_val else TitleSource.UNKNOWN
+        # polylogue-5dfu: None (not TitleSource.UNKNOWN) when neither field
+        # carries a title -- NULL already means "no title evidence" here.
+        title_source = TitleSource.ORIGIN if title_val else None
     title = str(title_val) if title_val else fallback_id
     create_time_str = (
         str(payload.get("createTime"))

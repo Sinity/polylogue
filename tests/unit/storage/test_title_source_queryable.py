@@ -110,22 +110,24 @@ def test_titleless_session_falls_back_to_structural_label(tmp_path: Path) -> Non
         assert matched[0].title_source == "path"
 
 
-def test_unknown_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
-    """polylogue-cijx.4 decision 3: ``title_source='unknown'`` is NOT a real
+def test_no_title_source_falls_back_to_structural_label(tmp_path: Path) -> None:
+    """polylogue-cijx.4 decision 3: a NULL ``title_source`` is NOT a real
     title, even when ``sessions.title`` is non-blank.
 
     Claude Code's parser (``sources/parsers/claude/code_parser.py``)
     initializes ``title`` to the raw composed session id (e.g.
-    ``"<uuid>:agent-<hash>"`` for a subagent) and only promotes
-    ``title_source`` off ``UNKNOWN`` when a real signal (human message,
-    ``agent-name``, ``ai-title``, ``custom-title``) is found. So a real
-    Claude Code row can carry a non-NULL, non-blank ``title`` *and*
-    ``title_source='unknown'`` simultaneously -- exactly the case decision 3
-    exists to fix ("a structural label today reads 'agent-<hash> - 27f -
-    499m' -- worse than the UUID it replaces"). Before this fix,
-    ``_summary_from_row`` treated any non-blank title as a real one
-    regardless of provenance, so the structural-label fallback never fired
-    for this population (measured live: 48.7% of root sessions).
+    ``"<uuid>:agent-<hash>"`` for a subagent) and only sets ``title_source``
+    when a real signal (human message, ``agent-name``, ``ai-title``,
+    ``custom-title``) is found -- otherwise it stays None (polylogue-5dfu:
+    TitleSource.UNKNOWN was deleted as a redundant second spelling of "no
+    evidence" on an already-nullable column). So a real Claude Code row can
+    carry a non-NULL, non-blank ``title`` *and* a NULL ``title_source``
+    simultaneously -- exactly the case decision 3 exists to fix ("a
+    structural label today reads 'agent-<hash> - 27f - 499m' -- worse than
+    the UUID it replaces"). Before this fix, ``_summary_from_row`` treated
+    any non-blank title as a real one regardless of provenance, so the
+    structural-label fallback never fired for this population (measured
+    live: 48.7% of root sessions).
     """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -140,7 +142,7 @@ def test_unknown_title_source_falls_back_to_structural_label(tmp_path: Path) -> 
             source_name=Provider.CLAUDE_CODE,
             provider_session_id="raw-uuid-1234",
             title="raw-uuid-1234",  # the code_parser.py raw-id fallback shape
-            title_source=TitleSource.UNKNOWN,
+            title_source=None,
             messages=[
                 ParsedMessage(
                     provider_message_id="m1",

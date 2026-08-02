@@ -134,17 +134,23 @@ def _session_kind(payload: Mapping[str, object]) -> SessionKind:
 
 def _resolve_claude_ai_title(
     payload: Mapping[str, object], resolved_session_id: str, *, ref_prefix: str
-) -> tuple[str, TitleSource, str | None, float | None]:
+) -> tuple[str, TitleSource | None, str | None, float | None]:
     """Claude AI's web UI auto-titles every conversation with a short
     generated summary of the exchange (distinct from Codex's raw
     first-prompt echoes, bd polylogue-6e7m -- see assembly_codex.py's
     ``_is_prompt_echo``). ``title``/``name`` is genuine provider curation
     when present, not a parser guess, so it is worth marking ORIGIN rather
-    than leaving ``title_source`` unset (as this parser did before)."""
+    than leaving ``title_source`` unset (as this parser did before).
+
+    polylogue-5dfu: the no-evidence branch below now returns ``None`` rather
+    than ``TitleSource.UNKNOWN`` -- NULL already means "no title evidence"
+    on this nullable column, so UNKNOWN was a redundant second spelling of
+    the same fact and has been deleted from the enum.
+    """
     raw_title = payload.get("title") or payload.get("name")
     if isinstance(raw_title, str) and raw_title.strip():
         return raw_title, TitleSource.ORIGIN, f"{ref_prefix}:{resolved_session_id}", 1.0
-    return str(resolved_session_id), TitleSource.UNKNOWN, None, None
+    return str(resolved_session_id), None, None, None
 
 
 # ---------------------------------------------------------------------------

@@ -8559,7 +8559,14 @@ def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSess
     # dead code for all of them. ``title_source='path'`` is the structural
     # label's own prior output; treating it as "not a real title" keeps this
     # idempotent on rebuild instead of freezing a stale message count.
-    has_real_title = bool(raw_title and raw_title.strip()) and raw_title_source in {"origin", "heuristic", "user"}
+    # polylogue-5dfu: ``TitleSource.UNKNOWN``/``TitleSource.USER`` were
+    # deleted from the enum (UNKNOWN was a redundant second "no evidence"
+    # spelling of NULL; USER had zero producers) but this still checks the
+    # bare *strings* -- an un-rebuilt archive can carry either value as
+    # stale on-disk data from before this change until its next full
+    # reparse, and both must keep failing this membership test exactly as
+    # they did before.
+    has_real_title = bool(raw_title and raw_title.strip()) and raw_title_source in {"origin", "heuristic"}
     provider_title = raw_title if has_real_title else None
     try:
         raw_display_name = row["display_name"]

@@ -348,7 +348,9 @@ def test_parse_chunked_prompt_records_fallback_title_source() -> None:
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
     assert result.title == "fallback-id"
-    assert result.title_source == "unknown"
+    # polylogue-5dfu: None, not TitleSource.UNKNOWN -- NULL already means
+    # "no title evidence" on this nullable column.
+    assert result.title_source is None
 
 
 def test_parse_chunked_prompt_preserves_reasoning_code_tool_results_and_attachments() -> None:
