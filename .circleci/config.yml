@@ -3,13 +3,29 @@ version: 2.1
 # CircleCI free-tier CI while GitHub Actions is billing-locked (and a cheap
 # second opinion afterwards). Credit budget: ~30k credits/month on the free
 # plan. Design keeps the per-push cost low and the heavy work nightly:
-#   - quick-gate (PRs + master pushes): generated-surface check, public
-#     claims, ruff, mypy. No pytest — mirrors `devtools verify --quick`
-#     semantics; the test suite's pre-merge gate remains local `devtools
-#     verify` (testmon), same as the repo's GitHub-era policy where the
-#     heavy suite ran post-merge only.
-#   - nightly (scheduled pipeline named "nightly"): full coverage suite +
-#     dependency audit + distribution verify on a larger executor.
+#   - quick-gate (PRs + master pushes): public claims + `devtools verify
+#     --quick` itself (not a hand-picked subset of its steps -- see
+#     polylogue-ze5i: this job used to reimplement ruff/mypy/render-all as
+#     separate `run` steps and silently diverged from what
+#     devtools/verify.py's `if not commit:` block actually gates, so
+#     schema-versioning/classifier-fingerprints/demo-tour-freshness and
+#     every other check added to that block over time never ran in real CI
+#     even though `.github/workflows/ci.yml` referenced them -- that GHA
+#     workflow does not execute, only CircleCI does). No pytest; the test
+#     suite's pre-merge gate remains local `devtools verify` (testmon), same
+#     as the repo's GitHub-era policy where the heavy suite ran post-merge
+#     only.
+#   - lab-policies (scheduled pipeline named "nightly"): the `lab policy *`
+#     checks that stay --lab-only because they scan the whole Beads/backlog
+#     corpus rather than the current diff (backlog-hygiene, bead-graph) or
+#     are otherwise not cheap/deterministic enough for every push
+#     (timestamp-doctrine, insight-honesty, demo-packet-registry, docs-drift,
+#     campaign-archive-boundaries). Runs nightly so a policy that fails
+#     continuously is at least visible somewhere, per polylogue-ze5i AC2,
+#     instead of only reachable via a human remembering `devtools verify
+#     --lab`.
+#   - full-suite (scheduled pipeline named "nightly"): full coverage suite +
+#     dependency audit on a larger executor.
 #   - release-verify (v* tags): build artifacts and store them.
 # Operator setup (one-time, UI): Project Settings → Advanced → "Only build
 # pull requests" ON; add a scheduled pipeline named "nightly" (master,
@@ -53,24 +69,58 @@ jobs:
             - mypy-v1-master
             - mypy-v1-
       - run:
-          name: Generated surfaces in sync
-          command: ~/.local/bin/uv run devtools render all --check
-      - run:
           name: Public claims gate
           command: ~/.local/bin/uv run devtools verify public-claims --json
       - run:
-          name: Ruff lint
-          command: ~/.local/bin/uv run ruff check polylogue/ tests/ devtools/
-      - run:
-          name: Ruff format
-          command: ~/.local/bin/uv run ruff format --check polylogue/ tests/ devtools/
-      - run:
-          name: Mypy (strict)
-          command: ~/.local/bin/uv run mypy polylogue/
+          name: devtools verify --quick
+          command: ~/.local/bin/uv run devtools verify --quick
       - save_cache:
           key: mypy-v1-{{ .Branch }}-{{ epoch }}
           paths:
             - .mypy_cache
+
+  lab-policies:
+    docker:
+      - image: cimg/python:3.13
+    resource_class: medium
+    environment: *polylogue_ci_env
+    steps:
+      - bootstrap
+      # Each currently-red check runs with `when: always` so one failure
+      # doesn't hide the pass/fail signal of the others in the same job --
+      # backlog-hygiene and bead-graph are known-red until the pre-existing
+      # backlog debt they report is triaged (tracked separately; see
+      # polylogue-ze5i notes), and that must not mask a genuine regression
+      # in timestamp-doctrine/insight-honesty/demo-packet-registry/
+      # docs-drift/campaign-archive-boundaries going unnoticed.
+      - run:
+          name: lab policy timestamp-doctrine
+          command: ~/.local/bin/uv run devtools lab policy timestamp-doctrine
+          when: always
+      - run:
+          name: lab policy insight-honesty
+          command: ~/.local/bin/uv run devtools lab policy insight-honesty
+          when: always
+      - run:
+          name: lab policy demo-packet-registry
+          command: ~/.local/bin/uv run devtools lab policy demo-packet-registry
+          when: always
+      - run:
+          name: lab policy docs-drift
+          command: ~/.local/bin/uv run devtools lab policy docs-drift
+          when: always
+      - run:
+          name: lab policy campaign-archive-boundaries
+          command: ~/.local/bin/uv run devtools lab policy campaign-archive-boundaries
+          when: always
+      - run:
+          name: lab policy backlog-hygiene (known backlog debt, see polylogue-ze5i)
+          command: ~/.local/bin/uv run devtools lab policy backlog-hygiene
+          when: always
+      - run:
+          name: lab policy bead-graph (known backlog debt, see polylogue-ze5i)
+          command: ~/.local/bin/uv run devtools lab policy bead-graph
+          when: always
 
   full-suite:
     docker:
@@ -131,3 +181,4 @@ workflows:
         - equal: [nightly, << pipeline.schedule.name >>]
     jobs:
       - full-suite
+      - lab-policies

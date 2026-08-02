@@ -96,6 +96,8 @@ def test_quick_verify_omits_pytest() -> None:
         "verify degrade-loudly",
         "verify hash-boundary-census",
         "lab policy schema-versioning",
+        "lab policy classifier-fingerprints",
+        "lab policy demo-tour-freshness",
         "schema promotion audit",
     ]
 

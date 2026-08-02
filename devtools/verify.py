@@ -1786,6 +1786,16 @@ def build_verify_steps(
                 # concrete case that shipped green against the version-keyed
                 # gate above).
                 ("lab policy classifier-fingerprints", _devtools_cmd("lab policy classifier-fingerprints")),
+                # ~15-30s, fully deterministic (wall-clock timing is masked
+                # before comparison, see devtools/verify_demo_tour_freshness.py).
+                # Unlike backlog-hygiene/bead-graph below, this check's failure
+                # count does not scale with total backlog/bead-corpus size --
+                # it is a fixed-cost diff against one committed fixture that
+                # only drifts when demo/insight code actually changes shape
+                # (polylogue-ze5i: moved out of --lab after the committed
+                # fixture was regenerated to match a `healed_tiers` field the
+                # demo receipts code had already grown).
+                ("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.
@@ -1883,12 +1893,22 @@ def build_verify_steps(
         steps.append(("lab policy timestamp-doctrine", _devtools_cmd("lab policy timestamp-doctrine")))
         steps.append(("lab policy insight-honesty", _devtools_cmd("lab policy insight-honesty")))
         steps.append(("lab policy demo-packet-registry", _devtools_cmd("lab policy demo-packet-registry")))
-        steps.append(("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")))
         steps.append(("lab policy docs-drift", _devtools_cmd("lab policy docs-drift")))
-        steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
         steps.append(
             ("lab policy campaign-archive-boundaries", _devtools_cmd("lab policy campaign-archive-boundaries"))
         )
+        # backlog-hygiene and bead-graph are corpus-wide backlog-debt scans
+        # (findings scale with the total count of open Beads issues, not
+        # with this change's diff) -- they stay --lab-only/scheduled rather
+        # than default- or CI-gated. Gating either on a merge would block
+        # every PR in the repo until the entire pre-existing backlog is
+        # cleaned up (485 backlog-hygiene findings / 225 missing-AC beads
+        # measured 2026-08-02), which is periodic hygiene debt, not a
+        # per-change regression signal. Wired into the CircleCI nightly
+        # schedule instead (polylogue-ze5i) so continuous failure is at
+        # least visible, and the backlog itself is tracked by follow-up
+        # beads rather than left to rot silently.
+        steps.append(("lab policy backlog-hygiene", _devtools_cmd("lab policy backlog-hygiene")))
         steps.append(("lab policy bead-graph", _devtools_cmd("lab policy bead-graph")))
     return steps
 
