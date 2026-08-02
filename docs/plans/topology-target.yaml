@@ -538,7 +538,7 @@ files:
     target: polylogue/archive/resume_routing.py
     owner: stable
   - path: polylogue/archive/revision_authority.py
-    loc: 357
+    loc: 373
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
@@ -2183,6 +2183,10 @@ files:
     loc: 0
     target: polylogue/maintenance/__init__.py
     owner: stable
+  - path: polylogue/maintenance/agent_meta_sidecar_purge_apply.py
+    loc: 259
+    target: polylogue/maintenance/agent_meta_sidecar_purge_apply.py
+    owner: stable
   - path: polylogue/maintenance/archive_verification.py
     loc: 709
     target: polylogue/maintenance/archive_verification.py
@@ -3638,6 +3642,10 @@ files:
     target: polylogue/storage/__init__.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/agent_meta_sidecar_sweep.py
+    loc: 151
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/antigravity_phantom_sweep.py
     loc: 133
     target: TBD
@@ -3974,7 +3982,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7326
+    loc: 7355
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -4234,7 +4242,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 2277
+    loc: 2307
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
@@ -4266,7 +4274,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2917
+    loc: 2931
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -4342,7 +4350,7 @@ files:
     target: polylogue/storage/sqlite/finding_provenance.py
     owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
-    loc: 864
+    loc: 884
     target: polylogue/storage/sqlite/lifecycle.py
     owner: stable
   - path: polylogue/storage/sqlite/maintenance.py

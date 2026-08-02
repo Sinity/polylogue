@@ -1056,6 +1056,50 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace agent-meta-sidecar-sweep",
+        "workspace",
+        "Find agent-*.meta.json subagent-sidecar phantom sessions (message_count=0).",
+        "devtools.agent_meta_sidecar_sweep_report",
+        use_when=(
+            "polylogue-ioz7 (direct fix for the polylogue-b508 audit finding): before a "
+            "producer bug was fixed 2026-07-28, a per-subagent metadata sidecar file "
+            "(subagents/agent-<id>.meta.json) was materialized into the archive as its own "
+            "empty claude-code-session row, a duplicate phantom beside the real, correctly-"
+            "ingested subagent transcript. This read-only report classifies every zero-"
+            "message index session against the bead's own repro predicate "
+            "(message_count=0 AND raw_sessions.source_path LIKE '%.meta.json') -- 4,945 "
+            "rows matched on the live archive as of 2026-08-02. Never mutates index.db or "
+            "source.db."
+        ),
+        examples=(
+            "devtools workspace agent-meta-sidecar-sweep",
+            "devtools workspace agent-meta-sidecar-sweep --json",
+            "devtools workspace agent-meta-sidecar-sweep --limit 500 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
+        "workspace agent-meta-sidecar-purge-apply",
+        "workspace",
+        "Purge agent-*.meta.json subagent-sidecar phantom sessions from index.db.",
+        "devtools.agent_meta_sidecar_purge_apply",
+        use_when=(
+            "polylogue-ioz7: act on the sweep's report by deleting the flagged sessions rows "
+            "via ArchiveStore.delete_sessions (the tested, incident-hardened bulk-delete "
+            "primitive, not a plain per-row DELETE) and writing an immutable receipt per "
+            "purged row. raw_sessions rows and blobs in source.db are never touched, and "
+            "re-ingest cannot resurrect a purged row (the producer bug is already fixed). "
+            "Default is dry-run; --apply requires --backup-manifest pointing at a verified "
+            "backup that includes index.db (the default backup profile omits it -- use "
+            "'polylogue backup --profile full_evidence --verify')."
+        ),
+        examples=(
+            "devtools workspace agent-meta-sidecar-purge-apply",
+            "devtools workspace agent-meta-sidecar-purge-apply --json",
+            "devtools workspace agent-meta-sidecar-purge-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace unknown-export-reclassification",
         "workspace",
         "Re-run the fixed browser-capture provider probe against stored unknown-export rows.",

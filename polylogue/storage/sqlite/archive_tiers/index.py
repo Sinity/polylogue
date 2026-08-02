@@ -297,7 +297,17 @@ INDEX_SCHEMA_VERSION = 55
 # re-parsing recovers the dropped rows on already-acquired raw evidence.
 # `polylogue ops reset --index && polylogued run` is required; deliberately
 # NOT executed by this declaration.
-INDEX_SCHEMA_VERSION = 56
+
+# polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, an immutable
+# per-row audit record for `polylogue.maintenance.agent_meta_sidecar_purge_apply`
+# -- the targeted actuator that deletes the ~4,945 pre-2026-07-28
+# `agent-<hash>.meta.json` subagent-sidecar phantom sessions found by the
+# polylogue-b508 audit (a fixed producer bug materialized a per-subagent
+# metadata sidecar file into its own empty session, duplicate of the real,
+# correctly-ingested subagent transcript). Brand-new table, no existing
+# archive has any rows to migrate -- CONSTRAINT_ONLY/REPLACE_TABLE fast-
+# forwards to a plain create, same shape as v33's `insight_materialization`.
+INDEX_SCHEMA_VERSION = 57
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -2261,6 +2271,26 @@ ON session_tag_rollups(bucket_day DESC, source_name, tag);
 
 CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
 ON session_tag_rollups(source_name, tag);
+
+-- v57 (polylogue-ioz7): one immutable receipt per `sessions` row deleted by
+-- the agent-meta-sidecar purge actuator. No FK to `sessions` -- the whole
+-- point of the row is that the session it describes no longer exists.
+-- `raw_id` is likewise unconstrained here (source.db is a separate
+-- database file; the raw row and its blob are deliberately retained there).
+CREATE TABLE IF NOT EXISTS agent_meta_sidecar_purge_receipts (
+    session_id           TEXT PRIMARY KEY,
+    origin               TEXT NOT NULL,
+    native_id            TEXT NOT NULL,
+    raw_id               TEXT NOT NULL,
+    source_path          TEXT NOT NULL,
+    purged_at_ms         INTEGER NOT NULL CHECK(purged_at_ms >= 0),
+    tool_version         TEXT NOT NULL,
+    backup_manifest_path TEXT NOT NULL,
+    detail               TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_meta_sidecar_purge_receipts_purged_at
+ON agent_meta_sidecar_purge_receipts(purged_at_ms);
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
