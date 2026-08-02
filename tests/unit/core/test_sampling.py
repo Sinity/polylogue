@@ -576,3 +576,82 @@ class TestLoadSamplesFromSessions:
         finally:
             # Restore permissions for cleanup
             bad_file.chmod(0o644)
+
+
+class TestReplayableRecordSamplesBoundedSlice:
+    """Regression coverage for polylogue-5svw0.
+
+    ``ReplayableRecordSamples.__bool__`` (PR #3546) already answers
+    emptiness with a bounded peek. Its ``__getitem__`` slice path, however,
+    still resolved every slice via ``index.indices(len(self))`` -- forcing a
+    full decode of the backing file even for a forward-bounded slice like
+    ``samples[:5]``, the exact shape ``observation_runtime.py`` had to route
+    around with ``islice`` + a warning comment. This verifies the bounded
+    ``samples[:N]`` shape no longer decodes the whole file.
+    """
+
+    @staticmethod
+    def _large_raw_content(record_count: int) -> str:
+        return "\n".join(json.dumps({"type": "message", "n": index}) for index in range(record_count))
+
+    def test_forward_bounded_slice_does_not_decode_full_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import polylogue.archive.raw_payload.sampling_extract as sampling_extract_module
+
+        decode_calls = {"n": 0}
+        original_loads = sampling_extract_module.loads  # type: ignore[attr-defined]
+
+        def counting_loads(text: str) -> object:
+            decode_calls["n"] += 1
+            return original_loads(text)
+
+        monkeypatch.setattr(sampling_extract_module, "loads", counting_loads)
+
+        record_count = 20_000
+        raw_content = self._large_raw_content(record_count)
+        samples = ReplayableRecordSamples(raw_content)
+
+        head = samples[:5]
+
+        assert [item["n"] for item in head] == [0, 1, 2, 3, 4]
+        # A bounded forward slice must not decode anywhere near the full
+        # 20,000-record backing content -- only the first 5 lines.
+        assert decode_calls["n"] <= 6, decode_calls["n"]
+
+    def test_bool_still_does_not_decode_full_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import polylogue.archive.raw_payload.sampling_extract as sampling_extract_module
+
+        decode_calls = {"n": 0}
+        original_loads = sampling_extract_module.loads  # type: ignore[attr-defined]
+
+        def counting_loads(text: str) -> object:
+            decode_calls["n"] += 1
+            return original_loads(text)
+
+        monkeypatch.setattr(sampling_extract_module, "loads", counting_loads)
+
+        record_count = 20_000
+        raw_content = self._large_raw_content(record_count)
+        samples = ReplayableRecordSamples(raw_content)
+
+        assert bool(samples) is True
+        assert decode_calls["n"] <= 2, decode_calls["n"]
+
+    def test_negative_index_still_correct_via_full_scan(self) -> None:
+        record_count = 25
+        raw_content = self._large_raw_content(record_count)
+        samples = ReplayableRecordSamples(raw_content)
+
+        assert samples[-1]["n"] == record_count - 1
+
+    def test_slice_with_negative_bound_still_correct(self) -> None:
+        record_count = 25
+        raw_content = self._large_raw_content(record_count)
+        samples = ReplayableRecordSamples(raw_content)
+
+        assert [item["n"] for item in samples[-3:]] == [22, 23, 24]

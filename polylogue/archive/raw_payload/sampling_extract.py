@@ -16,6 +16,7 @@ from polylogue.archive.raw_payload.sampling_buckets import (
     take_bucketed_samples,
 )
 from polylogue.archive.raw_payload.streams import raw_line_stream
+from polylogue.core.common import forward_bounded_slice
 from polylogue.core.json import JSONDocument, JSONValue, json_document, loads
 
 
@@ -91,6 +92,14 @@ class ReplayableRecordSamples(Sequence[JSONDocument]):
 
     def __getitem__(self, index: SupportsIndex | slice) -> JSONDocument | list[JSONDocument]:
         if isinstance(index, slice):
+            bounded = forward_bounded_slice(index)
+            if bounded is not None:
+                # See ``forward_bounded_slice``: a forward-bounded slice (the
+                # common ``samples[:N]`` shape) never needs ``len(self)``,
+                # which for this class means decoding the entire backing
+                # file. Answer it directly against the iterator instead.
+                start, stop, step = bounded
+                return list(islice(self, start, stop, step))
             start, stop, step = index.indices(len(self))
             return list(islice(self, start, stop, step))
         integer_index = operator.index(index)

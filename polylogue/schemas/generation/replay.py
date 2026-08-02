@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass
+from itertools import islice
 from typing import overload
 
+from polylogue.core.common import forward_bounded_slice, peek_truthy
 from polylogue.schemas.generation.models import _UnitMembership
 from polylogue.schemas.generation.observation_journal import JournalMemberships
 from polylogue.schemas.generation.schema_builder import SchemaInput
@@ -24,6 +27,12 @@ class ArtifactMemberships(Sequence[_UnitMembership]):
     def __len__(self) -> int:
         return sum(1 for _item in self)
 
+    def __bool__(self) -> bool:
+        # See ``peek_truthy``: avoid the ``Sequence`` default of falling back
+        # to ``__len__``, which rescans the whole filtered membership source
+        # just to answer "is this non-empty?".
+        return peek_truthy(self)
+
     @overload
     def __getitem__(self, index: int) -> _UnitMembership: ...
 
@@ -31,8 +40,22 @@ class ArtifactMemberships(Sequence[_UnitMembership]):
     def __getitem__(self, index: slice) -> Sequence[_UnitMembership]: ...
 
     def __getitem__(self, index: int | slice) -> _UnitMembership | Sequence[_UnitMembership]:
-        retained = list(self)
-        return retained[index]
+        if isinstance(index, slice):
+            bounded = forward_bounded_slice(index)
+            if bounded is not None:
+                start, stop, step = bounded
+                return list(islice(self, start, stop, step))
+            return list(self)[index]
+        integer_index = operator.index(index)
+        if integer_index >= 0:
+            try:
+                return next(islice(self, integer_index, integer_index + 1))
+            except StopIteration as error:
+                raise IndexError(index) from error
+        # Negative indices need the true length to normalize; unlike the
+        # common bounded-prefix access pattern, this path is rare enough
+        # that a full materialization here is acceptable.
+        return list(self)[integer_index]
 
 
 @dataclass(frozen=True)
@@ -47,6 +70,9 @@ class MembershipSamples(Collection[SchemaInput]):
 
     def __len__(self) -> int:
         return membership_sample_count(self.memberships)
+
+    def __bool__(self) -> bool:
+        return peek_truthy(self)
 
     def __contains__(self, value: object) -> bool:
         return any(sample == value for sample in self)
@@ -67,6 +93,9 @@ class MembershipSessionIds(Collection[str | None]):
 
     def __len__(self) -> int:
         return membership_sample_count(self.memberships)
+
+    def __bool__(self) -> bool:
+        return peek_truthy(self)
 
     def __contains__(self, value: object) -> bool:
         return any(session_id == value for session_id in self)
@@ -92,6 +121,9 @@ class MembershipObservedAts(Collection[str | None]):
 
     def __len__(self) -> int:
         return membership_sample_count(self.memberships)
+
+    def __bool__(self) -> bool:
+        return peek_truthy(self)
 
     def __contains__(self, value: object) -> bool:
         return any(observed_at == value for observed_at in self)
