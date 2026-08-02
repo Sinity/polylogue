@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -171,7 +172,9 @@ class TestParsingServiceParseSources:
         # In the unified ingest flow, validation backlog is collected as part of parse candidates
         mock_collect_validate.assert_awaited_once()
         mock_collect_parse.assert_awaited_once()
-        mock_parse.assert_awaited_once_with(raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False)
+        mock_parse.assert_awaited_once_with(
+            raw_ids=["raw-1", "raw-2"], progress_callback=None, force_write=False, max_pass_seconds=None
+        )
         assert result.counts["sessions"] == 2
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
@@ -267,6 +270,7 @@ class TestParsingServiceParseSources:
             raw_ids=["raw-1", "raw-2", "raw-3", "raw-4"],
             progress_callback=None,
             force_write=False,
+            max_pass_seconds=None,
         )
 
     async def test_ingest_skips_parse_when_nothing_acquired(self) -> None:
@@ -337,7 +341,9 @@ class TestParsingServiceParseSources:
             drive_config=mock_config.drive_config,
         )
         # In unified ingest, validation is inline — callback passed to parse_from_raw
-        mock_parse.assert_awaited_once_with(raw_ids=["raw-1"], progress_callback=callback, force_write=False)
+        mock_parse.assert_awaited_once_with(
+            raw_ids=["raw-1"], progress_callback=callback, force_write=False, max_pass_seconds=None
+        )
 
     async def test_backend_not_initialized_raises(self) -> None:
         mock_repository = MagicMock()
@@ -549,6 +555,69 @@ class TestParsingServiceStreaming:
             await service.parse_from_raw(provider="chatgpt")
 
         assert events == ["headers-open", "headers-closed", "batch-write"]
+
+    async def test_parse_from_raw_max_pass_seconds_bounds_one_call_and_preserves_progress(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """polylogue-qlae: mirrors polylogue-de2a's raw-materialization budget
+        (``test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_progress``)
+        applied to the daemon's other unbounded writer-holding actor
+        (``maintenance.drive_catchup``, measured hold_max=18,623s). A per-call
+        wall-clock budget must stop ``parse_from_raw`` from draining the whole
+        raw-id backlog in one call even though ``raw_batch_size`` alone would
+        admit every batch. The budget is checked only *between* batches (each
+        batch is a real write/transaction boundary), so at least one batch
+        always completes -- forward progress is guaranteed -- and raw ids left
+        unattempted stay ordinary backlog for the caller's next call, exactly
+        like ``collect_parse_backlog`` recomputing the remainder on the next
+        daemon tick.
+        """
+        backend = MagicMock()
+        repository = MagicMock()
+        repository.backend = backend
+        repository.get_raw_blob_sizes = AsyncMock(
+            side_effect=[
+                [("raw-1", 1), ("raw-2", 1), ("raw-3", 1)],
+                [("raw-2", 1), ("raw-3", 1)],
+            ]
+        )
+        config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
+        service = ParsingService(
+            repository=repository,
+            archive_root=config.archive_root,
+            config=config,
+            raw_batch_size=1,
+        )
+
+        # A monotonic clock that always advances well past any small budget
+        # after its very first read -- deterministic regardless of exactly
+        # how many ``time.monotonic()`` calls happen elsewhere in the pass,
+        # since the first call establishes the pass start and every later
+        # call already clears a 1-second budget.
+        elapsed = iter(float(step) * 100.0 for step in range(1000))
+        monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
+
+        with patch(
+            "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
+            new=AsyncMock(side_effect=[None, None, None]),
+        ) as mock_process:
+            bounded = await service.parse_from_raw(
+                raw_ids=["raw-1", "raw-2", "raw-3"],
+                max_pass_seconds=1.0,
+            )
+
+        assert mock_process.await_count == 1
+        assert bounded.time_budget_exceeded is True
+
+        monkeypatch.undo()
+        with patch(
+            "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
+            new=AsyncMock(side_effect=[None, None]),
+        ) as mock_process_remainder:
+            remainder = await service.parse_from_raw(raw_ids=["raw-2", "raw-3"])
+
+        assert mock_process_remainder.await_count == 2
+        assert remainder.time_budget_exceeded is False
 
 
 # =====================================================================

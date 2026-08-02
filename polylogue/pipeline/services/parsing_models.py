@@ -128,6 +128,13 @@ class ParseResult:
         # otherwise. Used by `devtools bench ingest-throughput` to attribute
         # ingest time per stage.
         self.stage_timings_s: dict[str, float] = {}
+        # Set when a caller-supplied ``max_pass_seconds`` budget (polylogue-qlae,
+        # mirroring polylogue-de2a's raw-materialization bound) cut this call
+        # short between raw-id batches. Remaining raw_ids were never attempted
+        # this call and stay in the backlog for the caller's next pass --
+        # identical in shape to how ``raw_artifact_limit`` already truncates
+        # raw-materialization's selected set.
+        self.time_budget_exceeded: bool = False
 
     @property
     def changed_session_ids(self) -> tuple[str, ...]:

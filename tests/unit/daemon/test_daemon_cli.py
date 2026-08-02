@@ -1999,13 +1999,21 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
         def __init__(self, *, repository: object, archive_root: Path, config: Config) -> None:
             events.append(("parser", repository, archive_root, config))
 
-        async def ingest_sources(self, *, sources: list[Source], stage: str, parse_records: bool) -> SimpleNamespace:
-            events.append(("ingest", sources, stage, parse_records))
+        async def ingest_sources(
+            self,
+            *,
+            sources: list[Source],
+            stage: str,
+            parse_records: bool,
+            max_pass_seconds: float | None = None,
+        ) -> SimpleNamespace:
+            events.append(("ingest", sources, stage, parse_records, max_pass_seconds))
             return SimpleNamespace(
                 acquire_result=SimpleNamespace(raw_ids=["raw-1"], errors=0),
                 parse_result=SimpleNamespace(
                     processed_ids={"session-b", "session-a"},
                     counts={"sessions": 2},
+                    time_budget_exceeded=False,
                 ),
             )
 
@@ -2022,7 +2030,7 @@ def test_drive_source_catchup_ingests_configured_drive_source(tmp_path: Path) ->
 
     assert changed == 2
     build_services.assert_called_once_with(config=config, db_path=config.db_path)
-    assert ("ingest", [drive_source], "all", True) in events
+    assert ("ingest", [drive_source], "all", True, daemon_cli._DRIVE_CATCHUP_MAX_PASS_SECONDS) in events
     assert ("refresh", ["session-a", "session-b"]) in events
     assert events[-1] == "close"
 

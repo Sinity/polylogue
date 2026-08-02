@@ -170,6 +170,7 @@ async def ingest_sources(
     parse_records: bool = True,
     skip_acquire: bool = False,
     force_write: bool = False,
+    max_pass_seconds: float | None = None,
 ) -> IngestResult:
     """Canonical ingestion orchestration.
 
@@ -177,6 +178,13 @@ async def ingest_sources(
     1. Acquire: walk sources, hash files to blob store
     2. Ingest: unified decode + validate + parse + transform + write
        (validation is inline in subprocess workers, not a separate stage)
+
+    ``max_pass_seconds`` (polylogue-qlae, default ``None`` = unbounded)
+    threads through to the parse stage's ``parse_from_raw`` call -- see its
+    docstring. It does not bound the acquire stage (network/filesystem walk
+    for the configured sources), which is not chunked at a granularity this
+    orchestration can safely checkpoint between; see polylogue-qlae follow-up
+    notes for that residual scope.
     """
     from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
     from polylogue.pipeline.services.planning import PlanningService
@@ -263,6 +271,7 @@ async def ingest_sources(
                 raw_ids=parse_raw_ids,
                 progress_callback=progress_callback,
                 force_write=force_write,
+                max_pass_seconds=max_pass_seconds,
             )
         ingest_state.record_parse_completed()
         parse_raw_ids = ingest_state.parse_raw_ids
@@ -320,19 +329,38 @@ async def parse_from_raw(
     progress_callback: ProgressCallback | None = None,
     force_write: bool = False,
     repair_message_fts: bool = True,
+    max_pass_seconds: float | None = None,
 ) -> ParseResult:
     """Parse raw_sessions from DB into sessions.
 
     Uses the unified ingest batch processor (decode + validate + parse +
     transform + write in one pass). Derived session-insight materialization
     happens in an explicit downstream pipeline stage.
+
+    ``max_pass_seconds`` (polylogue-qlae, default ``None`` = unbounded,
+    byte-for-byte unchanged for existing callers) bounds this call's own
+    wall-clock duration -- and therefore the writer-coordinator hold a caller
+    (e.g. the daemon's Drive catch-up actor) runs it under. Mirrors
+    ``repair_raw_materialization``'s ``max_pass_seconds`` (polylogue-de2a):
+    elapsed time is checked only *between* raw-id batches, the same point
+    this loop already commits and would naturally recompute a backlog on the
+    next call -- not a mid-write yield (a mid-batch transaction cannot safely
+    release the write lock without releasing the real DB-level lock). Each
+    branch always completes at least one batch before checking the budget,
+    so a single slower-than-budget batch still makes forward progress
+    instead of stalling. Raw ids left unattempted this call remain ordinary
+    backlog candidates for the caller's next call.
     """
     from polylogue.pipeline.services.ingest_batch import process_ingest_batch
 
     result = ParseResult()
     backend = service._require_backend()
     t_start = time.perf_counter()
+    pass_started_monotonic = time.monotonic()
     batches_processed = 0
+
+    def _pass_deadline_exceeded() -> bool:
+        return max_pass_seconds is not None and (time.monotonic() - pass_started_monotonic) >= max_pass_seconds
 
     if raw_ids is not None:
         raw_headers = await service.repository.get_raw_blob_sizes(raw_ids)
@@ -346,6 +374,17 @@ async def parse_from_raw(
             max_records=service.raw_batch_size,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
+            if batches_processed > 0 and _pass_deadline_exceeded():
+                result.time_budget_exceeded = True
+                logger.info(
+                    "parse_from_raw: yielding at time-budget checkpoint "
+                    "(max_pass_seconds=%.1f) after %d batch(es), %d/%d raw processed",
+                    max_pass_seconds,
+                    batches_processed,
+                    processed_so_far,
+                    total,
+                )
+                break
             next_batch = batches_processed + 1
             batch_blob_bytes = _emit_ingest_batch_start(
                 batch=next_batch,
@@ -398,6 +437,17 @@ async def parse_from_raw(
             max_records=service.raw_batch_size,
             max_blob_bytes=service.raw_batch_blob_limit_bytes,
         ):
+            if batches_processed > 0 and _pass_deadline_exceeded():
+                result.time_budget_exceeded = True
+                logger.info(
+                    "parse_from_raw: yielding at time-budget checkpoint "
+                    "(max_pass_seconds=%.1f) after %d batch(es), %d/%d raw processed",
+                    max_pass_seconds,
+                    batches_processed,
+                    processed_so_far,
+                    total,
+                )
+                break
             next_batch = batches_processed + 1
             batch_blob_bytes = _emit_ingest_batch_start(
                 batch=next_batch,
