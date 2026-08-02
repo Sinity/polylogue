@@ -1926,9 +1926,9 @@ def test_rebuild_index_full_source_resumes_one_candidate_until_terminal_promotio
             archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=(
-                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'
                     f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
-                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\\n'
+                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\n'
                 ).encode(),
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
@@ -2004,9 +2004,9 @@ def test_rebuild_index_persists_durable_pass_receipt_alongside_transaction(
             archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=(
-                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'
                     f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
-                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\\n'
+                    f'"content":[{{"type":"input_text","text":"{native_id}"}}]}}}}\n'
                 ).encode(),
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
@@ -2075,9 +2075,9 @@ def test_rebuild_index_byte_budget_defers_then_reaches_terminal_ready_candidate(
             archive.write_raw_payload(
                 provider=Provider.CODEX,
                 payload=(
-                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\\n'
+                    f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'
                     f'{{"type":"response_item","payload":{{"type":"message","role":"user",'
-                    f'"content":[{{"type":"input_text","text":"{padding}"}}]}}}}\\n'
+                    f'"content":[{{"type":"input_text","text":"{padding}"}}]}}}}\n'
                 ).encode(),
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=acquired_at_ms,
