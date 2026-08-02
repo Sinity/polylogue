@@ -11,6 +11,7 @@ import sqlite3
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
@@ -203,6 +204,91 @@ class ArchiveRawSessionEnvelope:
     artifact_ids: tuple[str, ...]
     hook_event_ids: tuple[str, ...]
     history_sidecar_ids: tuple[str, ...]
+
+
+CaptureModeResolutionStatus = Literal["unknown", "unambiguous", "ambiguous"]
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureModeResolution:
+    """Every acquisition mode ever observed for one raw, explicitly disambiguated.
+
+    ``raw_sessions.capture_mode`` (v8) is a convenience cache of only the
+    *first* known acquisition mode for a raw_id -- later writes update it
+    only when it is still NULL. Because ``raw_id`` is content-derived, a
+    GEMINI export and a live DRIVE acquisition of byte-identical bytes
+    collide on the same raw_id even though their acquisition mechanism
+    genuinely differs, and the cache alone cannot tell a caller whether the
+    value it holds is the only fact on record or one of several (polylogue-
+    buns). ``status`` makes that explicit: ``"unknown"`` when no observation
+    was ever recorded, ``"unambiguous"`` when exactly one distinct mode was,
+    ``"ambiguous"`` when more than one was. ``modes`` is ordered by first
+    observation time.
+    """
+
+    raw_id: str
+    status: CaptureModeResolutionStatus
+    modes: tuple[Provider, ...]
+
+
+def record_capture_mode_observation(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    capture_mode: Provider | str | None,
+    observed_at_ms: int,
+) -> None:
+    """Append one durable (raw_id, capture_mode) observation.
+
+    Idempotent: repeating an already-recorded pair is a no-op (its original
+    ``first_observed_at_ms`` is kept), but a genuinely new mode for this
+    raw_id gets its own row. This is what lets a later
+    :func:`read_capture_mode_resolution` distinguish "only one acquisition
+    mode was ever observed" from "several were, and the cache only kept the
+    first" -- content-hash dedup already collapses the bytes to one raw_id,
+    but must not also collapse distinct acquisition evidence about how those
+    bytes were obtained (polylogue-buns AC1/AC2). A ``None`` capture_mode is
+    a no-op: unknown provenance is not itself an observation.
+    """
+    value = _enum_value(capture_mode)
+    if value is None:
+        return
+    conn.execute(
+        """
+        INSERT INTO raw_capture_observations (raw_id, capture_mode, first_observed_at_ms)
+        VALUES (?, ?, ?)
+        ON CONFLICT(raw_id, capture_mode) DO NOTHING
+        """,
+        (raw_id, value, observed_at_ms),
+    )
+
+
+def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:
+    """Read every acquisition mode ever observed for ``raw_id``, explicitly ambiguous or not.
+
+    This is the durable-evidence read surface (AC2): unlike
+    ``raw_sessions.capture_mode``, which silently returns only the first-ever
+    known mode, this tells a caller whether that value is the sole fact on
+    record or one of several colliding observations.
+    """
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT capture_mode FROM raw_capture_observations
+        WHERE raw_id = ?
+        ORDER BY first_observed_at_ms, capture_mode
+        """,
+        (raw_id,),
+    ).fetchall()
+    modes = tuple(Provider.from_string(row["capture_mode"]) for row in rows)
+    status: CaptureModeResolutionStatus
+    if not modes:
+        status = "unknown"
+    elif len(modes) == 1:
+        status = "unambiguous"
+    else:
+        status = "ambiguous"
+    return CaptureModeResolution(raw_id=raw_id, status=status, modes=modes)
 
 
 def deterministic_blob_hash(payload: bytes) -> bytes:
@@ -500,6 +586,12 @@ def write_source_raw_session(
                 blob_size=blob_size,
                 revision=revision,
             )
+        record_capture_mode_observation(
+            conn,
+            raw_id=resolved_raw_id,
+            capture_mode=capture_mode,
+            observed_at_ms=acquired_at_ms,
+        )
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -667,6 +759,12 @@ def write_source_raw_session_blob_ref(
                 blob_size=blob_size,
                 revision=revision,
             )
+        record_capture_mode_observation(
+            conn,
+            raw_id=resolved_raw_id,
+            capture_mode=capture_mode,
+            observed_at_ms=acquired_at_ms,
+        )
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -1166,6 +1264,7 @@ __all__ = [
     "ArchiveRawSessionEnvelope",
     "ArchiveSourceArtifact",
     "ArchiveSourceBlobRef",
+    "CaptureModeResolution",
     "ContentExcisedError",
     "deterministic_blob_hash",
     "deterministic_history_sidecar_id",
@@ -1173,11 +1272,13 @@ __all__ = [
     "is_blob_hash_excised",
     "list_hook_events",
     "list_raw_artifacts",
+    "read_capture_mode_resolution",
     "read_earliest_history_sidecar_for_path",
     "read_history_sidecar",
     "read_hook_event",
     "read_raw_artifact",
     "read_archive_raw_session_envelope",
+    "record_capture_mode_observation",
     "record_excised_blob_hash",
     "write_history_sidecar",
     "write_source_raw_session",

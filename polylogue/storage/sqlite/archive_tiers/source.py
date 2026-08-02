@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 15
+SOURCE_SCHEMA_VERSION = 16
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -83,6 +83,25 @@ ON raw_sessions(blob_hash);
 -- re-sorting the remaining table on every bounded pass as the archive grows.
 CREATE INDEX IF NOT EXISTS idx_raw_sessions_blob_hash_raw_id
 ON raw_sessions(blob_hash, raw_id);
+
+-- v16 (polylogue-buns): durable multimap of every acquisition mode ever
+-- observed for one raw_id. raw_sessions.capture_mode above caches only the
+-- FIRST known mode (write-time UPDATE is gated `WHERE capture_mode IS
+-- NULL`), which silently discards any later, different capture_mode for a
+-- raw_id that collides on content hash -- e.g. a GEMINI export and a live
+-- DRIVE acquisition of byte-identical bytes. This table keeps one row per
+-- distinct (raw_id, capture_mode) ever observed so that fact is never lost,
+-- and lets a caller read an explicit unambiguous/ambiguous resolution
+-- instead of only ever seeing the first-cached value.
+CREATE TABLE IF NOT EXISTS raw_capture_observations (
+    raw_id               TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    capture_mode         TEXT NOT NULL CHECK ({check("capture_mode", Provider)}),
+    first_observed_at_ms INTEGER NOT NULL CHECK(first_observed_at_ms >= 0),
+    PRIMARY KEY (raw_id, capture_mode)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_capture_observations_raw_id
+ON raw_capture_observations(raw_id);
 
 CREATE TABLE IF NOT EXISTS raw_session_memberships (
     raw_id                  TEXT NOT NULL REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
