@@ -994,7 +994,15 @@ def classify_untyped_full_revision_groups(
                 HistoricalRawRevisionStream(raw_id=raw_id, payload_size=blob_size, open_payload=open_payload)
             )
         decisions = classify_historical_full_revision_streams(streams)
-        if not decisions or decisions[0].authority is not RawRevisionAuthority.BYTE_PROVEN:
+        # A duplicate/predecessor/baseline decision is always BYTE_PROVEN; any
+        # QUARANTINED entry means the fork-localization in
+        # classify_historical_full_revision_streams (I4/I5, polylogue-lb39z)
+        # found a genuine divergence or an unrelated sibling somewhere in this
+        # cohort. This caller's contract requires the WHOLE cohort to be one
+        # provable chain (it uses the result to skip *parsing* older members
+        # outright), so any partial verdict here still falls back to parsing
+        # every member, exactly as an all-ambiguous verdict always did.
+        if not decisions or any(decision.authority is not RawRevisionAuthority.BYTE_PROVEN for decision in decisions):
             continue
         groups[decisions[-1].raw_id] = tuple(decision.raw_id for decision in decisions[:-1])
     return groups

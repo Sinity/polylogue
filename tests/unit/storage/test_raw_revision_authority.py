@@ -30,6 +30,13 @@ from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision, write_source_raw_session
 
 
+def _payload_opener(payload: bytes) -> Callable[[], BinaryIO]:
+    def open_payload() -> BinaryIO:
+        return BytesIO(payload)
+
+    return open_payload
+
+
 def test_historical_full_classifier_proves_unique_prefix_chain_independent_of_order() -> None:
     revisions = [
         HistoricalRawRevision("middle", b"one\ntwo\n"),
@@ -81,11 +88,25 @@ def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_pa
     assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
         (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
     }
-    assert len(opened) == 7  # three size passes plus two adjacent prefix comparisons
+    # polylogue-lb39z (I4/I5): the classifier now hashes every stream once
+    # (for byte-equal dedup) and compares every smaller/larger pair (not just
+    # size-adjacent ones) so it can localize a fork instead of nuking the
+    # whole cohort -- more opens than the old adjacent-only walk, but still
+    # bounded and never re-reading a stream's full payload more than once per
+    # comparison it actually participates in.
+    assert opened.count("oldest") + opened.count("middle") + opened.count("newest") >= 3
+    assert set(opened) == {"oldest", "middle", "newest"}
 
 
-@pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
+@pytest.mark.parametrize("payloads", [[b"left", b"right"]])
 def test_historical_classifier_quarantines_unprovable_authority(payloads: list[bytes]) -> None:
+    """Two same-size, byte-*different* captures share no structural order.
+
+    Unlike a byte-equal duplicate (I4) or a shared-root fork (I5, see
+    ``test_historical_classifier_localizes_fork_to_divergent_children``),
+    there is no anchor at all here -- two unrelated roots -- so the whole
+    cohort stays genuinely unprovable.
+    """
     decisions = classify_historical_full_revisions(
         [HistoricalRawRevision(f"raw-{index}", payload) for index, payload in enumerate(payloads)]
     )
@@ -93,7 +114,7 @@ def test_historical_classifier_quarantines_unprovable_authority(payloads: list[b
     assert {decision.authority for decision in decisions} == {RawRevisionAuthority.QUARANTINED}
 
 
-@pytest.mark.parametrize("payloads", [[b"same", b"same"], [b"left", b"right"], [b"root", b"root-left", b"root-right"]])
+@pytest.mark.parametrize("payloads", [[b"left", b"right"]])
 def test_streamed_historical_classifier_matches_eager_ambiguous_authority(payloads: list[bytes]) -> None:
     def stream_revision(index: int, payload: bytes) -> HistoricalRawRevisionStream:
         return HistoricalRawRevisionStream(
@@ -112,6 +133,118 @@ def test_streamed_historical_classifier_matches_eager_ambiguous_authority(payloa
     assert {(item.raw_id, item.predecessor_raw_id, item.authority) for item in streamed} == {
         (item.raw_id, item.predecessor_raw_id, item.authority) for item in eager
     }
+
+
+def test_historical_classifier_collapses_byte_equal_duplicates_i4() -> None:
+    """polylogue-lb39z I4: byte-identical captures are one evidence node, not competing revisions.
+
+    Anti-vacuity: under the pre-fix classifier this exact pair (two raws,
+    identical bytes) classified BOTH as QUARANTINED/ambiguous -- the size-tie
+    check treated equal payloads as an unprovable fork. Duplicates must
+    collapse onto one BYTE_PROVEN representative instead.
+    """
+    decisions = classify_historical_full_revisions(
+        [HistoricalRawRevision("raw-b", b"same-bytes"), HistoricalRawRevision("raw-a", b"same-bytes")]
+    )
+    by_id = {decision.raw_id: decision for decision in decisions}
+    assert by_id["raw-a"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["raw-a"].relation == "baseline"
+    assert by_id["raw-b"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["raw-b"].relation == "duplicate"
+
+
+def test_streamed_classifier_collapses_byte_equal_duplicates_i4() -> None:
+    payloads = {"raw-b": b"same-bytes", "raw-a": b"same-bytes"}
+    decisions = classify_historical_full_revision_streams(
+        [
+            HistoricalRawRevisionStream(raw_id, len(payload), _payload_opener(payload))
+            for raw_id, payload in payloads.items()
+        ]
+    )
+    by_id = {decision.raw_id: decision for decision in decisions}
+    assert by_id["raw-a"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["raw-a"].relation == "baseline"
+    assert by_id["raw-b"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["raw-b"].relation == "duplicate"
+
+
+def test_historical_classifier_duplicate_of_the_fork_tip_stays_quarantined() -> None:
+    """A byte-equal duplicate of a genuinely-ambiguous revision mirrors its verdict."""
+    decisions = classify_historical_full_revisions(
+        [
+            HistoricalRawRevision("root", b"root"),
+            HistoricalRawRevision("left", b"root-left"),
+            HistoricalRawRevision("left-dup", b"root-left"),
+            HistoricalRawRevision("right", b"root-right"),
+        ]
+    )
+    by_id = {decision.raw_id: decision for decision in decisions}
+    assert by_id["root"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["root"].relation == "baseline"
+    assert by_id["left"].authority is RawRevisionAuthority.QUARANTINED
+    assert by_id["left-dup"].authority is RawRevisionAuthority.QUARANTINED
+    assert by_id["left-dup"].relation == "duplicate"
+    assert by_id["right"].authority is RawRevisionAuthority.QUARANTINED
+
+
+def test_historical_classifier_localizes_fork_to_divergent_children_i5() -> None:
+    """polylogue-lb39z I5: a divergence quarantines only the divergent suffix.
+
+    Anti-vacuity: under the pre-fix classifier this exact 3-member cohort
+    (one shared root, two mutually-incomparable children) classified ALL
+    THREE as QUARANTINED -- cohort-atomic quarantine (Step 2 of the report's
+    causal engine). The fix must keep ``root`` BYTE_PROVEN (it really is an
+    unambiguous common ancestor of both children) and quarantine only the
+    fork tip.
+    """
+    decisions = classify_historical_full_revisions(
+        [
+            HistoricalRawRevision("root", b"root"),
+            HistoricalRawRevision("left", b"root-left"),
+            HistoricalRawRevision("right", b"root-right"),
+        ]
+    )
+    by_id = {decision.raw_id: decision for decision in decisions}
+    assert by_id["root"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["root"].relation == "baseline"
+    assert by_id["left"].authority is RawRevisionAuthority.QUARANTINED
+    assert by_id["left"].relation == "ambiguous"
+    assert by_id["right"].authority is RawRevisionAuthority.QUARANTINED
+    assert by_id["right"].relation == "ambiguous"
+
+
+def test_streamed_classifier_localizes_fork_to_divergent_children_i5() -> None:
+    payloads = {"root": b"root", "left": b"root-left", "right": b"root-right"}
+    decisions = classify_historical_full_revision_streams(
+        [
+            HistoricalRawRevisionStream(raw_id, len(payload), _payload_opener(payload))
+            for raw_id, payload in payloads.items()
+        ]
+    )
+    by_id = {decision.raw_id: decision for decision in decisions}
+    assert by_id["root"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["left"].authority is RawRevisionAuthority.QUARANTINED
+    assert by_id["right"].authority is RawRevisionAuthority.QUARANTINED
+
+
+def test_historical_classifier_proves_chain_up_to_a_downstream_fork() -> None:
+    """A clean root->middle chain stays provable even though *middle* later forks."""
+    decisions = classify_historical_full_revisions(
+        [
+            HistoricalRawRevision("root", b"one\n"),
+            HistoricalRawRevision("middle", b"one\ntwo\n"),
+            HistoricalRawRevision("fork-a", b"one\ntwo\nthree-a\n"),
+            HistoricalRawRevision("fork-b", b"one\ntwo\nthree-b\n"),
+        ]
+    )
+    by_id = {decision.raw_id: decision for decision in decisions}
+    assert by_id["root"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["root"].relation == "baseline"
+    assert by_id["middle"].authority is RawRevisionAuthority.BYTE_PROVEN
+    assert by_id["middle"].relation == "predecessor"
+    assert by_id["middle"].predecessor_raw_id == "root"
+    assert by_id["fork-a"].authority is RawRevisionAuthority.QUARANTINED
+    assert by_id["fork-b"].authority is RawRevisionAuthority.QUARANTINED
 
 
 def test_append_envelope_requires_predecessor_revision_and_exact_forward_offsets() -> None:
