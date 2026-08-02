@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 16
+SOURCE_SCHEMA_VERSION = 17
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -468,6 +468,22 @@ CREATE TABLE IF NOT EXISTS excised_content (
     span_end        INTEGER CHECK(span_end IS NULL OR span_end > span_start),
     excised_at_ms   INTEGER NOT NULL,
     PRIMARY KEY(removed_hash, hash_kind)
+) STRICT;
+
+-- polylogue-byw3y: durable verification-receipt cache so a census does not
+-- re-hash every accepted frontier blob from scratch on every daemon
+-- restart. See migrations/source/017_verified_blob_receipts.sql for the
+-- full rationale and the safety invariant (a receipt is trusted only when
+-- its fingerprint matches the blob's CURRENT stat() exactly).
+CREATE TABLE IF NOT EXISTS verified_blob_receipts (
+    blob_hash        BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    st_dev           INTEGER NOT NULL,
+    st_ino           INTEGER NOT NULL,
+    st_size          INTEGER NOT NULL CHECK(st_size >= 0),
+    st_mtime_ns      INTEGER NOT NULL,
+    st_ctime_ns      INTEGER NOT NULL,
+    verified_at_ms   INTEGER NOT NULL CHECK(verified_at_ms >= 0),
+    PRIMARY KEY(blob_hash)
 ) STRICT;
 
 """

@@ -21,6 +21,7 @@ from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage import raw_reconciler as raw_reconciler_mod
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
     AUTO_STALE_PLAN_RESOLUTION,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -1504,6 +1505,89 @@ def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_frontier_blocking_count"] == 1
     assert raw_materialization_ready(readiness) is False
+
+
+def test_verified_blob_receipt_invalidates_when_blob_bytes_change_underneath_it(tmp_path: Path) -> None:
+    """polylogue-byw3y: the safety-critical half of the receipt cache.
+
+    A verification receipt is a durable HINT, never an authority: it may only
+    ever be trusted for the exact on-disk fingerprint (dev/inode/size/mtime/
+    ctime) it was recorded against. If a blob's bytes are corrupted/mutated
+    in place -- the file at the content-addressed path no longer matches its
+    own filename hash -- the next census MUST re-verify from scratch and
+    reclassify the frontier item as unproven, never silently keep trusting a
+    stale receipt. This is the regression this bead's whole design exists to
+    prevent: a performance win here would be worthless (and actively unsafe)
+    if it could paper over real corruption.
+    """
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(
+        tmp_path, native_id="tamper-target", source_path="tamper.jsonl", acquired_at_ms=1, text="hello"
+    )
+    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        blob_hash_hex = str(
+            source_conn.execute("SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        ).lower()
+
+    # First census: proves the blob, records a durable receipt.
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+    item = next(entry for entry in census.items if entry.raw_id == raw_id)
+    assert item.state is RawAuthorityFrontierState.PROVEN_CURRENT
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        receipt = source_conn.execute(
+            "SELECT st_size FROM verified_blob_receipts WHERE blob_hash = ?",
+            (bytes.fromhex(blob_hash_hex),),
+        ).fetchone()
+    assert receipt is not None, "first census must persist a verification receipt"
+
+    # Corrupt the blob bytes IN PLACE -- same content-addressed filename,
+    # different content. This is the exact shape a stale-but-trusted receipt
+    # would silently paper over: the fingerprint's st_size differs, so the
+    # census must force a real re-hash rather than trust the old receipt.
+    blob_path = BlobStore(tmp_path / "blob").blob_path(blob_hash_hex)
+    blob_path.write_bytes(blob_path.read_bytes() + b"tampered-bytes")
+
+    census2 = inspect_raw_authority_frontier(_config(tmp_path))
+    item2 = next(entry for entry in census2.items if entry.raw_id == raw_id)
+    assert item2.state is RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE
+    assert item2.reason == "accepted head raw bytes do not prove the expected content-addressed digest"
+    assert census2.state_counts[RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE.value] == 1
+
+
+def test_verified_blob_receipt_skips_rehash_on_unchanged_blob_across_census_passes(tmp_path: Path) -> None:
+    """polylogue-byw3y: the performance half -- a blob verified once and left
+    untouched must not be re-hashed by a second census pass. Counts actual
+    ``BlobStore.verify`` invocations (the real content re-hash) rather than
+    trusting a wall-clock or state proxy, so the assertion fails honestly if
+    the receipt cache regresses back to re-verifying every restart.
+    """
+    initialize_active_archive_root(tmp_path)
+    raw_id = _write_codex_raw(
+        tmp_path, native_id="unchanged-target", source_path="unchanged.jsonl", acquired_at_ms=1, text="hello"
+    )
+    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+
+    verify_calls: list[str] = []
+    real_verify = BlobStore.verify
+
+    def _counting_verify(self: BlobStore, hash_hex: str) -> bool:
+        verify_calls.append(hash_hex)
+        return real_verify(self, hash_hex)
+
+    with patch.object(BlobStore, "verify", _counting_verify):
+        census1 = inspect_raw_authority_frontier(_config(tmp_path))
+        assert len(verify_calls) == 1, "first census must hash the blob at least once"
+        item1 = next(entry for entry in census1.items if entry.raw_id == raw_id)
+        assert item1.state is RawAuthorityFrontierState.PROVEN_CURRENT
+
+        verify_calls.clear()
+        census2 = inspect_raw_authority_frontier(_config(tmp_path))
+        assert verify_calls == [], "second census over an unchanged blob must reuse the durable receipt"
+        item2 = next(entry for entry in census2.items if entry.raw_id == raw_id)
+        assert item2.state is RawAuthorityFrontierState.PROVEN_CURRENT
 
 
 def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quarantine(tmp_path: Path) -> None:
