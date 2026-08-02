@@ -102,6 +102,12 @@ class IngestRecordResult:
     retryable: bool | None = False
     evidence_ref: str | None = None
     remediation: str | None = None
+    # polylogue-azf7: set when on-demand sidecar-assembly enrichment raised
+    # and this record's sessions were materialized unenriched (native-id
+    # title etc.) as a result. Distinct from ``error`` -- the record still
+    # succeeds -- so the batch summary can count silent degradation instead
+    # of it only reaching a log line.
+    sessions_unenriched: bool = False
 
 
 ParsePlanMode = Literal["payload", "stream"]
@@ -216,6 +222,7 @@ def _record_result(
     include_source_name: bool = False,
     schema_drift: SchemaDriftObservation | None = None,
     disposition: IngestAttemptDisposition | None = None,
+    sessions_unenriched: bool = False,
 ) -> IngestRecordResult:
     if disposition is None:
         disposition = success_disposition() if error is None else None
@@ -234,6 +241,7 @@ def _record_result(
             retryable=(disposition.retryable if disposition is not None else None),
             evidence_ref=(disposition.evidence_ref if disposition is not None else None),
             remediation=(disposition.remediation if disposition is not None else None),
+            sessions_unenriched=sessions_unenriched,
         ),
         measure_serialized_size=context.measure_serialized_size,
     )
@@ -592,7 +600,7 @@ def _enrich_parsed_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
     parsed_sessions: list[ParsedSession],
-) -> list[ParsedSession]:
+) -> tuple[list[ParsedSession], bool]:
     """Apply the same provider assembly enrichment direct ingest uses.
 
     Canonical raw-record ingest historically bypassed provider assembly, so
@@ -612,27 +620,33 @@ def _enrich_parsed_sessions(
     ``None`` means the resolver never ran for this record (non-Codex, or a
     caller that bypasses the batch resolver, e.g. focused unit tests) and
     the prior on-demand disk-discovery behavior applies unchanged.
+
+    Returns ``(sessions, sessions_unenriched)`` -- the second element is
+    ``True`` only when on-demand discovery raised and the caller fell back
+    to the unenriched sessions (polylogue-azf7), so the batch summary can
+    surface a count of silently-degraded records instead of a log line
+    being the only trace.
     """
     from polylogue.sources.assembly import get_assembly_spec
 
     spec = get_assembly_spec(plan.provider)
     if spec is None:
-        return parsed_sessions
+        return parsed_sessions, False
     if context.raw_record.sidecar_snapshot is not None:
         sidecar_data = cast(SidecarData, context.raw_record.sidecar_snapshot)
-        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions]
+        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
     source_path = context.raw_record.source_path
     if not source_path:
-        return parsed_sessions
+        return parsed_sessions, False
     try:
         sidecar_data = spec.discover_sidecars([Path(source_path)])
-        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions]
+        return [spec.enrich_session(convo, sidecar_data) for convo in parsed_sessions], False
     except Exception:
         logger.exception(
             "assembly enrichment failed for %s; keeping unenriched sessions",
             context.raw_record.raw_id,
         )
-        return parsed_sessions
+        return parsed_sessions, True
 
 
 def _materialize_parsed_sessions(
@@ -641,6 +655,7 @@ def _materialize_parsed_sessions(
     *,
     validation: _PlanValidation,
     parsed_sessions: list[ParsedSession],
+    sessions_unenriched: bool = False,
 ) -> IngestRecordResult:
     if not parsed_sessions:
         error = "parse: session artifact produced no materializable sessions"
@@ -692,6 +707,7 @@ def _materialize_parsed_sessions(
         sessions=session_payloads,
         include_source_name=True,
         schema_drift=validation.schema_drift,
+        sessions_unenriched=sessions_unenriched,
     )
 
 
@@ -736,11 +752,13 @@ def _run_parse_plan(
             disposition=classify_parse_exception(exc),
         )
 
+    enriched_sessions, sessions_unenriched = _enrich_parsed_sessions(context, plan, parsed_sessions)
     return _materialize_parsed_sessions(
         context,
         plan,
         validation=validation,
-        parsed_sessions=_enrich_parsed_sessions(context, plan, parsed_sessions),
+        parsed_sessions=enriched_sessions,
+        sessions_unenriched=sessions_unenriched,
     )
 
 

@@ -87,6 +87,12 @@ class _IngestBatchSummary:
             "sidecar_blob_bytes_new": 0,
             "sidecar_blob_bytes_dedup": 0,
             "sidecar_blobs_written": 0,
+            # polylogue-azf7: records whose sessions materialized without
+            # provider assembly enrichment because on-demand sidecar
+            # discovery raised mid-ingest (see IngestRecordResult.sessions_
+            # unenriched). Surfaces silent title/enrichment degradation
+            # that previously only reached a log line.
+            "sessions_unenriched": 0,
         }
     )
     changed_counts: dict[str, int] = field(

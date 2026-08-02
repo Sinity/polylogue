@@ -117,6 +117,70 @@ def test_ambient_edit_after_first_resolution_does_not_alter_replay(tmp_path: Pat
     assert len(rows) == 1
 
 
+def test_transient_discovery_failure_does_not_freeze_an_empty_snapshot(
+    tmp_path: Path,
+    archive_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for polylogue-azf7.
+
+    Before the fix, ``_resolve_codex_sidecar_snapshots`` swallowed any
+    exception from ``discover_sidecars`` and persisted the resulting empty
+    ``{}`` via ``write_history_sidecar``. Because
+    ``read_earliest_history_sidecar_for_path`` replays the *first* persisted
+    row forever (polylogue-ih67 AC#3/4), a one-off transient error (disk
+    hiccup, a sidecar file mid-write) permanently froze an empty snapshot:
+    every subsequent ingest of that ``source_path`` -- even long after the
+    transient condition cleared -- would keep replaying the empty result and
+    enrichment could never recover.
+    """
+    from polylogue.sources import assembly_codex
+
+    session_id = "dddd1111-2222-3333-4444-555566667777"
+    rollout = _codex_runtime_root(tmp_path, session_id)
+    (rollout.parents[2] / "history.jsonl").write_text(
+        json.dumps({"session_id": session_id, "ts": 1, "text": "real title"}) + "\n",
+        encoding="utf-8",
+    )
+
+    original_discover = assembly_codex.CodexAssemblySpec.discover_sidecars
+    call_count = {"n": 0}
+
+    def flaky_discover(self: object, paths: object) -> object:
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise OSError("simulated transient disk error during discovery")
+        return original_discover(self, paths)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(assembly_codex.CodexAssemblySpec, "discover_sidecars", flaky_discover)
+
+    # First attempt: discovery raises. This ingest's record gets an empty
+    # (unenriched) snapshot for its own materialization, but nothing may be
+    # persisted as the frozen "first" row.
+    record_first = _record(str(rollout))
+    _resolve_codex_sidecar_snapshots([record_first], archive_root=archive_root)
+    assert record_first.sidecar_snapshot == {}
+
+    with sqlite3.connect(str(archive_root / "source.db")) as conn:
+        rows = conn.execute("SELECT payload_json FROM history_sidecars").fetchall()
+    assert rows == [], "a transient discovery failure must not persist a frozen empty snapshot"
+
+    # Second attempt for the SAME source_path: discovery now succeeds. This
+    # must become the real first-ever persisted snapshot and must be read
+    # back correctly, not the empty result from the failed first attempt.
+    record_second = _record(str(rollout))
+    _resolve_codex_sidecar_snapshots([record_second], archive_root=archive_root)
+
+    assert record_second.sidecar_snapshot is not None
+    assert record_second.sidecar_snapshot["history_titles"][session_id] == "real title"
+
+    with sqlite3.connect(str(archive_root / "source.db")) as conn:
+        rows = conn.execute("SELECT payload_json FROM history_sidecars").fetchall()
+    assert len(rows) == 1
+    persisted = json.loads(rows[0][0])
+    assert persisted["history_titles"][session_id] == "real title"
+
+
 def test_non_codex_records_are_left_unresolved(tmp_path: Path, archive_root: Path) -> None:
     record = RawSessionRecord(
         raw_id="raw-claude",
