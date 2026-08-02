@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, Provider, SessionKind, WebConstructType
+from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 
@@ -1282,7 +1282,18 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     ]
     session_events.extend(_block_metadata_evidence_events(messages))
     duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
-    title = payload.get("title") or payload.get("name") or fallback_id
+    provider_title = payload.get("title") or payload.get("name")
+    title = provider_title or fallback_id
+    # polylogue-cijx.4 decision 3 / has_real_title (archive_tiers/archive.py):
+    # title_source is the sole gate distinguishing a genuine provider title
+    # from the bare native-id fallback this parser stores in `title` when
+    # ChatGPT's own export carries neither `title` nor `name` -- without it,
+    # every ChatGPT session (titled or not) silently degraded to the
+    # structural "N msgs" label once #3421 made that gate strict. Only a
+    # real payload title counts as ORIGIN evidence; the id fallback is
+    # exactly the "worse than the UUID it replaces" case that gate exists
+    # to catch.
+    title_source = TitleSource.ORIGIN if provider_title else None
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     ingest_flags: list[str] = []
     if not messages and payload.get("conversation_id") and payload.get("id") and "mapping" not in payload:
@@ -1301,6 +1312,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         source_name=Provider.CHATGPT,
         provider_session_id=str(conv_id or fallback_id),
         title=str(title),
+        title_source=title_source,
         session_kind=session_kind,
         provider_project_ref=provider_project_ref,
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,
