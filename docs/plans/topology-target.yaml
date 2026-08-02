@@ -1636,7 +1636,7 @@ files:
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1378
+    loc: 1471
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -1920,6 +1920,10 @@ files:
   - path: polylogue/insights/authored_payloads.py
     loc: 163
     target: polylogue/insights/authored_payloads.py
+    owner: stable
+  - path: polylogue/insights/capture_coverage.py
+    loc: 414
+    target: polylogue/insights/capture_coverage.py
     owner: stable
   - path: polylogue/insights/claude_workflow_evidence.py
     loc: 778
