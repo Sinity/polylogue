@@ -15,6 +15,14 @@ the before/after artifact-class evidence (AC #6).
 
 The split out of ``storage/repair.py`` is the one called out in
 ``docs/plans/file-size-budgets.yaml`` for that file.
+
+Kept as a manual ``doctor --repair --target message_type_backfill`` surface
+(automagic-invariants audit, polylogue-cfvvt): unlike blob-gc or
+embedding-orphan-reconcile, there is no recurring daemon condition here to
+auto-heal. New-ingest rows are classified correctly at write time since
+PR #836/#944, so this backfill only ever touches a fixed, shrinking set of
+pre-existing legacy rows -- a one-time historical remediation, not an
+ongoing invariant a daemon convergence stage could maintain.
 """
 
 from __future__ import annotations

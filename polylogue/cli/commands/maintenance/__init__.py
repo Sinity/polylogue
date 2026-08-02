@@ -84,7 +84,7 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Resolve one stale-plan blocker against current source evidence.",
     ),
     ("preview", "_preview", "preview_command", "Staleness inventory by model and scope. Read-only."),
-    ("blob-gc", "_blob_gc", "blob_gc_command", "Preview or run lease-safe blob garbage collection."),
+    ("blob-gc", "_blob_gc", "blob_gc_command", "Preview lease-safe blob garbage collection. Read-only."),
     (
         "blob-publications",
         "_blob_publications",
