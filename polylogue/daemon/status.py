@@ -2752,7 +2752,14 @@ def daemon_status_payload(
             "health": {
                 "overall_status": status.health.overall_status.value,
                 "checked_at": status.health.checked_at,
-                "alert_count": len(status.health.alerts),
+                # Non-OK alerts only (polylogue-7eo7 #1): counting every
+                # check run -- including the OK ones -- produced the
+                # self-contradicting "Health: ok (6 alerts)" line, since a
+                # fully healthy daemon always runs exactly len(fast checks)
+                # of them. ``checks_run`` keeps the total available for
+                # anyone who wants it.
+                "alert_count": sum(1 for a in status.health.alerts if a.severity != HealthSeverity.OK),
+                "checks_run": len(status.health.alerts),
                 "tier_summary": status.health.tier_summary,
             },
             "raw_parse_failures": status.raw_parse_failures,
@@ -2825,8 +2832,15 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     lifecycle = payload.get("daemon_lifecycle")
     if payload.get("daemon_liveness"):
         age = lifecycle.get("heartbeat_age_s") if isinstance(lifecycle, dict) else None
+        lifecycle_state = lifecycle.get("state") if isinstance(lifecycle, dict) else None
         suffix = f" (heartbeat {age}s ago)" if isinstance(age, int | float) else ""
-        lines.append(f"  Status: running{suffix}")
+        # A "stale" lifecycle state (missed >=1 scheduled beat but short of
+        # the "vanished" floor) used to print as flat "running" with no
+        # signal at all (polylogue-7eo7 #2) -- surface it here, in addition
+        # to the heartbeat_staleness health check that feeds the overall
+        # verdict.
+        marker = " [STALE]" if lifecycle_state == "stale" else ""
+        lines.append(f"  Status: running{marker}{suffix}")
     elif isinstance(lifecycle, dict):
         lines.append(f"  Status: {lifecycle.get('state', 'absent')} heartbeat")
     storage = payload.get("archive_storage")

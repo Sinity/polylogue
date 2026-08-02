@@ -150,6 +150,55 @@ def _check_daemon_liveness_fast() -> HealthAlert:
         )
 
 
+def _check_heartbeat_staleness_fast() -> HealthAlert:
+    """Detect a heartbeat that has silently missed one or more scheduled beats.
+
+    ``daemon_liveness`` only distinguishes "fresh" from "vanished" at
+    ``DAEMON_HEARTBEAT_STALE_AFTER_SECONDS`` (2x the configured interval), so
+    a heartbeat sitting between 1.5x and 2x the interval used to read as
+    flat "running" with no signal at all (polylogue-7eo7 #2: observed
+    1369.8s against a 900s interval -- comfortably past one missed beat, but
+    short of the "vanished" floor). This check narrows that gap with a
+    WARNING tier at ``DAEMON_HEARTBEAT_STALE_WARN_SECONDS``.
+    """
+    from polylogue.daemon.lifecycle import lifecycle_status
+
+    now = datetime.now(UTC).isoformat()
+    try:
+        lifecycle = lifecycle_status()
+        state = lifecycle.get("state")
+        age = lifecycle.get("heartbeat_age_s")
+        if state == "vanished":
+            severity = HealthSeverity.ERROR
+            message = f"heartbeat stale for {age}s -- daemon process considered vanished"
+        elif state == "stale":
+            severity = HealthSeverity.WARNING
+            message = f"heartbeat {age}s old -- missed at least one scheduled beat"
+        else:
+            # "fresh"/"stopped"/"absent"/"unknown": nothing to add here --
+            # daemon_liveness already covers the not-running cases.
+            severity = HealthSeverity.OK
+            message = f"heartbeat {state}" if state else "heartbeat state unavailable"
+        is_ok = severity == HealthSeverity.OK
+        return HealthAlert(
+            check_name="heartbeat_staleness",
+            tier=HealthTier.FAST,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("heartbeat_staleness", is_ok),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="heartbeat_staleness",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.ERROR,
+            message=f"heartbeat staleness check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("heartbeat_staleness", False),
+        )
+
+
 def _check_disk_space_fast() -> HealthAlert:
     """Check free disk space on the archive volume."""
     now = datetime.now(UTC).isoformat()
@@ -426,6 +475,7 @@ def _check_hook_flow_fast() -> HealthAlert:
 def _run_fast_checks() -> list[HealthAlert]:
     return [
         _check_daemon_liveness_fast(),
+        _check_heartbeat_staleness_fast(),
         _check_schema_version_fast(),
         _check_disk_space_fast(),
         _check_wal_size_fast(),
@@ -1463,6 +1513,7 @@ __all__ = [
     "HealthAlert",
     "HealthSeverity",
     "HealthTier",
+    "_check_heartbeat_staleness_fast",
     "_check_hook_flow_fast",
     "_check_schema_version_fast",
     "check_health",

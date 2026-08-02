@@ -11,6 +11,7 @@ import signal
 import sqlite3
 import time
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -19,6 +20,7 @@ from polylogue.core.json import json_document
 from polylogue.daemon import lifecycle as lifecycle_module
 from polylogue.daemon.lifecycle import (
     DAEMON_HEARTBEAT_STALE_AFTER_SECONDS,
+    DAEMON_HEARTBEAT_STALE_WARN_SECONDS,
     DaemonLifecycle,
     install_signal_handlers,
     lifecycle_status,
@@ -86,6 +88,35 @@ def test_lifecycle_status_rejects_stale_unstopped_heartbeat(
     assert payload["heartbeat_age_s"] == DAEMON_HEARTBEAT_STALE_AFTER_SECONDS + 1
 
 
+def test_lifecycle_status_reports_stale_between_warn_and_vanished_floors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-7eo7 #2: a heartbeat missing one scheduled beat (past the
+    warn floor but short of the 2x "vanished" floor) used to report as flat
+    "fresh"/"running" with no signal at all -- the observed real case was
+    1369.8s against a 900s interval. It must now read "stale", not "fresh".
+    """
+    _bind_ops_db(monkeypatch, tmp_path)
+    lifecycle = DaemonLifecycle.start()
+    current_ms = 2_000_000_000_000
+    stale_ms = current_ms - int((DAEMON_HEARTBEAT_STALE_WARN_SECONDS + 1) * 1000)
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "UPDATE daemon_lifecycle SET last_heartbeat_at_ms = ? WHERE run_id = ?",
+            (stale_ms, lifecycle.run_id),
+        )
+        conn.commit()
+
+    payload = lifecycle_status(now_ms=current_ms)
+
+    assert payload["state"] == "stale"
+    # Still considered "running" -- the process is alive, just behind on
+    # its heartbeat cadence, distinct from a genuinely vanished process.
+    assert payload["running"] is True
+    assert cast(float, payload["heartbeat_age_s"]) < DAEMON_HEARTBEAT_STALE_AFTER_SECONDS
+
+
 def test_cli_status_formats_a_stale_heartbeat_as_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
     stale = {"state": "vanished", "running": False, "heartbeat_age_s": 1801.0}
     monkeypatch.setattr("polylogue.daemon.lifecycle.lifecycle_status", lambda: stale)
@@ -94,6 +125,20 @@ def test_cli_status_formats_a_stale_heartbeat_as_not_running(monkeypatch: pytest
     lines = format_daemon_status_lines(json_document({"daemon_liveness": False, "daemon_lifecycle": stale}))
 
     assert "  Status: vanished heartbeat" in lines
+
+
+def test_cli_status_marks_a_stale_but_still_running_heartbeat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-7eo7 #2: a "stale" lifecycle state (missed a beat, still
+    running) used to print as flat "Status: running (heartbeat ...s ago)"
+    with no signal at all. It must now carry a visible [STALE] marker.
+    """
+    stale = {"state": "stale", "running": True, "heartbeat_age_s": 1369.8}
+    monkeypatch.setattr("polylogue.daemon.lifecycle.lifecycle_status", lambda: stale)
+
+    assert _check_daemon_liveness() is True
+    lines = format_daemon_status_lines(json_document({"daemon_liveness": True, "daemon_lifecycle": stale}))
+
+    assert "  Status: running [STALE] (heartbeat 1369.8s ago)" in lines
 
 
 def test_sigterm_dumps_threads_and_persists_signal_before_exit(

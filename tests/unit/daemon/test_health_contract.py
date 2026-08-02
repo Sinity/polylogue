@@ -56,6 +56,9 @@ if TYPE_CHECKING:
 EXPECTED_FAST_CHECKS: frozenset[str] = frozenset(
     {
         "daemon_liveness",
+        # polylogue-7eo7 #2: narrows the "fresh"/"vanished" binary with a
+        # WARNING tier for a heartbeat that has missed a scheduled beat.
+        "heartbeat_staleness",
         "schema_version",
         "disk_space",
         "wal_size",
@@ -67,6 +70,9 @@ EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(
     {
         "fts_readiness",
         "raw_failures",
+        # #3541: capture-completeness coverage measure -- pre-existing check
+        # this pinned list drifted out of sync with when it landed.
+        "capture_coverage",
         "stale_ingest_attempts",
         "insight_freshness",
         "repeated_stage_failures",

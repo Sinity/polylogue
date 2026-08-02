@@ -1,6 +1,6 @@
 """Per-tier health-check evidence: OK, degraded, and recovery paths.
 
-Each of the 13 registered checks in ``polylogue/daemon/health.py`` carries:
+Each of the 14 registered checks in ``polylogue/daemon/health.py`` carries:
 
 - an OK-path assertion on a healthy synthetic fixture, and
 - at least one representative degraded-path assertion exercising the
@@ -40,6 +40,7 @@ from polylogue.daemon.health import (
     _check_disk_space_fast,
     _check_embedding_coverage_expensive,
     _check_fts_readiness_medium,
+    _check_heartbeat_staleness_fast,
     _check_insight_freshness_medium,
     _check_raw_failures_medium,
     _check_repeated_stage_failures_medium,
@@ -164,6 +165,53 @@ def test_daemon_liveness_ok_and_recovery(
     assert good.severity == HealthSeverity.OK
     assert good.consecutive_failures == 0
     assert "running" in good.message
+
+
+# ---------------------------------------------------------------------------
+# FAST: heartbeat_staleness (polylogue-7eo7 #2)
+# ---------------------------------------------------------------------------
+
+
+def test_heartbeat_staleness_ok_when_fresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.daemon.lifecycle as lifecycle_module_local
+
+    monkeypatch.setattr(
+        lifecycle_module_local,
+        "lifecycle_status",
+        lambda: {"state": "fresh", "heartbeat_age_s": 30.0},
+    )
+    alert = _check_heartbeat_staleness_fast()
+    assert alert.severity == HealthSeverity.OK
+
+
+def test_heartbeat_staleness_warning_between_warn_and_vanished_floors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The observed real case: 1369.8s against a 900s interval -- past one
+    missed beat, short of "vanished". Must not read as OK/"running" silence.
+    """
+    import polylogue.daemon.lifecycle as lifecycle_module_local
+
+    monkeypatch.setattr(
+        lifecycle_module_local,
+        "lifecycle_status",
+        lambda: {"state": "stale", "heartbeat_age_s": 1369.8},
+    )
+    alert = _check_heartbeat_staleness_fast()
+    assert alert.severity == HealthSeverity.WARNING
+    assert "1369.8" in alert.message
+
+
+def test_heartbeat_staleness_error_when_vanished(monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.daemon.lifecycle as lifecycle_module_local
+
+    monkeypatch.setattr(
+        lifecycle_module_local,
+        "lifecycle_status",
+        lambda: {"state": "vanished", "heartbeat_age_s": 1900.0},
+    )
+    alert = _check_heartbeat_staleness_fast()
+    assert alert.severity == HealthSeverity.ERROR
 
 
 # ---------------------------------------------------------------------------

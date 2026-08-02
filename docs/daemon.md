@@ -334,6 +334,10 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 
 **Fast** (sub-1s):
 - `daemon_liveness` — pidfile check
+- `heartbeat_staleness` — warns once the heartbeat misses a scheduled beat
+  (`DAEMON_HEARTBEAT_STALE_WARN_SECONDS`, 1.5x `DAEMON_HEARTBEAT_INTERVAL_SECONDS`),
+  errors once it crosses the "vanished" floor
+  (`DAEMON_HEARTBEAT_STALE_AFTER_SECONDS`, 2x the interval)
 - `disk_space` — free disk space (warns at 500 MB, critical at 100 MB)
 - `wal_size` — WAL file size (warns at 50 MB, errors at 200 MB)
 - `source_availability` — watch roots exist and are readable
