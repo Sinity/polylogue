@@ -4,7 +4,8 @@ Health checks are grouped into three tiers by cost:
 - FAST: sub-1s checks (liveness, disk space, WAL size, source availability)
 - MEDIUM: sub-10s queries (FTS readiness, insight freshness, stale attempts,
   repeated stage failures, raw failures)
-- EXPENSIVE: longer-running checks (DB integrity, blob integrity, embedding coverage)
+- EXPENSIVE: longer-running checks (DB integrity, blob integrity, blob
+  reference debt, embedding coverage)
 
 Each check produces a ``HealthAlert`` with severity, message, and checked_at.
 Alerts accrue a ``consecutive_failures`` counter that carries forward across
@@ -1326,6 +1327,65 @@ def _check_blob_integrity_expensive() -> list[HealthAlert]:
         ]
 
 
+def _check_blob_reference_debt_expensive() -> list[HealthAlert]:
+    """Fail loud if any referenced blob is ever missing from the blob store.
+
+    This class of debt (a ``blob_refs``/``raw_sessions`` row pointing at a
+    blob hash the store no longer has) has occurred exactly once on the
+    production archive: a 2026-06-26 incident (39,586 missing refs),
+    diagnosed and fully repaired the same day by
+    ``polylogue.storage.blob_integrity.classify_blob_reference_debt`` +
+    ``replace_raw_backed_blob_reference_debt_from_source`` (the CLI's
+    ``ops maintenance blob-reference-debt`` / ``blob-reference-replace-from-source``
+    commands). It has stayed at zero since (verified live, polylogue-rn5jh).
+    Rather than wiring the deterministic repair logic into always-on daemon
+    convergence for a problem with no recurring live instance, this check
+    exists so a *future* recurrence surfaces immediately as a health alert
+    instead of silently accumulating until someone happens to run a manual
+    backup or the maintenance CLI. It never mutates the archive; repair
+    stays a deliberate, operator-invoked step via the CLI commands above.
+    """
+    from polylogue.storage.blob_integrity import scan_blob_reference_debt
+
+    now = datetime.now(UTC).isoformat()
+    try:
+        report = scan_blob_reference_debt(_active_health_db_path(), configured_root=archive_root())
+        missing = report.missing_referenced_blobs
+        healthy = missing == 0
+        if healthy:
+            severity = HealthSeverity.OK
+            message = f"blob reference debt ok (0/{report.total_references_seen} references missing)"
+        else:
+            severity = HealthSeverity.ERROR
+            sample = ", ".join(f"{blob_hash[:12]}..." for blob_hash in report.sample[:5])
+            suffix = f"; sample={sample}" if sample else ""
+            message = (
+                f"{missing}/{report.total_references_seen} referenced blob(s) missing from blob store{suffix}; "
+                "run `polylogue ops maintenance blob-reference-debt` to classify"
+            )
+        return [
+            HealthAlert(
+                check_name="blob_reference_debt",
+                tier=HealthTier.EXPENSIVE,
+                severity=severity,
+                message=message,
+                checked_at=now,
+                consecutive_failures=_record_failure("blob_reference_debt", healthy),
+            )
+        ]
+    except Exception as exc:
+        return [
+            HealthAlert(
+                check_name="blob_reference_debt",
+                tier=HealthTier.EXPENSIVE,
+                severity=HealthSeverity.ERROR,
+                message=f"blob reference debt check failed: {exc}",
+                checked_at=now,
+                consecutive_failures=_record_failure("blob_reference_debt", False),
+            )
+        ]
+
+
 def _check_embedding_coverage_expensive() -> HealthAlert:
     """Check embedding coverage when embedding is enabled.
 
@@ -1390,6 +1450,7 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
 def _run_expensive_checks() -> list[HealthAlert]:
     alerts = [_check_db_integrity_expensive()]
     alerts.extend(_check_blob_integrity_expensive())
+    alerts.extend(_check_blob_reference_debt_expensive())
     alerts.append(_check_embedding_coverage_expensive())
     return alerts
 

@@ -1,6 +1,6 @@
 """Per-tier health-check evidence: OK, degraded, and recovery paths.
 
-Each of the 14 registered checks in ``polylogue/daemon/health.py`` carries:
+Each of the 15 registered checks in ``polylogue/daemon/health.py`` carries:
 
 - an OK-path assertion on a healthy synthetic fixture, and
 - at least one representative degraded-path assertion exercising the
@@ -35,6 +35,7 @@ from polylogue.daemon.blob_integrity_alerts import blob_integrity_alerts_from_re
 from polylogue.daemon.health import (
     HealthSeverity,
     _check_blob_integrity_expensive,
+    _check_blob_reference_debt_expensive,
     _check_daemon_liveness_fast,
     _check_db_integrity_expensive,
     _check_disk_space_fast,
@@ -51,7 +52,7 @@ from polylogue.daemon.health import (
 )
 from polylogue.daemon.live_ingest_attempt_models import LiveIngestAttemptSummary
 from polylogue.paths import archive_root, index_db_path
-from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrityReport
+from polylogue.storage.blob_integrity import BlobIntegrityFinding, BlobIntegrityReport, BlobReferenceDebtReport
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -792,6 +793,54 @@ def test_blob_integrity_alert_renderer_emits_one_alert_per_finding() -> None:
     assert alerts[0].severity == HealthSeverity.WARNING
     assert alerts[0].consecutive_failures == 7
     assert "bytes=42" in alerts[0].message
+
+
+# ---------------------------------------------------------------------------
+# EXPENSIVE: blob_reference_debt (polylogue-rn5jh)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.slow
+def test_blob_reference_debt_ok_when_nothing_missing(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.scan_blob_reference_debt",
+        lambda *_args, **_kwargs: BlobReferenceDebtReport(
+            total_references_seen=160609,
+            missing_referenced_blobs=0,
+            sample=(),
+            reference_sources={"blob_refs": 160609},
+        ),
+        raising=False,
+    )
+    alert = _check_blob_reference_debt_expensive()[0]
+    assert alert.severity == HealthSeverity.OK
+    assert alert.consecutive_failures == 0
+    assert "0/160609" in alert.message
+
+
+@pytest.mark.slow
+def test_blob_reference_debt_error_when_blobs_missing(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.scan_blob_reference_debt",
+        lambda *_args, **_kwargs: BlobReferenceDebtReport(
+            total_references_seen=68151,
+            missing_referenced_blobs=39586,
+            sample=("a" * 64, "b" * 64),
+            reference_sources={"blob_refs": 66355, "raw_sessions": 19900},
+        ),
+        raising=False,
+    )
+    alert = _check_blob_reference_debt_expensive()[0]
+    assert alert.severity == HealthSeverity.ERROR
+    assert alert.consecutive_failures == 1
+    assert "39586/68151" in alert.message
+    assert "blob-reference-debt" in alert.message
 
 
 # ---------------------------------------------------------------------------
