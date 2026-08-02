@@ -125,6 +125,26 @@ _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024
 # whose entire purpose is converging one oversized, resource-blocked
 # component in a single pass once the ordinary conveyor is quiescent.
 _RAW_MATERIALIZATION_MAX_PASS_SECONDS = 20.0
+# polylogue-qlae: the same bounded-hold technique applied to the daemon's
+# other unbounded writer-holding actor. Journal aggregation (2026-07-29 to
+# 2026-07-31) measured `maintenance.drive_catchup` hold_max=18,623s -- a
+# single `coordinator.run("maintenance.drive_catchup", ...)` call wraps the
+# whole Drive acquire+parse pass with no internal checkpoint, so a large
+# first-run or post-outage backlog holds the writer for its entire duration
+# regardless of `_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS`. `ParsingService
+# .ingest_sources`'s parse stage (`parse_from_raw`) already batches raw ids
+# by `raw_batch_size`/blob-byte limit -- a genuine transaction-boundary
+# checkpoint identical in shape to raw-materialization's per-component
+# checkpoint -- so the same `max_pass_seconds` parameter, threaded through
+# `ingest_sources` -> `parse_from_raw`, bounds this actor's hold the same
+# way. Raw ids left unattempted this call remain ordinary parse backlog,
+# recomputed by `collect_parse_backlog`/`collect_validation_backlog` on the
+# next `_periodic_drive_source_catchup` tick. This does NOT bound the
+# acquire stage (network/filesystem walk across configured Drive sources,
+# which runs before the parse stage and is not chunked at a granularity this
+# checkpoint can safely cover) -- see the drive_catchup follow-up note where
+# this constant is used.
+_DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
 # polylogue-t93b: escalation-tier envelope for the whale pass. A component
 # permanently resource-blocked at the ordinary fast-path limit above
 # converges through a dedicated, single-component pass at this wider
@@ -564,10 +584,17 @@ async def _run_drive_source_catchup_once() -> int:
             sources=sources,
             stage="all",
             parse_records=True,
+            max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
         )
         session_ids = sorted(result.parse_result.processed_ids)
         if session_ids:
             await refresh_session_insights_bulk(backend, session_ids)
+        if result.parse_result.time_budget_exceeded:
+            logger.info(
+                "daemon: Drive catch-up pass yielded at time-budget checkpoint "
+                "(max_pass_seconds=%.1f); remaining backlog retried next tick",
+                _DRIVE_CATCHUP_MAX_PASS_SECONDS,
+            )
         logger.info(
             "daemon: Drive source catch-up complete — sources=%d raw=%d sessions=%d changed=%d errors=%d",
             len(sources),

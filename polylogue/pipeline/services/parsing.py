@@ -80,6 +80,7 @@ class ParsingService:
         parse_records: bool = True,
         skip_acquire: bool = False,
         force_write: bool = False,
+        max_pass_seconds: float | None = None,
     ) -> IngestResult:
         return await ingest_sources(
             self,
@@ -90,6 +91,7 @@ class ParsingService:
             parse_records=parse_records,
             skip_acquire=skip_acquire,
             force_write=force_write,
+            max_pass_seconds=max_pass_seconds,
         )
 
     @property
@@ -116,6 +118,7 @@ class ParsingService:
         progress_callback: ProgressCallback | None = None,
         force_write: bool = False,
         repair_message_fts: bool = True,
+        max_pass_seconds: float | None = None,
     ) -> ParseResult:
         return await parse_from_raw(
             self,
@@ -124,6 +127,7 @@ class ParsingService:
             progress_callback=progress_callback,
             force_write=force_write,
             repair_message_fts=repair_message_fts,
+            max_pass_seconds=max_pass_seconds,
         )
 
 
