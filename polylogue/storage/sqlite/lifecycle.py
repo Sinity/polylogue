@@ -690,6 +690,21 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # deliberately NOT executed by this declaration.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=56,
+        # polylogue-fuky: the writer stops materializing `agent_reasoning`
+        # rows into `session_events` for Codex sessions -- confirmed
+        # duplicate of the paired `reasoning` record's already-materialized
+        # THINKING-block message, see INDEX_SCHEMA_VERSION's v56 comment
+        # (archive_tiers/index.py) for the full writeup. Matches the v42
+        # `agent_message` precedent: a writer-materialization change, not a
+        # DDL change (session_events keeps its existing columns) -- no
+        # declared clone-safe SQL delta because a fast-forward would require
+        # re-deriving which already-persisted rows a fresh parse would have
+        # skipped; existing index tiers rebuild from source evidence instead
+        # (`polylogue ops reset --index && polylogued run`).
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

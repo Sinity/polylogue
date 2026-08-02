@@ -277,6 +277,28 @@ INDEX_SCHEMA_VERSION = 55
 # `polylogue ops reset --index && polylogued run` is required; deliberately
 # NOT executed by this declaration.
 
+# polylogue-fuky: v56 stops materializing `agent_reasoning` rows into
+# `session_events` for Codex sessions. Producer/consumer audit found 318,474
+# live rows under this wire name with zero code reference anywhere in the
+# repo; reading raw wire samples across three sessions confirmed
+# `agent_reasoning.text` is a live-streamed echo of the same reasoning-
+# summary bullet text the paired `reasoning` record already carries in full
+# (`summary[].text`) and that `reasoning` is already materialized as a
+# THINKING-block message (v50) -- `agent_reasoning` brings no incremental
+# evidence, matching the v42 `agent_message` precedent (a twin
+# `ParsedMessage` already exists). See
+# `storage/sqlite/archive_tiers/write.py`'s `_SESSION_EVENTS_REDUNDANT_TYPES`
+# comment for the full writeup and `sources/parsers/codex.py`'s
+# `_CODEX_KNOWN_RESPONSE_ITEM_TYPES` for the sibling classification of every
+# other previously-unaudited Codex response_item/event_msg type (those keep
+# passing through unchanged -- only `agent_reasoning` is dropped). Like v42,
+# this is a writer-materialization change with no DDL delta on
+# `session_events` -- SEMANTIC_REPARSE, not a free fast-forward: only
+# re-parsing recovers the dropped rows on already-acquired raw evidence.
+# `polylogue ops reset --index && polylogued run` is required; deliberately
+# NOT executed by this declaration.
+INDEX_SCHEMA_VERSION = 56
+
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
 # triggers already use (see storage/fts/sql.py's _FTS_BULK_GUARD_NOT_SET).

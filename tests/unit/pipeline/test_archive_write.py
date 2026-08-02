@@ -236,6 +236,66 @@ async def test_persists_compaction_session_event_summary(async_backend: SQLiteBa
     assert row["source_message_id"] == f"{session_id}:msg-1"
 
 
+async def test_agent_reasoning_event_filtered_but_sibling_orphan_type_kept(
+    async_backend: SQLiteBackend,
+) -> None:
+    """polylogue-fuky: ``agent_reasoning`` is redundant; other orphan types are not.
+
+    The producer/consumer audit confirmed ``agent_reasoning`` duplicates the
+    paired ``reasoning`` record's already-materialized THINKING-block message
+    (live-wire comparison across three Codex sessions), so it is filtered out
+    at write time (``_SESSION_EVENTS_REDUNDANT_TYPES``,
+    ``storage/sqlite/archive_tiers/write.py``) exactly like the pre-existing
+    ``token_count``/``message_usage``/``agent_policy``/``agent_message``
+    entries. A sibling previously-unaudited type this bead classified but did
+    NOT find redundant (``thread_goal_updated``) must still reach
+    ``session_events`` unchanged, proving the filter is scoped to the one
+    confirmed-duplicate type, not a blanket drop of every orphan type this
+    audit named.
+    """
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="conv-agent-reasoning",
+        title="Session events",
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role=Role.USER,
+                text="Hello",
+                timestamp="2024-01-01T00:00:00Z",
+            )
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="agent_reasoning",
+                timestamp="2024-01-01T00:00:00Z",
+                payload={"type": "agent_reasoning", "text": "**Diagnosing the thing**"},
+            ),
+            ParsedSessionEvent(
+                event_type="thread_goal_updated",
+                timestamp="2024-01-01T00:00:00Z",
+                payload={"type": "thread_goal_updated"},
+            ),
+        ],
+        attachments=[],
+    )
+
+    session_id = await ingest_session(session, async_backend)
+
+    async with async_backend.connection() as conn:
+        rows = await (
+            await conn.execute(
+                "SELECT event_type FROM session_events WHERE session_id = ? ORDER BY event_type",
+                (session_id,),
+            )
+        ).fetchall()
+    event_types = [row["event_type"] for row in rows]
+    assert "agent_reasoning" not in event_types
+    assert event_types == ["thread_goal_updated"]
+
+
 async def test_projects_agent_policy_event_into_typed_columns(async_backend: SQLiteBackend) -> None:
     session = ParsedSession(
         source_name=Provider.CODEX,

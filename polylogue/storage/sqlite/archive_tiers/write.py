@@ -4048,13 +4048,34 @@ def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> i
 #   it there); the real text is guaranteed to exist as a ``ParsedMessage``
 #   via ``_codex_event_message`` -- this is a pure existence marker with a
 #   message-shaped twin already present.
+# - ``agent_reasoning`` (polylogue-fuky, 2026-08-02, the pending
+#   evidence-doctrine call this comment used to defer): confirmed DUPLICATE
+#   by reading raw wire records across three live Codex sessions --
+#   ``agent_reasoning.text`` is the same live-streamed reasoning-summary
+#   bullet text already carried in full by the paired ``reasoning`` record's
+#   ``summary[].text`` (one session: 156/156 identical values; a second:
+#   262/262 identical set; a third: 1,846 reasoning bullets vs. 1,859
+#   agent_reasoning ticks, >99% overlap, the residual being minor
+#   text-normalization on the same underlying bullets). ``reasoning``
+#   records are already materialized as a THINKING-block ``ParsedMessage``
+#   via ``_codex_reasoning_message`` (index v50) -- ``agent_reasoning`` is a
+#   live per-tick echo of that same content with nothing incremental to
+#   offer, matching this file's own ``agent_message`` rationale above (a
+#   twin already exists) plus the "streaming ticks superseded by the final
+#   record" pattern documented for Claude Code's ``progress`` subtypes in
+#   ``claude/code_parser.py``. See ``sources/parsers/codex.py``'s
+#   ``_CODEX_KNOWN_RESPONSE_ITEM_TYPES`` comment for the full classification
+#   this filtering decision is one piece of.
 #
-# ``reasoning``/``agent_reasoning``/``turn_context`` are deliberately excluded
-# (need an operator evidence-doctrine call per the audit); ``function_call``/
-# ``function_call_output`` payload-slimming is a separate, not-yet-decided
-# change. Parsers keep emitting all of these events unchanged -- only this
-# writer materialization step filters them.
-_SESSION_EVENTS_REDUNDANT_TYPES = frozenset({"token_count", "message_usage", "agent_policy", "agent_message"})
+# ``reasoning``/``turn_context`` remain deliberately excluded from this set
+# (still need their own operator evidence-doctrine call -- out of scope for
+# the polylogue-fuky audit that resolved ``agent_reasoning``);
+# ``function_call``/``function_call_output`` payload-slimming is a separate,
+# not-yet-decided change. Parsers keep emitting all of these events
+# unchanged -- only this writer materialization step filters them.
+_SESSION_EVENTS_REDUNDANT_TYPES = frozenset(
+    {"token_count", "message_usage", "agent_policy", "agent_message", "agent_reasoning"}
+)
 
 
 def _write_session_events(
