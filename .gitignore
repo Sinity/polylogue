@@ -93,8 +93,6 @@ dist/
 !.agent/CONVENTIONS.md
 !.agent/demos/
 !.agent/demos/**
-!.agent/handoffs/
-!.agent/handoffs/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md
