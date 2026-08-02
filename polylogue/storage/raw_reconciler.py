@@ -99,8 +99,6 @@ _APPLY_DISPATCHED_ACTUATORS = frozenset(
     }
 )
 
-_VERIFIED_BLOB_STATS: dict[str, tuple[int, int, int, int, int]] = {}
-
 _ChunkT = TypeVar("_ChunkT")
 
 _QUARANTINE_OVERRIDE_KEY_SEP = "\x00"
@@ -271,19 +269,69 @@ def _chunks(values: Sequence[_ChunkT], size: int = 100) -> Iterator[list[_ChunkT
         yield list(values[start : start + size])
 
 
-def _verified_blob_bytes(blob_store: BlobStore, hash_hex: str) -> bool:
-    """Hash once per stable on-disk inode state, then reuse the process receipt."""
+def _blob_receipt_fingerprint(conn: sqlite3.Connection, hash_hex: str) -> tuple[int, int, int, int, int] | None:
+    """Read the durably persisted verification-receipt fingerprint, if any."""
+    row = conn.execute(
+        """
+        SELECT st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns
+        FROM verified_blob_receipts WHERE blob_hash = ?
+        """,
+        (bytes.fromhex(hash_hex),),
+    ).fetchone()
+    if row is None:
+        return None
+    return (int(row[0]), int(row[1]), int(row[2]), int(row[3]), int(row[4]))
+
+
+def _record_blob_receipt(conn: sqlite3.Connection, hash_hex: str, fingerprint: tuple[int, int, int, int, int]) -> None:
+    """Upsert the verification receipt for *hash_hex* to its current fingerprint."""
+    st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns = fingerprint
+    conn.execute(
+        """
+        INSERT INTO verified_blob_receipts
+            (blob_hash, st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, verified_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(blob_hash) DO UPDATE SET
+            st_dev = excluded.st_dev,
+            st_ino = excluded.st_ino,
+            st_size = excluded.st_size,
+            st_mtime_ns = excluded.st_mtime_ns,
+            st_ctime_ns = excluded.st_ctime_ns,
+            verified_at_ms = excluded.verified_at_ms
+        """,
+        (bytes.fromhex(hash_hex), st_dev, st_ino, st_size, st_mtime_ns, st_ctime_ns, int(time.time() * 1000)),
+    )
+
+
+def _verified_blob_bytes(conn: sqlite3.Connection, blob_store: BlobStore, hash_hex: str) -> bool:
+    """Hash once per stable on-disk inode state, then reuse the durable receipt.
+
+    polylogue-byw3y: this used to cache verification in a process-lifetime
+    dict, so every daemon restart re-hashed every accepted frontier blob from
+    scratch even when nothing had changed -- tens of GiB of wasted reads given
+    the corpus's size skew (top 5% of raws = 69% of bytes, polylogue-el374).
+    Receipts now persist in ``verified_blob_receipts`` (source.db), so a blob
+    verified in a prior census stays trusted across restarts.
+
+    Safety invariant (deliberately conservative -- this matters more than the
+    performance win): a receipt is trusted ONLY when every stat() field
+    matches the persisted fingerprint exactly. Any mismatch -- a changed
+    size/mtime/ctime, a different inode, or no receipt at all -- forces a
+    fresh ``blob_store.verify()`` re-hash; a stale receipt is never partially
+    trusted. On a successful fresh verify, the receipt is rewritten to the
+    blob's current fingerprint so the next census can trust it.
+    """
     path = blob_store.blob_path(hash_hex)
     try:
         stat = path.stat()
     except OSError:
         return False
     fingerprint = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-    if _VERIFIED_BLOB_STATS.get(hash_hex) == fingerprint:
+    if _blob_receipt_fingerprint(conn, hash_hex) == fingerprint:
         return True
     if not blob_store.verify(hash_hex):
         return False
-    _VERIFIED_BLOB_STATS[hash_hex] = fingerprint
+    _record_blob_receipt(conn, hash_hex, fingerprint)
     return True
 
 
@@ -526,7 +574,7 @@ def _classify_frontier(
         )
     blob_hash = str(row["blob_hash"]).lower()
     blob_exists = blob_store.exists(blob_hash)
-    reacquisition_proven = blob_exists and _verified_blob_bytes(blob_store, blob_hash)
+    reacquisition_proven = blob_exists and _verified_blob_bytes(conn, blob_store, blob_hash)
     if not blob_exists or not reacquisition_proven:
         return _item(
             state=RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE,
@@ -1080,7 +1128,7 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
     index_db = root / "index.db"
     if not source_db.is_file() or not index_db.is_file():
         raise RuntimeError("raw authority frontier census requires initialized source and index tiers")
-    with closing(sqlite3.connect(source_db)) as conn:
+    with closing(sqlite3.connect(source_db)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         head_rows = _frontier_rows(conn)
@@ -1095,6 +1143,10 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
                     return scoped
             return overrides.get(raw_id)
 
+        # _classify_frontier may persist a verified-blob receipt (polylogue-byw3y)
+        # through this same connection; the outer ``conn`` context manager commits
+        # those writes on clean exit (or rolls back on exception), so a receipt is
+        # never durably recorded for bytes this pass didn't finish inspecting.
         head_items = [_classify_frontier(conn, BlobStore(root / "blob"), row, _override_for(row)) for row in head_rows]
         superseded_items = _terminal_superseded_items(conn)
     all_items = _apply_judgment_dispositions(config, (*head_items, *superseded_items))
