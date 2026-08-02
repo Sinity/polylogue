@@ -624,8 +624,14 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   rows move out of authored-user accounting while provider-role counts remain
   available.
 - Provider schemas (the parsing/validation surface, distinct from the
-  storage schema) are still regenerated fresh via
-  `devtools lab schema generate` and promoted via `devtools lab schema promote`.
+  storage schema) are still regenerated fresh. `devtools lab schema generate`
+  only previews a generation (it never writes committed package files);
+  `devtools lab schema commit --full-corpus` is the entry point that actually
+  persists a full-corpus regeneration into
+  `polylogue/schemas/providers/<provider>/versions/...`, and
+  `devtools lab schema promote` promotes a single reviewed evidence cluster
+  (from `generate --cluster`) into a registered package version -- a
+  narrower, single-version operation `commit` does not replace.
 
 For **derived tiers** (`index.db`, `embeddings.db`) this design intentionally
 rejects in-place upgrade-chain complexity (no Alembic, no forward/reverse

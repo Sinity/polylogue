@@ -30,6 +30,7 @@ VERIFICATION_LAB_COMMAND_NAMES: tuple[str, ...] = (
     "lab projections",
     "lab smoke",
     "lab schema audit",
+    "lab schema commit",
     "lab schema compare",
     "lab schema explain",
     "lab schema generate",
@@ -1547,6 +1548,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.schema_generate",
         use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
         examples=("devtools lab schema generate --provider chatgpt --cluster",),
+    ),
+    CommandSpec(
+        "lab schema commit",
+        "verification lab",
+        "Persist a real full-corpus schema generation into committed provider packages.",
+        "devtools.schema_commit",
+        use_when=(
+            "Actually regenerate and write polylogue/schemas/providers/<provider>/versions/... from the live "
+            "archive -- 'lab schema generate' only ever previews and never writes committed package files."
+        ),
+        examples=(
+            "devtools lab schema commit --provider chatgpt --full-corpus --dry-run",
+            "devtools lab schema commit --provider chatgpt --full-corpus",
+        ),
     ),
     CommandSpec(
         "lab schema promote",

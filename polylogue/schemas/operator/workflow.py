@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from polylogue.schemas.operator.annotations import collect_annotation_summary
+from polylogue.schemas.operator.commit import (
+    commit_provider_schema as _commit_provider_schema,
+)
 from polylogue.schemas.operator.inference import (
     audit_schemas as _audit_schemas,
 )
@@ -42,6 +45,7 @@ infer_schema = _infer_schema
 list_schemas = _list_schemas
 compare_schema_versions = _compare_schema_versions
 promote_schema_cluster = _promote_schema_cluster
+commit_provider_schema = _commit_provider_schema
 explain_schema = _explain_schema
 resolve_schema_payload = _resolve_schema_payload
 audit_schemas = _audit_schemas

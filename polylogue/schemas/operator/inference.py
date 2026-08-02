@@ -78,6 +78,16 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def privacy_config_from_payload(payload: Mapping[str, object] | None) -> PrivacyConfig | None:
+    """Build a typed ``PrivacyConfig`` from the CLI/request-facing JSON payload shape.
+
+    Public so other operator workflows (``polylogue.schemas.operator.commit``)
+    that accept the same ``JSONDocument | None`` privacy-config shape as
+    ``SchemaInferRequest`` can share this conversion instead of duplicating it.
+    """
+    return _privacy_config(payload)
+
+
 def _privacy_config(payload: Mapping[str, object] | None) -> PrivacyConfig | None:
     if payload is None:
         return None
@@ -357,5 +367,6 @@ __all__ = [
     "list_inferred_corpus_scenarios",
     "list_inferred_corpus_specs",
     "list_schemas",
+    "privacy_config_from_payload",
     "promote_schema_cluster",
 ]

@@ -78,6 +78,7 @@ def generate_all_schemas(
     max_samples: int | None = None,
     privacy_config: SchemaPrivacyConfig | None = None,
     include_archive_workload_profile: bool = False,
+    full_corpus: bool = False,
 ) -> list[GenerationResult]:
     """Generate versioned schemas for all providers."""
     if db_path is None:
@@ -93,6 +94,7 @@ def generate_all_schemas(
             db_path=db_path,
             max_samples=max_samples,
             privacy_config=privacy_config,
+            full_corpus=full_corpus,
         )
         results.append(bundle.result)
         persist_generated_provider_bundle(output_dir, provider, bundle)
