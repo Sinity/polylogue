@@ -2223,6 +2223,10 @@ files:
     loc: 505
     target: polylogue/maintenance/preview.py
     owner: stable
+  - path: polylogue/maintenance/raw_append_chain_backfill_apply.py
+    loc: 244
+    target: polylogue/maintenance/raw_append_chain_backfill_apply.py
+    owner: stable
   - path: polylogue/maintenance/raw_authority_reset.py
     loc: 109
     target: polylogue/maintenance/raw_authority_reset.py
@@ -3960,6 +3964,10 @@ files:
     loc: 137
     target: polylogue/storage/raw/models.py
     owner: stable
+  - path: polylogue/storage/raw_append_chain_backfill.py
+    loc: 214
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/raw_authority.py
     loc: 2295
     target: TBD
@@ -4282,7 +4290,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 538
+    loc: 569
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
