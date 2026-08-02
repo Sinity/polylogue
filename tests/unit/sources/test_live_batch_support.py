@@ -4823,9 +4823,15 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
     convergence_calls: list[list[Path]] = []
 
     async def fake_full_ingest(
-        paths: list[Path], *, source_name: str, heartbeat: object | None = None, attempt_id: str | None = None
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: object | None = None,
+        attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started
         return _FullIngestResult(
             succeeded=paths,
             failed=[],

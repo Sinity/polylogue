@@ -127,8 +127,10 @@ def _mock_live_ingest(
         source_name: str,
         heartbeat: Any,
         attempt_id: str,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started
         return _FullIngestResult(
             succeeded=paths,
             failed=[],

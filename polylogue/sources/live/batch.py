@@ -391,6 +391,17 @@ class _ArchiveFullWriteResult:
     # the two apart (mirrors ParseResult.excised_skips on the CLI import
     # path in pipeline/services/archive_ingest.py).
     excised_skips: int = 0
+    # polylogue-11cg9: raw ids never attempted this pass because the declared
+    # wall-clock budget (``max_pass_seconds``) was already exceeded before
+    # their turn. Not a failure and not a conveyor hand-off -- the record was
+    # never opened at all, so its path must stay out of both ``raw_ids`` and
+    # ``deferred_raw_ids`` (the two buckets the caller already treats as
+    # "durably observed") and out of the caller's success/failure accounting
+    # entirely. It remains ordinary backlog: the next catch-up scan or watch
+    # tick re-discovers it via the unchanged cursor, exactly like any other
+    # untouched file.
+    skipped_raw_ids: set[str] = field(default_factory=set)
+    time_budget_exceeded: bool = False
 
 
 class LiveBatchProcessor:
@@ -436,6 +447,7 @@ class LiveBatchProcessor:
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
         emit_event: bool = True,
+        max_pass_seconds: float | None = None,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
         if is_degraded():
@@ -445,6 +457,12 @@ class LiveBatchProcessor:
             # IOPS storm in #1003.
             return self._degraded_skip_metrics(paths, queued_file_count, skipped_file_count)
         batch_started = time.perf_counter()
+        # polylogue-11cg9: a dedicated monotonic reference for the
+        # max_pass_seconds budget, separate from ``batch_started`` (used for
+        # the unrelated ``total_time_s`` instrumentation) -- matches the
+        # ``pass_started_monotonic`` convention already used by de2a's
+        # raw-materialization checkpoint and qlae's drive-catchup checkpoint.
+        pass_started_monotonic = time.monotonic()
         db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         input_bytes = sum(_path_size(path) for path in paths)
         attempt_id = self._cursor.begin_ingest_attempt(
@@ -634,6 +652,16 @@ class LiveBatchProcessor:
         for path in full_paths:
             by_source.setdefault(self._source_name_for(path), []).append(path)
 
+        # polylogue-11cg9: a shared clock + "processed at least one group"
+        # flag across the *whole* by-source/progress-group nesting, so the
+        # declared budget bounds this entire ``ingest_files`` call the same
+        # way de2a/qlae bound their own passes -- not a fresh budget re-armed
+        # per source or per progress group, which would let N groups each
+        # individually "in budget" sum to an unbounded total hold. The first
+        # group across every source always completes regardless of budget
+        # (forward-progress guarantee); only later groups are ever skipped.
+        full_ingest_time_budget_exceeded = False
+        processed_any_full_group = False
         for source_name, grouped_paths in by_source.items():
             if is_degraded():
                 # A prior source group hit a structural error this batch.
@@ -641,10 +669,21 @@ class LiveBatchProcessor:
                 for path in grouped_paths:
                     failed_paths.append(str(path))
                 continue
+            if full_ingest_time_budget_exceeded:
+                # Remaining sources stay ordinary backlog for the next tick;
+                # nothing here was attempted, so nothing to mark failed.
+                break
             for source_paths in _full_parse_progress_groups(grouped_paths):
                 if self._stop_requested():
                     break
                 if is_degraded():
+                    break
+                if (
+                    processed_any_full_group
+                    and max_pass_seconds is not None
+                    and (time.monotonic() - pass_started_monotonic) > max_pass_seconds
+                ):
+                    full_ingest_time_budget_exceeded = True
                     break
                 t0 = time.perf_counter()
                 try:
@@ -664,6 +703,8 @@ class LiveBatchProcessor:
                         source_paths,
                         source_name=source_name,
                         attempt_id=attempt_id,
+                        max_pass_seconds=max_pass_seconds,
+                        pass_started=pass_started_monotonic,
                         heartbeat=self._full_ingest_heartbeat(
                             attempt_id,
                             source_name=source_name,
@@ -676,6 +717,9 @@ class LiveBatchProcessor:
                             convergence_time_s=convergence_time_s,
                         ),
                     )
+                    processed_any_full_group = True
+                    if full_result.time_budget_exceeded:
+                        full_ingest_time_budget_exceeded = True
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
                     full_ingest_aggregate.add(full_result)
                     for session_id in full_result.changed_session_ids:
@@ -861,6 +905,7 @@ class LiveBatchProcessor:
             failed_paths=retry_paths,
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
+            time_budget_exceeded=full_ingest_time_budget_exceeded,
         )
         if emit_event and self._event_emitter is not None:
             self._event_emitter("ingestion_batch", metrics.to_payload())
@@ -1412,6 +1457,8 @@ class LiveBatchProcessor:
         source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _FullIngestResult:
         if self._parse_stage is not None:
             # polylogue-wf8a: pre-parse eligible candidates BEFORE ever
@@ -1448,6 +1495,8 @@ class LiveBatchProcessor:
             source_name=source_name,
             heartbeat=heartbeat,
             attempt_id=attempt_id,
+            max_pass_seconds=max_pass_seconds,
+            pass_started=pass_started,
         )
 
     async def _run_sync(
@@ -1470,9 +1519,12 @@ class LiveBatchProcessor:
         source_name: str,
         heartbeat: _FullIngestHeartbeat | None = None,
         attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
+        pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         blob_root = archive_root / "blob"
         from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -1851,6 +1903,8 @@ class LiveBatchProcessor:
             raw_by_id[raw_id] = path
 
         summary: _IngestBatchSummary | None = None
+        skipped_paths: set[Path] = set()
+        time_budget_exceeded = False
         if raw_records:
             blob_store.flush()
             available_records = [record for record in raw_records if record.raw_id in raw_payloads]
@@ -1872,14 +1926,28 @@ class LiveBatchProcessor:
                     force=True,
                 )
             archive_write = self._ingest_full_records_archive(
-                raw_records, raw_payloads, blob_store, parsed_sessions_by_raw_id
+                raw_records,
+                raw_payloads,
+                blob_store,
+                parsed_sessions_by_raw_id,
+                max_pass_seconds=max_pass_seconds,
+                pass_started=pass_clock_started,
             )
+            # skipped_raw_ids (polylogue-11cg9) are records the time budget
+            # never let the archive-write loop reach at all -- neither a
+            # failure nor a conveyor hand-off, so they must be excluded from
+            # ``failed`` the same way ``deferred_raw_ids`` already is, and
+            # then also excluded from ``succeeded`` below (unlike
+            # deferred_raw_ids, whose raw row IS durably written this pass).
+            skipped_paths = {raw_by_id[raw_id] for raw_id in archive_write.skipped_raw_ids if raw_id in raw_by_id}
             # deferred_raw_ids is a conveyor hand-off, not a failure -- only
             # raws in neither map (a real exception was raised) count below.
             failed.extend(
                 raw_by_id[raw_id]
                 for raw_id in raw_by_id
-                if raw_id not in archive_write.raw_ids and raw_id not in archive_write.deferred_raw_ids
+                if raw_id not in archive_write.raw_ids
+                and raw_id not in archive_write.deferred_raw_ids
+                and raw_id not in archive_write.skipped_raw_ids
             )
             raw_by_id = {
                 (archive_write.raw_ids.get(raw_id) or archive_write.deferred_raw_ids.get(raw_id) or raw_id): path
@@ -1909,11 +1977,12 @@ class LiveBatchProcessor:
                 changed_session_ids=archive_write.session_ids,
                 stage_timings_s=archive_write.stage_timings_s,
             )
+            time_budget_exceeded = archive_write.time_budget_exceeded
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
         result = _full_ingest_result_from_summary(
-            succeeded=[path for path in ingested if path not in failed_set],
+            succeeded=[path for path in ingested if path not in failed_set and path not in skipped_paths],
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
             raw_fingerprints=raw_fingerprints,
@@ -1923,6 +1992,7 @@ class LiveBatchProcessor:
             captured_content_hashes=captured_content_hashes,
             captured_file_observations=captured_file_observations,
             summary=summary,
+            time_budget_exceeded=time_budget_exceeded,
         )
         raw_records.clear()
         raw_by_id.clear()
@@ -1972,13 +2042,34 @@ class LiveBatchProcessor:
         raw_payloads: dict[str, bytes],
         blob_store: BlobStore,
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
+        *,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _ArchiveFullWriteResult:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         result = _ArchiveFullWriteResult()
+        pass_clock_started = pass_started if pass_started is not None else time.monotonic()
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-            for record in records:
+            for record_index, record in enumerate(records):
+                # polylogue-11cg9: a single logical session write cannot be
+                # split mid-transaction (it must remain atomic), so the
+                # checkpoint this loop can safely offer is *between* records,
+                # not inside one. The first record of every pass always
+                # completes regardless of budget (forward-progress
+                # guarantee, same shape as de2a's raw-materialization
+                # checkpoint and qlae's drive-catchup batch checkpoint) --
+                # only records after the first are ever skipped for time.
+                if (
+                    record_index > 0
+                    and max_pass_seconds is not None
+                    and (time.monotonic() - pass_clock_started) > max_pass_seconds
+                ):
+                    for remaining in records[record_index:]:
+                        result.skipped_raw_ids.add(remaining.raw_id)
+                    result.time_budget_exceeded = True
+                    break
                 provider: Provider | None = None
                 source_raw_id: str | None = None
                 try:

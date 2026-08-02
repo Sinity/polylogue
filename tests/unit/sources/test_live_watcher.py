@@ -53,9 +53,16 @@ class _FullIngestMock:
         self.await_count = 0
 
     async def __call__(
-        self, paths: list[Path], *, source_name: str, heartbeat: object = None, attempt_id: str | None = None
+        self,
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: object = None,
+        attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started
         self.await_count += 1
         if self.side_effect is not None:
             if isinstance(self.side_effect, BaseException):
@@ -137,7 +144,7 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         2,
         0,
     ]
-    assert args[10:] == ["full_parse:0.450,insights:0.200,fts:0.050", 8.0, 1.0, 3]
+    assert args[10:] == ["full_parse:0.450,insights:0.200,fts:0.050", 8.0, 1.0, 3, False]
 
 
 def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
@@ -1352,9 +1359,15 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
     )
 
     def slow_full_ingest(
-        paths: list[Path], *, source_name: str, heartbeat: object = None, attempt_id: str | None = None
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: object = None,
+        attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),
@@ -3046,3 +3059,78 @@ def test_interleave_drains_browser_capture_spool_before_round_robin(tmp_path: Pa
     rest = [item.source_name for item in ordered[2:]]
     assert sorted(rest) == ["claude-code", "codex", "codex"]
     assert rest[0] != rest[1] or rest[1] != rest[2]
+
+
+@pytest.mark.asyncio
+async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-11cg9: watcher.catch_up.chunk / watcher.live_ingest.full held
+    the sole archive writer for however long a batch's full-ingest records
+    took to parse and write, with only a file/byte size bound (4 files/16MiB
+    for a catch-up chunk; nothing at all for a plain watch-flush batch) and
+    no wall-clock bound -- de2a's own incident was an in-size-bounds 7 MB
+    chunk that held the writer for 860s. A single session write cannot be
+    split mid-transaction, so the checkpoint this budget can safely offer is
+    *between* records/groups, never inside one: with a synthetic slow clock
+    that clears any small budget immediately after the first record, exactly
+    one of three small same-progress-group codex sessions should be written
+    this pass, the other two must be left as ordinary un-recorded backlog
+    (not succeeded, not failed -- no cursor written, no retry backoff), and a
+    follow-up call without a budget must finish them with nothing lost.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    paths = [root / f"session-{index}.jsonl" for index in range(3)]
+    for index, path in enumerate(paths):
+        _write_jsonl(
+            path,
+            [
+                _codex_session_meta(f"budget-session-{index}"),
+                _codex_message(
+                    message_id=f"budget-message-{index}",
+                    role="user",
+                    text=f"time-budget checkpoint {index}",
+                    timestamp="2026-08-02T00:00:00Z",
+                ),
+            ],
+        )
+
+    db_path = tmp_path / "live.sqlite"
+    cursor = CursorStore(db_path)
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    # A monotonic clock that establishes the pass start on its first read,
+    # then jumps far past any small budget on every later read -- the same
+    # deterministic shape as de2a's own
+    # ``test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_progress``.
+    elapsed = iter(float(step) * 1000.0 for step in range(1000))
+    monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
+
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=1.0)
+
+    assert bounded.succeeded_file_count == 1
+    assert bounded.failed_file_count == 0
+    assert bounded.time_budget_exceeded is True
+    recorded = [path for path in paths if cursor.get_record(path) is not None]
+    assert len(recorded) == 1
+    unrecorded = [path for path in paths if path not in recorded]
+    assert len(unrecorded) == 2
+
+    monkeypatch.undo()
+    remainder = await processor.ingest_files(unrecorded, emit_event=False)
+
+    assert remainder.succeeded_file_count == 2
+    assert remainder.failed_file_count == 0
+    assert remainder.time_budget_exceeded is False
+    for path in paths:
+        assert cursor.get_record(path) is not None
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3

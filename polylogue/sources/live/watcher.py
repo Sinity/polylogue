@@ -63,6 +63,16 @@ _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250
 _CATCH_UP_MAX_BATCH_FILES = 4
 _CATCH_UP_MAX_BATCH_BYTES = 16 * 1024 * 1024
 _CATCH_UP_HOT_FILE_AGE_S = 60.0 * 60.0
+# polylogue-11cg9: the file/byte caps above bound a catch-up chunk's *size*
+# but not the *time* a single full-ingest pass can hold the sole archive
+# writer -- a handful of files, or one slow-to-parse file, can still exceed
+# them by any margin (the original de2a incident was an in-size-bounds 7 MB
+# chunk that held the writer for 860s). Mirrors de2a's
+# ``_RAW_MATERIALIZATION_MAX_PASS_SECONDS`` / qlae's
+# ``_DRIVE_CATCHUP_MAX_PASS_SECONDS`` constant and value -- checked *between*
+# full-ingest records/groups (a single session write cannot be split
+# mid-transaction), never mid-record.
+_LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # Filesystem notifications are the real-time delivery path.  This sweep is a
 # recovery mechanism for notifications missed while the daemon was unavailable
@@ -102,7 +112,7 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
         "succeeded=%d failed=%d parse_s=%.3f convergence_s=%.3f stages=%s "
-        "wal_before_checkpoint=%.1f MB wal_after_checkpoint=%.1f MB wal_busy_pages=%d",
+        "wal_before_checkpoint=%.1f MB wal_after_checkpoint=%.1f MB wal_busy_pages=%d time_budget_exceeded=%s",
         prefix,
         source_payload_read_bytes / 1e6,
         input_bytes / 1e6,
@@ -117,7 +127,13 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "wal_bytes_before_checkpoint_max", 0) / 1e6,
         getattr(metrics, "wal_bytes_after_checkpoint_max", 0) / 1e6,
         getattr(metrics, "wal_busy_pages_total", 0),
+        getattr(metrics, "time_budget_exceeded", False),
     )
+    if getattr(metrics, "time_budget_exceeded", False):
+        logger.info(
+            "%s: max_pass_seconds budget exceeded -- remaining files deferred to the next tick (polylogue-11cg9)",
+            prefix,
+        )
 
 
 def _log_unclaimed_catch_up_candidate(path: Path, *, source_name: str, reason: str) -> None:
@@ -1250,6 +1266,7 @@ class LiveWatcher:
                     paths,
                     queued_file_count=queued_file_count,
                     skipped_file_count=skipped_file_count,
+                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
                 )
 
             run = getattr(self._write_coordinator, "run", None)
