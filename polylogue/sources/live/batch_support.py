@@ -11,6 +11,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Protocol
 
+import ijson
+
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
@@ -465,6 +467,24 @@ def _accumulate_stage_timings(target: dict[str, float], update: dict[str, float]
 
 
 def _browser_capture_prefix_probe(path: Path) -> tuple[bool, Provider | None]:
+    """Detect a browser-capture envelope and its provider for a large file.
+
+    The receiver serializes captures with ``sort_keys=True``
+    (``browser_capture/receiver.py``), so the envelope's ``raw_provider_payload``
+    field (an unbounded copy of the provider's own wire payload) sorts
+    alphabetically *before* ``session`` and therefore before
+    ``session.provider``. Once ``raw_provider_payload`` alone exceeds
+    ``_BROWSER_CAPTURE_PREFIX_PROBE_BYTES``, the provider marker never appears
+    in the leading prefix at all -- a >8MiB capture with a big enough leading
+    payload was permanently stamped ``unknown-export`` regardless of how many
+    times it was re-captured (polylogue-mvq8). The prefix regex below still
+    short-circuits the common case (small ``raw_provider_payload``, provider
+    marker within the first MiB); only when that is inconclusive but the
+    envelope is confirmed to be a browser capture does this fall back to a
+    memory-bounded structural scan (:func:`_browser_capture_provider_from_path`)
+    that finds ``session.provider`` regardless of where it falls in the
+    payload.
+    """
     if path.suffix.lower() != ".json":
         return False, None
     try:
@@ -475,14 +495,37 @@ def _browser_capture_prefix_probe(path: Path) -> tuple[bool, Provider | None]:
     if b"polylogue_capture_kind" not in prefix or b"browser_llm_session" not in prefix:
         return False, None
     match = _BROWSER_CAPTURE_PROVIDER_RE.search(prefix)
-    if match is None:
-        return True, None
+    if match is not None:
+        try:
+            provider_token = match.group(1).decode("utf-8")
+        except UnicodeDecodeError:
+            provider_token = None
+        if provider_token is not None:
+            provider = Provider.from_string(provider_token)
+            if provider is not Provider.UNKNOWN:
+                return True, provider
+    # The prefix confirmed a browser capture but didn't yield a usable
+    # provider marker -- ``session.provider`` may sit past this prefix.
+    return True, _browser_capture_provider_from_path(path)
+
+
+def _browser_capture_provider_from_path(path: Path) -> Provider | None:
+    """Stream-parse a browser-capture envelope to find ``session.provider``.
+
+    Memory-bounded regardless of payload size (an ``ijson`` event stream),
+    mirroring ``source_acquisition_components._stream_browser_capture_provider``
+    -- but reads directly from a filesystem path instead of the blob store,
+    since this probe runs before the file has been copied into a blob.
+    """
     try:
-        provider_token = match.group(1).decode("utf-8")
-    except UnicodeDecodeError:
-        return True, None
-    provider = Provider.from_string(provider_token)
-    return True, provider if provider is not Provider.UNKNOWN else None
+        with path.open("rb") as handle:
+            for element_prefix, event, value in ijson.parse(handle):
+                if event == "string" and element_prefix == "session.provider":
+                    provider = Provider.from_string(str(value))
+                    return provider if provider is not Provider.UNKNOWN else None
+    except (OSError, ijson.JSONError):
+        return None
+    return None
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
