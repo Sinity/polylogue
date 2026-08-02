@@ -1810,6 +1810,20 @@ def build_verify_steps(
                 # that reorder entries) -- polylogue-gysk3 found the same
                 # hazard still live for provider_message_id.
                 ("lab policy position-derived-identity", _devtools_cmd("lab policy position-derived-identity")),
+                # Static, archive-independent, sub-second: forbids a NEW
+                # unreachable (frontier state, dispatched actuator) pairing in
+                # polylogue/storage/raw_reconciler.py -- polylogue-w32w found
+                # UNRESOLVED_PROVENANCE paired with the dispatched
+                # REFINE_QUARANTINE actuator, an actuator no path could ever
+                # select, and 4,174 blockers accumulated behind it for weeks
+                # before anyone noticed. The runtime constructor guard
+                # (RawAuthorityFrontierItem.__post_init__) only fires when
+                # something actually constructs the bad combination; this
+                # lint re-checks every literal pairing at review time.
+                (
+                    "lab policy raw-authority-frontier-executability",
+                    _devtools_cmd("lab policy raw-authority-frontier-executability"),
+                ),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.
