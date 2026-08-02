@@ -19,6 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     list_hook_events,
     list_raw_artifacts,
     read_archive_raw_session_envelope,
+    read_capture_mode_resolution,
     read_history_sidecar,
     read_hook_event,
     read_raw_artifact,
@@ -357,3 +358,179 @@ def test_source_reference_commit_atomically_consumes_publication_reservation(tmp
     finally:
         observer.close()
         conn.close()
+
+
+def test_capture_mode_resolution_ambiguous_gemini_then_drive(tmp_path: Path) -> None:
+    """A content-identical GEMINI export observed first, then a live DRIVE
+    acquisition of the exact same bytes, must retain BOTH observed modes
+    (polylogue-buns AC1) instead of the DRIVE observation silently vanishing
+    behind the first-known cache."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"chunkedPrompt": {"chunks": []}}'
+
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        capture_mode=Provider.GEMINI,
+        source_path="/tmp/export.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=1_000,
+    )
+    write_source_raw_session(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        capture_mode=Provider.DRIVE,
+        source_path="/tmp/export.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=2_000,
+        raw_id=raw_id,
+    )
+
+    resolution = read_capture_mode_resolution(conn, raw_id)
+    assert resolution.status == "ambiguous"
+    assert set(resolution.modes) == {Provider.GEMINI, Provider.DRIVE}
+    # Order reflects first-observation time.
+    assert resolution.modes == (Provider.GEMINI, Provider.DRIVE)
+
+    # The cached convenience column is unchanged: first-known-mode wins.
+    envelope = read_archive_raw_session_envelope(conn, raw_id)
+    assert envelope.capture_mode == Provider.GEMINI.value
+
+    # AC3: blob dedup is untouched -- one raw_payload ref for this raw_id.
+    blob_ref_count = conn.execute(
+        "SELECT COUNT(*) FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
+        (raw_id,),
+    ).fetchone()[0]
+    assert blob_ref_count == 1
+    conn.close()
+
+
+def test_capture_mode_resolution_ambiguous_drive_then_gemini(tmp_path: Path) -> None:
+    """Mirror order of the above: a live DRIVE acquisition observed first,
+    then a GEMINI export of the same bytes -- both orders must behave the
+    same way (polylogue-buns AC4)."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"chunkedPrompt": {"chunks": []}}'
+
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        capture_mode=Provider.DRIVE,
+        source_path="/tmp/live-drive.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=1_000,
+    )
+    write_source_raw_session(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        capture_mode=Provider.GEMINI,
+        source_path="/tmp/live-drive.json",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=2_000,
+        raw_id=raw_id,
+    )
+
+    resolution = read_capture_mode_resolution(conn, raw_id)
+    assert resolution.status == "ambiguous"
+    assert set(resolution.modes) == {Provider.GEMINI, Provider.DRIVE}
+    assert resolution.modes == (Provider.DRIVE, Provider.GEMINI)
+
+    envelope = read_archive_raw_session_envelope(conn, raw_id)
+    assert envelope.capture_mode == Provider.DRIVE.value
+
+    blob_ref_count = conn.execute(
+        "SELECT COUNT(*) FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'",
+        (raw_id,),
+    ).fetchone()[0]
+    assert blob_ref_count == 1
+    conn.close()
+
+
+def test_capture_mode_resolution_unambiguous_single_observation(tmp_path: Path) -> None:
+    """A raw with exactly one acquisition mode ever observed reads as unambiguous,
+    not merely as an implicit absence of ambiguity."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"kind":"session"}'
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        capture_mode=Provider.CLAUDE_CODE,
+        source_path="/tmp/single.jsonl",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=1_000,
+    )
+    # Repeat acquisition of the identical raw is a no-op for ambiguity.
+    write_source_raw_session(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        capture_mode=Provider.CLAUDE_CODE,
+        source_path="/tmp/single.jsonl",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=2_000,
+        raw_id=raw_id,
+    )
+
+    resolution = read_capture_mode_resolution(conn, raw_id)
+    assert resolution.status == "unambiguous"
+    assert resolution.modes == (Provider.CLAUDE_CODE,)
+    conn.close()
+
+
+def test_capture_mode_resolution_unknown_when_never_observed(tmp_path: Path) -> None:
+    """A raw acquired without a capture_mode reads as unknown, not unambiguous."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"kind":"session"}'
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CLAUDE_CODE_SESSION,
+        source_path="/tmp/no-capture-mode.jsonl",
+        source_index=0,
+        payload=payload,
+        acquired_at_ms=1_000,
+    )
+
+    resolution = read_capture_mode_resolution(conn, raw_id)
+    assert resolution.status == "unknown"
+    assert resolution.modes == ()
+    conn.close()
+
+
+def test_capture_mode_resolution_ambiguous_via_blob_ref_writer(tmp_path: Path) -> None:
+    """The memory-bounded streaming writer (write_source_raw_session_blob_ref)
+    must retain both acquisition modes exactly like the in-memory writer."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"chunkedPrompt": {"chunks": []}}'
+    blob_hash = deterministic_blob_hash(payload)
+
+    raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        capture_mode=Provider.GEMINI,
+        source_path="/tmp/blobref-export.json",
+        source_index=0,
+        blob_hash=blob_hash,
+        blob_size=len(payload),
+        acquired_at_ms=1_000,
+    )
+    write_source_raw_session_blob_ref(
+        conn,
+        origin=Origin.AISTUDIO_DRIVE,
+        capture_mode=Provider.DRIVE,
+        source_path="/tmp/blobref-export.json",
+        source_index=0,
+        blob_hash=blob_hash,
+        blob_size=len(payload),
+        acquired_at_ms=2_000,
+        raw_id=raw_id,
+    )
+
+    resolution = read_capture_mode_resolution(conn, raw_id)
+    assert resolution.status == "ambiguous"
+    assert resolution.modes == (Provider.GEMINI, Provider.DRIVE)
+    conn.close()

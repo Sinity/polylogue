@@ -489,7 +489,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -575,8 +575,8 @@ def test_source_publication_backfill_requires_verified_backup(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 9
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 15
-        assert result.applied_versions == (10, 11, 12, 13, 14, 15)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 16
+        assert result.applied_versions == (10, 11, 12, 13, 14, 15, 16)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {
@@ -630,7 +630,7 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     old_ddl = old_ddl.replace(", 'beads-issue'", "")
     old_ddl = old_ddl.replace(
         "    capture_mode            TEXT CHECK ((capture_mode IN "
-        "('chatgpt', 'claude-ai', 'claude-code', 'codex', 'gemini', 'gemini-cli', "
+        "('chatgpt', 'claude-ai', 'claude-design', 'claude-code', 'codex', 'gemini', 'gemini-cli', "
         "'hermes', 'antigravity', 'beads', 'grok', 'drive', 'unknown') "
         "OR capture_mode IS NULL)),\n",
         "",
@@ -730,8 +730,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 15
-        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 16
+        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15, 16)
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -892,7 +892,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -950,7 +950,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """
@@ -985,8 +985,11 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
     and ``storage/blob_publication.py`` both run
     ``SELECT 1 FROM raw_sessions WHERE blob_hash = ?`` once per candidate blob
     on disk; without a ``blob_hash``-leading index this was a full table scan
-    repeated tens of thousands of times per periodic GC pass. The index is
-    pure-additive (``additive-no-backup``), so no manifest should be required.
+    repeated tens of thousands of times per periodic GC pass. Migration 014
+    itself is pure-additive (``additive-no-backup``), but a v13 fixture
+    migrating to "current" also picks up migration 016 (polylogue-buns, added
+    after this test), which is not additive-no-backup, so a verified backup
+    manifest is required for the full chain.
     """
     db_path = workspace_env["archive_root"] / "source.db"
     db_path.unlink(missing_ok=True)
@@ -997,6 +1000,7 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
             CREATE TABLE raw_sessions (
                 raw_id                  TEXT PRIMARY KEY,
                 origin                  TEXT NOT NULL,
+                capture_mode            TEXT,
                 native_id               TEXT,
                 source_path             TEXT NOT NULL,
                 source_index            INTEGER NOT NULL DEFAULT 0,
@@ -1011,15 +1015,17 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" not in indexes_before
 
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        manifest = _verified_backup_manifest(tmp_path / "backup-source-v13")
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 13
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 15
-        # v13 -> current also picks up migration 015 (polylogue-hord), added
-        # after this test -- a v13 fixture migrating to "current" is exactly
-        # the shape a real archive frozen at v13 would go through.
-        assert result.applied_versions == (14, 15)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 15
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 16
+        # v13 -> current also picks up migrations 015 (polylogue-hord) and
+        # 016 (polylogue-buns), both added after this test -- a v13 fixture
+        # migrating to "current" is exactly the shape a real archive frozen
+        # at v13 would go through.
+        assert result.applied_versions == (14, 15, 16)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 16
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" in indexes_after
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
@@ -1044,8 +1050,11 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
     The pre-existing single-column ``idx_raw_sessions_blob_hash`` index (v14)
     only covers the blob-GC point lookup and cannot satisfy this ordered
     query without a temp B-TREE sort; a leading ``(blob_hash, raw_id)``
-    index removes that sort. Pure-additive (``additive-no-backup``), so no
-    manifest should be required.
+    index removes that sort. Migration 015 itself is pure-additive
+    (``additive-no-backup``), but a v14 fixture migrating to "current" also
+    picks up migration 016 (polylogue-buns, added after this test), which is
+    not additive-no-backup, so a verified backup manifest is required for the
+    full chain.
     """
     db_path = workspace_env["archive_root"] / "source.db"
     db_path.unlink(missing_ok=True)
@@ -1056,6 +1065,7 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
             CREATE TABLE raw_sessions (
                 raw_id                  TEXT PRIMARY KEY,
                 origin                  TEXT NOT NULL,
+                capture_mode            TEXT,
                 native_id               TEXT,
                 source_path             TEXT NOT NULL,
                 source_index            INTEGER NOT NULL DEFAULT 0,
@@ -1071,12 +1081,13 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
         indexes_before = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" not in indexes_before
 
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        manifest = _verified_backup_manifest(tmp_path / "backup-source-v14")
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 14
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 15
-        assert result.applied_versions == (15,)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 15
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 16
+        assert result.applied_versions == (15, 16)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 16
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
         plan = conn.execute(

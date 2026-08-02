@@ -24,6 +24,7 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.queries.raw_reads import get_capture_mode_resolution
 from polylogue.storage.sqlite.queries.raw_reads import get_raw_session as get_query_raw_session
 from polylogue.storage.sqlite.queries.raw_writes import save_raw_session as save_query_raw_session
 from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
@@ -178,7 +179,14 @@ class TestRawSessionStorage:
         assert recovered_drive.payload_provider is Provider.DRIVE
 
     async def test_reacquisition_keeps_first_known_capture_mode(self, backend: SQLiteBackend) -> None:
-        """Later canonical fallback cannot erase durable live-Drive provenance."""
+        """Later canonical fallback cannot erase durable live-Drive provenance.
+
+        The cached column keeps first-known-mode behavior, but the durable
+        observation multimap must retain BOTH modes rather than silently
+        dropping the second (polylogue-buns AC1): this is the exact raw_id
+        collision the bead describes, expressed as a same-raw_id reacquisition
+        with a different capture_mode.
+        """
         drive = make_raw_session(
             raw_id="reacquired-aistudio",
             source_name="gemini",
@@ -195,6 +203,36 @@ class TestRawSessionStorage:
         assert recovered is not None
         assert recovered.capture_mode is Provider.DRIVE
         assert recovered.payload_provider is Provider.DRIVE
+
+        async with backend._get_connection() as conn:
+            resolution = await get_capture_mode_resolution(conn, drive.raw_id)
+        assert resolution.status == "ambiguous"
+        assert resolution.modes == (Provider.DRIVE, Provider.GEMINI)
+
+    async def test_reacquisition_ambiguous_gemini_then_drive(self, backend: SQLiteBackend) -> None:
+        """Mirror order of the test above: GEMINI observed first, DRIVE second."""
+        gemini = make_raw_session(
+            raw_id="reacquired-aistudio-reverse",
+            source_name="gemini",
+            source_path="/tmp/export.json",
+            blob_size=2,
+            acquired_at="2026-02-02T12:00:00+00:00",
+        ).model_copy(update={"capture_mode": Provider.GEMINI})
+        live_retry = gemini.model_copy(
+            update={"capture_mode": Provider.DRIVE, "acquired_at": "2026-02-02T12:00:01+00:00"}
+        )
+
+        assert await backend.save_raw_session(gemini) is True
+        assert await backend.save_raw_session(live_retry) is False
+
+        recovered = await backend.get_raw_session(gemini.raw_id)
+        assert recovered is not None
+        assert recovered.capture_mode is Provider.GEMINI
+
+        async with backend._get_connection() as conn:
+            resolution = await get_capture_mode_resolution(conn, gemini.raw_id)
+        assert resolution.status == "ambiguous"
+        assert resolution.modes == (Provider.GEMINI, Provider.DRIVE)
 
     async def test_rehydrated_unknown_capture_mode_remains_unknown(self, backend: SQLiteBackend) -> None:
         """A legacy NULL must not become the canonical GEMINI projection on save."""

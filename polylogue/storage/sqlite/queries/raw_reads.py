@@ -6,10 +6,14 @@ from collections.abc import AsyncIterator, Iterable, Sequence
 
 import aiosqlite
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.raw.models import RawSessionState
 from polylogue.storage.runtime import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    CaptureModeResolution,
+    CaptureModeResolutionStatus,
+)
 from polylogue.storage.sqlite.connection import _build_source_path_scope_filter
 from polylogue.storage.sqlite.queries.mappers import _ms_to_iso, _row_to_raw_session
 from polylogue.storage.sqlite.queries.raw_state import RAW_ORIGIN_FILTER_SQL, origin_filter_value
@@ -325,7 +329,34 @@ async def get_raw_session_count(conn: aiosqlite.Connection, origin: str | None =
     return int(row["cnt"]) if row is not None else 0
 
 
+async def get_capture_mode_resolution(conn: aiosqlite.Connection, raw_id: str) -> CaptureModeResolution:
+    """Read every acquisition mode ever observed for ``raw_id``, explicitly ambiguous or not.
+
+    Async counterpart of ``archive_tiers.source_write.read_capture_mode_resolution``
+    (polylogue-buns AC2) for the daemon's live async write/read path.
+    """
+    cursor = await conn.execute(
+        """
+        SELECT capture_mode FROM raw_capture_observations
+        WHERE raw_id = ?
+        ORDER BY first_observed_at_ms, capture_mode
+        """,
+        (raw_id,),
+    )
+    rows = await cursor.fetchall()
+    modes = tuple(Provider.from_string(row["capture_mode"]) for row in rows)
+    status: CaptureModeResolutionStatus
+    if not modes:
+        status = "unknown"
+    elif len(modes) == 1:
+        status = "unambiguous"
+    else:
+        status = "ambiguous"
+    return CaptureModeResolution(raw_id=raw_id, status=status, modes=modes)
+
+
 __all__ = [
+    "get_capture_mode_resolution",
     "get_known_source_mtimes",
     "get_raw_blob_sizes",
     "get_raw_session",

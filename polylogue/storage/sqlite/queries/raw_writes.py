@@ -86,6 +86,22 @@ async def save_raw_session(
             "UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL",
             (capture_mode.value, record.raw_id),
         )
+    if capture_mode is not None:
+        # Durable multimap append (polylogue-buns): the UPDATE above only
+        # ever remembers the FIRST known capture_mode for this raw_id, so a
+        # content-identical GEMINI export and a live DRIVE acquisition that
+        # collide on raw_id would otherwise silently lose whichever mode
+        # arrived second. This records every distinct mode ever observed,
+        # regardless of insert/conflict/order, so no acquisition evidence is
+        # dropped even though the cached column above still only holds one.
+        await conn.execute(
+            """
+            INSERT INTO raw_capture_observations (raw_id, capture_mode, first_observed_at_ms)
+            VALUES (?, ?, ?)
+            ON CONFLICT(raw_id, capture_mode) DO NOTHING
+            """,
+            (record.raw_id, capture_mode.value, acquired_at_ms),
+        )
     if not inserted and record.file_mtime is not None:
         file_mtime_ms = _timestamp_ms(record.file_mtime)
         await conn.execute(
