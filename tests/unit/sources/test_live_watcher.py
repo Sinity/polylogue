@@ -2813,6 +2813,19 @@ def test_claude_default_source_projects_originspec_suffixes() -> None:
     assert claude.accepts(claude.root / "project" / "session.jsonl")
 
 
+def test_claude_todos_default_source_watches_its_own_sibling_root() -> None:
+    """polylogue-t0p: ~/.claude/todos/ is watched separately from ~/.claude/projects/."""
+    from polylogue.sources.live.watcher import default_sources
+
+    todos = next(source for source in default_sources() if source.name == "claude-code-todos")
+    claude = next(source for source in default_sources() if source.name == "claude-code")
+
+    assert todos.root != claude.root
+    assert todos.root.name == "todos"
+    assert todos.suffixes == (".json",)
+    assert todos.accepts(todos.root / "005aeeae-bd21-4a4c-b928-e9ee5f6b8394.json")
+
+
 def test_browser_capture_spool_is_default_json_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

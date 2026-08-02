@@ -546,6 +546,26 @@ def _claude_code_spec() -> OriginSpec:
                 ),
                 path_suffixes=(".jsonl", ".ndjson"),
             ),
+            OriginArtifactRule(
+                kind="todo_snapshot",
+                path_pattern=r"(?:^|/)todos/[^/]+\.json$",
+                parse_policy="fact",
+                parser_path="polylogue/sources/parsers/claude/todos.py:parse_claude_todo_artifact",
+                coverage_role="plan_snapshot",
+                fidelity_note=(
+                    "~/.claude/todos/<session-id>[-agent-<agent-id>].json is Claude Code's live plan "
+                    "state (polylogue-t0p): a session's own TodoWrite invocations overwrite the same "
+                    "path wholesale, never append. Preserved: every task's content/status/priority/id "
+                    "and the agent's own list ORDER (a real priority signal, not alphabetical/insertion "
+                    "order) for every snapshot the watcher actually observed on disk. Lost: Claude Code "
+                    "prunes this directory on its own schedule and each write is a full overwrite, so "
+                    "intermediate transitions between two watcher-observed snapshots (e.g. pending -> "
+                    "in_progress -> completed within one polling gap) are unrecoverable once overwritten "
+                    "or pruned -- there is no in-file timestamp; observation time is acquisition-time, "
+                    "not plan-mutation time."
+                ),
+                path_suffixes=(".json",),
+            ),
         ),
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
         display_description="Claude Code local sessions (lab: Anthropic)",

@@ -2109,6 +2109,7 @@ class ResolvedSourcePaths:
     """Immutable local source discovery roots for one runtime."""
 
     claude_code: Path
+    claude_code_todos: Path
     codex: Path
     gemini_cli: Path
     hermes: Path
@@ -2256,6 +2257,7 @@ def resolve_runtime_config(
     )
     source_paths = ResolvedSourcePaths(
         claude_code=bootstrap.home / ".claude" / "projects",
+        claude_code_todos=bootstrap.home / ".claude" / "todos",
         codex=bootstrap.home / ".codex" / "sessions",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
         hermes=_resolved_runtime_path(
@@ -2272,6 +2274,7 @@ def resolve_runtime_config(
     )
     local_candidates = (
         ("claude-code", source_paths.claude_code),
+        ("claude-code-todos", source_paths.claude_code_todos),
         ("codex", source_paths.codex),
         ("gemini-cli", source_paths.gemini_cli),
         ("hermes", source_paths.hermes),

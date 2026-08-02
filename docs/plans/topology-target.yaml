@@ -70,7 +70,7 @@ files:
     owner: stable
     cross_cut: { api: async }
   - path: polylogue/api/archive.py
-    loc: 7264
+    loc: 7343
     target: polylogue/api/archive.py
     owner: stable
     cross_cut: { api: async }
@@ -174,7 +174,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/models.py
-    loc: 40
+    loc: 41
     target: polylogue/archive/artifact_taxonomy/models.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -1309,7 +1309,7 @@ files:
     target: polylogue/cli/verb_names.py
     owner: stable
   - path: polylogue/config.py
-    loc: 2897
+    loc: 2900
     target: polylogue/config.py
     owner: kernel
     reason: kernel root rule
@@ -1444,7 +1444,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/provider_identity.py
-    loc: 179
+    loc: 180
     target: polylogue/core/provider_identity.py
     owner: core-primitive
     reason: core primitive
@@ -1454,7 +1454,7 @@ files:
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/refs.py
-    loc: 470
+    loc: 521
     target: polylogue/core/refs.py
     owner: core-primitive
     reason: core primitive
@@ -1922,8 +1922,12 @@ files:
     target: polylogue/insights/authored_payloads.py
     owner: stable
   - path: polylogue/insights/capture_coverage.py
-    loc: 414
+    loc: 413
     target: polylogue/insights/capture_coverage.py
+    owner: stable
+  - path: polylogue/insights/claude_todo_projection.py
+    loc: 139
+    target: polylogue/insights/claude_todo_projection.py
     owner: stable
   - path: polylogue/insights/claude_workflow_evidence.py
     loc: 778
@@ -2054,7 +2058,7 @@ files:
     target: polylogue/insights/measurement/ratio.py
     owner: stable
   - path: polylogue/insights/measurement/registered_metrics.py
-    loc: 57
+    loc: 84
     target: polylogue/insights/measurement/registered_metrics.py
     owner: stable
   - path: polylogue/insights/measurement/registration.py
@@ -2427,11 +2431,11 @@ files:
     target: polylogue/operations/work_effect_reconciliation.py
     owner: stable
   - path: polylogue/paths/__init__.py
-    loc: 76
+    loc: 78
     target: polylogue/paths/__init__.py
     owner: stable
   - path: polylogue/paths/_roots.py
-    loc: 246
+    loc: 258
     target: polylogue/paths/_roots.py
     owner: stable
   - path: polylogue/paths/sanitize.py
@@ -3127,7 +3131,7 @@ files:
     target: polylogue/schemas/tooling_registry.py
     owner: stable
   - path: polylogue/schemas/type_narrowing.py
-    loc: 71
+    loc: 84
     target: polylogue/schemas/type_narrowing.py
     owner: stable
   - path: polylogue/schemas/validation/__init__.py
@@ -3392,11 +3396,11 @@ files:
     target: polylogue/sources/live/tool_result_sidecars.py
     owner: stable
   - path: polylogue/sources/live/watcher.py
-    loc: 1499
+    loc: 1511
     target: polylogue/sources/live/watcher.py
     owner: stable
   - path: polylogue/sources/origin_specs.py
-    loc: 1390
+    loc: 1410
     target: polylogue/sources/origin_specs.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
@@ -3437,7 +3441,7 @@ files:
     target: polylogue/sources/parsers/chatgpt_sidecars.py
     owner: stable
   - path: polylogue/sources/parsers/claude/__init__.py
-    loc: 78
+    loc: 80
     target: polylogue/sources/parsers/claude/__init__.py
     owner: stable
   - path: polylogue/sources/parsers/claude/ai_parser.py
@@ -3467,6 +3471,10 @@ files:
   - path: polylogue/sources/parsers/claude/orchestration.py
     loc: 230
     target: polylogue/sources/parsers/claude/orchestration.py
+    owner: stable
+  - path: polylogue/sources/parsers/claude/todos.py
+    loc: 151
+    target: polylogue/sources/parsers/claude/todos.py
     owner: stable
   - path: polylogue/sources/parsers/codex.py
     loc: 2651
@@ -4149,7 +4157,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/__init__.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive.py
-    loc: 11433
+    loc: 11598
     target: polylogue/storage/sqlite/archive_tiers/archive.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/archive_init.py
@@ -4189,7 +4197,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 2184
+    loc: 2197
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
@@ -4233,11 +4241,11 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 456
+    loc: 475
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
-    loc: 1185
+    loc: 1286
     target: polylogue/storage/sqlite/archive_tiers/source_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/types.py
@@ -4297,7 +4305,7 @@ files:
     target: polylogue/storage/sqlite/finding_provenance.py
     owner: stable
   - path: polylogue/storage/sqlite/lifecycle.py
-    loc: 819
+    loc: 832
     target: polylogue/storage/sqlite/lifecycle.py
     owner: stable
   - path: polylogue/storage/sqlite/maintenance.py
@@ -4414,7 +4422,7 @@ files:
     target: polylogue/storage/sqlite/queries/raw.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/raw_reads.py
-    loc: 341
+    loc: 372
     target: polylogue/storage/sqlite/queries/raw_reads.py
     owner: stable
     cross_cut: { layer: read }
@@ -4423,7 +4431,7 @@ files:
     target: polylogue/storage/sqlite/queries/raw_state.py
     owner: stable
   - path: polylogue/storage/sqlite/queries/raw_writes.py
-    loc: 107
+    loc: 123
     target: polylogue/storage/sqlite/queries/raw_writes.py
     owner: stable
     cross_cut: { layer: write }
@@ -4601,7 +4609,7 @@ files:
     target: polylogue/surfaces/chronicle.py
     owner: stable
   - path: polylogue/surfaces/payloads.py
-    loc: 3919
+    loc: 4022
     target: polylogue/surfaces/payloads.py
     owner: stable
   - path: polylogue/surfaces/projection_spec.py
