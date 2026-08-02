@@ -58,6 +58,36 @@ class LiveSourceVerdict:
     SOURCE_MISSING: Final = "source_missing"
 
 
+#: ``raw_sessions.revision_authority_evidence`` value (migration 017) written
+#: by the actuator (``polylogue.maintenance.raw_live_source_reconciliation_apply``)
+#: when it promotes a row to ``byte_proven`` on THIS module's evidence --
+#: distinct from the pre-existing revision-graph reconciler's promotions,
+#: which leave the column ``NULL``. See migration 017's docstring for why this
+#: is a new evidence-provenance column rather than a new ``revision_authority``
+#: value.
+LIVE_SOURCE_VERIFICATION_EVIDENCE: Final = "live_source_verification_v1"
+
+
+#: Receipt-table verdict vocabulary (``raw_live_source_reconciliation_receipts.verdict``).
+#: Both values correspond to :attr:`LiveSourceVerdict.EXACT_MATCH`; they are
+#: split here only to make "matched only after stripping the historical
+#: Codex header" durably visible in the audit trail without a second column.
+class ReceiptVerdict:
+    EXACT_MATCH: Final = "exact_match"
+    CODEX_HEADER_STRIP_MATCH: Final = "codex_header_strip_match"
+
+
+def receipt_verdict_for(candidate: LiveSourceReconciliationCandidate) -> str:
+    """Map an exact-match candidate to its receipt-table verdict label."""
+    if candidate.comparison.verdict != LiveSourceVerdict.EXACT_MATCH:
+        raise ValueError(f"receipt_verdict_for requires an exact_match candidate, got {candidate.comparison.verdict}")
+    return (
+        ReceiptVerdict.CODEX_HEADER_STRIP_MATCH
+        if candidate.comparison.matched_after_codex_header_strip
+        else ReceiptVerdict.EXACT_MATCH
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class LiveSourceComparison:
     """Result of comparing one raw row's archived bytes to its live source."""
@@ -182,6 +212,7 @@ class LiveSourceReconciliationCandidate:
     provider: Provider
     revision_kind: RawRevisionKind
     source_path: str | None
+    blob_hash: bytes
     blob_size: int
     comparison: LiveSourceComparison
 
@@ -235,7 +266,7 @@ def plan_quarantined_live_source_reconciliation(
     try:
         query = """
             SELECT raw_id, origin, capture_mode, logical_source_key, revision_kind,
-                   source_path, blob_size, lower(hex(blob_hash)) AS blob_hash_hex,
+                   source_path, blob_size, blob_hash, lower(hex(blob_hash)) AS blob_hash_hex,
                    append_start_offset, append_end_offset
             FROM raw_sessions
             WHERE revision_authority = 'quarantined'
@@ -287,6 +318,7 @@ def plan_quarantined_live_source_reconciliation(
                 provider=provider,
                 revision_kind=kind,
                 source_path=source_path_value,
+                blob_hash=bytes(row["blob_hash"]),
                 blob_size=blob_size,
                 comparison=comparison,
             )
@@ -308,10 +340,13 @@ def plan_quarantined_live_source_reconciliation(
 
 
 __all__ = [
+    "LIVE_SOURCE_VERIFICATION_EVIDENCE",
     "LiveSourceComparison",
     "LiveSourceReconciliationCandidate",
     "LiveSourceReconciliationPlan",
     "LiveSourceVerdict",
+    "ReceiptVerdict",
     "compare_raw_against_live_source",
     "plan_quarantined_live_source_reconciliation",
+    "receipt_verdict_for",
 ]
