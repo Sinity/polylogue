@@ -3691,6 +3691,10 @@ files:
     loc: 58
     target: polylogue/storage/artifacts/views.py
     owner: stable
+  - path: polylogue/storage/attachment_reacquisition.py
+    loc: 641
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/attachment_relink.py
     loc: 377
     target: TBD

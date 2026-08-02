@@ -836,6 +836,12 @@ entries:
   occurrence: 0
   classification: identifier
   note: 'observation-sample identity; 2026-07-09 hash-boundary census (docs/audits/2026-07-09-hash-boundary-census.md) Table 3.'
+- path: polylogue/storage/attachment_reacquisition.py
+  function: '<module>.apply_attachment_reacquisition'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: content-hash
+  note: 'polylogue-pfdf: hashes freshly re-derived attachment inline bytes to compute the new content-addressed blob_hash before publishing, mirroring blob_integrity.py''s recompute-and-compare pattern.'
 - path: polylogue/storage/backup_attestation.py
   function: '<module>.sign_verification_receipt'
   call: hashlib.sha256
