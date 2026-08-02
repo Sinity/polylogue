@@ -147,6 +147,60 @@ def test_find_list_json_parity_between_direct_and_daemon(
     assert direct_payload["items"], "fixture query must actually match rows, or parity is vacuous"
 
 
+def test_find_daemon_proxied_path_authenticates_with_auto_minted_token(
+    golden_parity_workspace: dict[str, Path],
+    _uds_runtime_dir: Path,
+) -> None:
+    """polylogue-n6pz: the daemon auto-mints and requires a bearer token by
+    default (polylogue-rzve) when no ``daemon.api.auth_token`` is explicitly
+    configured. The CLI fast path must resolve that same auto-minted token
+    (``polylogue.daemon.api_auth.resolve_api_auth_token``) rather than only
+    reading the unset config value -- otherwise every unauthenticated probe
+    gets a 401, ``DaemonClient.probe`` returns ``None``, and the CLI silently
+    falls back to the direct path even though a real daemon is reachable.
+    This test starts the real UDS server with the archive's actual
+    auto-minted token (not an empty one) and asserts the daemon-proxied path
+    is still reached."""
+    from polylogue.daemon.api_auth import load_or_mint_api_auth_token
+
+    archive_root = golden_parity_workspace["archive_root"]
+    args = ["--repo", "polylogue"]
+
+    # Mint the token the same way the daemon itself would on first start,
+    # scoped to this archive root (env already set by golden_parity_workspace).
+    minted_token = load_or_mint_api_auth_token()
+    assert minted_token
+
+    from polylogue.daemon.http import DaemonAPIHandler
+    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
+
+    socket_path = daemon_socket_path(archive_root, runtime_dir=str(_uds_runtime_dir))
+    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
+    server.auth_token = minted_token
+    thread = threading.Thread(target=server.serve_forever, name="golden-parity-uds-auth", daemon=True)
+    thread.start()
+    try:
+        from polylogue.cli.daemon_client import DaemonClient
+
+        client = DaemonClient(socket_path, timeout_s=1.0, auth_token=minted_token)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if client.request_json("GET", "/api/health") is not None:
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("daemon UDS server did not become ready")
+
+        daemon_payload = _run_find_json(args)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert daemon_payload["source"] == "daemon"
+    assert daemon_payload["items"], "fixture query must actually match rows, or parity is vacuous"
+
+
 def test_facets_json_parity_between_direct_and_daemon(
     golden_parity_workspace: dict[str, Path],
     _uds_runtime_dir: Path,

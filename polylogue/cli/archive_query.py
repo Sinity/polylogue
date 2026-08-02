@@ -1416,12 +1416,19 @@ def _fetch_daemon_payload(
     if _daemon_disabled(flag=disabled):
         return None
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
     socket_path = daemon_socket_path(config.archive_root)
-    client = DaemonClient(socket_path, auth_token=getattr(config, "api_auth_token", None))
+    client = DaemonClient(
+        socket_path,
+        auth_token=resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
+    )
     if (
         client.probe(
             archive_root=str(config.archive_root),

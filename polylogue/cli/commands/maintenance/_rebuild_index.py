@@ -49,6 +49,7 @@ def _run_daemon_rebuild(
 ) -> dict[str, object]:
     """Execute one rebuild pass through the daemon-owned writer."""
     from polylogue.config import load_polylogue_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
 
     body = json.dumps(
         {
@@ -63,7 +64,8 @@ def _run_daemon_rebuild(
         }
     ).encode("utf-8")
     headers = {"Content-Type": "application/json"}
-    if auth_token := load_polylogue_config().api_auth_token:
+    cfg = load_polylogue_config()
+    if auth_token := resolve_api_auth_token(cfg.api_auth_token, allow_no_auth=cfg.api_allow_no_auth):
         headers["Authorization"] = f"Bearer {auth_token}"
     request = Request(
         f"{daemon_url.rstrip('/')}/api/maintenance/rebuild-index",
