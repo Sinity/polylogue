@@ -45,7 +45,11 @@ def test_completion_functions_cover_origin_session_tag_tool_and_open_targets() -
     ctx, param = _ctx_param()
 
     origin_items = shell_completion_values.complete_origin_values(ctx, param, "chatgpt,cla")
-    assert [item.value for item in origin_items] == ["chatgpt,claude-ai-export", "chatgpt,claude-code-session"]
+    assert [item.value for item in origin_items] == [
+        "chatgpt,claude-ai-export",
+        "chatgpt,claude-code-session",
+        "chatgpt,claude-design-session",
+    ]
     action_items = shell_completion_values.complete_action_values(ctx, param, "file")
     action_sequence_items = shell_completion_values.complete_action_sequence_values(ctx, param, "shell,file")
     material_origin_items = shell_completion_values.complete_material_origin_values(ctx, param, "runtime")
@@ -260,7 +264,11 @@ def test_query_expression_value_completion_uses_field_completion_source() -> Non
     ctx, param = _ctx_param()
 
     origin_items = shell_completion_values.complete_query_expression_fields(ctx, param, "origin:cla")
-    assert [item.value for item in origin_items] == ["origin:claude-ai-export", "origin:claude-code-session"]
+    assert [item.value for item in origin_items] == [
+        "origin:claude-ai-export",
+        "origin:claude-code-session",
+        "origin:claude-design-session",
+    ]
 
     with (
         patch("polylogue.cli.shell_completion_values._db_exists", return_value=True),

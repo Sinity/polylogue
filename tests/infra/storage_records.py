@@ -13,7 +13,15 @@ from uuid import uuid4
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType, ValidationMode, ValidationStatus
+from polylogue.core.enums import (
+    BlockType,
+    Origin,
+    Provider,
+    SemanticBlockType,
+    TitleSource,
+    ValidationMode,
+    ValidationStatus,
+)
 from polylogue.core.json import dumps, loads, require_json_document, require_json_value
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import _timestamp_sort_key
@@ -937,6 +945,16 @@ def _record_to_parsed_session(
         source_name=provider_from_origin(session.origin),
         provider_session_id=session.native_id,
         title=session.title,
+        # A real parser that sets a title always sets title_source alongside
+        # it (assembly_codex.py, assembly_gemini.py, etc.) -- write.py's
+        # session upsert treats title_source as the sole gate for "is this a
+        # real title" (archive_tiers/archive.py's has_real_title check,
+        # polylogue-cijx.4 decision 3), so a builder-set title with no
+        # title_source silently degrades to the structural "N msgs" fallback
+        # at read time. Mirror real-parser provenance here rather than
+        # leaving every test-built session's explicit title invisible to
+        # that gate.
+        title_source=TitleSource.ORIGIN if session.title else None,
         created_at=session.created_at,
         updated_at=session.updated_at,
         messages=parsed_messages,

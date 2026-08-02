@@ -98,6 +98,9 @@ def test_quick_verify_omits_pytest() -> None:
         "lab policy schema-versioning",
         "lab policy classifier-fingerprints",
         "lab policy demo-tour-freshness",
+        "lab policy raw-payload-hash-purity",
+        "lab policy position-derived-identity",
+        "lab policy raw-authority-frontier-executability",
         "schema promotion audit",
     ]
 
