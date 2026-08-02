@@ -276,11 +276,34 @@ def _iter_schema_units_from_db(
             origins,
         )
         batch_size = 1 if config.sample_granularity == "record" else 100
+        # Content-hash dedup: distinct ``raw_id``s legitimately collapse onto the
+        # same ``blob_hash`` (unchanged re-acquisition, duplicate exports). Byte-
+        # identical content produces byte-identical schema-inference results, so
+        # once one raw_id for a given blob_hash has been observed in this run,
+        # later raw_ids sharing that hash are skipped without any loss of schema
+        # coverage (measured on the live archive: 13-38% of per-origin raw bytes
+        # are exact blob_hash duplicates, up to 33% / ~24GB for codex-session --
+        # polylogue-el374). This is unrelated to (and deliberately does not
+        # overlap with) ``revision_authority`` lineage reconciliation: it would be
+        # unsafe to also skip ``revision_authority='quarantined'`` rows here,
+        # because most of that pile is simply unreconciled-by-default
+        # (``logical_source_key IS NULL``), not a proven duplicate.
+        seen_blob_hashes: set[bytes] = set()
         while True:
             batch = tuple(_coerce_schema_row(row) for row in cursor.fetchmany(batch_size))
             if not batch:
                 break
             for row in batch:
+                if row.blob_hash in seen_blob_hashes:
+                    _record_terminal(
+                        terminal_recorder,
+                        row,
+                        status="intentionally_excluded",
+                        reason="duplicate_blob_content",
+                    )
+                    continue
+                seen_blob_hashes.add(row.blob_hash)
+
                 raw_content = blob_store.blob_path(_blob_hash_hex(row.blob_hash))
 
                 path_classification = classify_artifact_path(

@@ -405,6 +405,83 @@ class TestLoadSamplesFromDb:
             bad_raw_id: "payload_decode_failed",
         }
 
+    def test_schema_observation_skips_duplicate_blob_content(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Byte-identical raws (same blob_hash, distinct raw_id) are scanned once.
+
+        Re-acquiring an unchanged file or a duplicate export legitimately
+        produces two ``raw_sessions`` rows over the same content-addressed
+        blob. Schema inference gets no new information from decoding that
+        content twice, and on the live archive this duplication is
+        substantial (13-38% of per-origin bytes, up to ~24GB for
+        codex-session -- polylogue-el374): the second occurrence must be
+        skipped without opening its raw content a second time.
+        """
+        from polylogue.storage.blob_store import get_blob_store
+        from polylogue.storage.sqlite.connection import open_connection
+
+        db = _archive_index_db(tmp_path)
+        # A record-granularity codex session needs at least one message-shaped
+        # record to be schema-eligible -- a lone ``session_meta`` line (as used
+        # by other tests in this file that only assert on decode/terminal
+        # bookkeeping) does not register any schema unit, which would make
+        # ``iter_schema_units`` fall through to its real
+        # ``~/.codex/sessions`` directory-scan fallback and defeat this test's
+        # isolation.
+        raw_content = (
+            b"\n".join(
+                [
+                    b'{"type":"session_meta","id":"sess-1"}',
+                    b'{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}',
+                ]
+            )
+            + b"\n"
+        )
+        blob_store = get_blob_store()
+        hash_hex, blob_size = blob_store.write_from_bytes(raw_content)
+        acquired_at_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
+        first_raw_id = "raw-dup-first"
+        second_raw_id = "raw-dup-second"
+        with open_connection(db) as conn:
+            for raw_id, source_path in (
+                (first_raw_id, "/tmp/first.jsonl"),
+                (second_raw_id, "/tmp/second.jsonl"),
+            ):
+                conn.execute(
+                    """
+                    INSERT INTO raw_sessions (
+                        raw_id, origin, source_path, source_index,
+                        blob_hash, blob_size, acquired_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (raw_id, "codex-session", source_path, 0, bytes.fromhex(hash_hex), blob_size, acquired_at_ms),
+                )
+            conn.commit()
+
+        outcomes: list[dict[str, object]] = []
+        units = list(
+            iter_schema_units(
+                "codex",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert len(units) == 1
+        assert units[0].raw_id == first_raw_id
+        outcomes_by_raw_id = {outcome["raw_id"]: outcome for outcome in outcomes}
+        assert outcomes_by_raw_id[first_raw_id]["status"] == "included"
+        assert outcomes_by_raw_id[second_raw_id] == {
+            "raw_id": second_raw_id,
+            "status": "intentionally_excluded",
+            "artifact_kind": None,
+            "source_path": "/tmp/second.jsonl",
+            "reason": "duplicate_blob_content",
+        }
+
     def test_schema_observation_excludes_hermes_sqlite_evidence_before_json_decode(self, tmp_path: Path) -> None:
         db = _archive_index_db(tmp_path)
         raw_id = _insert_raw_session(
