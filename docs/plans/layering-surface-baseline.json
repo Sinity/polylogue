@@ -406,16 +406,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_embeddings_rescue.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_embeddings_rescue.py",
-    "import": "polylogue.storage.embeddings.rescue"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_migrate_tier.py",
     "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
   },

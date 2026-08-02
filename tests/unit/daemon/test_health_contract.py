@@ -84,6 +84,7 @@ EXPECTED_EXPENSIVE_CHECKS: frozenset[str] = frozenset(
     {
         "db_integrity",
         "blob_integrity",
+        "blob_reference_debt",
         "embedding_coverage",
     }
 )
