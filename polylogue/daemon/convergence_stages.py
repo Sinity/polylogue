@@ -826,6 +826,119 @@ def make_sinex_publication_stage(
     )
 
 
+_RAW_PARSE_RECOVERY_BATCH_LIMIT = 200
+# Mirrors ``storage.repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES`` as a
+# local literal rather than importing it: new surface code (this stage lives
+# in ``daemon/``) should not import substrate (``storage``) internals
+# directly per this repo's layering ratchet, and ``repair_materialization``'s
+# ``max_payload_bytes`` is a plain bound this stage can restate on its own.
+_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
+
+
+def _raw_parse_recovery_pending_count(db_path: Path, path: Path) -> int:
+    """Count raw rows under ``path`` acquired but never materialized.
+
+    Mirrors the non-terminal branch of ``repair.py``'s candidate query at the
+    cheap read-only level this stage's ``check`` needs: no materialized
+    ``sessions`` row for the raw (by raw_id or native-id alias) and no
+    terminal parse error recorded. It intentionally does not replicate the
+    full authority/quarantine/byte-authority classification -- that
+    refinement happens inside ``repair_raw_materialization`` itself during
+    ``execute``; this is only a cheap "is there plausibly pending work here"
+    probe so ``check`` stays fast and false positives just cost one wasted
+    ``execute`` call rather than silently missing real backlog.
+    """
+    source_db = db_path.parent / "source.db"
+    index_db = db_path.parent / "index.db"
+    if not source_db.exists():
+        return 0
+    normalized_root = str(path).rstrip("/")
+    try:
+        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error:
+        logger.warning("raw_parse_recovery: could not open source.db for %s; treating as no pending work", path)
+        return 0
+    try:
+        if index_db.exists():
+            conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
+            materialized_join = """
+                LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
+                LEFT JOIN index_tier.sessions AS s_by_native
+                  ON r.native_id IS NOT NULL
+                 AND s_by_native.origin = r.origin
+                 AND s_by_native.native_id = r.native_id
+            """
+            materialized_where = "AND s_by_raw.raw_id IS NULL AND s_by_native.native_id IS NULL"
+        else:
+            materialized_join = ""
+            materialized_where = ""
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM raw_sessions AS r
+            {materialized_join}
+            WHERE (r.source_path = ? OR r.source_path LIKE ?)
+              AND r.parsed_at_ms IS NULL
+              AND r.parse_error IS NULL
+              {materialized_where}
+            """,
+            (normalized_root, f"{normalized_root}/%"),
+        ).fetchone()
+        return int(row[0] or 0) if row is not None else 0
+    except sqlite3.Error:
+        logger.warning("raw_parse_recovery: pending-count probe failed for %s; treating as no pending work", path)
+        return 0
+    finally:
+        conn.close()
+
+
+def make_raw_parse_recovery_stage(db_path: Path) -> ConvergenceStage:
+    """Requeue raw rows an interrupted ingest attempt never validated/parsed.
+
+    polylogue-61jg: when the daemon stops mid-batch,
+    ``CursorStore._mark_interrupted_ops_attempts`` stamps the dangling
+    ``ingest_attempts`` row ``interrupted`` and records one
+    ``raw_parse_recovery`` convergence-debt row per source path that attempt
+    covered. This stage is what actually drains that debt: ``check`` reports
+    whether raw rows under the path are still acquired but never
+    materialized, and ``execute`` re-drives ``repair_raw_materialization``
+    scoped to exactly that path via ``source_root`` -- the same replay engine
+    the archive-wide trickle conveyor and manual ``ops maintenance
+    rebuild-index`` already use, just requeued deterministically instead of
+    waiting for an accidental future touch of the same path.
+    """
+
+    def check(path: Path) -> bool:
+        return _raw_parse_recovery_pending_count(db_path, path) > 0
+
+    def execute(path: Path) -> StageExecuteReturn:
+        from polylogue.config import Config
+        from polylogue.product.raw_authority import repair_materialization
+
+        archive_root = db_path.parent
+        config = Config(archive_root=archive_root, render_root=archive_root, sources=[])
+        try:
+            repair_materialization(
+                config,
+                dry_run=False,
+                raw_artifact_limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
+                max_payload_bytes=_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES,
+                source_root=path,
+            )
+        except Exception:
+            logger.warning("raw_parse_recovery: repair pass failed for %s", path, exc_info=True)
+            return False
+        return _raw_parse_recovery_pending_count(db_path, path) == 0
+
+    return ConvergenceStage(
+        name="raw_parse_recovery",
+        description="Requeue raw rows an interrupted ingest attempt never validated/parsed",
+        check=check,
+        execute=execute,
+        false_means_pending=True,
+    )
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -856,6 +969,7 @@ def make_default_convergence_stages(
         )
     stages.extend(
         (
+            make_raw_parse_recovery_stage(db_path),
             make_fts_stage(db_path),
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
@@ -2100,6 +2214,7 @@ __all__ = [
     "make_embed_stage",
     "make_fts_stage",
     "make_insights_stage",
+    "make_raw_parse_recovery_stage",
     "make_sinex_publication_stage",
     "make_standing_query_stage",
 ]

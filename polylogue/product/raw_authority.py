@@ -91,6 +91,7 @@ def repair_materialization(
     max_payload_bytes: int,
     prefetch_cache: RawParsePrefetchCache | None = None,
     raw_artifact_id: str | None = None,
+    source_root: Path | None = None,
     max_pass_seconds: float | None = None,
 ) -> Any:
     """Run one bounded raw source->index convergence pass.
@@ -105,6 +106,12 @@ def repair_materialization(
     daemon's escalation-tier whale pass uses this to converge one
     resource-blocked component at a time under a widened ``max_payload_bytes``
     envelope instead of re-scanning the whole archive-wide backlog.
+
+    ``source_root`` (polylogue-61jg, default ``None``) scopes the pass to raws
+    whose ``source_path`` equals or is nested under this root -- the daemon's
+    ``raw_parse_recovery`` convergence stage uses this to re-drive exactly the
+    source path an interrupted ingest attempt covered, instead of relying on
+    the archive-wide trickle conveyor to reach it eventually.
 
     ``max_pass_seconds`` (polylogue-de2a, default ``None`` = unbounded) bounds
     this call's own wall-clock duration so a caller running it under a
@@ -123,6 +130,7 @@ def repair_materialization(
         max_payload_bytes=max_payload_bytes,
         prefetch_cache=prefetch_cache,
         raw_artifact_id=raw_artifact_id,
+        source_root=source_root,
         max_pass_seconds=max_pass_seconds,
     )
 

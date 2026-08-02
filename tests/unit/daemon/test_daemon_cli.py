@@ -548,6 +548,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         max_payload_bytes: int,
         prefetch_cache: object = None,
         raw_artifact_id: str | None = None,
+        source_root: Path | None = None,
         max_pass_seconds: float | None = None,
     ) -> FakeResult:
         order.append("materialize")
@@ -558,6 +559,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["max_payload_bytes"] = max_payload_bytes
         calls["prefetch_cache"] = prefetch_cache
         calls["raw_artifact_id"] = raw_artifact_id
+        calls["source_root"] = source_root
         calls["max_pass_seconds"] = max_pass_seconds
         return FakeResult()
 
@@ -609,6 +611,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "max_payload_bytes": daemon_cli._RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
         "prefetch_cache": None,
         "raw_artifact_id": None,
+        "source_root": None,
         "recover_archive_root": tmp_path / "archive",
         "frontier_archive_root": tmp_path / "archive",
         "frontier_limit": 8,
