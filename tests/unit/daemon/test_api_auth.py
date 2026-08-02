@@ -67,6 +67,53 @@ def test_default_token_path_is_scoped_to_archive_root(tmp_path: Path, monkeypatc
     assert root_b in path_b.parents
 
 
+def test_load_or_mint_rejects_a_token_file_with_group_readable_permissions(tmp_path: Path) -> None:
+    """polylogue-n6pz: an existing token file must be owner-only before it is
+    trusted. A file with looser bits (e.g. inherited from a permissive
+    umask, restored from a backup, or planted by another process before this
+    one ever ran) must not be silently read and handed out as the daemon's
+    bearer token -- it is treated as absent and a fresh, correctly-permissioned
+    token is minted in its place."""
+    token_path = tmp_path / "api-auth-token"
+    token_path.write_text("attacker-known-token", encoding="utf-8")
+    token_path.chmod(0o644)
+
+    resolved = load_or_mint_api_auth_token(token_path)
+
+    assert resolved != "attacker-known-token"
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+    assert token_path.read_text(encoding="utf-8").strip() == resolved
+
+
+def test_load_or_mint_rejects_a_symlinked_token_file(tmp_path: Path) -> None:
+    """A symlink at the token path must never be followed for trust purposes,
+    even if it happens to point at a 0600 file owned by us -- planting a
+    symlink is itself evidence the path is not exclusively ours."""
+    real_token = tmp_path / "real-token"
+    real_token.write_text("some-real-token", encoding="utf-8")
+    real_token.chmod(0o600)
+    token_path = tmp_path / "api-auth-token"
+    token_path.symlink_to(real_token)
+
+    resolved = load_or_mint_api_auth_token(token_path)
+
+    assert resolved != "some-real-token"
+    assert not token_path.is_symlink()
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+
+def test_load_or_mint_trusts_an_owner_only_existing_file(tmp_path: Path) -> None:
+    """The positive case: an existing 0600 file we own is trusted as-is
+    (no re-mint), matching the pre-existing persistence contract."""
+    token_path = tmp_path / "api-auth-token"
+    token_path.write_text("legit-token", encoding="utf-8")
+    token_path.chmod(0o600)
+
+    resolved = load_or_mint_api_auth_token(token_path)
+
+    assert resolved == "legit-token"
+
+
 def test_resolve_api_auth_token_prefers_explicit_token(tmp_path: Path) -> None:
     token_path = tmp_path / "api-auth-token"
 

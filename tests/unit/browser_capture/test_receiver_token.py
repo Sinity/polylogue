@@ -88,6 +88,33 @@ def test_load_or_mint_receiver_token_rotate_changes_the_value(tmp_path: Path) ->
     assert reloaded == rotated
 
 
+def test_load_or_mint_rejects_a_token_file_with_group_readable_permissions(tmp_path: Path) -> None:
+    """polylogue-n6pz: mirrors the daemon API token's ownership check -- an
+    existing receiver token file with looser-than-0600 permissions must not
+    be trusted as-is; it is treated as absent and re-minted."""
+    token_path = tmp_path / "receiver-token"
+    token_path.write_text("attacker-known-token", encoding="utf-8")
+    token_path.chmod(0o644)
+
+    resolved = load_or_mint_receiver_token(token_path)
+
+    assert resolved != "attacker-known-token"
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+
+
+def test_load_or_mint_rejects_a_symlinked_token_file(tmp_path: Path) -> None:
+    real_token = tmp_path / "real-token"
+    real_token.write_text("some-real-token", encoding="utf-8")
+    real_token.chmod(0o600)
+    token_path = tmp_path / "receiver-token"
+    token_path.symlink_to(real_token)
+
+    resolved = load_or_mint_receiver_token(token_path)
+
+    assert resolved != "some-real-token"
+    assert not token_path.is_symlink()
+
+
 def test_default_token_and_spool_paths_are_scoped_to_archive_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

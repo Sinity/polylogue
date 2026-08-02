@@ -101,6 +101,7 @@ def _fetch_daemon_facets(
         return None
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.surfaces.payloads import FacetsResponse
@@ -109,7 +110,10 @@ def _fetch_daemon_facets(
     config = load_effective_config(env)
     client = DaemonClient(
         daemon_socket_path(config.archive_root),
-        auth_token=getattr(config, "api_auth_token", None),
+        auth_token=resolve_api_auth_token(
+            getattr(config, "api_auth_token", None),
+            allow_no_auth=getattr(config, "api_allow_no_auth", False),
+        ),
     )
     if (
         client.probe(

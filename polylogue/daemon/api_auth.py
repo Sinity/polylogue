@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import stat
 import tempfile
 from contextlib import suppress
 from pathlib import Path
@@ -43,6 +44,30 @@ API_AUTH_TOKEN_ENTROPY_BYTES = 32
 API_ALLOW_NO_AUTH_ENV = "POLYLOGUE_API_ALLOW_NO_AUTH"
 
 
+def _is_trusted_token_file(target: Path) -> bool:
+    """Refuse to trust a token file this process does not exclusively own.
+
+    polylogue-n6pz: the cross-uid audit finding this closes was exactly the
+    mistake of assuming a filesystem boundary holds without checking it. Do
+    not repeat that assumption for the token file itself -- an unmint'd file
+    at ``target`` (planted before this process ever ran, restored from a
+    backup with looser bits, or living under a misconfigured/shared config
+    root) could hand out an attacker-known token while the operator believes
+    the API is private. A symlink is refused outright (never follow it into
+    another owner's file); a regular file must be owned by our own uid and
+    carry no group/other permission bits.
+    """
+    try:
+        info = target.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return False
+    if info.st_uid != os.getuid():
+        return False
+    return stat.S_IMODE(info.st_mode) & 0o077 == 0
+
+
 def load_or_mint_api_auth_token(path: Path | None = None, *, rotate: bool = False) -> str:
     """Return the daemon API's persisted bearer token, minting one on first use.
 
@@ -50,12 +75,24 @@ def load_or_mint_api_auth_token(path: Path | None = None, *, rotate: bool = Fals
     then ``os.replace``) so the token is never briefly world-readable under a
     permissive umask -- identical idiom to
     :func:`polylogue.browser_capture.receiver.load_or_mint_receiver_token`.
+    An existing file is trusted only if :func:`_is_trusted_token_file` passes;
+    otherwise it is treated as absent and a fresh token is minted in its
+    place (logging so the operator can investigate why a stray/loose file was
+    sitting at the token path).
     """
     target = path if path is not None else api_auth_token_path()
     if not rotate and target.exists():
-        existing = target.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing
+        if _is_trusted_token_file(target):
+            existing = target.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        else:
+            logger.warning(
+                "daemon_api.token_file_untrusted",
+                path=str(target),
+                action="reminting",
+                reason="existing token file is not an owner-only regular file we exclusively own",
+            )
     token = secrets.token_urlsafe(API_AUTH_TOKEN_ENTROPY_BYTES)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")

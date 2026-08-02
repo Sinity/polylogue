@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import sqlite3
+import stat
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -94,6 +95,26 @@ RECEIVER_TOKEN_ENTROPY_BYTES = 32
 BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV = "POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH"
 
 
+def _is_trusted_token_file(target: Path) -> bool:
+    """Refuse to trust a token file this process does not exclusively own.
+
+    Mirrors :func:`polylogue.daemon.api_auth._is_trusted_token_file` --
+    reading an existing token file's bytes without first checking who put
+    them there repeats the exact filesystem-boundary assumption polylogue-n6pz
+    found reachable elsewhere. A symlink is never followed; a regular file
+    must be owned by our own uid with no group/other permission bits.
+    """
+    try:
+        info = target.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return False
+    if info.st_uid != os.getuid():
+        return False
+    return stat.S_IMODE(info.st_mode) & 0o077 == 0
+
+
 def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = False) -> str:
     """Return the receiver's persisted bearer token, minting one on first use.
 
@@ -102,13 +123,23 @@ def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = Fals
     0600 file rather than :mod:`polylogue.sources.token_store`'s
     keyring-backed store. Written atomically (mkstemp + fchmod(0o600) before
     any bytes land, then ``os.replace``) so the token is never briefly
-    world-readable under a permissive umask.
+    world-readable under a permissive umask. An existing file is trusted only
+    if :func:`_is_trusted_token_file` passes; otherwise it is treated as
+    absent and a fresh token is minted in its place.
     """
     target = path if path is not None else browser_capture_receiver_token_path()
     if not rotate and target.exists():
-        existing = target.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing
+        if _is_trusted_token_file(target):
+            existing = target.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        else:
+            logger.warning(
+                "browser_capture.receiver_token_file_untrusted",
+                path=str(target),
+                action="reminting",
+                reason="existing token file is not an owner-only regular file we exclusively own",
+            )
     token = secrets.token_urlsafe(RECEIVER_TOKEN_ENTROPY_BYTES)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
