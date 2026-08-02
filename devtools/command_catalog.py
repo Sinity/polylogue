@@ -956,6 +956,28 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-membership-writeback-apply",
+        "workspace",
+        "Propagate already-decided membership verdicts onto raw_sessions.revision_authority.",
+        "devtools.raw_membership_writeback_apply",
+        use_when=(
+            "polylogue-lb39z (Phase 1, item 2): 15,737 quarantined raw_sessions rows "
+            "(42.95GB, measured 2026-08-02) already have a decided raw_session_memberships "
+            "verdict (applied/superseded_equivalent/superseded_prefix, membership "
+            "revision_authority='byte_proven') that was never written back -- pure fact "
+            "transfer, not new judgment. Default is dry-run; --apply requires "
+            "--backup-manifest pointing at a verified source-tier backup (polylogue backup "
+            "--output-dir <dir> --verify). Writes an immutable per-row receipt; never runs "
+            "blob GC or VACUUM -- that is a separate, later step."
+        ),
+        examples=(
+            "devtools workspace raw-membership-writeback-apply",
+            "devtools workspace raw-membership-writeback-apply --json",
+            "devtools workspace raw-membership-writeback-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace unknown-export-reclassification",
         "workspace",
         "Re-run the fixed browser-capture provider probe against stored unknown-export rows.",
