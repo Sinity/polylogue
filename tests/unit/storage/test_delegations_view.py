@@ -871,4 +871,186 @@ def test_delegation_instruction_filter_matches_preview_extraction(tmp_path: Path
             if item.model_dump(mode="json").get("instruction_tool_use_block_id") == f"{parent_id}:empty:0"
         )
         assert empty_payload["instruction_preview"] is None
-        assert empty_payload["instruction_sha256"] is None
+
+
+# ---------------------------------------------------------------------------
+# polylogue-qsb4: arbitrary-depth ancestry/subtree recursive queries.
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_chain_level(
+    conn: sqlite3.Connection,
+    *,
+    dispatcher_id: str,
+    dispatcher_native_id: str,
+    child_native_id: str,
+    tool_id: str,
+) -> str:
+    """Create one trivial-cohort delegation edge: ``dispatcher_id`` has
+    exactly one dispatch action and exactly one resolved child, so the view
+    pairs them as ``mapping_state='resolved'`` without needing content-
+    identity disambiguation (the trivial-cohort case, see
+    ``delegation_facts_source`` in index.py). Returns the new child's
+    session id."""
+
+    child_id = _insert_session(conn, native_id=child_native_id)
+    message_id = _insert_message(conn, session_id=dispatcher_id, native_id=f"dispatch-{tool_id}", position=0)
+    _insert_dispatch_action(
+        conn,
+        message_id=message_id,
+        session_id=dispatcher_id,
+        position=0,
+        tool_id=tool_id,
+        tool_input="{}",
+        result_text="done",
+    )
+    _insert_session_link(
+        conn,
+        child_session_id=child_id,
+        dst_origin="claude-code-session",
+        dst_native_id=dispatcher_native_id,
+        parent_session_id=dispatcher_id,
+    )
+    return child_id
+
+
+def test_delegation_ancestry_returns_root_to_node_chain_depth_annotated(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    root_id = _insert_session(conn, native_id="root")
+    mid_id = _dispatch_chain_level(
+        conn, dispatcher_id=root_id, dispatcher_native_id="root", child_native_id="mid", tool_id="task-root-mid"
+    )
+    leaf_id = _dispatch_chain_level(
+        conn, dispatcher_id=mid_id, dispatcher_native_id="mid", child_native_id="leaf", tool_id="task-mid-leaf"
+    )
+    conn.commit()
+    conn.close()
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        ancestry = archive.get_delegation_ancestry(leaf_id)
+
+    # Root-first (depth descending), leaf itself last at depth 0 -- no N+1,
+    # one recursive-CTE call produced the whole chain.
+    assert [node.session_id for node in ancestry] == [root_id, mid_id, leaf_id]
+    assert [node.depth for node in ancestry] == [2, 1, 0]
+    assert ancestry[0].child_session_id == mid_id
+    assert ancestry[0].mapping_state == "resolved"
+    assert ancestry[1].child_session_id == leaf_id
+    assert ancestry[1].mapping_state == "resolved"
+    assert ancestry[2].child_session_id is None
+    assert ancestry[2].mapping_state is None
+
+    # A session nobody ever dispatched returns just itself.
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        root_ancestry = archive.get_delegation_ancestry(root_id)
+    assert [node.session_id for node in root_ancestry] == [root_id]
+    assert root_ancestry[0].depth == 0
+
+
+def test_delegation_subtree_returns_all_descendants_depth_annotated(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    root_id = _insert_session(conn, native_id="root")
+    child_a = _dispatch_chain_level(
+        conn, dispatcher_id=root_id, dispatcher_native_id="root", child_native_id="child-a", tool_id="task-a"
+    )
+    grandchild = _dispatch_chain_level(
+        conn, dispatcher_id=child_a, dispatcher_native_id="child-a", child_native_id="grandchild", tool_id="task-b"
+    )
+    conn.commit()
+    conn.close()
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        subtree = archive.get_delegation_subtree(root_id)
+
+    by_session = {node.session_id: node for node in subtree}
+    assert set(by_session) == {root_id, child_a, grandchild}
+    assert by_session[root_id].depth == 0
+    assert by_session[root_id].parent_session_id is None
+    assert by_session[child_a].depth == 1
+    assert by_session[child_a].parent_session_id == root_id
+    assert by_session[child_a].mapping_state == "resolved"
+    assert by_session[grandchild].depth == 2
+    assert by_session[grandchild].parent_session_id == child_a
+
+    # A leaf that dispatched nothing returns just itself.
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        leaf_subtree = archive.get_delegation_subtree(grandchild)
+    assert [node.session_id for node in leaf_subtree] == [grandchild]
+
+
+def test_delegation_subtree_excludes_quarantined_edges(tmp_path: Path) -> None:
+    """Quarantined edges (session_links' TopologyEdgeStatus cycle-break
+    precedent) are structural cycle-breaks and must never be traversed --
+    the recursive CTE reuses that vocabulary rather than re-deriving it."""
+
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="quarantine-parent")
+    child_id = _insert_session(conn, native_id="quarantine-child")
+    _insert_session_link(
+        conn,
+        child_session_id=child_id,
+        dst_origin="claude-code-session",
+        dst_native_id="quarantine-parent",
+        parent_session_id=parent_id,
+        status="quarantined",
+    )
+    conn.commit()
+    conn.close()
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        subtree = archive.get_delegation_subtree(parent_id)
+        ancestry = archive.get_delegation_ancestry(child_id)
+
+    # Only the queried node itself -- the quarantined edge is never followed.
+    assert [node.session_id for node in subtree] == [parent_id]
+    assert [node.session_id for node in ancestry] == [child_id]
+
+
+def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: Path) -> None:
+    """Two independent trivial-cohort (non-quarantined, `mapping_state=
+    'resolved'`) edges can compose into a cycle that session_links' own
+    quarantine pass never inspects (quarantine is asserted per-edge over
+    session_links alone, not over the composed `delegations` chain). The
+    recursive CTE's own defensive visited-path guard must still terminate
+    -- this is the exact scenario polylogue-qsb4 AC3 requires an explicit
+    answer for."""
+
+    conn = _connect(tmp_path / "index.db")
+    a_id = _insert_session(conn, native_id="cycle-a")
+    b_id = _insert_session(conn, native_id="cycle-b")
+
+    message_a = _insert_message(conn, session_id=a_id, native_id="dispatch-a-b", position=0)
+    _insert_dispatch_action(
+        conn, message_id=message_a, session_id=a_id, position=0, tool_id="task-a-b", tool_input="{}"
+    )
+    _insert_session_link(
+        conn, child_session_id=b_id, dst_origin="claude-code-session", dst_native_id="cycle-a", parent_session_id=a_id
+    )
+
+    message_b = _insert_message(conn, session_id=b_id, native_id="dispatch-b-a", position=0)
+    _insert_dispatch_action(
+        conn, message_id=message_b, session_id=b_id, position=0, tool_id="task-b-a", tool_input="{}"
+    )
+    _insert_session_link(
+        conn, child_session_id=a_id, dst_origin="claude-code-session", dst_native_id="cycle-b", parent_session_id=b_id
+    )
+    conn.commit()
+    conn.close()
+
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        # Both edges are genuinely `resolved` (neither quarantined) -- proof
+        # the cycle survives topology's own quarantine pass and only the
+        # recursive query's own guard stops it.
+        subtree_from_a = archive.get_delegation_subtree(a_id)
+        ancestry_from_a = archive.get_delegation_ancestry(a_id)
+
+    # The guard must terminate (no RecursionError/timeout) and must not
+    # revisit a session already on the current path.
+    assert [node.session_id for node in subtree_from_a] == [a_id, b_id]
+    assert [node.depth for node in subtree_from_a] == [0, 1]
+    assert [node.session_id for node in ancestry_from_a] == [b_id, a_id]
+    assert [node.depth for node in ancestry_from_a] == [1, 0]

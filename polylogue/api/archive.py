@@ -38,7 +38,9 @@ from polylogue.core.refs import (
     EvidenceRef,
     ObjectRef,
     normalize_object_ref_text,
+    parse_delegation_ancestry_object_id,
     parse_delegation_edge_object_id,
+    parse_delegation_subtree_object_id,
     parse_public_ref,
 )
 from polylogue.core.timestamps import parse_archive_datetime
@@ -4238,6 +4240,13 @@ class PolylogueArchiveMixin:
             model_json_document,
         )
 
+        ancestry_session_id = parse_delegation_ancestry_object_id(object_ref.object_id)
+        if ancestry_session_id is not None:
+            return self._resolve_delegation_ancestry_object_ref(archive, ref, normalized_ref, ancestry_session_id)
+        subtree_session_id = parse_delegation_subtree_object_id(object_ref.object_id)
+        if subtree_session_id is not None:
+            return self._resolve_delegation_subtree_object_ref(archive, ref, normalized_ref, subtree_session_id)
+
         edge_identity = parse_delegation_edge_object_id(object_ref.object_id)
         if edge_identity is not None:
             parent_session_id, child_session_id = edge_identity
@@ -4281,6 +4290,76 @@ class PolylogueArchiveMixin:
             actions=(
                 _resolution_action("read parent session", f"polylogue find id:{attempt.parent_session_id} then read"),
             ),
+        )
+
+    def _resolve_delegation_ancestry_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        session_id: str,
+    ) -> PublicRefResolutionPayload:
+        """Resolve a ``delegation:ancestry:<session_id>`` ref: the full
+        root-to-node dispatch chain for ``session_id`` (polylogue-qsb4),
+        depth-annotated, in one recursive-CTE call
+        (``ArchiveStore.get_delegation_ancestry``)."""
+
+        from polylogue.surfaces.payloads import (
+            DelegationAncestryPayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        rows = archive.get_delegation_ancestry(session_id)
+        payload = DelegationAncestryPayload.from_rows(session_id, rows)
+        object_refs = tuple(f"session:{node.session_id}" for node in payload.nodes)
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="delegation",
+            resolved=True,
+            payload_kind="delegation-ancestry",
+            payload=model_json_document(payload),
+            title=f"delegation ancestry for {session_id} ({payload.max_depth} level(s) up)",
+            summary=f"{len(payload.nodes)} node(s), root-to-node",
+            object_refs=object_refs,
+            evidence_refs=(),
+            actions=(_resolution_action("read queried session", f"polylogue find id:{session_id} then read"),),
+        )
+
+    def _resolve_delegation_subtree_object_ref(
+        self,
+        archive: Any,
+        ref: str,
+        normalized_ref: str,
+        session_id: str,
+    ) -> PublicRefResolutionPayload:
+        """Resolve a ``delegation:subtree:<session_id>`` ref: the full
+        dispatch subtree rooted at ``session_id`` (polylogue-qsb4),
+        depth-annotated, in one recursive-CTE call
+        (``ArchiveStore.get_delegation_subtree``)."""
+
+        from polylogue.surfaces.payloads import (
+            DelegationSubtreePayload,
+            PublicRefResolutionPayload,
+            model_json_document,
+        )
+
+        rows = archive.get_delegation_subtree(session_id)
+        payload = DelegationSubtreePayload.from_rows(session_id, rows)
+        object_refs = tuple(f"session:{node.session_id}" for node in payload.nodes)
+        return PublicRefResolutionPayload(
+            ref=ref,
+            normalized_ref=normalized_ref,
+            kind="delegation",
+            resolved=True,
+            payload_kind="delegation-subtree",
+            payload=model_json_document(payload),
+            title=f"delegation subtree rooted at {session_id} ({payload.node_count} node(s))",
+            summary=f"{payload.max_depth} level(s) deep",
+            object_refs=object_refs,
+            evidence_refs=(),
+            actions=(_resolution_action("read root session", f"polylogue find id:{session_id} then read"),),
         )
 
     def _resolve_runtime_object_ref(

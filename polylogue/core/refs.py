@@ -452,6 +452,53 @@ def parse_delegation_edge_object_id(object_id: str) -> tuple[str, str] | None:
     return parent_session_id, child_session_id
 
 
+# polylogue-qsb4: arbitrary-depth ancestry/subtree identities. These share
+# the "delegation" object-ref kind rather than adding new kinds -- both are
+# still delegation-relation identities, just resolved through a recursive
+# traversal instead of one edge lookup. Session ids never begin with
+# "ancestry:"/"subtree:" (origin tokens are provider names such as
+# "claude-code-session"), so these prefixes cannot collide with a plain
+# ``instruction_tool_use_block_id`` or the ``edge:`` shape above.
+_DELEGATION_ANCESTRY_PREFIX: Final[str] = "ancestry:"
+_DELEGATION_SUBTREE_PREFIX: Final[str] = "subtree:"
+
+
+def delegation_ancestry_object_id(session_id: str) -> str:
+    """Return the deterministic delegation-ancestry object id for ``session_id``."""
+
+    if not session_id:
+        raise ValueError("delegation ancestry identity requires a non-empty session id")
+    return f"{_DELEGATION_ANCESTRY_PREFIX}{session_id}"
+
+
+def parse_delegation_ancestry_object_id(object_id: str) -> str | None:
+    """Return the queried ``session_id`` when ``object_id`` is an ancestry
+    identity, else ``None``."""
+
+    if not object_id.startswith(_DELEGATION_ANCESTRY_PREFIX):
+        return None
+    session_id = object_id[len(_DELEGATION_ANCESTRY_PREFIX) :]
+    return session_id or None
+
+
+def delegation_subtree_object_id(session_id: str) -> str:
+    """Return the deterministic delegation-subtree object id for ``session_id``."""
+
+    if not session_id:
+        raise ValueError("delegation subtree identity requires a non-empty session id")
+    return f"{_DELEGATION_SUBTREE_PREFIX}{session_id}"
+
+
+def parse_delegation_subtree_object_id(object_id: str) -> str | None:
+    """Return the queried ``session_id`` when ``object_id`` is a subtree
+    identity, else ``None``."""
+
+    if not object_id.startswith(_DELEGATION_SUBTREE_PREFIX):
+        return None
+    session_id = object_id[len(_DELEGATION_SUBTREE_PREFIX) :]
+    return session_id or None
+
+
 __all__ = [
     "ActorKind",
     "ActorRef",
@@ -462,9 +509,13 @@ __all__ = [
     "ObjectRefKind",
     "PublicRef",
     "WorkerProfileRef",
+    "delegation_ancestry_object_id",
     "delegation_edge_object_id",
+    "delegation_subtree_object_id",
     "normalize_object_ref_text",
     "normalize_public_ref_text",
+    "parse_delegation_ancestry_object_id",
     "parse_delegation_edge_object_id",
+    "parse_delegation_subtree_object_id",
     "parse_public_ref",
 ]

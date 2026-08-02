@@ -606,6 +606,149 @@ def _archive_delegation_query_row(row: sqlite3.Row) -> ArchiveDelegationQueryRow
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationAncestryRow:
+    """One node in a depth-annotated delegation ancestry chain (polylogue-qsb4),
+    root-to-node ordered. ``depth`` is 0 at the queried session itself and
+    increases toward the root. ``child_session_id`` is the next node down the
+    chain (the one dispatched by this node, one step closer to the queried
+    session) -- ``None`` at depth 0, which has no outgoing edge in this
+    traversal. ``mapping_state``/``instruction_tool_use_block_id``/
+    ``link_confidence``/``link_method`` describe that edge (this node ->
+    ``child_session_id``)."""
+
+    session_id: str
+    depth: int
+    child_session_id: str | None
+    mapping_state: DelegationMappingState | None
+    instruction_tool_use_block_id: str | None
+    link_confidence: float | None
+    link_method: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationSubtreeRow:
+    """One node in a depth-annotated delegation subtree (polylogue-qsb4),
+    the queried session plus all its transitive dispatch descendants.
+    ``depth`` is 0 at the queried session itself (the subtree root) and
+    increases toward descendants. ``parent_session_id`` is this node's own
+    dispatcher -- ``None`` at depth 0, which is out of scope for this
+    traversal. ``mapping_state``/``instruction_tool_use_block_id``/
+    ``link_confidence``/``link_method`` describe the edge
+    (``parent_session_id`` -> this node)."""
+
+    session_id: str
+    depth: int
+    parent_session_id: str | None
+    mapping_state: DelegationMappingState | None
+    instruction_tool_use_block_id: str | None
+    link_confidence: float | None
+    link_method: str | None
+
+
+def _archive_delegation_ancestry_row(row: sqlite3.Row) -> ArchiveDelegationAncestryRow:
+    return ArchiveDelegationAncestryRow(
+        session_id=str(row["session_id"]),
+        depth=int(row["depth"]),
+        child_session_id=str(row["child_session_id"]) if row["child_session_id"] is not None else None,
+        mapping_state=(
+            cast(DelegationMappingState, str(row["mapping_state"])) if row["mapping_state"] is not None else None
+        ),
+        instruction_tool_use_block_id=(
+            str(row["instruction_tool_use_block_id"]) if row["instruction_tool_use_block_id"] is not None else None
+        ),
+        link_confidence=float(row["link_confidence"]) if row["link_confidence"] is not None else None,
+        link_method=str(row["link_method"]) if row["link_method"] is not None else None,
+    )
+
+
+def _archive_delegation_subtree_row(row: sqlite3.Row) -> ArchiveDelegationSubtreeRow:
+    return ArchiveDelegationSubtreeRow(
+        session_id=str(row["session_id"]),
+        depth=int(row["depth"]),
+        parent_session_id=str(row["parent_session_id"]) if row["parent_session_id"] is not None else None,
+        mapping_state=(
+            cast(DelegationMappingState, str(row["mapping_state"])) if row["mapping_state"] is not None else None
+        ),
+        instruction_tool_use_block_id=(
+            str(row["instruction_tool_use_block_id"]) if row["instruction_tool_use_block_id"] is not None else None
+        ),
+        link_confidence=float(row["link_confidence"]) if row["link_confidence"] is not None else None,
+        link_method=str(row["link_method"]) if row["link_method"] is not None else None,
+    )
+
+
+# polylogue-qsb4: both traversals recurse natively over the `delegations`
+# view (backed by `delegation_facts`, the richer typed source of truth --
+# see the module docstring on insights/delegation_work_evidence.py for why
+# this is a projection *source*, not a table to be replaced by the generic
+# work_evidence graph). One SQLite recursive CTE each -- no N+1, no
+# client-side stitching.
+#
+# Quarantined edges (session_links' TopologyEdgeStatus cycle-break
+# precedent, reused verbatim: delegation_facts_source's `mapping_state =
+# 'quarantined'` rows already mark exactly this) are excluded from
+# traversal by construction (`mapping_state != 'quarantined'`), not
+# reinterpreted into a second vocabulary. A defensive visited-path guard
+# (the `path`/`instr()` machinery below) is still carried on every step
+# despite that exclusion: quarantine is asserted by the topology resolver
+# over `session_links` alone, while `delegations` unions edges resolved by
+# an independent mechanism (`content_pairs`' provider-asserted content-
+# identity match, `delegation_facts_source` in index.py) that the topology
+# resolver's cycle detector never inspects. Two content-identity-matched
+# edges could in principle compose into a cycle the quarantine pass never
+# saw; the guard makes that structurally unreachable rather than assumed
+# absent.
+_DELEGATION_ANCESTRY_SQL = """
+WITH RECURSIVE ancestry(session_id, depth, child_session_id, mapping_state,
+                         instruction_tool_use_block_id, link_confidence, link_method, path) AS (
+    SELECT ?, 0, NULL, NULL, NULL, NULL, NULL, '/' || ? || '/'
+    UNION ALL
+    SELECT
+        d.parent_session_id,
+        a.depth + 1,
+        a.session_id,
+        d.mapping_state,
+        d.instruction_tool_use_block_id,
+        d.link_confidence,
+        d.link_method,
+        a.path || d.parent_session_id || '/'
+    FROM delegations d
+    JOIN ancestry a ON d.child_session_id = a.session_id
+    WHERE d.mapping_state != 'quarantined'
+      AND instr(a.path, '/' || d.parent_session_id || '/') = 0
+)
+SELECT session_id, depth, child_session_id, mapping_state, instruction_tool_use_block_id, link_confidence, link_method
+FROM ancestry
+ORDER BY depth DESC
+"""
+
+_DELEGATION_SUBTREE_SQL = """
+WITH RECURSIVE subtree(session_id, depth, parent_session_id, mapping_state,
+                        instruction_tool_use_block_id, link_confidence, link_method, path) AS (
+    SELECT ?, 0, NULL, NULL, NULL, NULL, NULL, '/' || ? || '/'
+    UNION ALL
+    SELECT
+        d.child_session_id,
+        s.depth + 1,
+        s.session_id,
+        d.mapping_state,
+        d.instruction_tool_use_block_id,
+        d.link_confidence,
+        d.link_method,
+        s.path || d.child_session_id || '/'
+    FROM delegations d
+    JOIN subtree s ON d.parent_session_id = s.session_id
+    WHERE d.mapping_state != 'quarantined'
+      AND d.child_session_id IS NOT NULL
+      AND instr(s.path, '/' || d.child_session_id || '/') = 0
+)
+SELECT session_id, depth, parent_session_id, mapping_state, instruction_tool_use_block_id, link_confidence, link_method
+FROM subtree
+ORDER BY depth, session_id
+"""
+
+
 def _delegation_instruction(payload: str | None) -> str | None:
     if payload is None:
         return None
@@ -7637,6 +7780,28 @@ class ArchiveStore:
             [*params, *session_params, normalized_limit, normalized_offset],
         ).fetchall()
         return [_archive_delegation_query_row(row) for row in rows]
+
+    def get_delegation_ancestry(self, session_id: str) -> list[ArchiveDelegationAncestryRow]:
+        """Return the full root-to-node ancestry chain for ``session_id`` in
+        one recursive-CTE call, depth-annotated (polylogue-qsb4). The queried
+        session is always the last row (``depth=0``); its dispatchers follow
+        at increasing depth, ordered root-first. Quarantined (cycle-break)
+        edges are never traversed. Returns a single-row list (just the
+        origin) when ``session_id`` was never dispatched by anything."""
+
+        rows = self._conn.execute(_DELEGATION_ANCESTRY_SQL, (session_id, session_id)).fetchall()
+        return [_archive_delegation_ancestry_row(row) for row in rows]
+
+    def get_delegation_subtree(self, session_id: str) -> list[ArchiveDelegationSubtreeRow]:
+        """Return the full subtree (``session_id`` plus all transitive
+        dispatch descendants) in one recursive-CTE call, depth-annotated
+        (polylogue-qsb4). The queried session is always the first row
+        (``depth=0``), ordered breadth-first thereafter. Quarantined
+        (cycle-break) edges are never traversed. Returns a single-row list
+        (just the root) when ``session_id`` never dispatched anything."""
+
+        rows = self._conn.execute(_DELEGATION_SUBTREE_SQL, (session_id, session_id)).fetchall()
+        return [_archive_delegation_subtree_row(row) for row in rows]
 
     def query_files(
         self,
