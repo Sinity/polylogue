@@ -88,3 +88,21 @@ def test_detect_provider_from_raw_bytes_evidence_falls_back_with_reason_on_garba
 
     assert provider is Provider.UNKNOWN
     assert "fallback_provider" in evidence
+
+
+def test_detect_provider_from_raw_bytes_evidence_refuses_sqlite_before_json_decode() -> None:
+    """polylogue-hbtj2: a SQLite-shaped raw byte stream must be positively refused
+    here (the single shared raw-bytes detection chokepoint used by production
+    per-file acquisition and the unclaimed-file sweep), by magic bytes -- not
+    by falling through to an incidental JSON-decode failure."""
+    raw_bytes = b"SQLite format 3\x00" + b"\x00" * 100
+
+    provider, evidence = detect_provider_from_raw_bytes_evidence(
+        raw_bytes,
+        "state_5.sqlite",
+        Provider.CODEX,
+    )
+
+    assert provider is Provider.CODEX
+    assert "sqlite" in evidence.lower()
+    assert "refused" in evidence.lower()

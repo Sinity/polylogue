@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
+from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.raw_payload.decode import (
     JSONValue,
     _sample_jsonl_payload_with_detail,
@@ -78,3 +80,84 @@ def test_jsonl_sampling_can_stop_after_bounded_prefix(tmp_path: Path) -> None:
     assert [_as_dict(sample)["ok"] for sample in samples] == [1, 2]
     assert malformed == 0
     assert detail is None
+
+
+def _write_plain_sqlite_db(path: Path) -> None:
+    """A genuine SQLite database with no Hermes state.db/verification_evidence.db shape.
+
+    Stands in for the audit's concrete miscaptures (Codex ``state_5.sqlite``,
+    or any other stray ``.db`` file) -- real SQLite magic bytes, but no
+    dedicated, content-verified session parser claims it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript("CREATE TABLE unrelated_thing (id INTEGER PRIMARY KEY, value TEXT);")
+        conn.execute("INSERT INTO unrelated_thing (value) VALUES ('not a session')")
+        conn.commit()
+
+
+def test_build_raw_payload_envelope_refuses_unrecognized_sqlite_path(tmp_path: Path) -> None:
+    """polylogue-hbtj2: a SQLite-shaped path with no dedicated parser must never be
+    handed to a session parser -- refused before any JSON decode is attempted,
+    classified as a binary-database artifact instead of a decode failure."""
+    path = tmp_path / "state_5.sqlite"
+    _write_plain_sqlite_db(path)
+
+    envelope = build_raw_payload_envelope(
+        path,
+        source_path=str(path),
+        fallback_provider="codex",
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.BINARY_DATABASE
+    assert envelope.artifact.parse_as_session is False
+    assert envelope.artifact.schema_eligible is False
+    assert isinstance(envelope.payload, dict)
+    assert envelope.payload.get("polylogue_artifact") == "unrecognized_binary_artifact"
+    assert envelope.payload.get("binary_format") == "sqlite"
+
+
+def test_build_raw_payload_envelope_refuses_unrecognized_sqlite_bytes(tmp_path: Path) -> None:
+    """Same refusal for in-memory bytes (the replay/backfill call shape)."""
+    path = tmp_path / "state_5.sqlite"
+    _write_plain_sqlite_db(path)
+    raw_bytes = path.read_bytes()
+
+    envelope = build_raw_payload_envelope(
+        raw_bytes,
+        source_path=str(path),
+        fallback_provider="codex",
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.BINARY_DATABASE
+    assert envelope.artifact.parse_as_session is False
+
+
+def test_build_raw_payload_envelope_still_recognizes_genuine_hermes_state_db(tmp_path: Path) -> None:
+    """Regression guard: this bead tightens detection, it does not retire the
+    existing, content-verified Hermes state.db session parser."""
+    path = tmp_path / "state.db"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, model_config TEXT,
+                parent_session_id TEXT, started_at REAL, ended_at REAL, title TEXT);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_name TEXT, tool_calls TEXT,
+                timestamp REAL NOT NULL, observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+                compacted INTEGER NOT NULL DEFAULT 0);
+            """
+        )
+        conn.commit()
+
+    envelope = build_raw_payload_envelope(
+        path,
+        source_path=str(path),
+        fallback_provider="hermes",
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.SESSION_DOCUMENT
+    assert envelope.artifact.parse_as_session is True

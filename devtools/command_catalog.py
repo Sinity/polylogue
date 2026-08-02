@@ -978,6 +978,44 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace binary-artifact-sweep",
+        "workspace",
+        "Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc).",
+        "devtools.binary_artifact_sweep_report",
+        use_when=(
+            "polylogue-hbtj2: the 2026-08-02 authority-dataflow audit found ~450MB of "
+            "SQLite databases (Hermes state.db/verification_evidence.db, Codex "
+            "state_5.sqlite) miscaptured as session content and marked 'genuinely "
+            "diverged' by the byte-diff classifier. This read-only report classifies "
+            "every raw_sessions row by magic bytes (core.binary_signatures) and reports "
+            "which are unrecognized binary artifacts vs the one existing Hermes "
+            "recognized-session-parser shape. Never mutates source.db."
+        ),
+        examples=(
+            "devtools workspace binary-artifact-sweep",
+            "devtools workspace binary-artifact-sweep --json",
+            "devtools workspace binary-artifact-sweep --limit 5000 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
+        "workspace binary-artifact-reclassify-apply",
+        "workspace",
+        "Persist raw_artifacts classification for binary-shaped raw rows.",
+        "devtools.binary_artifact_reclassify_apply",
+        use_when=(
+            "polylogue-hbtj2: act on the sweep's report by writing raw_artifacts rows "
+            "(materialize_artifact_observations) for the flagged binary content, so it "
+            "carries an explicit non-session classification instead of sitting "
+            "unclassified. Does not touch revision_authority or delete anything -- "
+            "default is dry-run; --apply performs the write."
+        ),
+        examples=(
+            "devtools workspace binary-artifact-reclassify-apply",
+            "devtools workspace binary-artifact-reclassify-apply --json",
+            "devtools workspace binary-artifact-reclassify-apply --apply",
+        ),
+    ),
+    CommandSpec(
         "workspace unknown-export-reclassification",
         "workspace",
         "Re-run the fixed browser-capture provider probe against stored unknown-export rows.",

@@ -174,7 +174,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/models.py
-    loc: 41
+    loc: 52
     target: polylogue/archive/artifact_taxonomy/models.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -514,7 +514,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/raw_payload/decode.py
-    loc: 368
+    loc: 431
     target: polylogue/archive/raw_payload/decode.py
     owner: archive-raw-payload
     reason: archive-domain semantics
@@ -538,7 +538,7 @@ files:
     target: polylogue/archive/resume_routing.py
     owner: stable
   - path: polylogue/archive/revision_authority.py
-    loc: 356
+    loc: 274
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
@@ -1366,6 +1366,11 @@ files:
   - path: polylogue/core/async_bridge.py
     loc: 73
     target: polylogue/core/async_bridge.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/binary_signatures.py
+    loc: 94
+    target: polylogue/core/binary_signatures.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/common.py
@@ -2221,10 +2226,6 @@ files:
   - path: polylogue/maintenance/raw_live_source_reconciliation_apply.py
     loc: 286
     target: polylogue/maintenance/raw_live_source_reconciliation_apply.py
-    owner: stable
-  - path: polylogue/maintenance/raw_membership_writeback_apply.py
-    loc: 220
-    target: polylogue/maintenance/raw_membership_writeback_apply.py
     owner: stable
   - path: polylogue/maintenance/rebuild_index.py
     loc: 1093
@@ -3272,7 +3273,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1830
+    loc: 1844
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3360,7 +3361,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 650
+    loc: 663
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -3621,7 +3622,7 @@ files:
     target: polylogue/sources/source_walk.py
     owner: stable
   - path: polylogue/sources/sqlite_snapshot.py
-    loc: 223
+    loc: 230
     target: polylogue/sources/sqlite_snapshot.py
     owner: stable
   - path: polylogue/sources/token_store.py
@@ -3679,6 +3680,10 @@ files:
     target: polylogue/storage/backup_attestation.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/binary_artifact_sweep.py
+    loc: 157
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/blob_gc.py
     loc: 568
     target: polylogue/storage/blob_gc.py
@@ -3945,10 +3950,6 @@ files:
     owner: stable
   - path: polylogue/storage/raw_authority.py
     loc: 2295
-    target: TBD
-    owner: storage-domain
-  - path: polylogue/storage/raw_membership_writeback.py
-    loc: 124
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
@@ -4253,7 +4254,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2917
+    loc: 2909
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/self_verify.py
@@ -4265,7 +4266,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 538
+    loc: 515
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py

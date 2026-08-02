@@ -8,12 +8,17 @@ from typing import Literal, TypeAlias, cast
 
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
+    ArtifactKind,
     classify_artifact,
 )
 from polylogue.archive.raw_payload.streams import raw_line_stream
+from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
+
+_BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
+_UNRECOGNIZED_BINARY_PEEK_BYTES = 32
 
 WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
@@ -272,6 +277,52 @@ def _infer_payload_provider(
     return fallback_token
 
 
+def _unrecognized_binary_marker_payload(prefix: bytes, *, source_path: str | Path | None) -> JSONDocument | None:
+    """Return a synthetic non-session marker for a recognized-but-unclaimed binary payload.
+
+    polylogue-hbtj2: a raw payload whose leading bytes match a known binary
+    format (SQLite being the concrete miscapture this bead fixes -- Hermes/
+    Codex state databases swept into ``raw_sessions`` and treated as
+    ambiguous session revisions purely because nothing checked the bytes
+    before attempting a JSON decode) must be refused as session content
+    *before* any JSON/JSONL decode is attempted, not merely tolerated via
+    the incidental ``JSONDecodeError`` a binary blob happens to raise. This
+    runs after ``_hermes_sqlite_marker_payload`` (so a content-verified,
+    dedicated Hermes state.db/verification_evidence.db parse still wins)
+    and covers every other case: Codex's own state databases (which
+    deliberately never become sessions of their own, see
+    ``sources/parsers/codex_state.py``), any other provider's stray SQLite
+    file, and the other recognized binary formats in
+    ``core.binary_signatures.BINARY_SIGNATURES``.
+    """
+    signature = detect_binary_signature(prefix)
+    if signature is None:
+        return None
+    return {
+        "polylogue_artifact": _BINARY_ARTIFACT_MARKER,
+        "binary_format": signature.name,
+        "source_path": str(source_path) if source_path is not None else None,
+    }
+
+
+def _binary_artifact_envelope(binary_marker: JSONDocument, *, provider: Provider) -> RawPayloadEnvelope:
+    signature_name = binary_marker["binary_format"]
+    kind = ArtifactKind.BINARY_DATABASE if signature_name == "sqlite" else ArtifactKind.BINARY_DOCUMENT
+    return RawPayloadEnvelope(
+        payload=binary_marker,
+        provider=provider,
+        wire_format="json",
+        artifact=ArtifactClassification(
+            provider=provider,
+            kind=kind,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=0,
+            reason=f"unrecognized {signature_name}-shaped binary payload; refused as session content (polylogue-hbtj2)",
+        ),
+    )
+
+
 def build_raw_payload_envelope(
     raw_content: Path | bytes | str | JSONValue,
     *,
@@ -287,6 +338,7 @@ def build_raw_payload_envelope(
     Python list. This avoids reading the whole file into one byte string,
     but grouped-provider parses still hold the decoded records in memory.
     """
+    provider_for_binary = Provider.from_string(payload_provider or fallback_provider)
     if isinstance(raw_content, Path):
         hermes_marker = _hermes_sqlite_marker_payload(raw_content, source_path=source_path)
         if hermes_marker is not None:
@@ -297,12 +349,23 @@ def build_raw_payload_envelope(
                 wire_format="json",
                 artifact=classify_artifact(hermes_marker, provider=provider, source_path=source_path),
             )
+        with raw_content.open("rb") as handle:
+            binary_prefix = handle.read(_UNRECOGNIZED_BINARY_PEEK_BYTES)
+        binary_marker = _unrecognized_binary_marker_payload(binary_prefix, source_path=source_path)
+        if binary_marker is not None:
+            return _binary_artifact_envelope(binary_marker, provider=provider_for_binary)
     normalized_path = str(source_path or "").lower()
     prefer_jsonl = normalized_path.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
     preferred_provider = payload_provider or fallback_provider
     if not prefer_jsonl:
         runtime_provider = Provider.from_string(preferred_provider)
         prefer_jsonl = runtime_provider in {Provider.CLAUDE_CODE, Provider.CODEX}
+    if isinstance(raw_content, bytes):
+        binary_marker = _unrecognized_binary_marker_payload(
+            raw_content[:_UNRECOGNIZED_BINARY_PEEK_BYTES], source_path=source_path
+        )
+        if binary_marker is not None:
+            return _binary_artifact_envelope(binary_marker, provider=provider_for_binary)
     payload, wire_format, malformed_jsonl_lines, malformed_jsonl_detail = _decode_raw_payload(
         raw_content,
         jsonl_dict_only=jsonl_dict_only,

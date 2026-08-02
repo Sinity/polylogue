@@ -10,6 +10,7 @@ from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
+from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
 from polylogue.core.payload_coercion import optional_string
@@ -355,6 +356,19 @@ def detect_provider_from_raw_bytes_evidence(
     default_file_claim_check``) so both surfaces report the same rule a real
     ingest would have used, not an approximation.
     """
+    # polylogue-hbtj2: a recognized binary format (SQLite being the concrete
+    # miscapture the audit found) must be positively refused here, at the
+    # single shared raw-bytes detection chokepoint, rather than relying on
+    # the incidental ``JSONDecodeError`` a binary blob happens to raise
+    # further down. This still returns ``fallback_provider`` (detection
+    # never invents an origin the caller didn't already suspect), but with
+    # explicit evidence identifying the refusal, instead of the generic
+    # "stream decode error" text a raised exception would otherwise produce.
+    if (signature := detect_binary_signature(raw_bytes)) is not None:
+        return (
+            fallback_provider,
+            f"{signature.name}-shaped binary payload; refused as session content, used fallback_provider",
+        )
     jsonl_like = _is_jsonl_stream_name(stream_name)
     text = None if jsonl_like else _decode_json_bytes(raw_bytes)
     if text is not None:
