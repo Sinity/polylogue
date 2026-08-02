@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from itertools import islice
 from typing import TypeAlias
 
 from polylogue.core.json import JSONDocument
@@ -38,9 +39,14 @@ def _structure_fingerprint(
         return ("string",)
 
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        # ``islice`` bounds consumption directly. ``value[:N]`` would resolve
+        # slice bounds via ``len(value)`` first -- for a full-corpus record
+        # stream (``ReplayableRecordSamples``) wrapping the whole raw session
+        # as one top-level array, that forces a complete decode pass of the
+        # entire backing file just to fingerprint its first few items.
         item_shapes = {
             _structure_fingerprint(item, depth=depth + 1, max_depth=max_depth)
-            for item in value[:_FINGERPRINT_ARRAY_SAMPLE]
+            for item in islice(value, _FINGERPRINT_ARRAY_SAMPLE)
         }
         return ("array", tuple(sorted(item_shapes, key=repr)))
 

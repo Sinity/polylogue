@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from typing import TypeAlias, cast
 
@@ -325,7 +326,10 @@ def _record_profile_tokens(
 ) -> tuple[str, ...]:
     bucket_keys: dict[str, set[str]] = {}
     bucket_value_types: dict[str, dict[str, set[str]]] = {}
-    for sample in samples[:512]:
+    # ``islice`` bounds consumption directly; ``samples[:512]`` would resolve
+    # slice bounds via ``len(samples)`` first, forcing a full rescan of a lazy
+    # full-corpus record stream just to take its first 512 records.
+    for sample in islice(samples, 512):
         bucket = record_bucket_key(sample, record_type_key)
         keys = bucket_keys.setdefault(bucket, set())
         value_types = bucket_value_types.setdefault(bucket, {})

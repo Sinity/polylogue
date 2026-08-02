@@ -66,6 +66,23 @@ class ReplayableRecordSamples(Sequence[JSONDocument]):
             self._known_length = sum(1 for _record in self)
         return self._known_length
 
+    def __bool__(self) -> bool:
+        """Report emptiness from a bounded one-record peek, not a full rescan.
+
+        ``Sequence`` provides ``__len__``-based truthiness by default, which
+        for this class means decoding the entire backing file just to answer
+        "is there at least one record?". Every "if not samples" / "if samples"
+        truthiness check on a full-corpus record stream otherwise forces a
+        complete, unbounded rescan of that raw file before any real work
+        starts -- multiplied across millions of raw sessions, this dominated
+        full-corpus schema-inference wall time (polylogue perf investigation,
+        2026-08). A single bounded peek answers the same question in O(1).
+        """
+        if self._known_length is not None:
+            return self._known_length > 0
+        sentinel = object()
+        return next(iter(self), sentinel) is not sentinel
+
     @overload
     def __getitem__(self, index: SupportsIndex) -> JSONDocument: ...
 

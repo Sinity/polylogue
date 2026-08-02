@@ -26,7 +26,7 @@ from polylogue.schemas.generation.models import (
     _ProfileSummary,
     _UnitMembership,
 )
-from polylogue.schemas.generation.observation_journal import ObservationJournal
+from polylogue.schemas.generation.observation_journal import ObservationJournal, RecordStreamDecodeError
 from polylogue.schemas.observation import SchemaUnit, profile_cluster_id
 
 
@@ -66,13 +66,19 @@ def collect_cluster_analysis(
     artifact_counts: dict[str, int] = {}
     retained_units: list[SchemaUnit] = []
 
-    def observe_summary(unit: SchemaUnit) -> None:
+    def observe_summary(unit: SchemaUnit, *, schema_sample_count: int | None = None) -> None:
         nonlocal total_schema_samples
         dominant_keys = _dominant_keys_for_payload(unit.cluster_payload)[:20]
+        # ``schema_sample_count`` is threaded through from ``append_unit``'s
+        # already-performed enumeration when a journal is in play, so this
+        # never forces its own separate rescan of a lazy full-corpus record
+        # stream. The ``journal is None`` path only runs with in-memory unit
+        # lists (never full-corpus), where ``len()`` is already O(1).
+        count = schema_sample_count if schema_sample_count is not None else len(unit.schema_samples)
         if journal is not None:
-            journal.observe_profile_summary(unit, dominant_keys=dominant_keys)
+            journal.observe_profile_summary(unit, dominant_keys=dominant_keys, schema_sample_count=count)
             artifact_counts[unit.artifact_kind] = artifact_counts.get(unit.artifact_kind, 0) + 1
-            total_schema_samples += len(unit.schema_samples)
+            total_schema_samples += count
             return
         summary_key = (unit.artifact_kind, unit.profile_tokens)
         summary = profile_summaries.get(summary_key)
@@ -84,7 +90,7 @@ def collect_cluster_analysis(
             )
             profile_summaries[summary_key] = summary
         summary.sample_count += 1
-        summary.schema_sample_count += len(unit.schema_samples)
+        summary.schema_sample_count += count
         artifact_counts[unit.artifact_kind] = artifact_counts.get(unit.artifact_kind, 0) + 1
         if (
             unit.source_path
@@ -92,7 +98,7 @@ def collect_cluster_analysis(
             and len(summary.representative_paths) < 5
         ):
             summary.representative_paths.append(unit.source_path)
-        total_schema_samples += len(unit.schema_samples)
+        total_schema_samples += count
 
     observed_units = iter_schema_units(
         provider,
@@ -108,8 +114,19 @@ def collect_cluster_analysis(
     else:
         observed_unit_count = 0
         for unit in observed_units:
-            observe_summary(unit)
-            journal.append_unit(unit, retain_cluster_payload=False)
+            # append_unit runs first: it performs the single real decode pass
+            # over unit.schema_samples (which may be a lazy full-corpus
+            # record stream) and reconciles the exact sample count it
+            # observed. observe_summary reuses that count instead of forcing
+            # its own separate rescan of the same content.
+            try:
+                journal.append_unit(unit, retain_cluster_payload=False)
+            except RecordStreamDecodeError:
+                # Already logged and recorded as an explicit decode_failed
+                # terminal by append_unit; this artifact's contribution is
+                # dropped without aborting the rest of the corpus.
+                continue
+            observe_summary(unit, schema_sample_count=journal.last_appended_sample_count)
             observed_unit_count += 1
             if progress_callback is not None and observed_unit_count % 128 == 0:
                 progress_callback(
