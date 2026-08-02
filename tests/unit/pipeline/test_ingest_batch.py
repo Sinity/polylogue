@@ -1062,6 +1062,192 @@ def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Pat
         assert row["raw_id"] == "raw-fetched"
 
 
+def _sidecar_matched_event(tool_use_id: str) -> ParsedSessionEvent:
+    return ParsedSessionEvent(
+        event_type="claude_tool_result_sidecar",
+        payload={
+            "acquisition_status": "matched",
+            "tool_use_id": tool_use_id,
+            "filename": f"{tool_use_id}.txt",
+            "byte_size": 999,
+            "content_hash": "irrelevant-precomputed-hash",
+            "content_replaced": True,
+        },
+    )
+
+
+def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) -> None:
+    """polylogue-rujy AC4: acquired sidecar text is published to the blob store, content-addressed.
+
+    A matched+content_replaced ``claude_tool_result_sidecar`` event alongside
+    a ``tool_result`` block sharing its ``tool_use_id`` is exactly what
+    ``apply_tool_result_sidecars`` (sources/parsers/claude/code_parser.py)
+    produces once a large sidecar file's full text has replaced a truncated
+    block preview. This asserts the write path (not a test-only
+    reimplementation) actually pushes those bytes through
+    ``ArchiveBlobPublisher`` -- the same publisher attachments use -- and
+    records the resulting hash back onto the event.
+    """
+    full_text = "full sidecar output " * 200
+    with open_connection(tmp_path / "index.db") as conn:
+        publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        session = _session_data(
+            "claude-code-session:sidecar-1",
+            content_hash="sidecar-hash-1",
+            provider=Provider.CLAUDE_CODE,
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "claude-code-session:sidecar-1",
+                    role="assistant",
+                    text="ran a command",
+                    content_hash="msg-hash-sidecar-1",
+                    sort_key=1777636900.0,
+                )
+            ],
+            block_tuples=[
+                (
+                    "msg-1",
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_1", text=full_text),
+                )
+            ],
+            action_tuples=[_sidecar_matched_event("toolu_1")],
+        )
+        changed, counts = _write_session(conn, session, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed is True
+        assert counts["sidecar_blobs_written"] == 1
+        assert counts["sidecar_blob_bytes_new"] == len(full_text.encode("utf-8"))
+        assert counts["sidecar_blob_bytes_dedup"] == 0
+
+        expected_hash = sha256(full_text.encode("utf-8")).hexdigest()
+        blob_path = tmp_path / "blob" / expected_hash[:2] / expected_hash[2:]
+        assert blob_path.is_file(), "sidecar bytes must land in the content-addressed blob store"
+        assert blob_path.read_text() == full_text
+
+        event_row = conn.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'claude_tool_result_sidecar'",
+            ("claude-code-session:sidecar-1",),
+        ).fetchone()
+        assert f'"blob_hash":"{expected_hash}"' in event_row["payload_json"]
+
+        block_row = conn.execute(
+            "SELECT text FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            ("claude-code-session:sidecar-1",),
+        ).fetchone()
+        assert block_row["text"] == full_text, "blob publication must not disturb the FTS-indexed block text (AC2)"
+
+
+def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: Path) -> None:
+    """Two sessions with byte-identical acquired sidecar text share one blob (AC4 dedup).
+
+    Mutation that would make this fail: removing the ``blob_publisher.exists``
+    pre-check (or always reporting ``bytes_new``) collapses the
+    new-vs-deduplicated distinction the bead asks be reported -- this test
+    fails if the second write is counted as new bytes instead of a dedup hit.
+    """
+    full_text = "identical build log content\n" * 300
+    with open_connection(tmp_path / "index.db") as conn:
+        publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        first = _session_data(
+            "claude-code-session:sidecar-dedup-a",
+            content_hash="sidecar-dedup-hash-a",
+            provider=Provider.CLAUDE_CODE,
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "claude-code-session:sidecar-dedup-a",
+                    role="assistant",
+                    text="ran a command",
+                    content_hash="msg-hash-dedup-a",
+                    sort_key=1777637000.0,
+                )
+            ],
+            block_tuples=[
+                (
+                    "msg-1",
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_a", text=full_text),
+                )
+            ],
+            action_tuples=[_sidecar_matched_event("toolu_a")],
+        )
+        changed_a, counts_a = _write_session(conn, first, blob_publisher=publisher)
+        conn.commit()
+        assert changed_a is True
+        assert counts_a["sidecar_blob_bytes_new"] == len(full_text.encode("utf-8"))
+        assert counts_a["sidecar_blob_bytes_dedup"] == 0
+
+        second = _session_data(
+            "claude-code-session:sidecar-dedup-b",
+            content_hash="sidecar-dedup-hash-b",
+            provider=Provider.CLAUDE_CODE,
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "claude-code-session:sidecar-dedup-b",
+                    role="assistant",
+                    text="ran the same command elsewhere",
+                    content_hash="msg-hash-dedup-b",
+                    sort_key=1777637100.0,
+                )
+            ],
+            block_tuples=[
+                (
+                    "msg-1",
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_b", text=full_text),
+                )
+            ],
+            action_tuples=[_sidecar_matched_event("toolu_b")],
+        )
+        changed_b, counts_b = _write_session(conn, second, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed_b is True
+        assert counts_b["sidecar_blob_bytes_new"] == 0
+        assert counts_b["sidecar_blob_bytes_dedup"] == len(full_text.encode("utf-8"))
+
+
+def test_write_session_skips_sidecar_blob_for_debt_events(tmp_path: Path) -> None:
+    """Debt (unmatched) sidecar events never trigger a blob write -- there is no owning block/bytes."""
+    with open_connection(tmp_path / "index.db") as conn:
+        publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        debt_event = ParsedSessionEvent(
+            event_type="claude_tool_result_sidecar",
+            payload={
+                "acquisition_status": "debt",
+                "filename": "orphan.txt",
+                "byte_size": 42,
+                "reason": "no_owning_tool_result_block",
+            },
+        )
+        session = _session_data(
+            "claude-code-session:sidecar-debt",
+            content_hash="sidecar-debt-hash",
+            provider=Provider.CLAUDE_CODE,
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "claude-code-session:sidecar-debt",
+                    role="assistant",
+                    text="ran a command",
+                    content_hash="msg-hash-debt",
+                    sort_key=1777637200.0,
+                )
+            ],
+            action_tuples=[debt_event],
+        )
+        changed, counts = _write_session(conn, session, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed is True
+        assert counts["sidecar_blobs_written"] == 0
+        assert counts["sidecar_blob_bytes_new"] == 0
+        assert not any(p.is_file() for p in (tmp_path / "blob").glob("**/*")), (
+            "no blob file should be written when there is no matched sidecar block"
+        )
+
+
 def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: Path) -> None:
     """Parser-owned auto-tags still converge when the content hash is unchanged."""
     with open_connection(tmp_path / "index.db") as conn:

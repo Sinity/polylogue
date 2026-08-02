@@ -11,10 +11,12 @@ Architecture:
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import pickle
 import sqlite3
 import time
+import unicodedata
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import AsyncExitStack, closing
@@ -25,7 +27,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_current_rss_mb,
@@ -422,6 +424,92 @@ def _incoming_write_regresses_attachment_coverage(
     return incoming_acquired < existing_acquired
 
 
+def _preacquire_sidecar_blobs(
+    session_to_write: ParsedSession,
+    blob_publisher: ArchiveBlobPublisher,
+    publication_receipts: list[tuple[str, bytes]],
+) -> tuple[ParsedSession, dict[str, int]]:
+    """Content-address + dedup Claude Code tool-result sidecar text (polylogue-rujy AC4).
+
+    ``apply_tool_result_sidecars`` (parser-side, side-effect-free) already
+    replaced a matched, truncated ``tool_result`` block's inline preview with
+    the sidecar file's full text and recorded a bounded
+    ``claude_tool_result_sidecar`` session event per file. That leaves the
+    acquired bytes living only as an ordinary SQLite TEXT column: two
+    sessions with byte-identical tool output (a repeated build log, the same
+    lint run) each store their own full copy, and there is no record of how
+    many genuinely new bytes an ingest run added to the archive versus how
+    many were already present under the same hash.
+
+    This mirrors the existing attachment-blob path (``_acquire_attachment_blob``
+    / the ``preacquired_attachment_blobs`` loop above): it publishes the exact
+    bytes the matched block now carries through the archive's content-addressed
+    blob store, records the resulting ``blob_hash`` back onto the event so a
+    reader can locate the durable copy, and returns per-run byte counts
+    (new vs. deduplicated) for the ingest batch's own accounting. It never
+    touches ``blocks.text`` -- that already carries the full text for FTS --
+    this only adds a deduplicated, content-addressed second home for it.
+
+    A no-op (returns ``session_to_write`` unchanged) unless the session
+    actually carries a matched+replaced sidecar event, so non-Claude-Code
+    sessions never pay this cost.
+    """
+    matched_tool_use_ids = {
+        tool_use_id
+        for event in session_to_write.session_events
+        if event.event_type == "claude_tool_result_sidecar"
+        and event.payload.get("acquisition_status") == "matched"
+        and event.payload.get("content_replaced")
+        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
+    }
+    if not matched_tool_use_ids:
+        return session_to_write, {}
+
+    text_by_tool_use_id: dict[str, str] = {
+        block.tool_id: block.text
+        for message in session_to_write.messages
+        for block in message.blocks
+        if block.type is BlockType.TOOL_RESULT
+        and block.tool_id is not None
+        and block.tool_id in matched_tool_use_ids
+        and block.text is not None
+    }
+    if not text_by_tool_use_id:
+        return session_to_write, {}
+
+    blob_hash_by_tool_use_id: dict[str, str] = {}
+    bytes_new = 0
+    bytes_dedup = 0
+    for tool_use_id, text in text_by_tool_use_id.items():
+        encoded = unicodedata.normalize("NFC", text).encode("utf-8")
+        precomputed_hash = hashlib.sha256(encoded).hexdigest()
+        already_present = blob_publisher.exists(precomputed_hash)
+        hash_hex, size = blob_publisher.write_from_bytes(encoded)
+        blob_hash_by_tool_use_id[tool_use_id] = hash_hex
+        if already_present:
+            bytes_dedup += size
+        else:
+            bytes_new += size
+        receipt_id = blob_publisher.receipt_id(hash_hex)
+        if receipt_id is not None:
+            publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
+
+    updated_events = [
+        event.model_copy(update={"payload": {**event.payload, "blob_hash": blob_hash_by_tool_use_id[tool_use_id]}})
+        if event.event_type == "claude_tool_result_sidecar"
+        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
+        and tool_use_id in blob_hash_by_tool_use_id
+        else event
+        for event in session_to_write.session_events
+    ]
+    counts = {
+        "sidecar_blob_bytes_new": bytes_new,
+        "sidecar_blob_bytes_dedup": bytes_dedup,
+        "sidecar_blobs_written": len(blob_hash_by_tool_use_id),
+    }
+    return session_to_write.model_copy(update={"session_events": updated_events}), counts
+
+
 def _write_session(
     conn: sqlite3.Connection,
     payload: SessionWritePayload,
@@ -447,6 +535,9 @@ def _write_session(
         "skipped_attachments": 0,
         "skipped_session_events": 0,
         "raw_links": 0,
+        "sidecar_blob_bytes_new": 0,
+        "sidecar_blob_bytes_dedup": 0,
+        "sidecar_blobs_written": 0,
     }
 
     existing_row = conn.execute(
@@ -608,6 +699,10 @@ def _write_session(
             preacquired_attachment_blobs[id(attachment)] = (blob_hash, size, "acquired")
             if receipt_id is not None:
                 publication_receipts.append((receipt_id, blob_hash))
+        session_to_write, sidecar_blob_counts = _preacquire_sidecar_blobs(
+            session_to_write, blob_publisher, publication_receipts
+        )
+        counts.update(sidecar_blob_counts)
         blob_publisher.flush()
 
     write_parsed_session_to_archive(
@@ -1643,6 +1738,12 @@ async def process_ingest_batch(
             wait_s=round(batch_summary.result_wait_s, 2),
             setup_s=round(batch_summary.setup_elapsed_s, 2),
             tear_s=round(batch_summary.teardown_elapsed_s, 2),
+            # polylogue-rujy AC4: content-addressed tool-result sidecar blob
+            # writes this batch actually added vs. deduplicated (0 unless the
+            # batch touched Claude Code sessions with acquired sidecars).
+            sidecar_blob_new_mb=round(batch_summary.counts["sidecar_blob_bytes_new"] / (1024 * 1024), 2),
+            sidecar_blob_dedup_mb=round(batch_summary.counts["sidecar_blob_bytes_dedup"] / (1024 * 1024), 2),
+            sidecar_blobs_written=batch_summary.counts["sidecar_blobs_written"],
         )
 
     succeeded_raw_ids = successful_raw_ids(batch_summary)
