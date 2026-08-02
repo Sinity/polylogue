@@ -936,6 +936,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace unknown-export-reclassification",
+        "workspace",
+        "Re-run the fixed browser-capture provider probe against stored unknown-export rows.",
+        "devtools.unknown_export_reclassification_report",
+        use_when=(
+            "polylogue-mvq8: before acting on browser-capture raw_sessions rows stamped "
+            "unknown-export by the pre-fix 1MiB prefix probe, get a read-only classification "
+            "of how many are re-detectable under the fixed structural (ijson) provider scan. "
+            "Never mutates origin or blob state; rewriting origin / re-parsing / re-indexing "
+            "a 'reclassifiable' row is a separate, explicitly operator-authorized step."
+        ),
+        examples=(
+            "devtools workspace unknown-export-reclassification",
+            "devtools workspace unknown-export-reclassification --json",
+            "devtools workspace unknown-export-reclassification --source-path-like '' --limit 500",
+        ),
+    ),
+    CommandSpec(
         "workspace temporal-read-profile",
         "workspace",
         "Measure read --view temporal phase timings on the active archive.",

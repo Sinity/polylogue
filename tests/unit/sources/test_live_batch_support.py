@@ -28,9 +28,11 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import _MAX_APPEND_PLAN_PAYLOAD_BYTES, LiveBatchProcessor, _ArchiveFullWriteResult
 from polylogue.sources.live.batch_support import (
+    _BROWSER_CAPTURE_PREFIX_PROBE_BYTES,
     _DEFER_APPEND,
     _AppendPlan,
     _AppendResult,
+    _browser_capture_prefix_probe,
     _detect_provider_from_path_sample,
     _FullIngestResult,
     _parse_path_as_session_artifact,
@@ -845,6 +847,50 @@ def test_large_browser_capture_prefix_planning_does_not_materialize_payload(
 
     assert _detect_provider_from_path_sample(target, Provider.UNKNOWN) is Provider.CHATGPT
     assert _parse_path_as_session_artifact(target, provider=Provider.CHATGPT) is True
+
+
+def test_browser_capture_prefix_probe_finds_provider_past_1mib_raw_payload(tmp_path: Path) -> None:
+    """polylogue-mvq8: session.provider beyond the 1MiB prefix must still detect.
+
+    Real receiver artifacts key-sort with ``raw_provider_payload`` (an
+    unbounded copy of the provider's own wire payload) sorting before
+    ``session`` alphabetically. Once ``raw_provider_payload`` alone exceeds
+    the 1MiB prefix-probe window, the plain byte-prefix regex never sees
+    ``session.provider`` and the capture was permanently misdetected as
+    ``unknown-export`` -- this reproduces that exact shape with real file
+    bytes (no probe-size monkeypatching) and asserts the provider is still
+    found.
+    """
+    target = tmp_path / "oversized-raw-payload.json"
+    huge_padding = "x" * (_BROWSER_CAPTURE_PREFIX_PROBE_BYTES + 64 * 1024)
+    capture_payload = {
+        "polylogue_capture_kind": "browser_llm_session",
+        "schema_version": 1,
+        "capture_id": "chatgpt:past-prefix",
+        "provenance": {
+            "source_url": "https://chatgpt.com/c/past-prefix",
+            "captured_at": "2026-04-24T00:00:00+00:00",
+            "adapter_name": "chatgpt-native-v1",
+        },
+        # Deliberately placed before ``session`` (as the real receiver's
+        # key-sorted output places it) and sized past the probe window.
+        "raw_provider_payload": {"padding": huge_padding},
+        "session": {
+            "provider": "chatgpt",
+            "provider_session_id": "past-prefix",
+            "turns": [{"provider_turn_id": "u1", "role": "user", "text": "hi"}],
+        },
+    }
+    target.write_text(json.dumps(capture_payload), encoding="utf-8")
+
+    # Confirm the fixture actually reproduces the bug shape: the provider
+    # marker sits past the probe window, and the file exceeds it too.
+    assert target.stat().st_size > _BROWSER_CAPTURE_PREFIX_PROBE_BYTES
+    assert target.read_bytes().find(b'"provider": "chatgpt"') > _BROWSER_CAPTURE_PREFIX_PROBE_BYTES
+
+    is_browser_capture, provider = _browser_capture_prefix_probe(target)
+    assert is_browser_capture is True
+    assert provider is Provider.CHATGPT
 
 
 def test_full_ingest_bootstraps_archive_root(
