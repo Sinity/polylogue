@@ -582,6 +582,97 @@ def _check_raw_failures_medium() -> HealthAlert:
         )
 
 
+_CAPTURE_COVERAGE_ORIGINS: tuple[str, ...] = ("claude-code-session", "codex-session")
+_CAPTURE_COVERAGE_WINDOW_MS = 24 * 60 * 60 * 1000
+_CAPTURE_COVERAGE_WARN_MISSES = 1
+_CAPTURE_COVERAGE_ERROR_MISSES = 5
+
+
+def _check_capture_coverage_medium() -> HealthAlert:
+    """Detect SessionStart hook evidence with no matching archived session (polylogue-3uw).
+
+    This is the reverse correlation from ``hook_flow``: that check asks
+    "for sessions we archived, did hook events arrive"; this one asks "for
+    hook evidence that a session happened, did we ever archive it" -- the
+    capture-completeness coverage error, not hook-wiring liveness. A
+    non-zero known-miss count here is a silent capture regression (harness
+    stopped writing, ingest never picked the file up) with a number to trip
+    an alert on, per polylogue-3uw's authoritative corrective scope.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.insights.capture_coverage import compute_capture_coverage
+
+        root = archive_root()
+        source_db = root / "source.db"
+        index_db = _active_health_db_path()
+        if not source_db.exists() or not index_db.exists():
+            return HealthAlert(
+                check_name="capture_coverage",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.OK,
+                message="capture coverage skipped: archive not initialized",
+                checked_at=now,
+                consecutive_failures=_record_failure("capture_coverage", True),
+            )
+
+        current_ms = int(datetime.now(UTC).timestamp() * 1000)
+        since_ms = current_ms - _CAPTURE_COVERAGE_WINDOW_MS
+        source_conn = sqlite3.connect(str(source_db))
+        index_conn = sqlite3.connect(str(index_db))
+        try:
+            total_misses = 0
+            details: list[str] = []
+            for origin in _CAPTURE_COVERAGE_ORIGINS:
+                assessment = compute_capture_coverage(
+                    origin=origin,
+                    since_ms=since_ms,
+                    until_ms=current_ms,
+                    source_conn=source_conn,
+                    index_conn=index_conn,
+                    now_ms=current_ms,
+                )
+                if assessment.known_miss_count:
+                    total_misses += assessment.known_miss_count
+                    details.append(
+                        f"{origin}: {assessment.known_miss_count} session(s) with SessionStart evidence never archived"
+                    )
+        finally:
+            source_conn.close()
+            index_conn.close()
+
+        if total_misses == 0:
+            severity = HealthSeverity.OK
+            message = "no capture-completeness misses in the trailing 24h"
+        elif total_misses <= _CAPTURE_COVERAGE_WARN_MISSES:
+            severity = HealthSeverity.WARNING
+            message = "; ".join(details)
+        elif total_misses <= _CAPTURE_COVERAGE_ERROR_MISSES:
+            severity = HealthSeverity.ERROR
+            message = "; ".join(details)
+        else:
+            severity = HealthSeverity.CRITICAL
+            message = "; ".join(details) + " — possible capture regression"
+
+        return HealthAlert(
+            check_name="capture_coverage",
+            tier=HealthTier.MEDIUM,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("capture_coverage", severity == HealthSeverity.OK),
+        )
+    except Exception as exc:
+        return HealthAlert(
+            check_name="capture_coverage",
+            tier=HealthTier.MEDIUM,
+            severity=HealthSeverity.ERROR,
+            message=f"capture coverage check failed: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("capture_coverage", False),
+        )
+
+
 def _check_stale_ingest_attempts_medium() -> HealthAlert:
     """Check for stale live ingest attempts."""
     from polylogue.daemon.status import _live_ingest_attempt_summary_info
@@ -1095,6 +1186,7 @@ def _run_medium_checks() -> list[HealthAlert]:
     return [
         _check_fts_readiness_medium(),
         _check_raw_failures_medium(),
+        _check_capture_coverage_medium(),
         _check_stale_ingest_attempts_medium(),
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
