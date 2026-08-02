@@ -79,7 +79,11 @@ def run_query_set_read_view(
             )
         finally:
             click.echo = _orig_echo
-        Path(out_path).write_text(buf.getvalue(), encoding="utf-8")
+        rendered = buf.getvalue()
+        from polylogue.cli.read_views.base import _warn_on_secret_candidates
+
+        _warn_on_secret_candidates(env, rendered, label=out_path)
+        Path(out_path).write_text(rendered, encoding="utf-8")
         env.ui.console.print(f"Wrote to {out_path}")
         return
 

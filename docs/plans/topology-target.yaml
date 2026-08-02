@@ -1135,7 +1135,7 @@ files:
     target: polylogue/cli/read_views/__init__.py
     owner: stable
   - path: polylogue/cli/read_views/base.py
-    loc: 227
+    loc: 249
     target: polylogue/cli/read_views/base.py
     owner: stable
   - path: polylogue/cli/read_views/chronicle.py
@@ -1159,7 +1159,7 @@ files:
     target: polylogue/cli/read_views/file_edits.py
     owner: stable
   - path: polylogue/cli/read_views/messages.py
-    loc: 262
+    loc: 270
     target: polylogue/cli/read_views/messages.py
     owner: stable
   - path: polylogue/cli/read_views/neighbors.py
@@ -1167,11 +1167,11 @@ files:
     target: polylogue/cli/read_views/neighbors.py
     owner: stable
   - path: polylogue/cli/read_views/query_set.py
-    loc: 96
+    loc: 100
     target: polylogue/cli/read_views/query_set.py
     owner: stable
   - path: polylogue/cli/read_views/standard.py
-    loc: 531
+    loc: 556
     target: polylogue/cli/read_views/standard.py
     owner: stable
   - path: polylogue/cli/read_views/streaming_markdown.py
@@ -1572,7 +1572,7 @@ files:
     target: polylogue/daemon/convergence_debt_status.py
     owner: stable
   - path: polylogue/daemon/convergence_stages.py
-    loc: 2105
+    loc: 2220
     target: polylogue/daemon/convergence_stages.py
     owner: stable
   - path: polylogue/daemon/convergence_standing_queries.py
@@ -2511,7 +2511,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/__init__.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_core.py
-    loc: 2031
+    loc: 2044
     target: polylogue/pipeline/services/ingest_batch/_core.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_memory.py
@@ -2519,7 +2519,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_memory.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_batch/_models.py
-    loc: 142
+    loc: 148
     target: polylogue/pipeline/services/ingest_batch/_models.py
     owner: stable
     cross_cut: { lifecycle: model }
@@ -2532,7 +2532,7 @@ files:
     target: polylogue/pipeline/services/ingest_batch/_summary.py
     owner: stable
   - path: polylogue/pipeline/services/ingest_worker.py
-    loc: 834
+    loc: 852
     target: polylogue/pipeline/services/ingest_worker.py
     owner: stable
   - path: polylogue/pipeline/services/parsing.py
@@ -2597,7 +2597,7 @@ files:
     target: polylogue/product/continuity_scenarios.py
     owner: stable
   - path: polylogue/product/raw_authority.py
-    loc: 205
+    loc: 213
     target: polylogue/product/raw_authority.py
     owner: stable
   - path: polylogue/product/workflows.py
@@ -3182,8 +3182,12 @@ files:
     loc: 398
     target: polylogue/security/lifecycle.py
     owner: stable
+  - path: polylogue/security/precommit_scan.py
+    loc: 109
+    target: polylogue/security/precommit_scan.py
+    owner: stable
   - path: polylogue/security/secret_scan.py
-    loc: 674
+    loc: 709
     target: polylogue/security/secret_scan.py
     owner: stable
   - path: polylogue/services.py
@@ -3364,7 +3368,7 @@ files:
     target: polylogue/sources/live/convergence_outcome.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 1461
+    loc: 1511
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/cursor_lifecycle.py
@@ -3932,7 +3936,7 @@ files:
     target: polylogue/storage/raw/models.py
     owner: stable
   - path: polylogue/storage/raw_authority.py
-    loc: 2280
+    loc: 2295
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py

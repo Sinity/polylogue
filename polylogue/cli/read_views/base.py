@@ -161,6 +161,27 @@ class ReadViewHandler:
         return self.option_builder(values)
 
 
+def _warn_on_secret_candidates(env: AppEnv, content: str, *, label: str) -> None:
+    """Warn (never block) when rendered/exported content has credential shapes.
+
+    Candidate-only, same detector and never-log-the-literal invariant as
+    ``polylogue ops scan-secrets`` (``polylogue/security/secret_scan.py``).
+    This is the render/export half of polylogue-t9xd (leak-surfaces L11):
+    before this, nothing scanned a session at the point it left the archive
+    as a file on disk, whatever credentials happened to be pasted into the
+    original conversation went out unexamined.
+    """
+    from polylogue.security.secret_scan import describe_secret_candidate_spans, scan_text_for_secret_candidates
+
+    spans = scan_text_for_secret_candidates(content)
+    if not spans:
+        return
+    env.ui.console.print(
+        f"[yellow]secret-scan: {label}: {describe_secret_candidate_spans(spans)} -- "
+        "review before sharing this file (candidate detector, not proof of a real secret).[/yellow]"
+    )
+
+
 def deliver_content(
     env: AppEnv,
     content: str,
@@ -183,6 +204,7 @@ def deliver_content(
     if destination == "file":
         if not out_path:
             raise click.UsageError("--to file requires --out <path>.")
+        _warn_on_secret_candidates(env, content, label=out_path)
         Path(out_path).write_text(content, encoding="utf-8")
         env.ui.console.print(f"Wrote to {out_path}")
     elif destination == "clipboard":

@@ -41,6 +41,29 @@ from polylogue.surfaces.temporal_evidence import (
 TemporalPhaseRecorder = Callable[[str, float, Mapping[str, object]], None]
 
 
+def _warn_on_written_file_secret_candidates(env: AppEnv, out_path: str | None) -> None:
+    """Post-write secret-candidate scan for the streaming-markdown fast path.
+
+    ``stream_exact_session_markdown`` writes directly to a file handle, so
+    (unlike the buffered ``deliver_content``/query-set export paths) there is
+    no in-memory string to scan before the write happens. Reading the file
+    back here still closes the same gap the leak-surfaces audit flagged
+    (polylogue-t9xd L11): before this, a transcript export taking this fast
+    path was never scanned at all.
+    """
+    if out_path is None:
+        return
+    from polylogue.security.secret_scan import describe_secret_candidate_spans, scan_path_for_secret_candidates
+
+    spans = scan_path_for_secret_candidates(Path(out_path))
+    if not spans:
+        return
+    env.ui.console.print(
+        f"[yellow]secret-scan: {out_path}: {describe_secret_candidate_spans(spans)} -- "
+        "review before sharing this file (candidate detector, not proof of a real secret).[/yellow]"
+    )
+
+
 def _record_temporal_phase(
     recorder: TemporalPhaseRecorder | None,
     name: str,
@@ -92,6 +115,7 @@ def run_read_summary_or_transcript(env: AppEnv, request: RootModeRequest, invoca
             prose_only=False,
         )
     ):
+        _warn_on_written_file_secret_candidates(env, invocation.out_path)
         env.ui.console.print(f"Wrote to {invocation.out_path}")
         return
     updated = (
@@ -138,6 +162,7 @@ def run_read_dialogue(env: AppEnv, request: RootModeRequest, invocation: ReadVie
             prose_only=True,
         )
     ):
+        _warn_on_written_file_secret_candidates(env, invocation.out_path)
         env.ui.console.print(f"Wrote to {invocation.out_path}")
         return
     projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None

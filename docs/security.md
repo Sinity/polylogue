@@ -172,6 +172,57 @@ running archive ever invokes them (fix-round note, 2026-07-14).
   `devtools test -k secret_candidate` anchor cited by
   `docs/plans/security-privacy-coverage.yaml`).
 
+#### Wired into pre-commit and render/export (polylogue-t9xd)
+
+The leak-surfaces audit (2026-07-31, `L5`/`L11`) found that the scanner
+above, while it works, was **manual, per-session, and candidate-only**:
+nothing invoked it at ingest, render, export, or before a commit — a
+rendered session or exported demo packet carried whatever credentials had
+been pasted into the original conversation, unexamined. Two chokepoints now
+call `scan_text_for_secret_candidates`/`scan_path_for_secret_candidates`
+directly, reusing the same never-log-the-literal invariant:
+
+- **Staged-content pre-commit gate** (`.githooks/pre-commit` and
+  `.beads-hooks/pre-commit`, via `polylogue/security/precommit_scan.py`):
+  scans the *staged (index) blob* of every added/modified path — any file
+  type, not just `*.py` — and prints a per-file, no-literal warning summary.
+  Warn-only by default (false positives on legitimate content — API docs,
+  sample configs, the scanner's own test fixtures — would be disruptive to
+  hard-block on unconditionally); set `POLYLOGUE_SECRET_SCAN_BLOCK=1` to
+  make a finding fail the commit instead.
+- **Render/export delivery** (`polylogue/cli/read_views/base.py`'s
+  `deliver_content`, plus the query-set bulk-export and streaming-markdown
+  fast paths in `polylogue/cli/read_views/{query_set,standard,messages}.py`):
+  every `--to file --out <path>` write is scanned before (or, for the
+  streaming fast paths, immediately after) the file lands on disk, and a
+  finding prints the same warning to the console. Still not a hard block —
+  same rationale as the pre-commit gate.
+
+Coverage: `tests/unit/security/test_precommit_scan.py`,
+`tests/unit/security/test_secret_scan.py::TestScanPathForSecretCandidates`,
+`tests/unit/cli/test_query_verbs_runtime.py::test_deliver_content_file_destination_warns_on_secret_candidate`.
+
+#### GitGuardian does not cover this content class (polylogue-bv59)
+
+The leak-surfaces audit's `L21` finding is evidentiary, not a code gap of
+its own, and is recorded here so it is not re-discovered: **GitGuardian is
+the only automated scanner on the publication path, and it detects
+credential-shaped *patterns*.** An independent regex sweep over the tracked
+tree at audit time found nothing but deliberate test literals inside this
+scanner's own tests — GitGuardian's green result is accurate for the class
+it checks. But the content that actually leaked in that same audit (`L1`
+through `L4`: real conversation text under `.agent/handoffs/`, a real Codex
+session in git history, real session identifiers, and live corpus/spend
+figures in the demo shelf) is private prose, identifiers, and dollar
+figures — a content *shape*, not a credential pattern, and one GitGuardian
+cannot see by design. A scanner that runs and passes while that content
+goes through is not partial coverage; treating GitGuardian's pass as
+"secrets are covered" would be the mistake. The fix is the content-shape
+gate described just above (pre-commit + render/export), not a pattern-based
+scanner change — GitGuardian and `polylogue/security/secret_scan.py` remain
+complementary (patterns vs. candidate-content-shape), neither one a
+substitute for the other.
+
 ### Local excision (standalone/off mode — authoritative)
 
 `polylogue ops excise --session <id> --reason "..."` (`--dry-run` to

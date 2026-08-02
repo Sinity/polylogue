@@ -555,6 +555,47 @@ def test_deliver_content_browser_destination_opens_browser() -> None:
     open_browser.assert_called_once_with(env, "rendered content", "markdown", None)
 
 
+def test_deliver_content_file_destination_warns_on_secret_candidate(tmp_path: Path) -> None:
+    """``--to file`` must fire the secret-candidate scan before writing (polylogue-t9xd).
+
+    Leak-surfaces audit L11: before this, nothing scanned a session at the
+    point it left the archive as a file on disk. Anti-vacuity: the
+    production caller is ``deliver_content``'s ``destination == "file"``
+    branch; removing the ``_warn_on_secret_candidates`` call (or the scan
+    rules it wraps) makes this assertion on the printed warning fail while
+    the file write itself keeps succeeding.
+    """
+    from polylogue.cli.read_views.base import deliver_content
+
+    console = MagicMock()
+    env = cast(AppEnv, SimpleNamespace(ui=SimpleNamespace(console=console)))
+    out_path = tmp_path / "export.md"
+    secret_bearing = "notes\nAWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\nmore notes\n"
+
+    deliver_content(env, secret_bearing, destination="file", out_path=str(out_path))
+
+    assert out_path.read_text(encoding="utf-8") == secret_bearing
+    warning_calls = [call for call in console.print.call_args_list if "secret-scan" in str(call)]
+    assert warning_calls, f"expected a secret-scan warning, got calls: {console.print.call_args_list}"
+    assert "aws-access-key-id" in str(warning_calls[0])
+
+
+def test_deliver_content_file_destination_no_warning_for_clean_content(tmp_path: Path) -> None:
+    """No false-positive warning for ordinary content with no secret shapes."""
+    from polylogue.cli.read_views.base import deliver_content
+
+    console = MagicMock()
+    env = cast(AppEnv, SimpleNamespace(ui=SimpleNamespace(console=console)))
+    out_path = tmp_path / "export.md"
+
+    deliver_content(
+        env, "# Session\n\nJust an ordinary rendered transcript.\n", destination="file", out_path=str(out_path)
+    )
+
+    warning_calls = [call for call in console.print.call_args_list if "secret-scan" in str(call)]
+    assert warning_calls == []
+
+
 def test_deliver_content_unrecognized_destination_raises() -> None:
     """An unrecognized destination must raise, never silently echo to stdout.
 

@@ -658,6 +658,39 @@ def scan_archive_for_secret_candidates(
     )
 
 
+def scan_path_for_secret_candidates(path: Path, *, max_bytes: int = 20_000_000) -> list[SecretCandidateSpan]:
+    """Scan a file already written to disk for credential-shaped spans.
+
+    Companion to :func:`scan_text_for_secret_candidates` for render/export
+    writers that stream content directly to a file handle rather than
+    building it in memory first (e.g. ``read --view transcript --to file``'s
+    non-lineage fast path, ``polylogue/cli/read_views/streaming_markdown.py``)
+    -- those still need a scan chokepoint after the fact
+    (polylogue-t9xd). Silently returns no findings for anything above
+    ``max_bytes`` or unreadable as UTF-8: scanning multi-GB exports
+    byte-for-byte would defeat the point of a streaming writer.
+    """
+    try:
+        if path.stat().st_size > max_bytes:
+            return []
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+    return scan_text_for_secret_candidates(text)
+
+
+def describe_secret_candidate_spans(spans: Sequence[SecretCandidateSpan]) -> str:
+    """One-line, no-literal summary of scan hits, safe for warning/log output.
+
+    Shared by every caller that needs to *tell a human* a scan fired without
+    reproducing this module's never-log-the-literal invariant per call site
+    (the staged-content pre-commit gate and the render/export delivery path,
+    polylogue-t9xd).
+    """
+    pattern_ids = sorted({span.pattern_id for span in spans})
+    return f"{len(spans)} candidate span(s) ({', '.join(pattern_ids)})"
+
+
 __all__ = [
     "BulkSecretScanResult",
     "DEFAULT_SECRET_SCAN_PAGE_SIZE",
@@ -665,8 +698,10 @@ __all__ = [
     "SecretCandidateSpan",
     "SecretScanResult",
     "count_pending_secret_scan_sessions",
+    "describe_secret_candidate_spans",
     "record_secret_candidates",
     "scan_archive_for_secret_candidates",
+    "scan_path_for_secret_candidates",
     "scan_session_for_secret_candidates",
     "scan_text_for_secret_candidates",
     "select_pending_secret_scan_session_ids",

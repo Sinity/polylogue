@@ -113,6 +113,56 @@ class TestScanTextForSecretCandidates:
         assert spans == []
 
 
+class TestScanPathForSecretCandidates:
+    """``scan_path_for_secret_candidates`` -- the render/export-side chokepoint
+    for writers that stream to a file handle rather than building content in
+    memory first (polylogue-t9xd L11)."""
+
+    def test_flags_file_with_secret_shape(self, tmp_path: Path) -> None:
+        from polylogue.security.secret_scan import scan_path_for_secret_candidates
+
+        path = tmp_path / "export.md"
+        path.write_text("body text\nAWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
+
+        spans = scan_path_for_secret_candidates(path)
+
+        assert any(span.pattern_id == "aws-access-key-id" for span in spans)
+
+    def test_clean_file_has_no_findings(self, tmp_path: Path) -> None:
+        from polylogue.security.secret_scan import scan_path_for_secret_candidates
+
+        path = tmp_path / "export.md"
+        path.write_text("# Session\n\nJust an ordinary rendered transcript.\n", encoding="utf-8")
+
+        assert scan_path_for_secret_candidates(path) == []
+
+    def test_skips_files_above_max_bytes(self, tmp_path: Path) -> None:
+        from polylogue.security.secret_scan import scan_path_for_secret_candidates
+
+        path = tmp_path / "export.md"
+        path.write_text("AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP\n", encoding="utf-8")
+
+        assert scan_path_for_secret_candidates(path, max_bytes=1) == []
+
+    def test_missing_path_returns_no_findings(self, tmp_path: Path) -> None:
+        from polylogue.security.secret_scan import scan_path_for_secret_candidates
+
+        assert scan_path_for_secret_candidates(tmp_path / "does-not-exist.md") == []
+
+
+class TestDescribeSecretCandidateSpans:
+    def test_never_includes_the_matched_literal(self) -> None:
+        from polylogue.security.secret_scan import describe_secret_candidate_spans
+
+        text = "AWS_ACCESS_KEY_ID=AKIAABCDEFGHIJKLMNOP"
+        spans = scan_text_for_secret_candidates(text)
+        description = describe_secret_candidate_spans(spans)
+
+        assert "AKIAABCDEFGHIJKLMNOP" not in description
+        assert "aws-access-key-id" in description
+        assert "1" in description
+
+
 class TestRecordSecretCandidates:
     @pytest.fixture
     def user_db(self, tmp_path: Path) -> Path:
