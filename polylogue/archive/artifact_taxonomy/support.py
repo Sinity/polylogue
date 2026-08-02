@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import islice
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument, JSONValue, json_document
@@ -159,11 +160,16 @@ def looks_metadataish_dict(payload: JSONDocument) -> bool:
 def looks_metadataish_list(payload: list[JSONValue]) -> bool:
     if not payload:
         return True
-    if len(payload) > 512:
+    # A bounded 513-item peek answers "more than 512 items?" without forcing
+    # ``len(payload)`` -- for a lazy full-corpus record stream
+    # (``ReplayableRecordSamples``) that would otherwise decode the entire
+    # backing file just to classify one artifact.
+    head = list(islice(payload, 513))
+    if len(head) > 512:
         return False
     return all(
         isinstance(item, _SCALAR_TYPES) or (isinstance(item, dict) and looks_metadataish_dict(item))
-        for item in payload[:64]
+        for item in head[:64]
     )
 
 

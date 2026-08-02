@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from itertools import islice
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
@@ -291,8 +292,6 @@ def _classify_list(
     provider: Provider,
     source_path: str | Path | None,
 ) -> ArtifactClassification:
-    dict_items = [json_document(item) for item in payload[:32]]
-    dict_items = [item for item in dict_items if item]
     if not payload:
         return ArtifactClassification(
             provider=provider,
@@ -302,6 +301,12 @@ def _classify_list(
             default_priority=0,
             reason="empty list payload",
         )
+    # ``islice`` bounds consumption directly. ``payload[:32]`` would resolve
+    # slice bounds via ``len(payload)`` first, which for a lazy full-corpus
+    # record stream (``ReplayableRecordSamples``) forces a complete rescan of
+    # the backing file just to take its first 32 items.
+    dict_items = [json_document(item) for item in islice(payload, 32)]
+    dict_items = [item for item in dict_items if item]
 
     # Hermes ATOF records look superficially like generic hook events, but
     # carry a producer-defined observer session stream and must be admitted
