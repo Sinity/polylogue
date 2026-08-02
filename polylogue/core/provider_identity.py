@@ -96,6 +96,7 @@ CORE_SCHEMA_PROVIDERS: Final[tuple[str, ...]] = (
 _RUNTIME_PROVIDER_ALIASES: Final[dict[str, str]] = {
     "claude": "claude-ai",
     "anthropic": "claude-ai",
+    "claude-code-todos": "claude-code",
     "openai": "chatgpt",
     "google": "gemini",
     "google-gemini": "gemini",

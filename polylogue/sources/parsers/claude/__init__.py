@@ -28,6 +28,7 @@ from .index import (
     parse_sessions_index,
 )
 from .orchestration import parse_claude_orchestration_artifact
+from .todos import parse_claude_todo_artifact
 
 
 def looks_like_ai(payload: object) -> bool:
@@ -74,5 +75,6 @@ __all__ = [
     "reconcile_code_session_chunks",
     "parse_sessions_index",
     "parse_claude_orchestration_artifact",
+    "parse_claude_todo_artifact",
     "parse_stream",
 ]

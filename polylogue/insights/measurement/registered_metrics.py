@@ -9,10 +9,12 @@ remains unstarted. Building that whole registry/composition epic is out of
 scope here (see ``polylogue-rxdo.9`` epic-expansion guard).
 
 This module is the bounded, honest slice available without it: a real,
-process-wide registry populated with one concrete metric definition for an
-existing, already-computed construct (session cost, ``cost/pricing.py``/
-``cost/outlook.py``), reachable through the MCP ``get`` tool
-(``get(ref="metric:session_cost_usd")``, see ``polylogue/mcp/
+process-wide registry populated with concrete metric definitions for
+existing, already-computed constructs -- session cost (``cost/pricing.py``/
+``cost/outlook.py``) and, since polylogue-t0p, plan-completion rate
+(``insights/claude_todo_projection.py``) -- reachable through the MCP ``get``
+tool (``get(ref="metric:session_cost_usd")`` /
+``get(ref="metric:plan_completion_rate")``, see ``polylogue/mcp/
 server_cutover.py``). This proves the identity/registry machinery resolves
 through a real production surface -- it does NOT execute the metric (no
 composition/aggregation engine exists yet; that is 9l5.7's job) or attach a
@@ -45,6 +47,30 @@ SESSION_COST_USD_METRIC = MetricDefinition(
     output_schema="usd:float",
 )
 
+#: Plan-vs-outcome measure (polylogue-t0p): fraction of a session's Claude
+#: Code plan (``~/.claude/todos/*.json``, ``insights/claude_todo_projection.py``)
+#: marked ``completed`` at its LATEST observed snapshot. ``structural``, not
+#: ``heuristic``: the status string is a provider-reported field Claude Code
+#: itself writes, never inferred from transcript prose. ``census`` enumeration
+#: (not a sample) -- every admitted snapshot for a session is used, not a
+#: subset -- so no sampling interval attaches per the registry's own
+#: census-vs-sample doctrine (9l5.7 bead notes, ``MeasureSpec`` design).
+#: Denominator hazard: a session with an empty plan (``item_count == 0``) has
+#: ``completion_rate is None`` (``ClaudeTodoSnapshot.completion_rate``), not
+#: zero -- "nothing planned" must never render as "nothing done".
+PLAN_COMPLETION_RATE_METRIC = MetricDefinition(
+    construct="fraction of a session's latest Claude Code TODO plan marked completed",
+    unit="ratio",
+    unit_source="claude_todo_plan_states",
+    aggregation="mean",
+    grain="logical",
+    required_enumeration="census",
+    measurement_authority=("structural",),
+    provenance_mixing="single-authority",
+    null_policy="exclude",
+    output_schema="ratio:float|null",
+)
+
 #: Process-wide default registry. A module-level singleton is the correct
 #: shape for an in-process content-addressed identity registry (mirrors
 #: ``polylogue.insights.registry.INSIGHT_REGISTRY``) -- registration is
@@ -52,6 +78,7 @@ SESSION_COST_USD_METRIC = MetricDefinition(
 #: -registers or drifts.
 DEFAULT_METRIC_REGISTRY = MetricRegistry()
 DEFAULT_METRIC_REGISTRY.register(SESSION_COST_USD_METRIC, name="session_cost_usd")
+DEFAULT_METRIC_REGISTRY.register(PLAN_COMPLETION_RATE_METRIC, name="plan_completion_rate")
 
 
-__all__ = ["DEFAULT_METRIC_REGISTRY", "SESSION_COST_USD_METRIC"]
+__all__ = ["DEFAULT_METRIC_REGISTRY", "PLAN_COMPLETION_RATE_METRIC", "SESSION_COST_USD_METRIC"]

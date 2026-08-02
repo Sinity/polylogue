@@ -195,6 +195,18 @@ def claude_code_path() -> Path:
     return Path.home() / ".claude" / "projects"
 
 
+def claude_code_todos_path() -> Path:
+    """Claude Code live plan-snapshot directory (polylogue-t0p).
+
+    Sibling of ``claude_code_path()``, not nested under it: Claude Code
+    writes one ``<session-id>[-agent-<agent-id>].json`` file per session
+    (rewritten wholesale on every ``TodoWrite`` call, never appended), and
+    prunes old entries on its own schedule -- unread state here is
+    eventually lost, not merely delayed.
+    """
+    return Path.home() / ".claude" / "todos"
+
+
 def codex_path() -> Path:
     """Codex sessions directory."""
     return Path.home() / ".codex" / "sessions"

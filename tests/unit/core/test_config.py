@@ -336,6 +336,29 @@ class TestConfiguredSources:
         sources = get_sources(resolve_runtime_config())
         assert [source.name for source in sources] == []
 
+    def test_claude_code_todos_source_discovered_when_directory_exists(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """polylogue-t0p: ~/.claude/todos/ is a distinct discovered source, not folded into claude-code."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+        todos_dir = home / ".claude" / "todos"
+        todos_dir.mkdir(parents=True)
+
+        from polylogue.config import get_sources, resolve_runtime_config
+
+        runtime = resolve_runtime_config()
+        assert runtime.source_paths.claude_code_todos == todos_dir
+
+        names = {source.name for source in get_sources(runtime)}
+        assert "claude-code-todos" in names
+        assert "claude-code" not in names  # sibling ~/.claude/projects/ was never created
+
     def test_get_sources_includes_drive_source_when_credentials_exist(
         self,
         monkeypatch: pytest.MonkeyPatch,

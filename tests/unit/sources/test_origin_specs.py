@@ -46,6 +46,7 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "agent_sidecar_meta",
         "adopt_manifest",
         "coordinator_session_stream",
+        "todo_snapshot",
     }
     assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
     assert claude.detector_tightness == 60

@@ -1389,6 +1389,7 @@ def default_sources(*, hermes_root: Path | None = None, beads_roots: tuple[Path,
         archive_root,
         browser_capture_spool_root,
         claude_code_path,
+        claude_code_todos_path,
         codex_path,
         gemini_cli_path,
         hermes_sessions_path,
@@ -1413,6 +1414,17 @@ def default_sources(*, hermes_root: Path | None = None, beads_roots: tuple[Path,
             name="claude-code",
             root=claude_code_path(),
             suffixes=artifact_suffixes_for_provider(Provider.CLAUDE_CODE, defaults=(".jsonl",)),
+        ),
+        # polylogue-t0p: Claude Code's live plan-snapshot directory
+        # (~/.claude/todos/) is a sibling of claude_code_path(), not nested
+        # under it -- a second, narrower WatchSource rooted there, same
+        # precedent as "codex-state" below, so the main claude-code root
+        # doesn't have to widen its own suffix/path assumptions to reach a
+        # completely different directory tree.
+        WatchSource(
+            name="claude-code-todos",
+            root=claude_code_todos_path(),
+            suffixes=(".json",),
         ),
         WatchSource(name="codex", root=codex_path()),
         # polylogue-0jf4: Codex also keeps live SQLite state (thread titles,
