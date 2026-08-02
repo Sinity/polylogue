@@ -317,10 +317,13 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `material_protocol`'s parse-time transcript encode, which reads
   `ParsedSession.session_events` directly and is unaffected); only the writer
   (`_write_session_events` in `storage/sqlite/archive_tiers/write.py`) filters
-  them out of the `session_events` INSERT. `reasoning`/`agent_reasoning`
-  (zero captured content today -- an evidence gap, not duplication) and
-  `turn_context` (low urgency, no confirmed payload reader) are deliberately
-  excluded pending an explicit operator evidence-doctrine call; `function_call`/
+  them out of the `session_events` INSERT. `agent_reasoning` was resolved by
+  the polylogue-fuky audit (index schema version 55): confirmed a duplicate
+  of the paired `reasoning` record's already-materialized THINKING-block
+  message, and added to the same writer filter. `reasoning` itself and
+  `turn_context` (low urgency, no confirmed payload reader) remain
+  deliberately excluded pending their own operator evidence-doctrine call;
+  `function_call`/
   `function_call_output` payload-slimming is a separate, not-yet-decided
   change. This is a writer-behavior change with no DDL delta on
   `session_events` itself, so there is no declared clone-safe SQL

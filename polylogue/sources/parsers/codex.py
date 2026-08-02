@@ -573,6 +573,185 @@ def _compact_response_payload(
     return compact
 
 
+# response_item/event_msg inner ``type`` values that reach the generic
+# session_event dispatch below (the `else` branch: not a message, not
+# `compacted`/`turn_context`/`world_state`, no dedicated handler elsewhere in
+# this file) with an explicit classification, rather than being stored
+# verbatim under Codex's own wire name with no code aware of what that name
+# means. Producer/consumer audit, polylogue-fuky (2026-08-02): every type
+# below was previously an unaudited passthrough -- zero literal reference
+# anywhere in the repo -- discovered via a live-archive `session_events`
+# scan finding large row counts (318K-3K) under Codex wire names no code
+# branches on. Each entry here has been read against raw wire samples (not
+# inferred from row shape); this table does not change the *stored*
+# `event_type` string for any of them -- every one still passes through
+# under its own wire name (see ``_codex_response_item_event_type`` below).
+# What changes is that a type NOT in this set (a future, never-examined
+# Codex wire addition) no longer silently joins the same vocabulary
+# unclassified -- it is routed to ``_CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE``
+# instead (fail loud/greppable, matching the
+# ``_ATTACHMENT_UNCLASSIFIED_EVENT_TYPE`` precedent in
+# ``sources/parsers/claude/code_parser.py``).
+#
+# TRANSIENT -- confirmed zero information content beyond the bare
+# ``{"type": ...}`` marker already captured generically, read directly off
+# raw wire samples:
+#   context_compacted -- literal ``{"type": "context_compacted"}`` in every
+#     sample read (live archive + source JSONL). Distinct from the
+#     ``compacted`` record type handled explicitly above (~line 2148),
+#     which DOES carry ``replacement_history`` -- this is a bare completion
+#     marker for a separate/newer compaction notification path with
+#     nothing else on the wire to capture.
+#   agent_reasoning -- confirmed DUPLICATE, not merely transient: live-wire
+#     comparison across three Codex sessions found `agent_reasoning.text`
+#     values are the same live-streamed reasoning-summary bullets already
+#     carried in full by the `reasoning` record's `summary[].text` (one
+#     session: 156/156 identical; a second: 262/262 identical set; a third:
+#     1,846 reasoning bullets vs. 1,859 agent_reasoning ticks, >99% overlap,
+#     the residual being minor text-normalization differences on the same
+#     underlying bullets, not new content). `reasoning` records are already
+#     materialized as a THINKING-block ``ParsedMessage`` via
+#     ``_codex_reasoning_message`` (index v50) -- `agent_reasoning` is a
+#     live per-tick echo of that same content, matching the
+#     "streaming ticks superseded by the final record" pattern documented
+#     for Claude Code's `progress` subtypes in `claude/code_parser.py`. The
+#     session_event this file emits for it is filtered back out at write
+#     time (`_SESSION_EVENTS_REDUNDANT_TYPES` in
+#     `storage/sqlite/archive_tiers/write.py`) rather than at parse time, to
+#     keep this file's classification table describing what the WIRE means
+#     (still a real, known type) separately from the WRITER's
+#     zero-evidence-loss dedup decision. ``reasoning`` itself is NOT
+#     reclassified here -- it already has a confirmed message consumer and
+#     is out of scope for this audit.
+#
+# EVIDENCE, currently under-captured by ``_compact_response_payload`` above
+# (its generic lift only covers type/id/call_id/name/status/timestamp/
+# output-or-argument-length/cwd/metadata.turn_id -- every field named below
+# is real signal read off the raw wire that falls outside that allowlist
+# and is silently dropped today, not merely "not yet interesting"). Kept
+# passing through under their own wire name for now; a dedicated extraction
+# pass for this cluster is out of scope for a classification-only audit
+# (each needs its own bounded field-set decision plus an
+# INDEX_SCHEMA_VERSION SEMANTIC_REPARSE bump) and is tracked as a follow-up
+# (see the bead filed alongside this change):
+#   thread_goal_updated (45,814 live rows) -- `goal.objective` (free text
+#     session objective), `goal.status`/`tokensUsed`/`timeUsedSeconds`.
+#   sub_agent_activity (41,769) -- `agent_thread_id`, `agent_path`, `kind`
+#     (e.g. "interacted") -- subagent delegation evidence.
+#   task_started (20,432) -- `turn_id`, `model_context_window`,
+#     `collaboration_mode_kind`.
+#   task_complete (17,055) -- `turn_id`, `last_agent_message`.
+#   turn_aborted (3,394) -- `turn_id`, `reason` (e.g. "interrupted").
+#   thread_settings_applied (3,548) -- full per-turn settings snapshot
+#     (model, reasoning_effort, personality, collaboration_mode including
+#     `developer_instructions` text) -- partially overlaps the
+#     `turn_context` capture above (~line 2232) but is a distinct wire
+#     record, not yet cross-checked for full redundancy.
+#   collab_agent_spawn_end / collab_waiting_end / collab_close_end /
+#     collab_agent_interaction_end (~1,000 combined) -- subagent-delegation
+#     evidence (new_thread_id, new_agent_nickname, new_agent_role, prompt,
+#     receiver_thread_id, receiver_agent_nickname/role, status text) beyond
+#     the call_id/status the generic compactor already lifts.
+#   item_completed (199) -- `item.text` (e.g. full plan content).
+#   entered_review_mode / exited_review_mode (13 each) --
+#     `target.instructions`/`user_facing_hint` and
+#     `review_output.findings`/`overall_correctness`/`overall_explanation`/
+#     `overall_confidence_score`.
+#   view_image_tool_call (62) -- `path` (the referenced image file).
+#   web_search_end (1,357) -- `query`, `action.queries` -- a distinct
+#     completion-marker wire shape from the already-handled
+#     `web_search_call`/`web_search_output` pair (different call_id
+#     namespace, `ws_...`); real search-query evidence, currently dropped.
+#   thread_rolled_back (92) -- `num_turns` (rollback extent).
+#   error (42) -- `message` (user-facing text, e.g. a usage-limit message)
+#     and `codex_error_info` (a real error code, e.g.
+#     "usage_limit_exceeded") -- operationally significant and currently
+#     dropped entirely.
+# Pre-existing types already dispatched/consumed elsewhere in this file
+# (``_compact_response_payload``'s own elif chain above, ``_codex_tool_message``,
+# ``_codex_event_message``, ``_codex_reasoning_message``,
+# ``_codex_mcp_tool_call_messages``) -- unaffected by this audit, listed here
+# only so the classifier below has a complete allowlist and none of them are
+# ever misrouted into the unclassified bucket:
+_CODEX_PRIOR_AUDITED_RESPONSE_ITEM_TYPES: frozenset[str] = frozenset(
+    {
+        "token_count",
+        "message_usage",
+        "ghost_snapshot",
+        "exec_command_begin",
+        "exec_command_end",
+        "patch_apply_begin",
+        "patch_apply_end",
+        "reasoning",
+        "function_call",
+        "function_call_output",
+        "custom_tool_call",
+        "custom_tool_call_output",
+        "tool_search_call",
+        "tool_search_output",
+        "web_search_call",
+        "web_search_output",
+        "local_shell_call",
+        "user_message",
+        "agent_message",
+        "mcp_tool_call_end",
+    }
+)
+
+_CODEX_KNOWN_RESPONSE_ITEM_TYPES: frozenset[str] = _CODEX_PRIOR_AUDITED_RESPONSE_ITEM_TYPES | frozenset(
+    {
+        "context_compacted",
+        "agent_reasoning",
+        "thread_goal_updated",
+        "sub_agent_activity",
+        "task_started",
+        "task_complete",
+        "turn_aborted",
+        "thread_settings_applied",
+        "collab_agent_spawn_end",
+        "collab_waiting_end",
+        "collab_close_end",
+        "collab_agent_interaction_end",
+        "item_completed",
+        "entered_review_mode",
+        "exited_review_mode",
+        "view_image_tool_call",
+        "web_search_end",
+        "thread_rolled_back",
+        "error",
+    }
+)
+
+# Fallback for a response_item/event_msg inner type not in the table above --
+# e.g. a new Codex CLI version introducing a wire shape this repo has never
+# read. FAIL LOUD: still persisted (never silently merged into the audited
+# vocabulary above, which is exactly the "unaudited passthrough" defect this
+# classification replaces), tagged with an event_type that is greppable/
+# triageable on its own. The original wire type string is not lost -- it
+# stays in the event payload's own ``type`` field (``_compact_response_payload``
+# always lifts it when present).
+_CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE = "codex_unclassified_response_item"
+
+
+def _codex_response_item_event_type(inner_type: str | None, record_type: str | None) -> str:
+    """Classify a response_item/event_msg inner ``type`` for ``session_events``.
+
+    Every type in ``_CODEX_KNOWN_RESPONSE_ITEM_TYPES`` has been read against
+    raw wire samples and passes through under its own Codex wire name
+    unchanged. A type this repo has never examined is routed to
+    ``_CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE`` instead of silently adopting
+    its own wire name, so an unaudited type can never again commingle with
+    the audited vocabulary above without a human noticing the greppable
+    marker.
+    """
+    resolved = inner_type or record_type
+    if resolved is None:
+        return "response_item"
+    if resolved in _CODEX_KNOWN_RESPONSE_ITEM_TYPES:
+        return resolved
+    return _CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE
+
+
 def _extract_cwd(payload: dict[str, object] | None) -> str | None:
     if not payload:
         return None
@@ -2331,7 +2510,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 )
                 session_events.append(
                     ParsedSessionEvent(
-                        event_type=_record_type(inner) or _record_type(record) or "response_item",
+                        event_type=_codex_response_item_event_type(_record_type(inner), _record_type(record)),
                         timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
                         payload=event_payload,
                     )

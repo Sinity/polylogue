@@ -1124,6 +1124,65 @@ class TestGitContextAndInstructions:
         }
         assert all("raw" not in event.payload for event in result.session_events)
 
+    def test_known_orphan_response_item_types_pass_through_unchanged(self) -> None:
+        """polylogue-fuky: audited-but-unextracted Codex types keep their wire name.
+
+        ``thread_goal_updated`` and ``agent_reasoning`` are two of the
+        previously-unaudited Codex response_item/event_msg types this bead's
+        producer/consumer audit classified explicitly
+        (``_CODEX_KNOWN_RESPONSE_ITEM_TYPES`` in ``sources/parsers/codex.py``).
+        The classification is intentionally non-destructive at parse time --
+        the parser still emits both under their own wire name; only
+        ``agent_reasoning`` is later filtered out at write time
+        (``_SESSION_EVENTS_REDUNDANT_TYPES``, storage/sqlite/archive_tiers/
+        write.py) because it is a confirmed duplicate of the paired
+        ``reasoning`` record's already-materialized THINKING-block message.
+        """
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "thread_goal_updated", "goal": {"objective": "ship the thing"}},
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "agent_reasoning", "text": "**Diagnosing the thing**"},
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert [event.event_type for event in result.session_events] == [
+            "thread_goal_updated",
+            "agent_reasoning",
+        ]
+
+    def test_unaudited_response_item_type_routes_to_unclassified_bucket(self) -> None:
+        """polylogue-fuky: a never-examined Codex type is fail-loud, not silent.
+
+        Before this bead, any response_item/event_msg inner ``type`` this repo
+        had never read joined the same vocabulary as every audited type,
+        indistinguishable at the ``event_type`` level. A type outside
+        ``_CODEX_KNOWN_RESPONSE_ITEM_TYPES`` must now route to the distinct,
+        greppable ``codex_unclassified_response_item`` bucket instead --
+        matching the ``claude_attachment_unclassified`` precedent in
+        ``sources/parsers/claude/code_parser.py``. The original wire type
+        string is not lost: it survives in the event payload's own ``type``
+        field.
+        """
+        payload = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "a_type_this_repo_has_never_seen", "id": "evt-9"},
+            },
+        ]
+
+        result = parse(payload, "fallback")
+
+        assert len(result.session_events) == 1
+        event = result.session_events[0]
+        assert event.event_type == "codex_unclassified_response_item"
+        assert event.payload["type"] == "a_type_this_repo_has_never_seen"
+
     def test_function_call_output_omits_inline_image_data_urls_from_text(self) -> None:
         payload = [
             {
