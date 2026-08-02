@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -68,6 +69,23 @@ def test_fingerprint_changes_when_logic_changes() -> None:
     assert isinstance(fn_a, ast.FunctionDef)
     assert isinstance(fn_b, ast.FunctionDef)
     assert vcf._fingerprint_function(fn_a) != vcf._fingerprint_function(fn_b)
+
+
+def test_fingerprint_changes_when_a_decorator_is_added() -> None:
+    src_a = "def looks_like_x(payload):\n    return 'a' in payload\n"
+    src_b = "@functools.lru_cache\ndef looks_like_x(payload):\n    return 'a' in payload\n"
+    fn_a = ast.parse(src_a).body[0]
+    fn_b = ast.parse(src_b).body[0]
+    assert isinstance(fn_a, ast.FunctionDef)
+    assert isinstance(fn_b, ast.FunctionDef)
+    assert vcf._fingerprint_function(fn_a) != vcf._fingerprint_function(fn_b)
+
+
+def test_collect_classifier_functions_skips_undecodable_file(tmp_path: Path) -> None:
+    bad_file = tmp_path / "broken.py"
+    bad_file.write_bytes(b"def looks_like_x(payload):\n    return b'\xff\xfe' in payload\n")
+    found = vcf.collect_classifier_functions(roots=(tmp_path,))
+    assert not found
 
 
 def test_undeclared_drift_fails_and_declared_drift_passes() -> None:

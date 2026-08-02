@@ -132,7 +132,7 @@ def _fingerprint_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
         name="_",
         args=node.args,
         body=body or [ast.Pass()],
-        decorator_list=[],
+        decorator_list=node.decorator_list,
         returns=None,
     )
     dump = ast.dump(replacement, annotate_fields=True, include_attributes=False)
@@ -148,7 +148,7 @@ def collect_classifier_functions(roots: tuple[Path, ...] = CLASSIFICATION_ROOTS)
         for path in sorted(root.rglob("*.py")):
             try:
                 tree = ast.parse(path.read_text(encoding="utf-8"))
-            except SyntaxError:
+            except (SyntaxError, UnicodeDecodeError):
                 continue
             for node in tree.body:
                 if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and _NAME_PATTERN.match(node.name):
