@@ -44,7 +44,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import AssertionKind, AssertionStatus, BlockType, BranchType, MaterialOrigin, Origin, Provider
 from polylogue.core.errors import DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
-from polylogue.core.refs import delegation_edge_object_id
+from polylogue.core.refs import (
+    delegation_ancestry_object_id,
+    delegation_edge_object_id,
+    delegation_subtree_object_id,
+)
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -3378,6 +3382,90 @@ async def test_resolve_ref_returns_missing_payload_for_unknown_delegation_identi
         )
         assert edge_missing.resolved is False
         assert edge_missing.payload_kind == "missing"
+    finally:
+        await archive.close()
+
+
+async def test_resolve_ref_returns_delegation_ancestry_and_subtree_payloads(tmp_path: Path) -> None:
+    """polylogue-qsb4: the `get` MCP tool (backed by `resolve_ref`) exposes
+    arbitrary-depth delegation traversal through the same `delegation`
+    ObjectRef kind, distinguished by the `ancestry:`/`subtree:` object-id
+    prefixes (mirroring the existing `edge:` shape) -- root-to-node and
+    node-to-descendants, depth-annotated, in one call each."""
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            root_id = archive_db.write_parsed(
+                _delegation_parent_session(provider_session_id="delegation-tree-root-v1", with_dispatch=True)
+            )
+            mid_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-tree-mid-v1",
+                    title="Delegation tree mid fixture",
+                    messages=[
+                        ParsedMessage(provider_message_id="mid-0", role=Role.USER, text="please look into this"),
+                        ParsedMessage(
+                            provider_message_id="mid-dispatch",
+                            role=Role.ASSISTANT,
+                            model_name="claude-opus-4-8",
+                            blocks=[
+                                ParsedContentBlock(
+                                    type=BlockType.TOOL_USE,
+                                    tool_name="Task",
+                                    tool_id="task-mid-1",
+                                    tool_input={"prompt": "audit the sub-thing", "subagent_type": "general-purpose"},
+                                )
+                            ],
+                        ),
+                    ],
+                    parent_session_provider_id="delegation-tree-root-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+            leaf_id = archive_db.write_parsed(
+                ParsedSession(
+                    source_name=Provider.CLAUDE_CODE,
+                    provider_session_id="delegation-tree-leaf-v1",
+                    title="Delegation tree leaf fixture",
+                    messages=[ParsedMessage(provider_message_id="leaf-0", role=Role.ASSISTANT, text="on it")],
+                    parent_session_provider_id="delegation-tree-mid-v1",
+                    branch_type=BranchType.SUBAGENT,
+                )
+            )
+
+        ancestry_ref = f"delegation:{delegation_ancestry_object_id(leaf_id)}"
+        ancestry_payload = await archive.resolve_ref(ancestry_ref)
+        assert ancestry_payload.resolved is True
+        assert ancestry_payload.kind == "delegation"
+        assert ancestry_payload.payload_kind == "delegation-ancestry"
+        assert ancestry_payload.payload is not None
+        ancestry_nodes = ancestry_payload.payload["nodes"]
+        assert [node["session_id"] for node in ancestry_nodes] == [root_id, mid_id, leaf_id]
+        assert [node["depth"] for node in ancestry_nodes] == [2, 1, 0]
+        assert ancestry_nodes[0]["child_session_id"] == mid_id
+        assert ancestry_nodes[0]["mapping_state"] == "resolved"
+        assert ancestry_nodes[-1]["child_session_id"] is None
+        assert ancestry_payload.object_refs == (
+            f"session:{root_id}",
+            f"session:{mid_id}",
+            f"session:{leaf_id}",
+        )
+
+        subtree_ref = f"delegation:{delegation_subtree_object_id(root_id)}"
+        subtree_payload = await archive.resolve_ref(subtree_ref)
+        assert subtree_payload.resolved is True
+        assert subtree_payload.payload_kind == "delegation-subtree"
+        assert subtree_payload.payload is not None
+        subtree_nodes = {node["session_id"]: node for node in subtree_payload.payload["nodes"]}
+        assert set(subtree_nodes) == {root_id, mid_id, leaf_id}
+        assert subtree_nodes[root_id]["depth"] == 0
+        assert subtree_nodes[root_id]["parent_session_id"] is None
+        assert subtree_nodes[mid_id]["depth"] == 1
+        assert subtree_nodes[mid_id]["parent_session_id"] == root_id
+        assert subtree_nodes[leaf_id]["depth"] == 2
+        assert subtree_nodes[leaf_id]["parent_session_id"] == mid_id
+        assert subtree_payload.payload["node_count"] == 3
     finally:
         await archive.close()
 

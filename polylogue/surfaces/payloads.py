@@ -84,8 +84,10 @@ if TYPE_CHECKING:
         ArchiveAssertionQueryRow,
         ArchiveBlockQueryRow,
         ArchiveContextSnapshotQueryRow,
+        ArchiveDelegationAncestryRow,
         ArchiveDelegationCard,
         ArchiveDelegationQueryRow,
+        ArchiveDelegationSubtreeRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
         ArchiveObservedEventQueryRow,
@@ -2593,6 +2595,103 @@ DELEGATION_STATE_CAVEATS: dict[str, str] = {
 }
 
 
+class DelegationAncestryNodePayload(SurfacePayloadModel):
+    """One node in a depth-annotated delegation ancestry chain (polylogue-qsb4).
+
+    ``depth`` is 0 at the queried session and increases toward the root.
+    ``child_session_id``/``mapping_state``/``instruction_tool_use_block_id``/
+    ``link_confidence``/``link_method`` describe the edge from this node to
+    its own child in the chain (``None`` at depth 0, which has no such edge
+    in this traversal). Quarantined (cycle-break) edges are never traversed.
+    """
+
+    session_id: str
+    depth: int
+    child_session_id: str | None = None
+    mapping_state: DelegationMappingState | None = None
+    instruction_tool_use_block_id: str | None = None
+    link_confidence: float | None = None
+    link_method: str | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveDelegationAncestryRow) -> DelegationAncestryNodePayload:
+        return cls(
+            session_id=row.session_id,
+            depth=row.depth,
+            child_session_id=row.child_session_id,
+            mapping_state=row.mapping_state,
+            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+            link_confidence=row.link_confidence,
+            link_method=row.link_method,
+        )
+
+
+class DelegationSubtreeNodePayload(SurfacePayloadModel):
+    """One node in a depth-annotated delegation subtree (polylogue-qsb4).
+
+    ``depth`` is 0 at the queried session (the subtree root) and increases
+    toward descendants. ``parent_session_id``/``mapping_state``/
+    ``instruction_tool_use_block_id``/``link_confidence``/``link_method``
+    describe the edge from this node's own dispatcher to this node (``None``
+    at depth 0, which is out of scope for this traversal). Quarantined
+    (cycle-break) edges are never traversed.
+    """
+
+    session_id: str
+    depth: int
+    parent_session_id: str | None = None
+    mapping_state: DelegationMappingState | None = None
+    instruction_tool_use_block_id: str | None = None
+    link_confidence: float | None = None
+    link_method: str | None = None
+
+    @classmethod
+    def from_row(cls, row: ArchiveDelegationSubtreeRow) -> DelegationSubtreeNodePayload:
+        return cls(
+            session_id=row.session_id,
+            depth=row.depth,
+            parent_session_id=row.parent_session_id,
+            mapping_state=row.mapping_state,
+            instruction_tool_use_block_id=row.instruction_tool_use_block_id,
+            link_confidence=row.link_confidence,
+            link_method=row.link_method,
+        )
+
+
+class DelegationAncestryPayload(SurfacePayloadModel):
+    """Root-to-node delegation ancestry chain for one session (polylogue-qsb4)."""
+
+    unit: Literal["delegation-ancestry"] = "delegation-ancestry"
+    session_id: str
+    max_depth: int
+    nodes: tuple[DelegationAncestryNodePayload, ...]
+
+    @classmethod
+    def from_rows(cls, session_id: str, rows: Sequence[ArchiveDelegationAncestryRow]) -> DelegationAncestryPayload:
+        nodes = tuple(DelegationAncestryNodePayload.from_row(row) for row in rows)
+        return cls(session_id=session_id, max_depth=max((node.depth for node in nodes), default=0), nodes=nodes)
+
+
+class DelegationSubtreePayload(SurfacePayloadModel):
+    """Full dispatch subtree rooted at one session (polylogue-qsb4)."""
+
+    unit: Literal["delegation-subtree"] = "delegation-subtree"
+    session_id: str
+    max_depth: int
+    node_count: int
+    nodes: tuple[DelegationSubtreeNodePayload, ...]
+
+    @classmethod
+    def from_rows(cls, session_id: str, rows: Sequence[ArchiveDelegationSubtreeRow]) -> DelegationSubtreePayload:
+        nodes = tuple(DelegationSubtreeNodePayload.from_row(row) for row in rows)
+        return cls(
+            session_id=session_id,
+            max_depth=max((node.depth for node in nodes), default=0),
+            node_count=len(nodes),
+            nodes=nodes,
+        )
+
+
 class SessionReadViewEnvelope(SurfacePayloadModel):
     """Stable daemon envelope for one executed session read-view."""
 
@@ -3863,10 +3962,14 @@ __all__ = [
     "MetadataMutationResult",
     "DeleteSessionOutcome",
     "DeleteSessionResult",
+    "DelegationAncestryNodePayload",
+    "DelegationAncestryPayload",
     "DelegationAttemptPayload",
     "DelegationCardPayload",
     "DelegationContextRowPayload",
     "DelegationQueryRowPayload",
+    "DelegationSubtreeNodePayload",
+    "DelegationSubtreePayload",
     "MutationResultPayload",
     "QueryErrorPayload",
     "QueryUnitAggregateEnvelope",
