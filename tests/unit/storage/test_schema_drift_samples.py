@@ -5,6 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     SCHEMA_DRIFT_SAMPLE_RETENTION_MS,
@@ -189,5 +191,124 @@ class TestSchemaDriftSamples:
                 pass
             else:
                 raise AssertionError("expected a CHECK constraint violation for an unrecognized origin token")
+        finally:
+            conn.close()
+
+    def test_drift_sample_writer_accepts_known_field_unread(self, tmp_path: Path) -> None:
+        """Regression test for polylogue-sd9s / #3451.
+
+        ``known_field_unread`` is one of ``DriftClassification``'s 4 members
+        and legitimately risky (``RISKY_CLASSIFICATIONS``) -- the CHECK must
+        accept it on a freshly bootstrapped ops.db.
+        """
+        conn = _ops_conn(tmp_path)
+        try:
+            record_schema_drift_sample(
+                conn,
+                origin="claude-code-session",
+                element_kind="session_record",
+                classification="known_field_unread",
+                unseen_key_signature="",
+                native_id_example="raw-1",
+                raw_id="raw-1",
+                observed_at_ms=1,
+            )
+            samples = list_schema_drift_samples(conn, limit=100)
+            assert [s.classification for s in samples] == ["known_field_unread"]
+        finally:
+            conn.close()
+
+
+class TestSchemaDriftSamplesStaleCheckConvergence:
+    """polylogue-sd9s: an ops.db bootstrapped before the literal_check fix
+    (#3451 / polylogue-u6tl) keeps a live CHECK naming only 3 of
+    DriftClassification's 4 values forever, because ``CREATE TABLE IF NOT
+    EXISTS`` never rewrites an existing table's constraints. Confirm the
+    bootstrap-time convergence step detects and repairs that stale CHECK.
+    """
+
+    _STALE_TABLE_DDL = """
+        CREATE TABLE schema_drift_samples (
+            sample_id             TEXT PRIMARY KEY,
+            origin                TEXT NOT NULL,
+            element_kind          TEXT NOT NULL,
+            classification        TEXT NOT NULL CHECK(classification IN ('unseen_shape', 'new_field', 'field_changed')),
+            unseen_key_signature  TEXT NOT NULL DEFAULT '',
+            native_id_example     TEXT NOT NULL,
+            raw_id                TEXT NOT NULL,
+            observed_at_ms        INTEGER NOT NULL
+        ) STRICT;
+    """
+
+    def test_pre_fix_stale_check_rejects_known_field_unread(self, tmp_path: Path) -> None:
+        """Reproduces the bug: the old 3-value CHECK raises IntegrityError."""
+        conn = sqlite3.connect(str(tmp_path / "ops.db"))
+        try:
+            conn.executescript(self._STALE_TABLE_DDL)
+            conn.execute(
+                "INSERT INTO schema_drift_samples "
+                "(sample_id, origin, element_kind, classification, native_id_example, raw_id, observed_at_ms) "
+                "VALUES ('s1', 'claude-code-session', 'session_record', 'unseen_shape', 'raw-1', 'raw-1', 1)"
+            )
+            with pytest.raises(sqlite3.IntegrityError):
+                conn.execute(
+                    "INSERT INTO schema_drift_samples "
+                    "(sample_id, origin, element_kind, classification, native_id_example, raw_id, observed_at_ms) "
+                    "VALUES ('s2', 'claude-code-session', 'session_record', 'known_field_unread', 'raw-2', 'raw-2', 2)"
+                )
+        finally:
+            conn.close()
+
+    def test_bootstrap_repairs_stale_check_on_reopen(self, tmp_path: Path) -> None:
+        ops_db = tmp_path / "ops.db"
+        conn = sqlite3.connect(str(ops_db))
+        try:
+            conn.executescript(self._STALE_TABLE_DDL)
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn = sqlite3.connect(str(ops_db))
+        try:
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            live_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_drift_samples'"
+            ).fetchone()[0]
+            assert "known_field_unread" in live_sql
+
+            # A known_field_unread insert now succeeds against the repaired CHECK.
+            record_schema_drift_sample(
+                conn,
+                origin="claude-code-session",
+                element_kind="session_record",
+                classification="known_field_unread",
+                unseen_key_signature="",
+                native_id_example="raw-3",
+                raw_id="raw-3",
+                observed_at_ms=3,
+            )
+            samples = list_schema_drift_samples(conn, limit=100)
+            assert [s.classification for s in samples] == ["known_field_unread"]
+        finally:
+            conn.close()
+
+    def test_bootstrap_is_a_noop_on_an_already_current_check(self, tmp_path: Path) -> None:
+        """Reopening an already-repaired/fresh ops.db must not drop live rows."""
+        conn = _ops_conn(tmp_path)
+        try:
+            record_schema_drift_sample(
+                conn,
+                origin="claude-code-session",
+                element_kind="session_record",
+                classification="new_field",
+                unseen_key_signature="",
+                native_id_example="raw-1",
+                raw_id="raw-1",
+                observed_at_ms=1,
+            )
+            # Reopen/re-initialize, as every daemon-restart same-version open does.
+            initialize_archive_tier(conn, ArchiveTier.OPS)
+            samples = list_schema_drift_samples(conn, limit=100)
+            assert [s.raw_id for s in samples] == ["raw-1"]
         finally:
             conn.close()

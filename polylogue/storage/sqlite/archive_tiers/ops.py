@@ -10,6 +10,30 @@ from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, 
 
 OPS_SCHEMA_VERSION = 1
 
+# Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
+# that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
+# bootstrap.py) can re-execute exactly this fragment after a DROP TABLE,
+# rather than maintaining a second, hand-copied definition that could itself
+# drift from the canonical fresh-create DDL.
+SCHEMA_DRIFT_SAMPLES_DDL = f"""
+CREATE TABLE IF NOT EXISTS schema_drift_samples (
+    sample_id             TEXT PRIMARY KEY,
+    origin                TEXT NOT NULL CHECK ({check("origin", Origin)}),
+    element_kind          TEXT NOT NULL,
+    classification        TEXT NOT NULL CHECK ({literal_check("classification", *get_args(DriftClassification))}),
+    unseen_key_signature  TEXT NOT NULL DEFAULT '',
+    native_id_example     TEXT NOT NULL,
+    raw_id                TEXT NOT NULL,
+    observed_at_ms        INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_origin_time
+ON schema_drift_samples(origin, observed_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_time
+ON schema_drift_samples(observed_at_ms DESC);
+"""
+
 OPS_DDL = f"""
 CREATE TABLE IF NOT EXISTS ingest_cursor (
     source_path          TEXT PRIMARY KEY,
@@ -354,22 +378,14 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- label. Generating the CHECK from DriftClassification via literal_check
 -- closes the gap; ops.db is disposable so this needs no migration/version
 -- bump, just the corrected DDL for the next bootstrap/bootstrap-repair.
-CREATE TABLE IF NOT EXISTS schema_drift_samples (
-    sample_id             TEXT PRIMARY KEY,
-    origin                TEXT NOT NULL CHECK ({check("origin", Origin)}),
-    element_kind          TEXT NOT NULL,
-    classification        TEXT NOT NULL CHECK ({literal_check("classification", *get_args(DriftClassification))}),
-    unseen_key_signature  TEXT NOT NULL DEFAULT '',
-    native_id_example     TEXT NOT NULL,
-    raw_id                TEXT NOT NULL,
-    observed_at_ms        INTEGER NOT NULL
-) STRICT;
+--
+-- polylogue-sd9s: ``CREATE TABLE IF NOT EXISTS`` never rewrites an
+-- *existing* table's CHECK, so any ops.db bootstrapped before the fix above
+-- (#3451) keeps rejecting ``known_field_unread`` forever on reopen. See
+-- ``_ensure_schema_drift_samples_check`` (bootstrap.py) for the drop+recreate
+-- convergence step that detects and repairs a stale live CHECK; it reuses
+-- this exact DDL fragment (``SCHEMA_DRIFT_SAMPLES_DDL``) so the two can never
+-- drift apart from each other.
+{SCHEMA_DRIFT_SAMPLES_DDL}"""
 
-CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_origin_time
-ON schema_drift_samples(origin, observed_at_ms DESC);
-
-CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_time
-ON schema_drift_samples(observed_at_ms DESC);
-"""
-
-__all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION"]
+__all__ = ["OPS_DDL", "OPS_SCHEMA_VERSION", "SCHEMA_DRIFT_SAMPLES_DDL"]

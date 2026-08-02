@@ -91,6 +91,7 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         _ensure_ops_cursor_lag_sample_columns(conn)
         _ensure_ops_ingest_attempt_outcome_columns(conn)
         ensure_embedding_catchup_run_outcome_columns(conn)
+        _ensure_schema_drift_samples_check(conn)
     if tier is ArchiveTier.INDEX:
         from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
@@ -104,6 +105,34 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         _ensure_user_annotation_schemas(conn)
     conn.execute(f"PRAGMA user_version = {spec.version}")
     conn.commit()
+
+
+def _ensure_schema_drift_samples_check(conn: sqlite3.Connection) -> None:
+    """Repair a ``schema_drift_samples`` table bootstrapped with a stale CHECK.
+
+    ``CREATE TABLE IF NOT EXISTS`` (the ``OPS_DDL`` reapply path every
+    ``initialize_archive_tier(..., ArchiveTier.OPS)`` call goes through) never
+    rewrites an *existing* table's constraints. An ops.db bootstrapped before
+    the ``literal_check(DriftClassification)`` fix (#3451 / polylogue-u6tl)
+    keeps a live CHECK naming only 3 of ``DriftClassification``'s 4 values --
+    ``known_field_unread`` rows raise ``sqlite3.IntegrityError`` on every
+    insert attempt against that archive forever, not just until the code
+    ships. Detect the stale CHECK via ``sqlite_master.sql`` and drop+recreate:
+    ``schema_drift_samples`` is disposable bounded telemetry (polylogue-da1),
+    so losing its rows on repair is an accepted, documented cost -- there is
+    no migration/version-bump ceremony for this tier.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_drift_samples'"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return
+    if "known_field_unread" in row[0]:
+        return
+    from polylogue.storage.sqlite.archive_tiers.ops import SCHEMA_DRIFT_SAMPLES_DDL
+
+    conn.execute("DROP TABLE IF EXISTS schema_drift_samples")
+    conn.executescript(SCHEMA_DRIFT_SAMPLES_DDL)
 
 
 def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:
