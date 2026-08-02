@@ -79,6 +79,11 @@ class CursorRecord:
     failure_count: int = 0
     next_retry_at: str | None = None
     excluded: bool | int = False
+    # polylogue-hat0: end offset of an append byte range already durably
+    # captured (raw written + revision bound) but still awaiting authority
+    # resolution. ``None`` means no pending deferred capture. See
+    # ``ops.py``'s ``ingest_cursor`` DDL comment for the full rationale.
+    deferred_end_offset: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +255,7 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         failure_count=_required_int(row[12] or 0),
         next_retry_at=_optional_str(row[13]),
         excluded=bool(row[16]) if row[16] is not None else False,
+        deferred_end_offset=_optional_int(row[17]),
     )
 
 
@@ -349,6 +355,7 @@ class CursorStore:
             failure_count=record.failure_count,
             next_retry_at=record.next_retry_at,
             excluded=bool(record.excluded),
+            deferred_end_offset=record.deferred_end_offset,
         )
 
     def _write_cursor_record_to_ops(self, record: CursorRecord) -> None:
@@ -1005,7 +1012,8 @@ class CursorStore:
                 next_retry_at,
                 origin,
                 updated_at_ms,
-                excluded
+                excluded,
+                deferred_end_offset
             FROM ingest_cursor
             WHERE source_path = ?
             """,
@@ -1044,7 +1052,8 @@ class CursorStore:
                         next_retry_at,
                         origin,
                         updated_at_ms,
-                        excluded
+                        excluded,
+                        deferred_end_offset
                     FROM ingest_cursor
                     WHERE source_path IN ({placeholders})
                     """,
@@ -1076,6 +1085,7 @@ class CursorStore:
         next_retry_at: str | None = None,
         excluded: bool | None = None,
         allow_backward: bool = False,
+        deferred_end_offset: int | None = None,
     ) -> bool:
         now = datetime.now(UTC).isoformat()
         offset = byte_size if byte_offset is None else byte_offset
@@ -1109,6 +1119,7 @@ class CursorStore:
                 failure_count=failure_count or 0,
                 next_retry_at=next_retry_at,
                 excluded=bool(excluded),
+                deferred_end_offset=deferred_end_offset,
             )
         )
 
@@ -1344,7 +1355,8 @@ class CursorStore:
                         next_retry_at,
                         origin,
                         updated_at_ms,
-                    excluded
+                    excluded,
+                    deferred_end_offset
                 FROM ingest_cursor
                 WHERE excluded = 0
                   AND (

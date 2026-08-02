@@ -942,12 +942,16 @@ class LiveWatcher:
         # cursor, even when the unfinished record exceeds the probe budget.
         # Record this observed state so unchanged periodic catch-up scans skip
         # it; a subsequent append changes stat evidence and reopens the probe.
+        # polylogue-hat0: this probe found no complete trailing record, not a
+        # resolved authority state -- preserve any existing pending-authority
+        # marker unchanged rather than clearing it.
         record_deferred_append_cursor(
             self._cursor,
             path,
             cursor=cursor,
             parser_fingerprint=_PARSER_FINGERPRINT,
             source_name=self._source_name_for(path),
+            deferred_end_offset=cursor.deferred_end_offset,
         )
         return True
 

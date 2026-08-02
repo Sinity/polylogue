@@ -52,6 +52,16 @@ CREATE TABLE IF NOT EXISTS ingest_cursor (
     failure_count        INTEGER NOT NULL DEFAULT 0 CHECK(failure_count >= 0),
     next_retry_at        TEXT,
     excluded             INTEGER NOT NULL DEFAULT 0 CHECK(excluded IN (0, 1)),
+    -- polylogue-hat0: the end offset of an append byte range that was
+    -- already durably captured (raw written + revision bound in source.db)
+    -- but is still awaiting authority resolution (quarantined/ambiguous
+    -- parent). NULL means there is no pending deferred capture for this
+    -- path. Distinct from byte_offset, which only advances once a plan is
+    -- actually applied -- a deferred plan never advances byte_offset, so
+    -- without this marker a re-observation of an unchanged file cannot be
+    -- told apart from genuine new content and re-mints an identical raw row
+    -- forever.
+    deferred_end_offset  INTEGER,
     updated_at_ms        INTEGER NOT NULL
 ) STRICT;
 
