@@ -94,8 +94,12 @@ def test_streamed_historical_full_classifier_matches_byte_proof_without_eager_pa
     # whole cohort -- more opens than the old adjacent-only walk, but still
     # bounded and never re-reading a stream's full payload more than once per
     # comparison it actually participates in.
-    assert opened.count("oldest") + opened.count("middle") + opened.count("newest") >= 3
     assert set(opened) == {"oldest", "middle", "newest"}
+    # Pin the read amplification instead of only lower-bounding it: 3 hashing
+    # opens plus one is_prefix comparison per smaller/larger candidate pair
+    # (2 opens each) across this 3-member chain. Tighten this number if the
+    # comparison strategy changes; do not relax it silently.
+    assert len(opened) == 9
 
 
 @pytest.mark.parametrize("payloads", [[b"left", b"right"]])

@@ -157,14 +157,15 @@ def _classify_deduped_nodes(
             for parent in ordered
             if parent != child and sizes[parent] < sizes[child] and is_prefix(parent, child)
         ]
-        maximal = [
-            candidate
-            for candidate in candidates
-            if not any(
-                candidate != other and sizes[candidate] < sizes[other] and is_prefix(candidate, other)
-                for other in candidates
-            )
-        ]
+        # Prefix is transitive: if parent1 and parent2 are both prefixes of
+        # child and sizes[parent1] < sizes[parent2], then parent1 is
+        # necessarily a prefix of parent2 (parent1's bytes equal child's
+        # first N bytes, which equal parent2's first N bytes since parent2
+        # is itself a prefix of child of length >= N). Candidates therefore
+        # form a totally ordered chain and the unique maximal element is
+        # simply the largest one -- no further is_prefix comparisons (and
+        # their streamed blob re-reads) are needed here.
+        maximal = [max(candidates, key=lambda raw_id: (sizes[raw_id], raw_id))] if candidates else []
         parents[child] = maximal
         for parent in maximal:
             children[parent].append(child)
