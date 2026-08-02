@@ -112,16 +112,6 @@ def _observe_package_membership(package: _PackageAccumulator, membership: _UnitM
     _update_observed_window(package, membership.unit.observed_at)
 
 
-def _observe_journal_package_membership(
-    package: _PackageAccumulator,
-    membership: _UnitMembership,
-) -> None:
-    """Update bounded package metadata; exact distinct values remain in SQLite."""
-    if membership.unit.source_path:
-        _merge_representative_paths(package.representative_paths, [membership.unit.source_path])
-    _update_observed_window(package, membership.unit.observed_at)
-
-
 def _package_bundle_scope_count(package: _PackageAccumulator) -> int:
     if package.journal_bundle_scope_count is not None:
         return package.journal_bundle_scope_count

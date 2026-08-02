@@ -112,24 +112,6 @@ def build_action_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
 # ---------------------------------------------------------------------------
 
 
-def build_profile_fts_status(
-    metrics: Metrics,
-    *,
-    key_prefix: str,
-    name: str,
-    label: str,
-) -> DerivedModelStatus:
-    return _fts_status(
-        metrics,
-        name=name,
-        label=label,
-        ready_key=f"{key_prefix}_ready",
-        source_rows_key="profile_rows",
-        materialized_rows_key=f"{key_prefix}_rows",
-        duplicate_key=f"{key_prefix}_duplicates",
-    )
-
-
 def _profile_rows_status(metrics: Metrics) -> DerivedModelStatus:
     ready = _metric_bool(metrics, "profile_rows_ready")
     profile_rows = _metric_int(metrics, "profile_rows")

@@ -1083,11 +1083,6 @@ def _fmt_bytes(value: int) -> str:
     return "0 KB"
 
 
-def _failing_files_info() -> list[str]:
-    """Return live-source files currently marked failed or excluded."""
-    return [item.source_path for item in _live_cursor_summary_info().failing_files]
-
-
 def _live_cursor_summary_info() -> LiveCursorSummary:
     """Return live cursor backlog/failure state without source-tree scans."""
     dbf = _active_status_db_path()

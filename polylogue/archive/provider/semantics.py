@@ -157,24 +157,6 @@ def extract_content_blocks(content: Sequence[object] | None) -> list[ContentBloc
     return blocks
 
 
-def extract_display_text_from_content_blocks(content: Sequence[object] | None) -> str:
-    """Rebuild human-readable text from stored structured content blocks."""
-    if not content:
-        return ""
-
-    parts: list[str] = []
-    for raw_block in content:
-        block = _content_block_record(raw_block)
-        if block is None:
-            continue
-        if block.get("type") not in {"text", "code", "tool_result", "thinking"}:
-            continue
-        text = _string_field(block, "text")
-        if text:
-            parts.append(text)
-    return "\n".join(parts)
-
-
 def extract_claude_code_text(content: Sequence[object] | None) -> str:
     """Extract text from Claude Code content blocks, excluding non-text blocks."""
     if not content:

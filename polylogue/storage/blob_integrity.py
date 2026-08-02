@@ -1092,18 +1092,6 @@ def _split_container_source_path(source_path: str) -> tuple[Path, str] | None:
     return Path(outer), member
 
 
-def _json_payload_at_index(raw_bytes: bytes, source_index: int) -> object:
-    loaded = json_loads(raw_bytes)
-    if isinstance(loaded, list):
-        try:
-            return loaded[source_index]
-        except IndexError as exc:
-            raise IndexError(f"source_index {source_index} outside JSON array of {len(loaded)} payloads") from exc
-    if source_index == 0:
-        return loaded
-    raise IndexError("non-array JSON payload only supports source_index 0")
-
-
 def _jsonl_payload_at_index(raw_bytes: bytes, source_index: int) -> object:
     for idx, line in enumerate(raw_bytes.splitlines()):
         if idx == source_index:

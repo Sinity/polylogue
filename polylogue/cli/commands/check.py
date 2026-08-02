@@ -4,28 +4,11 @@ from __future__ import annotations
 
 import click
 
-from polylogue.cli.shared.check_models import VacuumResult
 from polylogue.cli.shared.check_options import apply_check_command_options
 from polylogue.cli.shared.check_rendering_json import emit_json_output
 from polylogue.cli.shared.check_rendering_plain import render_plain_output
-from polylogue.cli.shared.check_support import (
-    format_count_mapping as _format_count_mapping_impl,
-)
-from polylogue.cli.shared.check_support import (
-    make_schema_progress_callback as _make_schema_progress_callback_impl,
-)
-from polylogue.cli.shared.check_support import (
-    parse_schema_samples as _parse_schema_samples_impl,
-)
-from polylogue.cli.shared.check_support import run_vacuum as _run_vacuum_impl
-from polylogue.cli.shared.check_support import vacuum_database as _vacuum_database_impl
 from polylogue.cli.shared.check_workflow import CheckCommandOptions, run_check_workflow, validate_check_options
 from polylogue.cli.shared.types import AppEnv
-from polylogue.core.protocols import ProgressCallback
-
-
-def _format_count_mapping(counts: dict[str, int]) -> str:
-    return _format_count_mapping_impl(counts)
 
 
 @click.command("doctor")
@@ -95,22 +78,6 @@ def check_command(
         emit_json_output(result, options)
         return
     render_plain_output(env, result, options)
-
-
-def _make_schema_progress_callback() -> ProgressCallback:
-    return _make_schema_progress_callback_impl()
-
-
-def _run_vacuum(env: AppEnv) -> None:
-    _run_vacuum_impl(env)
-
-
-def _vacuum_database(env: AppEnv) -> VacuumResult:
-    return _vacuum_database_impl(env)
-
-
-def _parse_schema_samples(raw: str) -> int | None:
-    return _parse_schema_samples_impl(raw)
 
 
 __all__ = ["check_command"]

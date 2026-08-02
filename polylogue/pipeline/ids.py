@@ -11,7 +11,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.types import ContentHash, MessageId, SessionEventId, SessionId
+from polylogue.core.types import ContentHash, MessageId, SessionId
 
 # ParsedMessage/ParsedSession/ParsedAttachment/ParsedContentBlock are used only
 # as parameter/return type annotations below (never constructed or
@@ -173,10 +173,6 @@ def session_id(source_name: Provider | Origin | str, provider_session_id: str) -
 
 def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
     return MessageId(f"{session_id}:{provider_message_id}")
-
-
-def session_event_id(session_id: SessionId, event_index: int) -> SessionEventId:
-    return SessionEventId(f"{session_id}:session-event:{event_index:06d}")
 
 
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:

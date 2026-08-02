@@ -101,8 +101,15 @@ permanently break composition. `session_links` is also the topology-edge table
 (the docs' older `topology_edges` name): it persists every parent reference a
 parser asserts, even when the parent isn't ingested yet, keyed
 `(src_session_id, dst_origin, dst_native_id, link_type)`, resolved on each save
-by `resolve_session_links_for_session`. `TopologyEdgeStatus` =
-unresolved/resolved/repaired/**quarantined** (cycle-break).
+by `_resolve_session_graph`/`_resolve_outbound_session_links`
+(`storage/sqlite/archive_tiers/write.py`) — the sole production
+implementation, invoked unconditionally from `write_parsed_session_to_archive`
+(the single choke point both live incremental ingest and full raw
+replay/reindex go through). `storage/sqlite/queries/session_links.py`'s
+similarly-named async `resolve_session_links_for_session` has no production
+caller; it exists only as test infrastructure (`polylogue-enium`).
+`TopologyEdgeStatus` = unresolved/resolved/repaired/**quarantined**
+(cycle-break).
 
 ### The five tiers (durability is the axis)
 

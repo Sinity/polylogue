@@ -81,12 +81,6 @@ def _referenced_blob_hashes(
     return hashes, surfaces
 
 
-def _surface_detail(surfaces: list[str]) -> str:
-    if not surfaces:
-        return "references: none"
-    return "references: " + ", ".join(sorted(dict.fromkeys(surfaces)))
-
-
 def count_orphaned_blobs_sync(
     conn: sqlite3.Connection, *, db_path: Path | str | None = None, configured_root: Path | None = None
 ) -> int:

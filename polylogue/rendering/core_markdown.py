@@ -15,7 +15,6 @@ from polylogue.rendering.core_messages import normalize_render_timestamp
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
-    from polylogue.storage.archive_views import SessionRenderProjection
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,21 +154,6 @@ def _normalize_markdown_message(
         timestamp=normalize_render_timestamp(timestamp),
         blocks=blocks,
     )
-
-
-def _group_projection_attachments(
-    projection: SessionRenderProjection,
-) -> dict[str | None, list[MarkdownAttachment]]:
-    attachments_by_message: dict[str | None, list[MarkdownAttachment]] = {}
-    for attachment in projection.attachments:
-        attachments_by_message.setdefault(attachment.message_id, []).append(
-            _normalize_markdown_attachment(
-                attachment_id=attachment.attachment_id,
-                path=attachment.path,
-                display_name=attachment.display_name,
-            )
-        )
-    return attachments_by_message
 
 
 def format_session_markdown(conv: Session) -> str:

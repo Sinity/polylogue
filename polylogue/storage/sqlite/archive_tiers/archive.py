@@ -9363,14 +9363,6 @@ def _session_cost_insight_from_archive_row(conn: sqlite3.Connection, row: sqlite
     )
 
 
-def _json_object_from_text(value: object) -> dict[str, object]:
-    try:
-        decoded = json.loads(str(value or "{}"))
-    except json.JSONDecodeError:
-        return {}
-    return decoded if isinstance(decoded, dict) else {}
-
-
 def _json_value(value: object, *, default: JSONValue) -> JSONValue:
     try:
         decoded = json.loads(str(value or json.dumps(default)))
@@ -10883,10 +10875,6 @@ def _no_action_between_predicate(previous: int, current: int, action_relation: s
         f"AND {after_previous} AND {before_current}"
         ")"
     )
-
-
-def _count_rows(conn: sqlite3.Connection, table: str) -> int:
-    return _count_scalar(conn, f"SELECT COUNT(*) FROM {table}")
 
 
 def _count_scalar(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:

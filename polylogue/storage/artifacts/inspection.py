@@ -208,19 +208,6 @@ _INSPECTION_PREFIX_BYTES = 64 * 1024  # 64 KB — enough to classify any format
 _FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
 
 
-def _inspection_prefix_from_bytes(raw_content: bytes, source_path: str | None) -> bytes:
-    """Extract a small prefix of in-memory raw content for artifact classification."""
-    if len(raw_content) <= _INSPECTION_PREFIX_BYTES:
-        return raw_content
-    normalized = (source_path or "").lower()
-    is_jsonl = normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
-    if is_jsonl:
-        newline_pos = raw_content.find(b"\n")
-        if newline_pos > 0:
-            return raw_content[: newline_pos + 1]
-    return raw_content[:_INSPECTION_PREFIX_BYTES]
-
-
 def _inspection_prefix(record: RawSessionRecord) -> bytes:
     """Extract a small prefix of raw content sufficient for classification.
 

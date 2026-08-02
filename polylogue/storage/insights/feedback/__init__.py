@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -412,11 +411,3 @@ __all__ = [
     "supports_kind",
     "upsert_correction",
 ]
-
-
-def _list_corrections_sequence_typed(
-    items: Sequence[LearningCorrection],
-) -> list[LearningCorrection]:
-    """Type-only helper used in tests to surface ``Sequence`` semantics."""
-
-    return list(items)

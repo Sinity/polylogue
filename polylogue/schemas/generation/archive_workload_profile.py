@@ -59,19 +59,6 @@ def _mix(conn: sqlite3.Connection, table: str, column: str) -> JSONDocument:
     return {"<null>" if row[0] is None else str(row[0]): int(row[1]) for row in rows}
 
 
-def _mixes(conn: sqlite3.Connection, table: str, columns: Sequence[str]) -> JSONDocument:
-    available = _columns(conn, table)
-    selected = [column for column in columns if column in available]
-    if not selected:
-        return {}
-    counters = {column: Counter[str]() for column in selected}
-    query = "SELECT " + ", ".join(f'"{column}"' for column in selected) + f' FROM "{table}"'
-    for row in conn.execute(query):
-        for index, column in enumerate(selected):
-            counters[column]["<null>" if row[index] is None else str(row[index])] += 1
-    return {column: dict(sorted(counts.items(), key=lambda item: item[0])) for column, counts in counters.items()}
-
-
 def _sketch_rows(rows: Iterable[Sequence[object]], index: int = 0) -> JSONDocument:
     sketch = DistributionSketch()
     null_count = 0
@@ -110,33 +97,6 @@ def _column_distributions(
         distribution = sketches[column].to_payload()
         distribution["null_count"] = null_counts[column]
         payload[column] = distribution
-    return payload
-
-
-def _length_distributions(
-    conn: sqlite3.Connection,
-    table: str,
-    columns: Sequence[str],
-) -> JSONDocument:
-    available = _columns(conn, table)
-    selected = [column for column in columns if column in available]
-    if not selected:
-        return {}
-    sketches = {column: DistributionSketch() for column in selected}
-    null_counts = dict.fromkeys(selected, 0)
-    expressions = ", ".join(f'length(CAST("{column}" AS BLOB))' for column in selected)
-    for row in conn.execute(f'SELECT {expressions} FROM "{table}"'):
-        for index, column in enumerate(selected):
-            value = row[index]
-            if value is None:
-                null_counts[column] += 1
-            elif isinstance(value, int | float) and not isinstance(value, bool):
-                sketches[column].observe(value)
-    payload: JSONDocument = {}
-    for column in selected:
-        distribution = sketches[column].to_payload()
-        distribution["null_count"] = null_counts[column]
-        payload[f"{column}_bytes"] = distribution
     return payload
 
 

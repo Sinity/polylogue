@@ -6,8 +6,6 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from typing import TypeVar
 
-from pydantic import BaseModel
-
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.runtime import (
     SessionLatencyProfileRecord,
@@ -395,18 +393,6 @@ def session_latency_profile_insert_values(record: SessionLatencyProfileRecord) -
         record.tool_call_count_by_category_json,
         record.evidence_payload_json,
         record.search_text,
-    )
-
-
-def _fallback_timeline_payload_json(
-    evidence_payload: BaseModel,
-    inference_payload: BaseModel,
-) -> str | None:
-    return _json_or_none(
-        {
-            **evidence_payload.model_dump(mode="json"),
-            **inference_payload.model_dump(mode="json"),
-        }
     )
 
 

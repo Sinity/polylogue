@@ -240,29 +240,6 @@ def _dropped_block_gap(
     )
 
 
-def _block_fidelity_gap(
-    session_id: str,
-    message_index: int,
-    block_position: int,
-    block: object,
-) -> FidelityGapInput | None:
-    unsupported: list[str] = []
-    metadata = _attr(block, "metadata", default={})
-    if isinstance(metadata, Mapping):
-        represented_metadata = {"language", "semantic_type"}
-        unsupported.extend(f"metadata.{key}" for key in sorted(set(map(str, metadata)) - represented_metadata))
-    if _items(_attr(block, "web_constructs", default=())):
-        unsupported.append("web_constructs")
-    if not unsupported:
-        return None
-    return FidelityGapInput(
-        scope="block",
-        record_id=f"{session_id}:message[{message_index}]:block[{block_position}]",
-        gap_kind="unsupported_normalized_fields",
-        detail="material-protocol v1 has no field for: " + ", ".join(unsupported),
-    )
-
-
 def _parsed_block_input(position: int, block: ParsedContentBlock) -> BlockInput:
     metadata = block.metadata or {}
     semantic_type = metadata.get("semantic_type")
