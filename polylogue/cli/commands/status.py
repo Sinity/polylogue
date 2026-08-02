@@ -498,6 +498,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "compiles a context image and records its delivery receipt through user.db",
     ),
     "get_file_edits": ("archive_routed", "index", "reads materialized file-edit evidence rows from index.db"),
+    "get_web_content_constructs": (
+        "archive_routed",
+        "index",
+        "reads materialized web-export construct rows (search/canvas/image/...) from index.db",
+    ),
     "get_hook_event_summary_for_session": (
         "archive_routed",
         "source",

@@ -31,6 +31,7 @@ from polylogue.storage.runtime import (
     SessionCommitRecord,
     SessionRecord,
     SessionRefRecord,
+    WebContentConstructRecord,
 )
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
@@ -168,6 +169,34 @@ def _row_to_session_ref(row: sqlite3.Row) -> SessionRefRecord:
     )
 
 
+def _row_to_web_content_construct(row: sqlite3.Row) -> WebContentConstructRecord:
+    return WebContentConstructRecord(
+        construct_id=row["construct_id"],
+        session_id=SessionId(row["session_id"]),
+        message_id=MessageId(row["message_id"]),
+        block_id=row["block_id"],
+        position=int(row["position"]),
+        provider=row["provider"],
+        construct_type=row["construct_type"],
+        provider_key=_row_text(row, "provider_key"),
+        title=_row_text(row, "title"),
+        url=_row_text(row, "url"),
+        text=_row_text(row, "text"),
+        source_id=_row_text(row, "source_id"),
+        group_id=_row_text(row, "group_id"),
+        group_title=_row_text(row, "group_title"),
+        query=_row_text(row, "query"),
+        asset_pointer=_row_text(row, "asset_pointer"),
+        mime_type=_row_text(row, "mime_type"),
+        status=_row_text(row, "status"),
+        task_id=_row_text(row, "task_id"),
+        task_type=_row_text(row, "task_type"),
+        rank=_row_int(row, "rank"),
+        start_index=_row_int(row, "start_index"),
+        end_index=_row_int(row, "end_index"),
+    )
+
+
 def _row_to_session_commit(row: sqlite3.Row) -> SessionCommitRecord:
     return SessionCommitRecord(
         session_id=SessionId(row["session_id"]),
@@ -284,4 +313,5 @@ __all__ = [
     "_row_to_session_ref",
     "_row_to_message",
     "_row_to_raw_session",
+    "_row_to_web_content_construct",
 ]

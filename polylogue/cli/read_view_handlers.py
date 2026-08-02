@@ -48,6 +48,7 @@ from polylogue.cli.read_views.messages import (
 from polylogue.cli.read_views.neighbors import build_neighbor_options, run_read_neighbors
 from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
+from polylogue.cli.read_views.web_content_constructs import run_read_web_content_constructs
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
@@ -116,6 +117,12 @@ READ_VIEW_HANDLERS: dict[str, ReadViewHandler] = {
         "agent-policies",
         "required",
         run_read_agent_policies,
+        default_format="json",
+    ),
+    "web-content": ReadViewHandler(
+        "web-content",
+        "required",
+        run_read_web_content_constructs,
         default_format="json",
     ),
     "context": ReadViewHandler(

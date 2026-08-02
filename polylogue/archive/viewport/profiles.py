@@ -214,6 +214,34 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "session with no recorded agent-policy facts"),
     ),
     SessionViewProfile(
+        view_id="web-content",
+        label="Web Content",
+        owner="polylogue.cli.read_views.web_content_constructs.run_read_web_content_constructs",
+        purpose=(
+            "Typed web-export constructs projected from ChatGPT/Claude web payloads: search queries/results, "
+            "canvas documents, content references, image results, async tasks, selected sources, token budgets, "
+            "voice notes -- 155k+ rows written every ingest with no prior reader (polylogue-kktg)."
+        ),
+        input_scope="single session id",
+        included_kinds=(
+            "search query",
+            "search result",
+            "canvas",
+            "content reference",
+            "image result",
+            "async task",
+            "selected source",
+            "token budget",
+            "voice note",
+        ),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured web-construct payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="web content construct list payload",
+        degraded_states=("missing session", "session with no captured web content constructs"),
+    ),
+    SessionViewProfile(
         view_id="context",
         label="Context",
         owner="polylogue.context.preamble.compose_context_preamble",

@@ -5598,6 +5598,63 @@ class PolylogueArchiveMixin:
             for edit in edits
         ]
 
+    async def get_web_content_constructs(
+        self,
+        session_id: str,
+        *,
+        construct_type: str | None = None,
+    ) -> list[dict[str, object]] | None:
+        """Return typed web-export constructs (search results, canvas, ...) for one session.
+
+        polylogue-kktg: ``web_content_constructs`` holds 155k+ rows written
+        every ingest from the ChatGPT/Claude parsers (search queries/
+        results, canvas documents, content references, image results, async
+        tasks, selected sources, token budgets, voice notes) but before this
+        reader had no production reader at all -- every existing SELECT
+        against it exists only to DELETE orphans or as a demo smoke-probe
+        COUNT(*). This is the read surface.
+
+        ``construct_type`` optionally narrows to one
+        ``core.enums.WebConstructType`` value (e.g. ``"search_result"``).
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning the session exists but has no captured web
+        constructs).
+        """
+        resolved = await self.repository.resolve_id(session_id)
+        resolved_id = str(resolved) if resolved is not None else session_id
+        session = await self.repository.get(resolved_id)
+        if session is None:
+            return None
+        constructs = await self.repository.get_web_content_constructs(resolved_id, construct_type=construct_type)
+        return [
+            {
+                "construct_id": construct.construct_id,
+                "message_id": str(construct.message_id),
+                "block_id": construct.block_id,
+                "position": construct.position,
+                "provider": construct.provider,
+                "construct_type": construct.construct_type,
+                "provider_key": construct.provider_key,
+                "title": construct.title,
+                "url": construct.url,
+                "text": construct.text,
+                "source_id": construct.source_id,
+                "group_id": construct.group_id,
+                "group_title": construct.group_title,
+                "query": construct.query,
+                "asset_pointer": construct.asset_pointer,
+                "mime_type": construct.mime_type,
+                "status": construct.status,
+                "task_id": construct.task_id,
+                "task_type": construct.task_type,
+                "rank": construct.rank,
+                "start_index": construct.start_index,
+                "end_index": construct.end_index,
+            }
+            for construct in constructs
+        ]
+
     async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:
         """Return sandbox/approval/network policy facts recorded for one session.
 

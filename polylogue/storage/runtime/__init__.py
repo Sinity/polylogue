@@ -38,6 +38,7 @@ from polylogue.storage.runtime.archive.records import (
     SessionEventRecord,
     SessionRecord,
     SessionRefRecord,
+    WebContentConstructRecord,
 )
 from polylogue.storage.runtime.raw.records import (
     ArtifactObservationRecord,
@@ -81,6 +82,7 @@ __all__ = [
     "SessionRecord",
     "SessionRefRecord",
     "SessionCommitRecord",
+    "WebContentConstructRecord",
     "DaySessionSummaryRecord",
     "LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT",
     "LINEAGE_TRUNCATION_DEPTH_LIMIT",

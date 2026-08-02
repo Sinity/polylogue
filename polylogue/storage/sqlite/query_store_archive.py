@@ -20,6 +20,7 @@ from polylogue.storage.runtime import (
     SessionEventRecord,
     SessionRecord,
     SessionRefRecord,
+    WebContentConstructRecord,
 )
 from polylogue.storage.search.models import SessionSearchEvidenceRow, SessionSearchResult
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
@@ -34,6 +35,7 @@ from polylogue.storage.sqlite.queries import session_refs as session_refs_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.queries import tool_usage as tool_usage_q
+from polylogue.storage.sqlite.queries import web_content_constructs as web_content_constructs_q
 from polylogue.storage.sqlite.queries.messages import MaterialOriginFilter, MessageTypeName
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
@@ -303,6 +305,24 @@ class SQLiteQueryStoreArchiveMixin:
     async def get_session_commits(self, session_id: str) -> list[SessionCommitRecord]:
         async with self._connection_factory() as conn:
             return await session_commits_q.get_session_commits(conn, session_id)
+
+    async def get_web_content_constructs(
+        self,
+        session_id: str,
+        *,
+        construct_type: str | None = None,
+    ) -> list[WebContentConstructRecord]:
+        async with self._connection_factory() as conn:
+            return await web_content_constructs_q.get_web_content_constructs_for_session(
+                conn, session_id, construct_type=construct_type
+            )
+
+    async def get_web_content_constructs_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[WebContentConstructRecord]]:
+        async with self._connection_factory() as conn:
+            return await web_content_constructs_q.get_web_content_constructs_for_session_batch(conn, session_ids)
 
     async def iter_messages(
         self,

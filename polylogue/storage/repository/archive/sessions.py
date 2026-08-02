@@ -25,6 +25,7 @@ from polylogue.storage.runtime import (
     SessionCommitRecord,
     SessionRecord,
     SessionRefRecord,
+    WebContentConstructRecord,
 )
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 
@@ -166,6 +167,30 @@ class RepositoryArchiveSessionMixin:
     async def get_session_commits(self, session_id: str) -> list[SessionCommitRecord]:
         """Read checkout-HEAD commit evidence (polylogue-cijx.3) for a session."""
         return await self.queries.get_session_commits(session_id)
+
+    async def get_web_content_constructs(
+        self,
+        session_id: str,
+        *,
+        construct_type: str | None = None,
+    ) -> list[WebContentConstructRecord]:
+        """Read typed web-export constructs (polylogue-kktg) for a session.
+
+        Search queries/results, canvas documents, content references, image
+        results, async tasks, selected sources, token budgets, and voice
+        notes projected from ChatGPT/Claude web payloads
+        (``core.enums.WebConstructType``) -- written every ingest into the
+        dedicated ``web_content_constructs`` table but, before this reader,
+        reachable only through an orphan-integrity DELETE sweep or a demo
+        smoke-probe COUNT(*).
+        """
+        return await self.queries.get_web_content_constructs(session_id, construct_type=construct_type)
+
+    async def get_web_content_constructs_batch(
+        self,
+        session_ids: list[str],
+    ) -> dict[str, list[WebContentConstructRecord]]:
+        return await self.queries.get_web_content_constructs_batch(session_ids)
 
     async def get_messages_paginated(
         self,
