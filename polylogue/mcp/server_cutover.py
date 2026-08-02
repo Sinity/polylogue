@@ -32,6 +32,18 @@ if TYPE_CHECKING:
     from polylogue.mcp.server_support import ServerCallbacks
 
 
+# The MCP judge tool has no authenticated caller identity (37t.11): every
+# judgment it records is attributed to this fixed, non-"user:"-prefixed actor
+# rather than a caller-supplied one. ``author_kind`` is hardcoded to "user"
+# by the assertion write path regardless of ``actor_ref``
+# (``_judge_assertion_candidate_in_transaction``/``_promote_candidate_assertion``),
+# so an accepted ``actor_ref="user:..."`` from an untrusted caller would
+# satisfy ``derive_assertion_context_trust``'s
+# ``author_kind == "user" and author_ref.startswith("user:")`` provenance
+# check and let that caller forge an operator-trusted assertion (polylogue-x2y9).
+_MCP_JUDGE_ACTOR_REF = "agent:mcp-unauthenticated-caller"
+
+
 @dataclass(frozen=True)
 class _EmbeddingStatusEnv:
     """Adapts ``ServerCallbacks`` config access to ``embedding_status_payload``'s ``_HasConfig`` protocol."""
@@ -2197,7 +2209,6 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             decision: Literal["accept", "reject", "defer", "supersede"] | None = None,
             reason: str | None = None,
             inject: bool = False,
-            actor_ref: str = "user:local",
             replacement_kind: str | None = None,
             replacement_body_text: str | None = None,
             replacement_value: object | None = None,
@@ -2206,6 +2217,15 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
 
             Pass ``items`` for bulk judgment (independently reported partial
             success), or ``candidate_ref``+``decision`` for a single one.
+
+            The recorded actor is always ``_MCP_JUDGE_ACTOR_REF`` -- this
+            tool has no authenticated caller identity (37t.11), so it does
+            not accept a caller-supplied ``actor_ref``. Accepting one would
+            let any MCP caller forge a ``user:``-prefixed author, which is
+            exactly the provenance
+            :func:`polylogue.core.assertions.derive_assertion_context_trust`
+            uses to elevate assertion prose to operator-instruction trust
+            (polylogue-x2y9).
             """
 
             async def _judge() -> str:
@@ -2231,7 +2251,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                             decision=item_decision,
                             reason=item_reason if isinstance(item_reason, str) else None,
                             inject=item_inject,
-                            actor_ref=actor_ref,
+                            actor_ref=_MCP_JUDGE_ACTOR_REF,
                             replacement_kind=item_replacement_kind if isinstance(item_replacement_kind, str) else None,
                             replacement_body_text=item_replacement_body_text
                             if isinstance(item_replacement_body_text, str)
@@ -2250,7 +2270,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                             decision=decision,
                             reason=reason,
                             inject=inject,
-                            actor_ref=actor_ref,
+                            actor_ref=_MCP_JUDGE_ACTOR_REF,
                             replacement_kind=replacement_kind,
                             replacement_body_text=replacement_body_text,
                             replacement_value=replacement_value,

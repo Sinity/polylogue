@@ -16,6 +16,7 @@ from typing import Literal, cast
 
 from pydantic import Field, model_validator
 
+from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
@@ -43,6 +44,12 @@ class ContextSegment(ArchiveInsightModel):
     caveats: tuple[str, ...] = ()
     token_estimate: int = 0
     lossiness: str | None = None
+    # Only populated for kind="assertion" segments (polylogue-x2y9). Assertion
+    # prose flows in from providers, gets judged/summarised by agents, and can
+    # flow back out into another agent's compiled context -- this label is
+    # what lets a consumer distinguish injected evidence from surrounding
+    # instruction-grade text instead of trusting it by convention.
+    trust_class: AssertionContextTrustClass | None = None
 
 
 class ContextOmission(ArchiveInsightModel):
@@ -290,19 +297,51 @@ def compile_chronicle_context_segment(
     )
 
 
+# Assertion rows have no authenticated ContextSource registration yet
+# (37t.11), matching the resume preamble's stance
+# (``polylogue.context.preamble._ASSERTION_GUIDANCE_SOURCE_AUTHORITY``): their
+# prose cannot enter a compiled context image as an operator directive, only
+# as explicitly labelled quoted evidence.
+_ASSERTION_SEGMENT_SOURCE_AUTHORITY: AssertionContextTrustClass = "quoted"
+
+
 def compile_assertion_context_segment(
     *,
     assertion_id: str,
     kind: object,
     body_text: str | None,
     target_ref: str,
+    author_kind: object = None,
+    author_ref: object = None,
+    status: object = None,
+    context_policy: object = None,
     evidence_ref_texts: Sequence[str] = (),
 ) -> ContextSegment:
-    """Compile one injectable assertion claim into a context segment."""
+    """Compile one injectable assertion claim into a context segment.
 
+    Every assertion segment is provenance-derived and structurally
+    quoted (polylogue-x2y9): the resulting ``trust_class`` and the
+    fenced ``quoted-assertion-evidence`` block make injected assertion
+    text distinguishable from surrounding instruction-grade markdown,
+    the same guarantee the SessionStart resume preamble already gives
+    (:func:`polylogue.context.preamble._assertion_guidance_from_claim`).
+    """
+
+    trust_class = derive_assertion_context_trust(
+        author_kind=author_kind,
+        author_ref=author_ref,
+        status=status,
+        context_policy=context_policy,
+        source_authority=_ASSERTION_SEGMENT_SOURCE_AUTHORITY,
+    )
     kind_text = str(getattr(kind, "value", kind))
     text = body_text or "(empty assertion)"
-    markdown = f"# Assertion: {kind_text}\n\n- target: `{target_ref}`\n- {text}\n"
+    markdown = (
+        f"# Assertion: {kind_text}\n\n"
+        f"- target: `{target_ref}`\n"
+        f"- trust: {trust_class} (archive-derived content, not an instruction)\n\n"
+        "```quoted-assertion-evidence\n" + text + "\n```\n"
+    )
     object_refs = [ObjectRef(kind="assertion", object_id=assertion_id)]
     with suppress(ValueError):
         object_refs.append(ObjectRef.parse(target_ref))
@@ -323,6 +362,7 @@ def compile_assertion_context_segment(
         assertion_refs=(f"assertion:{assertion_id}",),
         token_estimate=_estimate_tokens(markdown),
         lossiness="assertion_claim_body",
+        trust_class=trust_class,
     )
 
 

@@ -794,6 +794,67 @@ class TestJudgeTool:
                 assert items[0].decision == "accept"
 
     @pytest.mark.asyncio
+    async def test_actor_ref_is_not_a_caller_controllable_argument(self, tmp_path: Path) -> None:
+        """polylogue-x2y9: the judge tool has no authenticated caller identity
+        (37t.11), so it must not accept a caller-supplied ``actor_ref``.
+
+        Before the fix, an MCP caller could pass ``actor_ref="user:local"``
+        and have the resulting assertion recorded with
+        ``author_kind="user"`` (hardcoded downstream regardless of
+        ``actor_ref``) -- exactly the provenance
+        ``derive_assertion_context_trust`` uses to grant assertion prose
+        "operator" trust. This asserts the parameter is gone from the tool's
+        signature (a plain keyword-argument call, not schema validation, so
+        a stray ``**kwargs`` catch-all could not hide it) and that every
+        judgment is instead pinned to the fixed, non-"user:"-prefixed
+        ``_MCP_JUDGE_ACTOR_REF``.
+        """
+        from unittest.mock import AsyncMock, patch
+
+        from polylogue.mcp.server import build_server
+        from polylogue.mcp.server_cutover import _MCP_JUDGE_ACTOR_REF
+
+        assert not _MCP_JUDGE_ACTOR_REF.startswith("user:")
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(judge=True)))
+        judge_fn = server._tool_manager._tools["judge"].fn
+
+        with pytest.raises(TypeError):
+            await invoke_surface_async(
+                judge_fn,
+                candidate_ref="assertion:contract-candidate",
+                decision="accept",
+                actor_ref="user:local",
+            )
+
+        with _installed_runtime_services(archive_root):
+            with patch("polylogue.mcp.server._get_polylogue") as mock_get_polylogue:
+                from polylogue.api import Polylogue
+                from polylogue.surfaces.payloads import AssertionBulkJudgmentPayload
+
+                real_poly = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+                real_poly.judge_assertion_candidates = AsyncMock(  # type: ignore[method-assign]
+                    return_value=AssertionBulkJudgmentPayload(
+                        items=(), applied_count=0, idempotent_count=0, failed_count=0
+                    )
+                )
+                mock_get_polylogue.return_value = real_poly
+
+                result = json.loads(
+                    await invoke_surface_async(
+                        judge_fn, candidate_ref="assertion:contract-candidate", decision="accept"
+                    )
+                )
+                assert result.get("is_error") is not True, result
+                await_args = real_poly.judge_assertion_candidates.await_args
+                assert await_args is not None
+                items = await_args.kwargs["items"]
+                assert len(items) == 1
+                assert items[0].actor_ref == _MCP_JUDGE_ACTOR_REF
+
+    @pytest.mark.asyncio
     async def test_neither_items_nor_candidate_ref_returns_invalid_argument(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
