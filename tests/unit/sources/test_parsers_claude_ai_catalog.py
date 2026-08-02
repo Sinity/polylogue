@@ -382,6 +382,88 @@ def test_claude_ai_no_provider_title_falls_back_to_id_as_unknown() -> None:
     assert session.title_confidence is None
 
 
+def test_claude_ai_content_free_chat_message_stubs_emit_zero_messages() -> None:
+    """polylogue-p3b2 AC3 full-sweep regression: a claude-ai-export session
+    can carry ``chat_messages`` entries that are structurally present but
+    carry no material (``text`` empty string, ``content`` empty list, no
+    ``attachments``/``files``) -- an abandoned/aborted turn the Claude.ai web
+    client itself wrote empty, not something Polylogue's materializer drops.
+
+    Reproduces the exact shape of the live archive's
+    ``claude-ai-export:44810a60-201b-4ea9-9db5-a46b21302bbc`` (4
+    ``chat_messages``, ``index.db`` ``message_count=0``): the 2026-08-01
+    15-session sample flagged this as a "real content drop" by checking only
+    ``len(chat_messages)``, without checking whether those entries actually
+    hold text/content/attachments. The 2026-08-02 full 47-session sweep found
+    this was the only session with any ``chat_messages`` entries at all
+    among the 47 zero-``message_count`` claude-ai-export sessions, and none
+    of its 4 entries carry recoverable content -- ``has_material``
+    (``sources/parsers/claude/common.py``) correctly excludes all of them.
+    No materialize-time bug exists; this pins that behavior so a future
+    change to ``has_material``/``normalize_chat_messages`` can't silently
+    start (or stop) treating empty stubs as real messages without a test
+    noticing.
+    """
+    payload = {
+        "uuid": "44810a60-201b-4ea9-9db5-a46b21302bbc",
+        "name": "",
+        "summary": "",
+        "created_at": "2026-06-24T01:16:00.552451Z",
+        "updated_at": "2026-06-26T02:24:08.351083Z",
+        "account": {"uuid": "e1f27e58-33e5-4a5d-836b-40a2b78055aa"},
+        "chat_messages": [
+            {
+                "uuid": "019ef732-c1cd-7e98-bdd0-2a4fd8cda15f",
+                "text": "",
+                "content": [],
+                "sender": "human",
+                "created_at": "2026-06-24T01:16:00.969259Z",
+                "updated_at": "2026-06-24T01:16:00.969259Z",
+                "attachments": [],
+                "files": [],
+                "parent_message_uuid": "00000000-0000-4000-8000-000000000000",
+            },
+            {
+                "uuid": "019ef732-c1cd-718e-8a6c-a91e9bf1727a",
+                "text": "",
+                "content": [],
+                "sender": "assistant",
+                "created_at": "2026-06-24T01:16:16.055629Z",
+                "updated_at": "2026-06-24T01:16:16.055629Z",
+                "attachments": [],
+                "files": [],
+                "parent_message_uuid": "019ef732-c1cd-7e98-bdd0-2a4fd8cda15f",
+            },
+            {
+                "uuid": "019ef734-8471-7c08-813b-97d4253a0799",
+                "text": "",
+                "content": [],
+                "sender": "human",
+                "created_at": "2026-06-24T01:17:55.421756Z",
+                "updated_at": "2026-06-24T01:17:55.421756Z",
+                "attachments": [],
+                "files": [],
+                "parent_message_uuid": "019ef732-c1cd-718e-8a6c-a91e9bf1727a",
+            },
+            {
+                "uuid": "019ef734-8471-7f50-9609-5fe7250a4b26",
+                "text": "",
+                "content": [],
+                "sender": "assistant",
+                "created_at": "2026-06-24T01:18:30.537122Z",
+                "updated_at": "2026-06-24T01:18:30.537122Z",
+                "attachments": [],
+                "files": [],
+                "parent_message_uuid": "019ef734-8471-7c08-813b-97d4253a0799",
+            },
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    assert session.messages == []
+
+
 # ---------------------------------------------------------------------------
 # Catalog
 # ---------------------------------------------------------------------------
