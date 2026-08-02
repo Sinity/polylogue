@@ -88,8 +88,26 @@ def _render_status(status: HookHarnessStatus, *, coverage: bool) -> list[str]:
 
 
 @click.group("hooks")
-def hooks_command() -> None:
-    """Install and monitor Claude Code/Codex capture hooks."""
+@click.pass_context
+def hooks_command(ctx: click.Context) -> None:
+    """Install and monitor Claude Code/Codex capture hooks.
+
+    Prints the resolved archive root and its provenance (env override /
+    config file / default) before dispatching to any subcommand -- same
+    banner ``ops maintenance`` prints (``_shared.print_archive_root_provenance``,
+    polylogue-l1qg). ``hooks install``/``status`` resolve the hook sidecar
+    dir from the archive root too (``polylogue.paths.hooks_sidecar_dir``), so
+    a stray ``POLYLOGUE_ARCHIVE_ROOT`` left over from a devshell/demo session
+    silently pointed installs and status checks at the wrong sidecar spool
+    with no warning -- the exact silent-redirect hazard l1qg fixed for
+    ``ops maintenance``, reproduced live for ``hooks`` on 2026-08-02.
+    """
+    from polylogue.cli.commands.maintenance._shared import print_archive_root_provenance
+    from polylogue.cli.shared.types import AppEnv
+
+    env = ctx.obj
+    if isinstance(env, AppEnv):
+        print_archive_root_provenance(env)
 
 
 @hooks_command.command("install")

@@ -74,7 +74,7 @@ def test_install_recommended_is_idempotent_and_preserves_unrelated_hooks(isolate
         catch_exceptions=False,
     )
     assert first.exit_code == 0, first.output
-    first_payload = json.loads(first.output)
+    first_payload = json.loads(first.stdout)
     assert first_payload["changed"] is True
     assert first_payload["written"] is True
 
@@ -94,7 +94,7 @@ def test_install_recommended_is_idempotent_and_preserves_unrelated_hooks(isolate
         catch_exceptions=False,
     )
     assert second.exit_code == 0, second.output
-    second_payload = json.loads(second.output)
+    second_payload = json.loads(second.stdout)
     assert second_payload["changed"] is False
     assert second_payload["written"] is False
     assert target.read_bytes() == before_second
@@ -158,7 +158,7 @@ def test_install_dry_run_does_not_create_settings(isolated_hook_home: Path) -> N
         ["--plain", "hooks", "install", "--harness", "claude-code", "--dry-run", "--json"],
         catch_exceptions=False,
     )
-    payload = json.loads(result.output)
+    payload = json.loads(result.stdout)
     assert result.exit_code == 0
     assert payload["changed"] is True
     assert payload["written"] is False
@@ -256,7 +256,7 @@ def test_status_reports_wired_vs_recommended(isolated_hook_home: Path) -> None:
         ["--plain", "hooks", "status", "--harness", "claude-code", "--json"],
         catch_exceptions=False,
     )
-    payload = json.loads(status.output)["harnesses"][0]
+    payload = json.loads(status.stdout)["harnesses"][0]
     assert payload["wired_events"] == ["SessionStart"]
     assert payload["missing_recommended_events"] == [
         "UserPromptSubmit",
