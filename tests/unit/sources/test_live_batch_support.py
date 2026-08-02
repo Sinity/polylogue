@@ -2069,6 +2069,89 @@ def test_live_append_chain_survives_post_ingest_compaction(
     assert cursor_record.byte_offset == len(payload) + sum(len(chunk) for chunk in append_chunks)
 
 
+def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_path: Path) -> None:
+    """polylogue-ds4b4 item 1: the common append case must prove itself at
+    capture time, never deferring to the batch ``RawAuthorityReconciler``.
+
+    ``append_ingest.py``'s ``_ingest_append_plans_archive`` already resolves
+    the byte-contiguous predecessor via ``raw_append_revision_parent`` and,
+    once found, immediately classifies+applies the revision in the SAME
+    ingest call (``archive.classify_raw_revision_cohort`` /
+    ``apply_raw_revision_replay``) -- there is no code path where a normal,
+    single-predecessor append is left ``quarantined`` for a later async pass
+    to pick up. This test locks that invariant in: after one full capture
+    followed by one ordinary append, (a) the append's own raw row is
+    ``revision_authority='byte_proven'`` immediately, (b) the append's
+    content is already visible in ``index.db`` (``sessions``/``messages``)
+    before any convergence/reconciler pass has run, and (c) the heavier,
+    batch-oriented ``raw_authority_censuses`` bookkeeping table (owned by
+    ``RawAuthorityReconciler``, not this synchronous per-key classifier) has
+    zero rows -- proving the reconciler was never invoked for this raw.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "capture-proof.jsonl"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"capture-proof","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    path.write_bytes(baseline)
+    index_db = tmp_path / "index.db"
+    source_db = tmp_path / "source.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    baseline_result = asyncio.run(processor.ingest_files([path]))
+    assert baseline_result.succeeded_file_count == 1
+
+    append_chunk = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    with path.open("ab") as handle:
+        handle.write(append_chunk)
+    append_result = asyncio.run(processor.ingest_files([path]))
+
+    assert append_result.append_file_count == 1
+    assert append_result.succeeded_file_count == 1
+    assert append_result.failed_file_count == 0
+
+    with sqlite3.connect(source_db) as conn:
+        append_row = conn.execute(
+            "SELECT revision_kind, revision_authority, parsed_at_ms, parse_error "
+            "FROM raw_sessions WHERE revision_kind = 'append'"
+        ).fetchone()
+        assert append_row is not None
+        assert append_row[0] == "append"
+        # Proven synchronously, at capture time -- not left 'quarantined'
+        # for a later reconciler pass to resolve.
+        assert append_row[1] == "byte_proven"
+        assert append_row[2] is not None
+        assert append_row[3] is None
+        # The heavy batch census/plan/blocker ledger belongs to the
+        # separate, async RawAuthorityReconciler (daemon convergence /
+        # offline backfill). A normal single-predecessor append must never
+        # touch it.
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM raw_authority_blockers").fetchone()[0] == 0
+
+    with sqlite3.connect(index_db) as conn:
+        assert {str(row[0]) for row in conn.execute("SELECT native_id FROM messages")} == {
+            "message-0",
+            "message-1",
+        }
+
+
 def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

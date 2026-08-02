@@ -1796,6 +1796,20 @@ def build_verify_steps(
                 # fixture was regenerated to match a `healed_tiers` field the
                 # demo receipts code had already grown).
                 ("lab policy demo-tour-freshness", _devtools_cmd("lab policy demo-tour-freshness")),
+                # Static, archive-independent, sub-second: forbids the exact
+                # byte-mutation-before-hashing pattern that produced
+                # polylogue-u19l's Codex append-header bug (a synthesized
+                # literal spliced onto captured bytes before they reached the
+                # content hasher, permanently defeating live-source
+                # byte-identity verification for ~59GB of raw rows).
+                ("lab policy raw-payload-hash-purity", _devtools_cmd("lab policy raw-payload-hash-purity")),
+                # Static, archive-independent, sub-second: forbids a NEW
+                # occurrence of polylogue-hith/qkuq's already-fixed
+                # attachment-id bug shape (comparison identity minted from
+                # positional/index data, unstable across export vintages
+                # that reorder entries) -- polylogue-gysk3 found the same
+                # hazard still live for provider_message_id.
+                ("lab policy position-derived-identity", _devtools_cmd("lab policy position-derived-identity")),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance
                 # (bundle_scopes/representative_paths) and scans for secrets.
