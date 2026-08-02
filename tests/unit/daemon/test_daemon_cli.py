@@ -3885,7 +3885,7 @@ def test_run_daemon_services_drains_servers_when_main_task_is_cancelled() -> Non
     assert interrupted_cleanup_calls == 1
 
 
-def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
+def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
@@ -3907,10 +3907,21 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         raise AssertionError("schema-blocked daemon must not start DB background work")
 
     lifecycle_tick_started = False
+    health_check_started = False
 
     async def lifecycle_heartbeat() -> None:
         nonlocal lifecycle_tick_started
         lifecycle_tick_started = True
+        await asyncio.Event().wait()
+
+    async def fake_health_check() -> None:
+        # polylogue-7eo7 #4: FAST-tier health checks are read-only and stay
+        # meaningful precisely when the watcher is schema-blocked -- unlike
+        # the other periodic loops here, this one MUST start even while
+        # blocked, or the daemon goes completely blind for the whole
+        # blocked duration.
+        nonlocal health_check_started
+        health_check_started = True
         await asyncio.Event().wait()
 
     server = FakeServer()
@@ -3927,7 +3938,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
         patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lifecycle_heartbeat),
         patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
-        patch.object(daemon_cli, "_periodic_health_check", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_health_check", fake_health_check),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_drive_source_catchup", side_effect=fail_background_work),
@@ -3950,6 +3961,7 @@ def test_run_daemon_services_schema_block_skips_db_background_work() -> None:
     assert server.shutdown_called is False
     assert server.close_called is True
     assert lifecycle_tick_started is True
+    assert health_check_started is True
 
 
 def test_periodic_schema_preflight_recheck_exits_on_recovery(

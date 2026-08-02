@@ -37,7 +37,15 @@ from polylogue.storage.sqlite.connection_profile import open_daemon_connection, 
 logger = get_logger(__name__)
 
 DAEMON_HEARTBEAT_INTERVAL_SECONDS = 15 * 60
+# "vanished" (no stop/atexit marker, heartbeat clearly dead) at 2x the
+# interval -- unchanged, pre-existing floor.
 DAEMON_HEARTBEAT_STALE_AFTER_SECONDS = DAEMON_HEARTBEAT_INTERVAL_SECONDS * 2
+# "stale" (missed at least one scheduled beat, worth a warning) at 1.5x the
+# interval (polylogue-7eo7 #2): a heartbeat sitting between 1x and 2x the
+# interval used to report as flat "running" with no signal whatsoever --
+# the observed case was 1369.8s against a 900s interval, comfortably past
+# one missed beat but short of the 1800s "vanished" floor.
+DAEMON_HEARTBEAT_STALE_WARN_SECONDS = int(DAEMON_HEARTBEAT_INTERVAL_SECONDS * 1.5)
 _SIGNAL_WRITE_TIMEOUT_SECONDS = 0.5
 
 _last_heartbeat_monotonic: float | None = None
@@ -208,15 +216,19 @@ def lifecycle_status(*, now_ms: int | None = None) -> dict[str, object]:
     age_s = max(0.0, (current_ms - row.last_heartbeat_at_ms) / 1000)
     if row.stopped_at_ms is not None:
         state = "stopped"
-    elif age_s <= DAEMON_HEARTBEAT_STALE_AFTER_SECONDS:
-        state = "fresh"
-    else:
+    elif age_s > DAEMON_HEARTBEAT_STALE_AFTER_SECONDS:
         # No stop/atexit marker plus a stale heartbeat is the durable trace
         # of a hard kill or vanished process.
         state = "vanished"
+    elif age_s > DAEMON_HEARTBEAT_STALE_WARN_SECONDS:
+        # Missed at least one scheduled beat but short of the "vanished"
+        # floor -- still running, worth a staleness signal (polylogue-7eo7 #2).
+        state = "stale"
+    else:
+        state = "fresh"
     return {
         "state": state,
-        "running": state == "fresh",
+        "running": state in ("fresh", "stale"),
         "heartbeat_age_s": round(age_s, 3),
         "run_id": row.run_id,
         "started_at_ms": row.started_at_ms,
@@ -276,6 +288,7 @@ def _atexit_sentinel() -> None:
 __all__ = [
     "DAEMON_HEARTBEAT_INTERVAL_SECONDS",
     "DAEMON_HEARTBEAT_STALE_AFTER_SECONDS",
+    "DAEMON_HEARTBEAT_STALE_WARN_SECONDS",
     "DaemonLifecycle",
     "install_signal_handlers",
     "lifecycle_status",

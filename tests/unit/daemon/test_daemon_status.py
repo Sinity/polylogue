@@ -13,7 +13,7 @@ from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
 from polylogue.daemon.fts_status import FTSReadiness
-from polylogue.daemon.health import DaemonHealth
+from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.status import (
     _insight_freshness_info,
     browser_capture_status_payload,
@@ -533,6 +533,90 @@ def test_daemon_status_check_health_failure_reports_error_not_ok(
     assert alert.severity == "error"
     assert "health backend unavailable" in alert.message
     assert "check_health() failed" in caplog.text
+
+
+def _health_payload(tmp_path: Path, health: DaemonHealth) -> JSONDocument:
+    db = tmp_path / "index.db"
+    fresh = {"state": "fresh", "running": True, "heartbeat_age_s": 1.0}
+    with (
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch("polylogue.daemon.status.check_health", return_value=health),
+        patch("polylogue.daemon.lifecycle.lifecycle_status", return_value=fresh),
+    ):
+        return daemon_status_payload(sources=(), include_archive_debt=False)
+
+
+def test_health_alert_count_excludes_ok_severity_checks(tmp_path: Path) -> None:
+    """polylogue-7eo7 #1: ``alert_count`` used to count every fast check run,
+    including OK ones -- a fully healthy daemon (6 OK checks, 0 problems)
+    printed "Health: ok (6 alerts)", reading as a contradiction even though
+    nothing was wrong. It must report the number of actual problems.
+    """
+    all_ok = DaemonHealth(
+        overall_status=HealthSeverity.OK,
+        checked_at="2026-07-31T00:00:00Z",
+        alerts=[
+            HealthAlert(
+                check_name=f"check_{i}",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.OK,
+                message="fine",
+                checked_at="2026-07-31T00:00:00Z",
+            )
+            for i in range(6)
+        ],
+    )
+
+    payload = _health_payload(tmp_path, all_ok)
+    health = cast(dict[str, Any], payload["health"])
+
+    assert health["overall_status"] == "ok"
+    assert health["alert_count"] == 0
+    assert health["checks_run"] == 6
+
+    lines = format_daemon_status_lines(payload)
+    assert "Health: ok (0 alerts)" in lines
+
+
+def test_health_alert_count_reflects_a_real_problem_not_ok(tmp_path: Path) -> None:
+    """A single non-OK alert among otherwise-OK checks must show up in both
+    ``overall_status`` and the reported ``alert_count`` -- an "ok" verdict
+    must never co-occur with a nonzero problem count.
+    """
+    one_error = DaemonHealth(
+        overall_status=HealthSeverity.ERROR,
+        checked_at="2026-07-31T00:00:00Z",
+        alerts=[
+            HealthAlert(
+                check_name="daemon_liveness",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.OK,
+                message="fine",
+                checked_at="2026-07-31T00:00:00Z",
+            ),
+            HealthAlert(
+                check_name="hook_flow",
+                tier=HealthTier.FAST,
+                severity=HealthSeverity.ERROR,
+                message="claude-code: 3/5 recent session(s) have no hook events",
+                checked_at="2026-07-31T00:00:00Z",
+            ),
+        ],
+    )
+
+    payload = _health_payload(tmp_path, one_error)
+    health = cast(dict[str, Any], payload["health"])
+
+    assert health["overall_status"] == "error"
+    assert health["alert_count"] == 1
+    assert health["checks_run"] == 2
+
+    lines = format_daemon_status_lines(payload)
+    assert "Health: error (1 alerts)" in lines
+    assert not any("ok (" in line and "1" in line for line in lines if line.startswith("Health:"))
 
 
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:

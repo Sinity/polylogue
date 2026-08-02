@@ -2130,7 +2130,17 @@ async def run_daemon_services(
     # guard. It writes only the disposable ops tier and proves that the
     # surviving API/health process is still alive while archive work is
     # intentionally withheld.
-    maintenance_tasks: list[asyncio.Task[None]] = [asyncio.create_task(_periodic_lifecycle_heartbeat())]
+    # Fast-tier health checks are read-only (schema_version, disk/WAL space,
+    # hook flow, source availability, heartbeat staleness) and stay
+    # meaningful precisely when the watcher is schema-blocked -- that is
+    # exactly when an operator most needs "archive tier layout is not ready"
+    # to keep surfacing rather than going silent (polylogue-7eo7 #4: the
+    # daemon used to be blind for the entire blocked duration because this
+    # loop only started inside the `if not watcher_blocked:` branch below).
+    maintenance_tasks: list[asyncio.Task[None]] = [
+        asyncio.create_task(_periodic_lifecycle_heartbeat()),
+        asyncio.create_task(_periodic_health_check()),
+    ]
     if watcher_blocked:
         maintenance_tasks.append(asyncio.create_task(_periodic_schema_preflight_recheck()))
 
@@ -2259,7 +2269,6 @@ async def run_daemon_services(
                 _periodic_heartbeat(),
                 periodic_embedding_backlog_check(catch_up_complete=catch_up_complete_gate),
                 periodic_embedding_orphan_reconcile_check(catch_up_complete=catch_up_complete_gate),
-                _periodic_health_check(),
                 _periodic_db_optimize(),
                 _periodic_status_snapshot_refresh(),
                 periodic_judgment_automation_sweep(catch_up_complete=catch_up_complete_gate),
