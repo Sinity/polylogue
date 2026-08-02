@@ -114,6 +114,21 @@ class HistoricalRevisionDecision:
     authority: RawRevisionAuthority
     relation: Literal["baseline", "predecessor", "ambiguous", "duplicate"]
     predecessor_raw_id: str | None = None
+    #: For ``relation="duplicate"`` only: the representative raw_id whose
+    #: verdict (and, for callers that derive chain position such as
+    #: ``revision_governance.classify_raw_revision_cohort``, generation
+    #: number) this duplicate mirrors. Deliberately separate from
+    #: ``predecessor_raw_id`` -- a duplicate is NOT a chain-continuing child
+    #: of anything; it is a second copy of its representative's own bytes.
+    #: Mirroring the representative's ``predecessor_raw_id`` onto the
+    #: duplicate instead (the naive fix CodeRabbit flagged on #3574) would
+    #: make the duplicate and its representative collide on the same
+    #: predecessor-keyed dict entry in a plain-dict generation walk, risking
+    #: silently dropping the real chain-continuing representative. This
+    #: field lets a caller copy the representative's already-computed
+    #: generation in a separate post-pass instead of participating in the
+    #: predecessor-keyed walk at all (polylogue-5unky).
+    duplicate_of_raw_id: str | None = None
 
 
 def append_source_revision(predecessor_revision: str, payload_hash: str) -> str:
@@ -267,6 +282,7 @@ def _expand_duplicate_decisions(
                 authority=rep_decision.authority,
                 relation="duplicate",
                 predecessor_raw_id=None,
+                duplicate_of_raw_id=representative_id,
             )
             size_by_raw_id[member_id] = rep_sizes[representative_id]
     ordered_ids = sorted(decision_by_raw_id, key=lambda raw_id: (size_by_raw_id[raw_id], raw_id))

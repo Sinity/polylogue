@@ -409,6 +409,103 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
     }
 
 
+def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acquired_at_ms: int) -> str:
+    written_id = archive.write_raw_payload(
+        provider=Provider.CODEX,
+        payload=payload,
+        source_path="session.jsonl",
+        acquired_at_ms=acquired_at_ms,
+        raw_id=raw_id,
+    )
+    archive.bind_raw_revision(
+        written_id,
+        RawRevisionEnvelope("codex:session", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+    )
+    return written_id
+
+
+def _acquisition_generation(archive: ArchiveStore, raw_id: str) -> int:
+    row = (
+        archive._ensure_source_conn()
+        .execute("SELECT acquisition_generation FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+        .fetchone()
+    )
+    assert row is not None
+    return int(row[0])
+
+
+def test_duplicate_decision_mid_chain_gets_representative_generation_not_zero(tmp_path: Path) -> None:
+    """polylogue-5unky: a duplicate's ``acquisition_generation`` must mirror its
+    representative's real chain position, not silently fall back to 0.
+
+    ``_expand_duplicate_decisions`` gives every duplicate member
+    ``predecessor_raw_id=None``, so a predecessor-keyed dict walk that only
+    ever looks at ``predecessor_raw_id`` never reaches it. Build a 3-link
+    byte chain (base -> mid -> head) plus a byte-identical duplicate of the
+    *middle* link and prove the duplicate lands on generation 1 (mid's real
+    chain position), not the 0 fallback the bug produced.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        base = _write_full_raw(archive, raw_id="raw-000-base", payload=b"a" * 10, acquired_at_ms=1)
+        mid = _write_full_raw(archive, raw_id="raw-010-mid", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=2)
+        head = _write_full_raw(
+            archive, raw_id="raw-020-head", payload=b"a" * 10 + b"b" * 10 + b"c" * 10, acquired_at_ms=3
+        )
+        mid_duplicate = _write_full_raw(
+            archive, raw_id="raw-011-mid-dup", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=4
+        )
+
+        archive.classify_raw_revision_cohort("codex:session")
+
+        assert _acquisition_generation(archive, base) == 0
+        assert _acquisition_generation(archive, mid) == 1
+        assert _acquisition_generation(archive, head) == 2
+        assert _acquisition_generation(archive, mid_duplicate) == 1
+
+
+def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representative(tmp_path: Path) -> None:
+    """polylogue-5unky: prove the *rejected* fix's failure mode does not recur.
+
+    The naive fix CodeRabbit flagged (mirror the representative's
+    ``predecessor_raw_id`` onto its duplicate) makes the duplicate and its
+    representative compete for the same key in a plain-dict
+    ``{predecessor_raw_id: raw_id}`` generation walk -- whichever entry the
+    dict comprehension writes last wins that slot, so the duplicate can
+    silently overwrite the real chain-continuing representative and strand
+    every generation downstream of it at the fallback of 0.
+
+    This builds exactly that collision shape: a duplicate of ``mid`` that
+    sorts *after* ``mid`` in ``_expand_duplicate_decisions``'s
+    ``(size, raw_id)`` order -- the ordering the rejected fix's dict
+    comprehension would need to let this duplicate clobber ``mid``'s real
+    predecessor-keyed slot -- and proves ``head``, two links downstream of
+    ``mid``, still gets its correct real generation (2), not the fallback 0
+    a reintroduced collision would cause.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        base = _write_full_raw(archive, raw_id="raw-000-base", payload=b"a" * 10, acquired_at_ms=1)
+        mid = _write_full_raw(archive, raw_id="raw-010-mid", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=2)
+        head = _write_full_raw(
+            archive, raw_id="raw-020-head", payload=b"a" * 10 + b"b" * 10 + b"c" * 10, acquired_at_ms=3
+        )
+        # Same size and content as `mid`, and lexicographically the LATER of
+        # the two raw_ids -- the exact ordering the rejected fix needed for
+        # its dict comprehension to let this duplicate win mid's slot.
+        mid_duplicate = _write_full_raw(
+            archive, raw_id="raw-011-mid-dup", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=4
+        )
+        assert mid < mid_duplicate  # guards the ordering assumption the collision case depends on
+
+        archive.classify_raw_revision_cohort("codex:session")
+
+        assert _acquisition_generation(archive, base) == 0
+        assert _acquisition_generation(archive, mid) == 1
+        assert _acquisition_generation(archive, head) == 2
+        assert _acquisition_generation(archive, mid_duplicate) == 1
+
+
 def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 
