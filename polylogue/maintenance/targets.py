@@ -240,7 +240,7 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
         destructive=True,
-        description="Delete sessions that no longer contain any messages.",
+        description="Delete sessions with no real content (zero messages, or every message carries zero words).",
         include_in_archive_readiness=True,
         archive_readiness_unready_status=OutcomeStatus.WARNING,
     ),

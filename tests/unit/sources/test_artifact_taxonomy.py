@@ -82,6 +82,46 @@ def test_relationship_index_jsonl_conversation_field_is_metadata_not_session_str
     assert artifact.parse_as_session is False
 
 
+def test_analysis_signal_duplicate_messages_are_not_a_session() -> None:
+    """bd polylogue-21qj: ``analysis/signal/high_value_messages.jsonl`` is a
+    sinex-generated derivative index of "interesting" turns, copied verbatim
+    out of a real conversation (per-line shape: ``file``/``timestamp``/
+    ``type``/``content``, where ``type`` is the bare role word
+    ``"assistant"``/``"user"``, not a genuine record envelope). Unlike
+    ``conversation_relationships.jsonl``, its rows are real duplicated
+    conversation text rather than structurally empty pointer rows -- but it
+    must still never become its own ``claude-code-session``: the archive's
+    live copy of this file materialized 8,763 duplicate messages (827,894
+    words) that already exist verbatim in the session they were extracted
+    from. This shape has no ``_TYPE_ENVELOPE_MARKERS``/``_RECORDISH_KEYS`` hit
+    (``role`` is absent; the key is ``type``), so it falls through to the
+    ``analysis/`` directory heuristic exactly like ``problems_index.jsonl``.
+    """
+    records: list[JSONValue] = [
+        {
+            "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+            "timestamp": "2025-06-13T17:40:52.056Z",
+            "type": "assistant",
+            "content": "Let me check the unified collector implementation for more context:",
+        },
+        {
+            "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+            "timestamp": "2025-06-13T17:41:48.140Z",
+            "type": "user",
+            "content": "Search for ad-hoc solutions and pattern violations in the codebase.",
+        },
+    ]
+
+    artifact = classify_artifact(
+        records,
+        provider="claude-code",
+        source_path="/home/user/.claude/projects/x/analysis/signal/high_value_messages.jsonl",
+    )
+
+    assert artifact.kind is ArtifactKind.METADATA_DOCUMENT
+    assert artifact.parse_as_session is False
+
+
 def test_bare_tool_use_id_record_does_not_classify_as_session() -> None:
     """Regression for polylogue-9ykn: a record whose only distinguishing
     field is a ``tool_use_id``-shaped value (the real archive has 3 sessions

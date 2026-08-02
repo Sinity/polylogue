@@ -5206,8 +5206,10 @@ def has_orphaned_messages_sync(conn: sqlite3.Connection) -> bool:
 
 
 def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
-    """Count session rows that are debris: no messages AND a raw artifact the
-    current classifier positively refuses to admit as a session.
+    """Count session rows that are debris: no *content* (zero messages, or
+    every message carries zero words -- see ``_empty_session_candidate_ids``)
+    AND a raw artifact the current classifier positively refuses to admit as
+    a session.
 
     This deliberately does NOT count every message-less session, and it does
     NOT use ``raw_id IS NULL`` as the discriminator either (both were tried
@@ -5221,6 +5223,19 @@ def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
     it is WHAT THE ACQUIRED ARTIFACT IS: re-running each candidate's raw bytes
     through the same ``classify_artifact``/``inspect_raw_artifact`` pipeline
     live ingest uses, and counting only the ones it still refuses.
+
+    polylogue-21qj widened the candidate set beyond literally zero messages:
+    the live archive's ``claude-code-session:conversation_relationships``
+    phantom (a sinex graph-edge index misclassified as a session before
+    #3428) has 96,748 *message rows*, every one carrying zero blocks/words
+    (``session.word_count = 0``) -- a "no real content" session that the
+    original "no messages at all" predicate could never see. Broadening the
+    predicate to ``word_count = 0`` does not risk sweeping in a legitimate
+    all-tool-use session with no text turns: any such session's raw artifact
+    still carries genuine Claude Code envelope markers and is still admitted
+    by ``inspect_raw_artifact``, so the classifier gate below continues to
+    retain it. Only artifacts that positively fail current classification are
+    ever deleted, regardless of which candidate query found them.
 
     Kept in lockstep with ``repair_empty_sessions``: the counter and the
     deleter must agree, or the report says one thing and the repair does
@@ -5600,8 +5615,18 @@ def _sibling_source_db_path(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
-def _empty_session_message_less_candidates(conn: sqlite3.Connection) -> list[tuple[str, str | None]]:
-    """Return ``(session_id, raw_id)`` for every session with zero messages."""
+def _empty_session_candidate_ids(conn: sqlite3.Connection) -> list[tuple[str, str | None]]:
+    """Return ``(session_id, raw_id)`` for every session with no real content:
+    zero messages, or every message present carries zero words.
+
+    The second branch (``s.word_count = 0`` with ``message_count`` possibly
+    nonzero) is what catches ``claude-code-session:conversation_relationships``
+    (polylogue-21qj): 96,748 message rows, none of them carrying any block/word
+    content, from a sinex graph-edge index misclassified as a session's turn
+    stream before #3428. ``sessions.word_count`` is a materialized aggregate
+    over every message the session owns, so this stays a single indexed
+    comparison rather than a per-message join.
+    """
     return [
         (row["session_id"], row["raw_id"])
         for row in conn.execute(
@@ -5609,6 +5634,7 @@ def _empty_session_message_less_candidates(conn: sqlite3.Connection) -> list[tup
             SELECT s.session_id AS session_id, s.raw_id AS raw_id
             FROM sessions s
             WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
+               OR s.word_count = 0
             """
         ).fetchall()
     ]
@@ -5656,7 +5682,7 @@ def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
     Shared by ``count_empty_sessions_sync`` and ``repair_empty_sessions`` so
     the reported debt and the deleted rows can never diverge (polylogue-ne6k).
     """
-    candidates = _empty_session_message_less_candidates(conn)
+    candidates = _empty_session_candidate_ids(conn)
     if not candidates:
         return []
     source_db = _sibling_source_db_path(conn)
