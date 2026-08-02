@@ -78,7 +78,7 @@ def _write_codex_raw(
     native_id: str,
     source_path: str,
     acquired_at_ms: int,
-    text: str = "",
+    text: str = "authored content",
 ) -> str:
     payload = (
         f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'
