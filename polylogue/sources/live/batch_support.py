@@ -624,7 +624,20 @@ def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:
     if provider is Provider.HERMES and path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        return True
+        # polylogue-hbtj2: this used to be a bare extension match, which
+        # would accept ANY ".db"/".sqlite"/".sqlite3" file under a
+        # Hermes-tagged source as session-parseable without ever checking
+        # its bytes -- exactly the "detection-boundary strictness" bug the
+        # audit found (miscaptured SQLite databases opportunistically
+        # treated as sessions). Detection must be by content: only a
+        # payload whose schema genuinely matches Hermes's state.db /
+        # verification_evidence.db shape (verified via a real, read-only
+        # ``sqlite3`` connection in ``looks_like_state_db_path`` /
+        # ``looks_like_verification_evidence_db_path``) is session-eligible;
+        # every other SQLite-shaped file under a Hermes source is refused.
+        return hermes_state.looks_like_state_db_path(
+            path
+        ) or hermes_verification.looks_like_verification_evidence_db_path(path)
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return path_classification.parse_as_session

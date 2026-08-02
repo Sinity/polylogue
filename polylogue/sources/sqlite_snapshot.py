@@ -11,6 +11,8 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
+from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
@@ -19,7 +21,10 @@ _STAGING_METADATA_SUFFIX = ".polylogue-import"
 _STAGING_METADATA_VERSION = 1
 _HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v1\0"
 _CODEX_STATE_RAW_ID_DOMAIN = b"polylogue:codex-state-raw:v1\0"
-_SQLITE_MAGIC_HEADER = b"SQLite format 3\x00"
+# Re-exported for existing call sites; canonical constant now lives on the
+# shared, provider-agnostic detector in ``core.binary_signatures`` so it is
+# never redefined in more than one place (polylogue-hbtj2).
+_SQLITE_MAGIC_HEADER = SQLITE_MAGIC_HEADER
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,10 +82,12 @@ def looks_like_sqlite_bytes(payload: bytes) -> bool:
     Path-suffix detection (``is_sqlite_path``) is useless once bytes have
     already been read into memory as a raw revision (e.g. replay/backfill
     call sites, which only have ``payload: bytes`` -- see
-    ``revision_backfill.py``). This is the single shared byte-level sniffer
-    for that case; do not duplicate it.
+    ``revision_backfill.py``). This is a thin re-export of the shared,
+    provider-agnostic sniffer in ``core.binary_signatures`` (kept here too
+    since most call sites already import it from this module); do not
+    duplicate the magic-byte constant itself.
     """
-    return payload.startswith(_SQLITE_MAGIC_HEADER)
+    return _looks_like_sqlite_bytes(payload)
 
 
 def sqlite_database_for_sidecar(path: Path) -> Path | None:

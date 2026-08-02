@@ -338,11 +338,11 @@
       }
     },
     "polylogue/sources/sqlite_snapshot.py:looks_like_sqlite_bytes": {
-      "fingerprint": "7227970ea3a74e682e66b15727a477325ab759563a407e633e3c38957748b487",
+      "fingerprint": "73553ae410ddc2daa4078915b3e9abec780c6998a52b870b10a6fc7c0fe2654d",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "reason": "polylogue-hbtj2: delegated to the shared core.binary_signatures.looks_like_sqlite_bytes detector to avoid duplicating the magic-byte constant; byte-for-byte identical behavior (same SQLite magic header check), no semantic reparse.",
+        "ref": "polylogue-hbtj2"
       }
     }
   }

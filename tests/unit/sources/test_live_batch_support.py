@@ -36,6 +36,7 @@ from polylogue.sources.live.batch_support import (
     _detect_provider_from_path_sample,
     _FullIngestResult,
     _parse_path_as_session_artifact,
+    _parse_payload_as_session_artifact,
     encode_cursor_hash_authority,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -1047,6 +1048,50 @@ def test_unclassified_large_non_jsonl_is_not_streamed_as_session_artifact(
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
 
     assert _parse_path_as_session_artifact(target, provider=Provider.UNKNOWN) is False
+
+
+def _write_plain_sqlite_db(path: Path) -> None:
+    """A genuine SQLite database with no Hermes state.db/verification_evidence.db shape."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript("CREATE TABLE unrelated_thing (id INTEGER PRIMARY KEY, value TEXT);")
+        conn.commit()
+
+
+def test_parse_payload_as_session_artifact_refuses_unrecognized_hermes_db_extension(tmp_path: Path) -> None:
+    """polylogue-hbtj2: this used to be a bare ``.db``/``.sqlite``/``.sqlite3``
+    extension match under provider=HERMES -- ANY file with that suffix was
+    accepted as session content regardless of its actual bytes. It must now
+    require the same content-verified shape check the path-based sibling
+    function (``_parse_path_as_session_artifact``) already uses."""
+    target = tmp_path / "state_5.sqlite"
+    _write_plain_sqlite_db(target)
+    payload = target.read_bytes()
+
+    assert _parse_payload_as_session_artifact(target, provider=Provider.HERMES, payload=payload) is False
+
+
+def test_parse_payload_as_session_artifact_still_accepts_genuine_hermes_state_db(tmp_path: Path) -> None:
+    """Regression guard: the tightened check must not break the real feature."""
+    target = tmp_path / "state.db"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(target) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model TEXT, model_config TEXT,
+                parent_session_id TEXT, started_at REAL, ended_at REAL, title TEXT);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
+                role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_name TEXT, tool_calls TEXT,
+                timestamp REAL NOT NULL, observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1,
+                compacted INTEGER NOT NULL DEFAULT 0);
+            """
+        )
+        conn.commit()
+    payload = target.read_bytes()
+
+    assert _parse_payload_as_session_artifact(target, provider=Provider.HERMES, payload=payload) is True
 
 
 def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> None:

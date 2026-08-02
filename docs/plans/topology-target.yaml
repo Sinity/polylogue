@@ -174,7 +174,7 @@ files:
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
   - path: polylogue/archive/artifact_taxonomy/models.py
-    loc: 41
+    loc: 52
     target: polylogue/archive/artifact_taxonomy/models.py
     owner: archive-artifact-taxonomy
     reason: archive-domain semantics
@@ -514,7 +514,7 @@ files:
     owner: archive-raw-payload
     reason: archive-domain semantics
   - path: polylogue/archive/raw_payload/decode.py
-    loc: 368
+    loc: 431
     target: polylogue/archive/raw_payload/decode.py
     owner: archive-raw-payload
     reason: archive-domain semantics
@@ -538,7 +538,7 @@ files:
     target: polylogue/archive/resume_routing.py
     owner: stable
   - path: polylogue/archive/revision_authority.py
-    loc: 356
+    loc: 357
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
@@ -947,7 +947,7 @@ files:
     target: polylogue/cli/commands/maintenance/_backup_plan.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_gc.py
-    loc: 161
+    loc: 162
     target: polylogue/cli/commands/maintenance/_blob_gc.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_integrity.py
@@ -1366,6 +1366,11 @@ files:
   - path: polylogue/core/async_bridge.py
     loc: 73
     target: polylogue/core/async_bridge.py
+    owner: core-primitive
+    reason: core primitive
+  - path: polylogue/core/binary_signatures.py
+    loc: 94
+    target: polylogue/core/binary_signatures.py
     owner: core-primitive
     reason: core primitive
   - path: polylogue/core/common.py
@@ -3272,7 +3277,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1830
+    loc: 1844
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3360,7 +3365,7 @@ files:
     target: polylogue/sources/live/batch_observability.py
     owner: stable
   - path: polylogue/sources/live/batch_support.py
-    loc: 650
+    loc: 663
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
@@ -3621,7 +3626,7 @@ files:
     target: polylogue/sources/source_walk.py
     owner: stable
   - path: polylogue/sources/sqlite_snapshot.py
-    loc: 223
+    loc: 230
     target: polylogue/sources/sqlite_snapshot.py
     owner: stable
   - path: polylogue/sources/token_store.py
@@ -3679,6 +3684,10 @@ files:
     target: polylogue/storage/backup_attestation.py
     owner: storage-root
     reason: storage-root cross-cutting helper
+  - path: polylogue/storage/binary_artifact_sweep.py
+    loc: 157
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/blob_gc.py
     loc: 568
     target: polylogue/storage/blob_gc.py
@@ -3921,7 +3930,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/message_type_backfill.py
-    loc: 244
+    loc: 252
     target: polylogue/storage/message_type_backfill.py
     owner: storage-root
     reason: storage-root cross-cutting helper
