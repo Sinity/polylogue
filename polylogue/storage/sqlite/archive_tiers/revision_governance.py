@@ -910,6 +910,20 @@ def classify_raw_revision_cohort(
             generation_by_raw_id[current] = generation
             current = children.get(current)
             generation += 1
+    # polylogue-5unky: a "duplicate" decision (byte-identical to its
+    # representative) never carries a predecessor_raw_id and therefore never
+    # appears in the predecessor-keyed ``children`` walk above -- it is not a
+    # chain-continuing child of anything, it's a second copy of its
+    # representative's own bytes. Mirroring the representative's
+    # predecessor_raw_id onto the duplicate instead (the naive fix rejected
+    # in review) would make the duplicate and its representative compete for
+    # the same ``children`` dict key, risking silently dropping the real
+    # chain-continuing representative from the walk. Instead, copy each
+    # duplicate's generation directly from its already-computed
+    # representative in a separate post-pass that never touches ``children``.
+    for dup_decision in decisions:
+        if dup_decision.relation == "duplicate" and dup_decision.duplicate_of_raw_id is not None:
+            generation_by_raw_id[dup_decision.raw_id] = generation_by_raw_id.get(dup_decision.duplicate_of_raw_id, 0)
     with source_conn if manage_transaction else nullcontext():
         for row in full_rows:
             raw_id = str(row[0])
