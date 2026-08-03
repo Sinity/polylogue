@@ -4,8 +4,8 @@ its ENTIRE lifecycle, not merely a point-in-time check at entry.
 The 2026-07-10 competing-daemon incident was exactly a narrow point-in-time
 check (``_require_service_stopped``'s systemctl probe) that missed a
 transient-unit window between the check and the write. PR #2872 proved
-``RebuildLease``/``ActiveWriterLease`` mutual exclusion for the clone-forward
-fast-forward path (``devtools/archive_schema_fast_forward.py``); this test
+``RebuildLease``/``ActiveWriterLease`` mutual exclusion for the historical
+clone-forward fast-forward path; this test
 proves the SAME property for the raw-replay path
 (``rebuild_index_from_source`` / ``ops reset --index && polylogued run``),
 at a point deep inside the pass -- after replay has already committed rows to
