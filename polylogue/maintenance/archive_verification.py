@@ -1259,6 +1259,192 @@ def _check_planner_stats(archive_root: Path, _sample_limit: int) -> ArchiveVerif
 
 
 # ---------------------------------------------------------------------------
+# Check: excluded-cursor vocabulary honesty (polylogue-ix5r)
+# ---------------------------------------------------------------------------
+
+
+def _check_excluded_cursor_vocabulary_honesty(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """An excluded (quarantined) cursor row must never carry a live ``next_retry_at``.
+
+    Exclusion is permanent-until-file-replaced (or, since polylogue-ix5r, until
+    the responsible parser's fingerprint changes) -- it never retries on a
+    schedule. A row that is both ``excluded=1`` and carries a non-NULL
+    ``next_retry_at`` is exactly the mislabeling shape the 2026-07-31 audit
+    found in ``polylogued status`` output (excluded rows folded into a
+    "retry due" count that would never actually come due for them): any
+    consumer that queries "failing rows with a due retry timer" without
+    remembering to filter ``excluded = 0`` would misreport this row as
+    retryable. The production actuators (``mark_failed``'s exclusion branch)
+    already null ``next_retry_at`` when they set ``excluded=1``; this check
+    is the standing regression guard that invariant holds archive-wide, plus
+    it surfaces the excluded population's size and oldest age so an operator
+    can see at a glance how large and how stale the permanently-parked set
+    is (previously only visible via ``polylogue ops status`` truncated to a
+    50-row sample).
+    """
+    ops_path = _tier_path(archive_root, ArchiveTier.OPS)
+    if not ops_path.exists():
+        return _skip_check("excluded-cursor-vocabulary-honesty", "ops.db not present")
+
+    try:
+        conn = _open_ro(ops_path)
+    except sqlite3.Error as exc:
+        return _error_check("excluded-cursor-vocabulary-honesty", f"could not open ops.db: {exc}", exc=exc)
+
+    try:
+        if not table_exists(conn, "ingest_cursor"):
+            return _skip_check("excluded-cursor-vocabulary-honesty", "ingest_cursor table not present")
+        excluded_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1").fetchone()[0])
+        oldest_row = conn.execute("SELECT MIN(updated_at_ms) FROM ingest_cursor WHERE excluded = 1").fetchone()
+        mislabeled_rows = conn.execute(
+            """
+            SELECT source_path FROM ingest_cursor
+            WHERE excluded = 1 AND next_retry_at IS NOT NULL
+            ORDER BY source_path
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+        mislabeled_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1 AND next_retry_at IS NOT NULL"
+            ).fetchone()[0]
+        )
+    except sqlite3.Error as exc:
+        return _error_check("excluded-cursor-vocabulary-honesty", f"could not read ops.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    oldest_age_s = None
+    if oldest_row is not None and oldest_row[0] is not None:
+        oldest_age_s = max(0.0, datetime.now(UTC).timestamp() - int(oldest_row[0]) / 1000.0)
+
+    evidence: dict[str, Any] = {
+        "excluded_count": excluded_count,
+        "excluded_oldest_age_s": oldest_age_s,
+        "mislabeled_count": mislabeled_count,
+    }
+    if mislabeled_count:
+        return ArchiveVerificationCheck(
+            name="excluded-cursor-vocabulary-honesty",
+            status=OutcomeStatus.ERROR,
+            summary=(
+                f"{mislabeled_count:,} excluded cursor row(s) still carry a next_retry_at "
+                "(would misreport as retry-due)"
+            ),
+            count=mislabeled_count,
+            details=[str(row[0]) for row in mislabeled_rows],
+            evidence=evidence,
+        )
+    return ArchiveVerificationCheck(
+        name="excluded-cursor-vocabulary-honesty",
+        status=OutcomeStatus.OK,
+        summary=(
+            f"{excluded_count:,} excluded cursor(s), none mislabeled as retry-due"
+            + (f", oldest excluded {oldest_age_s / 3600.0:.1f}h ago" if oldest_age_s is not None else "")
+        ),
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: stalled append-cursor freshness (polylogue-2qrx)
+# ---------------------------------------------------------------------------
+
+#: How long a non-excluded cursor may sit with ``byte_offset < stat_size``
+#: (content on disk, fully acquirable, but not yet caught up) before it is
+#: flagged stale rather than merely "still catching up". Mirrors the
+#: escalation age ``sources/live/watcher.py``'s
+#: ``_STUCK_DEFERRED_APPEND_AGE_S`` already uses for the deferred-tail
+#: sub-case of this same shape (polylogue-2qrx's root-caused stall
+#: mechanism, PR #3650) -- reusing the same value here rather than picking a
+#: second, undocumented threshold.
+_STALLED_APPEND_CURSOR_STALE_AGE_S = 60.0 * 60.0
+
+
+def _check_stalled_append_cursor_freshness(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Flag non-excluded cursors stuck behind their file's current size.
+
+    A cursor with ``byte_offset < stat_size`` has content sitting on disk
+    that is fully recoverable -- but only via ordinary acquisition catch-up;
+    an index rebuild replays ``source.db`` and recovers none of it, since it
+    was never acquired in the first place (polylogue-2qrx). A cursor briefly
+    behind its file's size is normal (a writer mid-append); one behind for
+    longer than :data:`_STALLED_APPEND_CURSOR_STALE_AGE_S` with the file
+    otherwise cold is exactly the "329h stale, 94.8MB behind" shape the
+    2026-07-31 audit found with zero durable signal -- this check is that
+    signal.
+    """
+    ops_path = _tier_path(archive_root, ArchiveTier.OPS)
+    if not ops_path.exists():
+        return _skip_check("stalled-append-cursor-freshness", "ops.db not present")
+
+    try:
+        conn = _open_ro(ops_path)
+    except sqlite3.Error as exc:
+        return _error_check("stalled-append-cursor-freshness", f"could not open ops.db: {exc}", exc=exc)
+
+    try:
+        if not table_exists(conn, "ingest_cursor"):
+            return _skip_check("stalled-append-cursor-freshness", "ingest_cursor table not present")
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        stale_before_ms = now_ms - int(_STALLED_APPEND_CURSOR_STALE_AGE_S * 1000)
+        rows = conn.execute(
+            """
+            SELECT source_path, stat_size, byte_offset, updated_at_ms
+            FROM ingest_cursor
+            WHERE excluded = 0
+              AND byte_offset IS NOT NULL AND stat_size IS NOT NULL
+              AND byte_offset < stat_size
+              AND updated_at_ms <= ?
+            ORDER BY (stat_size - byte_offset) DESC
+            """,
+            (stale_before_ms,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return _error_check("stalled-append-cursor-freshness", f"could not read ops.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    stalled_count = len(rows)
+    total_lag_bytes = sum(int(row[1]) - int(row[2]) for row in rows)
+    oldest_age_s = max((now_ms - int(row[3]) for row in rows), default=0) / 1000.0
+    samples = [
+        {
+            "source_path": str(row[0]),
+            "lag_bytes": int(row[1]) - int(row[2]),
+            "stale_age_s": (now_ms - int(row[3])) / 1000.0,
+        }
+        for row in rows[:sample_limit]
+    ]
+    evidence: dict[str, Any] = {
+        "stalled_count": stalled_count,
+        "total_lag_bytes": total_lag_bytes,
+        "oldest_stale_age_s": oldest_age_s if stalled_count else None,
+        "stale_age_threshold_s": _STALLED_APPEND_CURSOR_STALE_AGE_S,
+        "samples": samples,
+    }
+    if stalled_count:
+        return ArchiveVerificationCheck(
+            name="stalled-append-cursor-freshness",
+            status=OutcomeStatus.WARNING,
+            summary=(
+                f"{stalled_count:,} cursor(s) stalled behind their file's current size "
+                f"({total_lag_bytes:,} bytes lag, oldest {oldest_age_s / 3600.0:.1f}h)"
+            ),
+            count=stalled_count,
+            details=[str(sample["source_path"]) for sample in samples],
+            evidence=evidence,
+        )
+    return ArchiveVerificationCheck(
+        name="stalled-append-cursor-freshness",
+        status=OutcomeStatus.OK,
+        summary="no non-excluded cursor is stalled behind its file's current size",
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Check 7: counts summary
 # ---------------------------------------------------------------------------
 
@@ -1637,6 +1823,19 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "user-tier-refs",
         "assertions.target_ref of kind session/message resolves to a live index.db row (polylogue-t0m73 I10).",
         _check_user_tier_refs,
+        ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "excluded-cursor-vocabulary-honesty",
+        "No excluded ingest_cursor row carries a live next_retry_at (would misreport as retry-due, polylogue-ix5r).",
+        _check_excluded_cursor_vocabulary_honesty,
+        ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "stalled-append-cursor-freshness",
+        "No non-excluded ingest_cursor row sits behind its file's current size for longer than "
+        "the stall-escalation threshold (polylogue-2qrx).",
+        _check_stalled_append_cursor_freshness,
         ArchiveVerificationCheckClass.LIVENESS,
     ),
 )

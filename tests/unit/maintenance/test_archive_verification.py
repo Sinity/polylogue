@@ -886,6 +886,112 @@ def test_user_tier_refs_passes_on_coherent_archive(tmp_path: Path) -> None:
     assert check.evidence["dangling_session_ref_count"] == 0
 
 
+def test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, failure_count, next_retry_at, updated_at_ms)
+            VALUES ('/poison.jsonl', 1, 5, '2026-08-04T00:00:00+00:00', 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("excluded-cursor-vocabulary-honesty",))
+
+    check = _check(report, "excluded-cursor-vocabulary-honesty")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["mislabeled_count"] == 1
+    assert "/poison.jsonl" in check.details
+
+
+def test_excluded_cursor_vocabulary_honesty_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, failure_count, next_retry_at, updated_at_ms)
+            VALUES ('/poison.jsonl', 1, 5, NULL, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("excluded-cursor-vocabulary-honesty",))
+
+    check = _check(report, "excluded-cursor-vocabulary-honesty")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["excluded_count"] == 1
+    assert check.evidence["mislabeled_count"] == 0
+
+
+def test_stalled_append_cursor_trips_freshness_check(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    now_ms = 10_000_000_000  # far enough past epoch that "now - threshold" stays positive
+    stale_updated_at_ms = now_ms - int(3 * 60 * 60 * 1000)  # 3h old, past the 1h threshold
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, stat_size, byte_offset, updated_at_ms)
+            VALUES ('/rollout-stalled.jsonl', 0, 100000000, 5000000, ?)
+            """,
+            (stale_updated_at_ms,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("stalled-append-cursor-freshness",))
+
+    check = _check(report, "stalled-append-cursor-freshness")
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["stalled_count"] == 1
+    assert check.evidence["total_lag_bytes"] == 95_000_000
+    assert "/rollout-stalled.jsonl" in check.details
+
+
+def test_recently_stalled_append_cursor_does_not_trip_freshness_check(tmp_path: Path) -> None:
+    """A cursor briefly behind its file's size (writer mid-append) is not a
+    finding -- only one stalled longer than the escalation threshold is."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, stat_size, byte_offset, updated_at_ms)
+            VALUES (
+                '/rollout-active.jsonl', 0, 100000000, 5000000,
+                CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("stalled-append-cursor-freshness",))
+
+    check = _check(report, "stalled-append-cursor-freshness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["stalled_count"] == 0
+
+
+def test_stalled_append_cursor_freshness_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("stalled-append-cursor-freshness",))
+
+    check = _check(report, "stalled-append-cursor-freshness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["stalled_count"] == 0
+
+
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
 def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
     check_name: str, seeded_archive: SeededArchiveArtifact
@@ -1077,6 +1183,8 @@ RED_TWIN_TESTS: dict[str, str] = {
     "planner-stats": "test_missing_sqlite_stat1_is_warning_not_error",
     "convergence-freshness": "test_stalled_backlog_trips_convergence_freshness",
     "user-tier-refs": "test_dangling_assertion_target_trips_user_tier_refs",
+    "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
+    "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
 }
 
 
