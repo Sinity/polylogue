@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import TracebackType
 
+from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -24,6 +25,18 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 logger = logging.getLogger(__name__)
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
+
+#: ``raw_session_memberships.decision`` values that mean "this raw is
+#: resolved, durable history" rather than resume debt -- reused directly from
+#: ``classify_membership_revisions``'s own closed vocabulary
+#: (``polylogue.archive.session_revision_membership.MembershipDecision``)
+#: instead of a rebuild-local classifier (polylogue-b5l.1 design note: reuse
+#: the existing revision authority vocabulary, never fork a parallel one).
+_SUPERSEDED_DECISIONS: tuple[str, ...] = (
+    MembershipDecision.SUPERSEDED_EQUIVALENT.value,
+    MembershipDecision.SUPERSEDED_PREFIX.value,
+)
+_SUPERSEDED_DECISION_PLACEHOLDERS = ",".join("?" for _ in _SUPERSEDED_DECISIONS)
 
 #: Superseded generations kept after a promotion.  One is enough to roll back
 #: to the previous index; each costs roughly the size of the index itself
@@ -495,28 +508,54 @@ class IndexGenerationStore:
         (``ArchiveStore.expand_raw_membership_selection``) already walks the
         full ``raw_sessions``/``raw_session_memberships`` graph regardless of
         which page triggered it -- neither depends on processing order.
+
+        polylogue-b5l.1: a raw whose EVERY persisted
+        ``raw_session_memberships`` row already carries a durable
+        ``superseded_equivalent``/``superseded_prefix`` decision (the
+        classification ``classify_membership_revisions`` itself writes back,
+        durable in ``source.db`` independent of any index generation) is
+        legitimate resolved history, not resume debt: it will never gain an
+        ``index.sessions`` row of its own (only its cohort's accepted head
+        does), so scheduling it wastes a full page slot re-parsing content a
+        prior pass already resolved -- every single rebuild pass would
+        otherwise re-touch it. A raw with no membership row at all (never
+        censused) or with at least one non-superseded row (``applied``/
+        ``ambiguous``/``deferred``/still pending) is left eligible -- this
+        only ever narrows the schedule, it never risks dropping a genuinely
+        unresolved or newly-accepted raw.
         """
         if limit <= 0:
             raise ValueError("rebuild raw page limit must be positive")
         source_db = self.archive_root / "source.db"
+        not_resume_debt_clause = f"""(
+            NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id = raw_sessions.raw_id)
+            OR EXISTS (
+                SELECT 1 FROM raw_session_memberships m
+                WHERE m.raw_id = raw_sessions.raw_id
+                  AND (m.decision IS NULL OR m.decision NOT IN ({_SUPERSEDED_DECISION_PLACEHOLDERS}))
+            )
+        )"""
         if transaction.last_blob_hash_hex is None or transaction.last_raw_id is None:
-            query = """
+            query = f"""
                 SELECT raw_id, blob_hash, blob_size FROM raw_sessions
+                WHERE {not_resume_debt_clause}
                 ORDER BY blob_hash, raw_id LIMIT ?
             """
-            params: tuple[object, ...] = (limit + 1,)
+            params: tuple[object, ...] = (*_SUPERSEDED_DECISIONS, limit + 1)
         else:
             last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex)
-            query = """
+            query = f"""
                 SELECT raw_id, blob_hash, blob_size FROM raw_sessions
-                WHERE blob_hash > ?
-                   OR (blob_hash = ? AND raw_id > ?)
+                WHERE (blob_hash > ?
+                   OR (blob_hash = ? AND raw_id > ?))
+                  AND {not_resume_debt_clause}
                 ORDER BY blob_hash, raw_id LIMIT ?
             """
             params = (
                 last_blob_hash,
                 last_blob_hash,
                 transaction.last_raw_id,
+                *_SUPERSEDED_DECISIONS,
                 limit + 1,
             )
         with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:

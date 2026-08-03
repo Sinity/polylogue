@@ -505,3 +505,132 @@ def test_pruning_never_removes_a_never_promoted_rebuild_candidate(tmp_path: Path
     # The genuine rollback target -- the previously-active generation -- is what
     # the retained slot is for, not the inactive candidate.
     assert Path(first.index_path).exists()
+
+
+def _seed_membership(
+    source_db: Path,
+    *,
+    raw_id: str,
+    logical_source_key: str,
+    decision: str | None,
+) -> None:
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships (
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count, revision_authority, decision, decided_at_ms
+            ) VALUES (?, ?, ?, ?, zeroblob(32), 1, 'byte_proven', ?, ?)
+            """,
+            (raw_id, logical_source_key, raw_id, raw_id, decision, 1 if decision is not None else None),
+        )
+
+
+def _seed_raw(conn: sqlite3.Connection, *, raw_id: str, blob_hash: bytes, acquired_at_ms: int) -> None:
+    conn.execute(
+        """INSERT INTO raw_sessions (raw_id, origin, native_id, source_path, source_index, blob_hash,
+           blob_size, acquired_at_ms, validation_status)
+           VALUES (?, 'codex-session', ?, ?, 0, ?, 1, ?, 'passed')""",
+        (raw_id, raw_id, f"/{raw_id}.jsonl", blob_hash, acquired_at_ms),
+    )
+
+
+class TestNextRawPageExcludesSupersededResumeDebt:
+    """polylogue-b5l.1 AC3: a raw whose every persisted membership decision is
+    ``superseded_equivalent``/``superseded_prefix`` is resolved history, not
+    resume debt -- it never gains its own ``index.sessions`` row (only its
+    cohort's accepted head does), so scheduling it every pass wastes a full
+    page slot re-parsing content a prior pass already resolved. A genuinely
+    accepted-but-unindexed raw, or one never censused at all, must still be
+    selected.
+    """
+
+    def test_fully_superseded_raw_is_excluded_from_the_page(self, tmp_path: Path) -> None:
+        _archive(tmp_path)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            _seed_raw(conn, raw_id="raw-superseded", blob_hash=b"\x01" * 32, acquired_at_ms=10)
+            _seed_raw(conn, raw_id="raw-accepted", blob_hash=b"\x02" * 32, acquired_at_ms=20)
+        _seed_membership(
+            tmp_path / "source.db",
+            raw_id="raw-superseded",
+            logical_source_key="cohort-1",
+            decision="superseded_prefix",
+        )
+        _seed_membership(
+            tmp_path / "source.db",
+            raw_id="raw-accepted",
+            logical_source_key="cohort-2",
+            decision="applied",
+        )
+
+        store = IndexGenerationStore.for_archive_root(tmp_path)
+        transaction = store.create_transaction(source_snapshot="source-v1")
+        page = store.next_raw_page(transaction, limit=10)
+
+        raw_ids = [row[0] for row in page.rows]
+        assert raw_ids == ["raw-accepted"]
+
+    def test_never_censused_raw_remains_eligible(self, tmp_path: Path) -> None:
+        """A raw with no membership row at all (never classified) must still
+        be scheduled -- excluding it would silently drop genuinely novel,
+        never-processed content."""
+        _archive(tmp_path)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            _seed_raw(conn, raw_id="raw-novel", blob_hash=b"\x03" * 32, acquired_at_ms=10)
+
+        store = IndexGenerationStore.for_archive_root(tmp_path)
+        transaction = store.create_transaction(source_snapshot="source-v1")
+        page = store.next_raw_page(transaction, limit=10)
+
+        assert [row[0] for row in page.rows] == ["raw-novel"]
+
+    def test_raw_superseded_in_one_cohort_but_pending_in_another_remains_eligible(self, tmp_path: Path) -> None:
+        """A multi-membership raw (e.g. a bundle member) is only resume-debt
+        -free when EVERY known membership row is superseded; a mixed shape
+        (superseded in one cohort, still ambiguous/pending in another) must
+        remain eligible."""
+        _archive(tmp_path)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            _seed_raw(conn, raw_id="raw-mixed", blob_hash=b"\x04" * 32, acquired_at_ms=10)
+        _seed_membership(
+            tmp_path / "source.db", raw_id="raw-mixed", logical_source_key="cohort-a", decision="superseded_prefix"
+        )
+        _seed_membership(tmp_path / "source.db", raw_id="raw-mixed", logical_source_key="cohort-b", decision=None)
+
+        store = IndexGenerationStore.for_archive_root(tmp_path)
+        transaction = store.create_transaction(source_snapshot="source-v1")
+        page = store.next_raw_page(transaction, limit=10)
+
+        assert [row[0] for row in page.rows] == ["raw-mixed"]
+
+    def test_exclusion_survives_the_keyset_cursor_across_pages(self, tmp_path: Path) -> None:
+        """The superseded-exclusion filter is applied inside the same SQL
+        query as the keyset cursor, so a superseded raw sitting between two
+        eligible pages must never surface on a later page either."""
+        _archive(tmp_path)
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            _seed_raw(conn, raw_id="raw-a", blob_hash=b"\x01" * 32, acquired_at_ms=10)
+            _seed_raw(conn, raw_id="raw-superseded", blob_hash=b"\x02" * 32, acquired_at_ms=20)
+            _seed_raw(conn, raw_id="raw-b", blob_hash=b"\x03" * 32, acquired_at_ms=30)
+        _seed_membership(
+            tmp_path / "source.db",
+            raw_id="raw-superseded",
+            logical_source_key="cohort-1",
+            decision="superseded_equivalent",
+        )
+
+        store = IndexGenerationStore.for_archive_root(tmp_path)
+        transaction = store.create_transaction(source_snapshot="source-v1")
+        first_page = store.next_raw_page(transaction, limit=1)
+        assert [row[0] for row in first_page.rows] == ["raw-a"]
+
+        transaction = store.checkpoint_transaction(
+            transaction,
+            status="paused",
+            last_blob_hash_hex=first_page.rows[0][1],
+            last_raw_id=first_page.rows[0][0],
+            processed_raw_count=1,
+        )
+        second_page = store.next_raw_page(transaction, limit=1)
+        assert [row[0] for row in second_page.rows] == ["raw-b"]
