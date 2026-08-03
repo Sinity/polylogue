@@ -174,6 +174,31 @@ interrupted operation. This command always mutates; it carries no
 polylogue ops maintenance run --target session_insights --output-format json
 ```
 
+### Blob-reference integrity — preview and apply pairs
+
+`polylogue ops maintenance blob-reference-debt` and
+`blob-reference-recovery-plan` are read-only classification/planning
+commands. The two commands that can actually mutate the archive each
+follow the same preview/apply split as `run`/`run-preview`: a dedicated
+read-only `-preview` command with no `--yes`/`--apply` flag, and a lean
+apply command that always mutates.
+
+```bash
+# Read-only: simulate what a replace-from-source pass would change.
+polylogue ops maintenance blob-reference-replace-from-source-preview --output-format json
+
+# Apply: always mutates; --manifest-file is required.
+polylogue ops maintenance blob-reference-replace-from-source \
+  --manifest-file /tmp/replace.jsonl --output-format json
+
+# Read-only: simulate what an orphan prune would remove.
+polylogue ops maintenance blob-reference-prune-orphans-preview --output-format json
+
+# Apply: always mutates; writes a quarantine JSONL before deleting rows.
+polylogue ops maintenance blob-reference-prune-orphans \
+  --quarantine-file /tmp/quarantine.jsonl --output-format json
+```
+
 ### `polylogue ops maintenance verify-archive` — coherence gate
 
 Read-only. Runs a fixed registry of independent checks over the whole
