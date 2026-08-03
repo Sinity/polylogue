@@ -641,16 +641,23 @@ def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> 
         )
 
     result = backfill_historical_revision_evidence(tmp_path)
-    assert result.quarantined == 2
+    # s1's own two revisions (base+left vs base+right) are a genuine,
+    # irreducible fork with no prior head for this fresh archive -- the
+    # presence-guarantee fallback (polylogue-lb39z item 5) now materializes
+    # a deterministic winner instead of leaving s1 permanently headless, so
+    # only the LOSING side of that fork stays quarantined (1, not 2). s2/s3
+    # are each single-member "safe" cohorts and were never at risk.
+    assert result.quarantined == 1
+    winner_raw_id = max(raw_a, raw_b)
+    loser_raw_id = raw_a if winner_raw_id == raw_b else raw_b
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert set(conn.execute("SELECT native_id FROM sessions")) == {("s2",), ("s3",)}
+        assert set(conn.execute("SELECT native_id FROM sessions")) == {("s1",), ("s2",), ("s3",)}
+        s1_raw_id = conn.execute("SELECT raw_id FROM sessions WHERE native_id = 's1'").fetchone()[0]
+        assert s1_raw_id == winner_raw_id
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert set(conn.execute("SELECT raw_id FROM raw_sessions WHERE parsed_at_ms IS NULL")) == {
-            (raw_a,),
-            (raw_b,),
-        }
+        assert set(conn.execute("SELECT raw_id FROM raw_sessions WHERE parsed_at_ms IS NULL")) == {(loser_raw_id,)}
         assert conn.execute("SELECT COUNT(*) FROM raw_session_memberships WHERE decision = 'ambiguous'").fetchone() == (
-            2,
+            1,
         )
 
 
@@ -714,7 +721,16 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
         conn.commit()
 
     result = backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_correct, raw_stale])
-    assert result.replayed_logical_sources == 0
+    # Both raws now correctly fold into ONE cohort under the freshly
+    # re-derived identity -- the bug this test guards against. That cohort
+    # is a genuine, irreducible fork (base+left vs base+right) with no
+    # prior head, so the presence-guarantee fallback (polylogue-lb39z item
+    # 5) now deterministically accepts one side instead of leaving the
+    # correctly-unified cohort permanently headless; this is a single
+    # cohort's own arbitration outcome, not a reappearance of the
+    # independent-singleton-winners bug (which would have produced TWO
+    # accepted sessions under two different keys).
+    assert result.replayed_logical_sources == 1
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         memberships = conn.execute(
@@ -722,13 +738,12 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
         ).fetchall()
     assert {row[0] for row in memberships} == {raw_correct, raw_stale}
     # Both raws must converge on the SAME (freshly re-derived) identity --
-    # not the stale key either was originally censused under -- and both
-    # must be recorded ambiguous, never silently accepted as a singleton.
+    # not the stale key either was originally censused under.
     assert {row[1] for row in memberships} == {correct_key}
-    assert {row[2] for row in memberships} == {"ambiguous"}
+    assert {row[2] for row in memberships} == {"applied", "ambiguous"}
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
 
 def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path) -> None:

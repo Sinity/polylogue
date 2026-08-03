@@ -2614,7 +2614,7 @@ class LiveBatchProcessor:
                         ),
                     )
                 )
-            classification = classify_membership_revisions(revisions)
+            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=accepted_head_raw_id)
             membership_session_id = archive.apply_raw_membership_classification(
                 logical_source_key,
                 classification,
