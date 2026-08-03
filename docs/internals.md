@@ -691,8 +691,7 @@ The archive file set is split by durability class:
   annotations, corrections, user tags, metadata keys, saved views,
   recall packs, workspaces, blackboard notes, candidates, and judgments.
 - `ops.db` stores disposable daemon telemetry such as ingest cursors,
-  attempts, convergence debt, stage events, embedding catch-up runs,
-  and OTLP spans.
+  attempts, convergence debt, stage events, and embedding catch-up runs.
 
 The operator flow is explicit:
 
@@ -869,7 +868,7 @@ SQLite WAL behavior for the archive database (see also
   full write profile (`128 MiB` SQLite cache, `1 GiB` mmap allowance).
   Long-running daemon/ops writes use the daemon write profile (`16 MiB`
   cache, `64 MiB` mmap allowance) so small telemetry, cursor, heartbeat,
-  OTLP, and maintenance writes do not keep batch-sized SQLite page-cache
+  and maintenance writes do not keep batch-sized SQLite page-cache
   pressure charged to `polylogued.service`. Read-only daemon probes use
   the read profile (`query_only=ON`) instead of opening write connections.
 - **Autocheckpoint threshold**: `WAL_AUTOCHECKPOINT_PAGES = 10000` =
@@ -1185,8 +1184,7 @@ the drilldown needed to tell whether the daemon is anchored on the
 normal `index.db` path and which split-file tier is missing or stale.
 
 Polylogue does not depend on `prometheus_client`; the exposition format
-is hand-rolled. The OTLP HTTP receiver from #1224's ambitious-move
-section is intentionally deferred and tracked under the same issue.
+is hand-rolled.
 
 ## Debugging Landmarks
 

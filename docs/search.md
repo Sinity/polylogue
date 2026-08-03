@@ -570,12 +570,8 @@ utility, or parent use.
 
 ## Outbound OTel Projection
 
-Polylogue has two telemetry directions that should not be confused:
-
-- inbound OTLP receiver routes store external telemetry in `ops.db` for local
-  correlation;
-- outbound OTel projection exports Polylogue archive evidence as an
-  observability-shaped view.
+Polylogue exposes an outbound OTel projection that exports archive evidence as
+an observability-shaped view.
 
 Outbound projection is not archive authority. Trace/span ids are stable export
 ids, while Polylogue refs remain the navigation surface back to canonical

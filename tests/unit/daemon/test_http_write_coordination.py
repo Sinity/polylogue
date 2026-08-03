@@ -160,20 +160,6 @@ def test_rebuild_index_route_uses_the_bridge_run_sync_with_timeout_writer_path(m
     assert send_json.call_args.args == (HTTPStatus.OK, receipt.to_dict())
 
 
-@pytest.mark.parametrize("signal", ["traces", "metrics", "logs"])
-def test_otlp_persistence_route_holds_gate_around_receiver(signal: str) -> None:
-    timeline: list[str] = []
-    handler = _handler(["v1", signal], timeline)
-    handler._handle_otlp_post = lambda _path: timeline.append("body")  # type: ignore[method-assign]
-    with patch(
-        "polylogue.config.load_polylogue_config",
-        return_value=SimpleNamespace(observability_enabled=True),
-    ):
-        handler._do_post_impl()
-
-    assert timeline == [f"enter:http.otlp.{signal}", "body", f"exit:http.otlp.{signal}"]
-
-
 def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime() -> None:
     server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
     runtime = server._owned_write_runtime

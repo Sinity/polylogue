@@ -119,7 +119,7 @@ writer_modules:
         record_ingest_attempt, record_query_run, record_schema_drift_sample,
         record_daemon_lifecycle_heartbeat, record_daemon_lifecycle_signal, record_daemon_lifecycle_start,
         record_daemon_lifecycle_stop, record_mcp_call, record_route_observation, upsert_embedding_catchup_run,
-        upsert_ingest_cursor, upsert_otlp_span]
+        upsert_ingest_cursor]
     - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
       surfaces:
         - tier: index

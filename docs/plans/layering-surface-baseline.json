@@ -1391,21 +1391,6 @@
   },
   {
     "target": "polylogue/daemon",
-    "file": "polylogue/daemon/otlp_receiver.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/otlp_receiver.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/otlp_receiver.py",
-    "import": "polylogue.storage.sqlite.connection_profile"
-  },
-  {
-    "target": "polylogue/daemon",
     "file": "polylogue/daemon/parse_prefetch.py",
     "import": "polylogue.sources.census_parse_stage"
   },

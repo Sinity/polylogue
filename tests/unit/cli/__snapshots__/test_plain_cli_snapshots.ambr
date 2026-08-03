@@ -1121,9 +1121,7 @@
           "cursor_lag_samples": 0,
           "daemon_stage_events": 0,
           "daemon_events": 0,
-          "embedding_catchup_runs": 0,
-          "otlp_spans": 0,
-          "otlp_telemetry": 0
+          "embedding_catchup_runs": 0
         },
         "table_count_precision": {
           "ingest_cursor": "exact",
@@ -1132,9 +1130,7 @@
           "cursor_lag_samples": "exact",
           "daemon_stage_events": "exact",
           "daemon_events": "exact",
-          "embedding_catchup_runs": "exact",
-          "otlp_spans": "exact",
-          "otlp_telemetry": "exact"
+          "embedding_catchup_runs": "exact"
         }
       }
     },

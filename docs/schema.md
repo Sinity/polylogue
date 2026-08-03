@@ -119,7 +119,7 @@ an `annotation-batch:<id>` `scope_ref`.
 
 Ingest cursors (`ingest_cursor`), ingest attempts (`ingest_attempts`),
 convergence debt (`convergence_debt`), cursor-lag samples, daemon stage/event
-logs, embedding catch-up runs, OTLP spans/telemetry, and the MCP call log
+logs, embedding catch-up runs, and the MCP call log
 (`mcp_call_log`, #7s57 — tool name, session id when known, timing, and
 success/failure per MCP tool invocation). `mcp_call_session_refs` normalizes
 plural invocations so one call remains queryable through every member session.
@@ -148,7 +148,7 @@ storage owner rather than duplicating full table definitions.
 | User overlays | `user.db.assertions` | Human marks, annotations, corrections, suppressions, tags, metadata, saved views, recall packs, workspaces, blackboard notes, candidates, and judgments are assertion rows. | Deleted specific overlay tables are not current storage. `index.db.session_tags` is only a rebuildable/search/read projection. |
 | Refs | Resolver/read boundary first | Refs may live inside payload JSON, evidence refs, target refs, and work/context refs. | No global refs table until resolver usage proves unresolved-ref auditing or performance needs persistence. |
 | Archive debt and readiness | `ops.db` for disposable operator state; `source.db`/`index.db` for durable evidence read by diagnostics | Raw-materialization debt, FTS trust, and provider-usage gaps are diagnostics over tier state, not a new durable domain. | Debt rows in `ops.db` are disposable. Durable facts remain in source/index tables. |
-| OTel spans | `source.db.otlp_spans` and `ops.db.otlp_spans` with distinct meanings | Source-tier spans are raw/source-correlated evidence tied to origin/native session ids; ops-tier spans are daemon/runtime telemetry. | Read paths should choose the tier by durability, not by table name alone. |
+| OTel spans | `source.db.otlp_spans` | Durable source-tier span evidence tied to origin/native session ids. | The empty durable table remains pending an explicit migration decision. |
 | Embeddings | `embeddings.db` | One active 1024-dimensional `message_embeddings` vec table plus metadata/status. | Multiple providers/dimensions require a deliberate schema design before another embedding family is added. |
 
 ## JSON payload contracts

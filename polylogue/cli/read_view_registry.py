@@ -31,9 +31,7 @@ CONTEXT_IMAGE_READ_VIEW_OPTION_NAMES = frozenset(
     }
 )
 NEIGHBOR_READ_VIEW_OPTION_NAMES = frozenset({"limit", "window_hours"})
-CORRELATION_READ_VIEW_OPTION_NAMES = frozenset(
-    {"confidence_threshold", "github_api", "otlp", "repo_path", "since_hours"}
-)
+CORRELATION_READ_VIEW_OPTION_NAMES = frozenset({"confidence_threshold", "github_api", "repo_path", "since_hours"})
 CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
 EVENTS_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
 

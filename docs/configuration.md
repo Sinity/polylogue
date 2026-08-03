@@ -213,10 +213,6 @@ dimension = 1024
 max_cost_usd = 5.0   # soft monthly cap; 0 = unlimited
 # voyage_api_key = "..." # prefer VOYAGE_API_KEY from a secret manager
 
-[observability]
-enabled = false
-otlp_max_body_bytes = 8388608
-
 [logging]
 force_plain = false
 
@@ -410,7 +406,6 @@ Common runtime overrides:
 | `NO_COLOR` | `no_color` | Standard no-color request; any non-empty value makes CLI output ANSI-free/plain. |
 | `VOYAGE_API_KEY` | `voyage_api_key` | Voyage credential; redacted and spend-gated. |
 | `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | `embedding_enabled` | Enable daemon embedding convergence. |
-| `POLYLOGUE_OBSERVABILITY_ENABLED` | `observability_enabled` | Enable OTLP/observability HTTP ingestion. |
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
 | `POLYLOGUE_HOOK_PROVIDER` | `hook_provider` | Force hook-harness detection to `claude-code`/`codex`. |

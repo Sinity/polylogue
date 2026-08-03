@@ -107,22 +107,6 @@ class ArchiveDaemonLifecycle:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveOtlpSpan:
-    """Compact read-back row for one OTLP span."""
-
-    trace_id: str
-    span_id: str
-    parent_span_id: str | None
-    origin: str | None
-    name: str
-    kind: str | None
-    started_at_ms: int | None
-    ended_at_ms: int | None
-    attributes_json: str
-    events_json: str
-
-
-@dataclass(frozen=True, slots=True)
 class ArchiveMcpCallLogEntry:
     """Compact read-back row for one durable MCP tool call-log entry."""
 
@@ -1212,100 +1196,6 @@ def _embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> dict[str
     }
 
 
-def upsert_otlp_span(
-    conn: sqlite3.Connection,
-    *,
-    trace_id: str,
-    span_id: str,
-    name: str,
-    parent_span_id: str | None = None,
-    origin: Origin | str | None = None,
-    kind: str | None = None,
-    started_at_ms: int | None = None,
-    ended_at_ms: int | None = None,
-    attributes_json: str = "{}",
-    events_json: str = "[]",
-) -> None:
-    """Create or replace one ``otlp_spans`` row."""
-    conn.execute(
-        """
-        INSERT INTO otlp_spans (
-            trace_id,
-            span_id,
-            parent_span_id,
-            origin,
-            name,
-            kind,
-            started_at_ms,
-            ended_at_ms,
-            attributes_json,
-            events_json
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT (trace_id, span_id) DO UPDATE SET
-            parent_span_id = excluded.parent_span_id,
-            origin = excluded.origin,
-            name = excluded.name,
-            kind = excluded.kind,
-            started_at_ms = excluded.started_at_ms,
-            ended_at_ms = excluded.ended_at_ms,
-            attributes_json = excluded.attributes_json,
-            events_json = excluded.events_json
-        """,
-        (
-            trace_id,
-            span_id,
-            parent_span_id,
-            _origin_value(origin),
-            name,
-            kind,
-            started_at_ms,
-            ended_at_ms,
-            attributes_json,
-            events_json,
-        ),
-    )
-    conn.commit()
-
-
-def list_otlp_spans(
-    conn: sqlite3.Connection,
-    *,
-    trace_id: str | None = None,
-) -> tuple[ArchiveOtlpSpan, ...]:
-    """Return OTLP spans ordered by start time descending."""
-    query = """
-        SELECT
-            trace_id, span_id, parent_span_id, origin, name, kind,
-            started_at_ms, ended_at_ms, attributes_json, events_json
-        FROM otlp_spans
-    """
-    params: tuple[object, ...] = ()
-    if trace_id is not None:
-        query += " WHERE trace_id = ?"
-        params = (trace_id,)
-    query += " ORDER BY started_at_ms DESC, span_id DESC"
-
-    return tuple(ArchiveOtlpSpan(*row) for row in conn.execute(query, params).fetchall())
-
-
-def read_otlp_span(conn: sqlite3.Connection, trace_id: str, span_id: str) -> ArchiveOtlpSpan:
-    """Read one OTLP span by composite primary key."""
-    row = conn.execute(
-        """
-        SELECT
-            trace_id, span_id, parent_span_id, origin, name, kind,
-            started_at_ms, ended_at_ms, attributes_json, events_json
-        FROM otlp_spans
-        WHERE trace_id = ? AND span_id = ?
-        """,
-        (trace_id, span_id),
-    ).fetchone()
-    if row is None:
-        raise KeyError((trace_id, span_id))
-    return ArchiveOtlpSpan(*row)
-
-
 def record_mcp_call(
     conn: sqlite3.Connection,
     *,
@@ -1677,7 +1567,6 @@ __all__ = [
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
     "ArchiveFtsDriftSample",
-    "ArchiveOtlpSpan",
     "ArchiveRouteObservation",
     "ArchiveSchemaDriftSample",
     "FTS_DRIFT_SAMPLE_RETENTION_MS",
@@ -1694,12 +1583,10 @@ __all__ = [
     "latest_daemon_lifecycle",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
-    "list_otlp_spans",
     "list_route_observations",
     "read_cursor_lag_sample",
     "read_daemon_stage_event",
     "read_embedding_catchup_run",
-    "read_otlp_span",
     "read_compact_state",
     "record_cursor_lag_sample",
     "record_daemon_lifecycle_heartbeat",
@@ -1715,5 +1602,4 @@ __all__ = [
     "summarize_schema_drift_since",
     "upsert_embedding_catchup_run",
     "upsert_ingest_cursor",
-    "upsert_otlp_span",
 ]

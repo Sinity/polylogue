@@ -293,8 +293,6 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "daemon_stage_events",
         "daemon_events",
         "embedding_catchup_runs",
-        "otlp_spans",
-        "otlp_telemetry",
     ),
 }
 
