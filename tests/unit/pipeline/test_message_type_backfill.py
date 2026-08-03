@@ -114,6 +114,51 @@ def _make_db_with_multi_block_message(db_path: Path) -> str:
     return conv_id
 
 
+def _make_db_with_drifted_mixed_block_message(db_path: Path) -> str:
+    """One row shaped exactly like the bd polylogue-c831 production drift.
+
+    ``classify_text_message_type`` matches most markers with
+    ``str.startswith`` (see ``polylogue/archive/message/artifacts.py``) --
+    anchored at position 0. Before PR #3525, Claude Code ingest classified
+    ``message_type`` from a *combined* string that concatenated every
+    content segment in record order (THINKING, then TOOL_RESULT, then
+    TEXT). A protocol/context marker that starts the message's own TEXT
+    block therefore does NOT start the combined string once non-empty
+    THINKING/TOOL_RESULT segments are prepended ahead of it, so the
+    anchored check misses it and the row is persisted as the default
+    ``message`` type -- exactly the live drift this bead measured (1,901
+    live candidates as of this fix, confirmed by a read-only production
+    scan).
+
+    This row simulates that already-materialized legacy state directly:
+    ``message_type='message'`` with a TEXT block whose content, alone,
+    unambiguously starts with a protocol marker (``<bash-input>``), plus
+    THINKING/TOOL_RESULT blocks carrying no markers of their own (so a
+    reader can see they are not why the row would reclassify). The
+    backfill reconstructs the classification input from the persisted
+    TEXT block only (``text_blocks_prose``'s SQL twin,
+    ``message_prose_sql(block_types=("text",))``), so it must flip this
+    row to ``protocol`` regardless of the other block types attached to
+    the same message.
+    """
+    conv_id = "conv-drifted-mixed-1"
+    builder = SessionBuilder(db_path, conv_id)
+    builder.provider("claude-code").title("Drifted mixed-block backfill test")
+    builder.add_message(
+        message_id="drifted-1",
+        role="assistant",
+        text="<bash-input>ls -la</bash-input>",
+        message_type="message",
+        blocks=[
+            {"type": "thinking", "text": "plain reasoning, no markers here"},
+            {"type": "tool_result", "text": "tool ran fine"},
+            {"type": "text", "text": "<bash-input>ls -la</bash-input>"},
+        ],
+    )
+    builder.save()
+    return conv_id
+
+
 def _make_config(workspace_env: dict[str, Path], db_path: Path) -> Config:
     """Create a minimal Config for tests."""
     return Config(
@@ -351,3 +396,35 @@ class TestMessageTypeBackfill:
 
         assert row is not None
         assert row[1] == "first block\nsecond block"
+
+    def test_backfill_reclassifies_drifted_row_ignoring_other_block_types(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """bd polylogue-c831: converge a row drifted by the combined-text
+        vs. TEXT-only classification divergence (PR #3525 root cause).
+
+        Reproduces the live production drift directly: a message persisted
+        with ``message_type='message'`` even though its own TEXT block
+        starts with an unambiguous protocol marker, because ingest (before
+        #3525) classified from a combined THINKING+TOOL_RESULT+TEXT string
+        where the marker was no longer at position 0. The backfill must
+        flip it to ``protocol`` from the persisted TEXT block alone.
+        """
+        db_path = db_setup(workspace_env)
+        _make_db_with_drifted_mixed_block_message(db_path)
+
+        cfg = _make_config(workspace_env, db_path)
+
+        with open_index_db(db_path) as conn:
+            before = conn.execute("SELECT message_type FROM messages WHERE native_id = 'drifted-1'").fetchone()
+        assert before is not None
+        assert before[0] == "message", "fixture must start in the drifted pre-fix state"
+
+        result = repair_message_type_backfill(cfg, dry_run=False)
+        assert result.success, result.detail
+        assert result.repaired_count == 1
+
+        with open_index_db(db_path) as conn:
+            after = conn.execute("SELECT message_type FROM messages WHERE native_id = 'drifted-1'").fetchone()
+        assert after is not None
+        assert after[0] == "protocol", f"drifted row should converge to protocol, got {after[0]}"
