@@ -146,7 +146,11 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     should_skip_stale_replace,
     stored_message_count,
 )
-from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionResult, admit_raw_observation
+from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+    RawAdmissionArm,
+    RawAdmissionResult,
+    admit_raw_observation,
+)
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
@@ -2972,6 +2976,101 @@ def write_raw_and_parsed_result(
         store,
         session,
         raw_id=raw_id,
+        source_index=source_index,
+        stage_timings_s=stage_timings_s,
+        stage_timing_prefix=stage_timing_prefix,
+        manage_transaction=manage_transaction,
+        preacquired_attachment_blobs=preacquired_attachments,
+        finalize_raw_parse=finalize_raw_parse,
+    )
+    add_timing("index_parsed_write", t0)
+    return result
+
+
+def admit_raw_and_parsed_result(
+    store: RawRevisionGovernanceHost,
+    session: ParsedSession,
+    *,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+    logical_source_key: str,
+    source_index: int = 0,
+    stage_timings_s: dict[str, float] | None = None,
+    stage_timing_prefix: str = "append",
+    manage_transaction: bool = True,
+    blob_publication_receipt_id: str | None = None,
+    finalize_raw_parse: bool = True,
+) -> ArchiveRawParsedWriteResult:
+    """Write raw acquisition bytes through the raw-admission chokepoint, then index.
+
+    polylogue-1fijp: :func:`write_raw_and_parsed_result` always writes a bare
+    ``FULL``/``revision=None`` raw row -- the exact nullable "figure it out
+    later" limbo :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`
+    exists to eliminate. This entrypoint instead resolves
+    ``admit_raw_observation``'s typed arms against ``prior_head=None``, so it
+    is restricted to callers that, by construction, only ever observe a
+    ``logical_source_key`` for the first time -- the caller has already
+    filtered to not-yet-acquired source paths/native ids, so no prior head
+    exists to compare against and the APPEND/SUPERSEDE/duplicate/ambiguous
+    arms are structurally unreachable here (enforced below: any non-BASELINE
+    outcome is a caller contract violation, not a silently accepted result).
+
+    Callers that need revision-chain comparison against a real prior head
+    (the live-watcher's append tracking in ``sources/live/``, Drive lineage
+    binding) have their own governed paths and are explicitly out of scope
+    for this entrypoint -- see the module docstring of ``raw_admission.py``
+    and polylogue-1fijp's call-site survey notes.
+    """
+
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timings_s is not None:
+            key = f"{stage_timing_prefix}.{name}"
+            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+
+    if store._blob_publisher is None:
+        raise RuntimeError("raw archive writes require a writable archive publisher")
+    if blob_publication_receipt_id is None:
+        raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
+        blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
+    preacquired_attachments, attachment_blob_refs = store._preacquire_attachment_blobs(
+        session,
+        source_path=source_path,
+        acquired_at_ms=acquired_at_ms,
+    )
+    store._blob_publisher.flush()
+    t0 = time.perf_counter()
+    source_conn = store._ensure_source_conn()
+    add_timing("source_connect", t0)
+    t0 = time.perf_counter()
+    admission = admit_raw_observation(
+        source_conn,
+        origin=origin_from_provider(session.source_name),
+        capture_mode=session.source_name,
+        source_path=source_path,
+        source_index=source_index,
+        payload=payload,
+        acquired_at_ms=acquired_at_ms,
+        native_id=session.provider_session_id,
+        logical_source_key=logical_source_key,
+        prior_head=None,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        additional_blob_refs=attachment_blob_refs,
+        manage_transaction=True,
+    )
+    add_timing("source_raw_write", t0)
+    if admission.arm is not RawAdmissionArm.BASELINE:
+        raise RuntimeError(
+            f"admit_raw_and_parsed_result: expected a BASELINE admission for "
+            f"logical_source_key={logical_source_key!r} (prior_head=None), got "
+            f"{admission.arm!r} instead -- the caller must guarantee no prior raw "
+            "observation exists for this key before calling this entrypoint"
+        )
+    t0 = time.perf_counter()
+    result = _index_parsed_for_retained_raw(
+        store,
+        session,
+        raw_id=admission.raw_id,
         source_index=source_index,
         stage_timings_s=stage_timings_s,
         stage_timing_prefix=stage_timing_prefix,

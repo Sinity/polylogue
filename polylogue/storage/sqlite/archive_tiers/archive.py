@@ -174,6 +174,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _raw_revision_payload_digest_and_size,
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
+    admit_raw_and_parsed_result,
     admit_raw_artifact_payload,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
@@ -2521,6 +2522,43 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             source_index=source_index,
             raw_id=raw_id,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            finalize_raw_parse=finalize_raw_parse,
+        )
+
+    def admit_raw_and_parsed_result(
+        self,
+        session: ParsedSession,
+        *,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        logical_source_key: str,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
+        blob_publication_receipt_id: str | None = None,
+        finalize_raw_parse: bool = True,
+    ) -> ArchiveRawParsedWriteResult:
+        """Write raw bytes through the raw-admission chokepoint, then index.
+
+        See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_and_parsed_result`.
+        Restricted to first-observation callers (no prior head exists for
+        ``logical_source_key``); use :meth:`write_raw_and_parsed_result` for
+        callers with revision-chain/dedup semantics of their own.
+        """
+        return admit_raw_and_parsed_result(
+            self,
+            session,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            logical_source_key=logical_source_key,
+            source_index=source_index,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
