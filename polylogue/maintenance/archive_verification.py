@@ -13,10 +13,26 @@ rather than only getting a red light.
 New checks slot into :data:`ARCHIVE_VERIFICATION_CHECKS` without touching
 :func:`verify_archive` or its callers -- the registry is the extension point
 for future checks (blob-reference debt, cost rollups, ...).
+
+**Registry contract rule (polylogue-in24n):** a check's universe must be a
+ground-truth table, never a derived ledger of the mechanism under audit. The
+canonical violation this rule exists to prevent: an earlier version of
+``source-index-coverage`` computed its universe from ``raw_membership_census``
+(the *census machinery's own bookkeeping* of what it considered complete)
+instead of ``raw_sessions`` (the durable, ground-truth table every acquired
+raw lands in regardless of what any downstream census/reconciliation stage
+later decides about it). Because the census never blesses a quarantined or
+unreconciled raw, that raw was invisible to the check by construction -- the
+check reported OK while a real, large materialization gap sat underneath it.
+When adding a new check, ask: "if the mechanism I'm checking silently drops a
+row from its own ledger, does my universe query still see that row?" If the
+answer is no, the check is auditing the mechanism against itself, not against
+reality.
 """
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -245,68 +261,180 @@ def _check_pointer_coherence(archive_root: Path, _sample_limit: int) -> ArchiveV
 
 
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Every logical source's head is indexed OR carries a typed refusal.
+
+    Universe (polylogue-in24n, invariant I1): ``raw_sessions`` logical heads --
+    the latest revision per ``(origin, COALESCE(native_id, source_path))`` --
+    which is a ground-truth table every acquired raw lands in, not a ledger a
+    downstream reconciliation stage can silently omit rows from. A logical
+    head counts as covered when *any* raw in its revision group is
+    materialized into ``index.db``. An uncovered head must be typed as one
+    of: ``parse_error`` (raw_sessions.parse_error set), ``non_session`` /
+    ``census_failed`` (raw_membership_census recorded a terminal non-complete
+    verdict), or ``quarantined`` (raw_sessions.revision_authority --
+    reconciliation hasn't granted it authority to write yet, WARN-level
+    evidence, not blocking). An uncovered head matching none of those is an
+    *untyped* gap -- a materialization failure no other subsystem has
+    explained -- and is the only ERROR-gating condition here besides orphans
+    (index sessions whose raw_id doesn't exist in source.db at all).
+    """
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
     index_path = _resolve_index_path(archive_root)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("source-index-coverage", "source.db or index.db not present")
 
     try:
-        source_conn = _open_ro(source_path)
+        conn = _open_ro(source_path)
     except sqlite3.Error as exc:
         return _error_check("source-index-coverage", f"could not open source.db: {exc}", exc=exc)
+
     try:
-        if table_exists(source_conn, "raw_membership_census"):
-            censused_complete = {
-                str(row[0])
-                for row in source_conn.execute(
-                    "SELECT raw_id FROM raw_membership_census WHERE status = 'complete' AND member_count > 0"
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("source-index-coverage", f"could not attach index.db: {exc}", exc=exc)
+
+        try:
+            has_census = table_exists(conn, "raw_membership_census")
+            census_expr = (
+                "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
+            )
+
+            # A read-only connection (``query_only=ON``, connection-wide, not
+            # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
+            # is still a write. Repeat the heads CTE per query instead; it is
+            # a plain in-query derived table, not a persisted write.
+            heads_cte = f"""
+                WITH heads AS (
+                    SELECT
+                        r.raw_id,
+                        r.parse_error,
+                        r.revision_authority,
+                        {census_expr} AS census_status,
+                        MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                            OVER (PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)) AS any_indexed,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)
+                            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                        ) AS rn
+                    FROM raw_sessions r
                 )
-            }
-        else:
-            censused_complete = set()
-        all_raw_ids = {str(row[0]) for row in source_conn.execute("SELECT raw_id FROM raw_sessions")}
-    except sqlite3.Error as exc:
-        return _error_check("source-index-coverage", f"could not read source.db: {exc}", exc=exc)
+            """
+            untyped_predicate = """
+                rn = 1 AND any_indexed = 0 AND parse_error IS NULL
+                  AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                  AND revision_authority != 'quarantined'
+            """
+            quarantined_predicate = """
+                rn = 1 AND any_indexed = 0 AND parse_error IS NULL
+                  AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                  AND revision_authority = 'quarantined'
+            """
+
+            total_heads = int(conn.execute(f"{heads_cte} SELECT COUNT(*) FROM heads WHERE rn = 1").fetchone()[0])
+
+            counts = conn.execute(
+                f"""
+                {heads_cte}
+                SELECT
+                  SUM(CASE WHEN any_indexed = 0 AND parse_error IS NOT NULL THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN any_indexed = 0 AND parse_error IS NULL
+                            AND census_status = 'non_session' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN any_indexed = 0 AND parse_error IS NULL
+                            AND COALESCE(census_status, '') != 'non_session'
+                            AND census_status = 'failed' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN {quarantined_predicate.replace("rn = 1 AND ", "")} THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN {untyped_predicate.replace("rn = 1 AND ", "")} THEN 1 ELSE 0 END)
+                FROM heads WHERE rn = 1
+                """
+            ).fetchone()
+            parse_error_n, non_session_n, census_failed_n, quarantined_n, untyped_n = (
+                int(value or 0) for value in counts
+            )
+
+            untyped_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    f"{heads_cte} SELECT raw_id FROM heads WHERE {untyped_predicate} LIMIT ?",
+                    (sample_limit,),
+                )
+            ]
+            quarantined_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    f"{heads_cte} SELECT raw_id FROM heads WHERE {quarantined_predicate} LIMIT ?",
+                    (sample_limit,),
+                )
+            ]
+
+            orphan_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM idx_tier.sessions s
+                WHERE s.raw_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id)
+                """
+            ).fetchone()[0]
+            orphan_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT s.raw_id FROM idx_tier.sessions s
+                    WHERE s.raw_id IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id)
+                    LIMIT ?
+                    """,
+                    (sample_limit,),
+                )
+            ]
+        except sqlite3.Error as exc:
+            return _error_check("source-index-coverage", f"could not read source/index tiers: {exc}", exc=exc)
     finally:
-        source_conn.close()
+        conn.close()
 
-    try:
-        index_conn = _open_ro(index_path)
-    except sqlite3.Error as exc:
-        return _error_check("source-index-coverage", f"could not open index.db: {exc}", exc=exc)
-    try:
-        session_raw_ids = {
-            str(row[0]) for row in index_conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL")
-        }
-    except sqlite3.Error as exc:
-        return _error_check("source-index-coverage", f"could not read index.db: {exc}", exc=exc)
-    finally:
-        index_conn.close()
+    unindexed_head_count = parse_error_n + non_session_n + census_failed_n + quarantined_n + untyped_n
+    blocking = untyped_n > 0 or int(orphan_count or 0) > 0
+    warning = quarantined_n > 0
 
-    missing_work = sorted(censused_complete - session_raw_ids)
-    orphans = sorted(session_raw_ids - all_raw_ids)
+    if blocking:
+        status = OutcomeStatus.ERROR
+    elif warning:
+        status = OutcomeStatus.WARNING
+    else:
+        status = OutcomeStatus.OK
 
-    status = OutcomeStatus.ERROR if (missing_work or orphans) else OutcomeStatus.OK
-    summary = (
-        f"{len(censused_complete):,} complete-census raw(s), {len(session_raw_ids):,} raw-backed session(s); "
-        f"missing_work={len(missing_work):,} orphans={len(orphans):,}"
-    )
+    parts = [f"{total_heads:,} logical source head(s), {unindexed_head_count:,} unindexed"]
+    if untyped_n:
+        parts.append(f"untyped={untyped_n:,}")
+    if quarantined_n:
+        parts.append(f"quarantined={quarantined_n:,} (WARN evidence, not blocking)")
+    if parse_error_n:
+        parts.append(f"parse_error={parse_error_n:,}")
+    if non_session_n or census_failed_n:
+        parts.append(f"declared-non-session={non_session_n + census_failed_n:,}")
+    if orphan_count:
+        parts.append(f"orphans={int(orphan_count):,}")
+    summary = "; ".join(parts)
+
     return ArchiveVerificationCheck(
         name="source-index-coverage",
         status=status,
         summary=summary,
-        count=len(missing_work) + len(orphans),
+        count=untyped_n + int(orphan_count or 0),
         details=[
-            *(f"missing-work:{raw_id}" for raw_id in missing_work[:sample_limit]),
-            *(f"orphan:{raw_id}" for raw_id in orphans[:sample_limit]),
+            *(f"untyped:{raw_id}" for raw_id in untyped_sample),
+            *(f"orphan:{raw_id}" for raw_id in orphan_sample),
         ],
         evidence={
-            "censused_complete_raw_count": len(censused_complete),
-            "raw_backed_session_count": len(session_raw_ids),
-            "missing_work_count": len(missing_work),
-            "missing_work_sample": missing_work[:sample_limit],
-            "orphan_count": len(orphans),
-            "orphan_sample": orphans[:sample_limit],
+            "logical_head_count": total_heads,
+            "unindexed_head_count": unindexed_head_count,
+            "untyped_count": untyped_n,
+            "untyped_sample": untyped_sample,
+            "parse_error_count": parse_error_n,
+            "non_session_count": non_session_n,
+            "census_failed_count": census_failed_n,
+            "quarantined_count": quarantined_n,
+            "quarantined_sample": quarantined_sample,
+            "orphan_count": int(orphan_count or 0),
+            "orphan_sample": orphan_sample,
         },
     )
 
@@ -505,6 +633,423 @@ def _check_lineage_sanity(archive_root: Path, sample_limit: int) -> ArchiveVerif
 
 
 # ---------------------------------------------------------------------------
+# Check: enum-superset-CHECK (I2, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+#: Column names that carry the ``Origin`` vocabulary and are generated via
+#: ``check("origin", Origin)`` / ``check("dst_origin", Origin)`` at DDL-build
+#: time (``archive_tiers/*.py``). Restricted to these two, word-boundary
+#: anchored columns rather than every enum-backed column in the schema:
+#: several other CHECK-constrained column names (``status``, ``kind``) are
+#: reused across tables with *unrelated*, hand-written literal vocabularies,
+#: so a blind column-name match would false-positive on those. ``origin`` is
+#: the column this class of bug was actually found on live (2026-08-03:
+#: ``Origin`` gained ``claude-design-session`` after several tables' DDL had
+#: already been written to disk with the older literal list -- a CHECK
+#: constraint is baked into the table at creation time and does not
+#: retroactively track a later enum change).
+_ORIGIN_CHECK_COLUMN_PATTERN = re.compile(
+    r"[(,\s][\"'`\[]?(origin|dst_origin)[\"'`\]]?\s+TEXT[^,]*?CHECK\s*\([^)]*?\bIN\s*\(([^)]*)\)",
+    re.IGNORECASE,
+)
+
+
+def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    """Every live ``origin``/``dst_origin`` CHECK list is a superset of ``Origin``.
+
+    A CHECK constraint is generated from :class:`polylogue.core.enums.Origin`
+    at DDL-build time, but once a table exists on disk its CHECK text is
+    frozen -- SQLite has no ``ALTER ... CHECK``. If ``Origin`` gains a member
+    after a table was created (an additive-derived or additive-durable
+    change that didn't trigger a full DDL rebuild for every affected table),
+    the *live* archive's CHECK list silently falls behind the vocabulary
+    production code can write, and the next insert with the new value either
+    raises or -- if some path writes around it -- corrupts silently. This
+    check reads ``sqlite_master`` on the live tiers and compares the CHECK
+    text actually on disk against the *current* Python enum, so it is
+    ground-truth against reality (the disk), not against the code that
+    would generate a fresh table today.
+    """
+    from polylogue.core.enums import Origin
+
+    origins = {o.value for o in Origin}
+    bad: dict[str, Any] = {}
+    examined_any = False
+    for db_name in ("source.db", "index.db"):
+        db_path = archive_root / db_name if db_name == "source.db" else _resolve_index_path(archive_root)
+        if not db_path.exists():
+            continue
+        examined_any = True
+        try:
+            conn = _open_ro(db_path)
+        except sqlite3.Error as exc:
+            return _error_check("enum-superset-check", f"could not open {db_name}: {exc}", exc=exc)
+        try:
+            rows = conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND sql LIKE '%origin%IN (%'"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            return _error_check("enum-superset-check", f"could not read {db_name}: {exc}", exc=exc)
+        finally:
+            conn.close()
+
+        for table_name, ddl in rows:
+            for match in _ORIGIN_CHECK_COLUMN_PATTERN.finditer(ddl or ""):
+                column, allowed_list = match.group(1), match.group(2)
+                allowed = set(re.findall(r"'([^']*)'", allowed_list))
+                missing = sorted(origins - allowed)
+                if missing:
+                    bad[f"{db_name}:{table_name}.{column}"] = missing
+
+    if not examined_any:
+        return _skip_check("enum-superset-check", "neither source.db nor index.db present")
+    if bad:
+        return ArchiveVerificationCheck(
+            name="enum-superset-check",
+            status=OutcomeStatus.ERROR,
+            summary=f"{len(bad)} CHECK list(s) missing current Origin member(s): {sorted(bad)}",
+            count=len(bad),
+            details=[f"{key}: missing {values}" for key, values in sorted(bad.items())],
+            evidence={"missing_by_column": bad, "current_origin_vocabulary": sorted(origins)},
+        )
+    return ArchiveVerificationCheck(
+        name="enum-superset-check",
+        status=OutcomeStatus.OK,
+        summary="every origin/dst_origin CHECK list on disk covers the current Origin enum",
+        evidence={"current_origin_vocabulary": sorted(origins)},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: blob_refs join-liveness per ref_type (I3, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+#: ``blob_refs.ref_type`` -> the source-tier table + PK column it must join
+#: to. GC's oracle for "is this blob still referenced" is exactly this join
+#: (a ``blob_refs`` row with no live referent is orphaned bookkeeping, not
+#: proof the blob itself is unreferenced -- the join direction the schema
+#: intends), so a ref_type this check doesn't recognize is itself a gap the
+#: check surfaces via `_error_check`, not a silent skip.
+_BLOB_REF_REFERENT_TABLES: dict[str, tuple[str, str]] = {
+    "raw_payload": ("raw_sessions", "raw_id"),
+    "attachment": ("raw_artifacts", "artifact_id"),
+    "sidecar": ("history_sidecars", "sidecar_id"),
+}
+
+
+def _check_blob_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Every ``blob_refs`` row resolves in its referent table for its ``ref_type``.
+
+    ``blob_refs`` is the durable GC substrate: a blob is eligible for
+    collection only once every referencing row is gone. An orphaned
+    ``blob_refs`` row (its referent already deleted, e.g. by a cascading
+    raw replace) is stale bookkeeping that either wastes retention (the blob
+    looks referenced forever) or -- worse -- signals the delete path forgot
+    to clean up ``blob_refs`` alongside the referent, which is a correctness
+    bug in the GC liveness contract itself.
+    """
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    if not source_path.exists():
+        return _skip_check("blob-refs-liveness", "source.db not present")
+
+    try:
+        conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("blob-refs-liveness", f"could not open source.db: {exc}", exc=exc)
+
+    try:
+        if not table_exists(conn, "blob_refs"):
+            return _skip_check("blob-refs-liveness", "blob_refs table not present")
+
+        try:
+            ref_types = {str(row[0]) for row in conn.execute("SELECT DISTINCT ref_type FROM blob_refs")}
+        except sqlite3.Error as exc:
+            return _error_check("blob-refs-liveness", f"could not read blob_refs: {exc}", exc=exc)
+
+        unknown_ref_types = sorted(ref_types - set(_BLOB_REF_REFERENT_TABLES))
+        if unknown_ref_types:
+            return _error_check(
+                "blob-refs-liveness",
+                f"blob_refs has ref_type(s) this check doesn't recognize: {unknown_ref_types} "
+                "(update _BLOB_REF_REFERENT_TABLES)",
+            )
+
+        orphans_by_type: dict[str, int] = {}
+        samples_by_type: dict[str, list[str]] = {}
+        try:
+            for ref_type, (referent_table, referent_column) in _BLOB_REF_REFERENT_TABLES.items():
+                if not table_exists(conn, referent_table):
+                    return _error_check(
+                        "blob-refs-liveness",
+                        f"referent table {referent_table!r} for ref_type={ref_type!r} does not exist",
+                    )
+                count = conn.execute(
+                    f"""
+                    SELECT COUNT(*) FROM blob_refs b
+                    WHERE b.ref_type = ? AND NOT EXISTS (
+                        SELECT 1 FROM {referent_table} r WHERE r.{referent_column} = b.ref_id
+                    )
+                    """,
+                    (ref_type,),
+                ).fetchone()[0]
+                orphans_by_type[ref_type] = int(count)
+                if count:
+                    samples_by_type[ref_type] = [
+                        str(row[0])
+                        for row in conn.execute(
+                            f"""
+                            SELECT DISTINCT b.ref_id FROM blob_refs b
+                            WHERE b.ref_type = ? AND NOT EXISTS (
+                                SELECT 1 FROM {referent_table} r WHERE r.{referent_column} = b.ref_id
+                            )
+                            LIMIT ?
+                            """,
+                            (ref_type, sample_limit),
+                        )
+                    ]
+        except sqlite3.Error as exc:
+            return _error_check("blob-refs-liveness", f"could not read source.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    total_orphans = sum(orphans_by_type.values())
+    status = OutcomeStatus.ERROR if total_orphans else OutcomeStatus.OK
+    summary = (
+        "; ".join(f"{ref_type} orphans={count:,}" for ref_type, count in orphans_by_type.items() if count)
+        if total_orphans
+        else "every blob_refs row resolves in its referent table"
+    )
+    return ArchiveVerificationCheck(
+        name="blob-refs-liveness",
+        status=status,
+        summary=summary,
+        count=total_orphans,
+        details=[f"{ref_type}:{ref_id}" for ref_type, ids in samples_by_type.items() for ref_id in ids],
+        evidence={"orphans_by_ref_type": orphans_by_type, "orphan_samples_by_ref_type": samples_by_type},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: embeddings refs resolve in the index tier (I4, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+
+def _check_embeddings_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Every ``message_embedding_refs`` row resolves to a live index message.
+
+    embeddings.db is a rebuildable derived tier keyed off index.db's message
+    ids; an embedding ref outliving the message it was computed for (e.g. a
+    session full-replace deleting messages without the embedding catch-up
+    stage draining the corresponding refs) is exactly the feu0-class bug:
+    dead vector rows that read back as "embedded" for content that no
+    longer exists in the index.
+    """
+    embeddings_path = _tier_path(archive_root, ArchiveTier.EMBEDDINGS)
+    index_path = _resolve_index_path(archive_root)
+    if not embeddings_path.exists():
+        return _skip_check("embeddings-refs-liveness", "embeddings.db not present")
+    if not index_path.exists():
+        return _skip_check("embeddings-refs-liveness", "index.db not present")
+
+    try:
+        conn = _open_ro(embeddings_path)
+    except sqlite3.Error as exc:
+        return _error_check("embeddings-refs-liveness", f"could not open embeddings.db: {exc}", exc=exc)
+
+    try:
+        if not table_exists(conn, "message_embedding_refs"):
+            return _skip_check("embeddings-refs-liveness", "message_embedding_refs table not present")
+
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("embeddings-refs-liveness", f"could not attach index.db: {exc}", exc=exc)
+
+        try:
+            total, orphans = conn.execute(
+                """
+                SELECT COUNT(*), SUM(
+                    CASE WHEN NOT EXISTS (
+                        SELECT 1 FROM idx_tier.messages m WHERE m.message_id = r.message_id
+                    ) THEN 1 ELSE 0 END
+                )
+                FROM message_embedding_refs r
+                """
+            ).fetchone()
+            orphans = int(orphans or 0)
+            orphan_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT r.message_id FROM message_embedding_refs r
+                    WHERE NOT EXISTS (SELECT 1 FROM idx_tier.messages m WHERE m.message_id = r.message_id)
+                    LIMIT ?
+                    """,
+                    (sample_limit,),
+                )
+            ]
+        except sqlite3.Error as exc:
+            return _error_check("embeddings-refs-liveness", f"could not read embeddings/index tiers: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    status = OutcomeStatus.ERROR if orphans else OutcomeStatus.OK
+    return ArchiveVerificationCheck(
+        name="embeddings-refs-liveness",
+        status=status,
+        summary=(
+            f"{int(total or 0):,} embedding ref(s), {orphans:,} orphaned (no live index message)"
+            if orphans
+            else f"all {int(total or 0):,} embedding ref(s) resolve to a live index message"
+        ),
+        count=orphans,
+        details=[f"orphan:{message_id}" for message_id in orphan_sample],
+        evidence={"ref_count": int(total or 0), "orphan_count": orphans, "orphan_sample": orphan_sample},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: session parent-chain acyclicity (I5, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+
+def _check_session_lineage_acyclic(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    """``sessions.parent_session_id`` never closes a cycle.
+
+    ``lineage-sanity`` (above) already covers ``session_links``' dangling
+    ``resolved_dst_session_id`` / ``branch_point_message_id`` references --
+    this check adds the one I5 sub-invariant that has no existing coverage:
+    the derived ``parent_session_id`` chain resolvers walk to recompose a
+    session's inherited prefix must terminate. A cycle here would make
+    prefix recomposition (see the lineage-normalization doc in
+    ``storage/sqlite/archive_tiers/write.py``) loop forever or silently
+    truncate depending on the walker's own defenses -- this check proves
+    the graph itself is acyclic independent of any particular walker's
+    resilience to being handed a cycle.
+    """
+    index_path = _resolve_index_path(archive_root)
+    if not index_path.exists():
+        return _skip_check("session-lineage-acyclic", "index.db not present")
+
+    try:
+        conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("session-lineage-acyclic", f"could not open index.db: {exc}", exc=exc)
+
+    try:
+        try:
+            parents: dict[str, str] = dict(
+                conn.execute(
+                    "SELECT session_id, parent_session_id FROM sessions WHERE parent_session_id IS NOT NULL"
+                ).fetchall()
+            )
+        except sqlite3.Error as exc:
+            return _error_check("session-lineage-acyclic", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    # Walk each node's parent chain once; nodes already proven part of some
+    # walk (cyclic or not) are never re-walked, so this is O(n) total despite
+    # the outer loop over every node.
+    resolved: set[str] = set()
+    cycle_members: set[str] = set()
+    for start in parents:
+        if start in resolved:
+            continue
+        path: list[str] = []
+        node = start
+        while node in parents and node not in resolved:
+            if node in path:
+                cycle_members.update(path[path.index(node) :])
+                break
+            path.append(node)
+            node = parents[node]
+        resolved.update(path)
+
+    status = OutcomeStatus.ERROR if cycle_members else OutcomeStatus.OK
+    return ArchiveVerificationCheck(
+        name="session-lineage-acyclic",
+        status=status,
+        summary=(
+            f"{len(cycle_members)} session(s) on a parent_session_id cycle"
+            if cycle_members
+            else f"{len(parents):,} parent-linked session(s), parent chain is acyclic"
+        ),
+        count=len(cycle_members),
+        details=sorted(cycle_members)[:10],
+        evidence={"linked_session_count": len(parents), "cycle_member_sample": sorted(cycle_members)[:10]},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: sessions.message_count projection drift (I8, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+
+def _check_message_count_projection(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """``sessions.message_count`` matches the actual materialized row count.
+
+    ``message_count`` is a write-time projection (set when a session is
+    written, not a generated column), so it can drift from the underlying
+    ``messages`` rows if a partial write, a bug in the write path, or a
+    manual repair touches one but not the other. Ground truth is
+    ``COUNT(*)`` over ``messages`` itself, joined back to ``sessions``.
+    """
+    index_path = _resolve_index_path(archive_root)
+    if not index_path.exists():
+        return _skip_check("message-count-projection", "index.db not present")
+
+    try:
+        conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("message-count-projection", f"could not open index.db: {exc}", exc=exc)
+
+    try:
+        try:
+            drift_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT s.session_id FROM sessions s
+                    LEFT JOIN (SELECT session_id, COUNT(*) AS n FROM messages GROUP BY session_id) m
+                        ON m.session_id = s.session_id
+                    WHERE COALESCE(m.n, 0) != s.message_count
+                )
+                """
+            ).fetchone()[0]
+            drift_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT s.session_id FROM sessions s
+                    LEFT JOIN (SELECT session_id, COUNT(*) AS n FROM messages GROUP BY session_id) m
+                        ON m.session_id = s.session_id
+                    WHERE COALESCE(m.n, 0) != s.message_count
+                    LIMIT ?
+                    """,
+                    (sample_limit,),
+                )
+            ]
+        except sqlite3.Error as exc:
+            return _error_check("message-count-projection", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    status = OutcomeStatus.ERROR if drift_count else OutcomeStatus.OK
+    return ArchiveVerificationCheck(
+        name="message-count-projection",
+        status=status,
+        summary=(
+            f"{drift_count} session(s) with drifted message_count"
+            if drift_count
+            else "sessions.message_count matches COUNT(messages) for every session"
+        ),
+        count=drift_count,
+        details=[f"session:{session_id}" for session_id in drift_sample],
+        evidence={"drifted_session_count": drift_count, "drifted_session_sample": drift_sample},
+    )
+
+
+# ---------------------------------------------------------------------------
 # Check 6: planner stats presence (polylogue-l3tk class)
 # ---------------------------------------------------------------------------
 
@@ -622,7 +1167,8 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
     ),
     ArchiveVerificationCheckSpec(
         "source-index-coverage",
-        "Complete-census raw sessions with no materialized index session, and index sessions with no backing raw.",
+        "Every raw_sessions logical head is indexed or typed (parse_error/non_session/quarantined); "
+        "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
     ),
     ArchiveVerificationCheckSpec(
@@ -634,6 +1180,33 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "lineage-sanity",
         "session_links.resolved_dst_session_id / branch_point_message_id resolve to real sessions/messages.",
         _check_lineage_sanity,
+    ),
+    ArchiveVerificationCheckSpec(
+        "enum-superset-check",
+        "Live origin/dst_origin CHECK lists on disk are a superset of the current Origin enum (polylogue-t0m73 I2).",
+        _check_enum_superset,
+    ),
+    ArchiveVerificationCheckSpec(
+        "blob-refs-liveness",
+        "Every blob_refs row resolves in its ref_type's referent table -- the GC liveness oracle is a join, "
+        "not membership in blob_refs itself (polylogue-t0m73 I3).",
+        _check_blob_refs_liveness,
+    ),
+    ArchiveVerificationCheckSpec(
+        "embeddings-refs-liveness",
+        "message_embedding_refs resolve to live index.db messages (feu0-class dead-vector detection, "
+        "polylogue-t0m73 I4).",
+        _check_embeddings_refs_liveness,
+    ),
+    ArchiveVerificationCheckSpec(
+        "session-lineage-acyclic",
+        "sessions.parent_session_id chains never close a cycle (polylogue-t0m73 I5).",
+        _check_session_lineage_acyclic,
+    ),
+    ArchiveVerificationCheckSpec(
+        "message-count-projection",
+        "sessions.message_count matches COUNT(messages) per session (polylogue-t0m73 I8).",
+        _check_message_count_projection,
     ),
     ArchiveVerificationCheckSpec(
         "planner-stats",

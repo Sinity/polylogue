@@ -235,6 +235,105 @@ class TestGetSampleCountFromDb:
         assert get_sample_count_from_db("claude-ai", db_path=db_path) == 0
 
 
+class TestLogicalHeadsOnly:
+    """``_iter_schema_units_from_db(..., logical_heads_only=True)``.
+
+    polylogue-t0m73 phase 1: an opt-in flag restricting the sampling query
+    to one row per logical source (latest revision per
+    ``(origin, COALESCE(native_id, source_path))``) for value-distribution
+    callers, who would otherwise have a re-acquired session contribute its
+    field values once per revision. Default is unchanged (every revision
+    sampled) for schema-shape discovery, which wants every revision since
+    an older one can carry a shape a later one dropped.
+
+    The two seeded raw rows use *different* blob_hash values deliberately:
+    ``_iter_schema_units_from_db``'s own content-hash dedup already skips a
+    later raw_id that shares an earlier one's exact blob_hash (unrelated,
+    pre-existing behavior -- see its docstring), which would mask whether
+    ``logical_heads_only`` is doing anything. Both rows' payload decode is
+    left to fail naturally (no real blob file backs either hash) -- the
+    terminal recorder still observes every row the query selects before
+    decode is attempted, so this proves the *query's* row selection without
+    needing a real, parseable ChatGPT export.
+    """
+
+    def _seed_two_revisions(self, source_db_path: Path) -> None:
+        import sqlite3
+
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        initialize_archive_database(source_db_path, ArchiveTier.SOURCE)
+        conn = sqlite3.connect(source_db_path)
+        try:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+                VALUES ('raw-old', 'chatgpt-export', 'conv-1', '/x/old.json', ?, 10, 100)
+                """,
+                (b"\x11" * 32,),
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+                VALUES ('raw-new', 'chatgpt-export', 'conv-1', '/x/new.json', ?, 200, 200)
+                """,
+                (b"\x22" * 32,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_default_samples_every_revision(self, tmp_path: Path) -> None:
+        from polylogue.core.enums import Provider
+        from polylogue.schemas.observation_identity import resolve_provider_config
+        from polylogue.schemas.sampling_db import _iter_schema_units_from_db
+
+        self._seed_two_revisions(tmp_path / "source.db")
+        config = resolve_provider_config(Provider.CHATGPT)
+
+        seen_raw_ids: list[str] = []
+
+        def _record(*, raw_id: str, status: object, artifact_kind: object, source_path: object, reason: object) -> None:
+            seen_raw_ids.append(raw_id)
+
+        list(
+            _iter_schema_units_from_db(
+                Provider.CHATGPT,
+                db_path=tmp_path / "index.db",
+                config=config,
+                terminal_recorder=_record,
+            )
+        )
+
+        assert sorted(seen_raw_ids) == ["raw-new", "raw-old"]
+
+    def test_logical_heads_only_samples_just_the_latest_revision(self, tmp_path: Path) -> None:
+        from polylogue.core.enums import Provider
+        from polylogue.schemas.observation_identity import resolve_provider_config
+        from polylogue.schemas.sampling_db import _iter_schema_units_from_db
+
+        self._seed_two_revisions(tmp_path / "source.db")
+        config = resolve_provider_config(Provider.CHATGPT)
+
+        seen_raw_ids: list[str] = []
+
+        def _record(*, raw_id: str, status: object, artifact_kind: object, source_path: object, reason: object) -> None:
+            seen_raw_ids.append(raw_id)
+
+        list(
+            _iter_schema_units_from_db(
+                Provider.CHATGPT,
+                db_path=tmp_path / "index.db",
+                config=config,
+                terminal_recorder=_record,
+                logical_heads_only=True,
+            )
+        )
+
+        assert seen_raw_ids == ["raw-new"]  # the later of the two revisions is the logical head
+
+
 class TestGenerateSchemaFromSamples:
     """Focused schema-generation edge cases beyond the general laws."""
 
