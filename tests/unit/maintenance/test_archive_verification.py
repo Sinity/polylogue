@@ -20,6 +20,7 @@ from polylogue.maintenance.archive_verification import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -700,6 +701,25 @@ def test_message_count_projection_passes_on_coherent_archive(tmp_path: Path) -> 
     check = _check(report, "message-count-projection")
     assert check.status is OutcomeStatus.OK
     assert check.evidence["drifted_session_count"] == 0
+
+
+@pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
+def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
+    check_name: str, seeded_archive: SeededArchiveArtifact
+) -> None:
+    """Every check in the registry, run individually against a real-pipeline
+    (acquire->parse->materialize->index), multi-provider synthetic corpus,
+    must not report ``error``. This is the anti-vacuity backstop for the
+    whole registry: a check that only ever runs against a single
+    hand-inserted row (the other tests in this file) could pass by never
+    actually exercising realistic multi-session, multi-provider shape.
+    ``verify_archive`` is read-only, so the session-scoped fixture root is
+    read directly with no per-test clone.
+    """
+    report = verify_archive(seeded_archive.root, checks=(check_name,))
+
+    check = _check(report, check_name)
+    assert check.status is not OutcomeStatus.ERROR, f"{check_name}: {check.summary}\n{check.evidence}"
 
 
 def test_report_to_json_is_json_document(tmp_path: Path) -> None:
