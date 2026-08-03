@@ -1082,3 +1082,108 @@ def test_provider_usage_coverage_matrix_marks_estimate_only_exports(tmp_path: Pa
     assert row.coverage_state == "estimate_only"
     assert row.provider_event_count == 0
     assert "exact provider telemetry unavailable" in " ".join(row.caveats)
+
+
+def _seed_priced_claude_session(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            origin, native_id, title, session_kind,
+            created_at_ms, updated_at_ms, message_count, word_count, content_hash
+        ) VALUES ('claude-code-session', 'priced', 'priced', 'standard', 1, 1, 1, 1, zeroblob(32))
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
+        VALUES ('test-catalog', 'test-hash', 'test', 0)
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO session_model_usage (
+            session_id, model_name, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens, message_count, cost_provenance, cost_usd, priced_with
+        ) VALUES ('claude-code-session:priced', 'claude-sonnet-4-5', 1000, 100, 2000, 0, 1, 'priced', 1.25, 'test-catalog')
+        """
+    )
+
+
+def test_origin_usage_report_subscription_tier_param_reprices_subscription_credit(tmp_path: Path) -> None:
+    """polylogue-at44: ``subscription_tier`` selects the plan priced into the
+    subscription-credit lane, replacing the hardcoded ``pro`` ratio."""
+    conn = _connect(tmp_path / "index.db")
+    _seed_priced_claude_session(conn)
+
+    default_report = origin_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+    pro_report = origin_usage_report_from_connection(
+        conn, archive_root=tmp_path, detail="headline", limit=0, subscription_tier="pro"
+    )
+    max20_report = origin_usage_report_from_connection(
+        conn, archive_root=tmp_path, detail="headline", limit=0, subscription_tier="max_20x"
+    )
+
+    assert default_report.subscription_credit_usd == pytest.approx(pro_report.subscription_credit_usd)
+    assert max20_report.subscription_credit_usd is not None
+    assert pro_report.subscription_credit_usd is not None
+    assert max20_report.subscription_credit_usd < pro_report.subscription_credit_usd
+    assert max20_report.subscription_credit_usd > 0
+
+
+def test_origin_usage_report_for_archive_root_reads_subscription_tier_user_setting(tmp_path: Path) -> None:
+    """The archive-root entry point resolves ``subscription_tier`` from the
+    durable ``user_settings`` row (polylogue-at44) rather than always
+    assuming ``pro``."""
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
+    from polylogue.storage.usage import origin_usage_report_for_archive_root
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    index_conn = _connect(archive_root / "index.db")
+    _seed_priced_claude_session(index_conn)
+    index_conn.commit()
+    index_conn.close()
+
+    user_conn = sqlite3.connect(archive_root / "user.db")
+    initialize_archive_tier(user_conn, ArchiveTier.USER)
+    set_user_setting(user_conn, "subscription_tier", "max_20x")
+    user_conn.commit()
+    user_conn.close()
+
+    report = origin_usage_report_for_archive_root(archive_root, detail="headline", limit=0)
+    default_conn = _connect(tmp_path / "no-setting-index.db")
+    _seed_priced_claude_session(default_conn)
+    pro_baseline = origin_usage_report_from_connection(
+        default_conn, archive_root=tmp_path, detail="headline", limit=0, subscription_tier="pro"
+    )
+
+    assert report.subscription_credit_usd is not None
+    assert pro_baseline.subscription_credit_usd is not None
+    assert report.subscription_credit_usd < pro_baseline.subscription_credit_usd
+
+
+def test_origin_usage_report_for_archive_root_defaults_when_setting_unset(tmp_path: Path) -> None:
+    """No stored ``subscription_tier`` row falls back to the conservative
+    ``pro`` default, not an error."""
+    from polylogue.storage.usage import origin_usage_report_for_archive_root
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    index_conn = _connect(archive_root / "index.db")
+    _seed_priced_claude_session(index_conn)
+    index_conn.commit()
+    index_conn.close()
+
+    user_conn = sqlite3.connect(archive_root / "user.db")
+    initialize_archive_tier(user_conn, ArchiveTier.USER)
+    user_conn.commit()
+    user_conn.close()
+
+    report = origin_usage_report_for_archive_root(archive_root, detail="headline", limit=0)
+    pro_conn = _connect(tmp_path / "pro-index.db")
+    _seed_priced_claude_session(pro_conn)
+    pro_report = origin_usage_report_from_connection(
+        pro_conn, archive_root=tmp_path, detail="headline", limit=0, subscription_tier="pro"
+    )
+
+    assert report.subscription_credit_usd == pytest.approx(pro_report.subscription_credit_usd)

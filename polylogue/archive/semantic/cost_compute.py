@@ -34,6 +34,7 @@ def compute_session_cost(
     session_estimate: CostEstimatePayload | None = None,
     estimate_if_missing: bool = True,
     model_usage: Sequence[ModelUsageTotals] | None = None,
+    subscription_tier: str | None = None,
 ) -> SessionCostSummary:
     """Compute per-model cost breakdown and aggregate cost summary.
 
@@ -49,6 +50,14 @@ def compute_session_cost(
     (its real usage arrives as periodic cumulative ``token_count`` events, not
     per-message ``usage`` blocks), which is what made the per-message fallback
     ~1000x too small for Codex sessions when it was the only source.
+
+    ``subscription_tier`` selects the plan whose ``monthly_fee_usd /
+    credit_pool`` ratio prices the subscription-equivalent figure
+    (:func:`polylogue.archive.semantic.subscription_pricing.credits_to_usd`).
+    ``None`` keeps the conservative ``pro`` default rather than guessing --
+    callers that know the archive owner's actual plan (e.g. one that has
+    read the ``subscription_tier`` :mod:`user_settings` row, polylogue-at44)
+    should pass it explicitly.
     """
     estimate = session_estimate or (estimate_session_cost(session) if estimate_if_missing else None)
     if estimate is not None and estimate.status == "exact":
@@ -135,7 +144,7 @@ def compute_session_cost(
         sub_equivalent = 0.0
         credit_rate = get_credit_rate(norm) if norm else None
         if credit_rate and credit_cost > 0:
-            sub_equivalent = round(credits_to_usd(credit_cost), 6)
+            sub_equivalent = round(credits_to_usd(credit_cost, tier=subscription_tier or "pro"), 6)
 
         updated = SessionCostBreakdown(
             normalized_model=norm,
