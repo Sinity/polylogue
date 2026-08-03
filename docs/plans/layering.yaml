@@ -132,12 +132,6 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints: [record_capture_gap_event, record_source_outage_events]
-    - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
-      surfaces:
-        - tier: index
-          durability: rebuildable
-          interruption: replayable
-      entrypoints: [seed_price_catalog]
     - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
       surfaces:
         - tier: index

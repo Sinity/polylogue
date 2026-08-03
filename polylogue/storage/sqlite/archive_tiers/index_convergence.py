@@ -37,6 +37,11 @@ check.
 First application: polylogue-v2mg drops ``model_prices`` and
 ``session_reported_costs`` (zero-consumer tables -- see each entry's
 ``reason``).
+
+Second application: polylogue-resk drops ``price_catalogs``. v2mg's original
+justification for keeping it ("session_model_usage.priced_with FK,
+active_price_catalog_id" are genuine reads) measured false in all three
+particulars on a 2026-07-31 audit -- see that entry's ``reason``.
 """
 
 from __future__ import annotations
@@ -71,9 +76,7 @@ INDEX_BENIGN_DDL_REGISTRY: tuple[BenignDDLEntry, ...] = (
             "computation (write.py._aggregate_message_tokens_into_model_usage) "
             "resolves per-model rates from the in-process "
             "polylogue.archive.semantic.pricing.PRICING catalog, never "
-            "round-tripping through this DB-backed mirror. The sibling "
-            "price_catalogs table genuinely is read (session_model_usage."
-            "priced_with FK, active_price_catalog_id) and is kept."
+            "round-tripping through this DB-backed mirror."
         ),
     ),
     BenignDDLEntry(
@@ -85,6 +88,35 @@ INDEX_BENIGN_DDL_REGISTRY: tuple[BenignDDLEntry, ...] = (
             "session.reported_cost_usd) and cleared by "
             "_clear_session_projection_rows on full-replace, but never read "
             "by any query surface, insight, or CLI/MCP payload."
+        ),
+    ),
+    BenignDDLEntry(
+        name="drop_price_catalogs",
+        sql="DROP TABLE IF EXISTS price_catalogs",
+        reason=(
+            "polylogue-resk: v2mg kept price_catalogs on the claim it is "
+            "genuinely read via session_model_usage.priced_with FK / "
+            "active_price_catalog_id. A 2026-07-31 audit measured that "
+            "claim false in all three particulars: priced_with and "
+            "priced_at_ms had zero production SELECTs (every reference was "
+            "an INSERT/UPDATE in write.py, the DDL FK line, or prose -- the "
+            "only SELECTs were in "
+            "tests/unit/storage/test_pricing_chain_roundtrip.py); "
+            "active_price_catalog_id's only non-test caller was "
+            "pricing_seed.py itself (a seeded-already check, not a genuine "
+            "read); live data confirmed the column carried no information "
+            "(18,655 session_model_usage rows, 10,222 with priced_with set, "
+            "exactly 1 distinct value). Actual pricing resolution is "
+            "in-process via polylogue.archive.semantic.pricing.PRICING -- "
+            "the same defect the v2mg bead was closing for model_prices. "
+            "The referencing columns (session_model_usage.priced_with/"
+            "priced_at_ms) and pricing_seed.py's seed_price_catalog()/"
+            "active_price_catalog_id() are removed in the same change "
+            "(INDEX_SCHEMA_VERSION v61's CONSTRAINT_ONLY delta). Does NOT "
+            "cover session_profiles.priced_with/priced_at_ms -- a different, "
+            "unrelated pair of columns (no FK to price_catalogs) with a "
+            "real production reader (daemon/http.py's session-insights "
+            "panel) -- those are kept."
         ),
     ),
 )
