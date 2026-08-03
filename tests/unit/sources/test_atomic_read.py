@@ -34,13 +34,13 @@ def test_read_source_bytes_atomic_detects_torn_read_via_stat_mismatch(tmp_path: 
     real_stat = Path.stat
     call_count = {"n": 0}
 
-    def flaky_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+    def flaky_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         # Every stat call after the very first sees a rewritten file: this
         # forces the pre/post identity comparison to disagree on every pass.
         call_count["n"] += 1
         if call_count["n"] > 1:
             self.write_bytes(f"generation-{call_count['n']}".encode())
-        return real_stat(self, *args, **kwargs)
+        return real_stat(self, follow_symlinks=follow_symlinks)
 
     with patch.object(Path, "stat", flaky_stat):
         with pytest.raises(TornReadError) as excinfo:
@@ -92,11 +92,11 @@ def test_try_read_source_bytes_atomic_returns_none_on_torn_read(tmp_path: Path) 
     real_stat = Path.stat
     call_count = {"n": 0}
 
-    def flaky_stat(self: Path, *args: object, **kwargs: object) -> os.stat_result:
+    def flaky_stat(self: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         call_count["n"] += 1
         if call_count["n"] > 1:
             self.write_bytes(f"generation-{call_count['n']}".encode())
-        return real_stat(self, *args, **kwargs)
+        return real_stat(self, follow_symlinks=follow_symlinks)
 
     with patch.object(Path, "stat", flaky_stat):
         result = try_read_source_bytes_atomic(path, max_retries=1, retry_delay_s=0.0)
