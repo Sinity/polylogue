@@ -662,6 +662,87 @@ def test_repeated_stage_failures_prefers_populated_archive_ops(
 
 
 # ---------------------------------------------------------------------------
+# MEDIUM: archive_verification_registry (polylogue-t0m73 binding (c))
+# ---------------------------------------------------------------------------
+
+
+def test_archive_verification_registry_ok_on_coherent_archive(
+    workspace_env: dict[str, Path],
+) -> None:
+    from polylogue.daemon.health import _check_archive_verification_registry_medium
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(archive_root())
+
+    alerts = _check_archive_verification_registry_medium()
+
+    assert alerts  # at least the LIVENESS/FRESHNESS checks ran
+    assert all(alert.severity != HealthSeverity.ERROR for alert in alerts)
+    assert all(alert.check_name.startswith("archive_verification_") for alert in alerts)
+
+
+def test_archive_verification_registry_error_on_orphaned_blob_ref(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A LIVENESS-class registry check (blob-refs-liveness) going red must
+    surface as an ERROR health alert -- proves binding (c) actually
+    schedules the LIVENESS/FRESHNESS classes, not merely that the function
+    runs without raising. Uses blob-refs-liveness rather than
+    embeddings-refs-liveness because the latter carries a real, currently
+    open waiver (polylogue-feu0) that would downgrade its severity to
+    WARNING and defeat this test's point."""
+    from polylogue.daemon.health import _check_archive_verification_registry_medium
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(archive_root())
+    with sqlite3.connect(archive_root() / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-does-not-exist', 'raw_payload', 10, 100)
+            """,
+            (b"z" * 32,),
+        )
+        conn.commit()
+
+    alerts = _check_archive_verification_registry_medium()
+
+    by_name = {alert.check_name: alert for alert in alerts}
+    assert "archive_verification_blob_refs_liveness" in by_name
+    assert by_name["archive_verification_blob_refs_liveness"].severity == HealthSeverity.ERROR
+
+
+def test_archive_verification_registry_only_schedules_liveness_and_freshness_classes(
+    workspace_env: dict[str, Path],
+) -> None:
+    """State-invariant/fidelity/conservation/config/complexity checks are
+    already reachable via the operator CLI and promotion gate -- this
+    scheduling loop must not duplicate them (module docstring's stated
+    scope)."""
+    from polylogue.daemon.health import _check_archive_verification_registry_medium
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(archive_root())
+
+    alerts = _check_archive_verification_registry_medium()
+
+    scheduled = {alert.check_name.removeprefix("archive_verification_") for alert in alerts}
+    # Hardcoded, not re-derived from the registry's class tags: this pins the
+    # exact LIVENESS/FRESHNESS membership as of this change so a future
+    # check silently added under one of these two classes (or an existing
+    # one silently reclassified) is a visible diff here, not just an
+    # incidental pass-through of whatever the production filter currently
+    # computes.
+    assert scheduled == {
+        "blob_refs_liveness",
+        "embeddings_refs_liveness",
+        "planner_stats",
+        "convergence_freshness",
+        "user_tier_refs",
+    }
+
+
+# ---------------------------------------------------------------------------
 # EXPENSIVE: db_integrity (OK + degraded + RECOVERY)
 # ---------------------------------------------------------------------------
 
