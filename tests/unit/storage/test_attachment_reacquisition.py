@@ -163,7 +163,7 @@ def _fake_valid_backup(monkeypatch: pytest.MonkeyPatch) -> list[tuple[Path, obje
         return manifest.with_name("verification-receipt.json")
 
     monkeypatch.setattr(
-        "polylogue.storage.attachment_reacquisition.validate_migration_backup_manifest",
+        "polylogue.storage.attachment_reacquisition.validate_backup_manifest_covers_derived_tier",
         _fake_validate,
     )
     return validated
@@ -350,7 +350,9 @@ def test_apply_refuses_when_backup_manifest_invalid(tmp_path: Path, monkeypatch:
     def _reject(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
         raise ValueError("backup manifest does not match live index.db")
 
-    monkeypatch.setattr("polylogue.storage.attachment_reacquisition.validate_migration_backup_manifest", _reject)
+    monkeypatch.setattr(
+        "polylogue.storage.attachment_reacquisition.validate_backup_manifest_covers_derived_tier", _reject
+    )
 
     with pytest.raises(ValueError, match="does not match"):
         apply_attachment_reacquisition(

@@ -54,7 +54,7 @@ from polylogue.storage.agent_meta_sidecar_sweep import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.migration_runner import validate_backup_manifest_covers_derived_tier
 
 TOOL_VERSION = "agent-meta-sidecar-purge-apply-v1"
 
@@ -198,7 +198,7 @@ def apply_agent_meta_sidecar_purge(
     validate_conn = sqlite3.connect(str(index_db), uri=True)
     try:
         _checkpoint_live_tier(validate_conn)
-        validate_migration_backup_manifest(backup_manifest, ArchiveTier.INDEX, connection=validate_conn)
+        validate_backup_manifest_covers_derived_tier(backup_manifest, ArchiveTier.INDEX, connection=validate_conn)
         plan = scan_agent_meta_sidecar_sessions(validate_conn, source_db, limit=limit)
     finally:
         validate_conn.close()

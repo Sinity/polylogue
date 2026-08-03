@@ -220,7 +220,7 @@ def test_apply_purges_only_the_meta_sidecar_phantoms(tmp_path: Path, monkeypatch
         return manifest.with_name("verification-receipt.json")
 
     monkeypatch.setattr(
-        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_migration_backup_manifest",
+        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_backup_manifest_covers_derived_tier",
         _fake_validate,
     )
 
@@ -275,7 +275,7 @@ def test_apply_refuses_when_backup_manifest_invalid(tmp_path: Path, monkeypatch:
         raise ValueError("backup manifest does not match live index.db")
 
     monkeypatch.setattr(
-        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_migration_backup_manifest",
+        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_backup_manifest_covers_derived_tier",
         _reject,
     )
 
@@ -304,7 +304,7 @@ def test_apply_refuses_on_native_id_shape_mismatch(tmp_path: Path, monkeypatch: 
         return manifest.with_name("verification-receipt.json")
 
     monkeypatch.setattr(
-        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_migration_backup_manifest",
+        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_backup_manifest_covers_derived_tier",
         _fake_validate,
     )
 
@@ -316,3 +316,48 @@ def test_apply_refuses_on_native_id_shape_mismatch(tmp_path: Path, monkeypatch: 
 
     assert _session_ids(archive_root) == before_sessions
     assert _receipt_rows(archive_root) == {}
+
+
+def test_apply_accepts_a_real_backup_manifest_from_ops_backup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-5kmn7 anti-vacuity regression.
+
+    Every other apply test in this file monkeypatches the backup-manifest
+    validator entirely, so none of them ever exercised a manifest actually
+    produced by ``polylogue ops backup --profile full_evidence --verify``.
+    That gap hid a real bug: the old ``validate_migration_backup_manifest``
+    call unconditionally required a cryptographic HMAC attestation for the
+    index tier, but attestations are only ever minted for durable tiers
+    (source, user) by ``daemon/backup.py`` -- no real backup, however fresh
+    or complete, could ever satisfy it. Discovered running the live purge
+    against a same-day, all-tiers-present, verdict=success manifest.
+
+    This test builds the fixture archive, runs the real ``backup_archive()``
+    entry point (the same code ``polylogue ops backup`` invokes) against it,
+    and lets ``apply_agent_meta_sidecar_purge`` validate that real manifest
+    with no monkeypatching -- proving
+    ``validate_backup_manifest_covers_derived_tier`` actually accepts what
+    the backup system actually produces.
+    """
+    archive_root = _build_fixture_archive(tmp_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+
+    from polylogue.daemon.backup import backup_archive
+
+    backup_result = backup_archive(output_dir=tmp_path / "backup", profile="full_evidence", verify=True)
+    assert backup_result.ok, backup_result.error
+    assert backup_result.verified, backup_result.verification
+    assert backup_result.output_path is not None
+    manifest = Path(backup_result.output_path) / "manifest.json"
+    assert manifest.exists()
+
+    report = apply_agent_meta_sidecar_purge(archive_root, backup_manifest=manifest, dry_run=False)
+
+    assert report.applied
+    assert report.purged_count == 2
+    assert report.shape_mismatch_count == 0
+    assert _session_ids(archive_root) == {
+        f"{Origin.CLAUDE_CODE_SESSION.value}:agent-aaa111",
+        f"{Origin.CLAUDE_CODE_SESSION.value}:agent-bbb222",
+        f"{Origin.CLAUDE_CODE_SESSION.value}:s2-uuid",
+    }
+    assert set(_receipt_rows(archive_root)) == set(report.purged_session_ids)
