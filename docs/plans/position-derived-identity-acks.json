@@ -8,10 +8,6 @@
       "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
       "ref": "polylogue-gysk3"
     },
-    "polylogue/sources/parsers/base_support.py:extract_messages_from_list:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
     "polylogue/sources/parsers/chatgpt.py:extract_messages_from_mapping:provider_message_id": {
       "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
       "ref": "polylogue-gysk3"
@@ -24,39 +20,11 @@
       "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
       "ref": "polylogue-gysk3"
     },
-    "polylogue/sources/parsers/claude/code_parser.py:_parse_code_records:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/claude/code_parser.py:_parse_code_records:provider_message_id#1": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/claude/code_parser.py:_parse_code_records:provider_message_id#2": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
     "polylogue/sources/parsers/claude/common.py:normalize_chat_messages:provider_message_id": {
       "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
       "ref": "polylogue-gysk3"
     },
-    "polylogue/sources/parsers/codex.py:_code_mode_exec_envelopes:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/codex.py:_codex_event_message:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
     "polylogue/sources/parsers/codex.py:_codex_reasoning_message:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/codex.py:_codex_tool_message:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/codex.py:_codex_tool_message:provider_message_id#1": {
       "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
       "ref": "polylogue-gysk3"
     },
@@ -77,14 +45,6 @@
       "ref": "polylogue-gysk3"
     },
     "polylogue/sources/parsers/grok.py:parse_conversation:provider_message_id#1": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/local_agent.py:_parse_gemini_message:provider_message_id": {
-      "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
-      "ref": "polylogue-gysk3"
-    },
-    "polylogue/sources/parsers/local_agent.py:_parse_hermes_message:provider_message_id": {
       "reason": "Existing instance found during polylogue-ds4b4 item 3's preventive-lint audit; fixing message_identity_hash to exclude position-derived provider_message_id (the attachment_identity_hash-class fix) is tracked separately, not fixed inline here.",
       "ref": "polylogue-gysk3"
     }
