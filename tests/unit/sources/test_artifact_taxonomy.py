@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
 from polylogue.core.json import JSONValue
 
 
@@ -296,6 +296,101 @@ def test_tool_result_sidecar_hook_file_keeps_hook_event_classification() -> None
 
     assert artifact.kind is ArtifactKind.HOOK_EVENT
     assert artifact.parse_as_session is False
+
+
+def test_tool_result_sidecar_path_wins_even_when_provider_hint_is_wrong() -> None:
+    """Regression for polylogue-omsw: generic/ad-hoc acquisition (the daemon's
+    shared "inbox" import source backing ``polylogue import <path>``, and
+    ``polylogue import <path> --explain``) resolves a provider hint of
+    "unknown" for files it has no fixed source-root association for -- it
+    never learns a file physically sits under a watched Claude Code
+    ``tool-results/`` directory. Live-reproduced 2026-08-03: a scratch
+    ``tool-results/*.json`` sidecar whose content happened to look like a
+    genuine claude-ai-export session (``mapping``/``chat_messages``/
+    ``messages`` keys) was admitted as an independent
+    ``session:claude-ai:...`` session via ``polylogue import ... --explain``,
+    because ``classify_artifact_path(path, provider=Provider.UNKNOWN)``
+    never consults the Claude Code ``tool_result_sidecar`` OriginArtifactRule
+    (gated on an exact provider match). The path segment
+    ``tool-results/<name>.json`` is specific enough to Claude Code's own
+    artifact family to check regardless of the caller-supplied provider
+    hint.
+    """
+    claude_ai_shaped_document: JSONValue = {
+        "mapping": {"a": {"message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}}},
+        "messages": [{"role": "user", "content": "hi"}],
+        "chat_messages": [{"role": "user", "text": "hi"}],
+    }
+    source_path = "/tmp/.claude/projects/proj/tool-results/toolu_01scratchprobe.json"
+
+    artifact = classify_artifact(claude_ai_shaped_document, provider="unknown", source_path=source_path)
+
+    assert artifact.kind is ArtifactKind.TOOL_RESULT_SIDECAR
+    assert artifact.parse_as_session is False
+
+    # Path-only pre-decode classification (used by schema sampling / source
+    # walk skip-listing) must agree.
+    path_only = classify_artifact_path(source_path, provider="unknown")
+    assert path_only is not None
+    assert path_only.kind is ArtifactKind.TOOL_RESULT_SIDECAR
+    assert path_only.parse_as_session is False
+
+
+def test_file_history_snapshot_only_stream_never_classifies_as_session() -> None:
+    """Regression for polylogue-omsw: a Claude Code
+    ``projects/<proj>/<session-uuid>.jsonl`` file whose every record is a
+    ``file-history-snapshot``/``progress`` checkpoint (never a chat turn)
+    matches the exact same path shape as a genuine
+    ``coordinator_session_stream`` -- the path-only ``OriginArtifactRule``
+    cannot tell them apart. Positive content evidence (every decoded record
+    type is a known non-conversational envelope kind) must override that
+    path-only session verdict.
+
+    ``require_positive_conversational_evidence`` already refuses to
+    materialize this shape as an index-tier session post-parse (see
+    ``test_dispatch_payloads.py``'s
+    ``test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records``),
+    but the raw-tier ``artifact_taxonomy``/``raw_artifacts`` classification
+    is a separate layer that must independently say "sidecar", not "session
+    that later turned out empty".
+    """
+    history_only_stream: JSONValue = [
+        {
+            "type": "file-history-snapshot",
+            "messageId": "06a77336-517e-4a27-996c-27547731e76b",
+            "sessionId": "history-only-session",
+            "snapshot": {"messageId": "06a77336-517e-4a27-996c-27547731e76b", "trackedFileBackups": {}},
+        },
+        {
+            "type": "file-history-snapshot",
+            "messageId": "fc6f7a3a-f38e-4f7c-9943-63157eea12c6",
+            "sessionId": "history-only-session",
+            "snapshot": {"messageId": "fc6f7a3a-f38e-4f7c-9943-63157eea12c6", "trackedFileBackups": {}},
+        },
+    ]
+    source_path = "/tmp/.claude/projects/proj/history-only-session.jsonl"
+
+    # Sanity check the premise: this exact path shape, with genuine chat
+    # content, really does classify as a session -- otherwise this test
+    # would pass for the wrong reason.
+    genuine_session: list[JSONValue] = [
+        {"type": "user", "sessionId": "s1", "uuid": "u1", "message": {"role": "user", "content": "hi"}},
+        {
+            "type": "assistant",
+            "sessionId": "s1",
+            "uuid": "u2",
+            "parentUuid": "u1",
+            "message": {"role": "assistant", "content": "hey"},
+        },
+    ]
+    as_genuine_session = classify_artifact(genuine_session, provider="claude-code", source_path=source_path)
+    assert as_genuine_session.parse_as_session is True
+
+    artifact = classify_artifact(history_only_stream, provider="claude-code", source_path=source_path)
+
+    assert artifact.kind is ArtifactKind.FILE_HISTORY_SNAPSHOT
+    assert artifact.parse_as_session is False
+    assert artifact.schema_eligible is False
 
 
 def test_chatgpt_codex_cloud_task_classifies_as_session_document() -> None:

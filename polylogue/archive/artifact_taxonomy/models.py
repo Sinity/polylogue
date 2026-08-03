@@ -34,6 +34,20 @@ class ArtifactKind(StrEnum):
     # family; only a path rule can, mirroring ``AGENT_SIDECAR_META`` /
     # ``WORKFLOW_JOURNAL``.
     TOOL_RESULT_SIDECAR = "tool_result_sidecar"
+    # polylogue-omsw: Claude Code writes a session-uuid-named ``.jsonl`` file
+    # under ``projects/<proj>/`` for pure filesystem-checkpoint activity that
+    # never carried a single chat turn -- every record's ``type`` is
+    # ``file-history-snapshot``/``progress``. The path alone is
+    # indistinguishable from a genuine ``coordinator_session_stream`` (same
+    # ``projects/<proj>/<uuid>.jsonl`` shape), so the ``OriginArtifactRule``
+    # path match wins first and would otherwise mark this content
+    # ``parse_as_session=True``. ``classify_artifact`` (content-aware) checks
+    # the decoded record types and overrides to this sidecar kind when every
+    # record is one of the known non-conversational envelope types --
+    # mirroring ``archive/raw_materialization.py``'s
+    # ``parsed_non_session_artifact_reason``, which already performs the
+    # equivalent check post-parse for archive-debt/backlog reporting.
+    FILE_HISTORY_SNAPSHOT = "file_history_snapshot"
     METADATA_DOCUMENT = "metadata_document"
     HOOK_EVENT = "hook_event"
     # polylogue-hbtj2: a raw payload whose magic bytes are a recognized
