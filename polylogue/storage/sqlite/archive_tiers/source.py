@@ -9,7 +9,7 @@ from __future__ import annotations
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
 
-SOURCE_SCHEMA_VERSION = 21
+SOURCE_SCHEMA_VERSION = 22
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -331,10 +331,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_authority_blockers_open_plan
 ON raw_authority_blockers(plan_id)
 WHERE resolved_at_ms IS NULL;
 
+-- v22 (polylogue-tfzw0): 'hook_payload' is a distinct ref_type from
+-- 'raw_payload' so blob GC's liveness join (storage/blob_gc.py) can tell a
+-- hook event's own durable blob ref apart from a raw_sessions payload ref --
+-- write_source_hook_event never mints a raw_sessions row (polylogue-31r1), so
+-- a hook-event blob ref keyed as 'raw_payload' with a synthetic ref_id could
+-- never join to any raw_sessions row and was therefore permanently
+-- GC-invisible under a naive membership check.
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
     ref_id          TEXT NOT NULL,
-    ref_type        TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar')),
+    ref_type        TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar', 'hook_payload')),
     source_path     TEXT,
     size_bytes      INTEGER NOT NULL CHECK(size_bytes >= 0),
     acquired_at_ms  INTEGER NOT NULL,
@@ -398,6 +405,12 @@ CREATE TABLE IF NOT EXISTS raw_hook_events (
     event_type      TEXT NOT NULL,
     payload_json    TEXT NOT NULL,
     observed_at_ms  INTEGER NOT NULL
+    -- v22 (polylogue-tfzw0): the SHA-256 of this hook event's own durable
+    -- raw_payload blob (see blob_refs above). Populated at write time by
+    -- write_source_hook_event; NULL for rows written before v22 until a
+    -- one-shot reconciliation pass backfills them (see
+    -- polylogue.storage.hook_payload_ref_reconciliation).
+    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_raw_hook_events_session

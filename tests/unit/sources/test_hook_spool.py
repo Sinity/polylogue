@@ -101,9 +101,12 @@ def test_hook_spool_does_not_mint_a_session_row(tmp_path: Path, provider: str) -
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
         assert conn.execute("SELECT session_native_id FROM raw_hook_events").fetchone() == ("sess-9",)
-        # durable retention: the raw bytes are anchored by a blob ref so blob GC
-        # keeps them, even without a raw_sessions row.
-        assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'raw_payload'").fetchone() == (1,)
+        # durable retention: the raw bytes are anchored by a 'hook_payload' blob
+        # ref (polylogue-tfzw0 -- distinct from 'raw_payload' so blob GC's
+        # liveness join can tell it apart from a raw_sessions payload ref) so
+        # blob GC keeps them, even without a raw_sessions row.
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'hook_payload'").fetchone() == (1,)
+        assert conn.execute("SELECT blob_hash FROM raw_hook_events").fetchone()[0] is not None
 
 
 def test_hook_spool_keeps_event_pending_when_source_tier_write_fails(tmp_path: Path) -> None:
