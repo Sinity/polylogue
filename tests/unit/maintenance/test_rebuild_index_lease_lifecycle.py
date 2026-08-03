@@ -27,12 +27,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+
+if TYPE_CHECKING:
+    from polylogue.config import Config
+    from polylogue.core.protocols import ProgressCallback
+    from polylogue.storage.repair import RepairResult
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -77,7 +83,16 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
 
     real_repair_session_insights = repair_module.repair_session_insights
 
-    def probing_repair_session_insights(*args: object, **kwargs: object) -> object:
+    def probing_repair_session_insights(
+        config: Config,
+        dry_run: bool = False,
+        *,
+        progress_callback: ProgressCallback | None = None,
+        progress_total: int | None = None,
+        session_ids: tuple[str, ...] | None = None,
+        archive_root_override: Path | None = None,
+        owned_inactive_generation: tuple[str, str] | None = None,
+    ) -> RepairResult:
         # This terminal stage runs strictly AFTER replay has already
         # committed rows into the owned inactive generation, and strictly
         # BEFORE FTS parity / readiness / promotion -- exactly the window
@@ -90,7 +105,15 @@ def test_rebuild_lease_blocks_a_concurrent_writer_deep_inside_the_pass(
             probe_result["blocked"] = True
         else:
             writer.close()
-        return real_repair_session_insights(*args, **kwargs)
+        return real_repair_session_insights(
+            config,
+            dry_run,
+            progress_callback=progress_callback,
+            progress_total=progress_total,
+            session_ids=session_ids,
+            archive_root_override=archive_root_override,
+            owned_inactive_generation=owned_inactive_generation,
+        )
 
     monkeypatch.setattr(repair_module, "repair_session_insights", probing_repair_session_insights)
 

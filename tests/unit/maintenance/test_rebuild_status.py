@@ -93,8 +93,10 @@ def test_reports_stale_lease_recovery_guidance(tmp_path: Path) -> None:
     os.fsync(holder_fd)
     try:
         status = rebuild_status(root, operation_id="none", include_daemon_bulk_rebuild=False)
-        assert status["lease"]["held"] is True
-        assert status["lease"]["stale"] is True
+        lease = status["lease"]
+        assert isinstance(lease, dict)
+        assert lease["held"] is True
+        assert lease["stale"] is True
         recovery = status["recovery"]
         assert isinstance(recovery, list)
         assert any("dead pid" in message for message in recovery)
