@@ -258,6 +258,75 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     assert parse_error is None
 
 
+def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
+    tmp_path: Path,
+) -> None:
+    """polylogue-gbs02: acquire-only mode must survive a REAL stale index tier.
+
+    The sibling test above proves the skip logic but leaves index.db at the
+    current version, so it never exercises the open: the ordinary
+    ``ArchiveStore.open_existing(read_only=False)`` writer hard-refuses an
+    index tier at a semantic-reparse distance (the live archive's actual
+    pre-rebuild state, index.db 46 vs current code). This test ages the
+    index to that distance first — with the source-tier-only open routed via
+    ``_open_archive_for_live_write`` the acquire succeeds and the stale
+    index file stays byte-identical; without it, the open raises before any
+    raw write and this test fails.
+    """
+    import hashlib
+    import sqlite3 as _sqlite3
+
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "degraded-stale-index.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"degraded-stale-index"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    # Bootstrap a real archive file set, then age the index tier to the
+    # semantic-reparse distance (46 is the live pre-818fy generation).
+    with ArchiveStore.open_existing(tmp_path, read_only=False):
+        pass
+    index_db = tmp_path / "index.db"
+    conn = _sqlite3.connect(index_db)
+    try:
+        conn.execute("PRAGMA user_version = 46")
+        conn.commit()
+    finally:
+        conn.close()
+    index_digest_before = hashlib.sha256(index_db.read_bytes()).hexdigest()
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "cursors.db", ops_db_path=tmp_path / "ops.db"),
+        parser_fingerprint="test-parser",
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="index.db:46!=current",
+            derived_only=True,
+        )
+    )
+    try:
+        result = processor._ingest_full_paths_sync([path], source_name="codex")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [path], f"failed={result.failed}"
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parsed_at_ms is None
+    assert parse_error is None
+    assert hashlib.sha256(index_db.read_bytes()).hexdigest() == index_digest_before, (
+        "the stale index tier must never be opened for write during acquire-only ingest"
+    )
+
+
 def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

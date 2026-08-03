@@ -1604,6 +1604,27 @@ def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> b
     return False
 
 
+class _SourceTierOnlyIndexConnection:
+    """Loud placeholder for the index connection in source-tier acquisition mode.
+
+    Acquire-only ingestion (polylogue-gbs02) deliberately never opens
+    ``index.db`` — a derived tier awaiting rebuild may be at an older schema
+    version, and the safest way to guarantee no index write can occur is to
+    hold no index handle at all. Any code path that reaches for the index
+    connection in this mode is a bug; it must fail immediately and loudly
+    instead of writing through a stale-schema handle.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "close":
+            return lambda: None
+        raise RuntimeError(
+            "index tier is unavailable in source-tier acquisition mode "
+            f"(attempted connection attribute {name!r}); only raw source-tier "
+            "admission is permitted while derived tiers await rebuild"
+        )
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -1615,7 +1636,11 @@ class ArchiveStore:
         read_only: bool = False,
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
+        source_tier_acquisition: bool = False,
     ) -> None:
+        if source_tier_acquisition and read_only:
+            raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
+        self._source_tier_acquisition = source_tier_acquisition
         self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
@@ -1650,7 +1675,7 @@ class ArchiveStore:
         try:
             self._initialize_store(
                 archive_root,
-                initialize=initialize,
+                initialize=initialize and not source_tier_acquisition,
                 read_only=read_only,
                 read_timeout=read_timeout,
                 # polylogue-623q: only ever True for a write connection against
@@ -1686,6 +1711,38 @@ class ArchiveStore:
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
         self._read_only = read_only
+        # Attribute type declarations shared by every open mode (the
+        # source-tier acquisition branch below returns early, so inference
+        # from a single assignment site would otherwise mistype these).
+        self._source_conn: sqlite3.Connection | None = None
+        self._blob_publisher: ArchiveBlobPublisher | None = None
+        self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
+        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
+        if getattr(self, "_source_tier_acquisition", False):
+            # polylogue-gbs02: acquire-only mode validates the DURABLE tiers it
+            # will write and never touches derived tiers. A stale or missing
+            # durable tier is a hard refusal (writing through it would corrupt
+            # irreplaceable evidence); a stale index/embeddings tier is exactly
+            # the situation this mode exists for and is not checked here.
+            for tier in (ArchiveTier.SOURCE, ArchiveTier.USER):
+                spec = archive_tier_spec(tier)
+                path = archive_root / spec.filename
+                if not path.exists():
+                    raise RuntimeError(f"source-tier acquisition refused: durable tier {spec.filename} is missing")
+                with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=read_timeout)) as vconn:
+                    current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
+                if current != spec.version:
+                    raise RuntimeError(
+                        f"source-tier acquisition refused: durable tier {spec.filename} "
+                        f"user_version {current} != expected {spec.version}"
+                    )
+            from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+            self._conn = cast(sqlite3.Connection, _SourceTierOnlyIndexConnection())
+            self._user_tier_attached = False
+            self._tags_relation = "session_tags"
+            self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
+            return
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
@@ -1718,14 +1775,10 @@ class ArchiveStore:
             ensure_runtime_indexes_sync(self._conn)
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
-        self._source_conn: sqlite3.Connection | None = None
-        self._blob_publisher = None
         if not read_only:
             from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
             self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
-        self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
-        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -1738,6 +1791,19 @@ class ArchiveStore:
         """
         initialize = not read_only
         return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+
+    @classmethod
+    def open_source_tier_acquisition(cls, archive_root: Path) -> ArchiveStore:
+        """Open a writer restricted to raw source-tier admission (polylogue-gbs02).
+
+        Used by acquire-only degraded mode: durable tiers (source/user) must be
+        current; derived tiers (index/embeddings) are never opened, so their
+        schema state is irrelevant and cannot be corrupted. Only raw admission
+        surfaces (``write_raw_payload``/``write_raw_blob_ref``/
+        ``write_hook_event``) are usable; anything touching the index
+        connection raises immediately.
+        """
+        return cls(archive_root, initialize=False, read_only=False, source_tier_acquisition=True)
 
     @classmethod
     def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
