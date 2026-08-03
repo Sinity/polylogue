@@ -917,9 +917,18 @@ def normalize_chat_messages(
         role = Role.normalize(str(raw_role)) if isinstance(raw_role, str) and raw_role else Role.UNKNOWN
         text = _extract_message_text(item)
         raw_content = item.get("content")
+        # polylogue-0qfy: do NOT synthesize a content_blocks entry that just
+        # duplicates `text` when `content` itself produced no blocks -- that
+        # made `message.blocks` presence (and therefore the message's
+        # identity hash, `pipeline/ids.py:_message_hash_payload`) depend on
+        # whether a given export vintage's raw record happened to carry a
+        # structured `content` field or only a top-level `text` field, for
+        # the exact same conversation content. The write path
+        # (`storage/sqlite/archive_tiers/write.py:_message_blocks`) already
+        # falls back to a text block for storage whenever `message.blocks`
+        # is empty, so this synthesis was pure redundancy with no storage
+        # benefit and a real comparison-stability cost.
         content_blocks = _claude_content_blocks(raw_content)
-        if not content_blocks and text:
-            content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
         role = reclassify_tool_result_envelope(role, content_blocks)
 
         raw_created_at = item.get("created_at") or item.get("create_time") or item.get("timestamp")

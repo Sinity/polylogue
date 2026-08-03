@@ -471,7 +471,11 @@ def test_claude_dom_fallback_keeps_identity_lineage_and_declares_degraded_fideli
     assert by_id["u2"].is_active_leaf is True
     assert by_id["a-new"].delivery_status == "completed"
     assert by_id["a-new"].end_turn is True
-    assert [str(block.type) for block in by_id["a-new"].blocks] == ["text"]
+    # polylogue-0qfy: a DOM-fallback turn carries only a plain `text` field
+    # (no structured `content`) -- the parser no longer synthesizes a
+    # content_blocks entry duplicating it; `.text` still carries the content.
+    assert by_id["a-new"].blocks == []
+    assert by_id["a-new"].text == "DOM fallback cannot expose native thinking or artifact blocks."
     assert next(row for row in fallback.attachments if row.provider_attachment_id == "att-native").inline_bytes == (
         b'{"captured":true}'
     )
