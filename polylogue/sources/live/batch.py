@@ -65,6 +65,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
+from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
@@ -2066,12 +2067,11 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _ArchiveFullWriteResult:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         result = _ArchiveFullWriteResult()
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        with _open_archive_for_live_write(archive_root) as archive:
             for record_index, record in enumerate(records):
                 # polylogue-11cg9: a single logical session write cannot be
                 # split mid-transaction (it must remain atomic), so the

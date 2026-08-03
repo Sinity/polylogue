@@ -18,6 +18,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
+from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -82,7 +83,6 @@ def _ingest_append_plans_archive(
         _is_declared_non_session_artifact,
         parse_retained_raw_sessions,
     )
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     _add_timing(timings, "append.imports", t0)
 
@@ -94,7 +94,7 @@ def _ingest_append_plans_archive(
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     try:
         t0 = time.perf_counter()
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        with _open_archive_for_live_write(archive_root) as archive:
             _add_timing(timings, "append.archive_open", t0)
             for plan in plans:
                 provider: Provider | None = None
