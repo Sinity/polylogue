@@ -383,7 +383,11 @@ def _check_schema_version_fast() -> HealthAlert:
                 parts.append(f"missing tiers: {', '.join(missing)}")
             if mismatches:
                 parts.append(f"tier user_version mismatch: {', '.join(mismatches)}")
-            message = "archive tier layout is not ready: " + "; ".join(parts)
+            message = (
+                "archive tier layout is not ready: "
+                + "; ".join(parts)
+                + " -- convergence loops parked pending schema recovery"
+            )
 
         is_ok = severity == HealthSeverity.OK
         return HealthAlert(

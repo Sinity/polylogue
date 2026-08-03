@@ -159,11 +159,11 @@ async def periodic_fts_orphan_audit(
     lock; the actual repair happens later, off this loop, via the ordinary
     convergence-debt drain.
     """
+    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root
 
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="fts orphan audit")
     while True:
         await asyncio.sleep(FTS_ORPHAN_AUDIT_INTERVAL_SECONDS)
         db_path = archive_root() / "index.db"

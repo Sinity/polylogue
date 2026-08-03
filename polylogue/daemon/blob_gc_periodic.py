@@ -32,10 +32,10 @@ BLOB_GC_MAX_BATCH = 200
 
 async def periodic_blob_gc_check(*, catch_up_complete: asyncio.Event | None = None) -> None:
     """Periodically reclaim one bounded batch of unreferenced, aged-out blobs."""
+    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root, source_db_path
 
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="blob gc check")
     while True:
         await asyncio.sleep(BLOB_GC_INTERVAL_SECONDS)
         try:

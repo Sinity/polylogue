@@ -331,11 +331,11 @@ async def periodic_judgment_automation_sweep(
     effect on the *next* tick without a daemon restart, the same as
     ``_periodic_db_optimize``'s self-gating pattern.
     """
+    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root
 
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="judgment automation sweep")
     while True:
         cfg = load_polylogue_config()
         interval = max(cfg.judgment_automation_interval_s, JUDGMENT_AUTOMATION_SWEEP_INTERVAL_FLOOR_SECONDS)

@@ -30,11 +30,11 @@ async def periodic_embedding_backlog_check(
     catch_up_complete: asyncio.Event | None = None,
 ) -> None:
     """Periodically drain one bounded pending-embedding window."""
+    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root
 
     db = archive_root() / "index.db"
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="embedding backlog catch-up")
     while True:
         await asyncio.sleep(EMBEDDING_BACKLOG_RETRY_INTERVAL_SECONDS)
         try:
@@ -84,11 +84,11 @@ async def periodic_embedding_orphan_reconcile_check(
     embed work; manual CLI (``polylogue maintenance embedding-orphan-reconcile``)
     remains the break-glass inspect/apply path.
     """
+    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.paths import archive_root
 
     db = archive_root() / "index.db"
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="embedding orphan reconcile")
     while True:
         await asyncio.sleep(EMBEDDING_ORPHAN_RECONCILE_INTERVAL_SECONDS)
         try:

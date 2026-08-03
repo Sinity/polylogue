@@ -268,6 +268,71 @@ _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
 
+# polylogue-5xxmc: ``catch_up_complete`` sequences a maintenance loop behind
+# the live watcher's initial source catch-up (see ``_bridge_catch_up_complete``
+# below) so archive-wide convergence work never races freshly-arriving
+# sessions for the single writer. That sequencing is a startup-ordering aid,
+# not a permanent kill switch -- if the watcher never reaches catch-up-complete
+# (crash, hang, or any other path that leaves the bridge task without a source
+# event to forward) every gated loop must still eventually run instead of
+# parking on ``Event.wait()`` forever. Verified live 2026-08-03: gated
+# maintenance loops frozen, convergence_debt retries stalled since 2026-07-31
+# with zero journal signal beyond the periodic schema_version health line.
+_CATCH_UP_GATE_TIMEOUT_SECONDS = 1800.0  # 30 minutes
+
+
+async def _await_catch_up_gate(
+    catch_up_complete: asyncio.Event | None,
+    *,
+    loop_name: str,
+    timeout_s: float = _CATCH_UP_GATE_TIMEOUT_SECONDS,
+) -> None:
+    """Wait for the watcher's initial catch-up, bounded by ``timeout_s``.
+
+    Preserves the exact prior behavior when the gate is released promptly
+    (or never supplied): the wait returns as soon as ``catch_up_complete``
+    is set. Only a gate that stays unset for the full timeout gets a single
+    WARNING and the loop proceeds without having observed catch-up.
+    """
+    if catch_up_complete is None or catch_up_complete.is_set():
+        return
+    try:
+        await asyncio.wait_for(catch_up_complete.wait(), timeout=timeout_s)
+    except TimeoutError:
+        logger.warning(
+            "daemon: %s catch-up gate not released after %ds; proceeding without watcher catch-up",
+            loop_name,
+            int(timeout_s),
+        )
+
+
+# The full set of daemon-owned periodic maintenance loops withheld while the
+# watcher is schema-blocked (see ``watcher_blocked`` in
+# ``run_daemon_services``) -- the whole ``if not watcher_blocked:`` block
+# below is skipped in that state, so none of these loops are even created,
+# let alone run, until an operator resolves the schema mismatch and the
+# daemon is restarted (or ``_periodic_schema_preflight_recheck`` detects
+# recovery and restarts it). Named here so the startup alert can say exactly
+# what is frozen instead of leaving it to be inferred from source.
+_SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES: tuple[str, ...] = (
+    "raw materialization convergence",
+    "session insight convergence",
+    "convergence debt retry",
+    "wal checkpoint",
+    "fts merge",
+    "heartbeat",
+    "embedding backlog catch-up",
+    "embedding orphan reconcile",
+    "db optimize",
+    "status snapshot refresh",
+    "judgment automation sweep",
+    "fts identity drift recompute",
+    "fts orphan audit",
+    "blob gc check",
+    "secret scan sweep",
+)
+_SCHEMA_BLOCKED_OPTIONAL_DRIVE_CATCHUP_LOOP_NAME = "drive source catch-up"
+
 
 async def _periodic_schema_preflight_recheck() -> None:
     """Poll for tier-layout recovery while the watcher is schema-blocked.
@@ -630,8 +695,7 @@ async def _periodic_drive_source_catchup(
     gets the single archive writer before remote download/index work.  The
     gate is deliberately absent for maintenance-only callers.
     """
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="drive source catch-up")
 
     while True:
         coordinator = daemon_write_coordinator()
@@ -788,8 +852,7 @@ async def _periodic_convergence_check(
 ) -> None:
     """Periodically retry recorded derived convergence debt."""
     db = _active_index_db_path()
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="convergence debt retry")
     while True:
         await _retry_convergence_debt_once(db)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
@@ -965,8 +1028,7 @@ async def _periodic_raw_materialization_convergence(
     — instead of waiting a full interval per pass, which would stretch a large
     drain into weeks.
     """
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="raw materialization convergence")
 
     while True:
         if _browser_capture_spool_has_pending_files():
@@ -1086,8 +1148,7 @@ async def _periodic_session_insight_convergence_after(
     catch_up_complete: asyncio.Event | None = None,
 ) -> None:
     """Continuously converge missing/stale session insights after catch-up."""
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="session insight convergence")
     while True:
         burst_count = 0
         try:
@@ -2083,6 +2144,33 @@ async def run_daemon_services(
                 detail={"check_name": schema_alert.check_name},
             )
         )
+        parked_loop_names = _SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES
+        if enable_source_catchup:
+            parked_loop_names = (*parked_loop_names, _SCHEMA_BLOCKED_OPTIONAL_DRIVE_CATCHUP_LOOP_NAME)
+        logger.error(
+            "daemon: %d maintenance loop(s) parked pending schema preflight recovery: %s",
+            len(parked_loop_names),
+            ", ".join(parked_loop_names),
+        )
+        try:
+            from polylogue.daemon.events import emit_daemon_event
+
+            emit_daemon_event(
+                "maintenance_loops_parked",
+                payload={
+                    "reason": "schema_version_mismatch",
+                    "loop_count": len(parked_loop_names),
+                    "loop_names": list(parked_loop_names),
+                    "schema_alert_message": schema_alert.message,
+                },
+            )
+        except Exception:
+            # daemon_events lives in the disposable ops.db tier, independent
+            # of whatever tier tripped the schema mismatch above -- but this
+            # is best-effort observability, not load-bearing startup work, so
+            # a failure here must never block the (already-decided) degraded
+            # startup path.
+            logger.warning("daemon: failed to emit maintenance_loops_parked event", exc_info=True)
 
     pidfile = archive_root_path / "daemon.pid"
     pidfile_fd: int | None = None
