@@ -3570,7 +3570,13 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     excised_source = root / "excised.jsonl"
     excised_source.write_bytes(excised_payload)
     normal_source = root / "normal.jsonl"
-    normal_source.write_bytes(b"{}\n")
+    # Real, parseable content -- not a bare `{}` -- because polylogue-lb39z's
+    # guarded presence-guarantee fallback (#3630) can drive this fixture's
+    # raw revision through a real re-parse (_parse_raw_revision_chain) that
+    # the parse_stream_payload monkeypatch below does not intercept, and a
+    # genuinely empty/malformed record now correctly fails to replay to any
+    # session rather than being silently accepted.
+    normal_source.write_bytes(b'{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}\n')
 
     # Pre-mark the excised file's exact content hash as durably excised,
     # mirroring a prior real `polylogue ops excise` apply.
