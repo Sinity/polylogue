@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from polylogue.config import load_polylogue_config
+from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.identity import (
     EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
     EMBEDDING_INPUT_HASH_SQL_FUNCTION,
@@ -1562,32 +1563,43 @@ def embed_archive_session_sync(
     except Exception as exc:
         from polylogue.storage.sqlite.archive_tiers.embedding_write import record_embedding_failure
 
-        origin_row = None
-        with contextlib.suppress(sqlite3.Error):
-            origin_row = index_conn.execute(
-                "SELECT origin FROM sessions WHERE session_id = ?", (session_id,)
-            ).fetchone()
-        if origin_row is not None:
-            if isinstance(exc, _ProviderRequestError):
-                provider = "voyage"
-                error_class = embedding_error_class(exc)
-                retryable = not is_terminal_embedding_provider_error(str(exc))
-            else:
-                provider = "local"
-                error_class = "internal_error"
-                retryable = True
-            record_embedding_failure(
-                embeddings_conn,
-                session_id=session_id,
-                origin=str(origin_row["origin"]),
-                message_refs=attempted_message_refs,
-                provider=provider,
-                model=text_provider.model,
-                error_class=error_class,
-                error_message=str(exc),
-                retryable=retryable,
-                attempt=attempt,
-            )
+        # The failure ledger must never lose a row merely because the origin
+        # lookup itself failed (polylogue-es7b) -- ``session`` already carries
+        # ``origin`` when it was fetched successfully at the top of this
+        # function; only when the failure predates that fetch (or the
+        # connection is otherwise unusable) do we fall back to a fresh,
+        # best-effort re-read, and finally to an explicit unknown sentinel so
+        # ``record_embedding_failure`` is always called.
+        if session is not None:
+            origin_value = str(session["origin"])
+        else:
+            origin_value = str(Origin.UNKNOWN_EXPORT)
+            with contextlib.suppress(sqlite3.Error):
+                origin_row = index_conn.execute(
+                    "SELECT origin FROM sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if origin_row is not None:
+                    origin_value = str(origin_row["origin"])
+        if isinstance(exc, _ProviderRequestError):
+            provider = "voyage"
+            error_class = embedding_error_class(exc)
+            retryable = not is_terminal_embedding_provider_error(str(exc))
+        else:
+            provider = "local"
+            error_class = "internal_error"
+            retryable = True
+        record_embedding_failure(
+            embeddings_conn,
+            session_id=session_id,
+            origin=origin_value,
+            message_refs=attempted_message_refs,
+            provider=provider,
+            model=text_provider.model,
+            error_class=error_class,
+            error_message=str(exc),
+            retryable=retryable,
+            attempt=attempt,
+        )
         return EmbedSessionOutcome(status="error", session_id=session_id, error=str(exc))
     finally:
         with contextlib.suppress(sqlite3.Error):
