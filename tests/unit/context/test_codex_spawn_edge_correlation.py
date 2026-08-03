@@ -45,7 +45,11 @@ def _init_source_db(archive_root: Path) -> None:
 def _write_spawn_edge(
     archive_root: Path, *, parent_thread_id: str, child_thread_id: str, status: str = "closed"
 ) -> None:
-    payload = {"parent_thread_id": parent_thread_id, "child_thread_id": child_thread_id, "status": status}
+    payload: dict[str, object] = {
+        "parent_thread_id": parent_thread_id,
+        "child_thread_id": child_thread_id,
+        "status": status,
+    }
     encoded = json.dumps(payload).encode("utf-8")
     with sqlite3.connect(archive_root / "source.db") as conn:
         write_source_hook_event(

@@ -1277,7 +1277,11 @@ async def test_reconcile_codex_spawn_edges_resolves_via_the_facade(tmp_path: Pat
         )
         index_conn.commit()
 
-    payload = {"parent_thread_id": "parent-facade-1", "child_thread_id": "child-facade-1", "status": "closed"}
+    payload: dict[str, object] = {
+        "parent_thread_id": "parent-facade-1",
+        "child_thread_id": "child-facade-1",
+        "status": "closed",
+    }
     encoded = json.dumps(payload).encode("utf-8")
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         write_source_hook_event(

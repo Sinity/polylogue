@@ -193,7 +193,7 @@ def _write_codex_thread_title_hook_event(archive_root: Path, *, thread_id: str, 
         write_source_hook_event,
     )
 
-    payload = {"thread_id": thread_id, "title": title}
+    payload: dict[str, object] = {"thread_id": thread_id, "title": title}
     encoded = _json.dumps(payload).encode("utf-8")
     with sqlite3.connect(str(archive_root / "source.db")) as conn:
         write_source_hook_event(
