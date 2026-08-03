@@ -6,7 +6,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from devtools import (
-    build_topology_projection,
     render_agent_manual,
     render_cli_output_schemas,
     render_cli_reference,
@@ -295,21 +294,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/archive/viewport/profiles.py",
             "polylogue/surfaces/payloads.py",
             "pyproject.toml",
-        ),
-    ),
-    GeneratedSurface(
-        name="topology-projection",
-        label="Topology projection",
-        description=(
-            "Regenerate docs/plans/topology-target.yaml from the current tree, or verify the "
-            "realized polylogue/ tree against it (orphans/missing/conflicts/kernel-rule)."
-        ),
-        command=control_plane_argv("render topology-projection"),
-        main=build_topology_projection.generated_surface_main,
-        inputs=(
-            "polylogue/",
-            "devtools/build_topology_projection.py",
-            "devtools/verify_topology.py",
         ),
     ),
     GeneratedSurface(

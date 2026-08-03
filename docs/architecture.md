@@ -541,8 +541,5 @@ big-bang move — recorded here so the direction is not re-litigated per PR):
   first, then surfaces adapt.
 - A module that doesn't clearly satisfy one of the eight numbered questions
   above joins an existing package's most-specific matching submodule; it is
-  not grounds for a new top-level package. `topology-target.yaml`'s
-  placement-rule audit (`devtools verify topology`) is the mechanical
-  backstop — it enforces the *current* tree faithfully, but this decision
-  procedure is what keeps the current tree from drifting further from a
-  legible one.
+  not grounds for a new top-level package. This decision procedure is what
+  keeps the current tree from drifting further from a legible one.
