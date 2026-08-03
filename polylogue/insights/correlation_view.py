@@ -22,7 +22,7 @@ def run_correlation_view(
     github_api: bool = True,
 ) -> None:
     """Show git commits and GitHub refs within the session's time window (#1690)."""
-    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.core.async_bridge import run_coroutine_sync
     from polylogue.insights.session_commit import (
         bridge_session_ids_from_events,
         build_correlation_result,
