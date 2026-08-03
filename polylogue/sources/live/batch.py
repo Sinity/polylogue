@@ -33,7 +33,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.revision_replay import RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
-from polylogue.core.degraded import is_degraded
+from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.core.memory import release_process_memory
@@ -450,7 +450,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
-        if is_degraded():
+        if is_fully_degraded():
             # The daemon has been marked structurally unable to ingest (e.g.
             # schema mismatch detected at preflight or on the first batch).
             # Do not enter the full-parse path — that is what produced the
@@ -552,7 +552,7 @@ class LiveBatchProcessor:
                 # same paths into ``failed_paths`` and does NOT call
                 # ``_record_failed_cursor`` against the DB we already know is
                 # structurally unusable. The by_source loop further down also
-                # checks ``is_degraded()`` and skips the full-parse phase.
+                # checks ``is_fully_degraded()`` and skips the full-parse phase.
                 append_result = _AppendResult(succeeded=[], failed=[], worker_count=0)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
@@ -617,7 +617,7 @@ class LiveBatchProcessor:
                 deferred_paths.append(plan.path)
 
         for path in paths:
-            if is_degraded():
+            if is_fully_degraded():
                 full_paths.append(path)
                 continue
             cursor = cursor_records.get(path)
@@ -663,7 +663,7 @@ class LiveBatchProcessor:
         full_ingest_time_budget_exceeded = False
         processed_any_full_group = False
         for source_name, grouped_paths in by_source.items():
-            if is_degraded():
+            if is_fully_degraded():
                 # A prior source group hit a structural error this batch.
                 # Don't burn IOPS on remaining groups.
                 for path in grouped_paths:
@@ -676,7 +676,7 @@ class LiveBatchProcessor:
             for source_paths in _full_parse_progress_groups(grouped_paths):
                 if self._stop_requested():
                     break
-                if is_degraded():
+                if is_fully_degraded():
                     break
                 if (
                     processed_any_full_group
@@ -2134,6 +2134,18 @@ class LiveBatchProcessor:
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        # polylogue-gbs02: the derived tier (index.db/
+                        # embeddings.db) is behind the running code, but
+                        # source.db just got this record durably -- stop
+                        # here, before any parse/materialize/index work
+                        # touches the stale derived tier. Same admit-and-skip
+                        # shape as the OriginSpec fact-artifact branch below,
+                        # just a different reason for stopping short of parse.
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     artifact_rule = artifact_rule_for_path(provider, record.source_path)
                     if artifact_rule is not None and artifact_rule.parse_policy != "session":
                         # OriginSpec fact artifacts are valid raw authority even

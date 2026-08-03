@@ -15,6 +15,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     append_source_revision,
 )
+from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
@@ -116,6 +117,22 @@ def _ingest_append_plans_archive(
                         native_id=plan.native_id_hint,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        # polylogue-gbs02: the derived tier (index.db/
+                        # embeddings.db) is behind the running code, but
+                        # source.db just durably got this append range --
+                        # stop here, before parsing or touching the stale
+                        # derived tier. Treat as succeeded (not deferred):
+                        # the acquire itself genuinely completed, so the
+                        # cursor should advance normally rather than
+                        # re-reading the same bytes on every tick. The raw
+                        # row sits with parsed_at_ms=NULL exactly like any
+                        # other not-yet-materialized raw, and ordinary
+                        # convergence picks it up once the derived tier is
+                        # current again -- no special resolution needed.
+                        succeeded.append(plan)
+                        continue
                     t0 = time.perf_counter()
                     payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
                     _add_timing(timings, "append.json_stream", t0)

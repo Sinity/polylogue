@@ -208,6 +208,56 @@ def test_live_full_replay_streams_retained_jsonl_raw(
     assert result.failed == []
 
 
+def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
+    tmp_path: Path,
+) -> None:
+    """polylogue-gbs02: a derived-only degraded reason must still acquire raw content.
+
+    Raw acquisition only ever writes source.db; when the daemon is degraded
+    ONLY because index.db/embeddings.db are behind the running code
+    (``DegradedReason.derived_only=True``), acquisition must proceed --
+    otherwise the daemon loses live capture data for the entire duration of
+    a schema-migration/reindex window. Materialization (parse) must still be
+    skipped: the raw row lands with ``parsed_at_ms IS NULL``, exactly the
+    same "not yet materialized" state ordinary convergence already knows
+    how to pick up once the derived tier catches up.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "degraded-full.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"degraded-full"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="index.db:46!=57",
+            derived_only=True,
+        )
+    )
+    try:
+        result = processor._ingest_full_paths_sync([path], source_name="codex")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parsed_at_ms is None
+    assert parse_error is None
+
+
 def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

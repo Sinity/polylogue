@@ -338,6 +338,52 @@ def _check_source_availability_fast() -> HealthAlert:
         )
 
 
+#: Durability classes whose mismatch/missing state must block ALL ingestion
+#: (raw acquisition included) -- these are the tiers a stale runtime could
+#: read or write incorrectly on the very first raw-acquire statement.
+#: Rebuildable/expensive_rebuild tiers (index.db/embeddings.db) are derived:
+#: acquisition never touches them, only the parse/materialize/index path
+#: does, so their mismatch alone must not stop acquisition (polylogue-gbs02).
+_INGESTION_BLOCKING_DURABILITY_CLASSES = frozenset({"irreplaceable", "human"})
+
+
+def durable_tier_schema_mismatch() -> bool:
+    """True if a durable tier (source.db/user.db) is missing or version-mismatched.
+
+    Narrower than ``_check_schema_version_fast``'s aggregate severity, which
+    intentionally reports CRITICAL for ANY tier mismatch (including
+    derived-only ones) so operators keep seeing the full picture. This
+    function answers the one question that must gate raw acquisition itself:
+    is a tier acquisition actually WRITES TO in a bad state? Only source.db
+    (irreplaceable) and user.db (human) are ingestion-blocking; index.db and
+    embeddings.db (rebuildable/expensive_rebuild) are not -- see
+    ``_INGESTION_BLOCKING_DURABILITY_CLASSES``.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+
+    dbf = _active_health_db_path()
+    if not dbf.exists():
+        # No archive yet -- nothing to be stale against; the daemon's normal
+        # bootstrap-on-first-write path handles this, not a preflight refusal.
+        return False
+    archive_dir = dbf.parent
+    for spec in ARCHIVE_TIER_SPECS.values():
+        if spec.durability not in _INGESTION_BLOCKING_DURABILITY_CLASSES:
+            continue
+        path = archive_dir / spec.filename
+        if not path.exists():
+            return True
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            row = conn.execute("PRAGMA user_version").fetchone()
+        finally:
+            conn.close()
+        current = int(row[0]) if row else 0
+        if current != spec.version:
+            return True
+    return False
+
+
 def _check_schema_version_fast() -> HealthAlert:
     """Check that the active archive root has the expected tier layout."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
