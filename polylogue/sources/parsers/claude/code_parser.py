@@ -1955,20 +1955,12 @@ def _parse_code_records(
     records: Iterable[object],
     fallback_id: str,
     *,
-    record_index_start: int = 0,
-    seen_record_uuids: set[str] | None = None,
     trust_fallback_id: bool = False,
 ) -> ParsedSession:
     """Parse Claude Code JSONL payloads into a canonical session model.
 
-    ``record_index_start`` and ``seen_record_uuids`` are compact streaming
-    continuation state used when one provider-native session is split by
-    interleaved JSONL rows. They preserve eager-path fallback identifiers and
-    first-record-wins UUID semantics without retaining raw records.
-
-    ``trust_fallback_id`` (bd polylogue-jc4q): dispatch.py's Claude Code
-    grouping (``_claude_code_grouped_record_specs`` /
-    ``_claude_code_stream_sessions``) sets this when ``fallback_id`` is a
+    ``trust_fallback_id`` (bd polylogue-jc4q): the caller (dispatch.py's
+    ``_claude_code_multiway_parse``) sets this when ``fallback_id`` is a
     composite it has already anchored to THIS file's own identity for a
     resume/fork/usage-limit boundary carryover fragment -- a run of records
     stamped with an ANCESTOR session's id even though it is not that
@@ -1980,16 +1972,22 @@ def _parse_code_records(
 
     This is a thin walk-and-fold wrapper (bd polylogue-taj0o Stage 1) over
     ``_fold_code_record``/``_finalize_code_session``, which carry the actual
-    per-record and post-loop logic against one ``_SessionAccumulator``.
+    per-record and post-loop logic against one ``_SessionAccumulator``. It
+    always sees one session's whole record set in a single call -- routing
+    the same raw ``records`` iterable to more than one logical session
+    (a file with interleaved sessionIds) is dispatch.py's
+    ``_claude_code_multiway_parse``'s job (bd polylogue-taj0o Stage 2), which
+    keys one ``_SessionAccumulator`` per session id directly via
+    ``_fold_code_record``/``_finalize_code_session`` instead of calling this
+    function per group.
     """
     acc = _SessionAccumulator(
         fallback_id=fallback_id,
         trust_fallback_id=trust_fallback_id,
         is_agent=fallback_id.startswith("agent-"),
         is_acompact=fallback_id.startswith("agent-acompact-"),
-        seen_uuids=seen_record_uuids if seen_record_uuids is not None else set(),
     )
-    for index, item in enumerate(records, start=record_index_start + 1):
+    for index, item in enumerate(records, start=1):
         if not isinstance(item, dict):
             continue
         _fold_code_record(acc, index, item)
@@ -2073,71 +2071,13 @@ def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:
     return format_timestamp(file_mtime_ms / 1000.0)
 
 
-def parse_code(
-    payload: Sequence[object],
-    fallback_id: str,
-    *,
-    tool_result_sidecars: SidecarJoinResult | None = None,
-    trust_fallback_id: bool = False,
-) -> ParsedSession:
-    session = _parse_code_records(payload, fallback_id, trust_fallback_id=trust_fallback_id)
-    if tool_result_sidecars is not None:
-        session = apply_tool_result_sidecars(session, tool_result_sidecars)
-    return session
-
-
-def _background_notification_from_event(
-    event: ParsedSessionEvent,
-) -> ClaudeCodeBackgroundTaskNotification | None:
-    if event.event_type != "background_task_completion":
-        return None
-    payload = event.payload
-    task_id = payload.get("task_id")
-    output_file = payload.get("output_file")
-    status = payload.get("status")
-    summary = payload.get("summary")
-    tool_use_id = payload.get("tool_use_id")
-    exit_code = payload.get("exit_code")
-    if not isinstance(task_id, str) or not task_id:
-        return None
-    if not isinstance(output_file, str) or not output_file:
-        return None
-    if not isinstance(status, str) or not status:
-        return None
-    if not isinstance(summary, str) or not summary:
-        return None
-    if tool_use_id is not None and not isinstance(tool_use_id, str):
-        return None
-    if exit_code is not None and not isinstance(exit_code, int):
-        return None
-    return ClaudeCodeBackgroundTaskNotification(
-        task_id=task_id,
-        tool_use_id=tool_use_id,
-        output_file=output_file,
-        status=status,
-        summary=summary,
-        exit_code=exit_code,
-    )
-
-
-# polylogue-4987i: eager parsing (_parse_code_records, single pass over a
-# session's whole record set) appends summary session_events -- background
-# completions, delegation progress, session_kind, coverage -- after its main
-# loop, in that fixed order, because it only sees "no more records" once, at
-# true end of input. Streaming parses non-contiguous chunks with the SAME
-# per-chunk logic, so each chunk appends its own summary events at that
-# chunk's local end; concatenating chunks in arrival order therefore
-# interleaves each chunk's local summary events with the next chunk's
-# ordinary events, a different permutation than eager's for identical
-# underlying records. There is no true "end of session" to wait for (a live
-# session can always grow another byte later, and both eager and streaming
-# only ever see whatever prefix of the file exists when parsing runs) -- so
-# the fix is not to defer harder, it is to make the final order depend only
-# on the parsed content, not on how many chunks it took to parse it: sort by
-# (timestamp, event-type tier, encounter order) rather than relying on
-# append order at all. This is idempotent for eager's own historical output
-# in the common case (record/timestamp order already coincides with the tier
-# order below) and chunk-count-invariant for streaming by construction.
+# polylogue-4987i: a session's summary session_events -- background
+# completions, delegation progress, session_kind, coverage -- are appended
+# after ``_fold_code_record``'s main loop, in that fixed order, because
+# ``_finalize_code_session`` only sees "no more records" once, at true end
+# of input. Sort by (timestamp, event-type tier, encounter order) rather
+# than relying on append order alone so the final order depends only on the
+# parsed content.
 _SESSION_EVENT_TYPE_ORDER_TIER: dict[str, int] = {
     "background_task_completion": 1,
     "claude_delegation_progress": 2,
@@ -2147,13 +2087,12 @@ _SESSION_EVENT_TYPE_ORDER_TIER: dict[str, int] = {
 
 
 def order_session_events(events: Sequence[ParsedSessionEvent]) -> list[ParsedSessionEvent]:
-    """Deterministic session_events order, independent of chunk count (polylogue-4987i).
+    """Deterministic session_events order (polylogue-4987i).
 
     Missing timestamps sort first (stable; matches prior append-order
     behavior for the rare untimestamped event). The trailing encounter index
     is an irreducible tiebreak: two same-type events genuinely stamped at
-    the same instant have no other ordering evidence, in either parsing
-    path.
+    the same instant have no other ordering evidence.
     """
 
     def sort_key(indexed: tuple[int, ParsedSessionEvent]) -> tuple[str, int, int]:
@@ -2163,167 +2102,29 @@ def order_session_events(events: Sequence[ParsedSessionEvent]) -> list[ParsedSes
     return [event for _, event in sorted(enumerate(events), key=sort_key)]
 
 
-def _merge_count_dicts(dicts: Iterable[object]) -> dict[str, int]:
-    merged: dict[str, int] = {}
-    for payload in dicts:
-        if not isinstance(payload, Mapping):
-            continue
-        for key, value in payload.items():
-            if isinstance(key, str) and isinstance(value, int):
-                merged[key] = merged.get(key, 0) + value
-    return dict(sorted(merged.items()))
-
-
-def reconcile_code_session_chunks(session: ParsedSession) -> ParsedSession:
-    """Finalize one Claude Code session after streaming chunk merge.
-
-    Every "whole-session summary" event type _parse_code_records emits after
-    its main loop -- background completions, delegation-progress ticks, parse
-    coverage counts -- is computed PER CHUNK when parsing is split into
-    non-contiguous chunks (polylogue-4987i): each chunk only sees its own
-    slice of records, so its coverage counts are a partial sum and its
-    background/delegation state resets at the chunk boundary instead of
-    accumulating across the whole session the way eager's single pass does.
-    Concatenating chunks therefore leaves eager and streaming BOTH
-    differently-ordered (fixed by `order_session_events` below) AND carrying
-    different per-event payloads/timestamps for the exact same session
-    (e.g. a stale chunk-local `claude_parse_coverage.updated_at` instead of
-    the session's true final `updated_at`) -- ordering alone cannot fix that,
-    each summary type needs the same fold-across-chunks eager already does
-    within one pass.
-
-    - `background_task_completion`: dedup by (task_id, tool_use_id), a later
-      completion overwrites an earlier start (unchanged from before).
-    - `claude_delegation_progress`: dedup+merge by `parent_tool_use_id`,
-      summing tick counts and taking min(first_seen)/max(last_seen) --
-      mirrors `_accumulate_delegation_progress`'s own accumulation.
-    - `claude_parse_coverage`: merge into at most one event, summing each
-      count dict per key and stamping the session-wide `updated_at` (already
-      correctly the true session max across chunks --
-      `merge_parsed_session_chunks` computes it via `max(updated_values)`
-      before this function runs).
-    - `claude_session_kind`: dedup to at most one (a session-wide constant
-      fact; any surviving instance carries the same value).
-    """
-    ordinary_events: list[ParsedSessionEvent] = []
-    completion_events: dict[tuple[str, str | None], ParsedSessionEvent] = {}
-    delegation_events: dict[str, ParsedSessionEvent] = {}
-    coverage_events: list[ParsedSessionEvent] = []
-    session_kind_event: ParsedSessionEvent | None = None
-    for event in session.session_events:
-        notification = _background_notification_from_event(event)
-        if notification is not None:
-            completion_events[(notification.task_id, notification.tool_use_id)] = event
-            continue
-        if event.event_type == "claude_delegation_progress":
-            parent_tool_use_id = event.payload.get("parent_tool_use_id")
-            if isinstance(parent_tool_use_id, str) and parent_tool_use_id:
-                existing_delegation = delegation_events.get(parent_tool_use_id)
-                if existing_delegation is None:
-                    delegation_events[parent_tool_use_id] = event
-                else:
-                    existing_payload = existing_delegation.payload
-                    tick_count = _safe_int(existing_payload.get("progress_tick_count")) + _safe_int(
-                        event.payload.get("progress_tick_count")
-                    )
-                    first_seen_values = [
-                        value
-                        for value in (existing_payload.get("first_seen"), event.payload.get("first_seen"))
-                        if isinstance(value, str) and value
-                    ]
-                    last_seen_values = [
-                        value
-                        for value in (existing_payload.get("last_seen"), event.payload.get("last_seen"))
-                        if isinstance(value, str) and value
-                    ]
-                    first_seen = min(first_seen_values) if first_seen_values else None
-                    last_seen = max(last_seen_values) if last_seen_values else None
-                    delegation_events[parent_tool_use_id] = existing_delegation.model_copy(
-                        update={
-                            "timestamp": last_seen or existing_delegation.timestamp,
-                            "payload": {
-                                "parent_tool_use_id": parent_tool_use_id,
-                                "progress_tick_count": tick_count,
-                                "first_seen": first_seen,
-                                "last_seen": last_seen,
-                                "summary": (
-                                    f"delegated work under tool_use {parent_tool_use_id} ({tick_count} progress ticks)"
-                                ),
-                            },
-                        }
-                    )
-                continue
-            ordinary_events.append(event)
-            continue
-        if event.event_type == "claude_parse_coverage":
-            coverage_events.append(event)
-            continue
-        if event.event_type == "claude_session_kind":
-            if session_kind_event is None:
-                session_kind_event = event
-            continue
-        ordinary_events.append(event)
-
-    final_events = list(completion_events.values())
-    notifications = [
-        notification
-        for event in final_events
-        if (notification := _background_notification_from_event(event)) is not None
-    ]
-    messages = _project_background_task_completions(session.messages, notifications)
-
-    merged_coverage_events: list[ParsedSessionEvent] = []
-    if coverage_events:
-        merged_coverage_events.append(
-            coverage_events[0].model_copy(
-                update={
-                    "timestamp": session.updated_at,
-                    "payload": {
-                        "sidecar_seen": _merge_count_dicts(
-                            event.payload.get("sidecar_seen", {}) for event in coverage_events
-                        ),
-                        "sidecar_persisted": _merge_count_dicts(
-                            event.payload.get("sidecar_persisted", {}) for event in coverage_events
-                        ),
-                        "empty_dropped_by_record_type": _merge_count_dicts(
-                            event.payload.get("empty_dropped_by_record_type", {}) for event in coverage_events
-                        ),
-                    },
-                }
-            )
-        )
-
-    ordered_events = order_session_events(
-        [
-            *ordinary_events,
-            *final_events,
-            *delegation_events.values(),
-            *([session_kind_event] if session_kind_event is not None else []),
-            *merged_coverage_events,
-        ]
-    )
-    return session.model_copy(update={"messages": messages, "session_events": ordered_events})
-
-
-def parse_code_stream(
-    records: Iterable[object],
+def parse_code(
+    payload: Iterable[object],
     fallback_id: str,
     *,
-    record_index_start: int = 0,
-    seen_record_uuids: set[str] | None = None,
     tool_result_sidecars: SidecarJoinResult | None = None,
     trust_fallback_id: bool = False,
 ) -> ParsedSession:
-    session = _parse_code_records(
-        records,
-        fallback_id,
-        record_index_start=record_index_start,
-        seen_record_uuids=seen_record_uuids,
-        trust_fallback_id=trust_fallback_id,
-    )
+    """Parse one Claude Code session's whole record set in a single pass.
+
+    Works identically whether ``payload`` is a materialized list or a true
+    one-pass iterator (bd polylogue-taj0o Stage 2: mirrors
+    ``polylogue/sources/parsers/codex.py``'s ``parse``/``parse_stream`` --
+    both names below are the same function). Splitting a raw record stream
+    that mixes more than one logical session (interleaved ``sessionId``\\s)
+    is dispatch.py's ``_claude_code_multiway_parse``'s job, not this one's.
+    """
+    session = _parse_code_records(payload, fallback_id, trust_fallback_id=trust_fallback_id)
     if tool_result_sidecars is not None:
         session = apply_tool_result_sidecars(session, tool_result_sidecars)
     return session
+
+
+parse_code_stream = parse_code
 
 
 __all__ = [
@@ -2331,5 +2132,4 @@ __all__ = [
     "order_session_events",
     "parse_code",
     "parse_code_stream",
-    "reconcile_code_session_chunks",
 ]

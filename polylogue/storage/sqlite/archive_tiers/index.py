@@ -350,7 +350,31 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # streaming) and that were originally ingested via the streaming path with
 # the old buggy order -- same v42/v44/v45/v46/v48/v58 "SEMANTIC_REPARSE, no
 # clone-safe SQL delta" shape.
-INDEX_SCHEMA_VERSION = 59
+# polylogue-taj0o Stage 2: unifies Claude Code eager and streaming parsing
+# into ONE incremental multi-way merge (dispatch.py's
+# `_claude_code_multiway_parse`, replacing the former
+# `_claude_code_grouped_record_specs` eager grouping and
+# `_claude_code_stream_sessions` streaming chunker, plus
+# `merge_parsed_session_chunks`'s Claude-Code branch and
+# `reconcile_code_session_chunks`, both deleted). Folds every record for one
+# session id into the SAME `_SessionAccumulator` across the whole record
+# stream, finalizing once at true end of input -- eliminates the
+# eager-vs-streaming duplication v59 already fixed the *ordering* symptom
+# of. Also resolves the "three-way duplication" identity-conflict finding
+# (bd polylogue-taj0o notes): the canonical "primary" group for a file
+# containing more than one interleaved Claude Code session is now ALWAYS
+# the group whose own sessionId equals the caller's fallback_id (streaming's
+# former rule), never eager's former max-by-record-count rule, which could
+# pick the wrong group as primary for a small main session sharing a file
+# with a much larger subagent transcript. `provider_session_id`/
+# `parent_session_id`/`branch_type` can change for any already-materialized
+# claude-code-session whose raw file both interleaves more than one session
+# AND has a non-fallback_id-matching group with the largest record count --
+# SEMANTIC_REPARSE, not a free fast-forward: no DDL change, only re-parsing
+# already-acquired raw evidence recovers the corrected identity split.
+# `polylogue ops reset --index && polylogued run` is required; deliberately
+# NOT executed by this declaration.
+INDEX_SCHEMA_VERSION = 60
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
