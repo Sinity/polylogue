@@ -725,6 +725,20 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=58,
+        # polylogue-omsw: `archive.artifact_taxonomy.classify_artifact`/
+        # `classify_artifact_path` changed classification decisions for
+        # identical input bytes -- see INDEX_SCHEMA_VERSION's v58 comment
+        # (archive_tiers/index.py) for the full writeup and measured
+        # live-impact counts. Same v42/v44/v45/v46/v48 "SEMANTIC_REPARSE,
+        # no clone-safe SQL delta" shape: no DDL change on any table, so
+        # there is nothing here for a fast-forward to do. Resolving already-
+        # materialized wrong-classification rows requires `polylogue ops
+        # reset --index && polylogued run` -- deliberately NOT executed by
+        # this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
