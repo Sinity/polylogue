@@ -156,11 +156,18 @@ def acquire_antigravity_conversations_once(archive_root: Path) -> int:
             source_path = _archive_raw_source_path(raw_data, source)
             source_index = _archive_raw_source_index(raw_data)
             try:
-                archive.write_raw_and_parsed_result(
+                # polylogue-1fijp: this loop only ever visits cascade ids not
+                # already present in raw_sessions (see missing_ids above), so
+                # no prior head can exist for this logical source key --
+                # admit_raw_and_parsed_result's BASELINE-only chokepoint path
+                # is the correct fit (vs. write_raw_and_parsed_result's bare
+                # revision=None write).
+                archive.admit_raw_and_parsed_result(
                     session,
                     payload=payload,
                     source_path=source_path,
                     acquired_at_ms=acquired_at_ms,
+                    logical_source_key=f"{Origin.ANTIGRAVITY_SESSION.value}:{source_path}",
                     source_index=source_index,
                     blob_publication_receipt_id=(
                         raw_data.blob_publication_receipt_id if raw_data is not None else None

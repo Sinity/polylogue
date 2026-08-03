@@ -85,6 +85,7 @@ from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
+    ArchiveSourceBlobRef,
     deterministic_blob_hash,
     write_source_raw_session,
 )
@@ -166,6 +167,7 @@ def admit_raw_observation(
     prior_head: PriorRawHead | None = None,
     artifact: ArtifactClassification | None = None,
     blob_publication_receipt_id: str | None = None,
+    additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
     reacquire: Callable[[], bytes | None] | None = None,
     manage_transaction: bool = True,
 ) -> RawAdmissionResult:
@@ -175,6 +177,13 @@ def admit_raw_observation(
     outcomes that do not compare against a prior head -- every write this
     function makes carries a real revision envelope, never the nullable
     ``revision=None`` fallback the lower-level writers otherwise default to.
+
+    ``additional_blob_refs`` forwards through to the underlying
+    ``write_source_raw_session`` call for the session-content arms (BASELINE/
+    APPEND/SUPERSEDE/REFUSED_AMBIGUOUS) -- e.g. attachment blobs preacquired
+    by the caller alongside the primary payload. It is not accepted by the
+    ``ARTIFACT`` arm: a non-conversational artifact payload has no parsed
+    attachments of its own.
     """
     if not logical_source_key:
         raise ValueError("logical_source_key is required for raw admission")
@@ -205,6 +214,7 @@ def admit_raw_observation(
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=additional_blob_refs,
             revision=RawRevisionEnvelope(
                 logical_source_key=logical_source_key,
                 kind=RawRevisionKind.FULL,
@@ -254,6 +264,7 @@ def admit_raw_observation(
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=additional_blob_refs,
             revision=RawRevisionEnvelope(
                 logical_source_key=logical_source_key,
                 kind=RawRevisionKind.APPEND,
@@ -286,6 +297,7 @@ def admit_raw_observation(
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=additional_blob_refs,
             revision=RawRevisionEnvelope(
                 logical_source_key=logical_source_key,
                 kind=RawRevisionKind.FULL,
@@ -325,6 +337,7 @@ def admit_raw_observation(
         acquired_at_ms=acquired_at_ms,
         native_id=native_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
+        additional_blob_refs=additional_blob_refs,
         revision=RawRevisionEnvelope(
             logical_source_key=logical_source_key,
             kind=RawRevisionKind.UNKNOWN,
