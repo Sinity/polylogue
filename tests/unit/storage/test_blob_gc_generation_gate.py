@@ -128,6 +128,16 @@ def test_gc_combines_reference_and_generation_guards(
             "VALUES (?, ?, ?, 0, 0)",
             ("gen-boundary", completed_at_ms, completed_at_ms),
         )
+        # A 'raw_payload' blob ref is only live evidence when its ref_id
+        # resolves to a real raw_sessions row (polylogue-tfzw0's corrected
+        # GC liveness join) -- a blob_refs row alone, with no referent, is an
+        # orphan and must not protect a blob from reclamation.
+        conn.execute(
+            "INSERT INTO raw_sessions "
+            "(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES ('ref-1', 'codex-session', 'source.jsonl', ?, 4, ?)",
+            (bytes.fromhex(referenced_hash), completed_at_ms),
+        )
         conn.execute(
             "INSERT INTO blob_refs "
             "(blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "

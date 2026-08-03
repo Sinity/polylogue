@@ -155,6 +155,67 @@ def _blob_hash_bytes(blob_hash: str) -> bytes | None:
         return None
 
 
+# blob_refs.ref_type -> the table/column a ref_id must actually resolve to for
+# that row to mean the blob is still live. 'attachment' refs are keyed by the
+# *parent session's* raw_id (write_source_raw_session/
+# write_source_raw_session_blob_ref always pass ref.raw_id=resolved_raw_id for
+# every entry in additional_blob_refs, regardless of ref_type -- verified
+# against every production call site, polylogue-tfzw0), not a raw_artifacts
+# row, so it joins the same table as 'raw_payload'. 'sidecar' has no
+# production writer today; it is included for completeness/forward-safety
+# against history_sidecars.sidecar_id, its only plausible referent.
+_BLOB_REF_LIVENESS_JOIN: tuple[tuple[str, str, str], ...] = (
+    ("raw_payload", "raw_sessions", "raw_id"),
+    ("attachment", "raw_sessions", "raw_id"),
+    ("hook_payload", "raw_hook_events", "hook_event_id"),
+    ("sidecar", "history_sidecars", "sidecar_id"),
+)
+
+
+def _blob_refs_has_ref_type_column(conn: sqlite3.Connection) -> bool:
+    """Guard for legacy/alternate ``blob_refs`` shapes lacking ``ref_type``/``ref_id``.
+
+    Some pre-#1743 fixtures and test doubles model ``blob_refs`` with a
+    different column set entirely (e.g. ``owner_kind``/``owner_id`` instead of
+    ``ref_type``/``ref_id``). The liveness join is meaningless there; callers
+    fall back to treating ``blob_refs`` as contributing nothing rather than
+    raising ``OperationalError``.
+    """
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(blob_refs)")}
+    return "ref_type" in columns and "ref_id" in columns
+
+
+def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
+    """Return True if some ``blob_refs`` row for this hash has a live referent.
+
+    Replaces a prior membership test that only checked whether ANY row in
+    ``blob_refs`` carried this hash -- a tautology, since the row being asked
+    about is itself the "evidence" (polylogue-tfzw0). A ``blob_refs`` row is
+    only real evidence of liveness when the table its own ``ref_type`` names
+    (see ``_BLOB_REF_LIVENESS_JOIN``) still has the row identified by
+    ``ref_id``. A hook-event blob ref whose ``raw_hook_events`` row was
+    deleted, or a stale ref left behind by a since-reverted write, no longer
+    joins to anything and is correctly treated as dead here.
+    """
+    if not _table_exists(conn, "blob_refs") or not _blob_refs_has_ref_type_column(conn):
+        return False
+    clauses = [
+        f"(ref_type = ? AND EXISTS (SELECT 1 FROM {referent_table} WHERE {referent_table}.{referent_column} = blob_refs.ref_id))"
+        for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN
+        if _table_exists(conn, referent_table)
+    ]
+    if not clauses:
+        return False
+    params = [
+        ref_type
+        for ref_type, referent_table, _referent_column in _BLOB_REF_LIVENESS_JOIN
+        if _table_exists(conn, referent_table)
+    ]
+    query = f"SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ({' OR '.join(clauses)}) LIMIT 1"
+    row = conn.execute(query, (blob_bytes, *params)).fetchone()
+    return row is not None
+
+
 def _archive_reference_surfaces(
     conn: sqlite3.Connection,
     blob_hash: str,
@@ -166,12 +227,14 @@ def _archive_reference_surfaces(
         return []
 
     surfaces: list[str] = []
-    for table in ("raw_sessions", "blob_refs", "attachments"):
+    for table in ("raw_sessions", "attachments"):
         if not _table_exists(conn, table):
             continue
         row = conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_bytes,)).fetchone()
         if row is not None:
             surfaces.append(f"{surface_prefix}.{table}")
+    if _blob_refs_still_live(conn, blob_bytes):
+        surfaces.append(f"{surface_prefix}.blob_refs")
     return surfaces
 
 
@@ -557,11 +620,67 @@ def read_gc_history(db_path: str | Path, *, limit: int = 20) -> list[GCHistoryRo
     ]
 
 
+@dataclass(frozen=True, slots=True)
+class OrphanedBlobRefCensus:
+    """Standing count of ``blob_refs`` rows whose referent no longer exists.
+
+    A "orphaned" row here is exactly the shape blob GC's liveness join
+    (``_blob_refs_still_live``) treats as dead: its ``ref_type`` names a
+    referent table, but no row in that table has the ``ref_id`` this row
+    claims. These rows are harmless (GC already reclaims their blob once it
+    ages out) but their *count* is operator-relevant evidence of how much
+    write-time drift (deleted rows, since-fixed bugs like the hook-payload one
+    this census was built for) has accumulated. Intended to be read by a
+    daemon health/expensive tier; wiring that in is left to the caller
+    (polylogue-tfzw0 explicitly defers "wire into health tiers" as optional).
+    """
+
+    total: int
+    by_ref_type: dict[str, int]
+
+    def to_dict(self) -> dict[str, object]:
+        return {"total": self.total, "by_ref_type": dict(self.by_ref_type)}
+
+
+def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus:
+    """Count ``blob_refs`` rows whose ``ref_id`` has no live referent, per ref_type.
+
+    Read-only; safe to call against a live connection or a read-only handle.
+    A ``ref_type`` whose referent table does not exist (an old archive
+    predating that table) is skipped rather than counted as fully orphaned --
+    its rows are simply not evaluable, the same conservative stance
+    ``_blob_refs_still_live`` takes.
+    """
+    if not _table_exists(conn, "blob_refs"):
+        return OrphanedBlobRefCensus(total=0, by_ref_type={})
+    by_ref_type: dict[str, int] = {}
+    for ref_type, referent_table, referent_column in _BLOB_REF_LIVENESS_JOIN:
+        if not _table_exists(conn, referent_table):
+            continue
+        row = conn.execute(
+            f"""
+            SELECT COUNT(*) FROM blob_refs
+            WHERE ref_type = ?
+              AND NOT EXISTS (
+                  SELECT 1 FROM {referent_table}
+                  WHERE {referent_table}.{referent_column} = blob_refs.ref_id
+              )
+            """,
+            (ref_type,),
+        ).fetchone()
+        count = int(row[0]) if row is not None else 0
+        if count:
+            by_ref_type[ref_type] = count
+    return OrphanedBlobRefCensus(total=sum(by_ref_type.values()), by_ref_type=by_ref_type)
+
+
 __all__ = [
     "BlobGCResult",
     "MIN_AGE_S",
     "GCHistoryRow",
     "GCRunEvidence",
+    "OrphanedBlobRefCensus",
+    "census_orphaned_blob_refs",
     "read_gc_history",
     "run_blob_gc",
     "run_blob_gc_report",
