@@ -472,6 +472,11 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/status.py",
+    "import": "polylogue.storage.introspection"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/status.py",
     "import": "polylogue.storage.repair"
   },
   {
@@ -502,7 +507,7 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/tutorial.py",
-    "import": "polylogue.storage.table_existence"
+    "import": "polylogue.storage.introspection"
   },
   {
     "target": "polylogue/cli",
@@ -537,7 +542,7 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/read_views/streaming_markdown.py",
-    "import": "polylogue.storage.table_existence"
+    "import": "polylogue.storage.introspection"
   },
   {
     "target": "polylogue/cli",
@@ -892,6 +897,11 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_stages.py",
+    "import": "polylogue.storage.introspection"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/convergence_stages.py",
     "import": "polylogue.storage.runtime"
   },
   {
@@ -948,11 +958,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_stages.py",
     "import": "polylogue.storage.sqlite.sqlite_vec_extension"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.table_existence"
   },
   {
     "target": "polylogue/daemon",
@@ -1027,6 +1032,11 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/embedding_backlog.py",
+    "import": "polylogue.storage.introspection"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/embedding_backlog.py",
     "import": "polylogue.storage.search_providers"
   },
   {
@@ -1082,6 +1092,11 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_automerge.py",
+    "import": "polylogue.storage.introspection"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_automerge.py",
     "import": "polylogue.storage.sqlite.connection_profile"
   },
   {
@@ -1127,7 +1142,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_orphan_audit.py",
-    "import": "polylogue.storage.table_existence"
+    "import": "polylogue.storage.introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -1153,6 +1168,11 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_startup.py",
     "import": "polylogue.storage.fts.fts_lifecycle"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_startup.py",
+    "import": "polylogue.storage.introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -1188,6 +1208,11 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/fts_status.py",
     "import": "polylogue.storage.fts.sql"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/fts_status.py",
+    "import": "polylogue.storage.introspection"
   },
   {
     "target": "polylogue/daemon",
@@ -1372,6 +1397,11 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/metrics.py",
+    "import": "polylogue.storage.introspection"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/metrics.py",
     "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
   },
   {
@@ -1383,11 +1413,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/metrics.py",
     "import": "polylogue.storage.sqlite.connection_profile"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.table_existence"
   },
   {
     "target": "polylogue/daemon",

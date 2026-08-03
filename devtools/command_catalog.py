@@ -1579,6 +1579,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools lab policy raw-payload-hash-purity", "devtools lab policy raw-payload-hash-purity --json"),
     ),
     CommandSpec(
+        "lab policy table-exists-duplication",
+        "verification lab",
+        "Verify no module outside storage/introspection.py redefines table_exists/column_exists/index_exists.",
+        "devtools.verify_table_exists_duplication",
+        use_when=(
+            "Keep polylogue-48h's consolidation from silently regrowing: ~25 independently maintained "
+            "_table_exists/_column_exists/_index_exists copies (each trivially small and subtly different) "
+            "were merged into polylogue.storage.introspection. A grep-based tripwire forbidding a new "
+            "top-level def with one of the retired names outside that module."
+        ),
+        examples=(
+            "devtools lab policy table-exists-duplication",
+            "devtools lab policy table-exists-duplication --json",
+        ),
+    ),
+    CommandSpec(
         "lab policy position-derived-identity",
         "verification lab",
         "Verify no parser mints cross-revision comparison identity from positional/index data.",

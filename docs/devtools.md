@@ -150,6 +150,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy raw-authority-frontier-executability` | Verify every raw-authority frontier state has a reachable actuator. |
 | `devtools lab policy raw-payload-hash-purity` | Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
+| `devtools lab policy table-exists-duplication` | Verify no module outside storage/introspection.py redefines table_exists/column_exists/index_exists. |
 | `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools lab probe bead-pr-reconciliation` | Surface beads whose referenced PR merged but the bead is still open. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
