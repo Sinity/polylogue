@@ -134,7 +134,10 @@ def test_daemon_status_plain_output_reports_schema_and_cursor_debt() -> None:
         "Storage: archive_file_set (source, index); missing embeddings, user, ops; schema mismatch index; active root /tmp/active-archive"
         in lines
     )
-    assert "Live cursor: 3 tracked, 1 failed, 1 excluded, 1 retry due, 0 in backoff" in lines
+    assert (
+        "Live cursor: 3 tracked, 1 failed, 1 excluded (permanent until file replaced), 1 retry due, 0 in backoff"
+        in lines
+    )
     assert "Failing files: 1 shown, 2 omitted" in lines
 
 
@@ -2422,6 +2425,55 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
     assert status.live_cursor.retry_due_file_count == 1
     assert status.live_cursor.in_backoff_file_count == 0
     assert [item.source_path for item in status.live_cursor.failing_files] == [str(excluded), str(failed)]
+
+
+def test_daemon_status_never_reports_excluded_cursor_as_retry_due(tmp_path: Path) -> None:
+    """polylogue-ix5r: an excluded cursor is permanent until the file's on-disk
+
+    identity changes (size/dev/inode/mtime) -- ``revive_replaced_exclusion``
+    never fires on a schedule. ``mark_failed`` reaching the failure cap sets
+    ``next_retry_at = NULL`` on exclusion, and the old status query treated a
+    NULL ``next_retry_at`` as "due now" for *every* failing row, including
+    excluded ones -- mislabeling permanently-dark files as retry-due and
+    hiding how long they had been excluded.
+    """
+    db = tmp_path / "index.db"
+    poison = tmp_path / "poison.jsonl"
+    poison.write_text('{"bad":true}\n')
+    cursor = CursorStore(db)
+    for _ in range(6):
+        cursor.mark_failed(poison)
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        status = build_daemon_status(sources=())
+        payload = daemon_status_payload(sources=())
+
+    assert status.live_cursor.excluded_file_count == 1
+    # The excluded file must never count toward retry-due: it has no
+    # schedule to become due on.
+    assert status.live_cursor.retry_due_file_count == 0
+    assert status.live_cursor.in_backoff_file_count == 0
+
+    [poison_state] = status.live_cursor.failing_files
+    assert poison_state.excluded is True
+    assert poison_state.retry_due is False
+    assert poison_state.excluded_age_s is not None
+    assert poison_state.excluded_age_s >= 0.0
+
+    assert status.live_cursor.excluded_oldest_age_s is not None
+    assert status.live_cursor.excluded_oldest_age_s >= 0.0
+
+    lines = format_daemon_status_lines(payload)
+    live_cursor_line = next(line for line in lines if line.startswith("Live cursor:"))
+    assert "1 excluded (permanent until file replaced" in live_cursor_line
+    assert "0 retry due" in live_cursor_line
 
 
 def test_daemon_status_payload_stalled_component_does_not_block_healthy_components(

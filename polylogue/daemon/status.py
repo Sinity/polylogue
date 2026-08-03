@@ -316,17 +316,35 @@ class LiveCursorFileState(BaseModel):
     failure_count: int = 0
     next_retry_at: str | None = None
     excluded: bool = False
+    # ``retry_due`` is only ever true for a non-excluded row: exclusion
+    # (polylogue-ix5r) clears ``next_retry_at`` to NULL and is permanent
+    # until the file's identity changes (size/dev/inode/mtime), so an
+    # excluded row with no scheduled retry must never read as "due now".
     retry_due: bool = False
+    # How long this row has been excluded, in seconds, derived from the
+    # cursor's ``updated_at``/``updated_at_ms`` (the timestamp the row was
+    # last written, which for an excluded row is the exclusion moment
+    # itself since nothing else updates it until revival). ``None`` when
+    # not excluded.
+    excluded_age_s: float | None = None
 
 
 class LiveCursorSummary(BaseModel):
     tracked_file_count: int = 0
     failed_file_count: int = 0
     excluded_file_count: int = 0
+    # Count of non-excluded failing files whose backoff window has
+    # elapsed. Excluded files are deliberately never counted here (see
+    # ``LiveCursorFileState.retry_due``) since they do not retry on a
+    # schedule at all.
     retry_due_file_count: int = 0
     in_backoff_file_count: int = 0
     sampled_file_count: int = 0
     omitted_file_count: int = 0
+    # Age of the longest-excluded row across the *entire* excluded set,
+    # not just the sampled ``failing_files`` page, so the summary line
+    # stays honest even when the sample is truncated.
+    excluded_oldest_age_s: float | None = None
     failing_files: list[LiveCursorFileState] = Field(default_factory=list)
 
 
@@ -1083,6 +1101,17 @@ def _fmt_bytes(value: int) -> str:
     return "0 KB"
 
 
+def _fmt_age_s(value: float) -> str:
+    """Format an age in seconds as a coarse human duration (days/hours/minutes)."""
+    if value >= 86400:
+        return f"{value / 86400:.1f}d"
+    if value >= 3600:
+        return f"{value / 3600:.1f}h"
+    if value >= 60:
+        return f"{value / 60:.0f}m"
+    return f"{value:.0f}s"
+
+
 def _live_cursor_summary_info() -> LiveCursorSummary:
     """Return live cursor backlog/failure state without source-tree scans."""
     dbf = _active_status_db_path()
@@ -1109,7 +1138,7 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
             )
             rows = conn.execute(
                 """
-                SELECT source_path, failure_count, next_retry_at, excluded
+                SELECT source_path, failure_count, next_retry_at, excluded, updated_at
                 FROM live_cursor
                 WHERE failure_count > 0 OR excluded = 1
                 ORDER BY source_path
@@ -1117,13 +1146,17 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
                 """,
                 (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
             ).fetchall()
+            # Excluded rows never retry on a schedule (revival requires the
+            # file's identity to change, not time to pass -- polylogue-ix5r),
+            # so they are deliberately excluded from the retry-due backlog.
             retry_rows = conn.execute(
                 """
                 SELECT next_retry_at
                 FROM live_cursor
-                WHERE failure_count > 0
+                WHERE failure_count > 0 AND excluded = 0
                 """
             ).fetchall()
+            oldest_excluded_row = conn.execute("SELECT MIN(updated_at) FROM live_cursor WHERE excluded = 1").fetchone()
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -1136,11 +1169,15 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
     for row in retry_rows:
         if _retry_due(row[0], now=now):
             retry_due_file_count += 1
-    in_backoff_file_count = max(0, failed_file_count - retry_due_file_count)
+    # ``retry_rows`` is already scoped to non-excluded failing rows, so this
+    # is "failed, non-excluded, not yet due" -- excluded rows are neither
+    # retry-due nor in backoff, they are permanently parked.
+    in_backoff_file_count = max(0, len(retry_rows) - retry_due_file_count)
     for row in rows:
         failure_count = _row_int(row[1])
         excluded = bool(row[3])
-        retry_due = failure_count > 0 and _retry_due(row[2], now=now)
+        retry_due = (not excluded) and failure_count > 0 and _retry_due(row[2], now=now)
+        excluded_age_s = _optional_iso_age_s(_optional_str(row[4]), now=now) if excluded else None
         failing_files.append(
             LiveCursorFileState(
                 source_path=str(row[0]),
@@ -1148,13 +1185,18 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
                 next_retry_at=row[2],
                 excluded=excluded,
                 retry_due=retry_due,
+                excluded_age_s=excluded_age_s,
             )
         )
+    excluded_oldest_age_s = (
+        _optional_iso_age_s(_optional_str(oldest_excluded_row[0]), now=now) if oldest_excluded_row is not None else None
+    )
 
     return LiveCursorSummary(
         tracked_file_count=tracked_file_count,
         failed_file_count=failed_file_count,
         excluded_file_count=excluded_file_count,
+        excluded_oldest_age_s=excluded_oldest_age_s,
         retry_due_file_count=retry_due_file_count,
         in_backoff_file_count=in_backoff_file_count,
         sampled_file_count=len(failing_files),
@@ -1192,7 +1234,7 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
             )
             rows = conn.execute(
                 """
-                SELECT source_path, failure_count, next_retry_at, excluded
+                SELECT source_path, failure_count, next_retry_at, excluded, updated_at_ms
                 FROM ingest_cursor
                 WHERE failure_count > 0 OR excluded = 1
                 ORDER BY source_path
@@ -1200,13 +1242,19 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
                 """,
                 (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
             ).fetchall()
+            # Excluded rows never retry on a schedule (revival requires the
+            # file's identity to change, not time to pass -- polylogue-ix5r),
+            # so they are deliberately excluded from the retry-due backlog.
             retry_rows = conn.execute(
                 """
                 SELECT next_retry_at
                 FROM ingest_cursor
-                WHERE failure_count > 0
+                WHERE failure_count > 0 AND excluded = 0
                 """
             ).fetchall()
+            oldest_excluded_row = conn.execute(
+                "SELECT MIN(updated_at_ms) FROM ingest_cursor WHERE excluded = 1"
+            ).fetchone()
         finally:
             conn.close()
     except sqlite3.Error:
@@ -1220,16 +1268,26 @@ def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
             failure_count=_row_int(row[1]),
             next_retry_at=_optional_str(row[2]),
             excluded=bool(row[3]),
-            retry_due=_row_int(row[1]) > 0 and _retry_due(_optional_str(row[2]), now=now),
+            retry_due=(not bool(row[3])) and _row_int(row[1]) > 0 and _retry_due(_optional_str(row[2]), now=now),
+            excluded_age_s=_optional_epoch_ms_age_s(_row_int(row[4]) or None, now=now) if bool(row[3]) else None,
         )
         for row in rows
     ]
+    excluded_oldest_age_s = (
+        _optional_epoch_ms_age_s(_row_int(oldest_excluded_row[0]) or None, now=now)
+        if oldest_excluded_row is not None
+        else None
+    )
     return LiveCursorSummary(
         tracked_file_count=tracked_file_count,
         failed_file_count=failed_file_count,
         excluded_file_count=excluded_file_count,
+        excluded_oldest_age_s=excluded_oldest_age_s,
         retry_due_file_count=retry_due_file_count,
-        in_backoff_file_count=max(0, failed_file_count - retry_due_file_count),
+        # ``retry_rows`` is already scoped to non-excluded failing rows, so
+        # this is "failed, non-excluded, not yet due" -- excluded rows are
+        # neither retry-due nor in backoff, they are permanently parked.
+        in_backoff_file_count=max(0, len(retry_rows) - retry_due_file_count),
         sampled_file_count=len(failing_files),
         omitted_file_count=max(0, attention_file_count - len(failing_files)),
         failing_files=failing_files,
@@ -1744,6 +1802,20 @@ def _attempt_updated_age_s(updated_at: str, *, now: datetime) -> float | None:
     if updated.tzinfo is None:
         updated = updated.replace(tzinfo=UTC)
     return max(0.0, round((now - updated.astimezone(UTC)).total_seconds(), 3))
+
+
+def _optional_iso_age_s(updated_at: str | None, *, now: datetime) -> float | None:
+    """Age in seconds since ``updated_at`` (an ISO-8601 string), or ``None``."""
+    if not updated_at:
+        return None
+    return _attempt_updated_age_s(updated_at, now=now)
+
+
+def _optional_epoch_ms_age_s(updated_at_ms: int | None, *, now: datetime) -> float | None:
+    """Age in seconds since ``updated_at_ms`` (epoch milliseconds), or ``None``."""
+    if updated_at_ms is None:
+        return None
+    return _attempt_updated_age_s(_epoch_ms_to_iso(updated_at_ms), now=now)
 
 
 def _epoch_ms_to_iso(value: int) -> str:
@@ -2890,11 +2962,17 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     failing_files = payload.get("failing_files")
     live_cursor = payload.get("live_cursor")
     if isinstance(live_cursor, dict):
+        excluded_count = _row_int(live_cursor.get("excluded_file_count"))
+        excluded_suffix = ""
+        if excluded_count:
+            oldest_age = live_cursor.get("excluded_oldest_age_s")
+            age_text = f", oldest {_fmt_age_s(float(oldest_age))}" if isinstance(oldest_age, int | float) else ""
+            excluded_suffix = f" (permanent until file replaced{age_text})"
         lines.append(
             "Live cursor: "
             f"{live_cursor.get('tracked_file_count', 0)} tracked, "
             f"{live_cursor.get('failed_file_count', 0)} failed, "
-            f"{live_cursor.get('excluded_file_count', 0)} excluded, "
+            f"{excluded_count} excluded{excluded_suffix}, "
             f"{live_cursor.get('retry_due_file_count', 0)} retry due, "
             f"{live_cursor.get('in_backoff_file_count', 0)} in backoff"
         )
