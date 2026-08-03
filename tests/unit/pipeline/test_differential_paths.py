@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.raw_payload.decode import JSONValue
-from polylogue.config import Config, get_config
 
 # ---------------------------------------------------------------------------
 # 1. Sample decoder vs streaming decoder (JSONL)
@@ -123,57 +122,6 @@ class TestHealthRepairConvergence:
     """Health/doctor and repair must agree on debt counts when querying
     the same database state."""
 
-    @pytest.fixture()
-    def seeded_db(self: object, workspace_env: dict[str, Path]) -> Path:
-        """Native ``index.db`` with sessions plus a hand-fabricated orphan.
-
-        Orphan ``messages`` cannot arise under the native
-        ``messages.session_id REFERENCES sessions ON DELETE CASCADE`` while
-        foreign keys are enforced — they only appear after a corrupted or
-        foreign-key-disabled write. The fixture reproduces exactly that
-        corruption shape (FK off, insert a message under a missing
-        ``session_id``) so the repair detection path has something to find.
-        """
-        from tests.infra.archive_scenarios import open_index_db
-        from tests.infra.storage_records import SessionBuilder, db_setup
-
-        db_path = db_setup(workspace_env)
-        (
-            SessionBuilder(db_path, "conv-1")
-            .provider("chatgpt")
-            .title("First")
-            .add_message(role="user", text="Hello")
-            .add_message(role="assistant", text="Hi")
-            .save()
-        )
-        (
-            SessionBuilder(db_path, "conv-2")
-            .provider("claude-code")
-            .title("Second")
-            .add_message(role="user", text="Test")
-            .save()
-        )
-
-        with open_index_db(db_path) as conn:
-            conn.execute("PRAGMA foreign_keys = OFF")
-            conn.execute(
-                "INSERT INTO messages (session_id, native_id, position, role, word_count, content_hash) "
-                "VALUES ('chatgpt:ext-nonexistent', 'orphan-msg-1', 0, 'user', 1, X'0011223344556677889900112233445566778899001122334455667788990011')"
-            )
-            conn.commit()
-            conn.execute("PRAGMA foreign_keys = ON")
-
-        return db_path
-
-    def test_orphaned_message_count_agrees(self: object, seeded_db: Path) -> None:
-        from polylogue.storage.repair import count_orphaned_messages_sync
-        from tests.infra.archive_scenarios import open_index_db
-
-        with open_index_db(seeded_db) as conn:
-            count = count_orphaned_messages_sync(conn)
-
-        assert count >= 1, "Should detect at least 1 orphaned message"
-
     def test_empty_session_count_agrees(self: object, workspace_env: dict[str, Path]) -> None:
         """``count_empty_sessions_sync`` only counts a message-less session as
         debris when its raw artifact positively fails the live
@@ -221,68 +169,3 @@ class TestHealthRepairConvergence:
 
 
 # ---------------------------------------------------------------------------
-# 3. Repair preview count vs live recount
-# ---------------------------------------------------------------------------
-
-
-class TestRepairPreviewConvergence:
-    """Repair preview counts (from health report) must match what the
-    actual repair handler would find on a fresh connection."""
-
-    @pytest.fixture()
-    def db_with_orphans(self: object, workspace_env: dict[str, Path]) -> Config:
-        from tests.infra.archive_scenarios import open_index_db
-        from tests.infra.storage_records import SessionBuilder, db_setup
-
-        db_path = db_setup(workspace_env)
-        SessionBuilder(db_path, "real-conv").provider("chatgpt").title("Real").add_message(
-            role="user", text="Real message"
-        ).save()
-
-        # Fabricate two archive session-less messages (FK disabled) to model the
-        # post-corruption shape the repair path exists to clean up.
-        with open_index_db(db_path) as conn:
-            conn.execute("PRAGMA foreign_keys = OFF")
-            conn.execute(
-                "INSERT INTO messages (session_id, native_id, position, role, word_count, content_hash) "
-                "VALUES ('chatgpt:ext-ghost', 'orphan-1', 0, 'user', 2, X'0011223344556677889900112233445566778899001122334455667788990011')"
-            )
-            conn.execute(
-                "INSERT INTO messages (session_id, native_id, position, role, word_count, content_hash) "
-                "VALUES ('chatgpt:ext-ghost', 'orphan-2', 1, 'assistant', 2, X'ffeeddccbbaa9988776655443322110099887766554433221100ffeeddccbbaa')"
-            )
-            conn.commit()
-            conn.execute("PRAGMA foreign_keys = ON")
-        return get_config()
-
-    def test_preview_matches_live_orphan_count(self: object, db_with_orphans: Config) -> None:
-        """The count from health/debt should match what repair would find."""
-        from polylogue.storage.repair import count_orphaned_messages_sync
-        from tests.infra.archive_scenarios import open_index_db
-
-        with open_index_db(db_with_orphans.db_path) as conn:
-            count1 = count_orphaned_messages_sync(conn)
-            count2 = count_orphaned_messages_sync(conn)
-
-        assert count1 == count2, "Same query on same state should return same count"
-        assert count1 == 2, "Should find exactly 2 orphaned messages"
-
-    def test_repair_removes_exactly_previewed_count(self: object, db_with_orphans: Config) -> None:
-        """After repair, orphan count should be zero."""
-        from polylogue.storage.repair import (
-            count_orphaned_messages_sync,
-            repair_orphaned_messages,
-        )
-        from tests.infra.archive_scenarios import open_index_db
-
-        with open_index_db(db_with_orphans.db_path) as conn:
-            before = count_orphaned_messages_sync(conn)
-            assert before == 2
-
-        result = repair_orphaned_messages(db_with_orphans, dry_run=False)
-
-        with open_index_db(db_with_orphans.db_path) as conn:
-            after = count_orphaned_messages_sync(conn)
-
-        assert after == 0, "Repair should remove all orphaned messages"
-        assert result.repaired_count == before, f"Repair should report removing {before}, got {result.repaired_count}"

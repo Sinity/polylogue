@@ -100,8 +100,6 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
     assert coverage.uncovered_maintenance_targets == (
         "empty_sessions",
         "message_type_backfill",
-        "orphaned_attachments",
-        "orphaned_messages",
         "superseded_raw_snapshots",
     )
     assert coverage.uncovered_declared_operations == coverage.uncovered_operations

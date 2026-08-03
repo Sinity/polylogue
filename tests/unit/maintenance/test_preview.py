@@ -268,9 +268,7 @@ def test_inventory_emits_zero_rows_for_clean_models(workspace_env: dict[str, Pat
 
     for model, items in grouped.items():
         if model in {
-            "orphaned_messages",
             "empty_sessions",
-            "orphaned_attachments",
             "orphaned_blobs",
         }:
             # Archive-cleanup scopes report a single orphan_archive_row item.
@@ -427,7 +425,7 @@ def test_cli_preview_plain_renders_per_model_sections(workspace_env: dict[str, P
     assert "Captured:" in result.output
     assert "Total stale rows:" in result.output
     # At least one model section header should appear.
-    assert "messages_fts:" in result.output or "orphaned_messages:" in result.output
+    assert "messages_fts:" in result.output
 
 
 def test_cli_preview_scope_filter_passes_through(workspace_env: dict[str, Path]) -> None:

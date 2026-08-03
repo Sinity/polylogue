@@ -461,18 +461,6 @@ entries:
     caller (repair_empty_sessions) already surfaces any real repair-level failure through its
     own typed _repair_result.'
 - path: polylogue/storage/repair.py
-  function: <module>.repair_orphaned_attachments
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
-- path: polylogue/storage/repair.py
-  function: <module>.repair_orphaned_messages
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
-- path: polylogue/storage/repair.py
   function: <module>.repair_session_insights
   exceptions:
   - Exception
