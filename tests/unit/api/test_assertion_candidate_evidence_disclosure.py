@@ -15,7 +15,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import AssertionKind, BlockType, Provider
+from polylogue.core.enums import AssertionKind, BlockType, Provider, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
@@ -29,6 +29,7 @@ def _seed_candidate(root: Path) -> tuple[str, str]:
                 source_name=Provider.CODEX,
                 provider_session_id="evidence-review",
                 title="Evidence review source",
+                title_source=TitleSource.ORIGIN,
                 messages=[
                     ParsedMessage(
                         provider_message_id="m1",

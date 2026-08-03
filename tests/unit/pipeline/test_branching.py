@@ -58,9 +58,31 @@ def _archive_session_id(provider: Provider, native_id: str) -> str:
 
 
 def _codex_continuation_payload(*, child_id: str, parent_id: str) -> list[dict[str, object]]:
+    # #3484 requires structural evidence for the legacy (no `forked_from_id`)
+    # continuation fallback: the second distinct session_meta only counts as
+    # the replayed parent header when its timestamp does not postdate the
+    # first's AND the two share a matching cwd or git repository_url -- a
+    # bare second session_meta with an unrelated id proves nothing on its
+    # own (polylogue.sources.parsers.codex._has_continuation_evidence).
     return [
-        {"type": "session_meta", "payload": {"id": child_id, "timestamp": "2025-01-02T10:00:00Z"}},
-        {"type": "session_meta", "payload": {"id": parent_id, "timestamp": "2025-01-01T10:00:00Z"}},
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": child_id,
+                "timestamp": "2025-01-02T10:00:00Z",
+                "cwd": "/realm/project/continuation-fixture",
+                "git": {"repository_url": "git@github.com:example/continuation-fixture.git"},
+            },
+        },
+        {
+            "type": "session_meta",
+            "payload": {
+                "id": parent_id,
+                "timestamp": "2025-01-01T10:00:00Z",
+                "cwd": "/realm/project/continuation-fixture",
+                "git": {"repository_url": "git@github.com:example/continuation-fixture.git"},
+            },
+        },
         {
             "type": "response_item",
             "payload": {
@@ -397,8 +419,15 @@ class TestBranchRepositoryTraversal:
             tree = await archive.get_session_tree(ids["grandchild"])
             children = [conv for conv in tree if conv.parent_id is not None and str(conv.parent_id) == ids["root"]]
             root = next(conv for conv in tree if conv.is_root)
-            continuations = await archive.filter().is_continuation().list()
-            sidechains = await archive.filter().is_sidechain().list()
+            # #3495 defaults every session query's SQL-level `root` filter to
+            # True (top-level only) unless the caller explicitly overrides
+            # it. A continuation/sidechain session is a child by
+            # definition (it always has a parent), so it can never be
+            # "root" -- without this override the implicit root-only
+            # default silently empties both result sets before
+            # is_continuation()/is_sidechain() even run.
+            continuations = await archive.filter().is_continuation().is_root(False).list()
+            sidechains = await archive.filter().is_sidechain().is_root(False).list()
             roots = await archive.filter().is_root().list()
             with_branches = await archive.filter().has_branches().list()
 

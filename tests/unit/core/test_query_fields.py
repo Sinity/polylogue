@@ -142,11 +142,16 @@ def test_query_field_catalog_drives_plan_presence_descriptions_and_pushdown() ->
 def test_query_field_catalog_covers_public_spec_fields() -> None:
     descriptor_spec_attrs = {descriptor.spec_attr for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.spec_attr}
     spec_fields = {field.name for field in fields(SessionQuerySpec)}
-    internal_spec_fields = {"boolean_predicate", "with_unit_fields"}
+    internal_spec_fields = {"boolean_predicate", "with_unit_fields", "with_unit_windows"}
 
     # All public spec fields have descriptors (cursor was promoted from
     # internal-only to exposed). ``boolean_predicate`` is the compiled AST
-    # carrier, not a user-authored field token.
+    # carrier, not a user-authored field token. ``with_unit_fields``/
+    # ``with_unit_windows`` are projection sub-details parsed out of the
+    # ``with <units>[bracket]`` clause by ``_split_with_projection_clause``
+    # -- ``with_units`` itself is the one user-authored field token and has
+    # its own descriptor; there is no separate DSL token for the field/window
+    # sub-selection, so neither carries its own descriptor.
     assert spec_fields - descriptor_spec_attrs - internal_spec_fields == set()
 
 

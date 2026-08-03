@@ -38,6 +38,7 @@ def test_origin_values_match_archive_issue_contract() -> None:
         "grok-export",
         "chatgpt-export",
         "claude-ai-export",
+        "claude-design-session",
         "aistudio-drive",
         "unknown-export",
     )

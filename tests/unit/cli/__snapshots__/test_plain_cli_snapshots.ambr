@@ -50,8 +50,8 @@
           "total_cost_usd": 0.0,
           "cost_is_estimated": true,
           "tokens": {
-            "input_tokens": 191,
-            "output_tokens": 0,
+            "input_tokens": 100,
+            "output_tokens": 91,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0
           },
@@ -162,8 +162,8 @@
           "total_cost_usd": 0.0,
           "cost_is_estimated": true,
           "tokens": {
-            "input_tokens": 191,
-            "output_tokens": 0,
+            "input_tokens": 100,
+            "output_tokens": 91,
             "cache_read_tokens": 0,
             "cache_write_tokens": 0
           },
@@ -524,7 +524,8 @@
     "next_offset": null,
     "offset": 0,
     "origin": null,
-    "total": 2
+    "total": 2,
+    "total_unit": "top-level sessions"
   }
   
   '''
@@ -546,6 +547,7 @@
     "sessions": 2,
     "messages": 12,
     "raw_records": 2,
+    "unidentified_artifacts": 0,
     "next_action": "polylogue init",
     "component_readiness": {
       "raw_materialization": {
@@ -1015,8 +1017,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 15,
-        "user_version": 15,
+        "expected_user_version": 20,
+        "user_version": 20,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,
@@ -1039,8 +1041,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 46,
-        "user_version": 46,
+        "expected_user_version": 57,
+        "user_version": 57,
         "version_status": "ok",
         "table_counts": {
           "sessions": 2,
@@ -1150,7 +1152,7 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 10,
+          "sqlite_stat1_rows": 12,
           "planner_stats_present": true
         },
         "index": {
@@ -1350,7 +1352,7 @@
   - **Sessions:** 4 analyzed / 4 matched
   - **Origins:** chatgpt-export (2), claude-code-session (2)
   - **Total cost:** $0.00 _(estimated)_
-  - **Tokens:** in 191, out 0, cache-read 0, cache-write 0
+  - **Tokens:** in 100, out 91, cache-read 0, cache-write 0
   
   ## Distributions
   
@@ -1383,7 +1385,7 @@
   | session_count | 4 |
   | wallclock_span | span_ms=75663126945, summed_wall_ms=<HASH> |
   | estimated_cost_usd | $0.000000 (estimated) |
-  | token_lanes | input=191, output=0, cache_read=0, cache_write=0 |
+  | token_lanes | input=100, output=91, cache_read=0, cache_write=0 |
   | top_expensive_session | no_signal: no session in scope carries a positive cost figure |
   | repos_touched | (none) |
   | subagent_branch_count | 0 |
@@ -1417,7 +1419,7 @@
   sessions: analyzed=4 matched=4
   origins: chatgpt-export=2, claude-code-session=2
   total_cost: $0.00 (estimated)
-  tokens: in=191 out=0 cache_read=0 cache_write=0
+  tokens: in=100 out=91 cache_read=0 cache_write=0
   cost_per_session_usd: no signal
   wall_per_session_s: n=4 total=1.45443e+<DURATION> min=240 p50=360 p90=7.38324e+07 max=7.38324e+07 mean=3.63606e+07
   wallclock_span_ms: 75663126945
@@ -1433,7 +1435,7 @@
     sessions: 4
     wallclock: span_ms=75663126945 summed_wall_ms=<HASH> (<TIMESTAMP> -> <TIMESTAMP>)
     cost: $0.000000 (estimated)
-      tokens: input=191 output=0 cache_read=0 cache_write=0
+      tokens: input=100 output=91 cache_read=0 cache_write=0
     top_expensive_session: no_signal (no session in scope carries a positive cost figure)
     repos_touched: (none)
     subagent_branch_count: 0

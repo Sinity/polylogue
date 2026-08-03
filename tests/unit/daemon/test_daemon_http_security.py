@@ -1036,6 +1036,11 @@ class TestNoTokenLogging:
         }
         intentional_secret_outputs = {
             (Path("polylogue/daemon/browser_capture.py"), "token_show", "echo"),
+            # `polylogue ops api token show` (#3488/#3549): the deliberate CLI
+            # surface for printing the daemon HTTP API's auto-minted bearer
+            # token to its own operator, same intentional pattern as the
+            # browser-capture pairing token_show above.
+            (Path("polylogue/daemon/api_auth.py"), "token_show", "echo"),
             # `_handle_query_units` reads a client-supplied pagination
             # `continuation` param and decodes it into `continuation_token`/
             # `continuation_request` (an opaque query-unit cursor, not a

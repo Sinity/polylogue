@@ -347,7 +347,13 @@ class TestConfigThreading:
         """Planner debt comes from the supplied archive, not ambient paths."""
         caller_workspace = _caller_archive_workspace(workspace_env)
         index_db = db_setup(caller_workspace)
-        DbFactory(index_db).create_session(id="planner-config")
+        factory = DbFactory(index_db)
+        factory.create_session(id="planner-config")
+        # A message-less session with no raw artifact is "no evidence either
+        # way" to the empty_sessions debt classifier and never counts as
+        # debt (polylogue-9rdky) -- give it a phantom raw the classifier
+        # positively refuses so this fixture produces real debt.
+        factory.mark_as_phantom_debris("planner-config")
         config = Config(
             archive_root=caller_workspace["archive_root"],
             render_root=workspace_env["data_root"] / "render",
@@ -364,7 +370,10 @@ class TestConfigThreading:
     def test_execute_dry_run_reads_the_callers_seeded_archive(self, workspace_env: dict[str, Path]) -> None:
         caller_workspace = _caller_archive_workspace(workspace_env)
         index_db = db_setup(caller_workspace)
-        DbFactory(index_db).create_session(id="planner-execute")
+        factory = DbFactory(index_db)
+        factory.create_session(id="planner-execute")
+        # See test_preview_reads_the_callers_seeded_archive above.
+        factory.mark_as_phantom_debris("planner-execute")
         config = Config(
             archive_root=caller_workspace["archive_root"],
             render_root=workspace_env["data_root"] / "render",

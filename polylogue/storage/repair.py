@@ -5667,24 +5667,40 @@ def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
 
     Shared by ``count_empty_sessions_sync`` and ``repair_empty_sessions`` so
     the reported debt and the deleted rows can never diverge (polylogue-ne6k).
+
+    Both ``_empty_session_candidate_ids`` and
+    ``_raw_artifact_positively_fails_classification`` access rows by column
+    name, so this sets ``row_factory = sqlite3.Row`` defensively on entry
+    (restoring the caller's original factory on exit) rather than assuming
+    every caller-supplied connection already has it -- ``count_empty_sessions_sync``'s
+    own docstring documents that it is "called with a caller-supplied,
+    possibly read-only, connection" (polylogue-9rdky: the maintenance
+    planner's preview/execute path opens a plain tuple-row connection via
+    ``open_readonly_connection``, which crashed both helpers with
+    ``TypeError: tuple indices must be integers or slices, not str``).
     """
-    candidates = _empty_session_candidate_ids(conn)
-    if not candidates:
-        return []
-    source_db = _sibling_source_db_path(conn)
-    if source_db is None or not source_db.exists():
-        # No source tier reachable -> no way to obtain positive evidence for
-        # any candidate -> retain all of them.
-        return []
-    conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+    original_row_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
     try:
-        return [
-            session_id
-            for session_id, raw_id in candidates
-            if _raw_artifact_positively_fails_classification(conn, raw_id)
-        ]
+        candidates = _empty_session_candidate_ids(conn)
+        if not candidates:
+            return []
+        source_db = _sibling_source_db_path(conn)
+        if source_db is None or not source_db.exists():
+            # No source tier reachable -> no way to obtain positive evidence for
+            # any candidate -> retain all of them.
+            return []
+        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+        try:
+            return [
+                session_id
+                for session_id, raw_id in candidates
+                if _raw_artifact_positively_fails_classification(conn, raw_id)
+            ]
+        finally:
+            conn.execute("DETACH DATABASE source")
     finally:
-        conn.execute("DETACH DATABASE source")
+        conn.row_factory = original_row_factory
 
 
 def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:

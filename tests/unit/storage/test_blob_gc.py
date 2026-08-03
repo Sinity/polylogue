@@ -263,6 +263,9 @@ def test_run_blob_gc_preserves_referenced_blobs(tmp_path: Path) -> None:
     assert blob_store.exists(h)
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_preserves_archive_source_referenced_blobs(tmp_path: Path) -> None:
     """GC run from ``index.db`` must preserve blobs referenced by sibling ``source.db``."""
     index_db_path = tmp_path / "index.db"
@@ -313,6 +316,9 @@ def test_run_blob_gc_max_batch_bound(tmp_path: Path) -> None:
     assert 0 <= deleted <= 2
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_bounds_final_lock_rechecks_with_many_references(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -378,6 +384,9 @@ def _backdate(blob_store: BlobStore, blob_hash: str, *, seconds: float = 3600) -
     os.utime(path, (past, past))
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_unlinks_sharded_path_and_increments_counter(tmp_path: Path) -> None:
     """#1190 regression: an orphan blob present at the sharded path
     ``{root}/{prefix}/{remainder}`` must actually be removed and the
@@ -408,6 +417,9 @@ def test_run_blob_gc_unlinks_sharded_path_and_increments_counter(tmp_path: Path)
     assert not sharded.exists(), "sharded blob must actually be removed from disk"
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path) -> None:
     """#1190 regression: when the candidate file has vanished between
     discovery and unlink (concurrent reclaimer, stale candidate, manual
@@ -461,6 +473,9 @@ def test_run_blob_gc_does_not_increment_when_file_already_missing(tmp_path: Path
     assert history[0].reclaimed_bytes == 0
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path) -> None:
     """#1190 ambitious-expansion: --dry-run previews without committing.
 
@@ -490,6 +505,9 @@ def test_run_blob_gc_dry_run_does_not_delete_or_record_generation(tmp_path: Path
     assert row[0] == 0, "dry-run must not consume a generation slot"
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
     """#1743: each committed pass writes a typed ``gc_generations`` row
     capturing the reclaimed blob count and freed bytes — the durable
@@ -527,6 +545,9 @@ def test_run_blob_gc_records_reclaim_counters(tmp_path: Path) -> None:
     assert row.started_at_ms <= row.completed_at_ms
 
 
+@pytest.mark.uses_real_clock(
+    "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call in production code, so frozen_clock cannot intercept either side"
+)
 def test_read_gc_history_returns_recent_passes(tmp_path: Path) -> None:
     """#1743: ``read_gc_history`` surfaces one typed row per committed pass,
     so a ``gc-history`` operator surface can show recent reclamation without

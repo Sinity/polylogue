@@ -13,7 +13,15 @@ from uuid import uuid4
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, Origin, Provider, SemanticBlockType, ValidationMode, ValidationStatus
+from polylogue.core.enums import (
+    BlockType,
+    Origin,
+    Provider,
+    SemanticBlockType,
+    TitleSource,
+    ValidationMode,
+    ValidationStatus,
+)
 from polylogue.core.json import dumps, loads, require_json_document, require_json_value
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import _timestamp_sort_key
@@ -937,6 +945,16 @@ def _record_to_parsed_session(
         source_name=provider_from_origin(session.origin),
         provider_session_id=session.native_id,
         title=session.title,
+        # A real parser that sets a title always sets title_source alongside
+        # it (assembly_codex.py, assembly_gemini.py, etc.) -- write.py's
+        # session upsert treats title_source as the sole gate for "is this a
+        # real title" (archive_tiers/archive.py's has_real_title check,
+        # polylogue-cijx.4 decision 3), so a builder-set title with no
+        # title_source silently degrades to the structural "N msgs" fallback
+        # at read time. Mirror real-parser provenance here rather than
+        # leaving every test-built session's explicit title invisible to
+        # that gate.
+        title_source=TitleSource.ORIGIN if session.title else None,
         created_at=session.created_at,
         updated_at=session.updated_at,
         messages=parsed_messages,
@@ -1423,3 +1441,75 @@ class DbFactory:
 
         builder.save()
         return cid
+
+    def mark_as_phantom_debris(self, native_id: str, *, provider: str = "test") -> str:
+        """Attach an ``agent-*.meta.json``-shaped phantom raw artifact to an
+        already-created session and link it via ``sessions.raw_id``.
+
+        ``count_empty_sessions_sync``/``repair_empty_sessions``
+        (``polylogue/storage/repair.py``) only ever count a message-less (or
+        all-zero-word) session as debris when its raw artifact *positively
+        fails* the current record-shape classifier
+        (``_raw_artifact_positively_fails_classification``) -- a session
+        created via :meth:`create_session` with no raw content at all has
+        ``raw_id IS NULL``, which the classifier treats as "no evidence
+        either way" and therefore always retains (never counted as debt).
+        This seeds the same phantom shape
+        ``tests/unit/storage/test_empty_session_repair_provenance.py``'s
+        ``_seed`` helper uses (an ``agent-*.meta.json`` sidecar path, a
+        genuinely-debris shape the classifier positively refuses), so a
+        caller that wants an "empty" session to actually register as
+        maintenance debt must call this after :meth:`create_session`.
+
+        Resolves the blob store from ``self.db_path``'s own parent directory
+        (this factory's archive root), never the ambient
+        ``POLYLOGUE_ARCHIVE_ROOT``/``blob_store_root()`` config -- a caller
+        that seeds a ``DbFactory`` pointed at an archive root distinct from
+        the ambient one (e.g. verifying config-supplied paths win over
+        ambient defaults) must have the phantom blob land in the same
+        archive the classifier will actually read back from.
+        """
+        from polylogue.storage.blob_store import BlobStore
+
+        # SessionBuilder.__init__ always stores native_id as f"ext-{session_id}"
+        # (the "id" callers pass to create_session), so the lookup below must
+        # match that same transform, not the bare caller-supplied id.
+        stored_native_id = f"ext-{native_id}"
+        origin = _origin_value(provider)
+        archive_root = self.db_path.parent
+        source_db = archive_root / "source.db"
+        store = BlobStore(archive_root / "blob")
+        raw_id, blob_size = store.write_from_bytes(
+            f'{{"agentType":"general-purpose","for":"{stored_native_id}"}}'.encode()
+        )
+
+        with sqlite3.connect(source_db) as source_conn:
+            source_conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, 1)
+                """,
+                (
+                    raw_id,
+                    origin.value,
+                    stored_native_id,
+                    f"agent-{stored_native_id}.meta.json",
+                    bytes.fromhex(raw_id),
+                    blob_size,
+                ),
+            )
+            source_conn.commit()
+
+        with sqlite3.connect(self.db_path) as index_conn:
+            cursor = index_conn.execute(
+                "UPDATE sessions SET raw_id = ? WHERE native_id = ? AND origin = ?",
+                (raw_id, stored_native_id, origin.value),
+            )
+            if cursor.rowcount != 1:
+                raise AssertionError(
+                    f"mark_as_phantom_debris: expected exactly one session row for "
+                    f"native_id={stored_native_id!r} origin={origin.value!r}, updated {cursor.rowcount}"
+                )
+            index_conn.commit()
+        return raw_id

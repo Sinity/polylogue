@@ -294,8 +294,14 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
 
     assert isinstance(plan, _AppendPlan)
     assert plan.start_offset == old_offset
-    assert b'"type":"session_meta","payload":{"id":"conv-hot"}' in plan.payload
-    assert b'"content":"new"' in plan.payload
+    # #3539 (polylogue-u19l) retired splicing a synthetic session_meta header
+    # into a Codex append payload before hashing/storing it -- the stored
+    # blob must stay a literal byte-slice of the live file so live-source
+    # byte-identity re-verification stays possible. Recovered identity now
+    # flows as a sidecar hint (native_id_hint) instead, applied as the
+    # parser's fallback_id at replay time.
+    assert plan.native_id_hint == "conv-hot"
+    assert plan.payload == source.read_bytes()[old_offset:]
 
 
 def test_catch_up_ingests_needed_files_in_bounded_chunks(

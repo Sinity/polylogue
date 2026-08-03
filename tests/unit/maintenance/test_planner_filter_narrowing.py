@@ -33,7 +33,15 @@ def _seeded_config(workspace_env: dict[str, Path], *, sessions: int = 3) -> Conf
     index_db = db_setup(workspace_env)
     factory = DbFactory(index_db)
     for index in range(sessions):
-        factory.create_session(id=f"empty-{index}")
+        native_id = f"empty-{index}"
+        factory.create_session(id=native_id)
+        # A message-less session with no raw artifact at all (raw_id IS
+        # NULL) is "no evidence either way" to the empty_sessions debt
+        # classifier and is never counted as debt -- give each one a
+        # phantom raw artifact the classifier positively refuses, so this
+        # fixture actually produces real archive debt for the tests below
+        # to narrow (polylogue-9rdky).
+        factory.mark_as_phantom_debris(native_id)
     return Config(
         archive_root=workspace_env["archive_root"],
         render_root=workspace_env["data_root"] / "render",

@@ -136,7 +136,14 @@ class TestStreamingEnvelopeShape:
 
         This is the canary for OpenAI introducing a new event class — the
         parser must still surface it as a session event so downstream
-        consumers can see something is happening.
+        consumers can see something is happening. #3567 added an explicit
+        allowlist-vs-passthrough classification at the generic session_event
+        dispatch: a type outside the known set (``_CODEX_KNOWN_RESPONSE_ITEM_TYPES``
+        in ``sources/parsers/codex.py``) now routes to a distinct
+        ``codex_unclassified_response_item`` bucket instead of silently
+        adopting its own wire name, matching the ``claude_attachment_unclassified``
+        precedent -- the event is still surfaced, just under the shared
+        "something unrecognized happened" name rather than the raw token.
         """
         records: list[object] = [
             {
@@ -145,7 +152,7 @@ class TestStreamingEnvelopeShape:
             }
         ]
         session = _parse(records)
-        assert [event.event_type for event in session.session_events] == ["future_event_kind"]
+        assert [event.event_type for event in session.session_events] == ["codex_unclassified_response_item"]
 
 
 # ---------------------------------------------------------------------------
