@@ -79,7 +79,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
-from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.migration_runner import validate_backup_manifest_covers_derived_tier
 from polylogue.storage.sqlite.queries.mappers_archive import _row_to_raw_session
 
 logger = get_logger(__name__)
@@ -424,12 +424,13 @@ def apply_attachment_reacquisition(
 
     ``dry_run=False`` requires both ``manifest_path`` (an immutable,
     append-only JSONL receipt of every row acted on) and ``backup_manifest``
-    (a verified backup manifest for the ``index`` tier, the same gate durable-
-    tier migrations use via
-    :func:`polylogue.storage.sqlite.migration_runner.validate_migration_backup_manifest`
-    -- index.db is rebuildable, but this mutation is still gated behind a
-    verified backup so an operator-authorized ``--apply`` can never be the
-    first time backup coverage is checked).
+    (a verified backup manifest for the ``index`` tier, checked via
+    :func:`polylogue.storage.sqlite.migration_runner.validate_backup_manifest_covers_derived_tier`
+    -- index.db is rebuildable and was never wired for the cryptographic
+    attestation durable-tier migrations require, so this checks manifest
+    coverage and a byte-exact live fingerprint instead; this mutation is
+    still gated behind a verified backup so an operator-authorized
+    ``--apply`` can never be the first time backup coverage is checked).
 
     Only two actions are ever taken: promoting a ``reacquirable`` attachment's
     ``blob_hash``/``byte_count``/``acquisition_status`` to ``'acquired'``
@@ -474,7 +475,7 @@ def apply_attachment_reacquisition(
         _checkpoint_index_tier(index_conn)
         # Lock-free precheck: reject a missing/stale/wrong-tier manifest
         # before paying for classification + a write-lock acquisition.
-        validate_migration_backup_manifest(backup_manifest, ArchiveTier.INDEX, connection=index_conn)
+        validate_backup_manifest_covers_derived_tier(backup_manifest, ArchiveTier.INDEX, connection=index_conn)
 
         with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as source_conn_ro:
             plan = plan_attachment_reacquisition(
@@ -553,7 +554,7 @@ def apply_attachment_reacquisition(
         # migrate_archive_tier's / raw_live_source_reconciliation_apply's
         # pattern: a concurrent write between the precheck and this lock
         # acquisition would make the backup stale.
-        validate_migration_backup_manifest(backup_manifest, ArchiveTier.INDEX, connection=index_conn)
+        validate_backup_manifest_covers_derived_tier(backup_manifest, ArchiveTier.INDEX, connection=index_conn)
 
         reacquired_count = 0
         reacquired_bytes = 0

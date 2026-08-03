@@ -498,10 +498,23 @@ def _validate_blob_inventory(
             raise MigrationError(f"migration backup blob hash mismatch: {blob['path']}")
 
 
-def validate_migration_backup_manifest(
-    path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection | None = None
+def _validate_backup_manifest_covers_tier(
+    path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection, require_attestation: bool
 ) -> Path:
-    """Validate that ``path`` has a successful backup verification receipt."""
+    """Validate that ``path`` has a successful backup verification receipt.
+
+    ``require_attestation`` gates the cryptographic HMAC attestation check.
+    Attestations are only ever minted for durable tiers (source, user) by
+    ``daemon/backup.py``'s ``_write_successful_verification_receipt`` -- a
+    derived tier (index, embeddings) can never carry one, by design, so
+    requiring it for those tiers would make backup-manifest validation
+    permanently unsatisfiable rather than merely strict. Callers protecting a
+    mutation against a derived tier (e.g. the agent-meta-sidecar purge, which
+    deletes rows from index.db) still get every other guarantee here --
+    manifest/receipt shape, tier inclusion, and a byte-exact live fingerprint
+    recomputed from the current on-disk file -- just not the attestation,
+    which durable-tier migrations (``migrate_archive_tier``) still require.
+    """
     manifest_path = _backup_manifest_path(path)
     if not manifest_path.exists() and not manifest_path.is_symlink():
         raise MigrationError(f"migration requires an existing backup manifest; missing {manifest_path}")
@@ -521,13 +534,12 @@ def validate_migration_backup_manifest(
     receipt = _load_json(receipt_path, label="verification receipt")
     if receipt.get("format") != VERIFICATION_RECEIPT_FORMAT:
         raise MigrationError(f"migration backup receipt has unsupported format: {receipt_path}")
-    if connection is None:
-        raise MigrationError("migration backup receipt authentication requires the live tier connection")
     live_tier_path = _connection_main_path(connection).resolve(strict=False)
-    try:
-        verify_verification_receipt(receipt, tier=tier.value, live_tier_path=live_tier_path)
-    except BackupAttestationError as exc:
-        raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
+    if require_attestation:
+        try:
+            verify_verification_receipt(receipt, tier=tier.value, live_tier_path=live_tier_path)
+        except BackupAttestationError as exc:
+            raise MigrationError(f"migration backup receipt authentication failed: {exc}") from exc
     if receipt.get("verdict") != "success":
         raise MigrationError(f"migration backup receipt is not a successful verification: {receipt_path}")
     artifact_inventory = _cached_backup_artifact_inventory(backup_root)
@@ -553,6 +565,30 @@ def validate_migration_backup_manifest(
         raise MigrationError("migration backup receipt does not match the closed artifact inventory")
     _validate_live_source_fingerprint(connection, artifact)
     return receipt_path
+
+
+def validate_migration_backup_manifest(
+    path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection | None = None
+) -> Path:
+    """Validate a backup manifest for a durable-tier migration (requires attestation)."""
+    if connection is None:
+        raise MigrationError("migration backup receipt authentication requires the live tier connection")
+    return _validate_backup_manifest_covers_tier(path, tier, connection=connection, require_attestation=True)
+
+
+def validate_backup_manifest_covers_derived_tier(
+    path: Path, tier: ArchiveTier, *, connection: sqlite3.Connection
+) -> Path:
+    """Validate a backup manifest covers a derived tier (index, embeddings) at its live fingerprint.
+
+    For use by actuators that mutate a derived tier and want backup coverage
+    as a safety net before doing so, without requiring the cryptographic
+    attestation that only durable tiers (source, user) ever carry -- see
+    ``_validate_backup_manifest_covers_tier``'s docstring.
+    """
+    if tier in DURABLE_MIGRATION_TIERS:
+        raise MigrationError(f"{tier.value} is a durable tier; use validate_migration_backup_manifest instead")
+    return _validate_backup_manifest_covers_tier(path, tier, connection=connection, require_attestation=False)
 
 
 def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
@@ -701,5 +737,6 @@ __all__ = [
     "MigrationResult",
     "MigrationStep",
     "migrate_archive_tier",
+    "validate_backup_manifest_covers_derived_tier",
     "validate_migration_backup_manifest",
 ]
