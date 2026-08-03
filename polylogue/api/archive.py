@@ -3137,23 +3137,43 @@ class PolylogueArchiveMixin:
         """Capture a terminal assertion as a non-injected candidate for review.
 
         ``ttl_seconds`` stamps an expiry on the written row (polylogue-37t.1);
-        see :func:`_archive_capture_assertion_candidate`.
+        the executor actuator preserves the existing user-tier admission and
+        idempotency semantics.
         """
 
+        from polylogue.operations.mutation_actuators import (
+            CaptureAssertionCandidateActuator,
+            CaptureAssertionCandidateArgs,
+        )
         from polylogue.surfaces.payloads import AssertionClaimPayload
 
-        envelope = _archive_capture_assertion_candidate(
-            self.config,
-            body_text=body_text,
-            kind=kind,
-            refs=refs,
-            scope_refs=scope_refs,
-            cwd=cwd,
-            author_ref=author_ref,
-            author_kind=author_kind,
-            idempotency_key=idempotency_key,
-            ttl_seconds=ttl_seconds,
+        if idempotency_key is None:
+            assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+        else:
+            identity = hashlib.sha256(
+                f"{normalize_object_ref_text(author_ref)}\0{idempotency_key.strip()}".encode(
+                    "utf-8", errors="surrogatepass"
+                )
+            ).hexdigest()
+            assertion_id = f"assertion-terminal-note:{identity}"
+        receipt, _plan = self._execute_facade_mutation(
+            CaptureAssertionCandidateActuator(),
+            lambda archive: CaptureAssertionCandidateArgs(
+                archive=archive,
+                body_text=body_text,
+                kind=kind,
+                refs=tuple(refs),
+                scope_refs=tuple(scope_refs),
+                cwd=cwd,
+                author_ref=author_ref,
+                author_kind=author_kind,
+                idempotency_key=idempotency_key,
+                assertion_id=assertion_id,
+                ttl_seconds=ttl_seconds,
+            ),
+            capability="archive.capture_assertion_candidate",
         )
+        envelope = cast("ArchiveAssertionEnvelope", receipt.domain_receipt["envelope"])
         return AssertionClaimPayload.from_envelope(envelope)
 
     async def judge_assertion_candidates(

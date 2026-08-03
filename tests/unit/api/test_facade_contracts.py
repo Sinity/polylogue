@@ -283,6 +283,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "tool_call_latency_distribution",
         "compare_sessions",
         "find_similar_sessions_by_metadata",
+        "search_similar_sessions",
         "correlate_sessions",
         # Comparative judgment storage (rxdo.9.6/.9.7/.9.11/.9.12), wired
         # into the real `polylogue compare` CLI command (tests/unit/cli/
@@ -339,6 +340,48 @@ def _materialize_run_projection(index_db: Path) -> None:
 
     with open_connection(index_db) as conn:
         rebuild_session_insights_sync(conn)
+
+
+async def test_facade_capture_candidate_dispatches_executor_and_persists_user_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real facade route cannot bypass the executor and still pass.
+
+    Production dependency: ``PolylogueArchiveMixin.capture_assertion_candidate``
+    calls ``OperationExecutor.execute`` and the actuator writes ``user.db``.
+    Removing that dispatch, or restoring the former direct helper call, makes
+    the captured actuator list empty or leaves no candidate row.
+    """
+
+    from polylogue.operations.mutation_transaction import OperationExecutor
+
+    archive = _archive(tmp_path)
+    captured: list[str] = []
+    original_execute = OperationExecutor.execute
+
+    def spy(self: OperationExecutor, actuator: object, plan: object, authorization: object, args: object) -> object:
+        captured.append(type(actuator).__name__)
+        return original_execute(self, actuator, plan, authorization, args)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(OperationExecutor, "execute", spy)
+    try:
+        result = await archive.capture_assertion_candidate(
+            body_text="facade candidate",
+            kind=AssertionKind.LESSON,
+            author_ref="agent:facade-test",
+            author_kind="agent",
+            idempotency_key="facade-capture",
+        )
+        assert captured == ["CaptureAssertionCandidateActuator"]
+        assert result.status is AssertionStatus.CANDIDATE
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            row = conn.execute(
+                "SELECT body_text, author_ref, status FROM assertions WHERE assertion_id = ?",
+                (result.assertion_id,),
+            ).fetchone()
+        assert row == ("facade candidate", "agent:facade-test", "candidate")
+    finally:
+        await archive.close()
 
 
 _HASH = b"x" * 32

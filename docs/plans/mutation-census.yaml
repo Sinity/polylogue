@@ -316,9 +316,14 @@ rows:
   # remains debt for a later phase.
 
   - operation: capture_assertion_candidate
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: Additive candidate capture, not destructive; tracked for completeness.
+    spec_name: mutate-capture-assertion-candidate
+    status: executor-routed
+    surfaces: [facade, cli, mcp]
+    actuator: polylogue.operations.mutation_actuators.CaptureAssertionCandidateActuator
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.capture_assertion_candidate
+      - polylogue.cli.commands.note.capture_note_command
+      - polylogue.mcp.server_cutover._dispatch_write (operation=capture_assertion_candidate)
 
   - operation: import_annotation_batch
     status: declared-not-routed
