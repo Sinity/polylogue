@@ -1536,6 +1536,10 @@ files:
     loc: 19
     target: polylogue/daemon/__init__.py
     owner: stable
+  - path: polylogue/daemon/antigravity_conversation_acquisition.py
+    loc: 183
+    target: polylogue/daemon/antigravity_conversation_acquisition.py
+    owner: stable
   - path: polylogue/daemon/api_auth.py
     loc: 172
     target: polylogue/daemon/api_auth.py
@@ -1565,7 +1569,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 3114
+    loc: 3118
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -2536,7 +2540,7 @@ files:
     target: polylogue/pipeline/services/acquisition_streams.py
     owner: stable
   - path: polylogue/pipeline/services/archive_ingest.py
-    loc: 456
+    loc: 468
     target: polylogue/pipeline/services/archive_ingest.py
     owner: stable
   - path: polylogue/pipeline/services/indexing.py
@@ -3449,7 +3453,7 @@ files:
     target: polylogue/sources/origin_specs.py
     owner: stable
   - path: polylogue/sources/parsers/antigravity.py
-    loc: 518
+    loc: 529
     target: polylogue/sources/parsers/antigravity.py
     owner: stable
   - path: polylogue/sources/parsers/base.py
@@ -3642,7 +3646,7 @@ files:
     target: polylogue/sources/source_acquisition_components.py
     owner: stable
   - path: polylogue/sources/source_parsing.py
-    loc: 432
+    loc: 440
     target: polylogue/sources/source_parsing.py
     owner: stable
   - path: polylogue/sources/source_walk.py

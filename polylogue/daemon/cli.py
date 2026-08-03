@@ -2346,6 +2346,9 @@ async def run_daemon_services(
         # both write-heavy; running them concurrently makes SQLite maintenance
         # time out behind the daemon's own writer.
         if not watcher_blocked:
+            from polylogue.daemon.antigravity_conversation_acquisition import (
+                periodic_antigravity_conversation_acquisition_check,
+            )
             from polylogue.daemon.blob_gc_periodic import periodic_blob_gc_check
             from polylogue.daemon.convergence import DaemonConverger
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
@@ -2396,6 +2399,7 @@ async def run_daemon_services(
                 periodic_fts_orphan_audit(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
                 periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
+                periodic_antigravity_conversation_acquisition_check(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))
