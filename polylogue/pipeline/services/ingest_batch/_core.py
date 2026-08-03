@@ -53,6 +53,7 @@ from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
+from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -586,6 +587,68 @@ class _DriveRevisionGovernanceAdapter:
         )
 
 
+def _drive_structural_growth_predecessor(
+    source_conn: sqlite3.Connection,
+    blob_publisher: ArchiveBlobPublisher,
+    *,
+    raw_id: str,
+    logical_source_key: str,
+) -> tuple[str, int, str] | None:
+    """Find a unique JSON-structural predecessor for ``raw_id``, if any.
+
+    polylogue-1fijp AC (b): ``_bind_drive_revision_lineage``'s legacy path
+    (below) only ever proves lineage via
+    ``classify_raw_revision_cohort_for_live_watch``'s byte-prefix classifier
+    (``archive/revision_authority.py``), which -- per PR #3656's finding --
+    can never recognize the realistic ``_inject_live_drive_attachment_bytes``
+    growth shape (a whole-document JSON re-serialization, not a byte-append).
+    This looks for exactly one existing ``revision_kind='full'`` sibling for
+    ``logical_source_key`` whose bytes are a JSON-structural predecessor of
+    ``raw_id``'s own bytes (see ``sources.drive.structural_diff``) and, if
+    found, returns ``(predecessor_raw_id, predecessor_generation,
+    baseline_raw_id)`` for the caller to bind directly.
+
+    Returns ``None`` on zero or more-than-one structural match (never guess
+    between competing candidates), or when ``raw_id``'s own row cannot be
+    found -- the caller falls through to the existing byte-prefix
+    quarantine-then-classify path unchanged in every such case, so this is a
+    strictly additive typed-lineage improvement, never a narrowing of what
+    the legacy path already proves.
+    """
+    new_row = source_conn.execute(
+        "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if new_row is None or new_row[0] is None:
+        return None
+    sibling_rows = source_conn.execute(
+        """
+        SELECT raw_id, lower(hex(blob_hash)), acquisition_generation, baseline_raw_id
+        FROM raw_sessions
+        WHERE logical_source_key = ? AND revision_kind = 'full' AND raw_id != ?
+        """,
+        (logical_source_key, raw_id),
+    ).fetchall()
+    if not sibling_rows:
+        return None
+    new_bytes = blob_publisher.read_all(str(new_row[0]))
+    matches: list[tuple[str, int, str]] = []
+    for row in sibling_rows:
+        sibling_blob_hash = row[1]
+        if sibling_blob_hash is None:
+            continue
+        sibling_raw_id = str(row[0])
+        sibling_bytes = blob_publisher.read_all(str(sibling_blob_hash))
+        relation = classify_drive_structural_relation(sibling_bytes, new_bytes)
+        if relation is DriveStructuralRelation.STRUCTURAL_GROWTH:
+            generation = int(row[2]) if row[2] is not None else 0
+            baseline_raw_id = str(row[3]) if row[3] else sibling_raw_id
+            matches.append((sibling_raw_id, generation, baseline_raw_id))
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
 def _bind_drive_revision_lineage(
     session_to_write: ParsedSession,
     *,
@@ -637,6 +700,20 @@ def _bind_drive_revision_lineage(
     Drive session's ``source_name`` is ``Provider.GEMINI``, not
     ``Provider.DRIVE`` (both map to the same ``Origin.AISTUDIO_DRIVE``, see
     ``core/sources.py``). Gate on the value actually observed on the wire.
+
+    polylogue-1fijp AC (b): before falling back to the legacy byte-prefix
+    quarantine-then-classify dance, this first tries
+    ``_drive_structural_growth_predecessor`` -- a JSON-structural-diff-aware
+    check for the exact realistic re-acquisition shape (whole-document
+    re-serialization, not a byte-append) that the byte-prefix classifier can
+    never prove. A unique structural match is bound directly as a
+    ``FULL``/``ASSERTED`` revision with a real ``predecessor_raw_id`` --
+    ``ASSERTED``, not ``BYTE_PROVEN``, because the proof is JSON-structural,
+    not byte-level (the existing byte-relation vocabulary in
+    ``archive/revision_authority.py``/``storage/sqlite/archive_tiers/
+    raw_admission.py`` deliberately reserves ``BYTE_PROVEN`` for the
+    ``bytes.startswith()`` relation). When no unique structural match exists,
+    behavior is byte-for-byte identical to before this change.
     """
     if source_conn is None or blob_publisher is None:
         return None
@@ -649,6 +726,32 @@ def _bind_drive_revision_lineage(
     try:
         if raw_membership_raw_ids(adapter, logical_source_key):
             return None
+        structural_match = _drive_structural_growth_predecessor(
+            source_conn,
+            blob_publisher,
+            raw_id=raw_id,
+            logical_source_key=logical_source_key,
+        )
+        if structural_match is not None:
+            predecessor_raw_id, predecessor_generation, baseline_raw_id = structural_match
+            bind_raw_revision(
+                adapter,
+                raw_id,
+                RawRevisionEnvelope(
+                    logical_source_key=logical_source_key,
+                    kind=RawRevisionKind.FULL,
+                    source_revision=raw_id,
+                    predecessor_raw_id=predecessor_raw_id,
+                    baseline_raw_id=baseline_raw_id,
+                    acquisition_generation=predecessor_generation + 1,
+                    authority=RawRevisionAuthority.ASSERTED,
+                ),
+            )
+            return RevisionReplayPlan(
+                logical_source_key=logical_source_key,
+                applications=(),
+                accepted_chain=(raw_id,),
+            )
         bind_raw_revision(
             adapter,
             raw_id,
