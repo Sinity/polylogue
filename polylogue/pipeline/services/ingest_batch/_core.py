@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.memory import release_process_memory
@@ -591,7 +592,7 @@ def _bind_drive_revision_lineage(
     raw_id: str | None,
     source_conn: sqlite3.Connection | None,
     blob_publisher: ArchiveBlobPublisher | None,
-) -> None:
+) -> RevisionReplayPlan | None:
     """Best-effort revision-lineage bookkeeping for Drive re-acquisitions.
 
     polylogue-sp72: ``iter_drive_raw_data`` backfills live-fetched
@@ -617,13 +618,18 @@ def _bind_drive_revision_lineage(
     ultimately skips as stale/duplicate -- so lineage metadata (and any
     future arbitration/rebuild consumer reading it, e.g. polylogue-x1gd) is
     recorded for every acquisition, not only the one that happened to win
-    ``_write_session``'s own freshness/content-hash comparison. It never
-    replays/applies the classifier's winning revision plan itself: that
-    comparison, plus the #3453 attachment-coverage tie-break, still solely
-    decides what actually lands in ``sessions`` from this call site. This
+    ``_write_session``'s own freshness/content-hash comparison. This
     function is non-fatal best-effort bookkeeping -- any failure (including
     ``classify_raw_revision_cohort`` requiring a writable blob publisher) is
-    logged and swallowed, never allowed to break the session write itself.
+    logged and swallowed (returning ``None``), never allowed to break the
+    session write itself.
+
+    Returns the classifier's :class:`RevisionReplayPlan` on success (``None``
+    on any early-return or swallowed failure) so the caller can tell whether
+    ``raw_id`` is a governance-*proven* member of the accepted chain --
+    see ``_write_session``'s use of this to bypass the #3453
+    freshness-tie-break safety net once real lineage evidence has already
+    settled the question that heuristic exists to guess at.
 
     Every real config and test fixture configures Drive acquisition as
     ``Source(name="gemini", folder=...)``, and ``iter_drive_raw_data`` sets
@@ -633,16 +639,16 @@ def _bind_drive_revision_lineage(
     ``core/sources.py``). Gate on the value actually observed on the wire.
     """
     if source_conn is None or blob_publisher is None:
-        return
+        return None
     if not raw_id:
-        return
+        return None
     if session_to_write.source_name is not Provider.GEMINI:
-        return
+        return None
     logical_source_key = f"{session_to_write.source_name.value}:{session_to_write.provider_session_id}"
     adapter = _DriveRevisionGovernanceAdapter(source_conn, blob_publisher)
     try:
         if raw_membership_raw_ids(adapter, logical_source_key):
-            return
+            return None
         bind_raw_revision(
             adapter,
             raw_id,
@@ -654,7 +660,7 @@ def _bind_drive_revision_lineage(
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
-        classify_raw_revision_cohort_for_live_watch(adapter, logical_source_key)
+        return classify_raw_revision_cohort_for_live_watch(adapter, logical_source_key)
     except Exception:
         logger.warning(
             "drive_revision_lineage_bind_failed",
@@ -662,6 +668,7 @@ def _bind_drive_revision_lineage(
             logical_source_key=logical_source_key,
             exc_info=True,
         )
+        return None
 
 
 def _write_session(
@@ -706,11 +713,22 @@ def _write_session(
     merge_append = False
     browser_precedence: BrowserCapturePrecedence = "default"
 
-    _bind_drive_revision_lineage(
+    drive_revision_plan = _bind_drive_revision_lineage(
         session_to_write,
         raw_id=payload.raw_id,
         source_conn=source_conn,
         blob_publisher=blob_publisher,
+    )
+    # polylogue-sp72 AC2: once real byte-prefix lineage evidence has proven
+    # this raw is the classifier's accepted chain head for its logical
+    # source key, the #3453 freshness-tie heuristic below no longer needs to
+    # guess at a question governance has already answered -- it stays purely
+    # a safety net for the ungoverned case (no source_conn/blob_publisher,
+    # non-Gemini Drive identity, or a classification failure).
+    drive_revision_proven_winner = (
+        drive_revision_plan is not None
+        and payload.raw_id is not None
+        and payload.raw_id in drive_revision_plan.accepted_chain
     )
 
     if revision_authority_refuses_write(
@@ -805,6 +823,7 @@ def _write_session(
             and existing_raw_id
             and payload.raw_id
             and existing_raw_id != payload.raw_id
+            and not drive_revision_proven_winner
             and _incoming_write_regresses_attachment_coverage(conn, payload, session_to_write)
         ):
             counts["skipped_sessions"] = 1
