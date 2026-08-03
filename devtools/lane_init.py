@@ -50,15 +50,20 @@ LEDGER_RELPATH = Path(".cache/fanout/lanes.jsonl")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("worktree", help="lane worktree path (created if missing)")
     parser.add_argument("--branch", required=True, help="lane branch (created from --base if missing)")
     parser.add_argument("--base", default="origin/master", help="base ref for a new branch (default: origin/master)")
     parser.add_argument("--beads", default="", help="comma-separated bead ids this lane owns")
-    parser.add_argument("--no-venv", action="store_true", help="skip venv provisioning (lane will NOT be able to run devtools/pytest)")
-    parser.add_argument("--expected-lanes", type=int, default=16, help="planned concurrent lane count, sizes the per-lane worker hint (default: 16)")
+    parser.add_argument(
+        "--no-venv", action="store_true", help="skip venv provisioning (lane will NOT be able to run devtools/pytest)"
+    )
+    parser.add_argument(
+        "--expected-lanes",
+        type=int,
+        default=16,
+        help="planned concurrent lane count, sizes the per-lane worker hint (default: 16)",
+    )
     parser.add_argument("--json", action="store_true", dest="as_json", help="emit the lane record as JSON on stdout")
     return parser
 
@@ -175,7 +180,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     verify = _run(
-        [sys.executable, "-m", "devtools", "workspace", "verify-worktree", str(worktree), "--expect-branch", args.branch],
+        [
+            sys.executable,
+            "-m",
+            "devtools",
+            "workspace",
+            "verify-worktree",
+            str(worktree),
+            "--expect-branch",
+            args.branch,
+        ],
         cwd=root,
     )
     if verify.returncode != 0:
@@ -210,7 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         print(f"lane ready: {worktree}")
         print(f"  branch: {args.branch} @ {base_sha}")
-        print(f"  venv: {'provisioned (guard-verified)' if not args.no_venv else 'SKIPPED -- lane cannot run devtools/pytest'}")
+        print(
+            f"  venv: {'provisioned (guard-verified)' if not args.no_venv else 'SKIPPED -- lane cannot run devtools/pytest'}"
+        )
         if beads:
             print(f"  beads: {', '.join(beads)}")
         print(f"  ledger: {ledger_path}")
