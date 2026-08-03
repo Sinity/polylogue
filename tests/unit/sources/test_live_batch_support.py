@@ -4570,6 +4570,15 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         assert parse_error is None
     else:
         assert parse_error is not None
+        # polylogue-5iz4: this guard's refusal is transient/retry-eligible by
+        # construction (a later pass over the same durable bytes can succeed
+        # once sibling evidence resolves), but a plain RuntimeError leaves the
+        # retry-candidate query (storage/repair.py) nothing stable to match
+        # once the message text drifts -- exactly what happened to a real
+        # production session that hit this guard under #2718's original
+        # wording and was never retried again. MembershipReplayConflictError
+        # gives that query a message-text-independent marker to key on.
+        assert parse_error.startswith("MembershipReplayConflictError:")
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(

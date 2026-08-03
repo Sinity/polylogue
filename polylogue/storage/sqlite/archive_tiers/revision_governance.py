@@ -172,6 +172,31 @@ class ActiveByteRevisionChainError(RuntimeError):
     """A byte-identical revision chain cannot admit a conflicting sibling."""
 
 
+class MembershipReplayConflictError(RuntimeError):
+    """Membership replay refused to move an accepted head this pass.
+
+    Raised by ``apply_raw_membership_classification`` when it cannot safely
+    retire or replace the currently accepted ``raw_revision_heads`` row for a
+    logical identity (an unrelated accepted head, or a head with unresolved
+    byte-append evidence still hanging off it). This is a **transient,
+    retry-eligible** refusal, not proof the raw is unparseable: a later pass
+    over the same durable raw bytes can succeed once sibling evidence
+    resolves or the accepted head itself changes (polylogue-5iz4).
+
+    A dedicated subclass exists so ``mark_raw_parse_failed``'s ``parse_error``
+    text (``f"{type(exc).__name__}: {exc}"``) carries a stable, matchable
+    marker for retry-eligibility checks (``storage/repair.py``'s raw
+    materialization candidate query) independent of this class's own
+    human-readable message wording, which has already drifted twice (#2718's
+    original "unconvertible byte head" phrasing no longer appears anywhere in
+    this module) and will keep drifting as the guard is refined. A plain
+    ``RuntimeError`` gives the retry-candidate query nothing durable to match
+    on beyond the exact message text, which is how a raw that hit this guard
+    under old wording got silently excluded from every future rebuild even
+    after the guard's conditions no longer applied to it.
+    """
+
+
 class RawRevisionGovernanceHost(Protocol):
     """The narrow slice of ``ArchiveStore`` this module is allowed to touch.
 
@@ -2506,7 +2531,7 @@ def apply_raw_membership_classification(
                         or persisted_session is None
                         or (persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids)
                     ):
-                        raise RuntimeError(
+                        raise MembershipReplayConflictError(
                             "membership replay cannot retire an unrelated accepted head: "
                             f"logical_source_key={logical_source_key!r} "
                             f"existing_head(raw_id={existing_raw_id!r}, session_id={str(existing_head[3])!r}, "
@@ -2566,7 +2591,7 @@ def apply_raw_membership_classification(
                             (logical_source_key, existing_raw_id, *classified_raw_ids, existing_raw_id),
                         ).fetchone()
                         if dangling_append is not None:
-                            raise RuntimeError(
+                            raise MembershipReplayConflictError(
                                 "membership replay cannot replace a head with unresolved byte-append "
                                 f"evidence: logical_source_key={logical_source_key!r} "
                                 f"existing_head(raw_id={existing_raw_id!r})"
