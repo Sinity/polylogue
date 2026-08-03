@@ -14,6 +14,26 @@ class PolylogueStrEnum(StrEnum):
         return self.value
 
 
+class OperationStatus(PolylogueStrEnum):
+    """Scheduling and lifecycle states shared by operation surfaces."""
+
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
+
+
+OPERATION_LIFECYCLE_STATUSES: tuple[OperationStatus, ...] = (
+    OperationStatus.RUNNING,
+    OperationStatus.COMPLETED,
+    OperationStatus.FAILED,
+    OperationStatus.INTERRUPTED,
+)
+
+
 def enum_values(enum_type: type[PolylogueStrEnum]) -> tuple[str, ...]:
     """Return persisted values for a closed enum."""
     return tuple(item.value for item in enum_type)
@@ -740,6 +760,8 @@ __all__ = [
     "MaterialOrigin",
     "MessageType",
     "Origin",
+    "OperationStatus",
+    "OPERATION_LIFECYCLE_STATUSES",
     "PasteBoundary",
     "PlanStage",
     "PolylogueStrEnum",

@@ -10,7 +10,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 
-from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.enums import IngestOutcome, OperationStatus, Origin
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
@@ -610,7 +610,7 @@ def upsert_ingest_cursor(
 def record_ingest_attempt(
     conn: sqlite3.Connection,
     *,
-    status: str,
+    status: OperationStatus | str,
     source_path: str | None = None,
     origin: Origin | str | None = None,
     phase: str | None = None,
@@ -634,6 +634,7 @@ def record_ingest_attempt(
     """
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
+    status_value = status.value if isinstance(status, OperationStatus) else status
     has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
     route_column = "storage_route,\n            " if has_storage_route else ""
     route_value = "?, " if has_storage_route else ""
@@ -706,7 +707,7 @@ def record_ingest_attempt(
             attempt_id,
             source_path,
             _origin_value(origin),
-            status,
+            status_value,
             phase,
             *route_params,
             *outcome_params,
@@ -1061,7 +1062,7 @@ def upsert_embedding_catchup_run(
     run_id: str | None = None,
     started_at_ms: int,
     finished_at_ms: int | None = None,
-    status: str,
+    status: OperationStatus | str,
     origin: Origin | str | None = None,
     scanned_sessions: int = 0,
     embedded_sessions: int = 0,
@@ -1074,6 +1075,7 @@ def upsert_embedding_catchup_run(
     """Create or replace one ``embedding_catchup_runs`` row and return ``run_id``."""
     if run_id is None:
         run_id = str(uuid.uuid4())
+    status_value = status.value if isinstance(status, OperationStatus) else status
     ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
@@ -1109,7 +1111,7 @@ def upsert_embedding_catchup_run(
             run_id,
             started_at_ms,
             finished_at_ms,
-            status,
+            status_value,
             _origin_value(origin),
             scanned_sessions,
             embedded_sessions,
@@ -1183,6 +1185,85 @@ def ensure_embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> No
     for name, definition in additions.items():
         if name not in existing:
             conn.execute(f"ALTER TABLE embedding_catchup_runs ADD COLUMN {name} {definition}")
+
+
+def ensure_ops_status_checks(conn: sqlite3.Connection) -> None:
+    """Converge same-version OPS status CHECKs without discarding rows.
+
+    The disposable tier intentionally has no migration chain, but SQLite does
+    not rewrite a table constraint when ``CREATE TABLE IF NOT EXISTS`` runs.
+    Rebuild only a table whose live status CHECK predates the canonical
+    lifecycle vocabulary. The replacement happens in the caller's transaction
+    and copies every row; the old embedding ``cancelled`` spelling is the
+    established equivalent of canonical ``interrupted`` and is normalized
+    while the row is copied.
+    """
+    from polylogue.storage.sqlite.archive_tiers.ops import (
+        _OPS_EMBEDDING_CATCHUP_RUNS_DDL,
+        _OPS_INGEST_ATTEMPTS_DDL,
+        _OPS_RUN_STATUS_CHECK,
+    )
+
+    _rebuild_ops_status_table_if_stale(
+        conn,
+        table="ingest_attempts",
+        table_ddl=_OPS_INGEST_ATTEMPTS_DDL,
+        status_check=_OPS_RUN_STATUS_CHECK,
+        indexes=(
+            "CREATE INDEX IF NOT EXISTS idx_ingest_attempts_status ON ingest_attempts(status, heartbeat_at_ms)",
+            "CREATE INDEX IF NOT EXISTS idx_ingest_attempts_storage_route ON ingest_attempts(storage_route)",
+            "CREATE INDEX IF NOT EXISTS idx_ingest_attempts_outcome_code "
+            "ON ingest_attempts(outcome_code, started_at_ms)",
+        ),
+    )
+    _rebuild_ops_status_table_if_stale(
+        conn,
+        table="embedding_catchup_runs",
+        table_ddl=_OPS_EMBEDDING_CATCHUP_RUNS_DDL,
+        status_check=_OPS_RUN_STATUS_CHECK,
+    )
+
+
+def _rebuild_ops_status_table_if_stale(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    table_ddl: str,
+    status_check: str,
+    indexes: tuple[str, ...] = (),
+) -> None:
+    """Replace one stale status-constrained OPS table while retaining rows."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    if row is None or row[0] is None or status_check in str(row[0]):
+        return
+
+    temporary_table = f"__polylogue_{table}_converged"
+    conn.execute(f"DROP TABLE IF EXISTS {temporary_table}")
+    temporary_ddl = table_ddl.replace(
+        f"CREATE TABLE IF NOT EXISTS {table}",
+        f"CREATE TABLE {temporary_table}",
+        1,
+    )
+    conn.executescript(temporary_ddl)
+
+    columns = tuple(str(info[1]) for info in conn.execute(f"PRAGMA table_info({table})"))
+    target_columns = tuple(str(info[1]) for info in conn.execute(f"PRAGMA table_info({temporary_table})"))
+    if not set(target_columns).issubset(columns):
+        missing = set(target_columns) - set(columns)
+        raise RuntimeError(f"cannot converge {table}: missing source columns {sorted(missing)}")
+    select_columns = ", ".join(
+        "CASE status WHEN 'cancelled' THEN 'interrupted' ELSE status END" if column == "status" else column
+        for column in target_columns
+    )
+    target_sql = ", ".join(target_columns)
+    conn.execute(f"INSERT INTO {temporary_table} ({target_sql}) SELECT {select_columns} FROM {table}")
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {temporary_table} RENAME TO {table}")
+    for index_ddl in indexes:
+        conn.execute(index_ddl)
 
 
 def _embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> dict[str, str]:
@@ -1577,6 +1658,7 @@ __all__ = [
     "OpsCompactState",
     "add_convergence_debt",
     "ensure_embedding_catchup_run_outcome_columns",
+    "ensure_ops_status_checks",
     "list_cursor_lag_samples",
     "list_fts_drift_samples",
     "list_schema_drift_samples",
