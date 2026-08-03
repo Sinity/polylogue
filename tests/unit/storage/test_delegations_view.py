@@ -2,15 +2,15 @@
 parent-dispatched subagent attempt from the PARENT's own dispatch actions
 (`actions` rows, semantic_type='subagent'), corroborated against resolved
 children via canonical `session_links` (child in `src_session_id`, parent in
-`resolved_dst_session_id` -- see resolve_session_links_for_session). The
-prior shipped view aliased these backwards; these fixtures use the canonical
-direction throughout and would fail against that reversed view. Model
-identity is separated into dispatch-turn / requested / child-observed /
-session-dominant-fallback columns rather than one "orchestrator model"."""
+`resolved_dst_session_id` -- see ``_resolve_outbound_session_links``,
+``storage/sqlite/archive_tiers/write.py``). The prior shipped view aliased
+these backwards; these fixtures use the canonical direction throughout and
+would fail against that reversed view. Model identity is separated into
+dispatch-turn / requested / child-observed / session-dominant-fallback
+columns rather than one "orchestrator model"."""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import sqlite3
@@ -18,18 +18,15 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-from polylogue.archive.topology.edge import TopologyEdgeRecord
-from polylogue.core.enums import LinkType as TopologyEdgeType
-from polylogue.core.enums import Origin
-from polylogue.core.types import SessionId
+from polylogue.core.enums import BranchType, Provider
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.queries.session_links import (
-    resolve_session_links_for_session,
-    upsert_session_links,
-)
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.surfaces.payloads import DelegationCardPayload, QueryUnitAggregateRowPayload
 
 _HASH = b"x" * 32
@@ -164,10 +161,10 @@ def _insert_session_link(
 ) -> None:
     """Canonical direction: the CHILD asserts the link (src_session_id), the
     PARENT is the resolved destination -- matching
-    resolve_session_links_for_session, where `child_id =
-    row["src_session_id"]` and the resolved session is written into
-    `sessions.parent_session_id` keyed by that child. This is the reverse of
-    the pre-y964 test fixtures, which is exactly the bug: those fixtures
+    ``_resolve_outbound_session_links`` (``storage/sqlite/archive_tiers/write.py``),
+    where `child_id = row["src_session_id"]` and the resolved session is
+    written into `sessions.parent_session_id` keyed by that child. This is
+    the reverse of the pre-y964 test fixtures, which is exactly the bug: those fixtures
     matched the (wrong) shipped view, not real ingestion."""
     conn.execute(
         """
@@ -187,40 +184,6 @@ def _insert_session_link(
             1_767_225_600_000,
         ),
     )
-
-
-class _AsyncSqliteAdapter:
-    """Minimal aiosqlite-compatible wrapper around stdlib sqlite3, matching
-    the pattern in tests/unit/insights/test_topology_cycle_rejection.py --
-    lets a real production async query helper run against a plain sqlite3
-    connection inside a synchronous test."""
-
-    def __init__(self, conn: sqlite3.Connection) -> None:
-        conn.row_factory = sqlite3.Row
-        self._conn = conn
-
-    async def execute(self, sql: str, params: tuple[object, ...] = ()) -> _AsyncCursorAdapter:
-        cursor = self._conn.execute(sql, params)
-        return _AsyncCursorAdapter(cursor)
-
-    def commit(self) -> None:
-        self._conn.commit()
-
-
-class _AsyncCursorAdapter:
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
-        self._cursor = cursor
-
-    async def fetchall(self) -> list[sqlite3.Row]:
-        return list(self._cursor.fetchall())
-
-    async def fetchone(self) -> sqlite3.Row | None:
-        result: sqlite3.Row | None = self._cursor.fetchone()
-        return result
-
-    @property
-    def rowcount(self) -> int:
-        return self._cursor.rowcount
 
 
 def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: Path) -> None:
@@ -625,43 +588,47 @@ def test_delegation_requested_model_unknown_when_not_recorded(tmp_path: Path) ->
 
 def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None:
     """Real-route regression: drive the ACTUAL production write path
-    (upsert_session_links / resolve_session_links_for_session -- the same
-    functions the daemon calls after parsing a session) instead of a
+    (``write_parsed_session_to_archive`` -> ``_resolve_outbound_session_links``,
+    ``storage/sqlite/archive_tiers/write.py`` -- the sole production writer,
+    the same path the daemon calls after parsing a session) instead of a
     hand-built row shape, then confirm the view reads parent/child in the
     correct direction against whatever the real resolver produced. This is
-    the test that would fail outright against the pre-y964 reversed view."""
+    the test that would fail outright against the pre-y964 reversed view.
+
+    polylogue-4ts.10: previously drove ``queries/session_links.py``'s
+    ``upsert_session_links``/``resolve_session_links_for_session`` under the
+    same "ACTUAL production write path" claim -- a 2026-08-03 structural
+    audit found that engine has zero production callers and was deleted;
+    this test now drives the real writer directly."""
     conn = _connect(tmp_path / "index.db")
     parent_id = _insert_session(conn, native_id="parent", origin="codex-session")
-    child_id = _insert_session(conn, native_id="child", origin="codex-session")
     dispatch_message_id = _insert_message(conn, session_id=parent_id, native_id="dispatch", position=0)
     _insert_dispatch_action(conn, message_id=dispatch_message_id, session_id=parent_id, position=0, tool_id="task-1")
+    conn.commit()
 
-    adapter = _AsyncSqliteAdapter(conn)
     # The CHILD is the one that asserts the (initially unresolved) link to
     # its parent -- mirroring what a real subagent-session parser does.
-    edge = TopologyEdgeRecord(
-        src_session_id=SessionId(child_id),
-        dst_origin=Origin.CODEX_SESSION,
-        dst_native_id="parent",
-        link_type=TopologyEdgeType.SUBAGENT,
+    child_session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.SUBAGENT,
+        messages=[ParsedMessage(provider_message_id="c0", role=Role.USER, text="go", position=0)],
     )
-    asyncio.run(upsert_session_links(adapter, [edge]))  # type: ignore[arg-type]
-    resolved_count = asyncio.run(
-        resolve_session_links_for_session(
-            adapter,  # type: ignore[arg-type]
-            session_id=parent_id,
-            origin="codex-session",
-            native_id="parent",
-            resolved_at="2026-07-10T00:00:00+00:00",
-        )
-    )
+    child_id = write_parsed_session_to_archive(conn, child_session, content_hash=session_content_hash(child_session))
     conn.commit()
-    assert resolved_count == 1
 
     # The resolver must have written the PARENT into sessions.parent_session_id
     # keyed by the CHILD -- confirming our fixture direction matches reality.
     sessions_row = conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)).fetchone()
     assert sessions_row["parent_session_id"] == parent_id
+
+    link_row = conn.execute(
+        "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?", (child_id,)
+    ).fetchone()
+    assert link_row is not None
+    assert link_row["status"] is None
+    assert link_row["resolved_dst_session_id"] == parent_id
 
     row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
