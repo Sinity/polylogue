@@ -313,7 +313,7 @@ def usage_command(
         _render_session_usage_reconciliation(env, reconciliation)
         return
 
-    report = run_coroutine_sync(env.polylogue.provider_usage_report(origin=origin, limit=sample_limit, detail=detail))
+    report = run_coroutine_sync(env.polylogue.origin_usage_report(origin=origin, limit=sample_limit, detail=detail))
     if output_format == "json":
         click.echo(json.dumps(report.to_dict(), indent=2))
         return
@@ -351,7 +351,7 @@ def _evidence_value_line(evidence: object) -> str:
 
 def _render_usage_report(env: AppEnv, report: object) -> None:
     origins = tuple(getattr(report, "origins", ()))
-    env.ui.console.print(f"[bold]Provider usage accounting[/bold] ({getattr(report, 'archive_root', '')})")
+    env.ui.console.print(f"[bold]Origin usage accounting[/bold] ({getattr(report, 'archive_root', '')})")
     env.ui.console.print(f"  detail: {getattr(report, 'detail_level', 'full')}")
     for caveat in getattr(report, "caveats", ()):
         env.ui.console.print(f"  [yellow]note[/yellow] {caveat}")

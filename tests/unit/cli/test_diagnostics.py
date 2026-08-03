@@ -69,7 +69,7 @@ def test_usage_command_passes_headline_detail(monkeypatch: pytest.MonkeyPatch) -
             return {"detail_level": "headline"}
 
     class FakePolylogue:
-        async def provider_usage_report(
+        async def origin_usage_report(
             self,
             *,
             origin: str | None = None,
