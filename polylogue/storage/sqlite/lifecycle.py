@@ -739,6 +739,18 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # this declaration.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=59,
+        # polylogue-4987i: Claude Code session_events ordering is now
+        # deterministic and chunk-count-invariant -- see INDEX_SCHEMA_VERSION's
+        # v59 comment (archive_tiers/index.py) for the full writeup, root
+        # cause, and live spot-check evidence. No DDL change on any table
+        # (content_hash values shift for a subset of already-materialized
+        # rows, not the schema), so there is nothing here for a fast-forward
+        # to do. Resolving already-materialized sessions with the old order
+        # requires `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
