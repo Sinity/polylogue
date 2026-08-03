@@ -123,14 +123,16 @@ def test_analysis_signal_duplicate_messages_are_not_a_session() -> None:
 
 
 def test_bare_tool_use_id_record_does_not_classify_as_session() -> None:
-    """Regression for polylogue-9ykn: a record whose only distinguishing
-    field is a ``tool_use_id``-shaped value (the real archive has 3 sessions
-    whose native_id is a bare ``toolu_*`` tool-use id, evidence of a
-    tool-result artifact acquired as an independent session rather than
-    joined as a sidecar -- see the sibling investigation polylogue-omsw for
-    the tool-result-specific acquisition-scope fix). A record with no
-    session/message envelope and no recognized record-ish key must fall
-    through to UNKNOWN, not default into a session.
+    """Regression for polylogue-9ykn (path rule landed for polylogue-omsw,
+    see ``test_tool_result_sidecar_never_classifies_as_session_even_when_
+    content_looks_like_one``): a record whose only distinguishing field is a
+    ``tool_use_id``-shaped value (the real archive has 3 sessions whose
+    native_id is a bare ``toolu_*`` tool-use id, evidence of a tool-result
+    artifact acquired as an independent session rather than joined as a
+    sidecar) must never become a session at a ``tool-results/`` path. Now
+    refused by path (``TOOL_RESULT_SIDECAR``) rather than falling through
+    content heuristics to UNKNOWN/METADATA_DOCUMENT -- the stronger,
+    content-independent guarantee this whole family needed.
     """
     record: JSONValue = {
         "tool_use_id": "toolu_01AbCdEfGhIjKlMnOpQrStUv",
@@ -143,10 +145,7 @@ def test_bare_tool_use_id_record_does_not_classify_as_session() -> None:
         source_path="/tmp/.claude/projects/x/tool-results/toolu_01AbCdEfGhIjKlMnOpQrStUv.json",
     )
 
-    # Falls through the metadata-shaped fallback (a small scalar-valued dict)
-    # rather than UNKNOWN -- either way the invariant that matters holds: it
-    # never becomes a session.
-    assert artifact.kind in (ArtifactKind.UNKNOWN, ArtifactKind.METADATA_DOCUMENT)
+    assert artifact.kind is ArtifactKind.TOOL_RESULT_SIDECAR
     assert artifact.parse_as_session is False
 
 
@@ -179,6 +178,79 @@ def test_workflow_run_snapshot_never_classifies_as_session() -> None:
     )
 
     assert artifact.kind is ArtifactKind.WORKFLOW_RUN_SNAPSHOT
+    assert artifact.parse_as_session is False
+
+
+def test_tool_result_sidecar_never_classifies_as_session_even_when_content_looks_like_one() -> None:
+    """Regression for polylogue-omsw: a ``tool-results/<name>`` sidecar must
+    never become a session regardless of its content, only its path.
+
+    Claude Code persists tool-call-overflow output verbatim to
+    ``<session>/tool-results/<name>.<ext>`` (``sources/live/
+    tool_result_sidecars.py`` joins it back to its owning ``tool_result``
+    block by ``tool_use_id`` -- it is never independent conversation
+    content). Content heuristics alone cannot refuse this family: a tool
+    call's own output can coincidentally reproduce a genuine
+    session-document shape byte-for-byte. This exact reproduction was found
+    live (a real ``~/.claude/projects`` corpus scan, not a hypothetical): a
+    ``tool-results/*.txt`` sidecar whose content was a real claude.ai
+    export document -- some prior turn's tool call had fetched and dumped
+    one -- classified as ``SESSION_DOCUMENT``/``parse_as_session=True``
+    under the pre-fix content-only rules, because it has ``uuid``/
+    ``title``/``messages`` exactly like a genuine claude-ai-export session.
+    """
+    real_export_document: JSONValue = {
+        "uuid": "05c097b4-00f0-4233-a5e4-906f9b204ea3",
+        "title": "Chat",
+        "project": {"uuid": "3fef01aa-8a77-4acb-a9c4-cc73c8f1c7a3", "name": "Some Project"},
+        "created_at": "2026-04-22T16:25:46.401856+00:00",
+        "updated_at": "2026-04-23T17:10:40.966156+00:00",
+        "messages": [
+            {"role": "user", "text": "hello"},
+            {"role": "assistant", "text": "hi there"},
+        ],
+    }
+
+    # Sanity check the premise: this exact content, at a non-sidecar path,
+    # really does classify as a session -- otherwise this test would pass
+    # for the wrong reason.
+    as_ordinary_document = classify_artifact(
+        real_export_document,
+        provider="claude-code",
+        source_path="/tmp/.claude/projects/x/session/some_other_file.json",
+    )
+    assert as_ordinary_document.parse_as_session is True
+
+    artifact = classify_artifact(
+        real_export_document,
+        provider="claude-code",
+        source_path="/tmp/.claude/projects/x/session/tool-results/bvatzjyve.txt",
+    )
+
+    assert artifact.kind is ArtifactKind.TOOL_RESULT_SIDECAR
+    assert artifact.parse_as_session is False
+    assert artifact.schema_eligible is False
+
+
+def test_tool_result_sidecar_hook_file_keeps_hook_event_classification() -> None:
+    """``hook-*`` files under ``tool-results/`` are a distinct, already-
+    tracked capture surface (raw hook stdout, polylogue-qqyg / #2781) with
+    their own reliable content-shape detector -- the new tool-result-sidecar
+    path rule must not shadow that classification."""
+    hook_event: JSONValue = {
+        "event_type": "PostToolUse",
+        "session_id": "session-abc",
+        "timestamp": "2026-08-01T00:00:00Z",
+        "provider": "claude-code",
+    }
+
+    artifact = classify_artifact(
+        hook_event,
+        provider="claude-code",
+        source_path="/tmp/.claude/projects/x/session/tool-results/hook-abc123.json",
+    )
+
+    assert artifact.kind is ArtifactKind.HOOK_EVENT
     assert artifact.parse_as_session is False
 
 

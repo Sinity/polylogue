@@ -40,6 +40,7 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
 
     assert claude.stream_parser_path is not None
     assert {rule.kind for rule in claude.artifact_rules} == {
+        "tool_result_sidecar",
         "workflow_run_snapshot",
         "workflow_journal",
         "agent_transcript",

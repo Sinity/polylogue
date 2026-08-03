@@ -488,6 +488,41 @@ def _claude_code_spec() -> OriginSpec:
         ),
         artifact_rules=(
             OriginArtifactRule(
+                kind="tool_result_sidecar",
+                # ``hook-*`` files under the same directory are a distinct,
+                # already-tracked capture surface (raw hook stdout,
+                # polylogue-qqyg / #2781) with their own reliable
+                # content-shape detector (``looks_like_hook_event``) --
+                # excluded here so this rule doesn't relabel their already
+                # correct ``HOOK_EVENT`` classification.
+                path_pattern=r"(?:^|/)tool-results/(?!hook-)[^/]+$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="tool_result_overflow",
+                fidelity_note=(
+                    "Tool-result overflow content persisted verbatim; never independently parsed -- "
+                    "sources/live/tool_result_sidecars.py joins it to its owning tool_result block by "
+                    "tool_use_id. A tool call's own output can coincidentally reproduce a genuine "
+                    "session-document shape (verified live: a real claude.ai export dumped by a prior "
+                    "tool call), so content heuristics alone cannot refuse this family; this path rule "
+                    "is the only reliable gate (polylogue-omsw)."
+                ),
+                # Deliberately NOT widened to every extension a tool result
+                # can carry (a real corpus scan found genuine ``.txt``/
+                # ``.html`` tool-results content too -- see the sibling
+                # classification test): ``artifact_suffixes_for_provider``
+                # feeds ``live/watcher.py``'s Claude Code ``WatchSource``
+                # acquisition suffix filter directly, so adding a suffix here
+                # would widen what gets *acquired* archive-wide, not merely
+                # what this rule classifies. ``.json`` is the one extension
+                # already inside the acquired/watched set today; the
+                # ``path_pattern`` match above still refuses any other
+                # extension's *content* once a raw row for it exists via
+                # some other acquisition route (zip replay, reindex), since
+                # ``matches()`` doesn't consult ``path_suffixes`` at all.
+                path_suffixes=(".json",),
+            ),
+            OriginArtifactRule(
                 kind="workflow_run_snapshot",
                 path_pattern=r"(?:^|/)workflows/[^/]+\.json$",
                 parse_policy="fact",
