@@ -177,23 +177,6 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
         assert {str(row["raw_id"]) for row in rows} == set(acquired.raw_ids)
         session_ids = [str(row["session_id"]) for row in rows]
 
-        async def durable_cost_payloads() -> list[dict[str, object]]:
-            async with backend.connection() as conn:
-                event_rows = list(
-                    await (
-                        await conn.execute(
-                            """
-                            SELECT estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
-                                   pricing_version, billing_provider, billing_base_url, billing_mode
-                            FROM session_provider_usage_events
-                            WHERE provider_event_type = 'token_count'
-                            ORDER BY session_id, position
-                            """
-                        )
-                    ).fetchall()
-                )
-            return [{key: value for key, value in dict(row).items() if value is not None} for row in event_rows]
-
         async def durable_cost_typed_totals() -> list[dict[str, object]]:
             async with backend.connection() as conn:
                 event_rows = list(
@@ -278,40 +261,19 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
                 result[str(row["session_id"])]["states"].append((str(row["source_message_id"]), str(row["state"])))
             return result
 
-        expected_cost_provenance = {
-            "estimated_cost_usd": 0.002,
-            "actual_cost_usd": 0.0015,
-            "cost_status": "estimated",
-            "cost_source": "litellm",
-            "pricing_version": "2026-07-10",
-            "billing_provider": "openrouter",
-            "billing_base_url": "https://openrouter.ai/api/v1",
-            "billing_mode": "metered",
-        }
-        cost_payloads = await durable_cost_payloads()
-        assert len(cost_payloads) == len(session_ids)
-        assert all(
-            {key: payload[key] for key in expected_cost_provenance} == expected_cost_provenance
-            for payload in cost_payloads
-        )
-        # The billing-provenance keys are their own nullable typed columns
-        # (polylogue-ei0d / polylogue-c3ip, index v45): every other field of
-        # the raw provider event (total_token_usage, model, type, ...) is
-        # redundant with a typed column on the same row, so only these eight
-        # columns carry Hermes cost-provenance evidence -- no JSON blob.
-        assert all(set(payload) == set(expected_cost_provenance) for payload in cost_payloads)
-        assert all(
-            totals
-            == {
-                "total_cached_input_tokens": 0,
-                "total_cache_write_tokens": 0,
-                "total_input_tokens": 0,
-                "total_output_tokens": 0,
-                "total_reasoning_output_tokens": 0,
-                "total_tokens": 0,
-            }
-            for totals in await durable_cost_typed_totals()
-        )
+        # polylogue-664l: the eight Hermes billing-provenance columns
+        # (estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+        # pricing_version, billing_provider, billing_base_url, billing_mode)
+        # were dropped from session_provider_usage_events (index v61) -- a
+        # 2026-07-31 producer/consumer audit found zero production readers
+        # anywhere in the repo. This fixture's Hermes session carries only
+        # billing evidence and zero real token counts, so with the billing
+        # columns gone there is no evidence left to write a row for at all:
+        # `_provider_usage_event_row_has_evidence` now gates purely on the
+        # token counters, and an all-zero-counter row with no billing data
+        # would carry no information. The pipeline correctly writes zero
+        # session_provider_usage_events rows for this fixture now.
+        assert await durable_cost_typed_totals() == []
 
         hermes_events = await durable_hermes_events()
         assert set(hermes_events) == set(session_ids)
@@ -367,8 +329,7 @@ async def test_identical_hermes_profiles_persist_and_reprocess_independently(tmp
         session_count = int(session_row[0])
         assert raw_count == 2
         assert session_count == 2
-        rebuilt_cost_payloads = await durable_cost_payloads()
-        assert rebuilt_cost_payloads == cost_payloads
+        assert await durable_cost_typed_totals() == []
         assert await durable_hermes_events() == hermes_events
         assert await durable_message_state() == message_state
     finally:

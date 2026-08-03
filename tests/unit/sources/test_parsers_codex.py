@@ -1491,7 +1491,7 @@ class TestEdgeCases:
             "uncached_input_tokens": 80,
             "output_tokens": 40,
         }
-        assert usage_event.payload["model_context_window"] == 200000
+        assert "model_context_window" not in usage_event.payload
 
     def test_token_count_event_preserves_nested_usage_counters(self) -> None:
         payload = [
@@ -1540,7 +1540,6 @@ class TestEdgeCases:
                 "reasoning_output_tokens": 40,
                 "total_tokens": 10340,
             },
-            "model_context_window": 200000,
         }
 
 

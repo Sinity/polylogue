@@ -1224,17 +1224,21 @@ def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> N
         "cache_read_tokens": 10,
         "cost_provenance": "priced",
     }
-    provenance_rows = conn.execute(
-        """
-        SELECT actual_cost_usd
-        FROM session_provider_usage_events
-        WHERE session_id = ?
-          AND actual_cost_usd IS NOT NULL
-        """,
+    # polylogue-664l: session_provider_usage_events dropped its 8 Hermes
+    # billing-provenance columns (index v61, zero production readers). The
+    # third session_event above carries only billing evidence (no token
+    # counts), so `_provider_usage_event_row_has_evidence` -- now gated
+    # purely on the token counters -- correctly writes no row for it. Of the
+    # two remaining events, the "c1" one is deleted by the prefix-tail
+    # reextraction (its source message is in the shared parent prefix); only
+    # the divergent-tail "cy" event survives, with baseline subtraction
+    # applied against the parent's cumulative totals.
+    remaining = conn.execute(
+        "SELECT total_input_tokens, total_tokens FROM session_provider_usage_events WHERE session_id = ?",
         (child_id,),
     ).fetchall()
-    assert len(provenance_rows) == 1
-    assert provenance_rows[0]["actual_cost_usd"] == 0.125
+    assert len(remaining) == 1
+    assert dict(remaining[0]) == {"total_input_tokens": 60, "total_tokens": 75}
 
 
 def test_parent_reingest_keeps_child_composing(tmp_path: Path) -> None:
