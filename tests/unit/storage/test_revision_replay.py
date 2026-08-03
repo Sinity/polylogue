@@ -361,6 +361,40 @@ def test_replay_requires_byte_proven_full_baseline() -> None:
     assert _decisions(candidates) == {"asserted": ApplicationDecision.DEFERRED}
 
 
+def test_replay_does_not_treat_a_duplicate_of_the_accepted_baseline_as_a_competing_head() -> None:
+    """polylogue-qhk8z: a byte-identical duplicate of the accepted baseline must
+    not create a false "multiple byte-proven full baselines" tie.
+
+    ``revision_governance.classify_raw_revision_cohort`` writes a duplicate
+    decision's ``baseline_raw_id`` to the SAME chain root as the real
+    baseline row (``predecessor_raw_id=None`` on both, per
+    ``HistoricalRevisionDecision.duplicate_of_raw_id``'s contract), and
+    mirrors the baseline's own ``acquisition_generation`` onto it
+    (polylogue-5unky's fix). Before this fix, ``plan_revision_replay``'s
+    "unique newest generation" tie-break saw two FULL BYTE_PROVEN candidates
+    sharing generation 0 and misclassified this as an ambiguous multi-
+    baseline fork -- even though one of the two candidates literally IS the
+    baseline (``baseline_raw_id == raw_id``) and the other is only its own
+    duplicate. That false ambiguity emptied ``accepted_raw_ids``, which
+    routed backfill/rebuild callers into the "no accepted chain" membership-
+    census fallback for a cohort that in fact has one unambiguous baseline,
+    which then tripped ``ActiveByteRevisionChainError`` on retirement
+    (reproduced end-to-end in
+    ``test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard``).
+    """
+    candidates = [
+        _candidate("raw-a-baseline", RawRevisionKind.FULL, 0, baseline="raw-a-baseline"),
+        _candidate("raw-b-duplicate", RawRevisionKind.FULL, 0, baseline="raw-a-baseline"),
+    ]
+    plan = plan_revision_replay(candidates)
+    assert plan.accepted_raw_ids == ("raw-a-baseline",)
+    decisions = {item.raw_id: item.decision for item in plan.applications}
+    assert decisions == {
+        "raw-a-baseline": ApplicationDecision.SELECTED_BASELINE,
+        "raw-b-duplicate": ApplicationDecision.DEFERRED,
+    }
+
+
 def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -504,6 +538,63 @@ def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representa
         assert _acquisition_generation(archive, mid) == 1
         assert _acquisition_generation(archive, head) == 2
         assert _acquisition_generation(archive, mid_duplicate) == 1
+
+
+def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tmp_path: Path) -> None:
+    """polylogue-qhk8z end-to-end reproduction: PR #3574's byte-identical-
+    duplicate collapse (I4) plus polylogue-5unky's generation-mirroring fix
+    together made a duplicate of the accepted baseline share that baseline's
+    ``acquisition_generation``. Before the ``plan_revision_replay`` fix
+    (``test_replay_does_not_treat_a_duplicate_of_the_accepted_baseline_as_a_
+    competing_head``), that shared generation made ``plan_revision_replay``
+    see two competing "newest" full baselines and reject the cohort as
+    ambiguous, emptying ``accepted_raw_ids`` even though the cohort has one
+    genuine, unambiguous baseline. Callers (``sources/revision_backfill.py``,
+    ``sources/live/batch.py``) treat an empty ``accepted_raw_ids`` as "no
+    accepted chain" and fall back to folding every full-only raw for this
+    identity into membership governance via
+    ``replace_raw_membership_census(..., retire_full_revision_governance=
+    True)`` -- which raised ``ActiveByteRevisionChainError`` the moment it
+    tried to retire the baseline raw_id, because the duplicate's own
+    ``baseline_raw_id`` column still durably points at it. This reproduces
+    that exact interaction against a real archive (mirroring the two-page
+    re-export shape ``test_revision_backfill.py`` and
+    ``test_rebuild_paging_content_order.py`` construct) and proves the
+    cohort is now accepted outright, so the membership-census fallback path
+    is never even reached -- while confirming the guard itself still fails
+    closed for a raw a duplicate genuinely still depends on.
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = _write_full_raw(archive, raw_id="raw-a-baseline", payload=b"hello world", acquired_at_ms=1)
+        duplicate = _write_full_raw(archive, raw_id="raw-b-duplicate", payload=b"hello world", acquired_at_ms=2)
+
+        plan = archive.classify_raw_revision_cohort("codex:session")
+
+        # The cohort has a unique byte-proven baseline -- the duplicate no
+        # longer manufactures a false "multiple newest baselines" ambiguity.
+        # Backfill/rebuild callers (sources/revision_backfill.py) gate the
+        # membership-census fallback on exactly this ``not
+        # plan.accepted_raw_ids`` check, so a non-empty result here means
+        # that fallback -- and the guard inside it -- is never invoked for
+        # this cohort in production.
+        assert plan.accepted_raw_ids == (baseline,)
+        assert _acquisition_generation(archive, duplicate) == 0
+
+        # The membership-census guard itself must remain intact: retiring
+        # the baseline directly still fails closed, because the duplicate's
+        # baseline_raw_id column durably points at it -- a real dependent,
+        # not a false one.
+        with pytest.raises(archive_revision_governance.ActiveByteRevisionChainError):
+            archive.replace_raw_membership_census(
+                baseline,
+                [],
+                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                censused_at_ms=0,
+                detail="test-duplicate-guard",
+                retire_full_revision_governance=True,
+            )
+        archive.rollback()
 
 
 def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:

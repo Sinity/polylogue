@@ -52,11 +52,49 @@ class RevisionReplayPlan:
         return self.accepted_chain
 
 
+def _is_full_duplicate_signature(candidate: RevisionCandidate) -> bool:
+    """Detect a byte-identical "duplicate" decision from its stored columns alone.
+
+    ``revision_governance.classify_raw_revision_cohort``'s classifier
+    (``archive/revision_authority.py``'s prefix-DAG proof) guarantees at most
+    one node per cohort is ever the genuine chain root (``relation=
+    "baseline"``, ``predecessor_raw_id=None``); every other proven chain
+    member carries a ``predecessor_raw_id``. A byte-identical "duplicate"
+    decision deliberately also gets ``predecessor_raw_id=None`` (it is not a
+    chain-continuing child of anything -- see
+    ``HistoricalRevisionDecision.duplicate_of_raw_id``), so a FULL,
+    BYTE_PROVEN candidate with no predecessor that is NOT itself the cohort's
+    ``baseline_raw_id`` can only be such a duplicate. Its
+    ``acquisition_generation`` mirrors its representative's real chain
+    position purely for display/ordering (polylogue-5unky); treating it as an
+    independent competing "newest full baseline" candidate here made it tie
+    with its own representative whenever it duplicated the accepted head,
+    producing a false "multiple byte-proven full baselines share the newest
+    generation" ambiguity for a cohort that in fact has one unambiguous
+    baseline -- which then routed the whole cohort into the "no accepted
+    chain" membership-census fallback and tripped
+    ``ActiveByteRevisionChainError`` on retirement, even though the
+    duplicate's own baseline/predecessor links were never unsafe to retire
+    past (polylogue-qhk8z).
+    """
+    return (
+        candidate.kind is RawRevisionKind.FULL
+        and candidate.authority is RawRevisionAuthority.BYTE_PROVEN
+        and candidate.predecessor_raw_id is None
+        and candidate.baseline_raw_id is not None
+        and candidate.baseline_raw_id != candidate.raw_id
+    )
+
+
 def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayPlan:
     """Choose a unique proven full baseline and its exact append chain.
 
     No enumeration order, timestamp, raw-id ordering, or provider timestamp can
     promote evidence. A tie or branch stops replay at the last unique head.
+    A byte-identical duplicate of an already-accepted node (see
+    ``_is_full_duplicate_signature``) never competes for baseline selection;
+    it is left for the trailing loop below to mark ``DEFERRED`` against
+    whatever head the genuine evidence accepts.
     """
     if not candidates:
         raise ValueError("revision replay requires at least one candidate")
@@ -71,7 +109,9 @@ def plan_revision_replay(candidates: list[RevisionCandidate]) -> RevisionReplayP
     proven_full = [
         candidate
         for candidate in candidates
-        if candidate.kind is RawRevisionKind.FULL and candidate.authority is RawRevisionAuthority.BYTE_PROVEN
+        if candidate.kind is RawRevisionKind.FULL
+        and candidate.authority is RawRevisionAuthority.BYTE_PROVEN
+        and not _is_full_duplicate_signature(candidate)
     ]
     applications: dict[str, RevisionApplication] = {}
     if not proven_full:
