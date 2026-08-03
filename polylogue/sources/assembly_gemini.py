@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import TitleSource
+from polylogue.storage.blob_store import BlobStore
 
 from .assembly import SidecarData
 from .parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -23,9 +24,14 @@ _UUIDISH = re.compile(
 class GeminiAssemblySpec:
     """Gemini assembly using message and attachment evidence for display labels."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
+    def discover_sidecars(
+        self,
+        source_paths: list[Path],
+        *,
+        blob_store: BlobStore | None = None,
+    ) -> SidecarData:
         """Gemini display-label enrichment does not require sidecar files."""
-        del source_paths
+        del source_paths, blob_store
         return {}
 
     def enrich_session(

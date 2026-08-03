@@ -445,12 +445,14 @@ def _attachment_tuple(
     *,
     mime_type: str = "image/png",
     inline_bytes: bytes | None = None,
+    precomputed_blob: tuple[str, int] | None = None,
 ) -> ParsedAttachment:
     return ParsedAttachment(
         provider_attachment_id=attachment_id,
         mime_type=mime_type,
         size_bytes=len(inline_bytes) if inline_bytes is not None else 1024,
         inline_bytes=inline_bytes,
+        precomputed_blob=precomputed_blob,
     )
 
 
@@ -1060,6 +1062,55 @@ def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Pat
             ("aistudio-drive:improve",),
         ).fetchone()
         assert row["raw_id"] == "raw-fetched"
+
+
+def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path: Path) -> None:
+    """bd polylogue-8ac0: bytes already streamed into the blob store during
+    sidecar discovery (ChatGPT ``.dat`` asset acquisition) are recorded
+    ``acquired`` via ``ParsedAttachment.precomputed_blob`` -- no
+    ``blob_publisher`` write happens here, since the bytes were already
+    published earlier.
+    """
+    store = BlobStore(tmp_path / "blob")
+    payload = b"chatgpt dat asset bytes"
+    blob_hash, size = store.write_from_bytes(payload)
+
+    with open_connection(tmp_path / "index.db") as conn:
+        session = _session_data(
+            "chatgpt-export:conv-1",
+            content_hash="hash-precomputed",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "chatgpt-export:conv-1",
+                    role="user",
+                    text="here is a photo",
+                    content_hash="msg-hash-precomputed",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("file-xyz", precomputed_blob=(blob_hash, size))],
+            attachment_ref_tuples=[_attachment_ref_tuple("file-xyz", "chatgpt-export:conv-1", "msg-1")],
+            raw_id="raw-chatgpt",
+            provider=Provider.CHATGPT,
+        )
+        changed, counts = _write_session(conn, session)
+        conn.commit()
+
+        assert changed is True
+        assert counts["attachments"] == 1
+        row = conn.execute(
+            """
+            SELECT a.acquisition_status, a.blob_hash, a.byte_count
+            FROM attachment_refs r JOIN attachments a ON a.attachment_id = r.attachment_id
+            WHERE r.session_id = ?
+            """,
+            ("chatgpt-export:conv-1",),
+        ).fetchone()
+        assert row["acquisition_status"] == "acquired"
+        assert bytes(row["blob_hash"]) == bytes.fromhex(blob_hash)
+        assert row["byte_count"] == size
+        assert store.read_all(blob_hash) == payload
 
 
 def _sidecar_matched_event(tool_use_id: str) -> ParsedSessionEvent:

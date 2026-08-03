@@ -317,6 +317,12 @@ def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValu
     }
     if attachment.inline_bytes is not None:
         payload["inline_content_hash"] = hash_bytes(attachment.inline_bytes)
+    elif attachment.precomputed_blob is not None:
+        # polylogue-8ac0: bytes already streamed into the blob store during
+        # sidecar discovery carry a known hash without needing to re-read
+        # them here (mirrors the ``inline_bytes`` branch above, whose content
+        # hash marks re-ingest content-changed once bytes newly arrive).
+        payload["inline_content_hash"] = attachment.precomputed_blob[0]
     return payload
 
 

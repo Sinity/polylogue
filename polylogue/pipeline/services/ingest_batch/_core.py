@@ -410,7 +410,11 @@ def _incoming_write_regresses_attachment_coverage(
     on the pre-fetch revision). This only ever blocks a regression: an
     incoming write that ties or improves attachment coverage is unaffected.
     """
-    incoming_acquired = sum(1 for attachment in session_to_write.attachments if attachment.inline_bytes is not None)
+    incoming_acquired = sum(
+        1
+        for attachment in session_to_write.attachments
+        if attachment.inline_bytes is not None or attachment.precomputed_blob is not None
+    )
     existing_acquired_row = conn.execute(
         """
         SELECT COUNT(*) FROM attachment_refs r
@@ -703,6 +707,19 @@ def _write_session(
         )
         counts.update(sidecar_blob_counts)
         blob_publisher.flush()
+    for attachment in session_to_write.attachments:
+        # bd polylogue-8ac0: bytes for this attachment were already streamed
+        # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
+        # asset acquisition) -- record the already-known hash/size directly
+        # rather than re-hashing. Independent of ``blob_publisher`` (no new
+        # write happens here) and skipped when ``inline_bytes`` already
+        # claimed this attachment above.
+        if attachment.inline_bytes is not None or attachment.precomputed_blob is None:
+            continue
+        if preacquired_attachment_blobs is None:
+            preacquired_attachment_blobs = {}
+        hash_hex, size = attachment.precomputed_blob
+        preacquired_attachment_blobs[id(attachment)] = (bytes.fromhex(hash_hex), size, "acquired")
 
     write_parsed_session_to_archive(
         conn,

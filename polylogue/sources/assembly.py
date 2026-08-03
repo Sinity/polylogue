@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias
 from typing_extensions import TypedDict
 
 from polylogue.core.enums import Provider
+from polylogue.storage.blob_store import BlobStore
 
 from .parsers.base import ParsedSession
 
@@ -43,6 +44,12 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     # resolver built once per source scan from conversation_asset_file_names.json
     # + library_files.json. See sources/assembly_chatgpt.py.
     chatgpt_asset_index: ChatGPTAssetIndex
+    # bd polylogue-8ac0: dat asset id -> (blob_hash_hex, size_bytes) for every
+    # ``.dat`` member/sibling file whose bytes were streamed into the blob
+    # store during sidecar discovery. Attachment resolution joins against this
+    # so previously-acquired dat bytes are marked "acquired" without
+    # re-hashing (see ``ingest_batch/_core.py``'s ``preacquired_attachment_blobs``).
+    chatgpt_dat_blobs: dict[str, tuple[str, int]]
 
 
 class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, total=False):
@@ -60,10 +67,21 @@ class TitleResolution:
 class ProviderAssemblySpec(Protocol):
     """Provider-specific sidecar discovery and session enrichment."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
+    def discover_sidecars(
+        self,
+        source_paths: list[Path],
+        *,
+        blob_store: BlobStore | None = None,
+    ) -> SidecarData:
         """Discover provider-specific sidecars from source paths.
 
         Returns opaque provider data keyed by parent directory or similar.
+
+        ``blob_store`` is an optional content-addressed blob store/publisher
+        a spec may use to stream sidecar-referenced bytes (not just metadata)
+        into the archive during discovery -- see ``ChatGPTAssemblySpec``'s
+        ``.dat`` asset acquisition (bd polylogue-8ac0). Specs that only need
+        sidecar metadata ignore it.
         """
         ...
 

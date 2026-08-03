@@ -258,6 +258,14 @@ class ParsedAttachment(BaseModel):
     # addressed blob store and records the true SHA-256 + 'acquired' status instead
     # of fabricating a hash. Excluded from serialization/repr; not a stored field.
     inline_bytes: bytes | None = Field(default=None, exclude=True, repr=False)
+    # Transport-only (polylogue-8ac0): a (blob_hash_hex, size_bytes) pair for
+    # bytes ALREADY streamed into the content-addressed blob store during
+    # sidecar discovery (e.g. ChatGPT ``.dat`` asset acquisition -- see
+    # ``sources/assembly_chatgpt.py``). Distinct from `inline_bytes`: those
+    # bytes still need hashing/writing at ingest time; this records a write
+    # that already happened, so ingestion must record it without re-hashing.
+    # Excluded from serialization/repr; not a stored field.
+    precomputed_blob: tuple[str, int] | None = Field(default=None, exclude=True, repr=False)
 
     @field_validator("path")
     @classmethod

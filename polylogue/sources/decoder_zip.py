@@ -14,6 +14,7 @@ from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
+from .assembly import SidecarData
 from .cursor import _record_cursor_failure
 from .parsers.base import ParsedSession, RawSessionData
 
@@ -230,8 +231,19 @@ def process_zip(
     cursor_state: CursorStatePayload | None,
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
+    sidecar_data: SidecarData | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
-    """Process a ZIP file, yielding sessions from its entries."""
+    """Process a ZIP file, yielding sessions from its entries.
+
+    ``sidecar_data`` (bd polylogue-8ac0) threads the source-scan-level
+    provider assembly sidecars (e.g. ChatGPT's ``chatgpt_asset_index``/
+    ``chatgpt_dat_blobs``, discovered once per source by
+    ``_setup_source_walk`` before any entry is parsed) into every entry's
+    ``_ParseContext`` so ``_SessionEmitter.emit``'s ``enrich_session`` hook
+    actually fires for ZIP-bundle sources. Without it, every entry got an
+    empty sidecar mapping and provider-assembly enrichment silently never ran
+    for ZIP-shaped sources -- the common shape for a GDPR/Takeout export.
+    """
     del should_group
 
     from polylogue.paths import blob_store_root
@@ -240,6 +252,8 @@ def process_zip(
     from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS
     from .emitter import _SessionEmitter
+
+    resolved_sidecar_data: SidecarData = sidecar_data if sidecar_data is not None else {}
 
     store = blob_store or BlobStore(blob_root or blob_store_root())
 
@@ -262,7 +276,7 @@ def process_zip(
                 fallback_id=zip_path.stem,
                 file_mtime=file_mtime,
                 capture_raw=capture_raw,
-                sidecar_data={},
+                sidecar_data=resolved_sidecar_data,
             )
             emitter = _SessionEmitter(ctx)
             precomputed_raw: RawSessionData | None = None

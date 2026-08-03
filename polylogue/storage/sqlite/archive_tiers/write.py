@@ -6690,6 +6690,8 @@ def _acquire_attachment_blob(
     del conn
     if attachment.inline_bytes is not None:
         raise ValueError("inline attachment bytes require preacquired_attachment_blobs from an archive-owned publisher")
+    if attachment.precomputed_blob is not None:
+        raise ValueError("a precomputed attachment blob requires preacquired_attachment_blobs to record it")
     return (None, attachment.size_bytes or 0, "unfetched")
 
 
