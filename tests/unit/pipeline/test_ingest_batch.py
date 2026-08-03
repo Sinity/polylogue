@@ -67,6 +67,7 @@ from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -1062,6 +1063,120 @@ def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Pat
             ("aistudio-drive:improve",),
         ).fetchone()
         assert row["raw_id"] == "raw-fetched"
+
+
+def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
+    """polylogue-sp72: a Drive re-acquisition must get real revision lineage.
+
+    ``iter_drive_raw_data`` backfills live-fetched attachment bytes into
+    cached Drive JSON on every ingest pass; whenever the bytes change, it
+    mints a brand-new ``raw_id`` for the SAME logical session. Before this
+    fix, ``_write_session`` (this module's generic, non-drive-aware write
+    path) never computed ``logical_source_key`` or called the revision
+    governance cohort classifier for that second raw -- confirmed live: all
+    157 duplicate ``aistudio-drive`` raw pairs carried
+    ``revision_kind='unknown'``, ``logical_source_key=NULL``,
+    ``revision_authority='quarantined'``, with no predecessor/baseline
+    linkage at all (see PR #3453's docstring on
+    ``_incoming_write_regresses_attachment_coverage``, the narrow tie-break
+    that papered over exactly this gap without fixing it).
+
+    This asserts the SECOND raw's ``raw_sessions`` row now carries a real
+    ``logical_source_key``, a ``predecessor_raw_id`` pointing at the first
+    raw, and a non-``quarantined`` ``revision_authority`` -- i.e. that the
+    real byte-prefix arbitration classifier actually ran, not just that
+    some metadata got stamped. This must fail against the pre-fix
+    ``_write_session`` (verified by temporarily reverting the production
+    change and re-running: both raws come back with
+    ``logical_source_key IS NULL``).
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db_path = archive_root / "source.db"
+    blob_publisher = ArchiveBlobPublisher(source_db_path, archive_root / "blob")
+
+    provider_session_id = "drive-lineage-tie"
+    session_id = f"aistudio-drive:{provider_session_id}"
+    # The second raw's bytes are a strict superset (prefix growth) of the
+    # first's, mirroring a real Drive attachment backfill appending newly
+    # fetched bytes into the cached JSON -- this is what lets the byte-prefix
+    # classifier prove a real predecessor/baseline relation instead of
+    # quarantining both raws as an unrelated/ambiguous pair.
+    first_payload = b'{"drive":"payload","messages":[{"id":"m-1","text":"hi"}]}'
+    second_payload = first_payload + b"  // backfilled attachment bytes appended"
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        first_raw_id = archive.write_raw_payload(
+            provider=Provider.GEMINI,
+            payload=first_payload,
+            source_path="drive://file-1",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second_raw_id = archive.write_raw_payload(
+            provider=Provider.GEMINI,
+            payload=second_payload,
+            source_path="drive://file-1",
+            acquired_at_ms=1_767_000_000_500,
+        )
+    assert first_raw_id != second_raw_id
+
+    message = _message_tuple(
+        "m-1",
+        session_id,
+        role="user",
+        text="hi",
+        content_hash="msg-hash-drive-lineage",
+        sort_key=1777636800.0,
+    )
+
+    with (
+        open_connection(archive_root / "index.db") as conn,
+        sqlite3.connect(str(source_db_path)) as source_conn,
+    ):
+        first_session = _session_data(
+            session_id,
+            content_hash="hash-drive-lineage-first",
+            raw_id=first_raw_id,
+            message_tuples=[message],
+            provider=Provider.GEMINI,
+            created_at="2026-07-18T17:46:10Z",
+            updated_at="2026-07-18T17:46:10Z",
+        )
+        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        conn.commit()
+        assert changed_first is True
+
+        second_session = _session_data(
+            session_id,
+            content_hash="hash-drive-lineage-second",
+            raw_id=second_raw_id,
+            message_tuples=[message],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"fetched drive attachment bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "m-1")],
+            provider=Provider.GEMINI,
+            created_at="2026-07-18T17:46:15Z",
+            updated_at="2026-07-18T17:46:15Z",
+        )
+        changed_second, _ = _write_session(conn, second_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        conn.commit()
+        assert changed_second is True
+
+    with sqlite3.connect(str(source_db_path)) as verify_conn:
+        verify_conn.row_factory = sqlite3.Row
+        first_row = verify_conn.execute(
+            "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (first_raw_id,),
+        ).fetchone()
+        second_row = verify_conn.execute(
+            "SELECT logical_source_key, predecessor_raw_id, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (second_raw_id,),
+        ).fetchone()
+
+    expected_logical_source_key = f"{Provider.GEMINI.value}:{provider_session_id}"
+    assert first_row["logical_source_key"] == expected_logical_source_key
+    assert second_row["logical_source_key"] == expected_logical_source_key
+    assert second_row["predecessor_raw_id"] == first_raw_id
+    assert second_row["revision_authority"] != "quarantined"
 
 
 def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path: Path) -> None:
