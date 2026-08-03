@@ -301,8 +301,7 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
     # flows as a sidecar hint (native_id_hint) instead, applied as the
     # parser's fallback_id at replay time.
     assert plan.native_id_hint == "conv-hot"
-    assert b'"type":"session_meta"' not in plan.payload
-    assert b'"content":"new"' in plan.payload
+    assert plan.payload == source.read_bytes()[old_offset:]
 
 
 def test_catch_up_ingests_needed_files_in_bounded_chunks(

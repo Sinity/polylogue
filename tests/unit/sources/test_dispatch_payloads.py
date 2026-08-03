@@ -725,6 +725,11 @@ def test_parse_stream_payload_codex_long_rollout_with_repeated_session_meta_yiel
     # no `content` still produces a message (block text=None) so the fact
     # that the model reasoned here survives.
     assert total_messages == 20 * 7
+    thinking_blocks = [
+        block for message in sessions[0].messages for block in message.blocks if block.type is BlockType.THINKING
+    ]
+    assert len(thinking_blocks) == 20
+    assert all(block.text is None for block in thinking_blocks)
 
 
 def test_require_positive_conversational_evidence_refuses_claude_code_stream_with_no_conversational_records(
