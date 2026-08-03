@@ -1067,6 +1067,33 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-byte-duplicate-supersession-apply",
+        "workspace",
+        "Promote quarantined, logical-key-less raws proven byte-identical to an already-indexed raw.",
+        "devtools.raw_byte_duplicate_supersession_apply",
+        use_when=(
+            "polylogue-6753s (corrected finding, 2026-08-03): of 7,200 unindexed logical-source "
+            "heads, 4,305 (17.6 of 22.9 GiB) are revision_authority='quarantined' with "
+            "logical_source_key IS NULL -- invisible to every reconciliation path, since all of "
+            "them key off logical_source_key -- and are byte-identical (same blob_hash) to some "
+            "OTHER raw that already has a materialized session in index.db: re-acquisitions/"
+            "re-syncs of already-archived content, not missing content. Default is dry-run; "
+            "--apply requires --backup-manifest pointing at a verified source-tier backup "
+            "(polylogue backup --output-dir <dir> --verify). Writes an immutable per-row receipt "
+            "(raw_byte_duplicate_supersession_receipts) recording which indexed raw_id/session_id "
+            "each duplicate matches; never touches index.db or the indexed twin's own row; never "
+            "runs blob GC or VACUUM -- those are separate, later steps. The genuinely novel "
+            "remainder (no indexed byte-identical twin) is left untouched for polylogue-lkrc/"
+            "polylogue-hjpx's reconciler."
+        ),
+        examples=(
+            "devtools workspace raw-byte-duplicate-supersession-apply",
+            "devtools workspace raw-byte-duplicate-supersession-apply --json",
+            "devtools workspace raw-byte-duplicate-supersession-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace binary-artifact-sweep",
         "workspace",
         "Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc).",

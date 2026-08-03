@@ -14,7 +14,7 @@ from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, Valida
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 22
+SOURCE_SCHEMA_VERSION = 23
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -227,6 +227,36 @@ CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_raw_append_chain_backfill_receipts_compared_at
 ON raw_append_chain_backfill_receipts(compared_at_ms);
+
+-- v22 (polylogue-6753s): one immutable receipt per raw_sessions row promoted
+-- out of quarantine because it is byte-identical (same blob_hash) to some
+-- OTHER raw_sessions row that already has a materialized session in
+-- index.db -- a pure re-acquisition/re-sync of already-archived content, not
+-- missing content. Deliberately does not widen revision_authority_evidence's
+-- closed CHECK vocabulary (would require a full raw_sessions table rebuild,
+-- see migration 021); this distinct, independently-verifiable evidence
+-- mechanism gets its own receipt table instead, exactly like
+-- raw_membership_writeback_receipts (v19) already does for its own distinct
+-- mechanism. See polylogue.storage.raw_byte_duplicate_supersession +
+-- polylogue.maintenance.raw_byte_duplicate_supersession_apply.
+CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
+    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
+    duplicate_of_raw_id         TEXT NOT NULL,
+    duplicate_of_session_id     TEXT NOT NULL,
+    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
+    tool_version                TEXT NOT NULL,
+    backup_manifest_path        TEXT NOT NULL,
+    detail                      TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_promoted_at
+ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
+ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither
