@@ -1,4 +1,13 @@
-"""``maintenance run``: execute (or dry-run) maintenance backfill operations."""
+"""``maintenance run``: execute maintenance backfill operations.
+
+The read-only twin of this command is ``maintenance run-preview``
+(:mod:`polylogue.cli.commands.maintenance._run_preview`) -- same target
+catalog, resume, and scope-filter surface, but the command type itself is
+non-mutating (no ``--dry-run``/``--apply`` flag to remember). Both commands
+share :func:`_execute_and_render`, which threads ``dry_run`` straight into
+:func:`polylogue.maintenance.replay.execute_replay`; the underlying replay
+semantics are byte-identical to the previous fused ``run --dry-run`` mode.
+"""
 
 from __future__ import annotations
 
@@ -27,11 +36,6 @@ _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
     multiple=True,
     type=click.Choice(MAINTENANCE_TARGET_NAMES),
     help=_MAINTENANCE_TARGET_HELP,
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Preview what would happen without executing",
 )
 @click.option(
     "--operation-id",
@@ -64,6 +68,48 @@ _MAINTENANCE_TARGET_HELP = build_maintenance_target_catalog().help_text()
 def run_command(
     env: AppEnv,
     targets: tuple[str, ...],
+    operation_id: str | None,
+    resume_cursor: str | None,
+    output_format: str,
+    session_ids: tuple[str, ...],
+    origin: str | None,
+    source_family: str | None,
+    source_root: str | None,
+    since: str | None,
+    until: str | None,
+    failure_kind: str | None,
+    parser_version: str | None,
+) -> None:
+    """Execute maintenance backfill operations.
+
+    Executes targeted rebuilds using existing repair infrastructure.
+    Per-target failures are isolated: one failing target does not abort
+    the remaining work. Use --operation-id together with --resume to
+    pick up an interrupted operation from its last checkpoint. For a
+    read-only dry run of the same replay path, use ``run-preview``.
+    """
+    _execute_and_render(
+        env=env,
+        targets=targets,
+        dry_run=False,
+        operation_id=operation_id,
+        resume_cursor=resume_cursor,
+        output_format=output_format,
+        session_ids=session_ids,
+        origin=origin,
+        source_family=source_family,
+        source_root=source_root,
+        since=since,
+        until=until,
+        failure_kind=failure_kind,
+        parser_version=parser_version,
+    )
+
+
+def _execute_and_render(
+    *,
+    env: AppEnv,
+    targets: tuple[str, ...],
     dry_run: bool,
     operation_id: str | None,
     resume_cursor: str | None,
@@ -77,12 +123,11 @@ def run_command(
     failure_kind: str | None,
     parser_version: str | None,
 ) -> None:
-    """Run (or dry-run) maintenance backfill operations.
+    """Shared body for ``run`` and ``run-preview``: execute_replay + render.
 
-    Executes targeted rebuilds using existing repair infrastructure.
-    Per-target failures are isolated: one failing target does not abort
-    the remaining work. Use --operation-id together with --resume to
-    pick up an interrupted operation from its last checkpoint.
+    ``dry_run`` is fixed per caller (``False`` for ``run``, ``True`` for
+    ``run-preview``) rather than exposed as a CLI flag -- the command name
+    is the read/write signal, not an option an operator can forget.
     """
     from polylogue.maintenance.envelope import envelope_from_operation
     from polylogue.maintenance.planner import BackfillStatus

@@ -250,18 +250,65 @@ def _render_blob_reference_recovery_plan_plain(report: BlobReferenceRecoveryPlan
             click.echo(f"  {sample.action} {sample.blob_hash} origin={sample.origin} {source}")
 
 
-@click.command("blob-reference-replace-from-source")
-@click.option(
-    "--yes",
-    "apply",
-    is_flag=True,
-    help="Apply the replacement. Without this flag the command is a dry run.",
-)
+@click.command("blob-reference-replace-from-source-preview")
 @click.option(
     "--manifest-file",
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
-    help="JSONL destination for before/after replacement rows. Required with --yes.",
+    help="Optional JSONL destination for the would-be before/after replacement rows.",
+)
+@click.option("--max-count", type=int, default=None, help="Maximum number of candidate rows to process.")
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative replacement rows to include.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_replace_from_source_preview_command(
+    manifest_file: Path | None,
+    max_count: int | None,
+    sample_limit: int,
+    output_format: str,
+) -> None:
+    """Preview raw-backed blob-reference replacement without mutating the archive."""
+    from polylogue.storage.blob_integrity import replace_raw_backed_blob_reference_debt_from_source
+
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        archive_root() / "source.db",
+        dry_run=True,
+        manifest_path=manifest_file,
+        max_count=max_count,
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "blob_reference_replace_from_source",
+        "mutates": False,
+        "writes_manifest": manifest_file is not None,
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_replace_from_source_plain(report)
+
+
+@click.command("blob-reference-replace-from-source")
+@click.option(
+    "--manifest-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help="JSONL destination for before/after replacement rows.",
 )
 @click.option("--max-count", type=int, default=None, help="Maximum number of candidate rows to process.")
 @click.option(
@@ -280,28 +327,30 @@ def _render_blob_reference_recovery_plan_plain(report: BlobReferenceRecoveryPlan
     help="Output format.",
 )
 def blob_reference_replace_from_source_command(
-    apply: bool,
-    manifest_file: Path | None,
+    manifest_file: Path,
     max_count: int | None,
     sample_limit: int,
     output_format: str,
 ) -> None:
-    """Replace raw-backed missing blob refs with current source-derived bytes."""
+    """Replace raw-backed missing blob refs with current source-derived bytes.
+
+    Always mutates the archive. Use
+    ``blob-reference-replace-from-source-preview`` for a read-only dry run
+    of the same candidate set.
+    """
     from polylogue.storage.blob_integrity import replace_raw_backed_blob_reference_debt_from_source
 
-    if apply and manifest_file is None:
-        raise click.UsageError("--manifest-file is required with --yes")
     report = replace_raw_backed_blob_reference_debt_from_source(
         archive_root() / "source.db",
-        dry_run=not apply,
+        dry_run=False,
         manifest_path=manifest_file,
         max_count=max_count,
         sample_size=sample_limit,
     )
     payload = {
         "mode": "blob_reference_replace_from_source",
-        "mutates": apply,
-        "writes_manifest": manifest_file is not None,
+        "mutates": True,
+        "writes_manifest": True,
         **report.to_dict(),
     }
 
@@ -342,12 +391,62 @@ def _render_blob_reference_replace_from_source_plain(report: BlobReferenceSource
             )
 
 
+@click.command("blob-reference-prune-orphans-preview")
+@click.option(
+    "--max-count",
+    type=int,
+    default=None,
+    help="Maximum number of orphan blob-reference rows to preview.",
+)
+@click.option(
+    "--sample-limit",
+    type=int,
+    default=30,
+    show_default=True,
+    help="Maximum number of representative samples to include.",
+)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+    help="Output format.",
+)
+def blob_reference_prune_orphans_preview_command(
+    max_count: int | None,
+    sample_limit: int,
+    output_format: str,
+) -> None:
+    """Preview orphan blob_refs pruning without mutating the archive."""
+    from polylogue.storage.blob_integrity import prune_orphan_blob_reference_debt
+
+    report = prune_orphan_blob_reference_debt(
+        archive_root() / "source.db",
+        dry_run=True,
+        quarantine_path=None,
+        max_count=max_count,
+        sample_size=sample_limit,
+    )
+    payload = {
+        "mode": "blob_reference_prune_orphans",
+        "mutates": False,
+        **report.to_dict(),
+    }
+
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    _render_blob_reference_prune_orphans_plain(report)
+
+
 @click.command("blob-reference-prune-orphans")
 @click.option(
     "--max-count",
     type=int,
     default=None,
-    help="Maximum number of orphan blob-reference rows to prune or preview.",
+    help="Maximum number of orphan blob-reference rows to prune.",
 )
 @click.option(
     "--sample-limit",
@@ -361,14 +460,9 @@ def _render_blob_reference_replace_from_source_plain(report: BlobReferenceSource
     type=click.Path(dir_okay=False, path_type=Path),
     default=None,
     help=(
-        "JSONL destination for rows removed by --yes. Defaults to "
+        "JSONL destination for rows removed. Defaults to "
         "<archive-root>/.maintenance-state/blob-ref-quarantine/<timestamp>.jsonl."
     ),
-)
-@click.option(
-    "--yes",
-    is_flag=True,
-    help="Delete orphan blob_refs after writing them to the quarantine JSONL.",
 )
 @click.option(
     "--output-format",
@@ -382,22 +476,25 @@ def blob_reference_prune_orphans_command(
     max_count: int | None,
     sample_limit: int,
     quarantine_file: Path | None,
-    yes: bool,
     output_format: str,
 ) -> None:
-    """Quarantine and prune missing blob_refs that no longer have raw rows."""
+    """Quarantine and prune missing blob_refs that no longer have raw rows.
+
+    Always mutates the archive. Use ``blob-reference-prune-orphans-preview``
+    for a read-only dry run of the same candidate set.
+    """
     from polylogue.storage.blob_integrity import prune_orphan_blob_reference_debt
 
     report = prune_orphan_blob_reference_debt(
         archive_root() / "source.db",
-        dry_run=not yes,
+        dry_run=False,
         quarantine_path=quarantine_file,
         max_count=max_count,
         sample_size=sample_limit,
     )
     payload = {
         "mode": "blob_reference_prune_orphans",
-        "mutates": bool(yes),
+        "mutates": True,
         **report.to_dict(),
     }
 

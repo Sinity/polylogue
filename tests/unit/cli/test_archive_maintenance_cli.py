@@ -1008,11 +1008,43 @@ def test_blob_reference_replace_from_source_cli_requires_manifest_for_apply(
 ) -> None:
     result = cli_runner.invoke(
         cli,
-        ["--plain", "ops", "maintenance", "blob-reference-replace-from-source", "--yes"],
+        ["--plain", "ops", "maintenance", "blob-reference-replace-from-source"],
     )
 
     assert result.exit_code != 0
-    assert "--manifest-file is required with --yes" in result.output
+    assert "--manifest-file" in result.output
+
+
+def test_blob_reference_replace_from_source_preview_cli_does_not_require_manifest(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    source = cli_workspace["archive_root"] / "exports" / "recoverable.json"
+    _seed_blob_reference_debt(cli_workspace["archive_root"], source)
+
+    result = cli_runner.invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "blob-reference-replace-from-source-preview",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["mode"] == "blob_reference_replace_from_source"
+    assert payload["mutates"] is False
+    assert payload["writes_manifest"] is False
+    assert payload["candidate_rows"] == 1
+    assert payload["replaced_rows"] == 0
+    with sqlite3.connect(cli_workspace["archive_root"] / "source.db") as conn:
+        refs = conn.execute("SELECT blob_hash FROM blob_refs WHERE source_path = ?", (str(source),)).fetchall()
+    assert refs, "preview must not mutate blob_refs"
 
 
 def test_blob_reference_replace_from_source_cli_applies_with_manifest(
@@ -1030,7 +1062,6 @@ def test_blob_reference_replace_from_source_cli_applies_with_manifest(
             "ops",
             "maintenance",
             "blob-reference-replace-from-source",
-            "--yes",
             "--manifest-file",
             str(manifest),
             "--output-format",
@@ -1052,7 +1083,7 @@ def test_blob_reference_replace_from_source_cli_applies_with_manifest(
     assert manifest_rows[0]["old_blob_hash"] != manifest_rows[0]["new_blob_hash"]
 
 
-def test_blob_reference_prune_orphans_cli_dry_run_keeps_refs(
+def test_blob_reference_prune_orphans_preview_cli_keeps_refs(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
 ) -> None:
@@ -1065,7 +1096,7 @@ def test_blob_reference_prune_orphans_cli_dry_run_keeps_refs(
             "--plain",
             "ops",
             "maintenance",
-            "blob-reference-prune-orphans",
+            "blob-reference-prune-orphans-preview",
             "--output-format",
             "json",
         ],
@@ -1099,7 +1130,6 @@ def test_blob_reference_prune_orphans_cli_apply_quarantines_deleted_refs(
             "ops",
             "maintenance",
             "blob-reference-prune-orphans",
-            "--yes",
             "--quarantine-file",
             str(quarantine_file),
             "--output-format",

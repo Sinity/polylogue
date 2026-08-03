@@ -96,7 +96,9 @@ unknown target is rejected at the CLI boundary.
 Heuristics:
 
 - **Preview before plan, plan before run.** `preview` is read-only;
-  `plan` is a dry-run summary; `run` is the only mutating verb.
+  `plan` is a dry-run summary; `run-preview` is a heavier, resumable
+  dry run that exercises the real execution path; `run` is the only
+  mutating verb.
 - **Prefer the narrowest target.** `--target session_insights` is
   cheaper and safer than rebuilding everything.
 - **Do not reach for `reset` to "fix a stale projection."** That is
@@ -146,16 +148,29 @@ polylogue ops maintenance plan --output-format json | jq .
 `MaintenanceOperationEnvelope` so the CLI output is byte-for-byte
 identical to the daemon HTTP and MCP responses.
 
+### `polylogue ops maintenance run-preview` — resumable dry run
+
+Read-only. Runs the exact same resumable replay path as `run` --
+including per-target repair simulation and checkpoint tracking -- but
+never mutates the archive. This is a heavier, more faithful dry run than
+`plan`: it exercises the same code each target's real `execute` step would
+take, not just an affected-row estimate. Use it to combine the safety of
+`plan` with the full execution-path code before committing to `run`.
+
+```bash
+polylogue ops maintenance run-preview
+polylogue ops maintenance run-preview --target session_insights --output-format json
+```
+
 ### `polylogue ops maintenance run` — execute
 
 Runs the resolved targets. Per-target failures are isolated as
 `FailureSample` entries; one failing target does not abort the rest.
-Use `--dry-run` to combine the safety of `plan` with the full
-execution-path code, or pass `--operation-id <uuid>` together with
-`--resume` to pick up an interrupted operation.
+Pass `--operation-id <uuid>` together with `--resume` to pick up an
+interrupted operation. This command always mutates; it carries no
+`--dry-run` flag -- use `run-preview` for the read-only twin.
 
 ```bash
-polylogue ops maintenance run --dry-run
 polylogue ops maintenance run --target session_insights --output-format json
 ```
 

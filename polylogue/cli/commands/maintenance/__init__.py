@@ -46,7 +46,13 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "migrate_tier_command",
         "Apply additive migrations for one durable archive tier.",
     ),
-    ("run", "_run", "run_command", "Run (or dry-run) maintenance backfill operations."),
+    (
+        "run-preview",
+        "_run_preview",
+        "run_preview_command",
+        "Preview a maintenance run (dry, resumable) without executing. Read-only.",
+    ),
+    ("run", "_run", "run_command", "Execute maintenance backfill operations."),
     (
         "rebuild-index",
         "_rebuild_index",
@@ -110,10 +116,22 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Plan recovery for raw-backed missing blobs without mutating archive state.",
     ),
     (
+        "blob-reference-replace-from-source-preview",
+        "_blob_integrity",
+        "blob_reference_replace_from_source_preview_command",
+        "Preview raw-backed blob-reference replacement without mutating the archive.",
+    ),
+    (
         "blob-reference-replace-from-source",
         "_blob_integrity",
         "blob_reference_replace_from_source_command",
         "Replace raw-backed missing blob refs with current source-derived bytes.",
+    ),
+    (
+        "blob-reference-prune-orphans-preview",
+        "_blob_integrity",
+        "blob_reference_prune_orphans_preview_command",
+        "Preview orphan blob_refs pruning without mutating the archive.",
     ),
     (
         "blob-reference-prune-orphans",
