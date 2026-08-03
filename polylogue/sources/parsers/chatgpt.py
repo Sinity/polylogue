@@ -22,6 +22,7 @@ from .base import (
     ParsedSession,
     ParsedSessionEvent,
     ParsedWebConstruct,
+    human_authored_override,
 )
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
@@ -1035,11 +1036,15 @@ def extract_messages_from_mapping(
             timestamp=str(timestamp) if timestamp is not None else None,
             blocks=content_blocks,
             message_type=message_type,
-            material_origin=classify_material_origin(
-                role=role,
-                message_type=message_type,
-                text=text,
-                block_types=tuple(block.type for block in content_blocks),
+            material_origin=human_authored_override(
+                role,
+                message_type,
+                classify_material_origin(
+                    role=role,
+                    message_type=message_type,
+                    text=text,
+                    block_types=tuple(block.type for block in content_blocks),
+                ),
             ),
             parent_message_provider_id=parent_message_provider_id,
             position=idx - 1,

@@ -16,11 +16,19 @@ from types import TracebackType
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession, mark_last_occurrence_as_active_leaf
+from .base import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    human_authored_override,
+    mark_last_occurrence_as_active_leaf,
+)
 
 _METADATA_SUFFIX = ".metadata.json"
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
@@ -432,6 +440,15 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
                 position=len(messages),
                 variant_index=0,
                 is_active_path=True,
+                # polylogue-gzgyl: an antigravity "User Input" section is
+                # unambiguously a real human turn -- positive-evidence
+                # override for the shared classify_material_origin
+                # no-fallthrough (#2502).
+                material_origin=human_authored_override(
+                    role,
+                    MessageType.MESSAGE,
+                    classify_material_origin(role=role, message_type=MessageType.MESSAGE, text=text),
+                ),
             )
         )
 

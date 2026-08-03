@@ -5,11 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
+from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, json_document
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
+from .base import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+    fill_linear_parent_chain,
+    human_authored_override,
+)
 
 
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
@@ -210,14 +219,23 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     if not text and not content_blocks:
         return None
     token_usage = _token_usage_fields(record)
+    gemini_role = _role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"})
+    gemini_blocks = content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    # A block-derived type (tool_use/tool_result from toolCalls above) must be
+    # resolved BEFORE classify_material_origin runs, or a genuine tool turn
+    # gets misclassified against an assumed plain MESSAGE type.
+    gemini_message_type = (
+        classify_block_message_type(tuple(block.type for block in gemini_blocks)) or MessageType.MESSAGE
+    )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_comparison_id's content-anchor fallback run instead.
         provider_message_id=_string(record.get("id")) or "",
-        role=_role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"}),
+        role=gemini_role,
         text=text,
         timestamp=_string(record.get("timestamp")),
-        blocks=content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)],
+        blocks=gemini_blocks,
+        message_type=gemini_message_type,
         position=position,
         variant_index=0,
         is_active_path=True,
@@ -228,6 +246,19 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         cache_write_tokens=token_usage["cache_write_tokens"],
         duration_ms=_non_negative_int(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
+        ),
+        # polylogue-gzgyl: Gemini CLI has no agent/subagent artifact ambiguity
+        # for a plain user turn -- positive-evidence override for the shared
+        # classify_material_origin no-fallthrough (#2502).
+        material_origin=human_authored_override(
+            gemini_role,
+            gemini_message_type,
+            classify_material_origin(
+                role=gemini_role,
+                message_type=gemini_message_type,
+                text=text,
+                block_types=tuple(block.type for block in gemini_blocks),
+            ),
         ),
     )
 
@@ -259,13 +290,21 @@ def _parse_hermes_message(
     if not text and not content_blocks:
         return None
     token_usage = _token_usage_fields(record)
+    hermes_blocks = content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    # A block-derived type (tool_use/tool_result above) must be resolved
+    # BEFORE classify_material_origin runs, or a genuine tool turn gets
+    # misclassified against an assumed plain MESSAGE type.
+    hermes_message_type = (
+        classify_block_message_type(tuple(block.type for block in hermes_blocks)) or MessageType.MESSAGE
+    )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback (see above).
         provider_message_id=tool_call_id or "",
         role=role,
         text=text,
         timestamp=_string(record.get("timestamp")) or _string(record.get("created_at")),
-        blocks=content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)],
+        blocks=hermes_blocks,
+        message_type=hermes_message_type,
         position=position,
         variant_index=0,
         is_active_path=True,
@@ -276,6 +315,21 @@ def _parse_hermes_message(
         cache_write_tokens=token_usage["cache_write_tokens"],
         duration_ms=_non_negative_int(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
+        ),
+        # polylogue-gzgyl: this JSON-sidecar Hermes wire path has no
+        # agent/subagent artifact ambiguity for a plain user turn --
+        # positive-evidence override for the shared classify_material_origin
+        # no-fallthrough (#2502). (The separate hermes_state.py state-db path
+        # already carries its own correct override.)
+        material_origin=human_authored_override(
+            role,
+            hermes_message_type,
+            classify_material_origin(
+                role=role,
+                message_type=hermes_message_type,
+                text=text,
+                block_types=tuple(block.type for block in hermes_blocks),
+            ),
         ),
     )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, ToolResultUnknownReason, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, ToolResultUnknownReason, WebConstructType
 from polylogue.core.hashing import hash_text
 
 from .base_models import (
@@ -14,6 +14,30 @@ from .base_models import (
     ParsedMessage,
     ParsedWebConstruct,
 )
+
+
+def human_authored_override(
+    role: Role,
+    message_type: MessageType,
+    material_origin: MaterialOrigin,
+) -> MaterialOrigin:
+    """Positive-evidence override for a plain user turn (polylogue-gzgyl).
+
+    ``classify_material_origin`` (``archive/message/artifacts.py``) stopped
+    falling through role=user/MESSAGE rows to ``HUMAN_AUTHORED`` (PR #2502,
+    correct for agent runtimes where a user-shaped row can be
+    generated/relayed context, not a real human turn). Consumer chat-export
+    origins have no such ambiguity: a plain user message IS positive human
+    evidence there, so this mirrors the compensating override Codex
+    (``_codex_material_origin``) and Claude Code
+    (``_claude_code_user_turn_origin``) already carry, for parsers whose
+    genuine user-turn shape has no agent/subagent complexity to exclude.
+    Callers pass the *already-classified* origin so this stays a pure
+    positive-evidence bump, never a replacement for ``classify_material_origin``.
+    """
+    if material_origin is MaterialOrigin.UNKNOWN and role is Role.USER and message_type is MessageType.MESSAGE:
+        return MaterialOrigin.HUMAN_AUTHORED
+    return material_origin
 
 
 def text_blocks_prose(blocks: Sequence[ParsedContentBlock]) -> str | None:

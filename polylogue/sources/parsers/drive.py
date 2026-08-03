@@ -5,13 +5,22 @@ from typing import cast
 
 from pydantic import ValidationError
 
+from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
-from .base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
+from .base import (
+    ParsedAttachment,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+    fill_linear_parent_chain,
+    human_authored_override,
+)
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
 )
@@ -393,13 +402,24 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
             )
         )
 
+        message_blocks = _parsed_blocks_from_meta(content_block_payloads)
+        # A block-derived type (e.g. TOOL_RESULT for a codeExecutionResult
+        # outcome) must be resolved BEFORE classify_material_origin runs --
+        # otherwise the origin gets computed against an assumed plain
+        # MESSAGE type and a genuine tool-result turn is misclassified as
+        # ASSISTANT_AUTHORED instead of TOOL_RESULT (caught by
+        # test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_and_status).
+        resolved_message_type = (
+            classify_block_message_type(tuple(block.type for block in message_blocks)) or MessageType.MESSAGE
+        )
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
                 text=text,
                 timestamp=message_timestamp,
-                blocks=_parsed_blocks_from_meta(content_block_payloads),
+                blocks=message_blocks,
+                message_type=resolved_message_type,
                 position=message_position,
                 variant_index=0,
                 is_active_path=True,
@@ -414,6 +434,20 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
                     if _string_field(chunk_obj, "finishReason", "finish_reason", "errorMessage", "error_message")
                     is not None
                     else None
+                ),
+                # polylogue-gzgyl: AI-Studio/Drive has no agent/subagent
+                # artifact ambiguity for a plain user turn -- positive-
+                # evidence override for the shared classify_material_origin
+                # no-fallthrough (#2502).
+                material_origin=human_authored_override(
+                    role,
+                    resolved_message_type,
+                    classify_material_origin(
+                        role=role,
+                        message_type=resolved_message_type,
+                        text=text,
+                        block_types=tuple(block.type for block in message_blocks),
+                    ),
                 ),
             )
         )
