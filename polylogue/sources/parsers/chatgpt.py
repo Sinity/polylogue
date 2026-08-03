@@ -102,12 +102,27 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
     is preferred over those partial copies; otherwise the best complete node
     on the same assistant branch owns the timing. Provider-finished duration
     is authoritative, with a valid start/end delta as the derived fallback.
+
+    The final tiebreak among nodes that agree on every other criterion is
+    the candidate message id itself, never raw ``mapping`` iteration order
+    (bd polylogue-uqwd). Two nodes on one branch can fully tie on source
+    rank, reasoning-recap flag, start/end presence, and ``end_turn`` --
+    ChatGPT re-exports of the SAME conversation are not guaranteed to
+    serialize ``mapping`` keys in the same order every time, so an
+    order-derived tiebreak silently anchored the resulting
+    ``generation_lifecycle`` event to a different message id per export,
+    even though every node's own content was byte-identical. That anchor
+    drift then made ``event_base_identity_hash``
+    (``pipeline/ids.py``) read the same event as two disjoint identities
+    across revisions -- the same "array position is not identity" hazard
+    ``session_revision_projection`` already guards against for messages,
+    attachments, and events.
     """
 
-    candidates: dict[str, list[tuple[tuple[int, int, int, int, int], _GenerationTiming]]] = {}
+    candidates: dict[str, list[tuple[tuple[int, int, int, int, str], _GenerationTiming]]] = {}
     related_message_ids: dict[str, set[str]] = {}
     legacy_duration_by_message_id: dict[str, dict[str, int]] = {}
-    for position, (node_id, raw_node) in enumerate(mapping.items()):
+    for node_id, raw_node in mapping.items():
         if not isinstance(raw_node, Mapping):
             continue
         raw_message = raw_node.get("message")
@@ -184,7 +199,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             int(content_type == "reasoning_recap"),
             int(start_sec is not None and end_sec is not None),
             int(raw_message.get("end_turn") is True),
-            position,
+            message_id,
         )
         candidates.setdefault(branch_key, []).append((score, timing))
 
