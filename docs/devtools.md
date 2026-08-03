@@ -247,6 +247,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools workspace mandate-continuity-replay` | Wire t8t continuity scenarios + work-evidence effects + discovery into one mandate artifact. |
+| `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
