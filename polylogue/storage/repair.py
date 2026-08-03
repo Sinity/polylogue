@@ -5253,7 +5253,6 @@ def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]
         "session_work_events_fts",
         "session_phases",
         "threads",
-        "threads_fts",
         "session_tag_rollups",
     ]
     maybe_statuses = [derived_statuses.get(k) for k in keys]

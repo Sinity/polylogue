@@ -385,7 +385,22 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # priced_at_ms, a different pair of columns with a real production reader
 # (daemon/http.py's session-insights panel) -- see the price_catalogs
 # removal comment above session_model_usage's DDL for the full distinction.
-INDEX_SCHEMA_VERSION = 61
+#
+# polylogue-eizc: v62 drops `threads_fts`, a maintained FTS surface (real
+# triggers, rebuild/repair/freshness machinery) with zero application-layer
+# consumers. Its only MATCH reader
+# (`session_insight_thread_queries.list_threads`) had zero production
+# callers; the live "analyze threads" search path
+# (`archive_tiers/archive.py:list_thread_insights`) already does a manual
+# LIKE substring scan and never touched `threads_fts`. `blocks_command_trigram`
+# (the sibling FTS surface flagged in the same audit) was investigated and
+# kept: `devtools/affordance_usage.py`'s `_cli_action_rows` (wired via
+# `devtools workspace affordance-usage`, PR #2622) is a real, functional
+# consumer the original zero-consumer finding missed -- it drives its
+# substring test off `blocks_command_trigram` for the documented 900x
+# speedup at archive scale. See INDEX_SCHEMA_VERSION's v62 entry in
+# lifecycle.py.
+INDEX_SCHEMA_VERSION = 62
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1104,15 +1119,14 @@ CREATE TABLE IF NOT EXISTS threads (
 CREATE INDEX IF NOT EXISTS idx_threads_time
 ON threads(end_time DESC, start_time DESC);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS threads_fts USING fts5(
-    thread_id UNINDEXED,
-    root_id UNINDEXED,
-    text,
-    tokenize='unicode61 remove_diacritics 2'
-);
-
--- FTS triggers for threads_fts table are now dynamically composed from sql.py
--- (polylogue-a7xr.5: consolidate FTS trigger DDL to single source)
+-- polylogue-eizc: threads_fts (a MATCH index over threads.search_text) was
+-- dropped in INDEX_SCHEMA_VERSION 62 -- its only MATCH reader
+-- (session_insight_thread_queries.list_threads) had zero production
+-- callers; the live "analyze threads" search path
+-- (list_thread_insights below) already does a manual LIKE substring scan
+-- over thread_id/session title/repo/branch and never touched threads_fts.
+-- list_threads now does the same LIKE scan over threads.search_text
+-- instead of an FTS5 MATCH. See lifecycle.py's v62 declaration.
 
 CREATE TABLE IF NOT EXISTS thread_sessions (
     thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE,
@@ -2273,7 +2287,7 @@ ON agent_meta_sidecar_purge_receipts(purged_at_ms);
 # storage/fts/sql.py as the single canonical source (also used by the
 # repair-path lifecycle in fts_lifecycle.py), but a fresh-database bootstrap
 # still needs them appended to the script it executescript()s -- without
-# this, a freshly created index.db has the messages_fts/threads_fts/
+# this, a freshly created index.db has the messages_fts/
 # session_work_events_fts virtual tables but no triggers populating them,
 # so every insert silently produces an empty search index. Regression:
 # devtools render demo-corpus-datasheet started failing with "Search index

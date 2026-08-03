@@ -105,7 +105,15 @@ async def _make_work_events_db() -> aiosqlite.Connection:
 
 
 async def _make_threads_db() -> aiosqlite.Connection:
-    """Create an in-memory db with the FTS5 table the thread read path joins."""
+    """Create an in-memory db with only the plain ``threads`` table.
+
+    polylogue-eizc: ``list_threads``'s text-query path used to join
+    ``threads_fts`` (an FTS5 MATCH index); that surface was dropped for zero
+    application-layer consumers and the read path now does a plain
+    ``LIKE`` scan over ``threads.search_text`` instead (mirroring the live
+    "analyze threads" search path in ``archive_tiers/archive.py``), so this
+    fixture no longer needs an FTS5 table at all.
+    """
     conn = await aiosqlite.connect(":memory:")
     conn.row_factory = sqlite3.Row
     await conn.executescript(
@@ -128,17 +136,6 @@ async def _make_threads_db() -> aiosqlite.Connection:
             payload_json TEXT NOT NULL DEFAULT '{}',
             search_text TEXT NOT NULL
         );
-        CREATE VIRTUAL TABLE threads_fts USING fts5(
-            thread_id UNINDEXED,
-            root_id UNINDEXED,
-            text,
-            tokenize='unicode61'
-        );
-        CREATE TRIGGER threads_fts_ai AFTER INSERT ON threads BEGIN SELECT 1; END;
-        CREATE TRIGGER threads_fts_ad AFTER DELETE ON threads BEGIN SELECT 1; END;
-        CREATE TRIGGER threads_fts_au AFTER UPDATE ON threads BEGIN SELECT 1; END;
-        INSERT INTO threads_fts (thread_id, root_id, text)
-        VALUES ('t1', 't1', 'hello world');
         INSERT INTO threads (
             thread_id, materialized_at, search_text
         ) VALUES ('t1', '2026-01-01T00:00:00Z', 'hello world');
@@ -164,13 +161,31 @@ async def test_list_work_events_escapes_fts5_query(malicious: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("malicious", MALICIOUS_QUERIES)
-async def test_list_threads_escapes_fts5_query(malicious: str) -> None:
+async def test_list_threads_query_never_raises(malicious: str) -> None:
+    """``list_threads``'s LIKE-based query path must never raise, same
+    contract the old FTS5 MATCH path had -- a bound LIKE parameter can't
+    trigger a SQL syntax error the way a raw FTS5 MATCH expression could,
+    but this pins that a threads_fts-shaped input still can't regress it."""
     conn = await _make_threads_db()
     try:
         result = await list_threads(conn, ThreadListQuery(query=malicious, limit=5))
         assert isinstance(result, list)
     except sqlite3.OperationalError as exc:  # pragma: no cover - failure path
-        pytest.fail(f"unescaped FTS5 query {malicious!r} raised: {exc}")
+        pytest.fail(f"query {malicious!r} raised: {exc}")
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_list_threads_like_query_matches_search_text() -> None:
+    """After dropping threads_fts, list_threads' text filter is a LIKE scan
+    over threads.search_text -- prove it still finds/excludes correctly."""
+    conn = await _make_threads_db()
+    try:
+        hit = await list_threads(conn, ThreadListQuery(query="hello", limit=5))
+        assert [record.thread_id for record in hit] == ["t1"]
+        miss = await list_threads(conn, ThreadListQuery(query="nonexistent-term", limit=5))
+        assert miss == []
     finally:
         await conn.close()
 

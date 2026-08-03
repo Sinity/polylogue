@@ -74,7 +74,6 @@ def test_session_insight_repair_count_uses_public_phase_status_key() -> None:
         "session_work_events_fts": _status(),
         "session_phases": _status(pending_rows=2),
         "threads": _status(),
-        "threads_fts": _status(),
         "session_tag_rollups": _status(),
     }
 
@@ -256,7 +255,6 @@ def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyP
         "session_work_events_fts": _status(),
         "session_phases": _status(),
         "threads": _status(),
-        "threads_fts": _status(),
         "session_tag_rollups": _status(),
     }
 
@@ -3032,7 +3030,6 @@ def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
         observed_event_rows_ready=True,
         context_snapshot_rows_ready=True,
         threads_ready=True,
-        threads_fts_ready=True,
         tag_rollups_ready=True,
     )
 
@@ -3075,7 +3072,6 @@ def test_repair_session_insights_dry_run_reports_archive_wide_rebuild(
                 work_event_inference_fts_ready=True,
                 phase_inference_rows_ready=True,
                 threads_ready=True,
-                threads_fts_ready=True,
                 tag_rollups_ready=True,
                 missing_profile_row_count=103,
             )
@@ -3113,7 +3109,6 @@ def test_repair_session_insights_dry_run_reports_scoped_rebuild(
                 work_event_inference_fts_ready=True,
                 phase_inference_rows_ready=True,
                 threads_ready=True,
-                threads_fts_ready=True,
                 tag_rollups_ready=True,
                 missing_profile_row_count=103,
             )
@@ -3311,7 +3306,6 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,
         threads_ready=True,
-        threads_fts_ready=True,
         tag_rollups_ready=True,
         missing_profile_row_count=1,
     )
@@ -3427,7 +3421,6 @@ def test_repair_session_insights_targets_stale_thread_materialization(
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,
         threads_ready=False,
-        threads_fts_ready=True,
         tag_rollups_ready=True,
         missing_thread_materialization_count=1,
     )
@@ -3464,7 +3457,6 @@ def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
         observed_event_rows_ready=True,
         context_snapshot_rows_ready=True,
         threads_ready=True,
-        threads_fts_ready=True,
         tag_rollups_ready=True,
         missing_run_materialization_count=1,
         missing_context_snapshot_materialization_count=1,
@@ -3495,13 +3487,11 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=True,
         threads_ready=True,
-        threads_fts_ready=True,
         tag_rollups_ready=True,
         stale_profile_row_count=2,
         stale_work_event_inference_count=2,
         work_event_inference_fts_count=4,
         work_event_inference_count=4,
-        thread_fts_count=1,
         thread_count=1,
     )
     statuses = iter((stale_status, _ready_session_insight_status()))

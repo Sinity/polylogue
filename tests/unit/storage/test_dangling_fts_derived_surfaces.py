@@ -44,25 +44,19 @@ def test_repair_missing_fts_rows_marks_derived_surfaces_ready(tmp_path: Path) ->
                 work_event_type TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, session_id UNINDEXED,
                 work_event_type UNINDEXED, text);
-            CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
-            CREATE VIRTUAL TABLE threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
             INSERT INTO session_work_events VALUES ('event-1', 'conv-1', 'decision', 'ship it');
-            INSERT INTO threads VALUES ('thread-1', 'startup fts repair');
             """
         )
         restore_fts_triggers_sync(conn)
         outcome = repair_missing_fts_rows(conn)
         states = dict(conn.execute("SELECT surface, state FROM fts_freshness_state").fetchall())
         work_events = conn.execute("SELECT COUNT(*) FROM session_work_events_fts_docsize").fetchone()[0]
-        threads = conn.execute("SELECT COUNT(*) FROM threads_fts_docsize").fetchone()[0]
     finally:
         conn.close()
 
     assert outcome.success is True
     assert work_events == 1
-    assert threads == 1
     assert states["session_work_events_fts"] == "ready"
-    assert states["threads_fts"] == "ready"
 
 
 def test_dangling_derived_repairs_preserve_l_stroke_recall(tmp_path: Path) -> None:
@@ -87,15 +81,9 @@ def test_dangling_derived_repairs_preserve_l_stroke_recall(tmp_path: Path) -> No
                 event_id UNINDEXED, session_id UNINDEXED, work_event_type UNINDEXED, text,
                 tokenize='unicode61 remove_diacritics 2'
             );
-            CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
-            CREATE VIRTUAL TABLE threads_fts USING fts5(
-                thread_id UNINDEXED, root_id UNINDEXED, text,
-                tokenize='unicode61 remove_diacritics 2'
-            );
             INSERT INTO session_work_events VALUES (
                 'event-polish', 'conv-polish', 'decision', 'Bardzo łatwo zrobiłem to zadanie'
             );
-            INSERT INTO threads VALUES ('thread-polish', 'To był łatwy wątek');
             """
         )
         restore_fts_triggers_sync(conn)
@@ -109,16 +97,6 @@ def test_dangling_derived_repairs_preserve_l_stroke_recall(tmp_path: Path) -> No
             assert (
                 conn.execute(
                     "SELECT COUNT(*) FROM session_work_events_fts WHERE session_work_events_fts MATCH ?",
-                    (normalized,),
-                ).fetchone()[0]
-                == 1
-            )
-        for query in ("latwy", "łatwy"):
-            normalized = normalize_fts5_query(query)
-            assert normalized is not None
-            assert (
-                conn.execute(
-                    "SELECT COUNT(*) FROM threads_fts WHERE threads_fts MATCH ?",
                     (normalized,),
                 ).fetchone()[0]
                 == 1
@@ -145,8 +123,6 @@ def test_reset_and_repair_fts_rows_recovers_excess_message_rows(tmp_path: Path) 
                 work_event_type TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, session_id UNINDEXED,
                 work_event_type UNINDEXED, text);
-            CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
-            CREATE VIRTUAL TABLE threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
             CREATE TABLE derived_refresh_guard (guard_name TEXT PRIMARY KEY) STRICT;
             CREATE TABLE messages_fts_identity (
                 rowid       INTEGER PRIMARY KEY,
@@ -164,7 +140,6 @@ def test_reset_and_repair_fts_rows_recovers_excess_message_rows(tmp_path: Path) 
             "INSERT INTO blocks VALUES ('block-2', 'msg-2', 'conv-1', 'text', 'survivor needle', 'survivor needle', NULL)"
         )
         conn.execute("INSERT INTO session_work_events VALUES ('event-1', 'conv-1', 'decision', 'ship it')")
-        conn.execute("INSERT INTO threads VALUES ('thread-1', 'startup fts repair')")
         conn.execute("DROP TRIGGER messages_fts_ad")
         conn.execute("DELETE FROM blocks WHERE block_id = 'block-1'")
 
@@ -217,8 +192,6 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
                 work_event_type TEXT, search_text TEXT);
             CREATE VIRTUAL TABLE session_work_events_fts USING fts5(event_id UNINDEXED, session_id UNINDEXED,
                 work_event_type UNINDEXED, text);
-            CREATE TABLE threads (thread_id TEXT PRIMARY KEY, search_text TEXT);
-            CREATE VIRTUAL TABLE threads_fts USING fts5(thread_id UNINDEXED, root_id UNINDEXED, text);
             CREATE TABLE fts_freshness_state (
                 surface TEXT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL,
                 source_rows INTEGER NOT NULL DEFAULT 0, indexed_rows INTEGER NOT NULL DEFAULT 0,
@@ -229,10 +202,7 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
             VALUES ('messages_fts', 'ready', 'now', 0, 0, NULL);
             INSERT INTO fts_freshness_state (surface, state, checked_at, source_rows, indexed_rows, detail)
             VALUES ('session_work_events_fts', 'stale', 'now', 0, 0, 'old');
-            INSERT INTO fts_freshness_state (surface, state, checked_at, source_rows, indexed_rows, detail)
-            VALUES ('threads_fts', 'stale', 'now', 0, 0, 'old');
             INSERT INTO session_work_events VALUES ('event-1', 'conv-1', 'decision', 'ship it');
-            INSERT INTO threads VALUES ('thread-1', 'startup fts repair');
             """
         )
         restore_fts_triggers_sync(conn)
@@ -246,7 +216,6 @@ def test_repair_stale_fts_rows_skips_ready_archive_surfaces(tmp_path: Path) -> N
     assert states == {
         "messages_fts": "ready",
         "session_work_events_fts": "ready",
-        "threads_fts": "ready",
     }
 
 

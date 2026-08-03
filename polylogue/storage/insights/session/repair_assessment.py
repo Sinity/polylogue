@@ -16,7 +16,6 @@ _SESSION_INSIGHT_READY_FLAGS: tuple[SessionInsightReadyFlag, ...] = (
     "observed_event_rows_ready",
     "context_snapshot_rows_ready",
     "threads_ready",
-    "threads_fts_ready",
     "tag_rollups_ready",
 )
 
@@ -43,7 +42,7 @@ def session_insight_status_ready(status: SessionInsightStatusSnapshot) -> bool:
 
 
 def session_insight_fts_ready(status: SessionInsightStatusSnapshot) -> bool:
-    return status.ready_flag("work_event_inference_fts_ready") and status.ready_flag("threads_fts_ready")
+    return status.ready_flag("work_event_inference_fts_ready")
 
 
 def _positive_count(value: int) -> int:
@@ -79,19 +78,10 @@ def _session_insight_row_repair_count(status: SessionInsightStatusSnapshot) -> i
 
 
 def _session_insight_fts_repair_count(status: SessionInsightStatusSnapshot) -> int:
-    return sum(
-        (
-            _fts_repair_count(
-                source_rows=status.work_event_inference_count,
-                indexed_rows=status.work_event_inference_fts_count,
-                duplicates=status.work_event_inference_fts_duplicate_count,
-            ),
-            _fts_repair_count(
-                source_rows=status.thread_count,
-                indexed_rows=status.thread_fts_count,
-                duplicates=status.thread_fts_duplicate_count,
-            ),
-        )
+    return _fts_repair_count(
+        source_rows=status.work_event_inference_count,
+        indexed_rows=status.work_event_inference_fts_count,
+        duplicates=status.work_event_inference_fts_duplicate_count,
     )
 
 

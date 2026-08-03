@@ -85,7 +85,6 @@ def _session_insight_table_counts(db_path: Path) -> dict[str, int]:
             "session_work_events_fts",
             "session_phases",
             "threads",
-            "threads_fts",
             "session_tag_rollups",
         ):
             try:
@@ -304,7 +303,6 @@ def run_session_insight_materialization_campaign(db_path: Path) -> CampaignResul
             "session_work_events_fts_after": stats_after.get("session_work_events_fts_count", 0),
             "session_phases_after": stats_after.get("session_phases_count", 0),
             "threads_after": stats_after.get("threads_count", 0),
-            "threads_fts_after": stats_after.get("threads_fts_count", 0),
             "session_tag_rollups_after": stats_after.get("session_tag_rollups_count", 0),
         },
     )

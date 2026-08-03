@@ -784,6 +784,38 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=62,
+        # polylogue-eizc: drops `threads_fts`, a maintained FTS surface
+        # (real triggers, rebuild/repair/freshness machinery) with zero
+        # application-layer consumers -- its only MATCH reader
+        # (`session_insight_thread_queries.list_threads`) had zero
+        # production callers; the live "analyze threads" search path
+        # (`archive_tiers/archive.py:list_thread_insights`) already does a
+        # manual LIKE substring scan and never touched `threads_fts`. A
+        # clone-safe deletion with no raw reparse -- same CACHE_REMOVAL
+        # shape as v37/v41 -- so a fast-forward drops the now-orphaned
+        # table and its three triggers rather than requiring
+        # `polylogue ops reset --index && polylogued run`. The sibling
+        # `blocks_command_trigram` FTS surface flagged in the same audit
+        # was investigated and kept: `devtools/affordance_usage.py`'s
+        # `_cli_action_rows` (wired via `devtools workspace
+        # affordance-usage`, PR #2622) is a real consumer the original
+        # zero-consumer finding missed.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            FastForwardOperation(
+                name="v62-drop-threads-fts",
+                kind=FastForwardOperationKind.DROP_TABLE,
+                objects=(
+                    ("trigger", "threads_fts_ai"),
+                    ("trigger", "threads_fts_ad"),
+                    ("trigger", "threads_fts_au"),
+                    ("table", "threads_fts"),
+                ),
+            ),
+        ),
+    ),
 )
 
 

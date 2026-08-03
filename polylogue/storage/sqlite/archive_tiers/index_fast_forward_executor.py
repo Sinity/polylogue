@@ -95,6 +95,10 @@ def _apply_drop_table(conn: sqlite3.Connection, name: str) -> None:
     conn.execute(f'DROP TABLE IF EXISTS "{name}"')
 
 
+def _apply_drop_trigger(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+
+
 def _apply_replace_view(conn: sqlite3.Connection, name: str, canonical_sql: str) -> None:
     conn.execute(f'DROP VIEW IF EXISTS "{name}"')
     conn.execute(canonical_sql)
@@ -211,7 +215,17 @@ def _apply_operation(
         return
     for object_type, name in operation.objects:
         if operation.kind is FastForwardOperationKind.DROP_TABLE:
-            _apply_drop_table(conn, name)
+            # A DROP_TABLE operation may bundle the table's own triggers as
+            # ("trigger", name) objects ahead of the ("table", name) object
+            # itself (see lifecycle.py's v62 threads_fts declaration) --
+            # trigger definitions on the SOURCE table (e.g. `AFTER INSERT ON
+            # threads`) are not implicitly dropped just because the target
+            # FTS5 virtual table is, and would otherwise fail on their next
+            # fire against a table that no longer exists.
+            if object_type == "trigger":
+                _apply_drop_trigger(conn, name)
+            else:
+                _apply_drop_table(conn, name)
         elif operation.kind is FastForwardOperationKind.REPLACE_VIEW:
             _apply_replace_view(conn, name, canonical[(object_type, name)])
         elif operation.kind is FastForwardOperationKind.CREATE_INDEX:

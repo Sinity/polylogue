@@ -158,27 +158,13 @@ SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
        END""",
 ]
 
-# FTS trigger DDL for threads FTS maintenance.
-THREAD_FTS_TRIGGER_DDL = [
-    f"""CREATE TRIGGER IF NOT EXISTS threads_fts_ai
-       AFTER INSERT ON threads BEGIN
-           INSERT INTO threads_fts (thread_id, root_id, text)
-           VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
-       END""",
-    """CREATE TRIGGER IF NOT EXISTS threads_fts_ad
-       AFTER DELETE ON threads BEGIN
-           DELETE FROM threads_fts WHERE thread_id = old.thread_id;
-       END""",
-    f"""CREATE TRIGGER IF NOT EXISTS threads_fts_au
-       AFTER UPDATE ON threads BEGIN
-           DELETE FROM threads_fts WHERE thread_id = old.thread_id;
-           INSERT INTO threads_fts (thread_id, root_id, text)
-           VALUES (new.thread_id, new.thread_id, {pl_fold_sql_expr("new.search_text")});
-       END""",
-]
+# polylogue-eizc: THREAD_FTS_TRIGGER_DDL / threads_fts dropped in
+# INDEX_SCHEMA_VERSION 62 -- zero application-layer consumers (see
+# lifecycle.py's v62 declaration and archive_tiers/index.py's threads_fts
+# removal comment).
 
 # Combined trigger DDL for all FTS surfaces.
-FTS_TRIGGER_DDL = BLOCKS_FTS_TRIGGER_DDL + SESSION_WORK_EVENT_FTS_TRIGGER_DDL + THREAD_FTS_TRIGGER_DDL
+FTS_TRIGGER_DDL = BLOCKS_FTS_TRIGGER_DDL + SESSION_WORK_EVENT_FTS_TRIGGER_DDL
 
 
 class IndexedMessage(Protocol):
@@ -549,7 +535,6 @@ __all__ = [
     "FTS_TRIGGER_DDL",
     "IndexedMessage",
     "SESSION_WORK_EVENT_FTS_TRIGGER_DDL",
-    "THREAD_FTS_TRIGGER_DDL",
     "TRIGRAM_REBUILD_DELETE_ALL_SQL",
     "chunked",
     "delete_session_identity_rows_sql",
