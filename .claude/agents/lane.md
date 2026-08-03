@@ -61,10 +61,23 @@ by construction.
 
 ## Verification
 
+- **Every `devtools test`/`devtools verify`/build invocation MUST pass an
+  explicit `timeout` of `600000` (600s) on the Bash tool call.** The
+  harness's Bash default (2 minutes) is shorter than these commands
+  routinely take under fleet contention; when a command exceeds the default
+  it gets silently auto-backgrounded, and the failure mode every lane hits
+  is then idle-waiting on that background task instead of continuing. Fix
+  it at the call site — pass the long timeout up front — rather than
+  discovering the backgrounding after the fact. This is not optional
+  guidance, it is the mechanical fix for a bug that has independently hit
+  this fleet 3+ times.
 - Inner loop: `devtools test <files>` (or `devtools test -k <expr>`) against
   the exact files/behavior you changed. Do not run whole test directories or
   blanket `pytest tests/unit` — that reruns tests your change never touched
-  and burns minutes for no signal.
+  and burns minutes for no signal. Verify your `-k`/file selector actually
+  matches tests before trusting a green/red result — pytest exits 5 ("no
+  tests ran") on a selector typo or wrong filename, which is easy to
+  mistake for "nothing to check" instead of "the check never ran".
 - Before finishing: `devtools verify --quick` (format + lint + mypy +
   `render all --check`) is the fast repo gate and must pass. Note that
   `render all --check` can print per-surface `sync OK` and still exit 1 —
