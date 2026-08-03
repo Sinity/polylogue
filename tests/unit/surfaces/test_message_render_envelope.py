@@ -6,7 +6,7 @@ contract enumerates which fields must be present (with their defaults)
 and asserts that a roundtrip through ``Message`` populates every typed
 slot from the canonical Message model.
 
-If a new field is added to ``SessionMessagePayload``, this test
+If a new field is added to the canonical ``Message`` model, this test
 must learn about it (the field list is exhaustively checked). That
 prevents the divergence the issue worried about — detail emitting one
 field set, paginated emitting another.
@@ -28,43 +28,12 @@ from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime.archive.records import BlockRecord, MessageRecord
 from polylogue.surfaces.payloads import (
+    _MESSAGE_MASK,
+    MessageRenderEnvelope,
     ReaderActionAvailabilityPayload,
-    SessionMessagePayload,
     TargetRefPayload,
-)
-
-# The canonical envelope field set. Adding a new field to
-# ``SessionMessagePayload`` requires extending this list — that's
-# the point: the contract should know about every emitted field so
-# downstream surfaces never silently drop one.
-_ENVELOPE_FIELDS: tuple[str, ...] = (
-    "id",
-    "role",
-    "text",
-    "target_ref",
-    "anchor",
-    "actions",
-    "timestamp",
-    "message_type",
-    "material_origin",
-    "content_blocks",
-    "parent_id",
-    "branch_index",
-    "position",
-    "is_active_path",
-    "is_active_leaf",
-    "has_paste_evidence",
-    "paste_boundary_state",
-    "has_tool_use",
-    "has_thinking",
-    "input_tokens",
-    "output_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "model_name",
-    "attachment_refs",
-    "raw_id",
-    "source_path",
+    message_render_envelope_from_archive_row,
+    message_render_envelope_from_domain,
 )
 
 
@@ -96,23 +65,54 @@ def _build_message(**overrides: object) -> Message:
 
 
 def test_envelope_field_set_is_exhaustive() -> None:
-    """``SessionMessagePayload`` field set matches the canonical envelope.
+    """The derived envelope contains the mask plus computed affordances.
 
     The contract is exact equality — extra fields would silently widen
     the surface; missing fields would silently drop one. Either case
-    requires updating ``_ENVELOPE_FIELDS`` deliberately.
+    requires updating the domain mask deliberately.
     """
-    assert set(SessionMessagePayload.model_fields) == set(_ENVELOPE_FIELDS), (
-        "SessionMessagePayload field set drifted from the canonical envelope. "
-        "Update tests/unit/surfaces/test_message_render_envelope.py:_ENVELOPE_FIELDS "
-        "to match, and verify the detail and paginated message endpoints both emit "
-        "the new field."
+    expected = {surface_name for _, surface_name in _MESSAGE_MASK} | {
+        "target_ref",
+        "anchor",
+        "actions",
+        "attachment_refs",
+        "raw_id",
+        "source_path",
+    }
+    assert set(MessageRenderEnvelope.model_fields) == expected, (
+        "MessageRenderEnvelope drifted from the domain mask and affordance set. "
+        "Update the mask only when the canonical Message model grows."
     )
+
+
+def test_domain_roundtrip_populates_every_masked_message_field() -> None:
+    message = _build_message(
+        role=Role.ASSISTANT,
+        text="answer",
+        duration_ms=1234,
+        stop_reason="max_tokens",
+        has_paste=True,
+    )
+    payload = message_render_envelope_from_domain(message, session_id="c1")
+    dumped = message.model_dump(mode="python")
+
+    for domain_name, surface_name in _MESSAGE_MASK:
+        expected = dumped[domain_name]
+        if domain_name in {"role", "message_type", "material_origin"}:
+            expected = expected.value
+        elif domain_name == "text":
+            expected = expected or ""
+        elif domain_name == "has_paste":
+            expected = bool(expected)
+        assert getattr(payload, surface_name) == expected, surface_name
+
+    assert payload.duration_ms == 1234
+    assert payload.stop_reason == "max_tokens"
 
 
 def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
     """The minimum required kwargs are id/role/text; everything else has a default."""
-    payload = SessionMessagePayload(id="m1", role="user", text="hi")
+    payload = MessageRenderEnvelope(id="m1", role="user", text="hi")
 
     assert payload.target_ref is None
     assert payload.anchor is None
@@ -137,38 +137,38 @@ def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
 
 
 # ---------------------------------------------------------------------------
-# from_message: every typed slot populated from the canonical Message model
+# Domain projection: every typed slot populated from the canonical Message model
 # ---------------------------------------------------------------------------
 
 
-def test_from_message_propagates_branch_lineage_state() -> None:
+def test_message_envelope_propagates_branch_lineage_state() -> None:
     msg = _build_message(branch_index=3, parent_id="m-parent")
-    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    payload = message_render_envelope_from_domain(msg, session_id="c1")
     assert payload.branch_index == 3
     assert payload.parent_id == "m-parent"
 
 
-def test_from_message_propagates_position_and_active_path_state() -> None:
+def test_message_envelope_propagates_position_and_active_path_state() -> None:
     """polylogue-ksgg: position/is_active_path/is_active_leaf must survive
     the read surface so branch/thread structure can be reconstructed
     without direct SQL."""
     msg = _build_message(position=7, is_active_path=True, is_active_leaf=True)
-    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    payload = message_render_envelope_from_domain(msg, session_id="c1")
     assert payload.position == 7
     assert payload.is_active_path is True
     assert payload.is_active_leaf is True
 
 
-def test_from_message_preserves_unknown_active_path() -> None:
+def test_message_envelope_preserves_unknown_active_path() -> None:
     """``is_active_path=None`` (unknown) must not collapse to False."""
     msg = _build_message(is_active_path=None)
-    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    payload = message_render_envelope_from_domain(msg, session_id="c1")
     assert payload.is_active_path is None
 
 
 def test_from_archive_row_propagates_position_and_active_path_state() -> None:
     # Note: MessageRecord's sibling-order field is named ``branch_index``
-    # while ``from_archive_row`` reads the real ArchiveMessageRow's
+    # while the archive-row projection reads the real ArchiveMessageRow's
     # ``variant_index`` attribute -- a pre-existing naming mismatch that
     # means MessageRecord-as-stand-in only exercises the fields whose
     # attribute names agree (position/is_active_path/is_active_leaf).
@@ -182,20 +182,20 @@ def test_from_archive_row_propagates_position_and_active_path_state() -> None:
         position=5,
         is_active_leaf=True,
     )
-    payload = SessionMessagePayload.from_archive_row(row, session_id="c1")
+    payload = message_render_envelope_from_archive_row(row, session_id="c1")
     assert payload.position == 5
     assert payload.is_active_path is True
     assert payload.is_active_leaf is True
 
 
-def test_from_message_propagates_content_flags() -> None:
+def test_message_envelope_propagates_content_flags() -> None:
     msg = _build_message(
         has_paste=True,
         paste_boundary_state="projected",
         has_tool_use=True,
         has_thinking=True,
     )
-    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    payload = message_render_envelope_from_domain(msg, session_id="c1")
     assert payload.has_paste_evidence is True
     assert payload.paste_boundary_state == "projected"
     assert payload.has_tool_use is True
@@ -224,7 +224,7 @@ def test_from_archive_row_propagates_paste_boundary_state() -> None:
         paste_boundary_state="projected",
     )
 
-    payload = SessionMessagePayload.from_archive_row(row, session_id="c1")
+    payload = message_render_envelope_from_archive_row(row, session_id="c1")
 
     assert payload.has_paste_evidence is True
     assert payload.paste_boundary_state == "projected"
@@ -253,13 +253,13 @@ def test_hydrated_message_envelope_preserves_paste_boundary_state() -> None:
     )
 
     message = message_from_record(record, [])
-    payload = SessionMessagePayload.from_message(message, session_id="c1")
+    payload = message_render_envelope_from_domain(message, session_id="c1")
 
     assert payload.has_paste_evidence is True
     assert payload.paste_boundary_state == "whole_message_fallback"
 
 
-def test_from_message_propagates_usage_and_model() -> None:
+def test_message_envelope_propagates_usage_and_model() -> None:
     msg = _build_message(
         input_tokens=10,
         output_tokens=20,
@@ -267,7 +267,7 @@ def test_from_message_propagates_usage_and_model() -> None:
         cache_write_tokens=2,
         model_name="claude-sonnet-4-6",
     )
-    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    payload = message_render_envelope_from_domain(msg, session_id="c1")
     assert payload.input_tokens == 10
     assert payload.output_tokens == 20
     assert payload.cache_read_tokens == 5
@@ -275,11 +275,11 @@ def test_from_message_propagates_usage_and_model() -> None:
     assert payload.model_name == "claude-sonnet-4-6"
 
 
-def test_from_message_carries_explicit_raw_and_source_refs() -> None:
+def test_message_envelope_carries_explicit_raw_and_source_refs() -> None:
     """``raw_id``/``source_path`` are caller-supplied because they live on
     the session, not the message."""
     msg = _build_message()
-    payload = SessionMessagePayload.from_message(
+    payload = message_render_envelope_from_domain(
         msg,
         session_id="c1",
         raw_id="raw-sha256-abc",
@@ -289,17 +289,17 @@ def test_from_message_carries_explicit_raw_and_source_refs() -> None:
     assert payload.source_path == "/home/user/.claude/projects/p/c1.jsonl"
 
 
-def test_from_message_carries_target_ref_when_session_id_supplied() -> None:
+def test_message_envelope_carries_target_ref_when_session_id_supplied() -> None:
     msg = _build_message()
-    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    payload = message_render_envelope_from_domain(msg, session_id="c1")
     assert payload.target_ref == TargetRefPayload.message(session_id="c1", message_id="m1")
     assert payload.anchor == "message-m1"
 
 
-def test_from_message_omits_target_ref_when_no_session_id() -> None:
+def test_message_envelope_omits_target_ref_when_no_session_id() -> None:
     """Without ``session_id`` the message can't be deep-linked."""
     msg = _build_message()
-    payload = SessionMessagePayload.from_message(msg)
+    payload = message_render_envelope_from_domain(msg)
     assert payload.target_ref is None
     # Anchor stays present because it only needs the message id.
     assert payload.anchor == "message-m1"
@@ -311,7 +311,7 @@ def test_from_message_omits_target_ref_when_no_session_id() -> None:
 
 
 def test_minimal_message_payload_constructs() -> None:
-    payload = SessionMessagePayload(
+    payload = MessageRenderEnvelope(
         id="m-c1",
         role="user",
         text="Hello reader",
@@ -334,7 +334,7 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     crowding the JSON. Defaults that are False/0/() must still appear so
     the contract is observable; only the optional ``None`` defaults are
     omitted under ``exclude_none``."""
-    payload = SessionMessagePayload(id="m1", role="user", text="hi")
+    payload = MessageRenderEnvelope(id="m1", role="user", text="hi")
     blob = json.loads(payload.to_json(exclude_none=True))
 
     # Required: typed envelope fields are observable (the test would
@@ -363,7 +363,7 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
 def test_envelope_rejects_unknown_fields() -> None:
     """``extra="forbid"`` on SurfacePayloadModel keeps the contract closed."""
     with pytest.raises(ValidationError):
-        SessionMessagePayload(  # type: ignore[call-arg]
+        MessageRenderEnvelope(
             id="m1",
             role="user",
             text="hi",

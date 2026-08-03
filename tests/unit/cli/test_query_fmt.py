@@ -344,7 +344,7 @@ class TestSessionFormatting:
         """polylogue-x7d PR #3420 follow-up (caught by review before merge):
 
         ``_conv_to_json``/``_conv_to_yaml`` build their top-level document
-        via ``_conv_to_dict`` -> ``SessionListRowPayload.from_session``, the
+        via ``_conv_to_dict`` -> ``session_list_envelope_from_domain``, the
         same constructor list contexts use. A single-session ``find ...
         then read --format json/yaml`` must stay lossless -- it must NOT
         inherit the 96-char list-row title budget, unlike genuine list

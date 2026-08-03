@@ -139,7 +139,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-message-row.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One message row emitted by `polylogue read --view messages --format ndjson` and embedded inside the finite messages response.\n\nGenerated from `polylogue.surfaces.payloads.SessionMessageRowPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "One message row emitted by `polylogue read --view messages --format ndjson` and embedded inside the finite messages response.\n\nGenerated from `polylogue.surfaces.payloads.MessageRowEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "additionalProperties": {
@@ -190,6 +190,11 @@
       },
       "title": "Content Blocks",
       "type": "array"
+    },
+    "duration_ms": {
+      "default": 0,
+      "title": "Duration Ms",
+      "type": "integer"
     },
     "has_paste_evidence": {
       "default": false,
@@ -320,6 +325,18 @@
       "default": null,
       "title": "Source Path"
     },
+    "stop_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Stop Reason"
+    },
     "target_ref": {
       "anyOf": [
         {
@@ -332,6 +349,7 @@
       "default": null
     },
     "text": {
+      "default": "",
       "title": "Text",
       "type": "string"
     },
@@ -352,7 +370,6 @@
   "required": [
     "id",
     "role",
-    "text",
     "session_id"
   ],
   "title": "Session Message Row",
@@ -361,5 +378,5 @@
     "polylogue read --view messages --format ndjson",
     "polylogue read --view messages --format json (messages[])"
   ],
-  "x-polylogue-source-model": "SessionMessageRowPayload"
+  "x-polylogue-source-model": "MessageRowEnvelope"
 }

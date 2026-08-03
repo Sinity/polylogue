@@ -100,9 +100,9 @@
       "title": "SessionNeighborReasonPayload",
       "type": "object"
     },
-    "SessionSummaryPayload": {
+    "SessionSummaryEnvelope": {
       "additionalProperties": false,
-      "description": "Compact session summary payload used by MCP/search surfaces.",
+      "description": "Compact session envelope derived from ``SessionSummary``.",
       "properties": {
         "actions": {
           "additionalProperties": {
@@ -141,8 +141,16 @@
           "type": "string"
         },
         "message_count": {
-          "title": "Message Count",
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message Count"
         },
         "origin": {
           "title": "Origin",
@@ -160,6 +168,7 @@
           "default": null
         },
         "title": {
+          "default": null,
           "title": "Title",
           "type": "string"
         },
@@ -215,11 +224,9 @@
       },
       "required": [
         "id",
-        "origin",
-        "title",
-        "message_count"
+        "origin"
       ],
-      "title": "SessionSummaryPayload",
+      "title": "SessionSummaryEnvelope",
       "type": "object"
     },
     "TargetRefPayload": {
@@ -328,7 +335,7 @@
       "type": "number"
     },
     "session": {
-      "$ref": "#/$defs/SessionSummaryPayload"
+      "$ref": "#/$defs/SessionSummaryEnvelope"
     },
     "source_session_id": {
       "anyOf": [

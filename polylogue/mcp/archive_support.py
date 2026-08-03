@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from polylogue.archive.query.spec import parse_query_date, resolve_default_root_filter
 from polylogue.core.timestamps import parse_archive_datetime
@@ -286,9 +286,9 @@ def _project_archive_message(
 
 def archive_message_payload(message: ArchiveMessageRow, *, session_id: str) -> MCPMessagePayload:
     """Project one archive message into the generic MCP message shape."""
-    from polylogue.surfaces.payloads import SessionMessagePayload
+    from polylogue.surfaces.payloads import message_render_envelope_from_archive_row
 
-    return SessionMessagePayload.from_archive_row(message, session_id=session_id)
+    return message_render_envelope_from_archive_row(message, session_id=session_id)
 
 
 def archive_session_list_payload(
@@ -701,7 +701,7 @@ def archive_message_page_payload(
     one-message request remain one-message work, even for very large sessions.
     """
     from polylogue.mcp.payloads import MCPMessagesListPayload
-    from polylogue.surfaces.payloads import SessionMessagePayload
+    from polylogue.surfaces.payloads import message_render_envelope_from_archive_row
 
     resolved_session_id = archive.resolve_session_id(session_id)
     if archive.has_prefix_lineage(resolved_session_id):
@@ -738,7 +738,7 @@ def archive_message_page_payload(
     )
     messages = []
     for row in rows:
-        message = SessionMessagePayload.from_archive_row(row, session_id=resolved_session_id)
+        message = message_render_envelope_from_archive_row(row, session_id=resolved_session_id)
         messages.append(
             _bounded_message_payload(
                 message,
@@ -788,7 +788,7 @@ def _bounded_message_payload(
         {key: ("" if key == "text" and isinstance(value, str) else value) for key, value in block.items()}
         for block in payload.content_blocks
     ]
-    return payload.model_copy(update={"text": text, "content_blocks": blocks})
+    return cast(MCPMessagePayload, payload.model_copy(update={"text": text, "content_blocks": blocks}))
 
 
 def _excerpt_text(text: str, max_chars: int, *, match_query: str | None = None) -> str:

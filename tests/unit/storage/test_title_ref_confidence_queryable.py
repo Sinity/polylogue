@@ -113,7 +113,7 @@ def test_session_list_row_payload_carries_title_ref_confidence() -> None:
     from polylogue.archive.session.domain_models import Session
     from polylogue.core.enums import Origin
     from polylogue.core.types import SessionId
-    from polylogue.surfaces.payloads import SessionListRowPayload, SessionSummaryPayload
+    from polylogue.surfaces.payloads import session_list_envelope_from_domain, session_summary_envelope_from_domain
 
     session = Session(
         id=SessionId("codex-session:codex-tr-4"),
@@ -124,10 +124,10 @@ def test_session_list_row_payload_carries_title_ref_confidence() -> None:
         title_confidence=0.5,
         messages=MessageCollection(messages=[]),
     )
-    row = SessionListRowPayload.from_session(session)
+    row = session_list_envelope_from_domain(session)
     assert row.title_ref == "message:codex-session:codex-tr-4:m1"
     assert row.title_confidence == pytest.approx(0.5)
-    summary_payload = SessionSummaryPayload.from_session(session)
+    summary_payload = session_summary_envelope_from_domain(session)
     assert summary_payload.title_ref == "message:codex-session:codex-tr-4:m1"
     assert summary_payload.title_confidence == pytest.approx(0.5)
 

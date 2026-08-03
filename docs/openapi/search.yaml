@@ -1149,7 +1149,7 @@ components:
       description: Search-hit payload with summary identity and match evidence.
       properties:
         session:
-          $ref: '#/components/schemas/SessionSummaryPayload'
+          $ref: '#/components/schemas/SessionSummaryEnvelope'
         match:
           $ref: '#/components/schemas/SessionSearchMatchPayload'
       required:
@@ -1253,9 +1253,9 @@ components:
       - match_surface
       title: SessionSearchMatchPayload
       type: object
-    SessionSummaryPayload:
+    SessionSummaryEnvelope:
       additionalProperties: false
-      description: Compact session summary payload used by MCP/search surfaces.
+      description: Compact session envelope derived from ``SessionSummary``.
       properties:
         id:
           title: Id
@@ -1264,6 +1264,7 @@ components:
           title: Origin
           type: string
         title:
+          default: null
           title: Title
           type: string
         title_source:
@@ -1285,8 +1286,11 @@ components:
           default: null
           title: Title Confidence
         message_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
           title: Message Count
-          type: integer
         target_ref:
           anyOf:
           - $ref: '#/components/schemas/TargetRefPayload'
@@ -1320,9 +1324,7 @@ components:
       required:
       - id
       - origin
-      - title
-      - message_count
-      title: SessionSummaryPayload
+      title: SessionSummaryEnvelope
       type: object
     TargetRefPayload:
       additionalProperties: false
@@ -1513,12 +1515,9 @@ components:
           type: boolean
       title: SessionFlagsPayload
       type: object
-    SessionListRowPayload:
+    SessionListEnvelope:
       additionalProperties: false
-      description: 'Session row payload used by CLI list, JSON, and YAML surfaces.
-
-
-        Carries the canonical row shape for the web reader contract (#848).'
+      description: Session list-row envelope derived from ``Session``.
       properties:
         id:
           title: Id
@@ -1527,6 +1526,7 @@ components:
           title: Origin
           type: string
         title:
+          default: null
           title: Title
           type: string
         title_source:
@@ -1639,8 +1639,7 @@ components:
       required:
       - id
       - origin
-      - title
-      title: SessionListRowPayload
+      title: SessionListEnvelope
       type: object
     SessionListResponse:
       additionalProperties: false
@@ -1651,7 +1650,7 @@ components:
       properties:
         items:
           items:
-            $ref: '#/components/schemas/SessionListRowPayload'
+            $ref: '#/components/schemas/SessionListEnvelope'
           title: Items
           type: array
         total:

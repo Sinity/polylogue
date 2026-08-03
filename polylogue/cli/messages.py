@@ -19,8 +19,8 @@ from polylogue.rendering.semantic_cards import (
 )
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
 from polylogue.surfaces.payloads import (
-    SessionMessageRowPayload,
     SessionMessagesResponsePayload,
+    message_row_envelope_from_domain,
     model_json_document,
 )
 
@@ -65,7 +65,7 @@ def run_messages(
                 return cast(
                     "dict[str, object]",
                     model_json_document(
-                        SessionMessageRowPayload.from_message(m, session_id=session_id),
+                        message_row_envelope_from_domain(m, session_id=session_id),
                         exclude_none=True,
                     ),
                 )
@@ -77,9 +77,7 @@ def run_messages(
                 payload = model_json_document(
                     SessionMessagesResponsePayload(
                         session_id=session_id,
-                        messages=tuple(
-                            SessionMessageRowPayload.from_message(m, session_id=session_id) for m in messages
-                        ),
+                        messages=tuple(message_row_envelope_from_domain(m, session_id=session_id) for m in messages),
                         total=total,
                         limit=effective_limit,
                         offset=offset,

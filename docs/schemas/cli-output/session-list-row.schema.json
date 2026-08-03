@@ -162,7 +162,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-list-row.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One row of `polylogue read --all --format json` output. The read-all path emits an array of these objects; the `ndjson` format emits one per line as results stream.\n\nGenerated from `polylogue.surfaces.payloads.SessionListRowPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "One row of `polylogue read --all --format json` output. The read-all path emits an array of these objects; the `ndjson` format emits one per line as results stream.\n\nGenerated from `polylogue.surfaces.payloads.SessionListEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "additionalProperties": {
@@ -317,6 +317,7 @@
       "default": null
     },
     "title": {
+      "default": null,
       "title": "Title",
       "type": "string"
     },
@@ -383,8 +384,7 @@
   },
   "required": [
     "id",
-    "origin",
-    "title"
+    "origin"
   ],
   "title": "Session List Row",
   "type": "object",
@@ -393,5 +393,5 @@
     "polylogue read --all --format ndjson",
     "polylogue read --all --format yaml"
   ],
-  "x-polylogue-source-model": "SessionListRowPayload"
+  "x-polylogue-source-model": "SessionListEnvelope"
 }

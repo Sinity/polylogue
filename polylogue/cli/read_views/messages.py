@@ -21,7 +21,7 @@ from polylogue.cli.read_views.base import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.surfaces.payloads import SessionMessageRowPayload, model_json_document
+from polylogue.surfaces.payloads import message_row_envelope_from_domain, model_json_document
 
 
 def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOptions:
@@ -129,7 +129,7 @@ def _write_messages_file(
                         payload = {
                             "session_id": session_id,
                             **model_json_document(
-                                SessionMessageRowPayload.from_message(message, session_id=session_id),
+                                message_row_envelope_from_domain(message, session_id=session_id),
                                 exclude_none=True,
                             ),
                         }
@@ -153,7 +153,7 @@ def _write_messages_file(
                     fh.write(
                         json.dumps(
                             model_json_document(
-                                SessionMessageRowPayload.from_message(message, session_id=session_id),
+                                message_row_envelope_from_domain(message, session_id=session_id),
                                 exclude_none=True,
                             ),
                             indent=2,

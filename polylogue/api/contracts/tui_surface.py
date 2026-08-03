@@ -38,7 +38,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
     SessionListResponse,
-    SessionListRowPayload,
+    session_list_envelope_from_domain,
 )
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ class TUIReadSurface:
             if miss is not None:
                 diagnostics = QueryMissDiagnosticsPayload.from_diagnostics(miss)
         return SessionListResponse(
-            items=tuple(SessionListRowPayload.from_session(conv) for conv in sessions),
+            items=tuple(session_list_envelope_from_domain(conv) for conv in sessions),
             total=total,
             limit=spec.limit if spec.limit is not None else len(sessions),
             offset=spec.offset,

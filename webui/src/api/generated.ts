@@ -597,17 +597,7 @@ export type SessionFlagsPayload = {
   readonly has_tool_use?: boolean;
 };
 
-export type SessionListResponse = {
-  readonly diagnostics?: QueryMissDiagnosticsPayload | null;
-  readonly items: ReadonlyArray<SessionListRowPayload>;
-  readonly limit: number;
-  readonly offset: number;
-  readonly query_description?: ReadonlyArray<string>;
-  readonly route_state?: RouteReadinessPayload | null;
-  readonly total: number;
-};
-
-export type SessionListRowPayload = {
+export type SessionListEnvelope = {
   readonly actions?: {
   readonly [key: string]: ReaderActionAvailabilityPayload;
 };
@@ -625,12 +615,22 @@ export type SessionListRowPayload = {
   readonly summary?: string | null;
   readonly tags?: ReadonlyArray<string>;
   readonly target_ref?: TargetRefPayload | null;
-  readonly title: string;
+  readonly title?: string;
   readonly title_confidence?: number | null;
   readonly title_ref?: string | null;
   readonly title_source?: string | null;
   readonly updated_at?: string | null;
   readonly words?: number | null;
+};
+
+export type SessionListResponse = {
+  readonly diagnostics?: QueryMissDiagnosticsPayload | null;
+  readonly items: ReadonlyArray<SessionListEnvelope>;
+  readonly limit: number;
+  readonly offset: number;
+  readonly query_description?: ReadonlyArray<string>;
+  readonly route_state?: RouteReadinessPayload | null;
+  readonly total: number;
 };
 
 export type SessionReadViewEnvelope = {
@@ -652,7 +652,7 @@ export type SessionReadViewEnvelope = {
 
 export type SessionSearchHitPayload = {
   readonly match: SessionSearchMatchPayload;
-  readonly session: SessionSummaryPayload;
+  readonly session: SessionSummaryEnvelope;
 };
 
 export type SessionSearchMatchPayload = {
@@ -677,17 +677,17 @@ export type SessionSearchMatchPayload = {
   readonly target_ref?: TargetRefPayload | null;
 };
 
-export type SessionSummaryPayload = {
+export type SessionSummaryEnvelope = {
   readonly actions?: {
   readonly [key: string]: ReaderActionAvailabilityPayload;
 };
   readonly anchor?: string | null;
   readonly created_at?: string | null;
   readonly id: string;
-  readonly message_count: number;
+  readonly message_count?: number | null;
   readonly origin: string;
   readonly target_ref?: TargetRefPayload | null;
-  readonly title: string;
+  readonly title?: string;
   readonly title_confidence?: number | null;
   readonly title_ref?: string | null;
   readonly title_source?: string | null;

@@ -139,7 +139,7 @@
   "$id": "https://polylogue.dev/schemas/cli-output/session-summary.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "Compact session identity payload used by analyze group-by and embedded inside search hits.\n\nGenerated from `polylogue.surfaces.payloads.SessionSummaryPayload` by `devtools render cli-output-schemas`. Do not edit by hand.",
+  "description": "Compact session identity payload used by analyze group-by and embedded inside search hits.\n\nGenerated from `polylogue.surfaces.payloads.SessionSummaryEnvelope` by `devtools render cli-output-schemas`. Do not edit by hand.",
   "properties": {
     "actions": {
       "additionalProperties": {
@@ -178,8 +178,16 @@
       "type": "string"
     },
     "message_count": {
-      "title": "Message Count",
-      "type": "integer"
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Message Count"
     },
     "origin": {
       "title": "Origin",
@@ -197,6 +205,7 @@
       "default": null
     },
     "title": {
+      "default": null,
       "title": "Title",
       "type": "string"
     },
@@ -252,9 +261,7 @@
   },
   "required": [
     "id",
-    "origin",
-    "title",
-    "message_count"
+    "origin"
   ],
   "title": "Session Summary",
   "type": "object",
@@ -262,5 +269,5 @@
     "polylogue analyze --format json (rows)",
     "polylogue --format json <query> (hits[].session)"
   ],
-  "x-polylogue-source-model": "SessionSummaryPayload"
+  "x-polylogue-source-model": "SessionSummaryEnvelope"
 }
