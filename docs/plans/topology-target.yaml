@@ -931,7 +931,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/__init__.py
-    loc: 173
+    loc: 191
     target: polylogue/cli/commands/maintenance/__init__.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_archive_plan.py
@@ -955,7 +955,7 @@ files:
     target: polylogue/cli/commands/maintenance/_blob_gc.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_integrity.py
-    loc: 436
+    loc: 533
     target: polylogue/cli/commands/maintenance/_blob_integrity.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_blob_publications.py
@@ -987,8 +987,12 @@ files:
     target: polylogue/cli/commands/maintenance/_rebuild_index.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_run.py
-    loc: 173
+    loc: 218
     target: polylogue/cli/commands/maintenance/_run.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_run_preview.py
+    loc: 100
+    target: polylogue/cli/commands/maintenance/_run_preview.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_shared.py
     loc: 143
@@ -1561,7 +1565,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 3021
+    loc: 3109
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -1645,7 +1649,7 @@ files:
     target: polylogue/daemon/fts_status.py
     owner: stable
   - path: polylogue/daemon/health.py
-    loc: 1583
+    loc: 1638
     target: polylogue/daemon/health.py
     owner: stable
   - path: polylogue/daemon/healthz.py
@@ -2472,7 +2476,7 @@ files:
     target: polylogue/pipeline/__init__.py
     owner: stable
   - path: polylogue/pipeline/ids.py
-    loc: 587
+    loc: 632
     target: polylogue/pipeline/ids.py
     owner: stable
   - path: polylogue/pipeline/ingest_outcomes.py
@@ -3518,7 +3522,7 @@ files:
     target: polylogue/sources/parsers/codex_state.py
     owner: stable
   - path: polylogue/sources/parsers/drive.py
-    loc: 507
+    loc: 520
     target: polylogue/sources/parsers/drive.py
     owner: stable
   - path: polylogue/sources/parsers/drive_support.py
@@ -4370,7 +4374,7 @@ files:
     target: polylogue/storage/sqlite/maintenance.py
     owner: stable
   - path: polylogue/storage/sqlite/migration_runner.py
-    loc: 742
+    loc: 756
     target: polylogue/storage/sqlite/migration_runner.py
     owner: stable
   - path: polylogue/storage/sqlite/migrations/__init__.py

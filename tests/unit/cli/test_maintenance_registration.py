@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli as root_cli
 from polylogue.cli.commands.maintenance._plan import plan_command
 from polylogue.cli.commands.maintenance._run import run_command
+from polylogue.cli.commands.maintenance._run_preview import run_preview_command
 from polylogue.cli.commands.maintenance._status import status_command
 
 
@@ -40,6 +41,11 @@ def test_maintenance_run_is_click_command() -> None:
     assert isinstance(run_command, click.Command)
 
 
+def test_maintenance_run_preview_is_click_command() -> None:
+    """run-preview is a Click Command on the maintenance group."""
+    assert isinstance(run_preview_command, click.Command)
+
+
 def test_maintenance_appears_in_ops_help() -> None:
     """polylogue ops --help includes the maintenance subcommand."""
     runner = CliRunner()
@@ -49,12 +55,13 @@ def test_maintenance_appears_in_ops_help() -> None:
 
 
 def test_maintenance_group_has_plan_and_run() -> None:
-    """maintenance group lists plan and run as subcommands."""
+    """maintenance group lists plan, run, and run-preview as subcommands."""
     maintenance_group = _registered_maintenance_command()
     ctx = click.Context(maintenance_group)
     cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
     assert "plan" in cmds
     assert "run" in cmds
+    assert "run-preview" in cmds
 
 
 def test_maintenance_plan_help_output() -> None:
@@ -66,11 +73,26 @@ def test_maintenance_plan_help_output() -> None:
 
 
 def test_maintenance_run_help_output() -> None:
-    """polylogue ops maintenance run --help shows run help."""
+    """polylogue ops maintenance run --help shows run help.
+
+    ``run`` is the lean apply-only command post-split (polylogue-oou3c): it
+    no longer carries a ``--dry-run`` flag -- ``run-preview`` is the
+    dedicated read-only twin instead.
+    """
     runner = CliRunner()
     result = runner.invoke(root_cli, ["ops", "maintenance", "run", "--help"])
     assert result.exit_code == 0
-    assert "--dry-run" in result.output
+    assert "--dry-run" not in result.output
+    assert "--operation-id" in result.output
+
+
+def test_maintenance_run_preview_help_output() -> None:
+    """polylogue ops maintenance run-preview --help shows the preview help."""
+    runner = CliRunner()
+    result = runner.invoke(root_cli, ["ops", "maintenance", "run-preview", "--help"])
+    assert result.exit_code == 0
+    assert "Read-only" in result.output or "read-only" in result.output.lower()
+    assert "--operation-id" in result.output
 
 
 def test_maintenance_status_is_click_command() -> None:
