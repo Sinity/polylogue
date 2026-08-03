@@ -2291,7 +2291,7 @@ class LiveBatchProcessor:
                                     authority=RawRevisionAuthority.QUARANTINED,
                                 ),
                             )
-                            plan = archive.classify_raw_revision_cohort(logical_source_key)
+                            plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
                                 parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
                                 session_id, applied_raw_ids = archive.apply_raw_revision_replay(

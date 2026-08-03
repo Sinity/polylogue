@@ -233,7 +233,7 @@ def _ingest_append_plans_archive(
                     # whose accepted metadata has not yet been established.
                     replay_plan = archive.raw_revision_replay_plan(logical_source_key)
                     if raw_id not in replay_plan.accepted_raw_ids:
-                        replay_plan = archive.classify_raw_revision_cohort(logical_source_key)
+                        replay_plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                     if raw_id not in replay_plan.accepted_raw_ids:
                         # A non-empty plan can still represent an older
                         # accepted chain while a newly observed full snapshot

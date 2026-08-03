@@ -618,8 +618,9 @@ def _census_historical_revision_evidence(
     learned identity without independently parsing bytes that byte comparison
     already proved are a strict prefix of the newest capture. This is a
     census-time parse-cost optimization only: it never grants authority --
-    ``classify_raw_revision_cohort`` (called later, during replay) still
-    independently re-derives byte-provenness from raw bytes for every raw.
+    ``classify_raw_revision_cohort_for_rebuild_repair`` (called later, during
+    replay) still independently re-derives byte-provenness from raw bytes for
+    every raw.
     """
     state = _RevisionCensusState(0, 0, 0, set(), {}, {})
     batch_size = commit_batch_size if commit_batch_size is not None and commit_batch_size > 0 else None
@@ -1170,19 +1171,21 @@ def backfill_historical_revision_evidence(
                 # polylogue-eqnv: the offline backfill/rebuild path is the one
                 # where a stale pre-fix parser identity can split one physical
                 # document's re-acquisitions across two logical_source_keys (see
-                # ArchiveStore.classify_raw_revision_cohort's docstring) -- opt
-                # into the source_path cross-key guard here. The live watcher
-                # (sources/live/batch.py) does NOT opt in: a watched path can be
-                # legitimately, atomically replaced with a different session's
-                # content, which must not be quarantined as "divergent evidence".
+                # ArchiveStore.classify_raw_revision_cohort_for_rebuild_repair's
+                # docstring) -- use that entry point here, which always applies
+                # the source_path cross-key guard. The live watcher
+                # (sources/live/batch.py) uses
+                # classify_raw_revision_cohort_for_live_watch instead: a
+                # watched path can be legitimately, atomically replaced with a
+                # different session's content, which must not be quarantined
+                # as "divergent evidence".
                 classify_started = time.perf_counter()
-                plan = archive.classify_raw_revision_cohort(
+                plan = archive.classify_raw_revision_cohort_for_rebuild_repair(
                     logical_key,
-                    check_source_path_identity_split=True,
                     # Batched replay defers the classification's source.db
                     # authority updates into the same batch window as the replay
                     # writes (idempotent, re-derived on resume -- see
-                    # classify_raw_revision_cohort's docstring).
+                    # classify_raw_revision_cohort_for_rebuild_repair's docstring).
                     manage_transaction=not replay_batched,
                 )
                 stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (

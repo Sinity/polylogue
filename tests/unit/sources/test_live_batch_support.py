@@ -3889,7 +3889,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
         # Exactly the polylogue-52l2 guard-tripping sequence: no unique
         # byte-prefix chain across a and b.
-        plan = store.classify_raw_revision_cohort("chatgpt:shared")
+        plan = store.classify_raw_revision_cohort_for_live_watch("chatgpt:shared")
         assert plan.accepted_raw_ids == ()
 
         # Mirror backfill_historical_revision_evidence's own retirement step
@@ -4041,7 +4041,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
                 "codex:shared", RawRevisionKind.FULL, "rev-b", 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        archive.classify_raw_revision_cohort("codex:shared")
+        archive.classify_raw_revision_cohort_for_live_watch("codex:shared")
         archive.commit()
         raw_c = archive.write_raw_payload(
             provider=Provider.CODEX,

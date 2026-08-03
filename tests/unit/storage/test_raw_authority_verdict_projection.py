@@ -157,7 +157,7 @@ def test_verdicts_match_direct_classification_of_the_same_bytes(tmp_path: Path) 
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
 
-        plan = archive.classify_raw_revision_cohort("codex:s1")
+        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:s1")
         verdicts = project_raw_authority_verdicts(archive, "codex:s1")
 
         row = (
