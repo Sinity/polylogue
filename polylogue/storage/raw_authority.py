@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.archive.revision_replay import ApplicationDecision
+from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
@@ -1309,10 +1311,18 @@ def validate_raw_replay_application_receipt(
     observed_memberships = {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in membership_rows}
     if observed_memberships != expected_memberships:
         problems.append("membership receipt pairs do not match the immutable authority witness")
-    terminal_membership_decisions = {"applied", "superseded_equivalent", "superseded_prefix"}
+    terminal_membership_decisions = {
+        MembershipDecision.APPLIED,
+        MembershipDecision.SUPERSEDED_EQUIVALENT,
+        MembershipDecision.SUPERSEDED_PREFIX,
+    }
     if any(row.get("decision") not in terminal_membership_decisions for row in membership_rows):
         problems.append("membership receipt contains a non-terminal decision")
-    terminal_application_decisions = {"selected_baseline", "applied_append", "superseded"}
+    terminal_application_decisions = {
+        ApplicationDecision.SELECTED_BASELINE,
+        ApplicationDecision.APPLIED_APPEND,
+        ApplicationDecision.SUPERSEDED,
+    }
     application_pairs = {(str(row.get("raw_id")), str(row.get("logical_source_key"))) for row in application_rows}
     if any(row.get("decision") not in terminal_application_decisions for row in application_rows):
         problems.append("application receipt contains a non-terminal decision")

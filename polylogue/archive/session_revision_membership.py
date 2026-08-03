@@ -5,8 +5,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, TypeAlias
 
+from polylogue.core.enums import PolylogueStrEnum
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.pipeline.ids import SessionRevisionProjection
+
+
+class MembershipDecision(PolylogueStrEnum):
+    """Closed vocabulary for ``raw_session_memberships.decision`` (source.db).
+
+    The membership-classification pipeline's own verdict on a raw revision's
+    fate within its logical-source cohort, persisted in the durable source
+    tier. Distinct from :class:`polylogue.archive.revision_replay.
+    ApplicationDecision` (the index-tier replay outcome for the same
+    underlying event) -- the two vocabularies model related but genuinely
+    different axes (pipeline verdict vs. replay-time application) and are
+    kept separate rather than merged; see polylogue-z22ml.
+    """
+
+    APPLIED = "applied"
+    SUPERSEDED_EQUIVALENT = "superseded_equivalent"
+    SUPERSEDED_PREFIX = "superseded_prefix"
+    AMBIGUOUS = "ambiguous"
+    DEFERRED = "deferred"
+
 
 #: One content axis's relation between two revisions: total and decidable,
 #: no residual category (polylogue-aggz). ``equal`` is the same identity set
@@ -464,4 +485,9 @@ def _browser_snapshot_dominates(older: MembershipRevision, newer: MembershipRevi
     )
 
 
-__all__ = ["MembershipClassification", "MembershipRevision", "classify_membership_revisions"]
+__all__ = [
+    "MembershipClassification",
+    "MembershipDecision",
+    "MembershipRevision",
+    "classify_membership_revisions",
+]

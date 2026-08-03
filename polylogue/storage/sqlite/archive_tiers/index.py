@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import get_args
 
+from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.core.enums import (
     BlockType,
     BranchType,
@@ -368,10 +369,7 @@ CREATE TABLE IF NOT EXISTS raw_revision_applications (
     logical_source_key       TEXT NOT NULL,
     source_revision          TEXT NOT NULL,
     acquisition_generation  INTEGER NOT NULL CHECK(acquisition_generation >= 0),
-    decision                 TEXT NOT NULL CHECK(decision IN (
-                                 'selected_baseline', 'applied_append', 'superseded',
-                                 'ambiguous', 'deferred'
-                             )),
+    decision                 TEXT NOT NULL CHECK ({check("decision", ApplicationDecision)}),
     accepted_raw_id          TEXT,
     accepted_source_revision TEXT,
     accepted_content_hash    BLOB CHECK(

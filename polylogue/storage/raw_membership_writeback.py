@@ -21,13 +21,22 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from polylogue.archive.session_revision_membership import MembershipDecision
+
 #: The only membership decisions this write-back ever acts on. Every one of
 #: these means the membership pipeline already established this raw's
 #: content is either the accepted revision or a proven-superseded prior
 #: revision of it -- never ``ambiguous`` (a real, unresolved conflict) or
 #: ``deferred`` (not yet decided) or ``NULL`` (no membership evidence at all,
-#: see item 3 / append-chain backfill for that population instead).
-WRITE_BACK_DECISIONS: tuple[str, ...] = ("applied", "superseded_equivalent", "superseded_prefix")
+#: see item 3 / append-chain backfill for that population instead). Tied to
+#: :class:`MembershipDecision` (polylogue-z22ml) rather than hand-typed, so
+#: this can no longer silently drift from the enum or the CHECK constraints
+#: generated from it.
+WRITE_BACK_DECISIONS: tuple[str, ...] = (
+    MembershipDecision.APPLIED,
+    MembershipDecision.SUPERSEDED_EQUIVALENT,
+    MembershipDecision.SUPERSEDED_PREFIX,
+)
 
 #: SQLite ``CASE`` ordering matching the report's own precedence when a raw
 #: has more than one membership row (rare: a retired-sibling reparse under a
@@ -35,9 +44,9 @@ WRITE_BACK_DECISIONS: tuple[str, ...] = ("applied", "superseded_equivalent", "su
 #: Prefer the strongest, most-specific decision deterministically.
 _DECISION_PRECEDENCE_SQL = (
     "CASE m.decision "
-    "WHEN 'applied' THEN 0 "
-    "WHEN 'superseded_equivalent' THEN 1 "
-    "WHEN 'superseded_prefix' THEN 2 "
+    f"WHEN '{MembershipDecision.APPLIED}' THEN 0 "
+    f"WHEN '{MembershipDecision.SUPERSEDED_EQUIVALENT}' THEN 1 "
+    f"WHEN '{MembershipDecision.SUPERSEDED_PREFIX}' THEN 2 "
     "ELSE 3 END"
 )
 
@@ -49,7 +58,7 @@ class WriteBackCandidate:
     raw_id: str
     logical_source_key: str
     provider_session_id: str
-    decision: str
+    decision: MembershipDecision
     blob_size: int
 
 
@@ -104,7 +113,7 @@ def plan_raw_membership_writeback(conn: sqlite3.Connection, *, limit: int | None
             raw_id=str(raw_id),
             logical_source_key=str(logical_source_key),
             provider_session_id=str(provider_session_id),
-            decision=str(decision),
+            decision=MembershipDecision(str(decision)),
             blob_size=int(blob_size),
         )
         for raw_id, logical_source_key, provider_session_id, decision, blob_size in rows

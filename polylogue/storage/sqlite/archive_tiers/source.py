@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority
+from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
@@ -124,10 +125,7 @@ CREATE TABLE IF NOT EXISTS raw_session_memberships (
     -- see ProvenRevisionAuthority in archive_tiers/types.py (polylogue-h57ic).
     revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
         CHECK ({literal_check("revision_authority", *get_args(ProvenRevisionAuthority))}),
-    decision                TEXT CHECK(decision IN (
-                                'applied', 'superseded_equivalent', 'superseded_prefix',
-                                'ambiguous', 'deferred'
-                            )),
+    decision                TEXT CHECK ({nullable_check("decision", MembershipDecision)}),
     decided_at_ms           INTEGER CHECK(decided_at_ms >= 0),
     PRIMARY KEY(raw_id, logical_source_key),
     CHECK((decision IS NULL) = (decided_at_ms IS NULL))
@@ -181,9 +179,14 @@ CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key          TEXT NOT NULL,
     provider_session_id         TEXT NOT NULL,
-    membership_decision         TEXT NOT NULL CHECK(membership_decision IN (
-                                    'applied', 'superseded_equivalent', 'superseded_prefix'
-                                )),
+    membership_decision         TEXT NOT NULL CHECK ({
+    literal_check(
+        "membership_decision",
+        MembershipDecision.APPLIED,
+        MembershipDecision.SUPERSEDED_EQUIVALENT,
+        MembershipDecision.SUPERSEDED_PREFIX,
+    )
+}),
     previous_revision_authority TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
     promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
     tool_version                TEXT NOT NULL,

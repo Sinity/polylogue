@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionKind
+from polylogue.core.enums import PolylogueStrEnum
 
 
-class ApplicationDecision(StrEnum):
+class ApplicationDecision(PolylogueStrEnum):
+    """Closed vocabulary for ``raw_revision_applications.decision`` (index.db).
+
+    The replay-time outcome recorded when a raw revision is applied against
+    a logical source's replay plan. Distinct from :class:`polylogue.archive.
+    session_revision_membership.MembershipDecision` (the source-tier
+    membership-classification verdict for the same underlying event) --
+    kept separate rather than merged; see polylogue-z22ml.
+    """
+
     SELECTED_BASELINE = "selected_baseline"
     APPLIED_APPEND = "applied_append"
     SUPERSEDED = "superseded"
