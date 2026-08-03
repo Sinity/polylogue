@@ -162,14 +162,23 @@ def test_invalid_pointer_file_is_reported_as_error(tmp_path: Path) -> None:
     assert "invalid active index pointer" in check.summary
 
 
-def test_raw_with_complete_census_and_no_session_is_missing_work(tmp_path: Path) -> None:
+def test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap(tmp_path: Path) -> None:
+    """A head with a real authority grant (not quarantined) and no parse
+    error or declared-non-session census verdict that never materialized is
+    the exact bug class I1 exists to catch: a silent, unexplained
+    materialization failure. Ground truth is ``raw_sessions`` itself -- the
+    census row here is deliberately 'complete' (would have satisfied the old,
+    buggy universe) to prove the fix is about typing, not about the census.
+    """
     _seed_coherent_archive(tmp_path)
     source_conn = _connect(tmp_path / "source.db")
     try:
         source_conn.execute(
             """
-            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
-            VALUES ('raw-orphaned-work', 'codex-session', 'never-materialized', '/y', ?, 10, 100)
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms, revision_authority
+            )
+            VALUES ('raw-orphaned-work', 'codex-session', 'never-materialized', '/y', ?, 10, 100, 'byte_proven')
             """,
             (b"b" * 32,),
         )
@@ -187,9 +196,103 @@ def test_raw_with_complete_census_and_no_session_is_missing_work(tmp_path: Path)
 
     check = _check(report, "source-index-coverage")
     assert check.status is OutcomeStatus.ERROR
-    assert check.evidence["missing_work_count"] == 1
-    assert "raw-orphaned-work" in check.evidence["missing_work_sample"]
+    assert check.evidence["untyped_count"] == 1
+    assert "raw-orphaned-work" in check.evidence["untyped_sample"]
     assert check.evidence["orphan_count"] == 0
+
+
+def test_quarantined_head_with_no_session_is_warning_not_error(tmp_path: Path) -> None:
+    """The polylogue-in24n bug class in reverse: a quarantined raw (the
+    default ``revision_authority``) that never materialized is a *typed*
+    gap -- reconciliation hasn't granted it write authority yet -- and must
+    surface as WARN-level evidence, not silently invisible (the old bug) and
+    not a hard ERROR (quarantine is an ordinary, common, self-explaining
+    state; see t0m73/in24n live counts: 7,191 of 7,200 unindexed heads).
+    """
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-quarantined', 'codex-session', 'not-yet-reconciled', '/z', ?, 10, 100)
+            """,
+            (b"c" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage",))
+
+    check = _check(report, "source-index-coverage")
+    assert check.status is OutcomeStatus.WARNING
+    assert not report.blocking
+    assert check.evidence["quarantined_count"] == 1
+    assert "raw-quarantined" in check.evidence["quarantined_sample"]
+    assert check.evidence["untyped_count"] == 0
+
+
+def test_parse_error_head_with_no_session_is_ok(tmp_path: Path) -> None:
+    """A head that failed to parse is explained by ``raw_sessions.parse_error``
+    itself -- not a coverage problem this check should flag at all."""
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms,
+                revision_authority, parse_error
+            )
+            VALUES ('raw-parse-error', 'codex-session', 'unparseable', '/w', ?, 10, 100, 'byte_proven', 'boom')
+            """,
+            (b"d" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage",))
+
+    check = _check(report, "source-index-coverage")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["parse_error_count"] == 1
+    assert check.evidence["untyped_count"] == 0
+    assert check.evidence["quarantined_count"] == 0
+
+
+def test_non_session_census_head_with_no_session_is_ok(tmp_path: Path) -> None:
+    """A head the census declared not-a-session (e.g. a settings/config
+    artifact) is a declared refusal, not a materialization gap."""
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms, revision_authority
+            )
+            VALUES ('raw-non-session', 'codex-session', 'not-a-session', '/v', ?, 10, 100, 'byte_proven')
+            """,
+            (b"e" * 32,),
+        )
+        source_conn.execute(
+            """
+            INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, censused_at_ms)
+            VALUES ('raw-non-session', 'fp', 'non_session', 0, 100)
+            """
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage",))
+
+    check = _check(report, "source-index-coverage")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["non_session_count"] == 1
+    assert check.evidence["untyped_count"] == 0
 
 
 def test_index_session_with_no_backing_raw_is_orphan(tmp_path: Path) -> None:
@@ -213,7 +316,7 @@ def test_index_session_with_no_backing_raw_is_orphan(tmp_path: Path) -> None:
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["orphan_count"] == 1
     assert "raw-does-not-exist" in check.evidence["orphan_sample"]
-    assert check.evidence["missing_work_count"] == 0
+    assert check.evidence["untyped_count"] == 0
 
 
 def test_deleted_fts_row_trips_message_fts_parity(tmp_path: Path) -> None:

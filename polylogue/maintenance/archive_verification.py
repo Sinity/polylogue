@@ -13,6 +13,21 @@ rather than only getting a red light.
 New checks slot into :data:`ARCHIVE_VERIFICATION_CHECKS` without touching
 :func:`verify_archive` or its callers -- the registry is the extension point
 for future checks (blob-reference debt, cost rollups, ...).
+
+**Registry contract rule (polylogue-in24n):** a check's universe must be a
+ground-truth table, never a derived ledger of the mechanism under audit. The
+canonical violation this rule exists to prevent: an earlier version of
+``source-index-coverage`` computed its universe from ``raw_membership_census``
+(the *census machinery's own bookkeeping* of what it considered complete)
+instead of ``raw_sessions`` (the durable, ground-truth table every acquired
+raw lands in regardless of what any downstream census/reconciliation stage
+later decides about it). Because the census never blesses a quarantined or
+unreconciled raw, that raw was invisible to the check by construction -- the
+check reported OK while a real, large materialization gap sat underneath it.
+When adding a new check, ask: "if the mechanism I'm checking silently drops a
+row from its own ledger, does my universe query still see that row?" If the
+answer is no, the check is auditing the mechanism against itself, not against
+reality.
 """
 
 from __future__ import annotations
@@ -245,68 +260,180 @@ def _check_pointer_coherence(archive_root: Path, _sample_limit: int) -> ArchiveV
 
 
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Every logical source's head is indexed OR carries a typed refusal.
+
+    Universe (polylogue-in24n, invariant I1): ``raw_sessions`` logical heads --
+    the latest revision per ``(origin, COALESCE(native_id, source_path))`` --
+    which is a ground-truth table every acquired raw lands in, not a ledger a
+    downstream reconciliation stage can silently omit rows from. A logical
+    head counts as covered when *any* raw in its revision group is
+    materialized into ``index.db``. An uncovered head must be typed as one
+    of: ``parse_error`` (raw_sessions.parse_error set), ``non_session`` /
+    ``census_failed`` (raw_membership_census recorded a terminal non-complete
+    verdict), or ``quarantined`` (raw_sessions.revision_authority --
+    reconciliation hasn't granted it authority to write yet, WARN-level
+    evidence, not blocking). An uncovered head matching none of those is an
+    *untyped* gap -- a materialization failure no other subsystem has
+    explained -- and is the only ERROR-gating condition here besides orphans
+    (index sessions whose raw_id doesn't exist in source.db at all).
+    """
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
     index_path = _resolve_index_path(archive_root)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("source-index-coverage", "source.db or index.db not present")
 
     try:
-        source_conn = _open_ro(source_path)
+        conn = _open_ro(source_path)
     except sqlite3.Error as exc:
         return _error_check("source-index-coverage", f"could not open source.db: {exc}", exc=exc)
+
     try:
-        if table_exists(source_conn, "raw_membership_census"):
-            censused_complete = {
-                str(row[0])
-                for row in source_conn.execute(
-                    "SELECT raw_id FROM raw_membership_census WHERE status = 'complete' AND member_count > 0"
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("source-index-coverage", f"could not attach index.db: {exc}", exc=exc)
+
+        try:
+            has_census = table_exists(conn, "raw_membership_census")
+            census_expr = (
+                "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
+            )
+
+            # A read-only connection (``query_only=ON``, connection-wide, not
+            # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
+            # is still a write. Repeat the heads CTE per query instead; it is
+            # a plain in-query derived table, not a persisted write.
+            heads_cte = f"""
+                WITH heads AS (
+                    SELECT
+                        r.raw_id,
+                        r.parse_error,
+                        r.revision_authority,
+                        {census_expr} AS census_status,
+                        MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                            OVER (PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)) AS any_indexed,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)
+                            ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                        ) AS rn
+                    FROM raw_sessions r
                 )
-            }
-        else:
-            censused_complete = set()
-        all_raw_ids = {str(row[0]) for row in source_conn.execute("SELECT raw_id FROM raw_sessions")}
-    except sqlite3.Error as exc:
-        return _error_check("source-index-coverage", f"could not read source.db: {exc}", exc=exc)
+            """
+            untyped_predicate = """
+                rn = 1 AND any_indexed = 0 AND parse_error IS NULL
+                  AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                  AND revision_authority != 'quarantined'
+            """
+            quarantined_predicate = """
+                rn = 1 AND any_indexed = 0 AND parse_error IS NULL
+                  AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                  AND revision_authority = 'quarantined'
+            """
+
+            total_heads = int(conn.execute(f"{heads_cte} SELECT COUNT(*) FROM heads WHERE rn = 1").fetchone()[0])
+
+            counts = conn.execute(
+                f"""
+                {heads_cte}
+                SELECT
+                  SUM(CASE WHEN any_indexed = 0 AND parse_error IS NOT NULL THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN any_indexed = 0 AND parse_error IS NULL
+                            AND census_status = 'non_session' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN any_indexed = 0 AND parse_error IS NULL
+                            AND COALESCE(census_status, '') != 'non_session'
+                            AND census_status = 'failed' THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN {quarantined_predicate.replace("rn = 1 AND ", "")} THEN 1 ELSE 0 END),
+                  SUM(CASE WHEN {untyped_predicate.replace("rn = 1 AND ", "")} THEN 1 ELSE 0 END)
+                FROM heads WHERE rn = 1
+                """
+            ).fetchone()
+            parse_error_n, non_session_n, census_failed_n, quarantined_n, untyped_n = (
+                int(value or 0) for value in counts
+            )
+
+            untyped_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    f"{heads_cte} SELECT raw_id FROM heads WHERE {untyped_predicate} LIMIT ?",
+                    (sample_limit,),
+                )
+            ]
+            quarantined_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    f"{heads_cte} SELECT raw_id FROM heads WHERE {quarantined_predicate} LIMIT ?",
+                    (sample_limit,),
+                )
+            ]
+
+            orphan_count = conn.execute(
+                """
+                SELECT COUNT(*) FROM idx_tier.sessions s
+                WHERE s.raw_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id)
+                """
+            ).fetchone()[0]
+            orphan_sample = [
+                str(row[0])
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT s.raw_id FROM idx_tier.sessions s
+                    WHERE s.raw_id IS NOT NULL
+                      AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.raw_id = s.raw_id)
+                    LIMIT ?
+                    """,
+                    (sample_limit,),
+                )
+            ]
+        except sqlite3.Error as exc:
+            return _error_check("source-index-coverage", f"could not read source/index tiers: {exc}", exc=exc)
     finally:
-        source_conn.close()
+        conn.close()
 
-    try:
-        index_conn = _open_ro(index_path)
-    except sqlite3.Error as exc:
-        return _error_check("source-index-coverage", f"could not open index.db: {exc}", exc=exc)
-    try:
-        session_raw_ids = {
-            str(row[0]) for row in index_conn.execute("SELECT DISTINCT raw_id FROM sessions WHERE raw_id IS NOT NULL")
-        }
-    except sqlite3.Error as exc:
-        return _error_check("source-index-coverage", f"could not read index.db: {exc}", exc=exc)
-    finally:
-        index_conn.close()
+    unindexed_head_count = parse_error_n + non_session_n + census_failed_n + quarantined_n + untyped_n
+    blocking = untyped_n > 0 or int(orphan_count or 0) > 0
+    warning = quarantined_n > 0
 
-    missing_work = sorted(censused_complete - session_raw_ids)
-    orphans = sorted(session_raw_ids - all_raw_ids)
+    if blocking:
+        status = OutcomeStatus.ERROR
+    elif warning:
+        status = OutcomeStatus.WARNING
+    else:
+        status = OutcomeStatus.OK
 
-    status = OutcomeStatus.ERROR if (missing_work or orphans) else OutcomeStatus.OK
-    summary = (
-        f"{len(censused_complete):,} complete-census raw(s), {len(session_raw_ids):,} raw-backed session(s); "
-        f"missing_work={len(missing_work):,} orphans={len(orphans):,}"
-    )
+    parts = [f"{total_heads:,} logical source head(s), {unindexed_head_count:,} unindexed"]
+    if untyped_n:
+        parts.append(f"untyped={untyped_n:,}")
+    if quarantined_n:
+        parts.append(f"quarantined={quarantined_n:,} (WARN evidence, not blocking)")
+    if parse_error_n:
+        parts.append(f"parse_error={parse_error_n:,}")
+    if non_session_n or census_failed_n:
+        parts.append(f"declared-non-session={non_session_n + census_failed_n:,}")
+    if orphan_count:
+        parts.append(f"orphans={int(orphan_count):,}")
+    summary = "; ".join(parts)
+
     return ArchiveVerificationCheck(
         name="source-index-coverage",
         status=status,
         summary=summary,
-        count=len(missing_work) + len(orphans),
+        count=untyped_n + int(orphan_count or 0),
         details=[
-            *(f"missing-work:{raw_id}" for raw_id in missing_work[:sample_limit]),
-            *(f"orphan:{raw_id}" for raw_id in orphans[:sample_limit]),
+            *(f"untyped:{raw_id}" for raw_id in untyped_sample),
+            *(f"orphan:{raw_id}" for raw_id in orphan_sample),
         ],
         evidence={
-            "censused_complete_raw_count": len(censused_complete),
-            "raw_backed_session_count": len(session_raw_ids),
-            "missing_work_count": len(missing_work),
-            "missing_work_sample": missing_work[:sample_limit],
-            "orphan_count": len(orphans),
-            "orphan_sample": orphans[:sample_limit],
+            "logical_head_count": total_heads,
+            "unindexed_head_count": unindexed_head_count,
+            "untyped_count": untyped_n,
+            "untyped_sample": untyped_sample,
+            "parse_error_count": parse_error_n,
+            "non_session_count": non_session_n,
+            "census_failed_count": census_failed_n,
+            "quarantined_count": quarantined_n,
+            "quarantined_sample": quarantined_sample,
+            "orphan_count": int(orphan_count or 0),
+            "orphan_sample": orphan_sample,
         },
     )
 
@@ -622,7 +749,8 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
     ),
     ArchiveVerificationCheckSpec(
         "source-index-coverage",
-        "Complete-census raw sessions with no materialized index session, and index sessions with no backing raw.",
+        "Every raw_sessions logical head is indexed or typed (parse_error/non_session/quarantined); "
+        "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
     ),
     ArchiveVerificationCheckSpec(
