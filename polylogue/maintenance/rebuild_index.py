@@ -1008,7 +1008,7 @@ async def _rebuild_index_from_source_owned(
                 failing = "; ".join(
                     f"{check.name}: {check.summary}"
                     for check in acceptance_report.checks
-                    if check.status.value == "error"
+                    if check.status.value == "error" and getattr(check, "waived_bead_id", None) is None
                 )
                 raise RuntimeError(
                     f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"

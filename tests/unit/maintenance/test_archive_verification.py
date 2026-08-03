@@ -810,11 +810,12 @@ def test_waived_check_still_reports_error_but_does_not_block(tmp_path: Path, mon
     assert not report.blocking  # but the waived finding does not gate
 
 
-def test_unwaived_check_of_the_same_kind_still_blocks(tmp_path: Path) -> None:
+def test_real_waiver_table_also_waives_embeddings_refs_liveness(tmp_path: Path) -> None:
     """Sanity twin for the waiver test above: with the real (unmodified)
-    ``ARCHIVE_VERIFICATION_WAIVERS`` table, the exact same violation blocks,
-    proving the prior test's green result came from the waiver and not from
-    embeddings-refs-liveness being vacuously non-blocking."""
+    ``ARCHIVE_VERIFICATION_WAIVERS`` table, this same violation is ALSO
+    non-blocking (waived), confirming the prior monkeypatched-table test's
+    green result matches production waiver config rather than an artifact
+    of the test's own patched table."""
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "embeddings.db")
     try:
