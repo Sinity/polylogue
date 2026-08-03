@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from polylogue.core.protocols import ProgressCallback
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     DestructiveClass,
@@ -1619,6 +1620,130 @@ class BlackboardPostActuator:
         )
 
 
+# ---------------------------------------------------------------------------
+# Derived maintenance rebuilds (mutate-rebuild-index / mutate-update-index /
+# mutate-rebuild-insights)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class IndexRebuildArgs:
+    """Shared archive handle and caller scope for derived-index rebuilds."""
+
+    archive: ArchiveStore
+    session_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class IndexRebuildActuator:
+    """Actuator for the trigger-maintained block FTS rebuild primitive.
+
+    ``update_index`` historically accepts session ids for surface symmetry,
+    but the storage primitive reconciles the complete derived index. The
+    requested scope is still included in the plan context so the executor
+    binds the caller's exact request before the full-index effect is applied.
+    """
+
+    operation: str = "mutate-rebuild-index"
+    destructive_class: DestructiveClass = "maintenance"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: IndexRebuildArgs) -> MutationPlan:
+        return build_plan(
+            operation=self.operation,
+            destructive_class="maintenance",
+            target_refs=(make_target_ref("source", "index.db:messages_fts"),),
+            affected_tiers=("index",),
+            reversible=False,
+            context={"session_ids": list(dict.fromkeys(args.session_ids))},
+        )
+
+    def apply(self, plan: MutationPlan, args: IndexRebuildArgs) -> MutationReceipt:
+        rebuilt_rows = args.archive.rebuild_index()
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied",
+            target_refs=plan.target_refs,
+            affected_count=rebuilt_rows,
+            detail=None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"indexed_rows": rebuilt_rows},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class InsightsRebuildArgs:
+    """Archive handle, exact session scope, and optional progress observer."""
+
+    archive: ArchiveStore
+    session_ids: tuple[str, ...] | None = None
+    progress_callback: ProgressCallback | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InsightsRebuildActuator:
+    """Actuator for the canonical durable session-insight materializer."""
+
+    operation: str = "mutate-rebuild-insights"
+    destructive_class: DestructiveClass = "maintenance"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: InsightsRebuildArgs) -> MutationPlan:
+        if args.session_ids is None:
+            resolved = tuple(summary.session_id for summary in args.archive.list_summaries(limit=1_000_000))
+        else:
+            resolved = tuple(
+                dict.fromkeys(
+                    resolved_id
+                    for session_id in args.session_ids
+                    for resolved_id in _resolve_session_id(args.archive, session_id)
+                )
+            )
+        return build_plan(
+            operation=self.operation,
+            destructive_class="maintenance",
+            target_refs=tuple(make_target_ref("session", session_id) for session_id in resolved),
+            affected_tiers=("index",),
+            reversible=False,
+            context={"full_rebuild": args.session_ids is None, "session_ids": list(resolved)},
+        )
+
+    def apply(self, plan: MutationPlan, args: InsightsRebuildArgs) -> MutationReceipt:
+        from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+        from polylogue.storage.insights.session.runtime import SessionInsightCounts
+
+        session_ids = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
+        if not session_ids and not bool(plan.context.get("full_rebuild")):
+            counts = SessionInsightCounts()
+        else:
+            counts = rebuild_session_insights_sync(
+                args.archive._conn,
+                session_ids=None if bool(plan.context.get("full_rebuild")) else session_ids,
+                progress_callback=args.progress_callback,
+            )
+        affected_count = counts.total()
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="applied" if affected_count else "already_satisfied",
+            target_refs=plan.target_refs,
+            affected_count=affected_count,
+            detail=None if affected_count else "no_insight_rows_rebuilt",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt=counts.to_dict(),
+        )
+
+
+def _resolve_session_id(archive: ArchiveStore, session_id: str) -> tuple[str, ...]:
+    try:
+        return (archive.resolve_session_id(session_id),)
+    except KeyError:
+        return ()
+
+
 __all__ = [
     "AnnotationDeleteActuator",
     "AnnotationDeleteArgs",
@@ -1638,6 +1763,10 @@ __all__ = [
     "CorrectionsClearArgs",
     "IdentityResetActuator",
     "IdentityResetArgs",
+    "IndexRebuildActuator",
+    "IndexRebuildArgs",
+    "InsightsRebuildActuator",
+    "InsightsRebuildArgs",
     "MarkAddActuator",
     "MarkArgs",
     "MarkRemoveActuator",

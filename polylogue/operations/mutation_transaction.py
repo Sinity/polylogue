@@ -50,8 +50,9 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 #: ``reset`` tombstones rebuildable rows while preserving durable evidence;
 #: ``delete`` permanently removes archive rows but re-ingest of the original
 #: source can resurrect them; ``excise`` is the durable, cross-tier,
-#: re-ingest-proof removal (right-to-forget).
-DestructiveClass = Literal["reversible", "reset", "delete", "excise"]
+#: re-ingest-proof removal (right-to-forget); ``maintenance`` rewrites
+#: rebuildable derived state without removing authored evidence.
+DestructiveClass = Literal["reversible", "maintenance", "reset", "delete", "excise"]
 
 #: Confirmation strength a caller can present at AUTHORIZE time, ordered
 #: weakest to strongest. Each :class:`MutationActuator` declares the floor it
