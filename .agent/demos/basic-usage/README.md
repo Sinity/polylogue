@@ -217,15 +217,14 @@ reported as named, actionable rows, not a single opaque health flag.
 ```bash
 export POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-basic-usage-demo
 polylogue demo seed --root "$POLYLOGUE_ARCHIVE_ROOT" --force --with-overlays --format json
-devtools workspace basic-usage-demo-check --archive-root "$POLYLOGUE_ARCHIVE_ROOT"
+polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --format json
+devtools test tests/integration/test_basic_usage_cli.py
 ```
 
-The check command re-runs every command above against a fresh seed and
-asserts each output has the expected *shape* (non-empty hit lists, expected
-JSON keys, expected session refs) — not exact volatile counts, since the
-demo corpus's construct coverage numbers can grow without invalidating any
-of these walkthroughs. See [`COLD_READER_GATE.md`](COLD_READER_GATE.md) for
-the fresh-reader verification prompt.
+The integration tests re-run each CLI walkthrough against a fresh seed through
+the real subprocess entry point. `polylogue demo verify` checks the seeded
+archive's structural contract. See [`COLD_READER_GATE.md`](COLD_READER_GATE.md)
+for the replacement mapping and fresh-reader verification prompt.
 
 ## Files
 

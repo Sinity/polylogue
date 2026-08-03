@@ -221,7 +221,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
 | `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
 | `devtools workspace backlog-calibration` | Measured lead-time/discovery/staleness distributions over the bead corpus. |
-| `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
