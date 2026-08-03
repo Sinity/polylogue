@@ -23,6 +23,16 @@ to produce evidence and a verdict, never a code change.
   `git show`), and run read-only queries (`rg`, `sqlite3 ... SELECT`,
   `devtools status`, etc.). Never run anything that mutates repo state,
   the archive DB, or bead state.
+- **If confirming a finding needs `devtools test`/`devtools verify` or a
+  long `sqlite3 ... SELECT` against the live archive, pass an explicit
+  `timeout` of `600000` (600s) on the Bash tool call.** The harness's Bash
+  default (2 minutes) is shorter than these commands routinely take under
+  fleet contention; a call that exceeds the default gets silently
+  auto-backgrounded, and the failure mode is then idle-waiting on that
+  background task instead of continuing. Fix it at the call site rather
+  than discovering the backgrounding after the fact — this is the same
+  mechanical rule the `lane` agent definition carries for its (write-mode)
+  verification calls.
 
 ## Evidence standard
 
