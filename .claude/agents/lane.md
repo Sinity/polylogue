@@ -39,6 +39,15 @@ task-specific instructions accompany the dispatch.
   with the escape-hatch env var — that guard exists because a stale or
   wrong-checkout `polylogue` import silently produces correct-looking but
   wrong results.
+- **No poll loops, including on any further agent you spawn.** If this task
+  has you dispatch a background subagent of your own, do not
+  `ScheduleWakeup`/`Monitor` it as a "done yet?" poll — its completion
+  notification is automatic. `Monitor` is for a genuine until-condition
+  (a concrete, checkable state), `ScheduleWakeup` only for a genuine
+  wall-clock deadline the harness can't observe on its own (a CI grace
+  window, an external SLA). Reaching for either tool to check on a
+  background job's progress is itself the signal to stop and let the
+  notification arrive instead (polylogue-kzse6).
 
 ## Beads: read-only
 
