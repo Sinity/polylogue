@@ -769,9 +769,38 @@ def _source_v20_ddl_with_stale_origin_check() -> str:
     widens, or skipping one of the five tables, must make this fixture (and
     the pre-migration IntegrityError assertion built on it) diverge from a
     genuine pre-021 archive.
+
+    ``capture_mode`` is also moved out of ``raw_sessions``'s declared column
+    list and re-added via a trailing ``ALTER TABLE ... ADD COLUMN``, so it
+    sits physically last -- exactly where migration 008's real
+    ``ALTER TABLE raw_sessions ADD COLUMN capture_mode ...`` put it in a
+    genuine v20 archive, and NOT in the position ``SOURCE_DDL`` declares it
+    (second column, right after ``origin``). Without this, the fixture's
+    physical and logical column order would coincide and a ``SELECT *``
+    copy-forward would pass against it despite being wrong on a real
+    archive -- see ``test_source_tier_v20_widens_origin_check_for_claude_design_session``'s
+    docstring, whose column-order anti-vacuity claim depends on this
+    mismatch actually existing.
     """
     stale = SOURCE_DDL.replace(", 'claude-design-session'", "")
     assert "claude-design-session" not in stale
+    capture_mode_declaration = (
+        "    capture_mode            TEXT CHECK ((capture_mode IN ('chatgpt', 'claude-ai', 'claude-design', "
+        "'claude-code', 'codex', 'gemini', 'gemini-cli', 'hermes', 'antigravity', 'beads', 'grok', 'drive', "
+        "'unknown') OR capture_mode IS NULL)),\n"
+    )
+    assert capture_mode_declaration in stale
+    stale = stale.replace(capture_mode_declaration, "")
+    raw_sessions_close = "        CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))\n) STRICT;\n"
+    assert raw_sessions_close in stale
+    stale = stale.replace(
+        raw_sessions_close,
+        raw_sessions_close
+        + "\nALTER TABLE raw_sessions ADD COLUMN capture_mode TEXT CHECK ((capture_mode IN ('chatgpt', "
+        "'claude-ai', 'claude-design', 'claude-code', 'codex', 'gemini', 'gemini-cli', 'hermes', 'antigravity', "
+        "'beads', 'grok', 'drive', 'unknown') OR capture_mode IS NULL));\n",
+        1,
+    )
     return stale
 
 
@@ -948,6 +977,76 @@ def test_source_tier_v20_widens_origin_check_for_claude_design_session(
             conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE origin = 'claude-design-session'").fetchone()[0] == 1
         )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """``migrate_archive_tier``'s create-copy-drop-rename table rebuild
+    (migration 021 among others) must survive a caller connection that has
+    ``PRAGMA foreign_keys = ON``.
+
+    ``DROP TABLE raw_sessions`` with ``foreign_keys`` enabled performs an
+    implicit ``DELETE FROM`` before removing the table, which fires
+    ``ON DELETE CASCADE`` into every table declaring
+    ``REFERENCES raw_sessions(raw_id)`` -- exactly the position seven real
+    durable tables are in (``raw_capture_observations``,
+    ``raw_session_memberships``, ``raw_membership_census``,
+    ``raw_live_source_reconciliation_receipts``,
+    ``raw_membership_writeback_receipts``,
+    ``raw_append_chain_backfill_receipts``, ``raw_authority_parser_census``,
+    plus ``raw_artifacts`` which migration 021 itself rebuilds). Production
+    callers (``archive_tiers/bootstrap.py``'s ``initialize_archive_database``,
+    ``cli/commands/maintenance/_migrate_tier.py``) reach ``migrate_archive_tier``
+    through a bare ``sqlite3.connect(path)`` with no ``PRAGMA foreign_keys``
+    statement of their own, so ``foreign_keys`` is OFF by SQLite's own
+    default on every production path today -- but that safety was only
+    implicit, never enforced by the runner itself, and a caller that opens
+    its own connection with foreign keys already enabled (as this test
+    does, and as any future caller reasonably might) had no protection.
+    ``migrate_archive_tier`` now disables ``foreign_keys`` for the duration
+    of its own migration work and restores the caller's original setting
+    afterwards, regardless of which value it started at.
+
+    Anti-vacuity: this test fails without that enforcement (verified by
+    temporarily reverting it) -- the scratch child row below gets
+    cascade-deleted the instant ``raw_sessions`` is dropped mid-migration.
+    """
+    db_path = workspace_env["archive_root"] / "source.db"
+    _create_source_v20_with_stale_origin_check(db_path, archive_root=workspace_env["archive_root"])
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE scratch_raw_sessions_child (
+                raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute("INSERT INTO scratch_raw_sessions_child (raw_id) VALUES ('raw-preexisting')")
+        conn.commit()
+
+    manifest = _verified_backup_manifest(tmp_path / "backup-v20-fk-cascade")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
+
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+
+        # The scratch child row survived the raw_sessions rebuild instead of
+        # being cascade-deleted when the original raw_sessions was dropped.
+        assert conn.execute(
+            "SELECT raw_id FROM scratch_raw_sessions_child WHERE raw_id = 'raw-preexisting'"
+        ).fetchone() == ("raw-preexisting",)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        # The runner restores the caller's foreign_keys setting afterwards.
+        assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
+    finally:
+        conn.close()
 
 
 def test_source_tier_fresh_bootstrap_accepts_claude_design_session(

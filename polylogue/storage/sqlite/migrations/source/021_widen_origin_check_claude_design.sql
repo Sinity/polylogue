@@ -36,12 +36,22 @@
 -- raw_append_chain_backfill_receipts, raw_authority_parser_census) never
 -- need to be touched: their FK text still says ``REFERENCES raw_sessions``,
 -- and a table with that exact name exists again the instant the final
--- rename statement below completes. Migration-runner connections
--- (migration_runner.py, cli/commands/maintenance/_migrate_tier.py,
--- archive_tiers/bootstrap.py) never set ``PRAGMA foreign_keys = ON`` before
--- applying a migration, so the intervening ``DROP TABLE`` steps below also
--- never trigger SQLite's drop-time cascading-delete behavior against rows in
--- those other tables.
+-- rename statement below completes. Every production connection factory
+-- that reaches ``migrate_archive_tier`` (``archive_tiers/bootstrap.py``'s
+-- ``initialize_archive_database``, ``cli/commands/maintenance/_migrate_tier.py``)
+-- opens a bare ``sqlite3.connect(path)`` with no ``PRAGMA foreign_keys``
+-- statement of its own, so ``foreign_keys`` is OFF on every one of those
+-- paths by SQLite's own default -- verified by inspecting both call sites.
+-- ``migrate_archive_tier`` no longer relies on that being merely incidental,
+-- though: it now disables ``foreign_keys`` for the duration of its own
+-- migration work (outside the ``BEGIN IMMEDIATE`` transaction, since the
+-- pragma is a no-op once a transaction is open) and restores the caller's
+-- original setting afterwards, so the intervening ``DROP TABLE`` steps
+-- below never trigger SQLite's drop-time cascading-delete behavior against
+-- rows in those other tables even if a caller's connection had
+-- ``foreign_keys = ON`` already (regression-tested by
+-- ``test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild``
+-- in ``tests/unit/storage/test_durable_migrations.py``).
 --
 -- raw_artifacts/raw_hook_events/otlp_spans/history_sidecars are each guarded
 -- with a preceding ``CREATE TABLE IF NOT EXISTS`` in their stale (pre-021)
@@ -164,10 +174,13 @@ DROP TABLE raw_sessions;
 ALTER TABLE raw_sessions__021ff RENAME TO raw_sessions;
 
 CREATE INDEX idx_raw_sessions_origin ON raw_sessions(origin);
-CREATE INDEX idx_raw_sessions_origin_native ON raw_sessions(origin, native_id) WHERE native_id IS NOT NULL;
+CREATE INDEX idx_raw_sessions_origin_native ON raw_sessions(origin, native_id)
+WHERE native_id IS NOT NULL;
 CREATE INDEX idx_raw_sessions_source_path ON raw_sessions(source_path, source_index);
-CREATE INDEX idx_raw_sessions_parse_ready ON raw_sessions(raw_id) WHERE parsed_at_ms IS NULL AND validated_at_ms IS NOT NULL AND (validation_status IS NULL OR validation_status != 'failed');
-CREATE INDEX idx_raw_sessions_logical_revision ON raw_sessions(logical_source_key, acquisition_generation, raw_id) WHERE logical_source_key IS NOT NULL;
+CREATE INDEX idx_raw_sessions_parse_ready ON raw_sessions(raw_id)
+WHERE parsed_at_ms IS NULL AND validated_at_ms IS NOT NULL AND (validation_status IS NULL OR validation_status != 'failed');
+CREATE INDEX idx_raw_sessions_logical_revision ON raw_sessions(logical_source_key, acquisition_generation, raw_id)
+WHERE logical_source_key IS NOT NULL;
 CREATE INDEX idx_raw_sessions_blob_hash ON raw_sessions(blob_hash);
 CREATE INDEX idx_raw_sessions_blob_hash_raw_id ON raw_sessions(blob_hash, raw_id);
 
@@ -266,7 +279,8 @@ DROP TABLE otlp_spans;
 ALTER TABLE otlp_spans__021ff RENAME TO otlp_spans;
 
 CREATE INDEX idx_otlp_spans_trace ON otlp_spans(trace_id, started_at_ms DESC);
-CREATE INDEX idx_otlp_spans_session ON otlp_spans(origin, session_native_id, started_at_ms DESC) WHERE session_native_id IS NOT NULL;
+CREATE INDEX idx_otlp_spans_session ON otlp_spans(origin, session_native_id, started_at_ms DESC)
+WHERE session_native_id IS NOT NULL;
 
 
 CREATE TABLE history_sidecars__021ff (
