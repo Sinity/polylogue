@@ -38,6 +38,13 @@ def iter_schema_units(
 
     config = resolve_provider_config(source_name)
     yielded_any = False
+    row_seen = False
+
+    def _observing_terminal_recorder(**outcome: object) -> None:
+        nonlocal row_seen
+        row_seen = True
+        if terminal_recorder is not None:
+            terminal_recorder(**outcome)
 
     if config.db_source_name and db_path.exists():
         for unit in _iter_schema_units_from_db(
@@ -46,12 +53,21 @@ def iter_schema_units(
             config=config,
             max_samples=max_samples,
             full_corpus=full_corpus,
-            terminal_recorder=terminal_recorder,
+            terminal_recorder=_observing_terminal_recorder,
         ):
             yielded_any = True
             yield unit
 
-    if yielded_any or config.session_dir is None:
+    # polylogue-o8c3m: the session-directory fallback exists for the
+    # genuinely-empty-archive CLI case (no index.db rows for this provider
+    # yet). It must NOT trigger merely because every observed row failed to
+    # decode/classify -- that silently substitutes an unrelated live
+    # filesystem scan (e.g. the operator's real ~/.codex/sessions) for what
+    # should surface as a decode-failure result, and does so even from
+    # contexts (tests, cloud sandboxes) that never intended to touch local
+    # session directories at all. `row_seen` distinguishes "the DB had zero
+    # matching rows" from "the DB had rows but none produced a unit".
+    if yielded_any or row_seen or config.session_dir is None:
         return
 
     yield from _iter_schema_units_from_sessions(

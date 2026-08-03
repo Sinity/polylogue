@@ -398,7 +398,7 @@ class TestLoadSamplesFromDb:
             db_path=db,
             origin="codex-session",
             source_path="/tmp/good.jsonl",
-            raw_content=b'{"type":"session_meta","id":"sess-1"}\n',
+            raw_content=b'{"type":"session_meta","payload":{"id":"sess-1"}}\n',
         )
         bad_raw_id = _insert_raw_session(
             db_path=db,

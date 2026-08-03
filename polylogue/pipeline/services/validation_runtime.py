@@ -135,6 +135,32 @@ def _validate_record_sync(
     parseable = True
     drift_count = 0
 
+    # Malformed-line loss is a structural decode defect, independent of
+    # whether the surviving records classify as a session (polylogue-o8c3m):
+    # `_classify_list` samples only the first 32 decoded records to decide
+    # `schema_eligible`, so a JSONL file whose *content* the classifier
+    # doesn't recognise (e.g. a hook-event/metadata-shaped stream) would
+    # otherwise skip malformed-line accounting entirely in STRICT mode --
+    # silently hiding real data loss behind an unrelated classification gate.
+    # Strict mode must fail on malformed lines regardless of artifact kind;
+    # the schema-eligibility skip still applies once that check is clear.
+    if malformed_lines and validation_mode is ValidationMode.STRICT:
+        malformed_error = _format_malformed_jsonl_error(
+            malformed_lines=malformed_lines,
+            malformed_detail=malformed_detail,
+        )
+        counts_delta["invalid"] += 1
+        return _ValidationOutcome(
+            validation_status=ValidationStatus.FAILED,
+            validation_error=malformed_error,
+            parse_error=malformed_error,
+            parseable=False,
+            canonical_provider=canonical_provider,
+            payload_provider=payload_provider,
+            drift_count=0,
+            counts_delta=counts_delta,
+        )
+
     if not envelope.artifact.schema_eligible:
         return _ValidationOutcome(
             validation_status=ValidationStatus.SKIPPED,
@@ -148,22 +174,6 @@ def _validate_record_sync(
         )
 
     if malformed_lines:
-        malformed_error = _format_malformed_jsonl_error(
-            malformed_lines=malformed_lines,
-            malformed_detail=malformed_detail,
-        )
-        if validation_mode is ValidationMode.STRICT:
-            counts_delta["invalid"] += 1
-            return _ValidationOutcome(
-                validation_status=ValidationStatus.FAILED,
-                validation_error=malformed_error,
-                parse_error=malformed_error,
-                parseable=False,
-                canonical_provider=canonical_provider,
-                payload_provider=payload_provider,
-                drift_count=0,
-                counts_delta=counts_delta,
-            )
         # Advisory mode does not fail the record, but the malformed-line loss is
         # still counted and surfaced rather than silently demoted (#1745).
         counts_delta["malformed_jsonl_lines"] += malformed_lines
