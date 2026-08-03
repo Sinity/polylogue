@@ -384,6 +384,47 @@ def test_claude_ai_no_provider_title_falls_back_to_id_with_no_title_source() -> 
     assert session.title_confidence is None
 
 
+def test_claude_ai_plain_text_message_has_no_synthetic_content_block() -> None:
+    """A ``chat_messages`` entry with only a top-level ``text`` field (no
+    structured ``content``) must not grow a synthetic ``content_blocks``
+    entry that just duplicates ``message.text`` (bd polylogue-0qfy).
+
+    Root cause: reparsing real ambiguous-only claude-ai-export cohorts found
+    the SAME message hashing differently across export vintages purely
+    because one vintage's raw record carried a structured ``content`` field
+    and the other carried only a top-level ``text`` field -- the parser
+    synthesized a single ``TEXT`` block from ``message.text`` whenever
+    ``content`` produced no blocks of its own, so ``message.blocks`` presence
+    (and therefore the message's hash payload, ``pipeline/ids.py``
+    ``_message_hash_payload``) depended on incidental export-vintage shape
+    rather than real content. The write path
+    (``storage/sqlite/archive_tiers/write.py:_message_blocks``) already
+    falls back to a text block for storage when ``message.blocks`` is empty,
+    so the parser-level synthesis was pure redundancy with no storage
+    benefit -- removing it makes ``content_blocks`` presence a deterministic
+    function of the raw ``content`` field alone, closing this volatility
+    axis.
+    """
+    payload = {
+        "uuid": "claude-0qfy",
+        "chat_messages": [
+            {
+                "uuid": "m1",
+                "sender": "human",
+                "text": "hello there",
+                "created_at": "2026-01-01T00:00:00Z",
+            },
+        ],
+    }
+
+    session = parse_ai(payload, "fallback")
+
+    assert len(session.messages) == 1
+    message = session.messages[0]
+    assert message.text == "hello there"
+    assert message.blocks == []
+
+
 def test_claude_ai_content_free_chat_message_stubs_emit_zero_messages() -> None:
     """polylogue-p3b2 AC3 full-sweep regression: a claude-ai-export session
     can carry ``chat_messages`` entries that are structurally present but
