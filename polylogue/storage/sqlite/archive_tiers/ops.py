@@ -35,6 +35,51 @@ CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_time
 ON schema_drift_samples(observed_at_ms DESC);
 """
 
+_OPS_INGEST_ATTEMPTS_DDL = f"""
+CREATE TABLE IF NOT EXISTS ingest_attempts (
+    attempt_id             TEXT PRIMARY KEY,
+    source_path            TEXT,
+    origin                 TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
+    status                 TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
+    phase                  TEXT,
+    storage_route          TEXT,
+    started_at_ms          INTEGER NOT NULL,
+    heartbeat_at_ms        INTEGER,
+    finished_at_ms         INTEGER,
+    parsed_raw_count       INTEGER NOT NULL DEFAULT 0 CHECK(parsed_raw_count >= 0),
+    materialized_count     INTEGER NOT NULL DEFAULT 0 CHECK(materialized_count >= 0),
+    error_message          TEXT,
+    source_paths_json      TEXT NOT NULL DEFAULT '[]',
+    -- polylogue-cnu3: typed, structurally-classified disposition -- never
+    -- guessed from ``error_message`` text. ``outcome_code`` defaults to
+    -- ``legacy_unknown`` so every pre-existing row (written before this
+    -- vocabulary existed) stays honestly queryable as unclassified rather
+    -- than silently guessed into a real class (AC4).
+    outcome_code           TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check("outcome_code", IngestOutcome)}),
+    retryable              INTEGER CHECK(retryable IN (0, 1)),
+    evidence_ref           TEXT,
+    diagnostic             TEXT,
+    remediation            TEXT
+) STRICT;
+"""
+
+_OPS_EMBEDDING_CATCHUP_RUNS_DDL = f"""
+CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at_ms       INTEGER NOT NULL,
+    finished_at_ms      INTEGER,
+    status              TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
+    origin              TEXT CHECK ({nullable_check("origin", Origin)}),
+    scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
+    embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),
+    skipped_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0),
+    error_count         INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
+    embedded_messages   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_messages >= 0),
+    estimated_cost_usd  REAL,
+    error_message       TEXT
+) STRICT;
+"""
+
 OPS_DDL = f"""
 CREATE TABLE IF NOT EXISTS ingest_cursor (
     source_path          TEXT PRIMARY KEY,
@@ -69,31 +114,7 @@ CREATE TABLE IF NOT EXISTS ingest_cursor (
 CREATE INDEX IF NOT EXISTS idx_ingest_cursor_attention
 ON ingest_cursor(failure_count, excluded, source_path);
 
-CREATE TABLE IF NOT EXISTS ingest_attempts (
-    attempt_id             TEXT PRIMARY KEY,
-    source_path            TEXT,
-    origin                 TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
-    status                 TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
-    phase                  TEXT,
-    storage_route          TEXT,
-    started_at_ms          INTEGER NOT NULL,
-    heartbeat_at_ms        INTEGER,
-    finished_at_ms         INTEGER,
-    parsed_raw_count       INTEGER NOT NULL DEFAULT 0 CHECK(parsed_raw_count >= 0),
-    materialized_count     INTEGER NOT NULL DEFAULT 0 CHECK(materialized_count >= 0),
-    error_message          TEXT,
-    source_paths_json      TEXT NOT NULL DEFAULT '[]',
-    -- polylogue-cnu3: typed, structurally-classified disposition -- never
-    -- guessed from ``error_message`` text. ``outcome_code`` defaults to
-    -- ``legacy_unknown`` so every pre-existing row (written before this
-    -- vocabulary existed) stays honestly queryable as unclassified rather
-    -- than silently guessed into a real class (AC4).
-    outcome_code           TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check("outcome_code", IngestOutcome)}),
-    retryable              INTEGER CHECK(retryable IN (0, 1)),
-    evidence_ref           TEXT,
-    diagnostic             TEXT,
-    remediation            TEXT
-) STRICT;
+{_OPS_INGEST_ATTEMPTS_DDL}
 
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_status
 ON ingest_attempts(status, heartbeat_at_ms);
@@ -189,20 +210,7 @@ ON daemon_lifecycle(started_at_ms DESC);
 -- write boundary. A pre-split monolith table of the same name (different
 -- shape, statuses incl. 'stopped'/'interrupted') survives read-only via
 -- storage/embeddings/progress.py.
-CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
-    run_id              TEXT PRIMARY KEY,
-    started_at_ms       INTEGER NOT NULL,
-    finished_at_ms      INTEGER,
-    status              TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
-    origin              TEXT CHECK ({nullable_check("origin", Origin)}),
-    scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
-    embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),
-    skipped_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0),
-    error_count         INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
-    embedded_messages   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_messages >= 0),
-    estimated_cost_usd  REAL,
-    error_message       TEXT
-) STRICT;
+{_OPS_EMBEDDING_CATCHUP_RUNS_DDL}
 
 -- Bulk/archive-wide secret-candidate scan coverage (polylogue-layg.1).
 -- Sole live table for the bounded, resumable ``scan_archive_for_secret_candidates``
