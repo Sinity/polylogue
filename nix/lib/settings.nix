@@ -150,19 +150,6 @@ let
       };
     };
 
-    observability = {
-      enabled = mkOption {
-        type = types.nullOr types.bool;
-        default = null;
-        description = "Enable OTLP/observability HTTP ingestion routes.";
-      };
-      otlp-max-body-bytes = mkOption {
-        type = types.nullOr types.ints.unsigned;
-        default = null;
-        description = "Maximum accepted OTLP request body size.";
-      };
-    };
-
     logging = {
       level = mkOption {
         type = types.nullOr (types.enum [ "DEBUG" "INFO" "WARNING" "ERROR" ]);
@@ -377,11 +364,6 @@ let
         voyage_api_key = settings.embedding.voyage-api-key;
       });
 
-      observability = maybe "observability" (dropNulls {
-        enabled = settings.observability.enabled;
-        otlp_max_body_bytes = settings.observability.otlp-max-body-bytes;
-      });
-
       logging = maybe "logging" (dropNulls {
         level = settings.logging.level;
         force_plain = settings.logging.force-plain;
@@ -442,7 +424,7 @@ let
         }
       );
     in
-    archive // daemon // sources // embedding // observability // logging // ui // schema // notifications // health // cost;
+    archive // daemon // sources // embedding // logging // ui // schema // notifications // health // cost;
 
   renderConfigFile = settings:
     (pkgs.formats.toml { }).generate "polylogue.toml" (renderSettings settings);

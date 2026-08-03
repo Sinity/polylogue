@@ -32,7 +32,7 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
-REPORT_VERSION = 18  # v18 adds weighted raw replay backlog diagnostics.
+REPORT_VERSION = 19  # v19 removes dead OTLP ops-tier table inventory.
 UNKNOWN_TABLE_COUNT = -2
 
 _EXPECTED_FTS_TRIGGERS: tuple[str, ...] = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -73,7 +73,6 @@ _OPS_BOUNDARY_TABLES: tuple[str, ...] = (
     "cursor_lag_samples",
     "daemon_stage_events",
     "daemon_events",
-    "otlp_telemetry",
 )
 
 _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
@@ -124,8 +123,6 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "daemon_stage_events",
         "daemon_events",
         "embedding_catchup_runs",
-        "otlp_spans",
-        "otlp_telemetry",
     ),
 }
 

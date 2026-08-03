@@ -372,7 +372,7 @@ def _close_test_opened_sqlite_connections(
     deliberately NOT tracked. If production leaks a connection the warning still
     fires, so this fixture cannot silently mask a real production leak — the
     kind this change just fixed in the live cursor store, the cursor-lag
-    baseline, the embedding progress ledger, and the OTLP correlation reader.
+    baseline, and the embedding progress ledger.
 
     The async (``aiosqlite``) leg is symmetric in spirit but simpler: every
     production async path opens its connection with ``async with

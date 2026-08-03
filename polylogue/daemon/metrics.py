@@ -25,10 +25,6 @@ Design notes:
 - **Resilient to missing tables.** Each section gracefully degrades
   to zero / absent series when a backing table does not yet exist
   (fresh archives, schema bumps mid-rollout).
-- **OTLP receiver deferred.** The OpenTelemetry HTTP receiver from
-  the original "ambitious move" section of #1224 is intentionally
-  out of scope here; it remains tracked under #1321 as a follow-up.
-
 Exposed series (label policy: use labels only when a series naturally
 varies on a known-bounded dimension):
 

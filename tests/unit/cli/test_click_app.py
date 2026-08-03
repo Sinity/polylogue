@@ -665,7 +665,7 @@ def test_read_views_plain_lists_profile_metadata(cli_runner: CliRunner) -> None:
     assert "evidence=required" in result.output
     assert "handoff" in result.output
     assert "options=--full, --limit, --offset" in result.output
-    assert "options=--confidence-threshold, --github-api, --otlp, --repo-path, --since-hours" in result.output
+    assert "options=--confidence-threshold, --github-api, --repo-path, --since-hours" in result.output
     assert "scope=query-set" in result.output
     assert (
         "projection=context,messages; body=authored-dialogue; render=standard; timestamps=include-available"

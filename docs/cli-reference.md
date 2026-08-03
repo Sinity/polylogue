@@ -294,7 +294,6 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
-      polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
 Projection:
@@ -373,8 +372,6 @@ Correlation view:
                                   0.3]
   --github-api / --no-github-api  Cross-reference issue/PR refs with the
                                   GitHub API via gh CLI (--view correlation).
-  --otlp                          Add OTLP span evidence to correlation output
-                                  (--view correlation).
 
 Other options:
   --full  Read a full single-session body for views that paginate.
