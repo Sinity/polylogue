@@ -6,19 +6,13 @@ from typing import get_args
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.core.enums import (
-    BlockType,
     BranchType,
     LinkType,
-    MaterialOrigin,
-    MessageType,
     Origin,
     PasteBoundary,
-    Role,
     SessionKind,
     SessionRefKind,
-    StopReason,
     TitleSource,
-    ToolResultUnknownReason,
     TopologyEdgeStatus,
     WebConstructType,
 )
@@ -28,6 +22,7 @@ from polylogue.storage.fts.sql import (
     FTS_TRIGGER_DDL,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
@@ -533,45 +528,7 @@ ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS messages (
-    message_id          TEXT GENERATED ALWAYS AS (
-                            session_id || ':' || COALESCE(native_id, position || '.' || variant_index)
-                        ) STORED UNIQUE,
-    session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    native_id           TEXT,
-    parent_message_id   TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
-    position            INTEGER NOT NULL CHECK(position >= 0),
-    role                TEXT NOT NULL CHECK ({check("role", Role)}),
-    message_type        TEXT NOT NULL DEFAULT 'message' CHECK ({check("message_type", MessageType)}),
-    material_origin     TEXT NOT NULL DEFAULT 'unknown' CHECK ({check("material_origin", MaterialOrigin)}),
-    model_name          TEXT,
-    model_effort        TEXT,
-    sender_name         TEXT,
-    recipient           TEXT,
-    delivery_status     TEXT,
-    end_turn            INTEGER CHECK(end_turn IN (0, 1) OR end_turn IS NULL),
-    user_context_text   TEXT,
-    has_tool_use        INTEGER NOT NULL DEFAULT 0 CHECK(has_tool_use IN (0, 1)),
-    has_thinking        INTEGER NOT NULL DEFAULT 0 CHECK(has_thinking IN (0, 1)),
-    has_paste           INTEGER NOT NULL DEFAULT 0 CHECK(has_paste IN (0, 1)),
-    paste_boundary      TEXT CHECK ({nullable_check("paste_boundary", PasteBoundary)}),
-    variant_index       INTEGER NOT NULL DEFAULT 0 CHECK(variant_index >= 0),
-    is_active_path      INTEGER NOT NULL DEFAULT 1 CHECK(is_active_path IN (0, 1)),
-    is_active_leaf      INTEGER NOT NULL DEFAULT 0 CHECK(is_active_leaf IN (0, 1)),
-    word_count          INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
-    input_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
-    output_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
-    cache_read_tokens   INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
-    cache_write_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
-    duration_ms         INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
-    content_hash        BLOB NOT NULL {CONTENT_HASH_CHECK},
-    occurred_at_ms      INTEGER,
-    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): the provider's own terminal-
-    -- state signal for this assistant turn (608,608 occurrences on the
-    -- Claude wire). Feeds terminal_state/result_status readers directly
-    -- instead of the 85-99%-unknown derived guesses those columns hold
-    -- today. NULL means the provider did not report one (or this is not an
-    -- assistant turn), never a guess.
-    stop_reason         TEXT CHECK ({nullable_check("stop_reason", StopReason)}),
+    {MESSAGES_SPEC.ddl_column_definitions},
     PRIMARY KEY(session_id, position, variant_index)
 ) STRICT;
 
@@ -630,69 +587,7 @@ ON messages(session_id, is_active_leaf)
 WHERE is_active_leaf = 1;
 
 CREATE TABLE IF NOT EXISTS blocks (
-    block_id        TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE,
-    message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position        INTEGER NOT NULL CHECK(position >= 0),
-    block_type      TEXT NOT NULL CHECK ({check("block_type", BlockType)}),
-    text            TEXT,
-    tool_name       TEXT,
-    tool_id         TEXT,
-    tool_input      TEXT CHECK ({json_object_check("tool_input", nullable=True)}),
-    semantic_type   TEXT,
-    media_type      TEXT,
-    language        TEXT,
-    tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
-    tool_result_exit_code INTEGER,
-    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): why tool_result_is_error is
-    -- NULL for this block, when it is a tool_result. Collapsing "provider
-    -- emitted nothing", "parser deliberately distrusts the reported value",
-    -- and "this origin's parser does not read the field" into one flat NULL
-    -- was the defect (72% of blocks.tool_result_is_error is NULL
-    -- archive-wide) -- all three are knowable at parse time. NULL here means
-    -- the outcome IS known (tool_result_is_error is set), never "unknown of
-    -- an unknown reason".
-    tool_result_outcome_unknown_reason TEXT
-        CHECK ({nullable_check("tool_result_outcome_unknown_reason", ToolResultUnknownReason)}),
-    -- polylogue-vf9x (v49): provider-issued cryptographic attestation for a
-    -- THINKING block (Claude's extended-thinking `signature`; Gemini's
-    -- `thoughtSignatures` are the same construct). Populated whenever the
-    -- wire carries one -- notably including the empty-body thinking blocks
-    -- Claude Code has shipped since ~2026-06, where this is the only
-    -- surviving evidence besides the block's existence. Deliberately
-    -- excluded from content_hash below and from the lineage prefix
-    -- signature (write.py): providers re-sign on every replay, so including
-    -- it would break fork-prefix/citation-anchor matching for otherwise-
-    -- identical replayed content.
-    signature       TEXT,
-    -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
-    -- (type, text, tool_name, canonical tool_input, semantic/media/language,
-    -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/
-    -- position/tool_id so the hash survives fork-position shift, re-ingest,
-    -- and provider tool-id regeneration. Nullable (not every low-level test
-    -- fixture / raw SQL writer populates it) -- the real write path always
-    -- sets it; the resolver treats a NULL row as its own state, never a crash.
-    content_hash    BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32),
-    tool_command    TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL,
-    tool_path       TEXT GENERATED ALWAYS AS (
-                        COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))
-                    ) VIRTUAL,
-    search_text     TEXT GENERATED ALWAYS AS (
-                        trim(COALESCE(text, '') || ' ' ||
-                             COALESCE(tool_name, '') || ' ' ||
-                             COALESCE(json_extract(tool_input, '$.command'), '') || ' ' ||
-                             COALESCE(json_extract(tool_input, '$.file_path'), '') || ' ' ||
-                             COALESCE(json_extract(tool_input, '$.path'), ''))
-                    ) VIRTUAL,
-    -- ohbx: lowercased command+path text for substring lookups (e.g. "did
-    -- this bash/exec_command block invoke `polylogue`?") that need LIKE
-    -- '%x%' semantics, not FTS token matching. Backs blocks_command_trigram
-    -- below -- a plain LIKE scan here recomputes tool_command/tool_path's
-    -- json_extract for every generic-tool row in the archive (measured
-    -- ~70s over 915K rows on a 26GB archive).
-    tool_detail_text TEXT GENERATED ALWAYS AS (
-                        lower(COALESCE(tool_command, '') || ' ' || COALESCE(tool_path, ''))
-                    ) VIRTUAL,
+    {BLOCKS_SPEC.ddl_column_definitions},
     PRIMARY KEY(message_id, position)
 ) STRICT;
 

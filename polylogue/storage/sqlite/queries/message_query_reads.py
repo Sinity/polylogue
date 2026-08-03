@@ -18,6 +18,7 @@ from polylogue.storage.runtime import (
     MessageRecord,
 )
 from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
 from polylogue.storage.sqlite.queries.mappers import _row_to_message
 
 logger = get_logger(__name__)
@@ -25,40 +26,7 @@ logger = get_logger(__name__)
 MessageTypeName = Literal["message", "summary", "tool_use", "tool_result", "thinking", "context", "protocol"]
 MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] | list[MaterialOrigin | str]
 
-_MESSAGE_RECORD_SELECT = """
-    m.message_id,
-    m.session_id,
-    m.native_id AS provider_message_id,
-    m.role,
-    COALESCE((
-        SELECT group_concat(b.text, char(10))
-        FROM blocks b
-        WHERE b.message_id = m.message_id
-          AND b.text IS NOT NULL
-    ), '') AS text,
-    m.occurred_at_ms / 1000.0 AS sort_key,
-    lower(hex(m.content_hash)) AS content_hash,
-    1 AS version,
-    m.parent_message_id,
-    m.variant_index AS branch_index,
-    m.is_active_path,
-    m.position,
-    m.is_active_leaf,
-    s.origin AS source_name,
-    m.word_count,
-    m.has_tool_use,
-    m.has_thinking,
-    m.has_paste,
-    m.paste_boundary AS paste_boundary_state,
-    m.message_type,
-    m.material_origin,
-    m.model_name,
-    m.input_tokens,
-    m.output_tokens,
-    m.cache_read_tokens,
-    m.cache_write_tokens,
-    m.stop_reason
-"""
+_MESSAGE_RECORD_SELECT = MESSAGES_SPEC.record_select_column_names("m")
 
 
 async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> str:
