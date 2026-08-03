@@ -420,6 +420,7 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
                 WITH heads AS (
                     SELECT
                         r.raw_id,
+                        r.blob_hash,
                         r.parse_error,
                         r.revision_authority,
                         {census_expr} AS census_status,
@@ -479,6 +480,37 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
                 )
             ]
 
+            # polylogue-t0m73 (2026-08-03 correction to I1's framing): an
+            # unindexed head whose bytes are byte-identical to an already-
+            # indexed raw (same blob_hash, different raw_id -- e.g. a second
+            # acquisition of content already captured) is not novel missing
+            # content. The operator's live-run challenge measured 4,305 of
+            # 7,200 unindexed heads (77%) in this bucket -- without it, the
+            # check's own evidence overstates the gap as if every unindexed
+            # head were a distinct materialization failure. This never
+            # changes ``blocking`` (an untyped/orphan head is still an error
+            # regardless of whether its bytes happen to be duplicated
+            # elsewhere); it only prevents the report from repeating the
+            # overstatement.
+            byte_dup_of_indexed_n = int(
+                conn.execute(
+                    f"""
+                    {heads_cte}
+                    SELECT SUM(CASE WHEN {quarantined_predicate.replace("rn = 1 AND ", "")}
+                                       OR {untyped_predicate.replace("rn = 1 AND ", "")}
+                                  THEN (
+                                    EXISTS(
+                                        SELECT 1 FROM raw_sessions dup
+                                        JOIN idx_tier.sessions ds ON ds.raw_id = dup.raw_id
+                                        WHERE dup.blob_hash = heads.blob_hash
+                                    )
+                                  ) ELSE 0 END)
+                    FROM heads WHERE rn = 1
+                    """
+                ).fetchone()[0]
+                or 0
+            )
+
             orphan_count = conn.execute(
                 """
                 SELECT COUNT(*) FROM idx_tier.sessions s
@@ -513,6 +545,8 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
     else:
         status = OutcomeStatus.OK
 
+    novel_unindexed_n = max(unindexed_head_count - byte_dup_of_indexed_n, 0)
+
     parts = [f"{total_heads:,} logical source head(s), {unindexed_head_count:,} unindexed"]
     if untyped_n:
         parts.append(f"untyped={untyped_n:,}")
@@ -522,6 +556,10 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
         parts.append(f"parse_error={parse_error_n:,}")
     if non_session_n or census_failed_n:
         parts.append(f"declared-non-session={non_session_n + census_failed_n:,}")
+    if byte_dup_of_indexed_n:
+        parts.append(
+            f"byte-dup-of-indexed={byte_dup_of_indexed_n:,} (novel={novel_unindexed_n:,} of {unindexed_head_count:,})"
+        )
     if orphan_count:
         parts.append(f"orphans={int(orphan_count):,}")
     summary = "; ".join(parts)
@@ -545,6 +583,8 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
             "census_failed_count": census_failed_n,
             "quarantined_count": quarantined_n,
             "quarantined_sample": quarantined_sample,
+            "byte_dup_of_indexed_count": byte_dup_of_indexed_n,
+            "novel_unindexed_count": novel_unindexed_n,
             "orphan_count": int(orphan_count or 0),
             "orphan_sample": orphan_sample,
         },
@@ -1263,6 +1303,250 @@ def _check_counts_summary(archive_root: Path, _sample_limit: int) -> ArchiveVeri
 
 
 # ---------------------------------------------------------------------------
+# Check 8: convergence freshness (I6, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+#: Window within which *some* daemon/convergence activity must have been
+#: observed for an open unindexed backlog to read as "being worked" rather
+#: than stalled. 24h matches the daemon's own quiet-window/catch-up cadence
+#: (see ``daemon/convergence_stages.py``) -- shorter than that flags normal
+#: async lag as false-positive stalls; much longer hides a genuinely dead
+#: converger for days.
+CONVERGENCE_FRESHNESS_WINDOW_MS = 24 * 3600 * 1000
+
+
+def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
+    """Count of ``raw_sessions`` logical heads with no indexed materialization
+    and no terminal typed refusal (parse_error / declared non-session) --
+    the same universe :func:`_check_source_index_coverage` (I1) tallies as
+    ``untyped_count + quarantined_count``, recomputed here so I6 doesn't
+    need I1's full breakdown/sample evidence, only the scalar gap.
+    """
+    has_census = table_exists(conn, "raw_membership_census")
+    census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
+    row = conn.execute(
+        f"""
+        WITH heads AS (
+            SELECT
+                r.raw_id,
+                r.parse_error,
+                {census_expr} AS census_status,
+                MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                    OVER (PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)) AS any_indexed,
+                ROW_NUMBER() OVER (
+                    PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)
+                    ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                ) AS rn
+            FROM raw_sessions r
+        )
+        SELECT SUM(
+            CASE WHEN rn = 1 AND any_indexed = 0 AND parse_error IS NULL
+                      AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                 THEN 1 ELSE 0 END
+        )
+        FROM heads WHERE rn = 1
+        """
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def _check_convergence_freshness(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    """An open unindexed backlog is only benign async lag if convergence is
+    actively working it (I6, polylogue-t0m73).
+
+    The prototype's original I6 criterion ("some daemon activity happened
+    ever") was too weak: it passed on an archive with a 7,200-source gap
+    and zero daemon stage events in the preceding 24h, because activity from
+    weeks earlier still counted. The corrected criterion requires BOTH a
+    non-zero gap (reusing I1's universe via :func:`_unindexed_backlog_gap`)
+    AND *no* convergence activity inside :data:`CONVERGENCE_FRESHNESS_WINDOW_MS`
+    across ``daemon_events``, ``daemon_stage_events``, and ``convergence_debt``
+    (the last of these was itself missed by the original predicate --
+    a debt row's own ``updated_at_ms`` is evidence of retry activity even
+    when no daemon_events/stage_events row was emitted in the same window).
+    A gap with recent activity is WARNING (backlog exists, still converging);
+    a gap with no recent activity anywhere is ERROR (stalled, not lag).
+    """
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    index_path = _resolve_index_path(archive_root)
+    ops_path = _tier_path(archive_root, ArchiveTier.OPS)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("convergence-freshness", "source.db or index.db not present")
+    if not ops_path.exists():
+        return _skip_check("convergence-freshness", "ops.db not present")
+
+    try:
+        conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("convergence-freshness", f"could not open source.db: {exc}", exc=exc)
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("convergence-freshness", f"could not attach index.db: {exc}", exc=exc)
+        try:
+            gap = _unindexed_backlog_gap(conn)
+        except sqlite3.Error as exc:
+            return _error_check("convergence-freshness", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    if gap == 0:
+        return ArchiveVerificationCheck(
+            name="convergence-freshness",
+            status=OutcomeStatus.OK,
+            summary="no unindexed backlog to converge",
+            evidence={"unindexed_backlog_gap": 0},
+        )
+
+    try:
+        ops_conn = _open_ro(ops_path)
+    except sqlite3.Error as exc:
+        return _error_check("convergence-freshness", f"could not open ops.db: {exc}", exc=exc)
+
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    activity: dict[str, Any] = {}
+    most_recent_ms: int | None = None
+    try:
+        if table_exists(ops_conn, "daemon_events"):
+            row = ops_conn.execute("SELECT MAX(ts_ms) FROM daemon_events").fetchone()
+            if row and row[0] is not None:
+                activity["daemon_events_latest_ms"] = int(row[0])
+                most_recent_ms = max(most_recent_ms or int(row[0]), int(row[0]))
+        if table_exists(ops_conn, "daemon_stage_events"):
+            row = ops_conn.execute("SELECT MAX(observed_at_ms) FROM daemon_stage_events").fetchone()
+            if row and row[0] is not None:
+                activity["daemon_stage_events_latest_ms"] = int(row[0])
+                most_recent_ms = max(most_recent_ms or int(row[0]), int(row[0]))
+        if table_exists(ops_conn, "convergence_debt"):
+            row = ops_conn.execute("SELECT MAX(updated_at_ms), COUNT(*) FROM convergence_debt").fetchone()
+            activity["convergence_debt_count"] = int(row[1] or 0) if row else 0
+            if row and row[0] is not None:
+                activity["convergence_debt_latest_ms"] = int(row[0])
+                most_recent_ms = max(most_recent_ms or int(row[0]), int(row[0]))
+    except sqlite3.Error as exc:
+        return _error_check("convergence-freshness", f"could not read ops.db: {exc}", exc=exc)
+    finally:
+        ops_conn.close()
+
+    age_ms = None if most_recent_ms is None else now_ms - most_recent_ms
+    recent = age_ms is not None and age_ms <= CONVERGENCE_FRESHNESS_WINDOW_MS
+    evidence = {"unindexed_backlog_gap": gap, "window_ms": CONVERGENCE_FRESHNESS_WINDOW_MS, **activity}
+    if age_ms is not None:
+        evidence["most_recent_activity_age_ms"] = age_ms
+
+    if recent:
+        return ArchiveVerificationCheck(
+            name="convergence-freshness",
+            status=OutcomeStatus.WARNING,
+            summary=f"{gap:,} unindexed head(s) with convergence activity in the last "
+            f"{CONVERGENCE_FRESHNESS_WINDOW_MS // 3_600_000}h -- still converging, not stalled",
+            count=gap,
+            evidence=evidence,
+        )
+    return ArchiveVerificationCheck(
+        name="convergence-freshness",
+        status=OutcomeStatus.ERROR,
+        summary=f"{gap:,} unindexed head(s), no daemon/convergence activity in the last "
+        f"{CONVERGENCE_FRESHNESS_WINDOW_MS // 3_600_000}h -- stalled, not just async lag",
+        count=gap,
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check 9: user-tier reference liveness (I10, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+
+def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """``assertions.target_ref`` of kind ``session``/``message`` must resolve
+    to a live row in ``index.db`` (I10, polylogue-t0m73).
+
+    Universe is ``assertions`` itself -- the durable, irreplaceable user-tier
+    ground truth (a mark/annotation/correction a human or agent made) -- not
+    ``index.db``'s own bookkeeping of what it currently holds. An assertion
+    whose target no longer resolves (the session/message it was about was
+    deleted or never survived a rebuild) is a dangling reference: not fatal
+    to read, but the annotation becomes silently unreachable from any
+    normal target-scoped query.
+    """
+    user_path = _tier_path(archive_root, ArchiveTier.USER)
+    index_path = _resolve_index_path(archive_root)
+    if not user_path.exists() or not index_path.exists():
+        return _skip_check("user-tier-refs", "user.db or index.db not present")
+
+    try:
+        conn = _open_ro(user_path)
+    except sqlite3.Error as exc:
+        return _error_check("user-tier-refs", f"could not open user.db: {exc}", exc=exc)
+
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("user-tier-refs", f"could not attach index.db: {exc}", exc=exc)
+        try:
+            if not table_exists(conn, "assertions"):
+                return _skip_check("user-tier-refs", "assertions table not present")
+
+            dangling_predicate = """
+                (a.target_ref LIKE 'session:%' AND NOT EXISTS (
+                    SELECT 1 FROM idx_tier.sessions s WHERE s.session_id = substr(a.target_ref, 9)
+                ))
+                OR (a.target_ref LIKE 'message:%' AND NOT EXISTS (
+                    SELECT 1 FROM idx_tier.messages m WHERE m.message_id = substr(a.target_ref, 9)
+                ))
+            """
+            total, dangling_sessions, dangling_messages = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN a.target_ref LIKE 'session:%' OR a.target_ref LIKE 'message:%' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN a.target_ref LIKE 'session:%' AND NOT EXISTS (
+                        SELECT 1 FROM idx_tier.sessions s WHERE s.session_id = substr(a.target_ref, 9)
+                    ) THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN a.target_ref LIKE 'message:%' AND NOT EXISTS (
+                        SELECT 1 FROM idx_tier.messages m WHERE m.message_id = substr(a.target_ref, 9)
+                    ) THEN 1 ELSE 0 END)
+                FROM assertions a
+                """
+            ).fetchone()
+            sample = [
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT assertion_id FROM assertions a WHERE {dangling_predicate} LIMIT ?",
+                    (sample_limit,),
+                )
+            ]
+        except sqlite3.Error as exc:
+            return _error_check("user-tier-refs", f"could not read user/index tiers: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    total_n = int(total or 0)
+    dangling_n = int(dangling_sessions or 0) + int(dangling_messages or 0)
+    status = OutcomeStatus.ERROR if dangling_n else OutcomeStatus.OK
+    summary = (
+        f"{total_n:,} session/message-scoped assertion(s), {dangling_n:,} dangling"
+        if dangling_n
+        else f"{total_n:,} session/message-scoped assertion(s), all resolve"
+    )
+    return ArchiveVerificationCheck(
+        name="user-tier-refs",
+        status=status,
+        summary=summary,
+        count=dangling_n,
+        details=[f"dangling:{assertion_id}" for assertion_id in sample],
+        evidence={
+            "total_scoped_assertion_count": total_n,
+            "dangling_session_ref_count": int(dangling_sessions or 0),
+            "dangling_message_ref_count": int(dangling_messages or 0),
+            "dangling_sample": sample,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1341,6 +1625,19 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "Archive-wide session/message/block counts and origin breakdown (numbers-freeze starter).",
         _check_counts_summary,
         ArchiveVerificationCheckClass.COMPLEXITY,
+    ),
+    ArchiveVerificationCheckSpec(
+        "convergence-freshness",
+        "An open unindexed backlog (I1's universe) with no daemon/convergence activity in the last 24h is "
+        "stalled, not async lag (polylogue-t0m73 I6).",
+        _check_convergence_freshness,
+        ArchiveVerificationCheckClass.FRESHNESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "user-tier-refs",
+        "assertions.target_ref of kind session/message resolves to a live index.db row (polylogue-t0m73 I10).",
+        _check_user_tier_refs,
+        ArchiveVerificationCheckClass.LIVENESS,
     ),
 )
 
