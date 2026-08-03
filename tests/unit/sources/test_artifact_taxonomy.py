@@ -181,6 +181,50 @@ def test_workflow_run_snapshot_never_classifies_as_session() -> None:
     assert artifact.parse_as_session is False
 
 
+def test_antigravity_brain_metadata_sidecar_never_schema_eligible_or_session() -> None:
+    """Regression pin for polylogue-3m3de: a real ``brain/<uuid>/*.md.metadata
+    .json`` sidecar (content shape verified against this machine's real
+    ``~/.gemini/antigravity/brain`` corpus, 940 files, 0 leaks) must never
+    become a session, AND must never be ``schema_eligible`` -- the latter is
+    what keeps it out of schema-inference sampling
+    (``schemas/sampling_db.py``'s ``_iter_schema_units_from_db`` already
+    excludes any ``classify_artifact_path`` result with
+    ``schema_eligible=False``, which this pins for antigravity specifically).
+
+    polylogue-3m3de's live measurement (232 growing ``raw_sessions`` rows,
+    zero ``.pb`` conversations acquired) is raw-tier acquisition volume --
+    ``source.db`` durably retains every acquired file regardless of
+    classification, by design -- not evidence that this classification gate
+    is missing; this test locks in that the gate itself is intact. The
+    unaddressed half is acquiring the real ``.pb`` conversations at all: the
+    live daemon watcher only watches ``antigravity`` sources for
+    ``.metadata.json`` (``sources/live/watcher.py``), never ``.pb`` -- a
+    separate acquisition-wiring gap, not a classification one, and out of
+    this fix's scope (would need the language-server RPC bridge wired into
+    the live daemon, not merely a classification tightening).
+    """
+    real_metadata: JSONValue = {
+        "artifactType": "ARTIFACT_TYPE_OTHER",
+        "summary": (
+            "Comprehensive audit results addressing: top-up/backfill elimination status, "
+            "DB mode removal evaluation with architectural analysis, Provenance distinction "
+            "justification, environment variable naming compliance check, per-crate "
+            "documentation gaps, and entity resolution verification."
+        ),
+        "updatedAt": "2026-01-07T19:08:15.216541610Z",
+    }
+
+    artifact = classify_artifact(
+        real_metadata,
+        provider="antigravity",
+        source_path="/tmp/.gemini/antigravity/brain/03c22aa3-8b7f-438d-baa8-d12567249cd9/comprehensive_audit.md.metadata.json",
+    )
+
+    assert artifact.kind is ArtifactKind.AGENT_SIDECAR_META
+    assert artifact.parse_as_session is False
+    assert artifact.schema_eligible is False
+
+
 def test_tool_result_sidecar_never_classifies_as_session_even_when_content_looks_like_one() -> None:
     """Regression for polylogue-omsw: a ``tool-results/<name>`` sidecar must
     never become a session regardless of its content, only its path.
