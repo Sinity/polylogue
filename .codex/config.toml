@@ -30,5 +30,5 @@ description = "Evidence-first bead/audit triage at volume: already-satisfied det
 config_file = "agents/triage.toml"
 
 [agents.narrow_worker]
-description = "Implements a pre-specified red test, fixture, or checklist-grade recipe exactly as written. Luna, high reasoning, full write, narrow footprint."
+description = "Executes a fully-specified lane -- a red test/fixture, or a whole already-decided architectural refactor -- without re-deriving the design. Luna, high reasoning, full write."
 config_file = "agents/narrow-worker.toml"
