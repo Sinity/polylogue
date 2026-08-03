@@ -1,7 +1,8 @@
 """bead-cluster: execution-frontier clustering for polylogue Beads.
 
 Implements polylogue-2yax: reads bd ready (or a supplied JSON export), extracts
-file/package/resource footprints from each bead's design+notes+ac text, builds
+file/package/resource footprints from each bead's design+notes+ac+description
+text, builds
 a weighted overlap graph, and emits:
 
   - FRONTIER-READY   -- horizon:frontier, no blocking deps -> claim now
@@ -167,6 +168,7 @@ _BROAD_PACKAGES: frozenset[str] = frozenset(
         "polylogue/",
         ".agent/",
         ".agent/scratch/",
+        ".agent/handoffs/",
         "storage/sqlite/",
         "pipeline/",
         "docs/",
@@ -212,7 +214,17 @@ class Footprint:
 
 
 def _extract_footprint(item: BeadDict) -> Footprint:
-    text = " ".join(filter(None, [item.get("design", ""), item.get("notes", ""), item.get("acceptance_criteria", "")]))
+    text = " ".join(
+        filter(
+            None,
+            [
+                item.get("design", ""),
+                item.get("notes", ""),
+                item.get("acceptance_criteria", ""),
+                item.get("description", ""),
+            ],
+        )
+    )
     labels: list[str] = item.get("labels", [])
 
     # Raw file paths (most specific footprint signal)
