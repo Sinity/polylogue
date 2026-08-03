@@ -115,6 +115,30 @@ def read_cgroup_memory_swap_current_mb() -> float | None:
     return _bytes_to_mb(_read_cgroup_int("memory.swap.current"))
 
 
+def read_cgroup_memory_max_bytes() -> int | None:
+    """Return this cgroup's ``memory.max`` (hard ceiling) in bytes.
+
+    ``None`` when the cgroup v2 controller is not mounted, the file is
+    missing (no controller delegated, e.g. outside a cgroup or in a
+    container without ``memory`` enabled), or the limit is literally
+    ``max`` (unlimited) -- ``_read_cgroup_int`` already treats ``max`` as
+    ``None``, which is the correct "no ceiling" reading here too.
+    """
+    return _read_cgroup_int("memory.max")
+
+
+def read_cgroup_memory_high_bytes() -> int | None:
+    """Return this cgroup's ``memory.high`` (soft throttle threshold) in bytes.
+
+    ``None`` under the same conditions as :func:`read_cgroup_memory_max_bytes`.
+    Reclaimable/mmap'd file-backed pages are throttled (evict-under-pressure)
+    once usage crosses this threshold, before ``memory.max`` would ever OOM-kill
+    -- see ``polylogue.storage.sqlite.connection_profile.mapped_bytes_budget``
+    for why this threshold matters independently of the hard ceiling.
+    """
+    return _read_cgroup_int("memory.high")
+
+
 def read_cgroup_memory_stat_mb() -> dict[str, float]:
     """Return selected memory.stat counters for the current cgroup in MiB."""
     path = _cgroup_file("memory.stat")
@@ -277,6 +301,8 @@ __all__ = [
     "SlowItemTracker",
     "StageMetrics",
     "read_cgroup_memory_current_mb",
+    "read_cgroup_memory_high_bytes",
+    "read_cgroup_memory_max_bytes",
     "read_cgroup_memory_peak_mb",
     "read_cgroup_memory_stat_mb",
     "read_cgroup_memory_swap_current_mb",

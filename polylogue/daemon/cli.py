@@ -2130,6 +2130,19 @@ async def run_daemon_services(
 
     logger.info("daemon started")
 
+    # polylogue-e98k: log the computed SQLite mmap/cache budget against this
+    # process' cgroup memory limits before anything else runs. This is the
+    # observability half of the 2026-07-31 memory-throttling incident (see
+    # connection_profile.py's module comment) -- a mismatch used to be
+    # discoverable only by symptom (slow_write, throttling, a stalled ingest)
+    # hours later; now it is a one-line grep of the startup log.
+    from polylogue.storage.sqlite.connection_profile import (
+        check_mapped_bytes_budget_against_cgroup_limit,
+        log_mapped_bytes_budget_check,
+    )
+
+    log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
+
     # Schema preflight runs FIRST, before any DB-touching startup task. A
     # mismatched runtime/db combination must not even open the DB for FTS or
     # heartbeat queries — that is the IO cost #1003 is meant to avoid.
