@@ -34,7 +34,7 @@ from polylogue.context.compiler import (
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, TitleSource
 from polylogue.core.errors import PolylogueError
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
     ObjectRef,
@@ -127,6 +127,7 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
@@ -1249,6 +1250,75 @@ def _archive_correlate_hermes_context_deliveries(
             exc_info=True,
         )
         return ()
+
+
+def _archive_get_setting(config: Config, setting_key: str) -> ArchiveUserSettingEnvelope | None:
+    """Read one durable ``user_settings`` row, or ``None`` when unset (polylogue-at44)."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import get_user_setting
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return get_user_setting(conn, setting_key)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _archive_list_settings(config: Config) -> list[ArchiveUserSettingEnvelope]:
+    """List every stored ``user_settings`` row, ordered by key."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import list_user_settings
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return list_user_settings(conn)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return []
+
+
+def _archive_set_setting(
+    config: Config,
+    setting_key: str,
+    value: object,
+    *,
+    author_ref: str = "user:local",
+) -> ArchiveUserSettingEnvelope:
+    """Insert-or-update one typed ``user_settings`` row.
+
+    ``user.db`` must already be initialized (an archive that has never
+    ingested anything has no durable tier to write into yet).
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("user settings tier is not initialized")
+    try:
+        conn = open_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = set_user_setting(conn, setting_key, cast(JSONValue, value), author_ref=author_ref)
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to set user setting {setting_key!r}: {exc}") from exc
 
 
 def _archive_reconcile_hermes_session_lifecycle(
@@ -7456,3 +7526,34 @@ class PolylogueArchiveMixin:
             if limit > 0 and len(notes) >= limit:
                 break
         return notes
+
+    async def get_setting(self, setting_key: str) -> ArchiveUserSettingEnvelope | None:
+        """Read one durable ``user_settings`` row, or ``None`` when unset (polylogue-at44).
+
+        This is the liveness slice: a closed, typed registry of setting
+        keys (``subscription_tier`` today), not a free-form key-value store.
+        The full scope x actor x override resolver belongs to the w8db epic.
+        """
+
+        return _archive_get_setting(self.config, setting_key)
+
+    async def list_settings(self) -> list[ArchiveUserSettingEnvelope]:
+        """List every stored ``user_settings`` row, ordered by key."""
+
+        return _archive_list_settings(self.config)
+
+    async def set_setting(
+        self,
+        setting_key: str,
+        value: object,
+        *,
+        author_ref: str = "user:local",
+    ) -> ArchiveUserSettingEnvelope:
+        """Insert-or-update one typed ``user_settings`` row.
+
+        Raises :class:`ValueError` for an unknown ``setting_key`` or a
+        value the key's validator rejects (see
+        :mod:`polylogue.storage.sqlite.archive_tiers.user_settings_write`).
+        """
+
+        return _archive_set_setting(self.config, setting_key, value, author_ref=author_ref)
