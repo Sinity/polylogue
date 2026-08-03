@@ -10,7 +10,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 
-from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.enums import IngestOutcome, OperationStatus, Origin
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
@@ -610,7 +610,7 @@ def upsert_ingest_cursor(
 def record_ingest_attempt(
     conn: sqlite3.Connection,
     *,
-    status: str,
+    status: OperationStatus | str,
     source_path: str | None = None,
     origin: Origin | str | None = None,
     phase: str | None = None,
@@ -634,6 +634,7 @@ def record_ingest_attempt(
     """
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
+    status_value = status.value if isinstance(status, OperationStatus) else status
     has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
     route_column = "storage_route,\n            " if has_storage_route else ""
     route_value = "?, " if has_storage_route else ""
@@ -706,7 +707,7 @@ def record_ingest_attempt(
             attempt_id,
             source_path,
             _origin_value(origin),
-            status,
+            status_value,
             phase,
             *route_params,
             *outcome_params,
@@ -1061,7 +1062,7 @@ def upsert_embedding_catchup_run(
     run_id: str | None = None,
     started_at_ms: int,
     finished_at_ms: int | None = None,
-    status: str,
+    status: OperationStatus | str,
     origin: Origin | str | None = None,
     scanned_sessions: int = 0,
     embedded_sessions: int = 0,
@@ -1074,6 +1075,7 @@ def upsert_embedding_catchup_run(
     """Create or replace one ``embedding_catchup_runs`` row and return ``run_id``."""
     if run_id is None:
         run_id = str(uuid.uuid4())
+    status_value = status.value if isinstance(status, OperationStatus) else status
     ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
@@ -1109,7 +1111,7 @@ def upsert_embedding_catchup_run(
             run_id,
             started_at_ms,
             finished_at_ms,
-            status,
+            status_value,
             _origin_value(origin),
             scanned_sessions,
             embedded_sessions,

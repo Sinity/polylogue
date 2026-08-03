@@ -798,6 +798,7 @@ def component_from_operation_status(
         OperationStatus.COMPLETED: CapabilityReadinessState.READY,
         OperationStatus.REJECTED: CapabilityReadinessState.BLOCKED,
         OperationStatus.FAILED: CapabilityReadinessState.BLOCKED,
+        OperationStatus.INTERRUPTED: CapabilityReadinessState.BLOCKED,
     }[operation_status]
     return ComponentReadiness(component=component, scope=scope, state=state, summary=summary)
 

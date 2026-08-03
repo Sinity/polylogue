@@ -37,6 +37,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.repair import ArchiveDebtStatus
@@ -125,13 +126,9 @@ def _coerce_backfill_kind(value: object) -> BackfillKind:
         return _RETIRED_STORED_KIND_MAP.get(text, BackfillKind.DERIVED_REBUILD)
 
 
-class BackfillStatus(str, Enum):
-    """Lifecycle status of a backfill operation."""
-
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
+# Compatibility name for callers that imported the former planner-local enum.
+# The operation model itself uses the canonical enum directly below.
+BackfillStatus = OperationStatus
 
 
 @dataclass(frozen=True)
@@ -240,7 +237,7 @@ class BackfillOperation:
     operation_id: str
     kind: BackfillKind
     targets: tuple[str, ...]
-    status: BackfillStatus = BackfillStatus.PENDING
+    status: OperationStatus = OperationStatus.PENDING
     progress: float = 0.0
     started_at: str | None = None
     completed_at: str | None = None
@@ -302,11 +299,11 @@ class BackfillOperation:
 
         op_id = str(payload.get("operation_id", ""))
         kind = _coerce_backfill_kind(payload.get("kind", BackfillKind.DERIVED_REBUILD.value))
-        status_raw = str(payload.get("status", BackfillStatus.PENDING.value))
+        status_raw = str(payload.get("status", OperationStatus.PENDING.value))
         try:
-            status = BackfillStatus(status_raw)
+            status = OperationStatus(status_raw)
         except ValueError:
-            status = BackfillStatus.PENDING
+            status = OperationStatus.PENDING
         targets_raw = payload.get("targets") or ()
         if not isinstance(targets_raw, (list, tuple)):
             targets_raw = ()

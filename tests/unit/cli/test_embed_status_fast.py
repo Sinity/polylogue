@@ -961,6 +961,28 @@ def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
     assert payload["latest_material_catchup_run"] == latest
 
 
+def test_archive_backfill_stop_persists_canonical_interrupted_status(tmp_path: Path) -> None:
+    from polylogue.cli.commands.embed import _record_archive_backfill_run
+
+    _record_archive_backfill_run(
+        tmp_path / "index.db",
+        started_at_ms=1_767_225_700_000,
+        status="stopped",
+        processed_sessions=2,
+        embedded_sessions=1,
+        skipped_sessions=0,
+        error_count=0,
+        embedded_messages=3,
+        estimated_cost_usd=0.001,
+        stop_reason="time limit reached",
+        configured_root=tmp_path,
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute("SELECT status FROM embedding_catchup_runs WHERE run_id IS NOT NULL").fetchone()
+    assert row == ("interrupted",)
+
+
 def test_status_json_distinguishes_latest_material_archive_catchup(tmp_path: Path) -> None:
     db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"

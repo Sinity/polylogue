@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import get_args
 
-from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
 OPS_SCHEMA_VERSION = 1
+_OPS_RUN_STATUS_CHECK = literal_check("status", *(status.value for status in OPERATION_LIFECYCLE_STATUSES))
 
 # Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
 # that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
@@ -72,7 +73,7 @@ CREATE TABLE IF NOT EXISTS ingest_attempts (
     attempt_id             TEXT PRIMARY KEY,
     source_path            TEXT,
     origin                 TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
-    status                 TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'interrupted')),
+    status                 TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
     phase                  TEXT,
     storage_route          TEXT,
     started_at_ms          INTEGER NOT NULL,
@@ -182,16 +183,17 @@ CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
 ON daemon_lifecycle(started_at_ms DESC);
 
 -- Sole live embedding_catchup_runs table (writer: ops_write.upsert_embedding_catchup_run).
--- Status vocabulary: the CLI backfill payload says 'stopped'/'complete';
--- cli/commands/embed.py:_record_archive_backfill_run translates those to
--- 'cancelled'/'completed' at this write boundary. A pre-split monolith table
--- of the same name (different shape, statuses incl. 'stopped'/'interrupted')
--- survives read-only via storage/embeddings/progress.py.
+-- Status vocabulary is generated from the canonical operation lifecycle enum.
+-- The public CLI payload retains its 'stopped'/'complete' display vocabulary;
+-- cli/commands/embed.py maps those values to typed operation statuses at this
+-- write boundary. A pre-split monolith table of the same name (different
+-- shape, statuses incl. 'stopped'/'interrupted') survives read-only via
+-- storage/embeddings/progress.py.
 CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
     run_id              TEXT PRIMARY KEY,
     started_at_ms       INTEGER NOT NULL,
     finished_at_ms      INTEGER,
-    status              TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+    status              TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
     origin              TEXT CHECK ({nullable_check("origin", Origin)}),
     scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
     embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),

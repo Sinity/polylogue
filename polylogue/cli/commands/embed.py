@@ -29,6 +29,7 @@ import click
 
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import OperationStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -177,6 +178,12 @@ class BackfillResultPayload(TypedDict):
     processed_sessions: int
     preflight: dict[str, object]
     sessions: list[BackfillSessionPayload]
+
+
+_ARCHIVE_BACKFILL_STATUS_MAP: dict[str, OperationStatus] = {
+    "complete": OperationStatus.COMPLETED,
+    "stopped": OperationStatus.INTERRUPTED,
+}
 
 
 def _render_backfill_json(payload: BackfillResultPayload) -> None:
@@ -875,11 +882,11 @@ def _record_archive_backfill_run(
 
     ops_db = (configured_root / "ops.db") if configured_root is not None else index_db.with_name("ops.db")
     initialize_archive_database(ops_db, ArchiveTier.OPS)
-    # Vocabulary boundary: the CLI payload says 'stopped'/'complete'; the
-    # ops-tier CHECK (archive_tiers/ops.py) admits
-    # 'running'/'completed'/'failed'/'cancelled'. Translate here, at the sole
-    # write site, so the two vocabularies never meet anywhere else.
-    terminal_status = "cancelled" if status == "stopped" else "completed"
+    try:
+        terminal_status = _ARCHIVE_BACKFILL_STATUS_MAP[status]
+    except KeyError as exc:
+        choices = ", ".join(_ARCHIVE_BACKFILL_STATUS_MAP)
+        raise ValueError(f"unknown archive backfill status {status!r}; expected one of: {choices}") from exc
     with closing(sqlite3.connect(ops_db, timeout=30.0)) as conn:
         upsert_embedding_catchup_run(
             conn,
