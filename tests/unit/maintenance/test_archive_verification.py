@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -710,6 +711,287 @@ def test_message_count_projection_passes_on_coherent_archive(tmp_path: Path) -> 
     assert check.evidence["drifted_session_count"] == 0
 
 
+def test_missing_enum_value_trips_enum_superset_check(tmp_path: Path) -> None:
+    """RED TWIN (I2): a live CHECK list frozen at an older, narrower Origin
+    vocabulary is exactly the drift class this check exists to catch -- an
+    additive enum change that didn't rebuild every table's DDL. A fresh
+    fixture can't reproduce a real table falling behind (its DDL is always
+    generated from the current enum), so this creates a synthetic table
+    whose CHECK list the check's own regex recognizes (``origin ... IN
+    (...)``), pinned to a single, deliberately-stale origin value."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute("CREATE TABLE frozen_origin_probe (origin TEXT NOT NULL CHECK(origin IN ('codex-session')))")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("enum-superset-check",))
+
+    check = _check(report, "enum-superset-check")
+    assert check.status is OutcomeStatus.ERROR
+    assert "source.db:frozen_origin_probe.origin" in check.evidence["missing_by_column"]
+
+
+def test_byte_dup_of_indexed_head_is_reported_as_evidence_not_hidden(tmp_path: Path) -> None:
+    """I1 correction (2026-08-03 operator challenge): an unindexed head whose
+    bytes duplicate an already-indexed raw is real evidence the gap isn't
+    all-novel. This must show up as report evidence (byte_dup_of_indexed_count,
+    novel_unindexed_count) without silently suppressing the underlying
+    quarantined/untyped classification the head still gets."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-dup', 'codex-session', 'session-dup', '/y', ?, 10, 200)
+            """,
+            (b"a" * 32,),  # same blob_hash as raw-1, which IS indexed; defaults to quarantined
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage",))
+
+    check = _check(report, "source-index-coverage")
+    assert check.status is OutcomeStatus.WARNING  # quarantined (default authority), not untyped -- doesn't block
+    assert check.evidence["quarantined_count"] == 1
+    assert check.evidence["byte_dup_of_indexed_count"] == 1
+    assert check.evidence["novel_unindexed_count"] == 0
+
+
+def test_stalled_backlog_trips_convergence_freshness(tmp_path: Path) -> None:
+    """RED TWIN (I6): an unindexed backlog (a second, uncovered logical
+    source) with no daemon/convergence activity recorded in ops.db is
+    exactly the "stalled, not async lag" condition this check exists to
+    catch -- the corrected criterion (gap>0 AND no recent activity) that
+    replaced the prototype's too-weak "some activity ever happened"."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-gap', 'codex-session', 'session-gap', '/z', ?, 10, 300)
+            """,
+            (b"b" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    # ops.db exists (bootstrapped by _seed_coherent_archive) but carries no
+    # daemon_events/daemon_stage_events/convergence_debt rows -- no activity.
+
+    report = verify_archive(tmp_path, checks=("convergence-freshness",))
+
+    check = _check(report, "convergence-freshness")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unindexed_backlog_gap"] == 1
+
+
+@pytest.mark.frozen_clock_modules("polylogue.maintenance.archive_verification")
+def test_recent_activity_downgrades_convergence_freshness_to_warning(tmp_path: Path, frozen_clock: Any) -> None:
+    """A gap with recent daemon activity is WARNING (still converging), not
+    ERROR (stalled) -- the criterion's second half, proven independently of
+    the red twin above."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-gap', 'codex-session', 'session-gap', '/z', ?, 10, 300)
+            """,
+            (b"b" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    ops_conn = _connect(tmp_path / "ops.db")
+    try:
+        now_ms = int(frozen_clock.now().timestamp() * 1000)
+        ops_conn.execute(
+            "INSERT INTO daemon_events(ts_ms, kind, operation_id, payload_json) VALUES (?, 'ingest', 'op-1', '{}')",
+            (now_ms,),
+        )
+        ops_conn.commit()
+    finally:
+        ops_conn.close()
+
+    report = verify_archive(tmp_path, checks=("convergence-freshness",))
+
+    check = _check(report, "convergence-freshness")
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["unindexed_backlog_gap"] == 1
+
+
+def test_convergence_freshness_passes_with_no_gap(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("convergence-freshness",))
+
+    check = _check(report, "convergence-freshness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["unindexed_backlog_gap"] == 0
+
+
+def test_dangling_assertion_target_trips_user_tier_refs(tmp_path: Path) -> None:
+    """RED TWIN (I10): a user-tier assertion whose target session/message no
+    longer resolves in index.db is a dangling reference -- silently
+    unreachable from any normal target-scoped query, exactly the liveness
+    gap this check exists to catch."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "user.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO assertions(assertion_id, target_ref, kind, body_text, created_at_ms, updated_at_ms)
+            VALUES ('a-dangling', 'session:codex-session:no-such-session', 'note', 'orphaned note', 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("user-tier-refs",))
+
+    check = _check(report, "user-tier-refs")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["dangling_session_ref_count"] == 1
+    assert "a-dangling" in check.evidence["dangling_sample"]
+
+
+def test_user_tier_refs_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "user.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO assertions(assertion_id, target_ref, kind, body_text, created_at_ms, updated_at_ms)
+            VALUES ('a-live', 'session:codex-session:session', 'note', 'a live note', 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("user-tier-refs",))
+
+    check = _check(report, "user-tier-refs")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["total_scoped_assertion_count"] == 1
+    assert check.evidence["dangling_session_ref_count"] == 0
+
+
+def test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, failure_count, next_retry_at, updated_at_ms)
+            VALUES ('/poison.jsonl', 1, 5, '2026-08-04T00:00:00+00:00', 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("excluded-cursor-vocabulary-honesty",))
+
+    check = _check(report, "excluded-cursor-vocabulary-honesty")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["mislabeled_count"] == 1
+    assert "/poison.jsonl" in check.details
+
+
+def test_excluded_cursor_vocabulary_honesty_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, failure_count, next_retry_at, updated_at_ms)
+            VALUES ('/poison.jsonl', 1, 5, NULL, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("excluded-cursor-vocabulary-honesty",))
+
+    check = _check(report, "excluded-cursor-vocabulary-honesty")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["excluded_count"] == 1
+    assert check.evidence["mislabeled_count"] == 0
+
+
+def test_stalled_append_cursor_trips_freshness_check(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    now_ms = 10_000_000_000  # far enough past epoch that "now - threshold" stays positive
+    stale_updated_at_ms = now_ms - int(3 * 60 * 60 * 1000)  # 3h old, past the 1h threshold
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, stat_size, byte_offset, updated_at_ms)
+            VALUES ('/rollout-stalled.jsonl', 0, 100000000, 5000000, ?)
+            """,
+            (stale_updated_at_ms,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("stalled-append-cursor-freshness",))
+
+    check = _check(report, "stalled-append-cursor-freshness")
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["stalled_count"] == 1
+    assert check.evidence["total_lag_bytes"] == 95_000_000
+    assert "/rollout-stalled.jsonl" in check.details
+
+
+def test_recently_stalled_append_cursor_does_not_trip_freshness_check(tmp_path: Path) -> None:
+    """A cursor briefly behind its file's size (writer mid-append) is not a
+    finding -- only one stalled longer than the escalation threshold is."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "ops.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor(source_path, excluded, stat_size, byte_offset, updated_at_ms)
+            VALUES (
+                '/rollout-active.jsonl', 0, 100000000, 5000000,
+                CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("stalled-append-cursor-freshness",))
+
+    check = _check(report, "stalled-append-cursor-freshness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["stalled_count"] == 0
+
+
+def test_stalled_append_cursor_freshness_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("stalled-append-cursor-freshness",))
+
+    check = _check(report, "stalled-append-cursor-freshness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["stalled_count"] == 0
+
+
 @pytest.mark.parametrize("check_name", ARCHIVE_VERIFICATION_CHECK_NAMES)
 def test_every_registry_check_does_not_error_on_the_real_pipeline_corpus(
     check_name: str, seeded_archive: SeededArchiveArtifact
@@ -873,3 +1155,67 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
     assert not report.blocking, [check.summary for check in report.checks if check.status is OutcomeStatus.ERROR]
     for check in report.checks:
         assert check.status is not OutcomeStatus.ERROR, f"{check.name}: {check.summary}"
+
+
+# ---------------------------------------------------------------------------
+# RED-TWIN contract rule (polylogue-t0m73): structural enforcement
+# ---------------------------------------------------------------------------
+
+#: Maps every registry check name to the name of the test function in *this*
+#: module that proves a fixture mutation flips it to a non-OK status. This
+#: is the RED-TWIN contract rule's structural carrier: a check without an
+#: entry here (or whose named function doesn't exist) fails
+#: ``test_every_non_complexity_check_has_a_red_twin_test`` below, rather
+#: than silently shipping a check nobody has proven can ever go red.
+#: ``COMPLEXITY``-class checks (report-only, never pass/fail by design --
+#: see :class:`ArchiveVerificationCheckClass`) are exempt.
+RED_TWIN_TESTS: dict[str, str] = {
+    "tier-schema": "test_missing_tier_trips_tier_schema_check",
+    "pointer-coherence": "test_stale_pointer_trips_pointer_coherence_check",
+    "source-index-coverage": "test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap",
+    "fts-parity": "test_deleted_fts_row_trips_message_fts_parity",
+    "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
+    "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
+    "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
+    "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
+    "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",
+    "message-count-projection": "test_drifted_message_count_trips_message_count_projection",
+    "planner-stats": "test_missing_sqlite_stat1_is_warning_not_error",
+    "convergence-freshness": "test_stalled_backlog_trips_convergence_freshness",
+    "user-tier-refs": "test_dangling_assertion_target_trips_user_tier_refs",
+    "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
+    "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
+}
+
+
+def test_every_non_complexity_check_has_a_red_twin_test() -> None:
+    """Structural enforcement of the RED-TWIN contract rule (polylogue-t0m73):
+    every registry check whose class is not COMPLEXITY (a pass/fail
+    invariant, not a report-only summary -- see
+    :class:`ArchiveVerificationCheckClass`'s docstring) must have a
+    registered red-twin test in :data:`RED_TWIN_TESTS`, and that test
+    function must actually exist in this module. A new check added to
+    :data:`ARCHIVE_VERIFICATION_CHECKS` without a red-twin entry fails this
+    test immediately -- the meta-test the AC calls for, not a manual review
+    convention that can be forgotten."""
+    module_globals = globals()
+    missing_entry = []
+    missing_function = []
+    for spec in ARCHIVE_VERIFICATION_CHECKS:
+        if spec.check_class is ArchiveVerificationCheckClass.COMPLEXITY:
+            continue
+        test_name = RED_TWIN_TESTS.get(spec.name)
+        if test_name is None:
+            missing_entry.append(spec.name)
+            continue
+        if test_name not in module_globals or not callable(module_globals[test_name]):
+            missing_function.append((spec.name, test_name))
+    assert not missing_entry, f"registry check(s) with no RED_TWIN_TESTS entry: {missing_entry}"
+    assert not missing_function, f"RED_TWIN_TESTS entries pointing at a missing test function: {missing_function}"
+
+
+def test_red_twin_tests_only_reference_real_registry_checks() -> None:
+    """Inverse of the above: a stale ``RED_TWIN_TESTS`` entry for a check
+    name that no longer exists in the registry (e.g. after a rename) is
+    itself a drift signal worth catching, not silently ignored."""
+    assert set(RED_TWIN_TESTS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)

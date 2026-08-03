@@ -1010,12 +1010,23 @@ def latency_command(
     metavar="BEFORE AFTER",
     help="Compare two saved census snapshots (from --save) and report the delta. Does not read the live archive.",
 )
+@click.option(
+    "--hook-event-coverage",
+    is_flag=True,
+    help=(
+        "Additionally report how many unresolved sessions are covered by an already-acquired "
+        "codex_thread_title hook event (bd polylogue-foee) -- a read-only lower-bound estimate "
+        "of what a live reprocess would newly resolve via that lane alone, without mutating the "
+        "archive or running the rest of the title ladder."
+    ),
+)
 @click.pass_context
 def codex_title_census_command(
     ctx: click.Context,
     json_output: bool,
     save: Path | None,
     compare: tuple[Path, Path] | None,
+    hook_event_coverage: bool,
 ) -> None:
     """Report Codex UUID-title coverage: resolved/unresolved counts, reasons (polylogue-ih67 AC#6).
 
@@ -1034,6 +1045,7 @@ def codex_title_census_command(
     from polylogue.archive.codex_title_census import (
         CodexTitleCensus,
         compare_censuses,
+        compute_codex_hook_event_title_coverage,
         compute_codex_title_census,
     )
     from polylogue.cli.shared.helpers import fail, load_effective_config
@@ -1061,11 +1073,23 @@ def codex_title_census_command(
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=2.0)) as conn:
         census = compute_codex_title_census(conn)
 
+        coverage = None
+        if hook_event_coverage:
+            source_db = config.archive_root / "source.db"
+            if not source_db.exists():
+                fail("codex-title-census", f"no source.db found at {source_db}")
+            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=2.0)) as source_conn:
+                coverage = compute_codex_hook_event_title_coverage(conn, source_conn)
+
+    output: dict[str, object] = census.to_dict()
+    if coverage is not None:
+        output["hook_event_coverage"] = coverage.to_dict()
+
     if save is not None:
-        save.write_text(_json.dumps(census.to_dict(), indent=2), encoding="utf-8")
+        save.write_text(_json.dumps(output, indent=2), encoding="utf-8")
 
     if json_output:
-        click.echo(_json.dumps(census.to_dict(), indent=2))
+        click.echo(_json.dumps(output, indent=2))
         return
 
     env.ui.console.print(f"Codex sessions: {census.total_codex_sessions}")
@@ -1080,3 +1104,9 @@ def codex_title_census_command(
         env.ui.console.print("Unresolved by reason:")
         for reason, count in sorted(census.unresolved_by_reason.items()):
             env.ui.console.print(f"  {reason}: {count}")
+    if coverage is not None:
+        env.ui.console.print(
+            f"Hook-event coverage (lower bound): {coverage.covered_by_hook_event_count}/"
+            f"{coverage.unresolved_count} unresolved sessions ({coverage.coverage_fraction:.1%}) "
+            "have an acquired codex_thread_title hook event"
+        )

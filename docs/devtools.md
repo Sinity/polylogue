@@ -218,7 +218,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace agent-meta-sidecar-sweep` | Find agent-*.meta.json subagent-sidecar phantom sessions (message_count=0). |
 | `devtools workspace antigravity-phantom-purge-apply` | Delete antigravity brain-metadata phantom sessions and reclassify their raw rows. |
 | `devtools workspace antigravity-phantom-sweep` | List antigravity-session rows that are brain-metadata phantom fragments. |
-| `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
 | `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
 | `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
 | `devtools workspace backlog-calibration` | Measured lead-time/discovery/staleness distributions over the bead corpus. |
@@ -238,7 +237,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
-| `devtools workspace index-fast-forward` | Apply a declared clone-first index.db fast-forward with receipts and rollback. |
 | `devtools workspace index-v37-fast-forward` | Clone-forward index v36 to v37 by retiring derived caches without raw replay. |
 | `devtools workspace lane-brief` | Generate a dispatch brief for a bead lane with live footprint/prior-art evidence. |
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |
@@ -260,7 +258,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
-| `devtools workspace trajectory-report` | Self-contained HTML velocity/trajectory report over git + PR + bead history. |
 | `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
 | `devtools workspace verify-worktree` | Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |

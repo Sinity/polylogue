@@ -652,7 +652,44 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     lines = format_daemon_status_lines(payload)
     assert "Live cursor: 1 tracked, 1 failed, 0 excluded, 0 retry due, 1 in backoff" in lines
     assert "Failing files: 1" in lines
-    assert f"  {failed}" in lines
+    # polylogue-ix5r: a non-excluded, not-yet-due failing file is labeled "in
+    # backoff" rather than printed as a bare path with no status.
+    assert f"  {failed} (in backoff)" in lines
+
+
+def test_daemon_status_failing_files_listing_labels_excluded_rows_with_age(tmp_path: Path) -> None:
+    """polylogue-ix5r AC2: the per-file 'Failing files' listing must not print
+    an excluded (permanently-quarantined) row as a bare path indistinguishable
+    from an ordinary retrying failure -- it must say the row is excluded and
+    how long ago, so "50 shown, N omitted" is not read as "N more due soon".
+    """
+    db = tmp_path / "index.db"
+    excluded = tmp_path / "poison.jsonl"
+    excluded.write_text('{"bad":true}\n')
+    cursor = CursorStore(db)
+    for _ in range(5):
+        cursor.mark_failed(excluded)
+    record = cursor.get_record(excluded)
+    assert record is not None and record.excluded
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=db.parent),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    lines = format_daemon_status_lines(payload)
+    matching = [line for line in lines if str(excluded) in line]
+    assert len(matching) == 1
+    assert "permanent until file replaced" in matching[0]
+    assert "excluded" in matching[0]
+    # Not mislabeled as a due-soon retry.
+    assert "retry due" not in matching[0]
+    assert "in backoff" not in matching[0]
 
 
 def test_daemon_status_payload_links_unified_archive_debt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
