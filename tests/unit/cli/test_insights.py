@@ -11,12 +11,12 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.api.archive import _rebuild_archive_session_insights
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
 from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
+from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
@@ -54,7 +54,7 @@ def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
     ``session_work_events``, ``session_phases``, and ``threads``.
     """
     with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
-        return _rebuild_archive_session_insights(archive, **kwargs)
+        return rebuild_archive_session_insights(archive, **kwargs)
 
 
 def _insight_status(db_path: Path) -> SessionInsightStatusSnapshot:

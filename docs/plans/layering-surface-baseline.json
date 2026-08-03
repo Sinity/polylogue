@@ -27,16 +27,6 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/api",
-    "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.insights.session.rebuild"
-  },
-  {
-    "target": "polylogue/api",
-    "file": "polylogue/api/archive.py",
     "import": "polylogue.storage.insights.session.records"
   },
   {

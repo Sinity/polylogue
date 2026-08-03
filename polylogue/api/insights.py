@@ -6,10 +6,10 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Protocol
 
-from polylogue.api.archive import _active_archive_root
 from polylogue.archive.query.spec import parse_query_date
 from polylogue.archive.query.transaction import run_archive_read
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.core.types import SessionId
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import CycleOutlook, ProjectionMethod, build_cycle_outlook

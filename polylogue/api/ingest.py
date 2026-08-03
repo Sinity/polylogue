@@ -37,7 +37,7 @@ class PolylogueIngestMixin:
             source_name = file_path.stem
 
         source = Source(name=source_name, path=file_path)
-        from polylogue.api.archive import _active_archive_root
+        from polylogue.config import active_archive_root as _active_archive_root
         from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
         return await parse_sources_archive(_active_archive_root(self.config), [source])
@@ -52,14 +52,14 @@ class PolylogueIngestMixin:
             sources = self.config.sources
 
         del download_assets
-        from polylogue.api.archive import _active_archive_root
+        from polylogue.config import active_archive_root as _active_archive_root
         from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 
         return await parse_sources_archive(_active_archive_root(self.config), sources)
 
     async def rebuild_index(self) -> bool:
         """Rebuild the derived block-FTS index through the mutation executor."""
-        from polylogue.api.archive import _active_archive_root
+        from polylogue.config import active_archive_root as _active_archive_root
         from polylogue.operations.mutation_actuators import IndexRebuildActuator, IndexRebuildArgs
         from polylogue.operations.mutation_transaction import OperationExecutor
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

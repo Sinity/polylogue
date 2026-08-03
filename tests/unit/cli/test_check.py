@@ -54,11 +54,11 @@ def cli_runner() -> CliRunner:
 
 def _rebuild_native_insights(db_path: Path) -> None:
     """Materialize session insights for a seeded index.db."""
-    from polylogue.api.archive import _rebuild_archive_session_insights
+    from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
-        _rebuild_archive_session_insights(archive)
+        rebuild_archive_session_insights(archive)
 
 
 def _find_named_check(payload: JSONDocument, name: str) -> JSONDocument:

@@ -3194,7 +3194,7 @@ def test_repair_session_insights_clears_scoped_convergence_debt(
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         lambda _archive, **_kwargs: SessionInsightCounts(profiles=1),
     )
 
@@ -3326,7 +3326,7 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
 
@@ -3442,7 +3442,7 @@ def test_repair_session_insights_targets_stale_thread_materialization(
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
     result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
@@ -3515,7 +3515,7 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
 

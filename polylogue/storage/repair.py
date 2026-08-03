@@ -5837,10 +5837,12 @@ def repair_session_insights(
     without first giving thread/tag-rollup/day-summary aggregate
     staleness its own automatic convergence mechanism.
     """
-    from polylogue.api.archive import _rebuild_archive_session_insights
     from polylogue.paths import archive_root as _resolve_archive_root
     from polylogue.storage.archive_identity import resolve_active_index_path
-    from polylogue.storage.insights.session.rebuild import refresh_session_insight_aggregates_sync
+    from polylogue.storage.insights.session.rebuild import (
+        rebuild_archive_session_insights,
+        refresh_session_insight_aggregates_sync,
+    )
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
@@ -5909,7 +5911,7 @@ def repair_session_insights(
                 )
 
             rebuild_session_ids = session_ids if session_ids is not None else targeted_session_ids
-            rebuilt = _rebuild_archive_session_insights(
+            rebuilt = rebuild_archive_session_insights(
                 archive,
                 session_ids=rebuild_session_ids,
                 progress_callback=progress_callback,

@@ -27,6 +27,7 @@ from polylogue.archive.query.transaction import archive_read_context, run_archiv
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
@@ -53,7 +54,6 @@ from polylogue.insights.archive import (
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
 from polylogue.paths import archive_file_set_index_available_for_paths
-from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
@@ -410,20 +410,6 @@ def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
 
 def _archive_index_available(config: Config) -> bool:
     return archive_file_set_index_available_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
-
-
-def _active_archive_root(config: Config) -> Path:
-    """Return the archive file-set root housing the currently active database.
-
-    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
-    matching the ``polylogue-yla8.1`` split-root contract used by
-    :func:`polylogue.storage.repair._raw_materialization_archive_root` and
-    :func:`polylogue.storage.raw_reconciler._archive_root`: an explicit
-    ``Config(db_path=...)`` override must be honored, and the ordinary case
-    already resolves ``config.db_path`` correctly (``.index-active-pointer``
-    -aware) inside ``Config.__init__``.
-    """
-    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _archive_context_message_window(
@@ -2318,45 +2304,6 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
         )
         events.extend(build_actions(message, calls))
     return tuple(events)
-
-
-def _rebuild_archive_session_insights(
-    archive: Any,
-    *,
-    session_ids: Sequence[str] | None = None,
-    progress_callback: ProgressCallback | None = None,
-) -> SessionInsightCounts:
-    """Rebuild durable session insights via the canonical materializer.
-
-    This is a thin adapter over
-    ``polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync``
-    — the single rebuild stack shared with daemon convergence (#1743 P13). It
-    resolves any session-id aliases against the archive, then delegates the
-    whole rebuild (profiles, latency, work events, phases, threads +
-    thread_sessions + 'thread' markers, tag rollups, provider-day aggregates)
-    to the canonical path, which commits internally.
-    """
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.insights.session.runtime import SessionInsightCounts
-
-    resolved_ids = _archive_rebuild_session_ids(archive, session_ids) if session_ids is not None else None
-    if session_ids is not None and not resolved_ids:
-        return SessionInsightCounts()
-    return rebuild_session_insights_sync(
-        archive._conn,
-        session_ids=resolved_ids,
-        progress_callback=progress_callback,
-    )
-
-
-def _archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str] | None) -> tuple[str, ...]:
-    if session_ids is None:
-        return tuple(summary.session_id for summary in archive.list_summaries(limit=1_000_000))
-    resolved: list[str] = []
-    for session_id in session_ids:
-        with suppress(KeyError):
-            resolved.append(archive.resolve_session_id(str(session_id)))
-    return tuple(dict.fromkeys(resolved))
 
 
 def _archive_message_matches(
