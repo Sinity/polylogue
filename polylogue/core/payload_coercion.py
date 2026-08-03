@@ -162,6 +162,30 @@ def row_float(value: object) -> float | None:
     return None
 
 
+def required_int(value: object) -> int:
+    """Coerce a value to int; raise if it cannot be parsed as one."""
+    if isinstance(value, bool):
+        raise ValueError(f"Required int value is a bool: {value!r}")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value)
+    raise ValueError(f"Required int value is not coercible: {value!r}")
+
+
+def required_float(value: object) -> float:
+    """Coerce a value to float; raise if it cannot be parsed as one."""
+    if isinstance(value, bool):
+        raise ValueError(f"Required float value is a bool: {value!r}")
+    if isinstance(value, int | float):
+        return float(value)
+    if isinstance(value, str):
+        return float(value)
+    raise ValueError(f"Required float value is not coercible: {value!r}")
+
+
 __all__ = [
     "PayloadMapping",
     "coerce_float",
@@ -174,6 +198,8 @@ __all__ = [
     "optional_datetime",
     "optional_str",
     "optional_string",
+    "required_float",
+    "required_int",
     "required_str",
     "row_float",
     "row_int",

@@ -1061,21 +1061,13 @@ def _typed_failure_samples(value: object) -> list[RawFailureSample]:
 
 
 def _safe_int(value: object) -> int:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return int(value)
-    return 0
+    return _row_int(value)
 
 
 def _safe_float(value: object, *, default: float = 0.0) -> float:
     """Coerce value to float, returning default on failure."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
+    coerced = _row_float(value)
+    return default if coerced is None else coerced
 
 
 def _gil_enabled() -> bool:
