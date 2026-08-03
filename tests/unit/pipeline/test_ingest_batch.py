@@ -1179,6 +1179,163 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
     assert second_row["revision_authority"] != "quarantined"
 
 
+def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_path: Path) -> None:
+    """polylogue-sp72 AC2: a governance-proven Drive revision must not need
+    the #3453 freshness-tie safety net to land.
+
+    Reproduces the exact tie shape the #3453 tie-break exists to guess at
+    (identical message content/timestamps, differing attachment coverage,
+    differing raw_id) -- but this time the second raw's bytes are a proven
+    byte-prefix successor of the first (the same fixture shape as
+    ``test_write_session_binds_drive_revision_lineage``), so
+    ``classify_raw_revision_cohort_for_live_watch`` has already settled which
+    raw wins before the freshness comparison ever runs. The second write here
+    carries FEWER acquired attachments than the first -- exactly the shape
+    ``_incoming_write_regresses_attachment_coverage`` blocks -- yet must still
+    land, because governance (not the heuristic) already proved it is the
+    legitimate next revision in the chain.
+
+    The negative control (``test_write_session_freshness_tie_regression_without_lineage_still_blocks``)
+    proves the tie-break safety net is untouched when no governance evidence
+    is available (no ``source_conn``/``blob_publisher``): it still blocks the
+    exact same regression shape.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db_path = archive_root / "source.db"
+    blob_publisher = ArchiveBlobPublisher(source_db_path, archive_root / "blob")
+
+    provider_session_id = "drive-tie-proven-winner"
+    session_id = f"aistudio-drive:{provider_session_id}"
+    first_payload = b'{"drive":"payload","messages":[{"id":"m-1","text":"hi"}]}'
+    second_payload = first_payload + b"  // backfilled attachment bytes appended"
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        first_raw_id = archive.write_raw_payload(
+            provider=Provider.GEMINI,
+            payload=first_payload,
+            source_path="drive://file-tie",
+            acquired_at_ms=1_767_000_000_000,
+        )
+        second_raw_id = archive.write_raw_payload(
+            provider=Provider.GEMINI,
+            payload=second_payload,
+            source_path="drive://file-tie",
+            acquired_at_ms=1_767_000_000_500,
+        )
+    assert first_raw_id != second_raw_id
+
+    message = _message_tuple(
+        "m-1",
+        session_id,
+        role="user",
+        text="hi",
+        content_hash="msg-hash-drive-tie",
+        sort_key=1777636800.0,
+    )
+    tied_timestamp = "2026-07-18T17:46:10Z"
+
+    with (
+        open_connection(archive_root / "index.db") as conn,
+        sqlite3.connect(str(source_db_path)) as source_conn,
+    ):
+        first_session = _session_data(
+            session_id,
+            content_hash="hash-drive-tie-first",
+            raw_id=first_raw_id,
+            message_tuples=[message],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"acquired drive attachment bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "m-1")],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        conn.commit()
+        assert changed_first is True
+
+        # Same content-derived timestamp as the first write, but zero
+        # acquired attachments -- a coverage regression the #3453 tie-break
+        # exists to block, UNLESS governance already proved this raw is the
+        # legitimate next revision (which it does here).
+        second_session = _session_data(
+            session_id,
+            content_hash="hash-drive-tie-second",
+            raw_id=second_raw_id,
+            message_tuples=[message],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_second, _ = _write_session(conn, second_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        conn.commit()
+
+        assert changed_second is True
+        row = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert row["raw_id"] == second_raw_id
+
+
+def test_write_session_freshness_tie_regression_without_lineage_still_blocks(tmp_path: Path) -> None:
+    """Negative control for the test above: absent lineage governance
+    evidence (no ``source_conn``, so ``_bind_drive_revision_lineage`` bails
+    out before ever classifying), the #3453 tie-break safety net still
+    blocks the identical regression shape -- this fix only ever bypasses the
+    heuristic when governance has independently proven a real
+    predecessor/successor relationship, never unconditionally.
+    ``blob_publisher`` is still supplied (attachments require one to write
+    inline bytes at all) -- ``source_conn`` alone is what gates lineage
+    governance."""
+    with open_connection(tmp_path / "index.db") as conn:
+        blob_publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+        session_id = "aistudio-drive:tie-no-lineage"
+        tied_timestamp = "2026-07-18T17:46:10Z"
+        message = _message_tuple(
+            "m-1",
+            session_id,
+            role="user",
+            text="hi",
+            content_hash="msg-hash-tie-no-lineage",
+            sort_key=1777636800.0,
+        )
+        first_session = _session_data(
+            session_id,
+            content_hash="hash-tie-no-lineage-first",
+            raw_id="raw-no-lineage-first",
+            message_tuples=[message],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=b"acquired bytes")],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", session_id, "m-1")],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher)
+        conn.commit()
+        assert changed_first is True
+
+        second_session = _session_data(
+            session_id,
+            content_hash="hash-tie-no-lineage-second",
+            raw_id="raw-no-lineage-second",
+            message_tuples=[message],
+            provider=Provider.GEMINI,
+            created_at=tied_timestamp,
+            updated_at=tied_timestamp,
+        )
+        changed_second, counts_second = _write_session(conn, second_session, blob_publisher=blob_publisher)
+        conn.commit()
+
+        assert changed_second is False
+        assert counts_second["skipped_sessions"] == 1
+        row = conn.execute(
+            "SELECT raw_id FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert row["raw_id"] == "raw-no-lineage-first"
+
+
 def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path: Path) -> None:
     """bd polylogue-8ac0: bytes already streamed into the blob store during
     sidecar discovery (ChatGPT ``.dat`` asset acquisition) are recorded

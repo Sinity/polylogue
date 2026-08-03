@@ -38,11 +38,21 @@ class DegradedReason:
     ``detail`` is normalized to a read-only mapping on construction so that
     holders of the original dict — or the value returned by ``degraded_reason()``
     — cannot mutate process-wide shared state outside the lock.
+
+    ``derived_only`` (polylogue-gbs02): True when the condition affects only
+    a rebuildable/derived tier (index.db, embeddings.db) and NOT a durable
+    tier (source.db, user.db). Raw acquisition writes only source.db, so a
+    derived-only condition must not stop it -- only the full parse/
+    materialize/index path (which reads/writes the stale derived tier) needs
+    to stay withheld. Defaults to False (the historical behavior: any
+    degraded reason fully stops ingestion), so every existing caller that
+    doesn't know about this distinction keeps its current, safe behavior.
     """
 
     code: str
     message: str
     detail: Mapping[str, Any] | None = None
+    derived_only: bool = False
 
     def __post_init__(self) -> None:
         # ``frozen=True`` blocks normal assignment; bypass via object.__setattr__.
@@ -77,10 +87,25 @@ def is_degraded() -> bool:
     return degraded_reason() is not None
 
 
+def is_fully_degraded() -> bool:
+    """True only when the current degraded reason blocks ALL ingestion.
+
+    False for a derived-tier-only reason (``derived_only=True``), which must
+    still allow raw acquisition (source.db writes) to proceed -- see
+    ``DegradedReason.derived_only``. Callers that need the historical
+    "ingestion cannot happen at all" check should use this, not
+    ``is_degraded()``, which stays True (correctly) for status/health
+    reporting purposes in the derived-only case too.
+    """
+    reason = degraded_reason()
+    return reason is not None and not reason.derived_only
+
+
 __all__ = [
     "DegradedReason",
     "clear_degraded",
     "degraded_reason",
     "is_degraded",
+    "is_fully_degraded",
     "set_degraded",
 ]

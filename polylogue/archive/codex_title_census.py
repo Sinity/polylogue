@@ -169,10 +169,81 @@ def compare_censuses(before: CodexTitleCensus, after: CodexTitleCensus) -> Codex
     return CodexTitleCensusDelta(before=before, after=after)
 
 
+@dataclass(frozen=True, slots=True)
+class CodexHookEventTitleCoverage:
+    """Lower-bound simulation of what a live reprocess would resolve via the
+    ``codex_thread_title`` hook-event lane alone (bd polylogue-foee AC#3).
+
+    A full reprocess also re-reads the higher-priority live-file lanes
+    (provider thread name, ``history.jsonl``, ``state_5.sqlite``), which can
+    resolve additional sessions this coverage check does not model -- so
+    ``covered_by_hook_event_count`` is a floor, not a prediction of the full
+    post-reprocess resolved count. It exists because triggering an actual
+    reprocess against the live archive is an operator-authorized mutating
+    action outside a read-only census's scope; this reports what the
+    already-acquired, durable hook-event evidence alone would fix, without
+    running or simulating the rest of the ladder.
+    """
+
+    unresolved_count: int
+    covered_by_hook_event_count: int
+
+    @property
+    def coverage_fraction(self) -> float:
+        if self.unresolved_count == 0:
+            # Nothing left to cover reads as complete, not zero -- same
+            # convention as the sibling resolved_fraction property above.
+            return 1.0
+        return self.covered_by_hook_event_count / self.unresolved_count
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "unresolved_count": self.unresolved_count,
+            "covered_by_hook_event_count": self.covered_by_hook_event_count,
+            "coverage_fraction": round(self.coverage_fraction, 4),
+        }
+
+
+def compute_codex_hook_event_title_coverage(
+    index_conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection,
+) -> CodexHookEventTitleCoverage:
+    """Cross-reference still-unresolved Codex sessions against acquired
+    ``codex_thread_title`` hook events (read-only over both ``index.db`` and
+    ``source.db`` -- never mutates either).
+    """
+    from polylogue.core.enums import Origin
+    from polylogue.storage.sqlite.archive_tiers.source_write import list_hook_events
+
+    index_conn.row_factory = sqlite3.Row
+    rows = index_conn.execute(
+        "SELECT native_id, title FROM sessions WHERE origin = ?",
+        (CODEX_ORIGIN,),
+    ).fetchall()
+    unresolved_ids = {row["native_id"] for row in rows if row["title"] is None or row["title"] == row["native_id"]}
+
+    title_by_thread: dict[str, str] = {}
+    for event in list_hook_events(source_conn, origin=Origin.CODEX_SESSION):
+        if event.event_type != "codex_thread_title":
+            continue
+        thread_id = event.session_native_id
+        title = event.payload.get("title")
+        if isinstance(thread_id, str) and thread_id and isinstance(title, str) and title.strip():
+            title_by_thread[thread_id] = title.strip()
+
+    covered = unresolved_ids & title_by_thread.keys()
+    return CodexHookEventTitleCoverage(
+        unresolved_count=len(unresolved_ids),
+        covered_by_hook_event_count=len(covered),
+    )
+
+
 __all__ = [
     "CODEX_ORIGIN",
+    "CodexHookEventTitleCoverage",
     "CodexTitleCensus",
     "CodexTitleCensusDelta",
     "compare_censuses",
+    "compute_codex_hook_event_title_coverage",
     "compute_codex_title_census",
 ]

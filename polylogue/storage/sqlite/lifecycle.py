@@ -746,12 +746,11 @@ def resolve_canonical_index_objects(objects: tuple[tuple[str, str], ...]) -> dic
     """Resolve the exact canonical ``CREATE`` statement for each declared object.
 
     Built from a scratch in-memory connection executing the current
-    ``INDEX_DDL`` so the resolved text is always the live canonical shape --
-    the same source of truth ``devtools/index_fast_forward.py``'s offline
-    clone actuator uses (``_canonical_schema``). Lives here (not in the
-    executor module under ``storage/sqlite/archive_tiers/``) so it stays a
-    read-only declaration-resolution helper, never itself an index-tier
-    mutation the writer-module inventory has to account for.
+    ``INDEX_DDL`` so the resolved text is always the live canonical shape.
+    Lives here (not in the executor module under
+    ``storage/sqlite/archive_tiers/``) so it stays a read-only
+    declaration-resolution helper, never itself an index-tier mutation the
+    writer-module inventory has to account for.
     """
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

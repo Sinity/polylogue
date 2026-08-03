@@ -520,38 +520,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace index-fast-forward",
-        "workspace",
-        "Apply a declared clone-first index.db fast-forward with receipts and rollback.",
-        "devtools.index_fast_forward",
-        use_when=(
-            "Upgrade a quiesced supported derived index without raw replay: reflink an inactive generation, "
-            "apply declared canonical schema/FTS deltas, validate structural equivalence on the clone, "
-            "then separately activate or roll back. Semantic-reparse deltas deliberately require rebuild/reprocess."
-        ),
-        examples=(
-            "devtools workspace index-fast-forward plan --source /path/to/index.db",
-            "devtools workspace index-fast-forward clone-upgrade --source /path/to/index.db --receipt /path/to/receipt.json",
-            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json --restart",
-            "devtools workspace index-fast-forward rollback --receipt /path/to/receipt.json --restart",
-        ),
-    ),
-    CommandSpec(
-        "workspace archive-schema-fast-forward",
-        "workspace",
-        "Clone-forward the v35 archive tiers without raw replay.",
-        "devtools.archive_schema_fast_forward",
-        use_when=(
-            "Advance a stopped, verified v35 archive through the declared source/user durable migrations "
-            "and derived v36/index plus v2/embeddings clones. The existing verified backup remains valid: "
-            "the durable runner verifies active path plus bytes/version rather than inode identity."
-        ),
-        examples=(
-            "devtools workspace archive-schema-fast-forward prepare --archive-root /realm/db/polylogue --staging-root /realm/staging/polylogue-schema-forward --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
-            "devtools workspace archive-schema-fast-forward activate --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
-        ),
-    ),
-    CommandSpec(
         "workspace index-v37-fast-forward",
         "workspace",
         "Clone-forward index v36 to v37 by retiring derived caches without raw replay.",
@@ -2162,30 +2130,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace beads-state-report --fresh",
             "devtools workspace beads-state-report --out /tmp/beads-state.html",
             "devtools workspace beads-state-report --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace trajectory-report",
-        "workspace",
-        "Self-contained HTML velocity/trajectory report over git + PR + bead history.",
-        "devtools.trajectory_report",
-        use_when=(
-            "Answer 'is this project accelerating or plateauing, and what does a "
-            "typical week/day look like?' as a real time-axis view: weekly volume "
-            "across commits, squash-merge PR events (recovered offline from (#N) "
-            "subjects on the first-parent line), and bead created/closed series; "
-            "rolling 7d/28d momentum with an explicit last-28d-vs-prior verdict; "
-            "hour-by-weekday rhythm; data-derived day-character classes (quiet/"
-            "organic/heavy/campaign) with burstiness (Gini, top-decile day share); "
-            "per-area weekly file-touch small multiples; and a PR-vs-bead-closure "
-            "coupling scatter. Complements, never duplicates, `workspace "
-            "backlog-calibration` (duration/discovery models) and `workspace "
-            "beads-state-report` (point-in-time population census)."
-        ),
-        examples=(
-            "devtools workspace trajectory-report",
-            "devtools workspace trajectory-report --out /tmp/trajectory.html",
-            "devtools workspace trajectory-report --fresh --json",
         ),
     ),
 )
