@@ -2069,10 +2069,6 @@ class ResolvedArchivePaths:
     hook_sidecar_root: Path
     drive_cache_root: Path
 
-    @property
-    def active_index_db(self) -> Path:
-        return self.index_db
-
 
 @dataclass(frozen=True, slots=True)
 class ResolvedSourcePaths:
