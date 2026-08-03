@@ -7,6 +7,8 @@ import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
+from enum import StrEnum
 
 
 def _initialize_worker_logging() -> None:
@@ -105,6 +107,121 @@ def parallel_threads_effective() -> bool:
     return not is_gil_enabled()
 
 
+class PoolKind(StrEnum):
+    """Which executor (if any) a resolved parse-dispatch plan should use."""
+
+    THREAD = "thread"
+    PROCESS = "process"
+    SEQUENTIAL = "sequential"
+
+
+@dataclass(frozen=True)
+class ParseDispatchPlan:
+    """One call site's resolved (pool kind, worker count) decision.
+
+    polylogue-xecca: before this, four CPU-bound parse-dispatch call sites
+    each computed their own worker-count formula inline (and one, the
+    thread-vs-sequential choice under ``parallel_threads_effective``, also
+    decided pool KIND inline) -- ``pipeline/services/validation_flow.py``,
+    ``pipeline/services/archive_ingest.py``, ``pipeline/services/
+    ingest_batch/_core.py``, and ``sources/revision_backfill.py``'s census
+    parse family. None of the three worker-count formulas were wrong, but
+    scattering them meant "how many workers, and thread or process, for a
+    parse dispatch" had no single place to read or change. The
+    ``resolve_*_dispatch`` functions below are that single place: one per
+    site, since each site's formula reflects a genuinely different,
+    independently measured input (workload shape, GIL-vs-free-threaded
+    build, or a deliberate ignore of build capability) -- see each
+    function's docstring for its own measurement citation. None of the four
+    sites' *effective* behavior changes; only where the arithmetic lives
+    does.
+    """
+
+    pool_kind: PoolKind
+    worker_count: int
+
+
+def resolve_archive_ingest_dispatch(*, parse_workers: int | None = None) -> ParseDispatchPlan:
+    """Worker-count decision for ``archive_ingest.py``'s re-ingest file-walk parse.
+
+    Unchanged formula: an explicit ``parse_workers`` override (clamped to at
+    least 1) wins; otherwise :func:`resolve_parse_worker_count` (CPU count,
+    ceiling adjusted for a free-threaded build). Always a process pool -- the
+    caller's own ``workers <= 1`` branch is the escape hatch to sequential,
+    preserved unchanged at the call site rather than folded into
+    :data:`PoolKind` here, since that branch also skips constructing the pool
+    context entirely (a real, not merely nominal, sequential path).
+    """
+    worker_count = resolve_parse_worker_count() if parse_workers is None else max(1, parse_workers)
+    return ParseDispatchPlan(PoolKind.PROCESS, worker_count)
+
+
+def resolve_validation_dispatch(*, record_count: int) -> ParseDispatchPlan:
+    """Worker-count decision for ``validation_flow.py``'s raw-record validation batch.
+
+    Unchanged formula: ``min(record_count, cpus, 8)``, always a process pool.
+    Deliberately ignores :func:`parallel_threads_effective` -- unlike every
+    other site here, this one's process-pool preference is *itself* the
+    measured result, independent of GIL/free-threading: JSON decode's native
+    C extension accelerator releases the GIL, so ``ProcessPoolExecutor``
+    measured 605 MB/s at 8 workers against 160 MB/s for 24 threads (3.7x),
+    a GIL-build result threads cannot approach regardless of build. Do not
+    gate this on ``parallel_threads_effective()``.
+    """
+    return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(record_count, os.cpu_count() or 4, 8)))
+
+
+def resolve_ingest_batch_dispatch(*, total_blob_bytes: int, record_count: int, worker_limit: int) -> ParseDispatchPlan:
+    """Worker-count decision for ``ingest_batch/_core.py``'s size-tiered process-pool dispatch.
+
+    Unchanged formula, size-tiered by aggregate blob bytes in the batch:
+    ``<= 8 MiB`` stays sequential (pool setup cost isn't worth it for a tiny
+    batch); ``<= 64 MiB`` caps at 4 workers (a mid-size batch doesn't benefit
+    from wider fan-out); above that, ``min(record_count, cpus, worker_limit)``
+    with no additional cap. Always a process pool when not sequential.
+    """
+    if total_blob_bytes <= 8 * 1024 * 1024:
+        return ParseDispatchPlan(PoolKind.SEQUENTIAL, 1)
+    if total_blob_bytes <= 64 * 1024 * 1024:
+        return ParseDispatchPlan(
+            PoolKind.PROCESS,
+            min(max(record_count, 1), os.cpu_count() or 4, worker_limit, 4),
+        )
+    return ParseDispatchPlan(
+        PoolKind.PROCESS,
+        min(max(record_count, 1), os.cpu_count() or 4, worker_limit),
+    )
+
+
+def resolve_revision_backfill_census_dispatch(
+    *, ingest_workers: int, record_count: int, free_threaded: bool
+) -> ParseDispatchPlan:
+    """Pool-kind + worker-count decision for the raw-authority census parse family.
+
+    Unchanged formula (``sources/revision_backfill.py``'s
+    ``_parse_unique_retained_raws``): sequential unless ``ingest_workers > 1``,
+    ``record_count > 1``, AND ``free_threaded`` -- CPU-bound parse threads
+    must never engage under the GIL (polylogue-7mtf measured 0.93x-0.96x
+    speedup, i.e. none, while inflating a concurrent SQLite writer thread's
+    commit latency ~5000x). This is the one site here whose pool KIND, not
+    just worker count, is a build-capability decision: a process pool is
+    never used for this family (the historical process-pool fallback was
+    retired -- see that module's docstring).
+
+    ``free_threaded`` is an explicit input (the caller's own
+    :func:`parallel_threads_effective` read), not resolved internally here --
+    matching the mission's "build capability via parallel_threads_effective"
+    framing as one of this function's INPUTS rather than an ambient global it
+    reaches for itself. This also keeps ``revision_backfill.py``'s own tests
+    able to monkeypatch their local ``parallel_threads_effective`` import and
+    have it actually reach this decision, rather than silently patching a
+    different module's binding of the same name.
+    """
+    if ingest_workers <= 1 or record_count <= 1 or not free_threaded:
+        return ParseDispatchPlan(PoolKind.SEQUENTIAL, 1)
+    return ParseDispatchPlan(PoolKind.THREAD, min(ingest_workers, record_count))
+
+
 def process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
     """Create a process pool that avoids bare fork() in multi-threaded parents."""
     return ProcessPoolExecutor(
@@ -133,10 +250,16 @@ def terminate_process_pool(executor: ProcessPoolExecutor, *, timeout: float = 1.
 
 
 __all__ = [
+    "ParseDispatchPlan",
+    "PoolKind",
     "_initialize_worker_logging",
     "parallel_threads_effective",
     "process_pool_context",
     "process_pool_executor",
+    "resolve_archive_ingest_dispatch",
+    "resolve_ingest_batch_dispatch",
     "resolve_parse_worker_count",
+    "resolve_revision_backfill_census_dispatch",
+    "resolve_validation_dispatch",
     "terminate_process_pool",
 ]

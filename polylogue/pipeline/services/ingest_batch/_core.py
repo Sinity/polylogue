@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import os
 import pickle
 import sqlite3
 import time
@@ -42,7 +41,7 @@ from polylogue.pipeline.services.ingest_worker import (
     SessionWritePayload,
     ingest_record,
 )
-from polylogue.pipeline.services.process_pool import process_pool_executor
+from polylogue.pipeline.services.process_pool import process_pool_executor, resolve_ingest_batch_dispatch
 from polylogue.sinex.material_adapter import (
     PublicationBackpressureError,
     PublicationEncodingError,
@@ -1110,20 +1109,11 @@ def _resolved_ingest_worker_limit(value: int | None) -> int:
 
 def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:
     total_blob_size = sum(record.blob_size for record in raw_artifacts)
-    if total_blob_size <= 8 * 1024 * 1024:
-        return 1
-    if total_blob_size <= 64 * 1024 * 1024:
-        return min(
-            max(len(raw_artifacts), 1),
-            os.cpu_count() or 4,
-            _resolved_ingest_worker_limit(ingest_workers),
-            4,
-        )
-    return min(
-        max(len(raw_artifacts), 1),
-        os.cpu_count() or 4,
-        _resolved_ingest_worker_limit(ingest_workers),
-    )
+    return resolve_ingest_batch_dispatch(
+        total_blob_bytes=total_blob_size,
+        record_count=len(raw_artifacts),
+        worker_limit=_resolved_ingest_worker_limit(ingest_workers),
+    ).worker_count
 
 
 def _new_ingest_batch_summary(

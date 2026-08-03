@@ -38,7 +38,11 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes, estimate_parsed_tree_bytes
-from polylogue.pipeline.services.process_pool import parallel_threads_effective
+from polylogue.pipeline.services.process_pool import (
+    PoolKind,
+    parallel_threads_effective,
+    resolve_revision_backfill_census_dispatch,
+)
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     is_stream_record_provider,
@@ -158,12 +162,20 @@ class _PrefetchedParse:
     revision_kind: RawRevisionKind
 
 
-#: Content-cache dedup key: ``(provider, blob_hash, dedup_path)``, identical
-#: in shape to the per-batch grouping key ``_parse_retained_raws`` already
-#: uses (``dedup_path`` is ``""`` for :data:`_PATH_INDEPENDENT_PARSE_PROVIDERS`,
-#: else the raw's own ``source_path``) -- see :func:`_parse_retained_raws`'s
-#: docstring for why that key shape is safe to reuse across rows.
-ContentCacheKey = tuple[Provider, str, str]
+#: Content-cache dedup key: ``(provider, blob_hash, dedup_path, native_id)``,
+#: identical in shape to the per-batch grouping key ``_parse_retained_raws``
+#: already uses (``dedup_path`` is ``""`` for
+#: :data:`_PATH_INDEPENDENT_PARSE_PROVIDERS`, else the raw's own
+#: ``source_path``) -- see :func:`_parse_retained_raws`'s docstring for why
+#: that key shape is safe to reuse across rows. ``native_id`` (polylogue-
+#: 6lyh1) is the fallback-identity hint an APPEND-kind raw recovers at
+#: replay time (``None`` for every FULL raw and every APPEND raw with no
+#: recorded hint); without it in the key, two byte-identical APPEND payloads
+#: recorded under different recovered native ids -- content-hash dedup alone
+#: cannot see that divergence, since path-independent providers deliberately
+#: ignore ``source_path`` too -- would incorrectly fan the SAME parsed
+#: session identity out to both raw_ids.
+ContentCacheKey = tuple[Provider, str, str, str | None]
 
 #: Default budget for :class:`RawParsePrefetchCache`'s cross-page content
 #: cache (polylogue-oab7). Deliberately a small, fixed, conservative default
@@ -1428,6 +1440,8 @@ def census_parse_worker(
     is_stream: bool,
     blob_root_str: str,
     source_db_path_str: str,
+    kind_token: str,
+    native_id: str | None,
 ) -> tuple[str, list[ParsedSession] | None, str | None]:
     """Parse one retained raw's already-published blob bytes.
 
@@ -1440,24 +1454,45 @@ def census_parse_worker(
     can apply the exact same per-raw quarantine handling as the sequential
     path.
 
-    Dispatched onto a ``ProcessPoolExecutor`` (GIL-build fallback, see
-    ``_parse_unique_retained_raws``), a ``ThreadPoolExecutor`` (real
-    free-threading, see ``_parse_unique_retained_raws_via_threads``), and the
-    daemon's own off-writer-hold pre-parse ``ThreadPoolExecutor``
+    ``kind_token``/``native_id`` (polylogue-6lyh1) mirror
+    ``parse_retained_raw_sessions``'s own fallback-identity recovery exactly:
+    an APPEND-kind raw's own record stream may carry no self-describing
+    identity of its own (e.g. a Codex append delta has no ``session_meta``
+    record), so the identity hint recorded at write time
+    (``sources/live/batch.py``'s ``_append_payload_for_provider`` /
+    ``write_raw_payload``'s ``native_id``) must be used as the parser's
+    fallback_id instead of the bare filename stem -- otherwise a parallel
+    dispatch path silently falls back to ``Path(source_path).stem`` and
+    diverges from the sequential path whenever the source path's stem isn't
+    the provider session id (polylogue-u19l fixed this for the sequential
+    path only; every dispatcher of this worker must apply the identical
+    fallback for parallel and sequential replay to stay byte-identical).
+    Every caller resolves both values on its own calling thread (never
+    inside a worker) for the same thread-affine-connection reason
+    ``_parse_unique_retained_raws_via_threads`` avoids touching a shared
+    ``ArchiveStore`` at all.
+
+    Dispatched onto a ``ThreadPoolExecutor`` (real free-threading, see
+    ``_parse_unique_retained_raws_via_threads``) and the daemon's own
+    off-writer-hold pre-parse ``ThreadPoolExecutor``
     (``polylogue.daemon.parse_prefetch.DaemonParseStage``, polylogue-m6tp
-    phase (a)) -- the function is identical every time; only the executor
-    and the recreated ``ArchiveBlobPublisher``'s process/thread affinity
-    differ. Public (not module-private) precisely so the daemon's warmer can
-    import and dispatch it without duplicating this parse logic.
+    phase (a)), plus the pipelined replay prefetcher's reparse fallback
+    (``_ReplaySpillPrefetcher._decode``) -- the function is identical every
+    time; only the executor and the recreated ``ArchiveBlobPublisher``'s
+    process/thread affinity differ. Public (not module-private) precisely so
+    the daemon's warmer can import and dispatch it without duplicating this
+    parse logic.
     """
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     provider = Provider(provider_token)
+    kind = RawRevisionKind(kind_token)
+    fallback_id_override = native_id if kind is RawRevisionKind.APPEND else None
     publisher = ArchiveBlobPublisher(Path(source_db_path_str), Path(blob_root_str))
     try:
         if is_stream:
             with publisher.open(blob_hash) as payload:
-                sessions = _parse_stream(provider, payload, source_path)
+                sessions = _parse_stream(provider, payload, source_path, fallback_id_override=fallback_id_override)
         else:
             payload_path = None
             if provider is Provider.HERMES:
@@ -1469,6 +1504,7 @@ def census_parse_worker(
                 source_path,
                 payload_path=payload_path,
                 archive_root=Path(blob_root_str).parent,
+                fallback_id_override=fallback_id_override,
             )
         return raw_id, sessions, None
     except Exception as exc:
@@ -1551,7 +1587,15 @@ def _parse_retained_raws(
     (every caller that does not opt in) skips this lookup/store entirely and
     is byte-identical to today's behavior.
     """
-    descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
+    for raw_id in raw_ids:
+        provider, blob_hash, source_path, kind, size = archive.raw_revision_descriptor(raw_id)
+        # polylogue-6lyh1: resolve the same APPEND fallback-identity hint the
+        # sequential path (``parse_retained_raw_sessions``) recovers, on this
+        # calling thread, so every parallel dispatch path below can apply the
+        # identical fallback -- see ``census_parse_worker``'s docstring.
+        native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
+        descriptors[raw_id] = (provider, blob_hash, source_path, kind, size, native_id)
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
     remaining_raw_ids = raw_ids
     if prefetch_cache is not None and raw_ids:
@@ -1562,13 +1606,13 @@ def _parse_retained_raws(
                 remaining_raw_ids.append(raw_id)
             else:
                 results[raw_id] = cached
-    grouped: dict[tuple[Provider, str, str], list[str]] = {}
+    grouped: dict[ContentCacheKey, list[str]] = {}
     for raw_id in remaining_raw_ids:
-        provider, blob_hash, source_path, _kind, _size = descriptors[raw_id]
+        provider, blob_hash, source_path, _kind, _size, native_id = descriptors[raw_id]
         dedup_path = "" if provider in _PATH_INDEPENDENT_PARSE_PROVIDERS else source_path
-        grouped.setdefault((provider, blob_hash, dedup_path), []).append(raw_id)
+        grouped.setdefault((provider, blob_hash, dedup_path, native_id), []).append(raw_id)
 
-    content_hits: dict[tuple[Provider, str, str], tuple[list[ParsedSession], int, RawRevisionKind]] = {}
+    content_hits: dict[ContentCacheKey, tuple[list[ParsedSession], int, RawRevisionKind]] = {}
     representatives: list[str] = []
     for key, members in grouped.items():
         content_hit = prefetch_cache.get_content(key) if prefetch_cache is not None else None
@@ -1601,7 +1645,7 @@ def _parse_retained_raws(
                 results[raw_id] = outcome
             else:
                 sessions, _rep_size, _rep_kind = outcome
-                _provider, _blob_hash, _source_path, kind, size = descriptors[raw_id]
+                _provider, _blob_hash, _source_path, kind, size, _native_id = descriptors[raw_id]
                 results[raw_id] = (sessions, size, kind)
     return results
 
@@ -1610,7 +1654,7 @@ def _parse_unique_retained_raws_via_threads(
     archive: ArchiveStore,
     raw_ids: list[str],
     *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Thread-parallel parse over every raw, regardless of size.
@@ -1653,7 +1697,7 @@ def _parse_unique_retained_raws_via_threads(
     with ThreadPoolExecutor(max_workers=min(ingest_workers, len(raw_ids))) as pool:
         future_to_raw_id = {}
         for raw_id in raw_ids:
-            provider, blob_hash, source_path, _kind, _payload_size = descriptors[raw_id]
+            provider, blob_hash, source_path, kind, _payload_size, native_id = descriptors[raw_id]
             future = pool.submit(
                 census_parse_worker,
                 raw_id,
@@ -1663,6 +1707,8 @@ def _parse_unique_retained_raws_via_threads(
                 is_stream_record_provider(source_path, str(provider)),
                 blob_root_str,
                 source_db_path_str,
+                kind.value,
+                native_id,
             )
             future_to_raw_id[future] = raw_id
         for future in as_completed(future_to_raw_id):
@@ -1675,7 +1721,7 @@ def _parse_unique_retained_raws_via_threads(
             if error is not None:
                 results[raw_id] = RuntimeError(error)
                 continue
-            _provider, _blob_hash, _source_path, kind, payload_size = descriptors[raw_id]
+            _provider, _blob_hash, _source_path, kind, payload_size, _native_id = descriptors[raw_id]
             results[raw_id] = (sessions or [], payload_size, kind)
     return results
 
@@ -1684,7 +1730,7 @@ def _parse_unique_retained_raws(
     archive: ArchiveStore,
     raw_ids: list[str],
     *,
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
     ingest_workers: int,
 ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
     """Parse already-deduplicated raws, optionally in parallel.
@@ -1719,7 +1765,10 @@ def _parse_unique_retained_raws(
     what made a full index rebuild a ~9-hour job on a 24-thread machine.
     """
     results: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {}
-    if ingest_workers <= 1 or len(raw_ids) <= 1 or not parallel_threads_effective():
+    plan = resolve_revision_backfill_census_dispatch(
+        ingest_workers=ingest_workers, record_count=len(raw_ids), free_threaded=parallel_threads_effective()
+    )
+    if plan.pool_kind is PoolKind.SEQUENTIAL:
         if ingest_workers > 1 and len(raw_ids) > 1:
             _LOGGER.warning(
                 "parsing %d raws sequentially: this interpreter has the GIL enabled, and "
@@ -2040,15 +2089,15 @@ class _ReplaySpillPrefetcher:
         source_conn: sqlite3.Connection,
         keys: tuple[str, ...],
         extra_members: dict[str, frozenset[str]],
-    ) -> tuple[list[tuple[int, str]], dict[str, tuple[Provider, str, str, int]]]:
+    ) -> tuple[list[tuple[int, str]], dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]]]:
         """Resolve (seq, raw_id) decode order plus per-raw parse descriptors.
 
         Durable membership comes from source.db on this thread's own
         read-only connection (both mappings are committed before replay
         begins; retirement-phase additions living in an open batch window
         are covered by ``extra_members`` instead). Descriptors mirror
-        ``raw_revision_descriptor``'s SELECT exactly, minus the writer-side
-        connection affinity.
+        ``raw_revision_descriptor``'s SELECT exactly (plus ``native_id``,
+        polylogue-6lyh1), minus the writer-side connection affinity.
         """
         wanted = set(keys)
         members: dict[str, list[str]] = {key: [] for key in keys}
@@ -2078,25 +2127,39 @@ class _ReplaySpillPrefetcher:
             # equals the next key's, which is exactly what enter_key needs.
         with self._lock:
             self._key_start_seq = key_start_seq
-        descriptors: dict[str, tuple[Provider, str, str, int]] = {}
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {}
         planned = [raw_id for _seq, raw_id in plan]
         for start in range(0, len(planned), 500):
             chunk = planned[start : start + 500]
             placeholders = ",".join("?" for _ in chunk)
             for row in source_conn.execute(
-                "SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, blob_size "
+                "SELECT raw_id, origin, capture_mode, lower(hex(blob_hash)), source_path, revision_kind, "
+                "blob_size, native_id "
                 f"FROM raw_sessions WHERE raw_id IN ({placeholders})",
                 chunk,
             ):
                 provider = provider_from_origin(Origin.from_string(str(row[1])), family_hint=row[2])
-                descriptors[str(row[0])] = (provider, str(row[3]), str(row[4]), int(row[5]))
+                kind = RawRevisionKind(str(row[5]))
+                # polylogue-6lyh1: mirror ``census_parse_worker``'s fallback-id
+                # contract exactly -- only an APPEND raw's recovered native_id
+                # is ever used as a fallback identity; see that function's
+                # docstring for why this must match the sequential path.
+                raw_native_id_value = row[7]
+                native_id = (
+                    str(raw_native_id_value)
+                    if kind is RawRevisionKind.APPEND
+                    and isinstance(raw_native_id_value, str)
+                    and raw_native_id_value.strip()
+                    else None
+                )
+                descriptors[str(row[0])] = (provider, str(row[3]), str(row[4]), kind, int(row[6]), native_id)
         return plan, descriptors
 
     def _decode(
         self,
         spill_conn: sqlite3.Connection,
         raw_id: str,
-        descriptors: dict[str, tuple[Provider, str, str, int]],
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
     ) -> tuple[list[ParsedSession], int, bool] | None:
         started = time.perf_counter()
         rows = spill_conn.execute(
@@ -2110,7 +2173,7 @@ class _ReplaySpillPrefetcher:
         descriptor = descriptors.get(raw_id)
         if descriptor is None:
             return None
-        provider, blob_hash, source_path, payload_bytes = descriptor
+        provider, blob_hash, source_path, kind, payload_bytes, native_id = descriptor
         if payload_bytes > self._budget // 4:
             # Oversized decode: leave it to the writer's inline path so one
             # in-flight tree can never balloon far past the buffer budget.
@@ -2123,6 +2186,8 @@ class _ReplaySpillPrefetcher:
             is_stream_record_provider(source_path, str(provider)),
             str(self._blob_root),
             str(self._source_db_path),
+            kind.value,
+            native_id,
         )
         if error is not None or sessions_or_none is None:
             # Do not buffer failures: the writer's inline decode raises the

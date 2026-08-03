@@ -14,7 +14,7 @@ from polylogue.archive.ingest_flags import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
-from polylogue.archive.revision_authority import RawRevisionKind
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
@@ -1615,9 +1615,9 @@ def test_raw_parse_prefetch_cache_content_get_put_lru_and_budget() -> None:
     never admit a single entry bigger than the whole budget (a whale must
     not evict everything and then still fail to fit)."""
     cache = RawParsePrefetchCache(max_inflight_bytes=1_000_000, max_content_cache_bytes=100)
-    key_a = (Provider.CODEX, "hash-A", "")
-    key_b = (Provider.CODEX, "hash-B", "")
-    key_c = (Provider.CODEX, "hash-C", "")
+    key_a = (Provider.CODEX, "hash-A", "", None)
+    key_b = (Provider.CODEX, "hash-B", "", None)
+    key_c = (Provider.CODEX, "hash-C", "", None)
 
     assert cache.content_len() == 0
     assert cache.get_content(key_a) is None
@@ -1887,6 +1887,110 @@ def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypat
     assert _sessions(sequential_root) == _sessions(thread_root)
 
 
+def _append_delta_without_self_describing_identity(text: str) -> bytes:
+    """A Codex append-delta payload with no ``session_meta`` record of its
+    own -- the polylogue-u19l shape: the parser has no self-describing
+    identity to read and must fall back to whatever fallback_id it is
+    given."""
+    return (
+        b'{"type":"response_item","payload":{"type":"message","id":"m0","role":"user",'
+        b'"content":[{"type":"input_text","text":"' + text.encode() + b'"}]}}\n'
+    )
+
+
+def _write_append_raw_with_recovered_identity(
+    archive: ArchiveStore, *, raw_id: str, native_id: str, source_path: str, payload: bytes, acquired_at_ms: int
+) -> None:
+    """Write an APPEND-kind raw whose own bytes carry no identity, recording
+    ``native_id`` as the write-time recovery hint (``write_raw_payload``'s
+    ``native_id`` -- see ``sources/live/batch.py``'s
+    ``_append_payload_for_provider``) -- deliberately at a ``source_path``
+    whose stem does NOT equal ``native_id``, so a dispatch path that falls
+    back to ``Path(source_path).stem`` instead of the recorded native_id
+    diverges observably from one that recovers it correctly."""
+    assert Path(source_path).stem != native_id
+    archive.write_raw_payload(
+        provider=Provider.CODEX,
+        payload=payload,
+        source_path=source_path,
+        acquired_at_ms=acquired_at_ms,
+        raw_id=raw_id,
+        native_id=native_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=f"codex:{native_id}",
+            kind=RawRevisionKind.APPEND,
+            source_revision=f"{raw_id}-revision",
+            acquisition_generation=0,
+            predecessor_source_revision=f"{raw_id}-predecessor",
+            append_start_offset=0,
+            append_end_offset=len(payload),
+            authority=RawRevisionAuthority.QUARANTINED,
+        ),
+    )
+
+
+def test_thread_parse_recovers_append_native_id_matching_sequential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """polylogue-6lyh1 red-first: census_parse_worker lacked kind/native_id,
+    so the thread-parallel census path fell back to
+    ``Path(source_path).stem`` for an APPEND raw with no self-describing
+    identity of its own, instead of the write-time-recorded native_id the
+    sequential path (``parse_retained_raw_sessions``) recovers via
+    ``archive.raw_native_id`` -- see that function's polylogue-u19l comment.
+
+    Two APPEND raws are constructed with a payload carrying NO
+    ``session_meta`` record (so the parser has nothing else to fall back on)
+    AND a ``source_path`` stem that deliberately differs from the recorded
+    native_id, forcing observable divergence: before the fix, the thread
+    path's ``provider_session_id`` would be the source_path's stem
+    (``"delta-file-one"``/``"delta-file-two"``); after the fix, both paths
+    agree on the recorded native_id (``"session-alpha"``/``"session-beta"``).
+    Two raws are used (not one) because ``_parse_unique_retained_raws`` only
+    takes the thread-pool branch when ``record_count > 1``.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        _write_append_raw_with_recovered_identity(
+            archive,
+            raw_id="raw-alpha",
+            native_id="session-alpha",
+            source_path="delta-file-one.jsonl",
+            payload=_append_delta_without_self_describing_identity("hello alpha"),
+            acquired_at_ms=1,
+        )
+        _write_append_raw_with_recovered_identity(
+            archive,
+            raw_id="raw-beta",
+            native_id="session-beta",
+            source_path="delta-file-two.jsonl",
+            payload=_append_delta_without_self_describing_identity("hello beta"),
+            acquired_at_ms=2,
+        )
+
+    raw_ids = ["raw-alpha", "raw-beta"]
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        sequential_results = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=1)
+
+    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        thread_results = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=4)
+
+    expected_native_id = {"raw-alpha": "session-alpha", "raw-beta": "session-beta"}
+    for raw_id in raw_ids:
+        seq_sessions, _seq_size, _seq_kind = sequential_results[raw_id]  # type: ignore[misc]
+        thread_sessions, _thread_size, _thread_kind = thread_results[raw_id]  # type: ignore[misc]
+        assert len(seq_sessions) == 1
+        assert len(thread_sessions) == 1
+        assert seq_sessions[0].provider_session_id == expected_native_id[raw_id]
+        # The actual regression proof: the thread path must match the
+        # sequential path's recovered identity, not silently fall back to
+        # the source_path stem instead.
+        assert thread_sessions[0].provider_session_id == seq_sessions[0].provider_session_id
+
+
 def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression guard for the sqlite ``check_same_thread`` hazard this
     thread path was designed around: ``ArchiveStore._source_conn`` is a
@@ -1907,9 +2011,9 @@ def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytes
         archive_root = Path("/fake-root")
         source_db_path = Path("/fake-root/source.db")
 
-    descriptors = {
-        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 111),
-        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 222),
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
+        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 111, None),
+        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 222, None),
     }
 
     def fake_worker(
@@ -1920,6 +2024,8 @@ def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytes
         is_stream: bool,
         blob_root_str: str,
         source_db_path_str: str,
+        kind_token: str,
+        native_id: str | None,
     ) -> tuple[str, list[ParsedSession] | None, str | None]:
         return raw_id, [], None
 
@@ -1947,10 +2053,10 @@ def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
     ``as_completed`` loop uncaught, this whole test (and every other raw's
     result) would never be reached -- the two surviving successful results
     are asserted explicitly, not merely "no exception raised"."""
-    descriptors = {
-        "ok-1": (Provider.CODEX, "hash-A", "a.jsonl", RawRevisionKind.FULL, 10),
-        "bad-1": (Provider.CODEX, "hash-B", "b.jsonl", RawRevisionKind.FULL, 20),
-        "ok-2": (Provider.CODEX, "hash-C", "c.jsonl", RawRevisionKind.FULL, 30),
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
+        "ok-1": (Provider.CODEX, "hash-A", "a.jsonl", RawRevisionKind.FULL, 10, None),
+        "bad-1": (Provider.CODEX, "hash-B", "b.jsonl", RawRevisionKind.FULL, 20, None),
+        "ok-2": (Provider.CODEX, "hash-C", "c.jsonl", RawRevisionKind.FULL, 30, None),
     }
 
     class _FakeArchive:
@@ -1965,6 +2071,8 @@ def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
         is_stream: bool,
         blob_root_str: str,
         source_db_path_str: str,
+        kind_token: str,
+        native_id: str | None,
     ) -> tuple[str, list[ParsedSession] | None, str | None]:
         if raw_id == "bad-1":
             raise RuntimeError(f"boom {raw_id}")
@@ -1997,8 +2105,8 @@ def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: 
     descriptor-derived payload_size must still come back attached to it
     regardless."""
     raw_ids = [f"raw-{i}" for i in range(6)]
-    descriptors = {
-        raw_id: (Provider.CODEX, f"hash-{i}", f"path-{i}.jsonl", RawRevisionKind.FULL, 100 + i)
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
+        raw_id: (Provider.CODEX, f"hash-{i}", f"path-{i}.jsonl", RawRevisionKind.FULL, 100 + i, None)
         for i, raw_id in enumerate(raw_ids)
     }
     # raw-0 (submitted first) sleeps longest; raw-5 (submitted last) returns
@@ -2017,6 +2125,8 @@ def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: 
         is_stream: bool,
         blob_root_str: str,
         source_db_path_str: str,
+        kind_token: str,
+        native_id: str | None,
     ) -> tuple[str, list[ParsedSession] | None, str | None]:
         time.sleep(delay_by_raw_id[raw_id])
         return raw_id, [], None
@@ -2044,9 +2154,9 @@ def test_parse_unique_retained_raws_routes_to_threads_when_probe_true(
     ``parallel_threads_effective()`` is true, it must call
     ``_parse_unique_retained_raws_via_threads`` (no size partition / floor)
     rather than falling through to the process-pool branch below it."""
-    descriptors = {
-        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 10),
-        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 20),
+    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
+        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 10, None),
+        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 20, None),
     }
 
     sentinel: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {
@@ -2059,7 +2169,7 @@ def test_parse_unique_retained_raws_routes_to_threads_when_probe_true(
         archive: object,
         raw_ids: list[str],
         *,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int]],
+        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
         ingest_workers: int,
     ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
         calls.append((tuple(raw_ids), ingest_workers))

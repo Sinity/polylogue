@@ -51,7 +51,9 @@ _AVG_PAYLOAD_BYTES = 80_000
 
 def _time_parse(archive_root: Path, raw_ids: list[str], *, ingest_workers: int) -> float:
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+        descriptors = {
+            raw_id: (*archive.raw_revision_descriptor(raw_id), archive.raw_native_id(raw_id)) for raw_id in raw_ids
+        }
         started = time.perf_counter()
         results = _parse_unique_retained_raws(archive, raw_ids, descriptors=descriptors, ingest_workers=ingest_workers)
         elapsed = time.perf_counter() - started

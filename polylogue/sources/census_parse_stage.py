@@ -48,10 +48,14 @@ deploy (phase (b), polylogue-m6tp).
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import closing
+from pathlib import Path
 
+from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.pipeline.parsed_tree_size import (
@@ -95,6 +99,32 @@ _MAX_MAX_INFLIGHT_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 # this bound can fix -- the bound's job is only to stop the CONVEYOR LOOP
 # from waiting on it forever, which it does.
 _DEFAULT_WARM_TIMEOUT_SECONDS = 300.0
+
+
+def _resolve_readonly_native_ids(archive_root: Path, raw_ids: Sequence[str]) -> dict[str, str | None]:
+    """Read-only ``native_id`` lookup for pre-parse dispatch (no writer needed).
+
+    polylogue-6lyh1: mirrors ``ArchiveStore.raw_native_id`` (same column, same
+    "blank means unknown" contract) but over a plain ``mode=ro`` connection,
+    the same relationship ``raw_materialization_readonly_descriptors`` (in
+    ``storage/repair.py``) has to ``ArchiveStore.raw_revision_descriptor`` --
+    kept as a small dedicated query here rather than widening that shared
+    helper's return shape, since its other callers do not need this column.
+    """
+    raw_ids = list(raw_ids)
+    if not raw_ids:
+        return {}
+    placeholders = ",".join("?" for _ in raw_ids)
+    result: dict[str, str | None] = {}
+    with closing(sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)) as conn:
+        rows = conn.execute(
+            f"SELECT raw_id, native_id FROM raw_sessions WHERE raw_id IN ({placeholders})",
+            raw_ids,
+        ).fetchall()
+    for row in rows:
+        value = row[1]
+        result[str(row[0])] = value if isinstance(value, str) and value.strip() else None
+    return result
 
 
 def daemon_parse_stage_worker_count() -> int:
@@ -344,13 +374,23 @@ class CensusParseStage:
         descriptors = raw_materialization_readonly_descriptors(archive_root, raw_ids)
         blob_root_str = str(archive_root / "blob")
         source_db_path_str = str(archive_root / "source.db")
+        # polylogue-6lyh1: resolve the same APPEND fallback-identity hint the
+        # sequential path recovers, so this warmer's parsed output matches
+        # the writer-held pass exactly -- see census_parse_worker's docstring.
+        append_raw_ids = [
+            raw_id
+            for raw_id in raw_ids
+            if (descriptors.get(raw_id) is not None and descriptors[raw_id][3] is RawRevisionKind.APPEND)
+        ]
+        native_ids = _resolve_readonly_native_ids(archive_root, append_raw_ids)
 
         futures = {}
         for raw_id in raw_ids:
             descriptor = descriptors.get(raw_id)
             if descriptor is None:
                 continue
-            provider, blob_hash, source_path, _kind, _size = descriptor
+            provider, blob_hash, source_path, kind, _size = descriptor
+            native_id = native_ids.get(raw_id) if kind is RawRevisionKind.APPEND else None
             future = self._executor.submit(
                 revision_backfill.census_parse_worker,
                 raw_id,
@@ -360,6 +400,8 @@ class CensusParseStage:
                 is_stream_record_provider(source_path, str(provider)),
                 blob_root_str,
                 source_db_path_str,
+                kind.value,
+                native_id,
             )
             futures[future] = raw_id
 
