@@ -1079,6 +1079,116 @@ def rebuild_index_from_source_sync(request: RebuildIndexRequest) -> RebuildIndex
     return asyncio.run(rebuild_index_from_source(request))
 
 
+def rebuild_status(
+    archive_root: Path,
+    *,
+    operation_id: str | None = None,
+    include_daemon_bulk_rebuild: bool = True,
+) -> dict[str, object]:
+    """Consolidated raw-replay rebuild status for operator/agent surfaces.
+
+    polylogue-b5l.1 AC5: one read gives lease ownership, the active
+    generation, the resumable transaction's cursor/delta, and explicit
+    stale-lock/failed-transaction recovery guidance -- instead of an operator
+    hand-cross-referencing ``.index-rebuild.lock``, ``.index-active-pointer``,
+    and a transaction JSON file under ``.index-rebuild-transactions/``.
+
+    ``operation_id`` selects which persisted transaction to report. When
+    omitted and ``include_daemon_bulk_rebuild`` is True (the default), this
+    falls back to the daemon's own well-known bulk-rebuild operation id
+    (``DAEMON_BULK_REBUILD_OPERATION_ID``) -- the common case for
+    ``ops reset --index && polylogued run``, where the daemon never has an
+    explicit operation id to hand the caller. Read-only throughout: never
+    acquires ``RebuildLease``, never mutates any transaction or generation.
+    """
+    from polylogue.daemon.bulk_rebuild import DAEMON_BULK_REBUILD_OPERATION_ID
+    from polylogue.storage.index_generation import (
+        IndexGenerationStore,
+        rebuild_lease_status,
+        source_revision_snapshot,
+    )
+
+    location = ArchiveLocation.resolve(archive_root)
+    lease = rebuild_lease_status(archive_root)
+    store = IndexGenerationStore(location)
+
+    active_generation: dict[str, object] | None = None
+    try:
+        active_target = store.active_pointer.resolve(strict=True)
+    except OSError:
+        active_target = None
+    if active_target is not None:
+        for metadata_path in store.generations_root.glob("gen-*/generation.json"):
+            try:
+                generation = store.load(metadata_path.parent.name)
+                if generation.state == "active" and Path(generation.index_path).resolve(strict=True) == active_target:
+                    active_generation = cast(dict[str, object], asdict(generation))
+                    break
+            except (OSError, ValueError, TypeError):
+                continue
+
+    schema_version: int | None = None
+    try:
+        with contextlib.closing(sqlite3.connect(f"file:{store.active_pointer}?mode=ro", uri=True, timeout=5.0)) as conn:
+            row = conn.execute("PRAGMA user_version").fetchone()
+        schema_version = int(row[0]) if row is not None else None
+    except sqlite3.Error:
+        schema_version = None
+
+    resolved_operation_id = operation_id
+    if resolved_operation_id is None and include_daemon_bulk_rebuild:
+        resolved_operation_id = DAEMON_BULK_REBUILD_OPERATION_ID
+
+    transaction_payload: dict[str, object] | None = None
+    delta: dict[str, object] | None = None
+    if resolved_operation_id is not None:
+        try:
+            transaction = store.load_transaction(resolved_operation_id)
+        except FileNotFoundError:
+            transaction = None
+        except (OSError, ValueError, TypeError, KeyError):
+            transaction = None
+        if transaction is not None:
+            transaction_payload = cast(dict[str, object], asdict(transaction))
+            current_snapshot = source_revision_snapshot(archive_root) if (archive_root / "source.db").exists() else None
+            delta = {
+                "source_snapshot_matches": (
+                    current_snapshot is not None and current_snapshot == transaction.source_snapshot
+                ),
+                "current_source_snapshot": current_snapshot,
+                "transaction_source_snapshot": transaction.source_snapshot,
+            }
+
+    recovery: list[str] = []
+    if lease.stale:
+        recovery.append(
+            f"lease lock file records dead pid={lease.holder_pid} host={lease.holder_host!r}; "
+            "the next RebuildLease acquisition reclaims it automatically -- no manual action required "
+            "unless a fresh attempt still refuses"
+        )
+    if transaction_payload is not None and transaction_payload.get("status") == "failed":
+        recovery.append(
+            f"transaction {resolved_operation_id!r} is failed: {transaction_payload.get('error')!r}; "
+            "resume with the same --operation-id to retry the same candidate, or discard it to start fresh"
+        )
+    if delta is not None and delta.get("source_snapshot_matches") is False:
+        recovery.append(
+            f"transaction {resolved_operation_id!r} source snapshot no longer matches current source.db; "
+            "the next pass against this operation id will refuse as stale -- start a new operation"
+        )
+
+    return {
+        "archive_root": str(archive_root),
+        "lease": lease.to_dict(),
+        "generation": active_generation,
+        "schema_version": schema_version,
+        "operation_id": resolved_operation_id,
+        "transaction": transaction_payload,
+        "delta": delta,
+        "recovery": recovery,
+    }
+
+
 __all__ = [
     "RebuildIndexReceipt",
     "RebuildIndexRequest",
@@ -1088,6 +1198,7 @@ __all__ = [
     "missing_index_raw_ids",
     "rebuild_index_from_source",
     "rebuild_index_from_source_sync",
+    "rebuild_status",
     "select_rebuild_raw_ids",
     "validate_rebuild_index_request",
 ]
