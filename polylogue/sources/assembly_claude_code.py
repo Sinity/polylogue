@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
+from polylogue.storage.blob_store import BlobStore
 
 from .assembly import (
     ClaudeCodeHistoryPasteIndex,
@@ -38,13 +39,19 @@ _HISTORY_TIMESTAMP_TOLERANCE_MS = 6_000
 class ClaudeCodeAssemblySpec:
     """Claude Code provider assembly — sessions-index.json + history.jsonl."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
+    def discover_sidecars(
+        self,
+        source_paths: list[Path],
+        *,
+        blob_store: BlobStore | None = None,
+    ) -> SidecarData:
         """Discover Claude Code sidecars.
 
         Returns both the session index (used for title/branch enrichment) and
         the per-session history paste index (used for ``has_paste`` evidence,
         #1583).
         """
+        del blob_store
         indices: dict[Path, dict[str, SessionIndexEntry]] = {}
         history_indices: dict[Path, ClaudeCodeHistoryPasteIndex] = {}
         for path in source_paths:

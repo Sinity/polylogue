@@ -88,6 +88,52 @@ def test_inline_attachment_bytes_are_stored_with_true_hash(tmp_path: Path, monke
     assert store.read_all(hashlib.sha256(payload).hexdigest()) == payload
 
 
+def test_precomputed_blob_attachment_is_stored_as_acquired(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """bd polylogue-8ac0: bytes already streamed into the blob store (e.g.
+    ChatGPT ``.dat`` asset acquisition during sidecar discovery) are recorded
+    as ``acquired`` via ``precomputed_blob`` without re-hashing/re-writing.
+    """
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+
+    payload = b"dat asset bytes acquired during sidecar discovery"
+    blob_hash, size = store.write_from_bytes(payload)
+
+    conn = _connect(tmp_path / "index.db")
+    attachment = ParsedAttachment(
+        provider_attachment_id="file-xyz",
+        message_provider_id="m0",
+        name="photo.png",
+        mime_type="image/png",
+        precomputed_blob=(blob_hash, size),
+    )
+    session = _session_with_attachment(attachment)
+    preacquired: dict[int, tuple[bytes | None, int, str]] = {
+        id(attachment): (bytes.fromhex(blob_hash), size, "acquired")
+    }
+    write_parsed_session_to_archive(conn, session, preacquired_attachment_blobs=preacquired)
+
+    row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
+    assert row["acquisition_status"] == "acquired"
+    assert row["byte_count"] == len(payload)
+    assert bytes(row["blob_hash"]) == bytes.fromhex(blob_hash)
+    assert store.read_all(blob_hash) == payload
+
+
+def test_low_level_writer_rejects_precomputed_blob_without_preacquisition(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = _session_with_attachment(
+        ParsedAttachment(
+            provider_attachment_id="att-unreserved",
+            message_provider_id="m0",
+            precomputed_blob=("ab" * 32, 5),
+        )
+    )
+
+    with pytest.raises(ValueError, match="preacquired_attachment_blobs"):
+        write_parsed_session_to_archive(conn, session)
+
+
 def test_attachment_without_bytes_is_marked_unfetched_not_faked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -230,6 +230,7 @@ def parse_one_source_path(
             cursor_state=cursor_state,
             blob_root=blob_root,
             blob_store=blob_store,
+            sidecar_data=sidecar_data,
         )
         return
 
@@ -379,6 +380,7 @@ def iter_source_sessions_with_raw(
         include_mtime=capture_raw,
         known_mtimes=known_mtimes,
         discover_sidecars=True,
+        blob_store=blob_store,
     )
     if walk is None:
         return

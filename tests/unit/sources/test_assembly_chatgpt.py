@@ -17,6 +17,8 @@ from polylogue.core.enums import Provider
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
+from polylogue.storage.blob_store import BlobStore
+from tests.infra.source_builders import ChatGPTExportBuilder
 
 
 def _session(
@@ -225,3 +227,182 @@ class TestEnrichSession:
         assert len(events) == 1
         assert events[0].payload["resolution_tier"] == 6
         assert "resolved_file_id" not in events[0].payload
+
+
+class TestAcquireDatBlobsFromZip:
+    """bd polylogue-8ac0 — streaming ``.dat`` asset bytes into the blob store."""
+
+    def test_dat_member_streamed_into_blob_store(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "export.zip"
+        dat_bytes = b"the real attachment bytes"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("conversation_asset_file_names.json", json.dumps({"file-xyz.dat": "photo.png"}))
+            zf.writestr("file-xyz.dat", dat_bytes)
+
+        store = BlobStore(tmp_path / "blobs")
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+
+        dat_blobs = sidecar_data.get("chatgpt_dat_blobs")
+        assert dat_blobs is not None
+        assert "file-xyz" in dat_blobs
+        blob_hash, size = dat_blobs["file-xyz"]
+        assert size == len(dat_bytes)
+        assert store.exists(blob_hash)
+        assert store.read_all(blob_hash) == dat_bytes
+
+    def test_no_blob_store_leaves_dat_blobs_absent(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "export.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("file-xyz.dat", b"bytes")
+
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path])
+        assert "chatgpt_dat_blobs" not in sidecar_data
+
+    def test_non_dat_members_are_not_streamed(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "export.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("conversations.json", "[]")
+
+        store = BlobStore(tmp_path / "blobs")
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+        assert "chatgpt_dat_blobs" not in sidecar_data
+
+
+class TestAcquireDatBlobsFromDirectory:
+    def test_dat_sibling_streamed_into_blob_store(self, tmp_path: Path) -> None:
+        (tmp_path / "conversations-000.json").write_text("[]", encoding="utf-8")
+        dat_bytes = b"library file bytes"
+        (tmp_path / "file_abc.dat").write_bytes(dat_bytes)
+
+        store = BlobStore(tmp_path / "blobs")
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([tmp_path / "conversations-000.json"], blob_store=store)
+
+        dat_blobs = sidecar_data.get("chatgpt_dat_blobs")
+        assert dat_blobs is not None
+        blob_hash, size = dat_blobs["file_abc"]
+        assert size == len(dat_bytes)
+        assert store.read_all(blob_hash) == dat_bytes
+
+
+class TestEnrichSessionAcquiresBlobs:
+    def test_dat_attachment_gets_precomputed_blob(self) -> None:
+        attachment = ParsedAttachment(provider_attachment_id="file-xyz", message_provider_id="m1")
+        conv = _session([attachment])
+        spec = ChatGPTAssemblySpec()
+
+        result = spec.enrich_session(
+            conv,
+            {
+                "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
+                "chatgpt_dat_blobs": {"file-xyz": ("ab" * 32, 5)},
+            },
+        )
+
+        resolved = result.attachments[0]
+        assert resolved.precomputed_blob == ("ab" * 32, 5)
+        assert resolved.size_bytes == 5
+        events = [e for e in result.session_events if e.event_type == "chatgpt_asset_resolution"]
+        assert events == []  # no library_files/asset_names hit, only the blob join
+
+    def test_does_not_overwrite_inline_bytes(self) -> None:
+        attachment = ParsedAttachment(
+            provider_attachment_id="file-xyz",
+            message_provider_id="m1",
+            inline_bytes=b"already carrying real bytes",
+        )
+        conv = _session([attachment])
+        spec = ChatGPTAssemblySpec()
+
+        result = spec.enrich_session(
+            conv,
+            {
+                "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
+                "chatgpt_dat_blobs": {"file-xyz": ("cd" * 32, 5)},
+            },
+        )
+
+        resolved = result.attachments[0]
+        assert resolved.precomputed_blob is None
+        assert resolved.inline_bytes == b"already carrying real bytes"
+
+    def test_sandbox_attachment_never_joins_dat_blobs(self) -> None:
+        attachment = ParsedAttachment(
+            provider_attachment_id="sandbox:m-unrelated:/mnt/data/mystery.bin",
+            message_provider_id="m-unrelated",
+            name="mystery.bin",
+            attachment_kind="sandbox_file",
+            source_url="sandbox:/mnt/data/mystery.bin",
+        )
+        conv = _session([attachment], provider_session_id="conv-unrelated")
+        spec = ChatGPTAssemblySpec()
+
+        result = spec.enrich_session(
+            conv,
+            {
+                "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
+                "chatgpt_dat_blobs": {"mystery.bin": ("ef" * 32, 5)},
+            },
+        )
+
+        assert result.attachments[0].precomputed_blob is None
+
+
+class TestZipBundleEndToEndBlobAcquisition:
+    """Regression coverage for the ZIP-bundle sidecar-enrichment wiring gap.
+
+    ``process_zip`` used to hardcode ``sidecar_data={}`` for every entry's
+    ``_ParseContext``, so ``enrich_session`` never actually ran for
+    ZIP-shaped ChatGPT sources (the common shape for a GDPR/Takeout export) --
+    only unit tests exercising ``discover_sidecars``/``enrich_session`` in
+    isolation existed, none of them through the real ``parse_one_source_path``
+    entry point. This drives a synthetic ZIP export all the way through.
+    """
+
+    def test_dat_bytes_acquired_through_real_zip_ingest_path(self, tmp_path: Path) -> None:
+        from polylogue.sources.source_parsing import parse_one_source_path
+
+        conversation = (
+            ChatGPTExportBuilder("conv-1")
+            .title("t")
+            .add_node(
+                "user",
+                "hello",
+                metadata={
+                    "attachments": [
+                        {"id": "file-xyz", "name": "photo.png", "mime_type": "image/png", "size": 5},
+                    ]
+                },
+            )
+            .build()
+        )
+
+        zip_path = tmp_path / "export.zip"
+        dat_bytes = b"the real bytes"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("conversations.json", json.dumps([conversation]))
+            zf.writestr("conversation_asset_file_names.json", json.dumps({"file-xyz.dat": "photo.png"}))
+            zf.writestr("file-xyz.dat", dat_bytes)
+
+        blob_root = tmp_path / "blobs"
+        store = BlobStore(blob_root)
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+        assert "file-xyz" in sidecar_data.get("chatgpt_dat_blobs", {})
+
+        results = list(
+            parse_one_source_path(
+                str(zip_path),
+                file_mtime=None,
+                source_name="chatgpt",
+                sidecar_data=sidecar_data,
+                capture_raw=False,
+                blob_root=blob_root,
+                blob_store=store,
+            )
+        )
+        assert len(results) == 1
+        _, session = results[0]
+        assert len(session.attachments) == 1
+        resolved = session.attachments[0]
+        blob_hash, size = sidecar_data["chatgpt_dat_blobs"]["file-xyz"]
+        assert resolved.precomputed_blob == (blob_hash, size)
+        assert resolved.name == "photo.png"

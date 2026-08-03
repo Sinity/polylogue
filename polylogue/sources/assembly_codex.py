@@ -10,6 +10,7 @@ from pathlib import Path
 from polylogue.core.enums import MaterialOrigin, TitleSource
 from polylogue.core.json import json_document
 from polylogue.logging import get_logger
+from polylogue.storage.blob_store import BlobStore
 
 from .assembly import CodexHistoryTitles, CodexThreadNames, SidecarData
 from .parsers.base import ParsedSession
@@ -223,11 +224,17 @@ def _is_prompt_echo(candidate: str, conv: ParsedSession) -> bool:
 class CodexAssemblySpec:
     """Codex provider assembly — thread-name and authored-history sidecars."""
 
-    def discover_sidecars(self, source_paths: list[Path]) -> SidecarData:
+    def discover_sidecars(
+        self,
+        source_paths: list[Path],
+        *,
+        blob_store: BlobStore | None = None,
+    ) -> SidecarData:
         """Discover Codex thread names and authored-history titles.
 
         Returns ``{"thread_names": {...}, "history_titles": {...}}``.
         """
+        del blob_store
         thread_names: dict[str, str] = {}
         history_titles: dict[str, str] = {}
         state_titles: dict[str, str] = {}

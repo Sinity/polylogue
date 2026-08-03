@@ -356,6 +356,31 @@ def test_attachment_identity_hash_rejects_full_payload_spread() -> None:
         attachment_identity_hash(**full_payload)
 
 
+def test_attachment_hash_payload_precomputed_blob_mirrors_inline_bytes() -> None:
+    """bd polylogue-8ac0: a precomputed blob changes content hash like inline bytes.
+
+    Bytes streamed into the blob store during sidecar discovery (ChatGPT
+    ``.dat`` asset acquisition) are recorded via ``precomputed_blob`` rather
+    than ``inline_bytes`` -- but must still perturb the attachment's content
+    hash payload the same way, or re-ingesting an export whose ``.dat`` bytes
+    only just became available would look content-unchanged and get skipped.
+    """
+    unresolved = ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1", name="f.png")
+    with_precomputed = ParsedAttachment(
+        provider_attachment_id="a1",
+        message_provider_id="m1",
+        name="f.png",
+        precomputed_blob=("ab" * 32, 5),
+    )
+
+    unresolved_payload = _attachment_hash_payload(unresolved)
+    precomputed_payload = _attachment_hash_payload(with_precomputed)
+
+    assert "inline_content_hash" not in unresolved_payload
+    assert precomputed_payload["inline_content_hash"] == "ab" * 32
+    assert hash_payload(precomputed_payload) != hash_payload(unresolved_payload)
+
+
 def test_event_base_identity_hash_rejects_measurement_fields() -> None:
     """Provider-reported measurement (polylogue-nuec) cannot reach event identity."""
     with pytest.raises(TypeError):

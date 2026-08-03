@@ -285,6 +285,7 @@ async def parse_sources_archive(
                         include_mtime=True,
                         known_mtimes=None,
                         discover_sidecars=True,
+                        blob_store=parse_blob_publisher,
                     )
                     if walk is None:
                         continue

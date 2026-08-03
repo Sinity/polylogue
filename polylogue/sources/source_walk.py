@@ -8,6 +8,7 @@ from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
@@ -83,6 +84,7 @@ def _setup_source_walk(
     known_mtimes: dict[str, str] | None,
     known_cursors: dict[str, dict[str, object]] | None = None,
     discover_sidecars: bool,
+    blob_store: BlobStore | None = None,
 ) -> _SourceWalkSetup | None:
     paths = _resolve_source_paths(source)
     _cursor._initialize_cursor_state(cursor_state, paths)
@@ -99,7 +101,7 @@ def _setup_source_walk(
         provider = Provider.from_string(source.name)
         spec = get_assembly_spec(provider)
         if spec is not None:
-            sidecar_data = spec.discover_sidecars(paths)
+            sidecar_data = spec.discover_sidecars(paths, blob_store=blob_store)
     return _SourceWalkSetup(
         paths=paths,
         paths_to_process=paths_to_process,
