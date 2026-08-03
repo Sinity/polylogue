@@ -45,10 +45,24 @@ actionable. It makes the presence of an unverified late signal impossible to
 merge past silently, and impossible to permanently paper over without an
 explicit, current-head-scoped decision.
 
+``check --post-status`` closes the remaining gap (2026-08-03,
+polylogue-1cbeh): the verdict above is a purely local CLI result, so nothing
+in GitHub itself -- branch protection, `gh pr merge --auto` -- has anything
+to wait on, and a coordinator ends up manually cycling
+checkout->test->check->merge one PR at a time. `--post-status` posts the
+verdict as a commit status (`context=merge-gate`) on the PR's current head
+sha via `gh api repos/{owner}/{repo}/statuses/{sha}`: OK -> `success`, BLOCK
+-> `failure` with the block reason(s) in the description. Branch protection
+can then require this status like any other check, and `gh pr merge --auto`
+has something real to gate on. This does not itself change branch
+protection settings (a one-time operator action) or switch lanes to
+`--auto` merging -- see polylogue-1cbeh follow-ups.
+
 Usage:
     devtools workspace merge-gate record 3517 --command "devtools verify"
     devtools workspace merge-gate check 3517
     devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1
+    devtools workspace merge-gate check 3517 --post-status
     devtools workspace merge-gate ack 3517 <comment-id> --reason "false positive, already fixed upstream"
 """
 
@@ -103,6 +117,53 @@ def _gh_json_paginated(args: list[str]) -> list[Any]:
     return items
 
 
+# GitHub commit-status `description` is truncated to 140 chars by the API
+# itself; trim ourselves so the reported description matches what actually
+# gets stored rather than being silently cut mid-word server-side.
+_STATUS_DESCRIPTION_MAX = 140
+
+
+def _status_description(verdict: GateVerdict) -> str:
+    if verdict.ok:
+        return "merge-gate OK: verification receipt fresh, no unacked late comments"
+    joined = "; ".join(verdict.reasons) or "merge-gate BLOCK"
+    if len(joined) > _STATUS_DESCRIPTION_MAX:
+        joined = joined[: _STATUS_DESCRIPTION_MAX - 1] + "…"
+    return joined
+
+
+def _post_commit_status(head_sha: str, *, state: str, description: str) -> dict[str, Any]:
+    """Post a GitHub commit status for ``head_sha`` under ``context=merge-gate``.
+
+    Returns a small result dict (never raises) so a status-posting failure --
+    rate limit, auth, network -- surfaces as an advisory in the verdict rather
+    than crashing a check that otherwise completed successfully."""
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            f"repos/{{owner}}/{{repo}}/statuses/{head_sha}",
+            "-f",
+            f"state={state}",
+            "-f",
+            "context=merge-gate",
+            "-f",
+            f"description={description}",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        return {
+            "posted": False,
+            "state": state,
+            "description": description,
+            "error": result.stderr.strip()[:300] or "gh api statuses call failed",
+        }
+    return {"posted": True, "state": state, "description": description}
+
+
 def _read_json_object(path: Path) -> dict[str, Any] | None:
     """Return the parsed object, or None when the file is absent, unreadable,
     truncated, or not a JSON object (a hand edit or an interrupted write must
@@ -136,6 +197,7 @@ class GateVerdict:
     head_sha: str = ""
     receipt: dict[str, Any] | None = None
     late_comments: list[dict[str, Any]] = field(default_factory=list)
+    status_post: dict[str, Any] | None = None
 
 
 def _receipt_path(pr: int) -> Path:
@@ -300,7 +362,15 @@ def _poll_stable_comments(pr: int, *, rounds: int, interval_s: int) -> list[dict
     return last
 
 
-def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int, as_json: bool) -> int:
+def cmd_check(
+    pr: int,
+    *,
+    max_age_s: int,
+    poll_rounds: int,
+    poll_interval_s: int,
+    as_json: bool,
+    post_status: bool = False,
+) -> int:
     verdict = GateVerdict(pr=pr, ok=True)
 
     try:
@@ -316,17 +386,22 @@ def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int
     except (RuntimeError, json.JSONDecodeError, OSError, subprocess.SubprocessError) as exc:
         verdict.ok = False
         verdict.reasons.append(f"gh pr view failed: {exc}")
-        _emit(verdict, as_json)
-        return 1
-
-    if info.get("state") != "OPEN":
-        verdict.ok = False
-        verdict.reasons.append(f"PR state is {info.get('state')!r}, not OPEN")
+        # No head sha resolved yet -- nothing to post a status against.
         _emit(verdict, as_json)
         return 1
 
     head_sha = info["headRefOid"]
     verdict.head_sha = head_sha
+
+    if info.get("state") != "OPEN":
+        verdict.ok = False
+        verdict.reasons.append(f"PR state is {info.get('state')!r}, not OPEN")
+        if post_status:
+            verdict.status_post = _post_commit_status(
+                head_sha, state="failure", description=_status_description(verdict)
+            )
+        _emit(verdict, as_json)
+        return 1
 
     mss = info.get("mergeStateStatus", "")
     if mss not in {"CLEAN", "UNSTABLE", "UNKNOWN"}:
@@ -406,6 +481,13 @@ def cmd_check(pr: int, *, max_age_s: int, poll_rounds: int, poll_interval_s: int
             "refusing to report OK"
         )
 
+    if post_status:
+        verdict.status_post = _post_commit_status(
+            head_sha,
+            state="success" if verdict.ok else "failure",
+            description=_status_description(verdict),
+        )
+
     _emit(verdict, as_json)
     return 0 if verdict.ok else 1
 
@@ -421,6 +503,15 @@ def _emit(verdict: GateVerdict, as_json: bool) -> None:
         print(
             f"    late comment id={late['id']} [{late['path']}:{late['line']}] {late['created_at']}: {late['body_head']}"
         )
+    if verdict.status_post is not None:
+        if verdict.status_post.get("posted"):
+            print(f"  posted commit status: state={verdict.status_post['state']} context=merge-gate")
+        else:
+            print(
+                f"  FAILED to post commit status (state={verdict.status_post.get('state')}): "
+                f"{verdict.status_post.get('error')}",
+                file=sys.stderr,
+            )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -437,6 +528,15 @@ def main(argv: list[str] | None = None) -> int:
     check_p.add_argument("--poll-rounds", type=int, default=_DEFAULT_POLL_ROUNDS)
     check_p.add_argument("--poll-interval-s", type=int, default=_DEFAULT_POLL_INTERVAL_S)
     check_p.add_argument("--json", action="store_true", dest="as_json")
+    check_p.add_argument(
+        "--post-status",
+        action="store_true",
+        dest="post_status",
+        help=(
+            "Post the verdict as a GitHub commit status (context=merge-gate) on the PR's current "
+            "head sha, so branch protection / `gh pr merge --auto` has something to gate on"
+        ),
+    )
 
     ack_p = sub.add_parser("ack", help="Acknowledge a specific review comment as triaged for the current head sha")
     ack_p.add_argument("pr", type=int)
@@ -455,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
         poll_rounds=args.poll_rounds,
         poll_interval_s=args.poll_interval_s,
         as_json=args.as_json,
+        post_status=args.post_status,
     )
 
 

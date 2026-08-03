@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -391,3 +392,132 @@ def test_check_reports_advisory_when_receipt_command_skips_tests(
     assert exit_code == 0
     receipt = json.loads(merge_gate._receipt_path(42).read_text())
     assert receipt["skips_tests"] is True
+
+
+def _fake_run_with_status_capture(
+    pr_view: dict[str, object],
+    comments: list[dict[str, object]],
+    *,
+    status_calls: list[list[str]],
+    status_exit: int = 0,
+) -> object:
+    """Like ``_fake_run`` but also captures ``gh api .../statuses/<sha>`` calls
+    (the commit-status POST issued by ``--post-status``) into ``status_calls``,
+    the same way other devtools tests intercept ``gh`` subprocess invocations
+    -- by matching on the argv shape rather than hitting the network."""
+    base: Callable[..., MagicMock] = _fake_run(pr_view, comments)  # type: ignore[assignment]
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["gh", "api"] and "/statuses/" in cmd[2]:
+            status_calls.append(cmd)
+            return MagicMock(returncode=status_exit, stdout="{}", stderr="" if status_exit == 0 else "boom")
+        return base(cmd, **kwargs)
+
+    return _run
+
+
+def test_check_post_status_posts_success_for_ok_verdict(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view(head_sha="abc123")
+    _record(monkeypatch, pr_view)
+
+    status_calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run_with_status_capture(pr_view, [], status_calls=status_calls))
+
+    exit_code = merge_gate.cmd_check(
+        42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False, post_status=True
+    )
+
+    assert exit_code == 0
+    assert len(status_calls) == 1
+    call = status_calls[0]
+    assert call[2] == "repos/{owner}/{repo}/statuses/abc123"
+    assert "state=success" in call
+    assert "context=merge-gate" in call
+
+
+def test_check_post_status_posts_failure_with_block_reason_for_block_verdict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view(head_sha="def456")
+    # No receipt recorded at all -- guaranteed BLOCK.
+
+    status_calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run_with_status_capture(pr_view, [], status_calls=status_calls))
+
+    exit_code = merge_gate.cmd_check(
+        42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False, post_status=True
+    )
+
+    assert exit_code == 1
+    assert len(status_calls) == 1
+    call = status_calls[0]
+    assert call[2] == "repos/{owner}/{repo}/statuses/def456"
+    assert "state=failure" in call
+    description_arg = next(arg for arg in call if arg.startswith("description="))
+    assert "no local verification receipt" in description_arg
+
+
+def test_check_post_status_targets_the_pr_current_head_sha_not_a_stale_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A receipt recorded against an old sha, with the PR now on a new head,
+    must post the status against the *current* head sha -- posting against
+    the stale sha would create a status GitHub never associates with the
+    commit branch protection actually needs to gate on."""
+    monkeypatch.chdir(tmp_path)
+    _record(monkeypatch, _base_pr_view(head_sha="old111"))
+
+    new_pr_view = _base_pr_view(head_sha="new222")
+    status_calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run_with_status_capture(new_pr_view, [], status_calls=status_calls))
+
+    exit_code = merge_gate.cmd_check(
+        42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False, post_status=True
+    )
+
+    assert exit_code == 1  # stale-receipt BLOCK
+    assert len(status_calls) == 1
+    assert status_calls[0][2] == "repos/{owner}/{repo}/statuses/new222"
+    assert "state=failure" in status_calls[0]
+
+
+def test_check_without_post_status_flag_never_calls_gh_api_statuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view()
+    _record(monkeypatch, pr_view)
+
+    status_calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_run_with_status_capture(pr_view, [], status_calls=status_calls))
+
+    merge_gate.cmd_check(42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=False)
+
+    assert status_calls == []
+
+
+def test_check_post_status_failure_is_reported_but_does_not_change_verdict_exit_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A `gh api` failure while posting the status (rate limit, auth) must not
+    silently flip an otherwise-OK verdict, and must not raise -- it surfaces
+    as an advisory in the JSON verdict for the caller to notice."""
+    monkeypatch.chdir(tmp_path)
+    pr_view = _base_pr_view(head_sha="abc123")
+    _record(monkeypatch, pr_view)
+
+    status_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_run_with_status_capture(pr_view, [], status_calls=status_calls, status_exit=1),
+    )
+
+    exit_code = merge_gate.cmd_check(
+        42, max_age_s=3600, poll_rounds=1, poll_interval_s=0, as_json=True, post_status=True
+    )
+
+    assert exit_code == 0
+    assert len(status_calls) == 1
