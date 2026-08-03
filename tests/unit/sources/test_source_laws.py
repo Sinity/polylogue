@@ -44,7 +44,6 @@ from polylogue.sources.decoders import (
 from polylogue.sources.dispatch import (
     detect_provider,
     merge_parsed_session_chunks,
-    parse_drive_payload,
     parse_payload,
     parse_stream_payload,
 )
@@ -57,7 +56,6 @@ from polylogue.sources.drive.types import DriveFile
 from polylogue.sources.emitter import _SessionEmitter
 from polylogue.sources.parsers import chatgpt as chatgpt_parser
 from polylogue.sources.parsers import claude as claude_parser
-from polylogue.sources.parsers import drive as drive_parser
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
@@ -855,46 +853,6 @@ def test_source_iteration_ignores_stat_failures_for_optional_mtime_contract(
     assert "latest_mtime" not in parsed_cursor
 
 
-@pytest.mark.parametrize(
-    ("provider", "payload", "expected_provider", "expected_count"),
-    [
-        (
-            "drive",
-            {"id": "generic", "messages": [{"id": "m1", "role": "user", "text": "hello"}]},
-            "drive",
-            1,
-        ),
-        (
-            "drive",
-            {
-                "conversation_id": "chatgpt-ish",
-                "id": "chatgpt-ish",
-                "create_time": 1704067200.0,
-                "current_node": "n1",
-                "mapping": {"n1": {"id": "n1", "parent": None, "children": []}},
-            },
-            "chatgpt",
-            1,
-        ),
-        (
-            "gemini",
-            [{"role": "user", "text": "hello"}, {"role": "model", "text": "hi"}],
-            "gemini",
-            1,
-        ),
-    ],
-)
-def test_parse_drive_payload_contract(
-    provider: str,
-    payload: object,
-    expected_provider: str,
-    expected_count: int,
-) -> None:
-    sessions = parse_drive_payload(provider, payload, "fallback")
-    assert len(sessions) >= expected_count
-    assert all(session.source_name == expected_provider for session in sessions)
-
-
 def test_parse_payload_generic_messages_contract(monkeypatch: pytest.MonkeyPatch) -> None:
     sentinel_messages = [_parsed_message("m1", role="user", text="hello")]
 
@@ -1054,52 +1012,6 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
         ([{"type": "user"}, {"type": "assistant"}], "session"),
         ([{"type": "assistant", "message": {"content": "hi"}}], "single"),
     ]
-
-
-def test_parse_drive_payload_recurses_lists_and_detected_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
-    drive_calls: list[tuple[str, object, str]] = []
-    parse_calls: list[tuple[str, object, str]] = []
-
-    def fake_chunked(provider: str, payload: object, fallback_id: str) -> ParsedSession:
-        drive_calls.append((provider, payload, fallback_id))
-        return _parsed_session(
-            source_name=provider,
-            provider_session_id=fallback_id,
-            title=fallback_id,
-            created_at=None,
-            updated_at=None,
-            messages=[],
-        )
-
-    def fake_parse_payload(
-        provider: str,
-        payload: object,
-        fallback_id: str,
-        _depth: int = 0,
-    ) -> list[ParsedSession]:
-        parse_calls.append((provider, payload, fallback_id))
-        return [
-            _parsed_session(
-                source_name=provider,
-                provider_session_id=fallback_id,
-                title=fallback_id,
-                created_at=None,
-                updated_at=None,
-                messages=[],
-            )
-        ]
-
-    monkeypatch.setattr(drive_parser, "parse_chunked_prompt", fake_chunked)
-    monkeypatch.setattr(dispatch_module, "parse_payload", fake_parse_payload)
-    monkeypatch.setattr(dispatch_module, "detect_provider", lambda payload, path=None: Provider.CHATGPT)
-
-    chunked = parse_drive_payload("gemini", [{"role": "user", "text": "hello"}], "chunks")
-    recursive = parse_drive_payload("drive", [{"mapping": {}, "id": "chatgpt-ish"}], "wrapped")
-
-    assert [session.provider_session_id for session in chunked] == ["chunks"]
-    assert drive_calls == [("gemini", {"chunks": [{"role": "user", "text": "hello"}]}, "chunks")]
-    assert [session.provider_session_id for session in recursive] == ["wrapped-0"]
-    assert parse_calls == [("chatgpt", {"mapping": {}, "id": "chatgpt-ish"}, "wrapped-0")]
 
 
 @pytest.mark.parametrize(
