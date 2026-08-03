@@ -1774,60 +1774,6 @@ def parse_stream_payload(
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 
-def parse_drive_payload(
-    provider: str | Provider,
-    payload: object,
-    fallback_id: str,
-    _depth: int = 0,
-) -> list[ParsedSession]:
-    """Adapter for Drive/Gemini payload parsing."""
-    runtime_provider = Provider.from_string(provider)
-    if _depth > _MAX_PARSE_DEPTH:
-        logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
-        return []
-
-    payloads = _payload_sequence(payload)
-    if payloads is not None:
-        if payloads and all(isinstance(item, str) or _payload_record(item) is not None for item in payloads):
-            first_record = _payload_record(payloads[0]) if payloads else None
-            if first_record is None or "role" in first_record or "text" in first_record:
-                spec = _chunked_prompt_spec(runtime_provider, payloads, fallback_id)
-                return _parse_lowered_spec(spec)
-
-        nested_sessions: list[ParsedSession] = []
-        for index, item in enumerate(payloads):
-            if _looks_like_chunked_session(item):
-                nested_sessions.extend(
-                    parse_drive_payload(
-                        runtime_provider,
-                        item,
-                        f"{fallback_id}-{index}",
-                        _depth + 1,
-                    )
-                )
-                continue
-            detected = detect_provider(item) or runtime_provider
-            nested_sessions.extend(
-                parse_payload(
-                    detected,
-                    item,
-                    f"{fallback_id}-{index}",
-                    _depth + 1,
-                )
-            )
-        return nested_sessions
-
-    record = _payload_record(payload)
-    if record is None:
-        return []
-    if "chunkedPrompt" in record or "chunks" in record:
-        spec = _chunked_prompt_spec(runtime_provider, record, fallback_id)
-        return _parse_lowered_spec(spec)
-
-    detected = detect_provider(record) or runtime_provider
-    return parse_payload(detected, record, fallback_id, _depth + 1)
-
-
 __all__ = [
     "GROUP_PROVIDERS",
     "STREAM_RECORD_PROVIDERS",
@@ -1838,7 +1784,6 @@ __all__ = [
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",
     "is_stream_record_provider",
-    "parse_drive_payload",
     "parse_payload",
     "parse_stream_payload",
 ]

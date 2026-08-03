@@ -20,6 +20,20 @@ class ArtifactKind(StrEnum):
     TODO_SNAPSHOT = "todo_snapshot"
     SESSION_INDEX = "session_index"
     BRIDGE_POINTER = "bridge_pointer"
+    # polylogue-omsw: Claude Code persists tool-result overflow content to
+    # ``<session>/tool-results/<name>.<ext>`` (see
+    # ``sources/live/tool_result_sidecars.py``'s module docstring) -- the
+    # sidecar join mechanism reads it FROM disk to attach to its owning
+    # ``tool_result`` block, it is never independent conversation content.
+    # A tool call's own output can coincidentally reproduce a genuine
+    # session-document shape byte-for-byte (verified live: a
+    # ``tool-results/*.txt`` file whose content was a real claude.ai export
+    # document -- some prior turn's tool call had fetched and dumped one --
+    # classified as SESSION_DOCUMENT/parse_as_session=True under the old
+    # content-only rules), so content heuristics alone can never refuse this
+    # family; only a path rule can, mirroring ``AGENT_SIDECAR_META`` /
+    # ``WORKFLOW_JOURNAL``.
+    TOOL_RESULT_SIDECAR = "tool_result_sidecar"
     METADATA_DOCUMENT = "metadata_document"
     HOOK_EVENT = "hook_event"
     # polylogue-hbtj2: a raw payload whose magic bytes are a recognized

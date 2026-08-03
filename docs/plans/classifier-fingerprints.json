@@ -112,6 +112,14 @@
         "ref": "polylogue-qs4b"
       }
     },
+    "polylogue/sources/origin_specs.py:artifact_rule:claude-code-session:tool_result_sidecar": {
+      "fingerprint": "fec746c784f5ce11a8b1b11819cad93ceb45e0a8b8fec067abfe2561197b4faa",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "Tightens acceptance only: tool-results/*.json sidecars (overflow tool-call output Claude Code persists verbatim, joined to their owning tool_result block by tool_use_id -- see sources/live/tool_result_sidecars.py) were never a real independent conversation; content heuristics alone cannot refuse them since a tool call's own output can coincidentally reproduce a genuine session-document shape (verified live against a real ~/.claude/projects corpus: a tool-results/*.txt sidecar whose content was a real claude.ai export document classified as SESSION_DOCUMENT/parse_as_session=True under the prior content-only rules; path_suffixes scoped to .json only -- not the .txt/.html also found live -- since artifact_suffixes_for_provider feeds live/watcher.py's acquisition suffix filter and widening it is out of this fix's scope). No reparse of existing rows: the already-planned index rebuild (polylogue-x1gd) is the retroactive cleanup path, not this change.",
+        "ref": "polylogue-omsw"
+      }
+    },
     "polylogue/sources/origin_specs.py:artifact_rule:claude-code-session:workflow_journal": {
       "fingerprint": "9d39e1590195ca7a767f42f03401add2441e5f947dddb25241df25282fbbd99d",
       "covered_by": {
