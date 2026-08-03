@@ -667,6 +667,16 @@ def migrate_archive_tier(
         assert backup_manifest is not None
         validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
 
+    # Durable-tier migrations rebuild tables via create-copy-drop-rename;
+    # with foreign_keys ON, DROP TABLE on a referenced parent performs an
+    # implicit DELETE FROM and fires ON DELETE CASCADE into every referencing
+    # table. Production migration connections are bare sqlite3.connect (FK
+    # OFF by SQLite default), but that safety was implicit -- enforce it by
+    # construction here, outside the transaction (the pragma is a no-op
+    # inside one), and restore the caller's state afterwards.
+    foreign_keys_were_on = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    if foreign_keys_were_on:
+        conn.execute("PRAGMA foreign_keys = OFF")
     try:
         conn.execute("BEGIN IMMEDIATE")
         # Authoritative re-read: a concurrent migration may have advanced (or
@@ -719,9 +729,13 @@ def migrate_archive_tier(
     except Exception:
         if conn.in_transaction:
             conn.rollback()
+        if foreign_keys_were_on:
+            conn.execute("PRAGMA foreign_keys = ON")
         raise
     else:
         conn.commit()
+        if foreign_keys_were_on:
+            conn.execute("PRAGMA foreign_keys = ON")
     return MigrationResult(
         tier=tier,
         from_version=start_version,
