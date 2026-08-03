@@ -120,7 +120,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools render public-claims` | Render README, launch, findings-page, and verified-export claim views from FINDING assertions. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries. |
 | `devtools render query-discovery` | Render parser-gated query discovery examples and result semantics into docs/search.md. |
-| `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render visual-tapes` | Write VHS tape files and optionally capture GIFs for the default visual evidence specs. |
 | `devtools render webui-client` | Render the committed WebUI TypeScript client from docs/openapi/search.yaml. |
 | `devtools render webui-design-system` | Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence. |
@@ -189,13 +188,11 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
 | `devtools verify docs-coverage` | Verify every public CLI command, MCP tool, config key, and stable daemon route is named in the docs tree. |
 | `devtools verify evidence` | Render the pytest-first evidence dashboard or a changed-path trace. |
-| `devtools verify hash-boundary-census` | Verify every hashlib/core.hashing call site in polylogue/ is registered in the hash-boundary registry. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
 | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
 | `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
-| `devtools verify topology` | Verify the realized polylogue tree against the topology projection. |
 
 ### Benchmarking
 
