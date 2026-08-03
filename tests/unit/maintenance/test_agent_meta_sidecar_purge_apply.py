@@ -236,7 +236,11 @@ def test_apply_purges_only_the_meta_sidecar_phantoms(tmp_path: Path, monkeypatch
         "claude-code-session:agent-bbb222.meta",
     }
     assert report.backup_manifest == manifest
-    assert validated == [(manifest, ArchiveTier.INDEX)]
+    # Validated twice: a lock-free precheck before classification, then an
+    # authoritative revalidation after the write lease is held (polylogue-
+    # 5kmn7 CodeRabbit follow-up) -- closes the TOCTOU window between the
+    # precheck and the actual delete.
+    assert validated == [(manifest, ArchiveTier.INDEX), (manifest, ArchiveTier.INDEX)]
 
     remaining = _session_ids(archive_root)
     assert remaining == {
@@ -361,3 +365,44 @@ def test_apply_accepts_a_real_backup_manifest_from_ops_backup(tmp_path: Path, mo
         f"{Origin.CLAUDE_CODE_SESSION.value}:s2-uuid",
     }
     assert set(_receipt_rows(archive_root)) == set(report.purged_session_ids)
+
+
+def test_apply_refuses_when_backup_goes_stale_between_precheck_and_write_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Concurrency regression (polylogue-5kmn7 CodeRabbit follow-up).
+
+    A concurrent write to index.db between the lock-free precheck and the
+    write-lease acquisition must be caught by the authoritative
+    revalidation, not silently ignored -- proving the second call is
+    actually wired in and enforced, not merely present as dead code. The
+    fake validator simulates what a real live-fingerprint mismatch would
+    raise (validate_backup_manifest_covers_derived_tier itself already has
+    focused coverage for the real mismatch path via
+    _validate_live_source_fingerprint).
+    """
+    archive_root = _build_fixture_archive(tmp_path)
+    before_sessions = _session_ids(archive_root)
+
+    calls = 0
+
+    def _fake_validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise ValueError("migration backup receipt live tier hash mismatch")
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.agent_meta_sidecar_purge_apply.validate_backup_manifest_covers_derived_tier",
+        _fake_validate,
+    )
+
+    manifest = tmp_path / "verified-backup" / "manifest.json"
+
+    with pytest.raises(ValueError, match="hash mismatch"):
+        apply_agent_meta_sidecar_purge(archive_root, backup_manifest=manifest, dry_run=False)
+
+    assert calls == 2
+    assert _session_ids(archive_root) == before_sessions
+    assert _receipt_rows(archive_root) == {}

@@ -216,6 +216,21 @@ def apply_agent_meta_sidecar_purge(
     if session_ids:
         store = ArchiveStore(archive_root, read_only=False)
         try:
+            # Authoritative re-validation now that the writer lease is held
+            # (ArchiveStore.__init__ acquires it synchronously above) --
+            # matches attachment_reacquisition.py's / migrate_archive_tier's
+            # pattern: a concurrent write between the first, lock-free
+            # precheck and this lease acquisition would make the backup
+            # stale, and the lease guarantees nothing else can write between
+            # this check and delete_sessions below.
+            revalidate_conn = sqlite3.connect(str(index_db), uri=True)
+            try:
+                _checkpoint_live_tier(revalidate_conn)
+                validate_backup_manifest_covers_derived_tier(
+                    backup_manifest, ArchiveTier.INDEX, connection=revalidate_conn
+                )
+            finally:
+                revalidate_conn.close()
             store.delete_sessions(session_ids)
         finally:
             store.close()
