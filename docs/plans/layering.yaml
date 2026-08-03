@@ -109,6 +109,12 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints: [write_context_delivery]
+    - path: polylogue/storage/sqlite/archive_tiers/user_settings_write.py
+      surfaces:
+        - tier: user
+          durability: durable
+          interruption: atomic
+      entrypoints: [set_user_setting]
     - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
       surfaces:
         - tier: ops

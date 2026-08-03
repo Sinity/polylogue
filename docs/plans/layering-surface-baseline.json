@@ -92,6 +92,11 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_settings_write"
+  },
+  {
+    "target": "polylogue/api",
+    "file": "polylogue/api/archive.py",
     "import": "polylogue.storage.sqlite.archive_tiers.user_write"
   },
   {
@@ -443,6 +448,11 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/reset.py",
     "import": "polylogue.storage.archive_identity"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/setting.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_settings_write"
   },
   {
     "target": "polylogue/cli",
