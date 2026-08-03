@@ -1586,7 +1586,7 @@ def _resolve_codex_sidecar_snapshots(
         return
 
     from polylogue.core.sources import origin_from_provider
-    from polylogue.sources.assembly_codex import CodexAssemblySpec
+    from polylogue.sources.assembly_codex import CodexAssemblySpec, read_codex_thread_title_hook_events
     from polylogue.storage.sqlite.archive_tiers.source_write import (
         read_earliest_history_sidecar_for_path,
         write_history_sidecar,
@@ -1597,6 +1597,13 @@ def _resolve_codex_sidecar_snapshots(
     resolved: dict[str, dict[str, dict[str, str]]] = {}
     source_db_path = archive_root / "source.db"
     with closing(sqlite3.connect(str(source_db_path), timeout=DB_TIMEOUT)) as conn:
+        # bd polylogue-foee: read acquired codex_thread_title hook events
+        # fresh on every batch (never frozen into the persisted sidecar
+        # snapshot below -- the hook events themselves come from a separate,
+        # later-running acquisition path, polylogue-0jf4, so freezing them
+        # into the once-and-done snapshot could permanently exclude titles
+        # acquired after the first parse of a given source_path).
+        hook_event_titles = read_codex_thread_title_hook_events(conn)
         for record in codex_records:
             source_path = record.source_path
             if source_path in resolved:
@@ -1633,7 +1640,11 @@ def _resolve_codex_sidecar_snapshots(
             except Exception:
                 logger.exception("failed to persist codex sidecar snapshot for %s", source_path)
     for record in codex_records:
-        record.sidecar_snapshot = resolved.get(record.source_path)
+        snapshot = resolved.get(record.source_path)
+        if hook_event_titles:
+            snapshot = dict(snapshot) if snapshot else {}
+            snapshot["hook_event_titles"] = hook_event_titles
+        record.sidecar_snapshot = snapshot
 
 
 def _process_ingest_batch_sync(

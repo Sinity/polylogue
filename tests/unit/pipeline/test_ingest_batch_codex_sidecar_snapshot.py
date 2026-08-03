@@ -181,6 +181,91 @@ def test_transient_discovery_failure_does_not_freeze_an_empty_snapshot(
     assert persisted["history_titles"][session_id] == "real title"
 
 
+def _write_codex_thread_title_hook_event(archive_root: Path, *, thread_id: str, title: str) -> None:
+    """Write a real ``codex_thread_title`` raw_hook_events row (polylogue-0jf4
+    shape), the same one ``sources/live/batch.py::_write_codex_thread_state_evidence``
+    produces from an acquired ``state_5.sqlite``."""
+    import json as _json
+
+    from polylogue.core.enums import Origin
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        ArchiveHookEvent,
+        write_source_hook_event,
+    )
+
+    payload = {"thread_id": thread_id, "title": title}
+    encoded = _json.dumps(payload).encode("utf-8")
+    with sqlite3.connect(str(archive_root / "source.db")) as conn:
+        write_source_hook_event(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="synthetic:state-db",
+            payload=encoded,
+            acquired_at_ms=1_000,
+            raw_id="raw-codex-thread-title",
+            hook_event=ArchiveHookEvent(
+                hook_event_id=f"codex-thread-title:{thread_id}",
+                origin=Origin.CODEX_SESSION,
+                source_path="synthetic:state-db",
+                event_type="codex_thread_title",
+                payload=payload,
+                observed_at_ms=1_000,
+                native_id=f"{thread_id}:codex_thread_title",
+                session_native_id=thread_id,
+            ),
+        )
+
+
+def test_hook_event_titles_merged_from_acquired_evidence(tmp_path: Path, archive_root: Path) -> None:
+    """bd polylogue-foee: a codex_thread_title hook event acquired via
+    polylogue-0jf4's state-db snapshot (never the JSONL rollout the parser
+    reads) surfaces as ``hook_event_titles`` in the sidecar snapshot handed
+    to ``CodexAssemblySpec.enrich_session``, even though the rollout itself
+    carries no session_index.jsonl/history.jsonl/state_5.sqlite of its own.
+    """
+    session_id = "cccc1111-2222-3333-4444-555566667777"
+    rollout = _codex_runtime_root(tmp_path, session_id)
+    _write_codex_thread_title_hook_event(archive_root, thread_id=session_id, title="Durable curated title")
+
+    record = _record(str(rollout))
+    _resolve_codex_sidecar_snapshots([record], archive_root=archive_root)
+
+    assert record.sidecar_snapshot is not None
+    assert record.sidecar_snapshot["hook_event_titles"][session_id] == "Durable curated title"
+    # Never a live-read title source -- nothing else discovered one.
+    assert not record.sidecar_snapshot.get("state_titles")
+
+    # Never frozen into the persisted history_sidecars snapshot: it is read
+    # fresh from raw_hook_events on every batch (see the _core.py comment),
+    # so a hook event acquired AFTER a source_path's first-ever resolution
+    # still surfaces on the next batch.
+    with sqlite3.connect(str(archive_root / "source.db")) as conn:
+        rows = conn.execute("SELECT payload_json FROM history_sidecars").fetchall()
+    assert len(rows) == 1
+    persisted = json.loads(rows[0][0])
+    assert "hook_event_titles" not in persisted
+
+
+def test_hook_event_titles_surface_on_replay_even_when_acquired_later(tmp_path: Path, archive_root: Path) -> None:
+    """The hook event can be acquired AFTER a source_path's frozen sidecar
+    snapshot already exists; since hook_event_titles is never part of that
+    frozen payload, a later batch still sees it."""
+    session_id = "eeee1111-2222-3333-4444-555566667777"
+    rollout = _codex_runtime_root(tmp_path, session_id)
+
+    record_first = _record(str(rollout))
+    _resolve_codex_sidecar_snapshots([record_first], archive_root=archive_root)
+    assert record_first.sidecar_snapshot is not None
+    assert "hook_event_titles" not in record_first.sidecar_snapshot
+
+    _write_codex_thread_title_hook_event(archive_root, thread_id=session_id, title="Acquired after first parse")
+
+    record_second = _record(str(rollout))
+    _resolve_codex_sidecar_snapshots([record_second], archive_root=archive_root)
+    assert record_second.sidecar_snapshot is not None
+    assert record_second.sidecar_snapshot["hook_event_titles"][session_id] == "Acquired after first parse"
+
+
 def test_non_codex_records_are_left_unresolved(tmp_path: Path, archive_root: Path) -> None:
     record = RawSessionRecord(
         raw_id="raw-claude",
