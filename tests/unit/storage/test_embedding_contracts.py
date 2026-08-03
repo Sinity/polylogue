@@ -14,7 +14,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeAlias
+from typing import Any, TypeAlias, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1612,3 +1612,72 @@ def test_archive_provider_fault_keeps_provider_attribution(tmp_path: Path) -> No
         conn.close()
     assert recorded_provider == "voyage"
     assert error_class == "provider_http_429"
+
+
+def test_archive_failure_ledger_survives_origin_lookup_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A failed origin lookup must degrade the ledger row, never drop it.
+
+    Anti-vacuity: the production handler used to wrap the origin re-read in
+    ``contextlib.suppress(sqlite3.Error)`` and skip ``record_embedding_failure``
+    entirely when that lookup raised, so a session that fails before ``session``
+    is ever fetched (e.g. the sqlite-vec load check) left no forensic trace at
+    all beyond an aggregate error count (polylogue-es7b). Forcing that early
+    failure plus a raising origin SELECT reproduces the drop; the fix must
+    still land a row, falling back to an explicit unknown-origin sentinel.
+    """
+    from polylogue.storage.sqlite import sqlite_vec_extension as sqlite_vec_extension_module
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    archive_root = tmp_path / "archive"
+    session_id = _write_archive_session(archive_root, native_id="embed-origin-lookup-fault", embeddable=True)
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+
+    def _fail_vec_load(conn: sqlite3.Connection) -> tuple[bool, Exception | None]:
+        # Raise before `session` is ever fetched, so the except-handler must
+        # take the origin-unknown fallback path rather than the already
+        # -fetched `session["origin"]` fast path.
+        return False, RuntimeError("sqlite-vec unavailable")
+
+    monkeypatch.setattr(sqlite_vec_extension_module, "try_load_sqlite_vec", _fail_vec_load)
+
+    # sqlite3.Connection is a builtin type and doesn't accept monkeypatched
+    # instance/class attributes, so route the index-db connection through a
+    # `factory=` subclass whose `execute` raises for the specific origin
+    # lookup, leaving every other query (including the embeddings.db
+    # connection opened by the same call site) untouched.
+    class _FlakyConnection(sqlite3.Connection):
+        def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+            if "SELECT origin FROM sessions" in sql:
+                raise sqlite3.OperationalError("simulated origin lookup failure")
+            return super().execute(sql, parameters)
+
+    real_connect = sqlite3.connect
+    index_db_marker = str(index_db)
+
+    def _patched_connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if index_db_marker in str(database):
+            kwargs["factory"] = _FlakyConnection
+        return cast(sqlite3.Connection, real_connect(database, *args, **kwargs))
+
+    monkeypatch.setattr(sqlite3, "connect", _patched_connect)
+
+    outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), session_id)
+    assert outcome.status == "error"
+
+    monkeypatch.undo()
+    conn = sqlite3.connect(embeddings_db)
+    try:
+        row = conn.execute(
+            "SELECT origin, error_class, error_message FROM embedding_failures WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "origin-lookup failure must not silently drop the ledger row"
+    origin, error_class, error_message = row
+    assert origin == "unknown-export"
+    assert error_class == "internal_error"
+    assert "sqlite-vec" in error_message
