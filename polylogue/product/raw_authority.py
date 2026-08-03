@@ -190,5 +190,4 @@ __all__ = [
     "read_detail",
     "recover_interrupted_frontier",
     "repair_materialization",
-    "resolve_blocker",
 ]
