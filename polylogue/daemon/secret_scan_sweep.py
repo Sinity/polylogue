@@ -93,11 +93,11 @@ async def periodic_secret_scan_sweep(
     races initial source catch-up -- same gating shape as every other
     ``catch_up_complete``-gated periodic loop in ``daemon/cli.py``.
     """
+    from polylogue.daemon.cli import _await_catch_up_gate
     from polylogue.daemon.write_coordinator import daemon_write_coordinator
     from polylogue.paths import archive_root
 
-    if catch_up_complete is not None:
-        await catch_up_complete.wait()
+    await _await_catch_up_gate(catch_up_complete, loop_name="secret scan sweep")
     while True:
         await asyncio.sleep(SECRET_SCAN_SWEEP_INTERVAL_SECONDS)
         root = archive_root()
