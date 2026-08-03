@@ -417,7 +417,7 @@ def _claude_code_spec() -> OriginSpec:
         detector_tightness=60,
         parser_paths=("polylogue/sources/parsers/claude/code_parser.py",),
         stream_parser_path="polylogue/sources/parsers/claude/code_parser.py:parse_code_stream",
-        assembly_paths=("polylogue/sources/dispatch.py:merge_parsed_session_chunks",),
+        assembly_paths=("polylogue/sources/dispatch.py:_claude_code_multiway_parse",),
         fixture_paths=(
             "tests/unit/sources/test_parsers_claude_code_artifacts.py",
             "tests/unit/sources/test_assembly_claude_code_history.py",

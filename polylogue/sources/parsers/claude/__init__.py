@@ -15,7 +15,7 @@ from .ai_parser import parse_ai as _parse_ai
 from .ai_parser import parse_design as _parse_design
 from .ai_parser import parse_memories as _parse_memories
 from .code_detection import looks_like_code
-from .code_parser import parse_code, parse_code_stream, reconcile_code_session_chunks
+from .code_parser import parse_code, parse_code_stream
 from .common import (
     extract_messages_from_chat_messages,
     extract_text_from_segments,
@@ -72,7 +72,6 @@ __all__ = [
     "parse_code_stream",
     "parse_design",
     "parse_memories",
-    "reconcile_code_session_chunks",
     "parse_sessions_index",
     "parse_claude_orchestration_artifact",
     "parse_claude_todo_artifact",

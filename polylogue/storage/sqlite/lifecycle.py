@@ -751,6 +751,18 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # requires `polylogue ops reset --index && polylogued run`.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=60,
+        # polylogue-taj0o Stage 2: Claude Code eager and streaming parsing
+        # are unified into one incremental multi-way merge -- see
+        # INDEX_SCHEMA_VERSION's v60 comment (archive_tiers/index.py) for
+        # the full writeup, root cause (the eager/streaming primary-group
+        # definition conflict), and scope. No DDL change on any table, so
+        # there is nothing here for a fast-forward to do. Resolving
+        # already-materialized sessions affected by the identity-definition
+        # change requires `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 
