@@ -620,7 +620,11 @@ def write_source_raw_session(
         if artifact is not None:
             _insert_artifact(conn, resolved_raw_id, artifact)
         if hook_event is not None:
-            _insert_hook_event(conn, resolved_raw_id, hook_event)
+            # This hook event shares the session's own raw-payload blob (the
+            # same bytes just inserted above as a real raw_sessions row), so
+            # it needs no blob ref of its own -- unlike write_source_hook_event
+            # below, resolved_raw_id here is a genuine raw_sessions row.
+            _insert_hook_event(conn, hook_event, blob_hash=blob_hash)
 
         return resolved_raw_id
 
@@ -641,13 +645,21 @@ def write_source_hook_event(
 
     A hook event (PreToolUse / PostToolUse / UserPromptSubmit / …) is evidence
     *within* an existing session (identified by ``hook_event.session_native_id``),
-    never a conversation of its own. It therefore gets a durable ``raw_payload``
+    never a conversation of its own. It therefore gets a durable ``hook_payload``
     blob ref (so blob GC + copy-forward treat it like any other retained bytes)
     and a ``raw_hook_events`` row, but — unlike :func:`write_source_raw_session` —
     NO ``raw_sessions`` row. Writing a ``raw_sessions`` row per hook is exactly
     the defect that inflated the archive with tens of thousands of empty
     session shells (polylogue-31r1); ``raw_hook_events`` has no FK to
     ``raw_sessions``, so the linkage stands on its own via ``session_native_id``.
+
+    ``raw_id`` is a content-derived identifier kept for the caller's return
+    value / logging only. It is deliberately NOT used as the blob ref's
+    ``ref_id`` (polylogue-tfzw0): no ``raw_sessions`` row is ever minted here,
+    so a ``raw_id``-keyed ref could never join to a live referent and blob GC
+    would retain it forever, uncounted. The blob ref is keyed by
+    ``ref_type='hook_payload'`` / ``ref_id=hook_event.hook_event_id`` instead,
+    which really is this row's primary key in ``raw_hook_events``.
     """
     conn.execute("PRAGMA foreign_keys = ON")
     if _enum_value(origin) is None:
@@ -661,15 +673,15 @@ def write_source_hook_event(
             conn,
             ArchiveSourceBlobRef(
                 blob_hash=blob_hash,
-                raw_id=raw_id,
-                ref_type="raw_payload",
+                raw_id=hook_event.hook_event_id,
+                ref_type="hook_payload",
                 source_path=source_path,
                 size_bytes=blob_size,
                 acquired_at_ms=acquired_at_ms,
                 publication_receipt_id=blob_publication_receipt_id,
             ),
         )
-        _insert_hook_event(conn, raw_id, hook_event)
+        _insert_hook_event(conn, hook_event, blob_hash=blob_hash)
     return raw_id
 
 
@@ -1173,14 +1185,18 @@ def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSou
     )
 
 
-def _insert_hook_event(conn: sqlite3.Connection, raw_id: str, hook_event: ArchiveHookEvent) -> None:
-    del raw_id
+def _insert_hook_event(
+    conn: sqlite3.Connection,
+    hook_event: ArchiveHookEvent,
+    *,
+    blob_hash: bytes | None = None,
+) -> None:
     conn.execute(
         """
         INSERT INTO raw_hook_events (
             hook_event_id, origin, native_id, session_native_id, source_path, event_type,
-            payload_json, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            payload_json, observed_at_ms, blob_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(hook_event_id) DO UPDATE SET
             origin = excluded.origin,
             native_id = excluded.native_id,
@@ -1188,7 +1204,8 @@ def _insert_hook_event(conn: sqlite3.Connection, raw_id: str, hook_event: Archiv
             source_path = excluded.source_path,
             event_type = excluded.event_type,
             payload_json = excluded.payload_json,
-            observed_at_ms = excluded.observed_at_ms
+            observed_at_ms = excluded.observed_at_ms,
+            blob_hash = COALESCE(excluded.blob_hash, raw_hook_events.blob_hash)
         """,
         (
             hook_event.hook_event_id,
@@ -1199,6 +1216,7 @@ def _insert_hook_event(conn: sqlite3.Connection, raw_id: str, hook_event: Archiv
             hook_event.event_type,
             _json_dumps(hook_event.payload),
             hook_event.observed_at_ms,
+            blob_hash,
         ),
     )
 

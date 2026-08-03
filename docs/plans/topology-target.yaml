@@ -1565,7 +1565,7 @@ files:
     target: polylogue/daemon/catchup_status.py
     owner: stable
   - path: polylogue/daemon/cli.py
-    loc: 3109
+    loc: 3114
     target: polylogue/daemon/cli.py
     owner: stable
   - path: polylogue/daemon/compare.py
@@ -2196,7 +2196,7 @@ files:
     target: polylogue/maintenance/agent_meta_sidecar_purge_apply.py
     owner: stable
   - path: polylogue/maintenance/archive_verification.py
-    loc: 709
+    loc: 1282
     target: polylogue/maintenance/archive_verification.py
     owner: stable
   - path: polylogue/maintenance/cost_backfill.py
@@ -2210,6 +2210,10 @@ files:
   - path: polylogue/maintenance/failure_routing.py
     loc: 445
     target: polylogue/maintenance/failure_routing.py
+    owner: stable
+  - path: polylogue/maintenance/hook_payload_ref_reconciliation_apply.py
+    loc: 197
+    target: polylogue/maintenance/hook_payload_ref_reconciliation_apply.py
     owner: stable
   - path: polylogue/maintenance/invalidation.py
     loc: 54
@@ -3078,7 +3082,7 @@ files:
     target: polylogue/schemas/sampling.py
     owner: stable
   - path: polylogue/schemas/sampling_db.py
-    loc: 490
+    loc: 530
     target: polylogue/schemas/sampling_db.py
     owner: stable
   - path: polylogue/schemas/sampling_sessions.py
@@ -3373,7 +3377,7 @@ files:
     target: polylogue/sources/live/append_ingest.py
     owner: stable
   - path: polylogue/sources/live/batch.py
-    loc: 3349
+    loc: 3351
     target: polylogue/sources/live/batch.py
     owner: stable
   - path: polylogue/sources/live/batch_observability.py
@@ -3385,7 +3389,7 @@ files:
     target: polylogue/sources/live/batch_support.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt.py
-    loc: 75
+    loc: 101
     target: polylogue/sources/live/convergence_debt.py
     owner: stable
   - path: polylogue/sources/live/convergence_debt_retry.py
@@ -3393,11 +3397,11 @@ files:
     target: polylogue/sources/live/convergence_debt_retry.py
     owner: stable
   - path: polylogue/sources/live/convergence_outcome.py
-    loc: 47
+    loc: 49
     target: polylogue/sources/live/convergence_outcome.py
     owner: stable
   - path: polylogue/sources/live/cursor.py
-    loc: 1511
+    loc: 1516
     target: polylogue/sources/live/cursor.py
     owner: stable
   - path: polylogue/sources/live/cursor_lifecycle.py
@@ -3717,7 +3721,7 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/blob_gc.py
-    loc: 568
+    loc: 687
     target: polylogue/storage/blob_gc.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -3838,6 +3842,10 @@ files:
     loc: 570
     target: polylogue/storage/fts/sql.py
     owner: stable
+  - path: polylogue/storage/hook_payload_ref_reconciliation.py
+    loc: 159
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/hydrators.py
     loc: 256
     target: polylogue/storage/hydrators.py
@@ -4002,7 +4010,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/repair.py
-    loc: 7296
+    loc: 7315
     target: polylogue/storage/repair.py
     owner: storage-root
     reason: storage-root cross-cutting helper
@@ -4302,11 +4310,11 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 569
+    loc: 582
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
-    loc: 1286
+    loc: 1304
     target: polylogue/storage/sqlite/archive_tiers/source_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/types.py

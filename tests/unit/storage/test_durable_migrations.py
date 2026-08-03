@@ -489,7 +489,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+        assert result.applied_versions == tuple(range(2, SOURCE_SCHEMA_VERSION + 1))
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -577,8 +577,13 @@ def test_source_publication_backfill_requires_verified_backup(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 9
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
-        assert result.applied_versions == (10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+        # polylogue-tfzw0: see the analogous comment in
+        # test_source_tier_v7_expands_origin_checks_with_verified_backup for
+        # why this is asserted dynamically against SOURCE_SCHEMA_VERSION
+        # (currently 22) rather than a hardcoded literal, and why the full
+        # chain requires migration 021 (PR #3598, unmerged as of this bead).
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == tuple(range(10, SOURCE_SCHEMA_VERSION + 1))
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {
@@ -660,6 +665,22 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     authority_start = old_ddl.index("-- Durable authority reconciliation ledger.")
     authority_end = old_ddl.index("CREATE TABLE IF NOT EXISTS blob_refs", authority_start)
     old_ddl = old_ddl[:authority_start] + old_ddl[authority_end:]
+    # Migration 022 (polylogue-tfzw0) adds `raw_hook_events.blob_hash` -- a v7
+    # snapshot predates it. Without stripping this, migration 009's own
+    # copy-forward (`INSERT INTO raw_hook_events SELECT * FROM
+    # raw_hook_events_v7`, a bare SELECT * that long predates and is
+    # untouched by this bead) would try to insert this fixture's 9-column
+    # `raw_hook_events` row into 009's hardcoded 8-column rebuilt shape.
+    old_ddl = old_ddl.replace(
+        "\n"
+        "    -- v22 (polylogue-tfzw0): the SHA-256 of this hook event's own durable\n"
+        "    -- raw_payload blob (see blob_refs above). Populated at write time by\n"
+        "    -- write_source_hook_event; NULL for rows written before v22 until a\n"
+        "    -- one-shot reconciliation pass backfills them (see\n"
+        "    -- polylogue.storage.hook_payload_ref_reconciliation).\n"
+        "    ,blob_hash       BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)\n",
+        "",
+    )
     # Migration 010 adds `excised_content` (polylogue-27m) -- a v7 snapshot
     # predates it, same as it predates the beads-origin/capture_mode diffs
     # stripped above. Without this, the fixture (built from the CURRENT
@@ -732,8 +753,17 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
-        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+        # polylogue-tfzw0: asserted against SOURCE_SCHEMA_VERSION rather than a
+        # hardcoded literal so this test tracks the current head version
+        # automatically. NOTE: at the time of writing, this full v7->head
+        # chain migration requires migration file 021 (PR #3598, unmerged),
+        # which does not yet exist in this branch alongside this bead's own
+        # migration 022 -- this specific assertion is expected to fail with a
+        # "migration chain is incomplete" MigrationError until #3598 merges.
+        # That gap is coordination debt explicitly called out in this PR's
+        # body, not a defect in migration 022 itself.
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == tuple(range(8, SOURCE_SCHEMA_VERSION + 1))
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -915,9 +945,13 @@ def test_source_tier_v20_widens_origin_check_for_claude_design_session(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 20
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
-        assert result.applied_versions == (21,)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 21
+        # polylogue-tfzw0: asserted dynamically -- a v20 fixture migrating to
+        # "current" also picks up migration 022 (polylogue-tfzw0, added after
+        # this test), which is additive and does not change this test's own
+        # claims about the five origin-CHECK tables.
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == tuple(range(21, SOURCE_SCHEMA_VERSION + 1))
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
 
         # Every pre-existing row from the v20 fixture survived the rebuild.
         assert conn.execute(
@@ -1035,7 +1069,9 @@ def test_migrate_archive_tier_neutralizes_foreign_key_cascade_during_rebuild(
         assert bool(conn.execute("PRAGMA foreign_keys").fetchone()[0]) is True
 
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+        # polylogue-tfzw0: asserted dynamically -- see the analogous comment
+        # in test_source_tier_v20_widens_origin_check_for_claude_design_session.
+        assert result.to_version == SOURCE_SCHEMA_VERSION
 
         # The scratch child row survived the raw_sessions rebuild instead of
         # being cascade-deleted when the original raw_sessions was dropped.
@@ -1208,7 +1244,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+        assert result.applied_versions == tuple(range(3, SOURCE_SCHEMA_VERSION + 1))
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -1253,6 +1289,9 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
                 blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
                 ref_id TEXT NOT NULL,
                 ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                acquired_at_ms INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(blob_hash, ref_type, ref_id)
             ) STRICT;
             PRAGMA user_version = 3;
@@ -1266,7 +1305,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
+        assert result.applied_versions == tuple(range(4, SOURCE_SCHEMA_VERSION + 1))
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """
@@ -1360,15 +1399,17 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 13
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+        # polylogue-tfzw0: asserted dynamically -- see the analogous comment
+        # in test_source_tier_v7_expands_origin_checks_with_verified_backup.
+        assert result.to_version == SOURCE_SCHEMA_VERSION
         # v13 -> current also picks up migrations 015 (polylogue-hord), 016
         # (polylogue-buns), 017 (polylogue-byw3y), 018 (polylogue-u19l), 019
-        # (polylogue-lb39z item 2), 020 (polylogue-lb39z item 3), and 021
-        # (polylogue-052vs), all added after this test -- a v13 fixture
+        # (polylogue-lb39z item 2), 020 (polylogue-lb39z item 3), and 022
+        # (polylogue-tfzw0), all added after this test -- a v13 fixture
         # migrating to "current" is exactly the shape a real archive frozen
         # at v13 would go through.
-        assert result.applied_versions == (14, 15, 16, 17, 18, 19, 20, 21)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 21
+        assert result.applied_versions == tuple(range(14, SOURCE_SCHEMA_VERSION + 1))
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" in indexes_after
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
@@ -1454,9 +1495,11 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 14
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
-        assert result.applied_versions == (15, 16, 17, 18, 19, 20, 21)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 21
+        # polylogue-tfzw0: asserted dynamically -- see the analogous comment
+        # in test_source_tier_v7_expands_origin_checks_with_verified_backup.
+        assert result.to_version == SOURCE_SCHEMA_VERSION
+        assert result.applied_versions == tuple(range(15, SOURCE_SCHEMA_VERSION + 1))
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
         plan = conn.execute(
