@@ -1,0 +1,34 @@
+# Project-scoped Codex agent registry for polylogue.
+#
+# Deliberately does not set model/sandbox/approval_policy here: project
+# config outranks the ~/.codex profile config that already carries the house
+# defaults (gpt-5.6-sol, danger-full-access, approval_policy=never, network
+# on) — repeating them here would risk this file silently pinning a stale
+# parent model if the machine default ever changes. Only per-role overrides
+# live in the individual agents/*.toml files below.
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 24
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "medium"
+
+[agents.architect]
+description = "Rare architectural adjudication: conflicting invariants, machinery deletion, migration design. Sol, max reasoning, read-only."
+config_file = "agents/architect.toml"
+
+[agents.worker]
+description = "Bounded correctness/architecture-reduction implementer, one lane, one worktree. Terra, high reasoning, full write."
+config_file = "agents/worker.toml"
+
+[agents.reviewer]
+description = "Independent adversarial reviewer of a worker's diff. Terra, high reasoning, read-only."
+config_file = "agents/reviewer.toml"
+
+[agents.triage]
+description = "Evidence-first bead/audit triage at volume: already-satisfied detection, footprint clustering, census work. Luna, medium reasoning, read-only."
+config_file = "agents/triage.toml"
+
+[agents.narrow_worker]
+description = "Implements a pre-specified red test, fixture, or checklist-grade recipe exactly as written. Luna, high reasoning, full write, narrow footprint."
+config_file = "agents/narrow-worker.toml"
