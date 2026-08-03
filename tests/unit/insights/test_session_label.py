@@ -118,7 +118,14 @@ def test_structural_label_degrades_to_message_count_only_with_no_evidence() -> N
     assert compute_session_structural_label(inputs) == "3 msgs"
 
 
-def test_structural_label_falls_back_to_directory_name_with_no_files() -> None:
+def test_structural_label_suppresses_repo_name_when_marked_directory() -> None:
+    """polylogue-cijx.2 AC4: a bare directory (no git evidence) must never
+    display as if it were a repository. This reproduces the exact bug this
+    AC exists to kill -- a session whose cwd happens to be e.g.
+    ``/home/sinity`` must not surface "sinity" as a repo name -- as a defensive
+    read-layer check: even if ``repo_name`` is populated while ``is_directory``
+    is True (contradicting the write-path invariant), the label must not leak
+    it."""
     inputs = SessionLabelInputs(
         provider_title=None,
         repo_name="sinity",
@@ -127,7 +134,7 @@ def test_structural_label_falls_back_to_directory_name_with_no_files() -> None:
         additional_file_count=0,
         message_count=7,
     )
-    assert compute_session_structural_label(inputs) == "sinity · 7 msgs"
+    assert compute_session_structural_label(inputs) == "7 msgs"
 
 
 # ── repo_relative_path ──────────────────────────────────────────────────────
