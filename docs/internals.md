@@ -818,9 +818,8 @@ agents and MCP callers; `get_session_topology` remains the full graph view.
 ## Learning Corrections (Feedback Loop)
 
 User corrections live outside the content-hash boundary by construction
-(#1131). In the split archive they are `AssertionKind.CORRECTION` rows in the
-unified `user.db` `assertions` table; a legacy `user_corrections` table is still
-read for pre-split single-file archives (`storage/insights/feedback/`):
+(#1131). They are `AssertionKind.CORRECTION` rows in the unified `user.db`
+`assertions` table (`storage/insights/feedback/`):
 
 - Keyed by session and correction kind — at most one correction of
   each kind per session, so deterministic rebuilds always produce the

@@ -19,8 +19,8 @@ import yaml
 from devtools import repo_root as _get_root
 from devtools.authored_scenario_catalog import get_authored_scenario_catalog
 from devtools.command_catalog import COMMANDS, command_name_from_tokens
+from devtools.manifest_models import validate_manifest
 from devtools.verify_ci_workflows import WorkflowInventory, inventory_workflows
-from polylogue.verification.manifests.models import validate_manifest
 
 _COVERAGE_AXIS_KEYS = ("domain", "subject", "area", "dimension", "artifact", "platform", "concern")
 _COVERAGE_GAP_SEVERITIES = {"info", "minor", "major", "serious"}

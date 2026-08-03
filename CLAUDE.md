@@ -128,8 +128,7 @@ blocker / handoff / judgment / pathology / …). It collapsed the old separate
 overlay tables; `context_policy_json` (default `{"inject":false}`) gates whether
 an assertion is injected into agent context. The column is plain `TEXT` so the
 vocabulary can grow without a user-tier schema bump. User corrections are
-`AssertionKind.CORRECTION` rows here (a legacy `user_corrections` table survives
-only as a compat read path for pre-split single-file archives). Versioned
+`AssertionKind.CORRECTION` rows here. Versioned
 annotation construct definitions live in `annotation_schemas`; independent
 label-run provenance lives in `annotation_batches`, while the labels remain
 ordinary assertion rows scoped by `annotation-batch:<id>` ObjectRefs.
