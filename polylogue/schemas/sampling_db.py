@@ -249,12 +249,26 @@ def _iter_schema_units_from_db(
     max_samples: int | None = None,
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
+    logical_heads_only: bool = False,
 ) -> Iterator[SchemaUnit]:
     """Yield clusterable schema units from raw_sessions.
 
     Raw acquisition rows live in the ``source.db`` tier (#1743). Given an
     ``index.db`` path, the sibling ``source.db`` of the same archive root holds
     ``raw_sessions``; it is opened read-write but only read here.
+
+    ``logical_heads_only`` (default ``False``, opt-in): restrict the sampled
+    rows to one per logical source -- the latest revision per
+    ``(origin, COALESCE(native_id, source_path))``, the same grouping the
+    archive-verification I1 coverage check uses for its universe. Schema
+    inference's ordinary use (discovering every shape a provider's wire
+    format can take) wants every revision, since an older revision can carry
+    a field shape a later one dropped. Value-*distribution* callers (field
+    value frequency/statistics, not shape discovery) want the opposite: a
+    session re-acquired N times would otherwise contribute its field values
+    N times, skewing a distribution toward whichever sources happen to have
+    the most revisions rather than reflecting the archive's actual logical
+    session population.
     """
     source_name = Provider.from_string(source_name)
     source_db_path = db_path.parent / "source.db"
@@ -264,17 +278,32 @@ def _iter_schema_units_from_db(
     query_provider = config.db_source_name or source_name
     origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
     placeholders = ",".join("?" for _ in origins)
-    with connection_context(source_db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            f"""
+    if logical_heads_only:
+        query = f"""
+            WITH heads AS (
+                SELECT
+                    source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
+                    validation_status,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY origin, COALESCE(native_id, source_path)
+                        ORDER BY acquired_at_ms DESC, raw_id DESC
+                    ) AS rn
+                FROM raw_sessions
+                WHERE origin IN ({placeholders})
+            )
+            SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms, validation_status
+            FROM heads WHERE rn = 1
+        """
+    else:
+        query = f"""
             SELECT source_path, origin, raw_id, blob_hash, file_mtime_ms, acquired_at_ms,
                    validation_status
             FROM raw_sessions
             WHERE origin IN ({placeholders})
-            """,
-            origins,
-        )
+        """
+    with connection_context(source_db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(query, origins)
         batch_size = 1 if config.sample_granularity == "record" else 100
         # Content-hash dedup: distinct ``raw_id``s legitimately collapse onto the
         # same ``blob_hash`` (unchanged re-acquisition, duplicate exports). Byte-
@@ -424,6 +453,7 @@ def _iter_samples_from_db(
     db_path: Path,
     config: ProviderConfig,
     with_conv_ids: Literal[False] = False,
+    logical_heads_only: bool = False,
 ) -> Iterator[SchemaSample]: ...
 
 
@@ -434,6 +464,7 @@ def _iter_samples_from_db(
     db_path: Path,
     config: ProviderConfig,
     with_conv_ids: Literal[True],
+    logical_heads_only: bool = False,
 ) -> Iterator[tuple[SchemaSample, str | None]]: ...
 
 
@@ -443,10 +474,19 @@ def _iter_samples_from_db(
     db_path: Path,
     config: ProviderConfig,
     with_conv_ids: bool = False,
+    logical_heads_only: bool = False,
 ) -> Iterator[SchemaSample | tuple[SchemaSample, str | None]]:
-    """Yield individual sample dicts from the database."""
+    """Yield individual sample dicts from the database.
+
+    ``logical_heads_only`` (default ``False``, opt-in) passes through to
+    :func:`_iter_schema_units_from_db` -- see its docstring for why a
+    value-distribution caller wants this and a shape-discovery caller does
+    not.
+    """
     source_name = Provider.from_string(source_name)
-    for unit in _iter_schema_units_from_db(source_name, db_path=db_path, config=config):
+    for unit in _iter_schema_units_from_db(
+        source_name, db_path=db_path, config=config, logical_heads_only=logical_heads_only
+    ):
         for sample in unit.schema_samples:
             if with_conv_ids:
                 yield sample, unit.session_id
