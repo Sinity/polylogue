@@ -5074,15 +5074,30 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
     raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
+    origin_url = (session.git_repository_url or "").strip()
     # polylogue-cijx.4 decision 1: resolve each raw cwd to its git root before
     # deduplicating, so multiple cwds inside the same checkout (or a cwd
     # that is an agent-worktree subdirectory) collapse to one row instead of
     # one row per distinct raw path.
-    root_paths = tuple(dict.fromkeys(_normalized_repo_root_path(path) for path in raw_root_paths))
-    if not root_paths and not session.git_repository_url:
+    #
+    # polylogue-cijx.2 AC4: a session with no git evidence resolves to a
+    # directory, not a repository. A raw cwd that resolves to no discoverable
+    # git root is dropped here -- not kept as a "dir:<raw_path>" fallback --
+    # unless an explicit remote (``origin_url``) is known, in which case
+    # identity comes from the remote and the raw cwd is retained purely as a
+    # representative checkout-root value. Without this, every session whose
+    # cwd happens to be, say, ``/home/sinity`` would synthesize a "sinity"
+    # repository from a bare directory with zero git evidence.
+    resolved_root_paths: list[str] = []
+    for raw_path in raw_root_paths:
+        discovered_root = _discovered_repo_root_path(raw_path)
+        if discovered_root is not None:
+            resolved_root_paths.append(discovered_root)
+        elif origin_url:
+            resolved_root_paths.append(raw_path)
+    root_paths = tuple(dict.fromkeys(resolved_root_paths))
+    if not root_paths and not origin_url:
         return
-
-    origin_url = (session.git_repository_url or "").strip()
     for root_path in root_paths or ("",):
         repo_name = _repo_name(origin_url, root_path)
         # polylogue-cijx.4 decision 1: identity is the canonicalized remote
@@ -6546,8 +6561,8 @@ def _repo_name(repository_url: str, root_path: str) -> str | None:
     return candidate or None
 
 
-def _normalized_repo_root_path(root_path: str) -> str:
-    """Resolve ``root_path`` to its git root when one is discoverable.
+def _discovered_repo_root_path(root_path: str) -> str | None:
+    """Resolve ``root_path`` to its git root when one is discoverable on disk.
 
     Without this, two sessions whose cwd differs only by subdirectory (or by
     worktree path under one checkout) would write two distinct checkout
@@ -6562,8 +6577,15 @@ def _normalized_repo_root_path(root_path: str) -> str:
     ``repo_checkouts``/``session_repos.root_path`` (decision 2's
     repo-relative path stripping), and as the sole identity fallback for a
     repository with no remote.
+
+    Returns ``None`` -- not the raw ``root_path`` -- when no git root is
+    discoverable (polylogue-cijx.2 AC4: "a session with no git evidence
+    resolves to a directory, not a repository"). Callers with no other git
+    evidence (no known remote) must not synthesize a repository identity
+    from an unresolved bare cwd -- a session in ``/home/sinity`` is honestly
+    a directory, not the "sinity" repo.
     """
-    return normalize_repo_path(root_path) or root_path
+    return normalize_repo_path(root_path)
 
 
 _SCP_LIKE_REMOTE_RE = re.compile(r"^[\w.-]+@([\w.-]+):(.+)$")
@@ -6616,8 +6638,9 @@ def repo_identity_key(origin_url: str, root_path: str) -> str:
     does identity fall back to the resolved checkout root
     (``dir:<root_path>``, decision 1's "where no remote exists, the
     outermost git root"); ``root_path`` is expected to already be resolved
-    to that outermost root by ``_normalized_repo_root_path`` before this is
-    called.
+    to that outermost root by ``_discovered_repo_root_path`` before this is
+    called -- a ``root_path`` with no discoverable git root and no known
+    remote must not reach this function at all (see ``_write_repo_edges``).
 
     This used to be a SQLite ``GENERATED ALWAYS`` column computed as
     ``origin_url || root_path`` -- so two worktree checkouts of the exact
