@@ -373,26 +373,27 @@ def test_iter_drive_raw_data_two_revision_fixture_gets_real_lineage(tmp_path: Pa
     problem shape.
 
     Both raws MUST carry a real, non-NULL ``logical_source_key`` (the
-    concrete, durable fix: they are no longer invisible to
+    concrete, durable fix from #3656: they are no longer invisible to
     ``raw_revision_heads``/future arbitration) and ``revision_kind='full'``
-    (never the pre-fix ``'unknown'``). Whether the second raw also gets a
-    proven ``predecessor_raw_id`` depends on whether its bytes are a literal
-    byte-prefix continuation of the first's, per
-    ``classify_historical_full_revision_streams``
-    (``archive/revision_authority.py``) -- and a full JSON re-serialization
-    that injects the resolved attachment bytes into the MIDDLE of the
-    document (not appended at the very end) is generally NOT a byte-prefix
-    superset of the original, so this real fixture is expected to land
-    ``revision_authority='quarantined'`` with no predecessor link, same as
-    before this PR for this exact non-prefix shape -- what changed is that
-    the identity (``logical_source_key``) is now recorded at all, so a
-    future consumer (or a classifier upgraded to recognize JSON-structural
-    supersets, not just byte-literal ones -- polylogue-1fijp's larger
-    raw-admission-chokepoint scope) can still find and arbitrate this
-    cohort. This is intentionally NOT asserted as "predecessor-linked" --
-    doing so would be a false claim about what the current byte-prefix-only
-    classifier can prove for this shape; see the PR description for the
-    scope boundary this test exists to keep honest.
+    (never the pre-fix ``'unknown'``).
+
+    A full JSON re-serialization that injects the resolved attachment bytes
+    into the MIDDLE of the document (not appended at the very end) is NOT a
+    byte-prefix superset of the original, so the byte-prefix classifier
+    (``classify_historical_full_revision_streams``,
+    ``archive/revision_authority.py``) alone lands
+    ``revision_authority='quarantined'`` with no predecessor link for this
+    exact shape (that residual gap was #3656's documented scope boundary,
+    deferred to polylogue-1fijp). polylogue-1fijp AC (b) closes it: this
+    fixture's second raw is exactly the shape
+    ``sources.drive.structural_diff.classify_drive_structural_relation``
+    exists to recognize -- the first raw's ``driveDocument`` dict is a
+    structural subset of the second's (same keys/values, plus the injected
+    fetch-data field) -- so ``_bind_drive_revision_lineage``'s new
+    structural-growth pre-check now binds the second raw directly as a
+    ``FULL``/``ASSERTED`` revision with a real ``predecessor_raw_id``
+    pointing at the first raw, instead of falling through to the
+    byte-prefix quarantine path.
     """
     payload = {
         "chunkedPrompt": {
@@ -493,21 +494,27 @@ def test_iter_drive_raw_data_two_revision_fixture_gets_real_lineage(tmp_path: Pa
             (first_raw_id,),
         ).fetchone()
         second_row = verify_conn.execute(
-            "SELECT logical_source_key, revision_kind, predecessor_raw_id FROM raw_sessions WHERE raw_id = ?",
+            """
+            SELECT logical_source_key, revision_kind, predecessor_raw_id, revision_authority
+            FROM raw_sessions WHERE raw_id = ?
+            """,
             (second_raw_id,),
         ).fetchone()
 
     provider_session_id = first_sessions[0].provider_session_id
     expected_logical_source_key = f"{Provider.GEMINI.value}:{provider_session_id}"
     # The durable fix: both raws now carry the real identity key and a typed
-    # revision_kind, no longer NULL/'unknown' -- regardless of whether the
-    # byte-prefix classifier can additionally prove a predecessor link for
-    # this non-append-shaped fixture.
+    # revision_kind, no longer NULL/'unknown'.
     assert first_row["logical_source_key"] == expected_logical_source_key
     assert second_row["logical_source_key"] == expected_logical_source_key
     assert first_row["revision_kind"] == "full"
     assert second_row["revision_kind"] == "full"
-    # Documented, expected residual gap (see docstring): a mid-document JSON
-    # re-serialization is not byte-prefix provable, so no predecessor link is
-    # established for THIS shape yet.
-    assert second_row["predecessor_raw_id"] is None
+    # polylogue-1fijp AC (b): the JSON-structural-diff classifier proves the
+    # second raw is a genuine structural extension of the first (the
+    # attachment-injected chunk's dict grew a key, nothing existing changed
+    # or was removed), so it gets typed, predecessor-linked lineage --
+    # never the pre-fix quarantined-unknown outcome, and no longer even the
+    # #3656 interim outcome (typed identity, but no predecessor) for this
+    # exact shape.
+    assert second_row["predecessor_raw_id"] == first_raw_id
+    assert second_row["revision_authority"] == "asserted"
