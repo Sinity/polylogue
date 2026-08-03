@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -28,8 +29,11 @@ from polylogue.core.enums import Provider
 from polylogue.maintenance.raw_quarantine_group_dedup_apply import (
     TOOL_VERSION,
     RawQuarantineGroupDedupApplyError,
+    _checkpoint_live_tier,
+    _mark_group_duplicates,
     apply_raw_quarantine_group_dedup,
 )
+from polylogue.storage.raw_quarantine_group_dedup import RawQuarantineGroup
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -229,6 +233,156 @@ async def test_apply_materializes_one_representative_and_marks_duplicates(
         "raw-b": ("raw-a", promotion.representative_session_id, TOOL_VERSION),
         "raw-c": ("raw-a", promotion.representative_session_id, TOOL_VERSION),
     }
+
+
+async def test_apply_leaves_group_untouched_when_representative_produces_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A representative whose bytes fail to parse (decode error, no session
+    materialized) must leave the WHOLE group untouched: no duplicate marked,
+    no receipt, and the representative itself still quarantined -- never
+    guessed at. Covers raw_quarantine_group_dedup_apply.py's "zero sessions"
+    branch (CodeRabbit PR #3697)."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    unparseable_payload = b"this is not valid json at all, just garbage bytes\n"
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for raw_id in ("raw-x", "raw-y"):
+            _write_quarantined_raw(
+                archive, raw_id=raw_id, payload=unparseable_payload, source_path=str(tmp_path / "garbage.jsonl")
+            )
+        archive.commit()
+
+    before = _revision_authority_rows(archive_root)
+
+    def _fake_validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_quarantine_group_dedup_apply.validate_migration_backup_manifest",
+        _fake_validate,
+    )
+
+    manifest = tmp_path / "verified-backup" / "manifest.json"
+    report = await apply_raw_quarantine_group_dedup(archive_root, backup_manifest=manifest, dry_run=False)
+
+    assert report.applied is True
+    assert report.group_count == 1  # classified as a group -- classification doesn't require parseability
+    assert report.promoted_count == 0
+    assert report.marked_duplicate_count == 0
+    assert _revision_authority_rows(archive_root) == before
+    assert _receipt_rows(archive_root) == {}
+    assert _index_sessions_rows(archive_root) == []
+
+
+async def test_apply_leaves_group_untouched_when_representative_materializes_multiple_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A representative raw that is a genuine multi-session capture file
+    (e.g. a grouped Claude Code JSONL split by sessionId) materializes MORE
+    than one sessions row from one raw_id -- this actuator's whole premise
+    is one raw/one representative session, so it must refuse to guess which
+    materialized session is "the" representative and leave the group
+    untouched entirely, exactly like the zero-session case."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    multi_session_payload = (
+        b'{"type":"user","sessionId":"first-session","uuid":"u1",'
+        b'"message":{"role":"user","content":"one"}}\n'
+        b'{"type":"user","sessionId":"second-session","uuid":"u2",'
+        b'"message":{"role":"user","content":"two"}}\n'
+    )
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for raw_id in ("raw-multi-a", "raw-multi-b"):
+            archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=multi_session_payload,
+                source_path=str(tmp_path / "multi.jsonl"),
+                source_index=-1,
+                acquired_at_ms=1_700_000_000_000,
+                raw_id=raw_id,
+            )
+        archive.commit()
+
+    before = _revision_authority_rows(archive_root)
+
+    def _fake_validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_quarantine_group_dedup_apply.validate_migration_backup_manifest",
+        _fake_validate,
+    )
+
+    manifest = tmp_path / "verified-backup" / "manifest.json"
+    report = await apply_raw_quarantine_group_dedup(archive_root, backup_manifest=manifest, dry_run=False)
+
+    assert report.applied is True
+    assert report.group_count == 1
+    assert report.promoted_count == 0
+    assert report.marked_duplicate_count == 0
+    assert _revision_authority_rows(archive_root) == before
+    assert _receipt_rows(archive_root) == {}
+    # The representative's own content DID materialize (real, legitimate
+    # sessions) -- this actuator just declines to build a receipt around it.
+    index_sessions = _index_sessions_rows(archive_root)
+    assert len(index_sessions) == 2
+    assert all(raw_id == "raw-multi-a" for _session_id, raw_id in index_sessions)
+
+
+def test_mark_group_duplicates_rolls_back_on_receipt_constraint_violation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Covers the phase-two rollback branch directly: a receipt INSERT that
+    violates a CHECK constraint must roll back the WHOLE transaction --
+    including any earlier duplicate's revision_authority UPDATE already
+    applied within the same locked transaction -- not partially commit
+    (CodeRabbit PR #3697)."""
+    archive_root = _build_fixture_archive(tmp_path)
+    before = _revision_authority_rows(archive_root)
+
+    def _fake_validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_quarantine_group_dedup_apply.validate_migration_backup_manifest",
+        _fake_validate,
+    )
+
+    # blob_hash with the wrong length violates raw_quarantine_group_dedup_receipts'
+    # CHECK(length(blob_hash) = 32) on the very first duplicate's INSERT.
+    bad_group = RawQuarantineGroup(
+        source_path=str(tmp_path / "repeated.jsonl"),
+        blob_hash=b"\x00" * 31,
+        blob_size=len(_GROUP_PAYLOAD),
+        raw_ids=("raw-a", "raw-b", "raw-c"),
+    )
+    manifest = tmp_path / "verified-backup" / "manifest.json"
+
+    with pytest.raises(sqlite3.IntegrityError):
+        _mark_group_duplicates(archive_root / "source.db", manifest, bad_group, "fake-representative-session-id")
+
+    assert _revision_authority_rows(archive_root) == before
+    assert _receipt_rows(archive_root) == {}
+
+
+def test_checkpoint_live_tier_refuses_when_wal_checkpoint_reports_busy(tmp_path: Path) -> None:
+    """``PRAGMA wal_checkpoint(TRUNCATE)`` always returns one row
+    ``(busy, log, checkpointed)``. ``busy=1`` means the WAL was NOT fully
+    truncated (another connection held a blocking lock); a subsequent
+    backup-manifest fingerprint check must not silently attest against a
+    tier that still has uncheckpointed frames (CodeRabbit PR #3697)."""
+
+    class _BusyCursor:
+        def fetchone(self) -> tuple[int, int, int]:
+            return (1, 0, 0)  # busy=1
+
+    class _BusyConnection:
+        def execute(self, _sql: str) -> _BusyCursor:
+            return _BusyCursor()
+
+    with pytest.raises(RawQuarantineGroupDedupApplyError, match="blocked by another connection"):
+        _checkpoint_live_tier(cast(sqlite3.Connection, _BusyConnection()))
 
 
 async def test_apply_with_no_qualifying_groups_is_a_clean_no_op(
