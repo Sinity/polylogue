@@ -385,7 +385,48 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # priced_at_ms, a different pair of columns with a real production reader
 # (daemon/http.py's session-insights panel) -- see the price_catalogs
 # removal comment above session_model_usage's DDL for the full distinction.
-INDEX_SCHEMA_VERSION = 61
+# polylogue-664l: v62 batches two column-level dead-weight removals found by
+# the 2026-07-31 producer/consumer audit, both clone-safe (no re-parse of raw
+# evidence needed -- remaining/unchanged columns carry byte-identical values):
+#  - session_provider_usage_events drops 9 write-only columns:
+#    model_context_window plus the 8 Hermes billing-provenance columns
+#    (estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+#    pricing_version, billing_provider, billing_base_url, billing_mode).
+#    Every write site (`_provider_usage_event_row` in write.py) populates
+#    them from `ParsedSessionEvent.payload`, but no reader anywhere in the
+#    repo ever selects them -- confirmed by re-auditing `storage/usage.py`
+#    (the only production reader of this table), which reads only the
+#    `last_*`/`total_*` token counters. Same "cache/copy with zero readers"
+#    shape as v41's `action_pairs` text-copy removal.
+#  - attachment_native_ids.id_kind's CHECK narrows from 5 members to 4,
+#    dropping 'source'. Re-auditing confirmed 'url' IS read (the generic
+#    `search_attachment_identity_evidence_hits` identity-search query in
+#    `storage/sqlite/queries/attachment_records.py` joins ALL id_kind rows,
+#    not just attachment/file/drive, contrary to the audit's original
+#    "readers pull attachment/file/drive only" claim for 'url') -- so 'url'
+#    is kept. 'source' has zero producers anywhere in the repo
+#    (`_write_attachment_native_ids` in write.py only ever writes
+#    attachment/file/drive/url) and zero live rows can exist by
+#    construction, so narrowing the CHECK rejects nothing on any real
+#    archive -- CONSTRAINT_ONLY, the same v33/v36/v51/v52 "tightening over
+#    unchanged values" precedent.
+#  - The other two column-level findings from the same audit (bead
+#    polylogue-664l) were re-verified and found stale on current source, so
+#    no DDL change accompanies them here: `insight_materialization`'s CHECK
+#    vocabulary (9 values) is fully live (every value has a real writer in
+#    `rebuild.py`/`write.py`); the registry entries with no per-session
+#    ledger row are either `readiness_exempt=True` (query-time aggregates
+#    with no separate materialized state to go stale: archive_coverage,
+#    tool_usage, session_costs, cost_rollups, usage_timeline, archive_debt)
+#    or `session_tag_rollups`, which has its own dedicated non-session-scoped
+#    staleness query (`STALE_SESSION_TAG_ROLLUP_COUNT_SQL` in
+#    `storage/insights/session/status.py`) because it isn't keyed by
+#    session_id at all. `input_high_water_mark_source` is read broadly
+#    across public surfaces (`insights/archive.py`'s `time_confidence_for_
+#    source`, `daemon/http.py` status payloads), not confined to
+#    repair/status internals. price_catalogs metadata is out of scope here
+#    (table-level finding, tracked separately by polylogue-resk).
+INDEX_SCHEMA_VERSION = 62
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1239,7 +1280,7 @@ CREATE TABLE IF NOT EXISTS attachment_refs (
 
 CREATE TABLE IF NOT EXISTS attachment_native_ids (
     ref_id     TEXT NOT NULL REFERENCES attachment_refs(ref_id) ON DELETE CASCADE,
-    id_kind    TEXT NOT NULL CHECK(id_kind IN ('attachment', 'file', 'drive', 'source', 'url')),
+    id_kind    TEXT NOT NULL CHECK(id_kind IN ('attachment', 'file', 'drive', 'url')),
     native_id  TEXT NOT NULL,
     PRIMARY KEY(ref_id, id_kind, native_id)
 ) STRICT;
@@ -1350,15 +1391,6 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
     total_cache_write_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0),
     total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
     total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
-    model_context_window           INTEGER CHECK(model_context_window IS NULL OR model_context_window >= 0),
-    estimated_cost_usd              REAL,
-    actual_cost_usd                 REAL,
-    cost_status                     TEXT,
-    cost_source                     TEXT,
-    pricing_version                 TEXT,
-    billing_provider                TEXT,
-    billing_base_url                TEXT,
-    billing_mode                    TEXT,
     occurred_at_ms                 INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;

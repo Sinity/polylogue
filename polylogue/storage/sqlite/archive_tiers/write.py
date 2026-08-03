@@ -4282,7 +4282,7 @@ def _write_session_events(
                 event,
                 provider_usage_baseline=provider_usage_baseline,
             )
-            if _provider_usage_event_row_has_evidence(row, event):
+            if _provider_usage_event_row_has_evidence(row):
                 provider_usage_rows.append(row)
                 wrote_provider_usage_events = True
         position += 1
@@ -4320,10 +4320,9 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_input_tokens, last_output_tokens, last_cached_input_tokens,
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
-        total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
-        estimated_cost_usd, actual_cost_usd, cost_status, cost_source, pricing_version,
-        billing_provider, billing_base_url, billing_mode, occurred_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
+        occurred_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -4368,38 +4367,12 @@ def _provider_usage_event_row(
         total_cache_write,
         total_reasoning,
         total_tokens,
-        _payload_optional_int(event.payload, "model_context_window"),
-        _payload_optional_float(event.payload, "estimated_cost_usd"),
-        _payload_optional_float(event.payload, "actual_cost_usd"),
-        _sqlite_text(_payload_string(event.payload, "cost_status")),
-        _sqlite_text(_payload_string(event.payload, "cost_source")),
-        _sqlite_text(_payload_string(event.payload, "pricing_version")),
-        _sqlite_text(_payload_string(event.payload, "billing_provider")),
-        _sqlite_text(_payload_string(event.payload, "billing_base_url")),
-        _sqlite_text(_payload_string(event.payload, "billing_mode")),
         _timestamp_ms(event.timestamp),
     )
 
 
-_PROVIDER_USAGE_PROVENANCE_KEYS = (
-    "estimated_cost_usd",
-    "actual_cost_usd",
-    "cost_status",
-    "cost_source",
-    "pricing_version",
-    "billing_provider",
-    "billing_base_url",
-    "billing_mode",
-)
-
-
-def _provider_usage_event_row_has_evidence(
-    row: tuple[object, ...],
-    event: ParsedSessionEvent,
-) -> bool:
-    if any(isinstance(value, int) and value for value in row[5:17]):
-        return True
-    return any(event.payload.get(key) is not None for key in _PROVIDER_USAGE_PROVENANCE_KEYS)
+def _provider_usage_event_row_has_evidence(row: tuple[object, ...]) -> bool:
+    return any(isinstance(value, int) and value for value in row[5:17])
 
 
 def _provider_usage_cumulative_baseline(
@@ -6262,14 +6235,6 @@ def _reextract_provider_usage_tail_db(
           AND total_cache_write_tokens = 0
           AND total_reasoning_output_tokens = 0
           AND total_tokens = 0
-          AND estimated_cost_usd IS NULL
-          AND actual_cost_usd IS NULL
-          AND cost_status IS NULL
-          AND cost_source IS NULL
-          AND pricing_version IS NULL
-          AND billing_provider IS NULL
-          AND billing_base_url IS NULL
-          AND billing_mode IS NULL
         """,
         (child_session_id,),
     )
