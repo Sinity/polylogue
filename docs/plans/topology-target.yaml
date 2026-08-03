@@ -931,7 +931,7 @@ files:
     target: polylogue/cli/commands/judge.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/__init__.py
-    loc: 191
+    loc: 197
     target: polylogue/cli/commands/maintenance/__init__.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_archive_plan.py
@@ -985,6 +985,10 @@ files:
   - path: polylogue/cli/commands/maintenance/_rebuild_index.py
     loc: 550
     target: polylogue/cli/commands/maintenance/_rebuild_index.py
+    owner: stable
+  - path: polylogue/cli/commands/maintenance/_rebuild_index_status.py
+    loc: 101
+    target: polylogue/cli/commands/maintenance/_rebuild_index_status.py
     owner: stable
   - path: polylogue/cli/commands/maintenance/_run.py
     loc: 218
@@ -2260,7 +2264,7 @@ files:
     target: polylogue/maintenance/raw_membership_writeback_apply.py
     owner: stable
   - path: polylogue/maintenance/rebuild_index.py
-    loc: 1093
+    loc: 1204
     target: polylogue/maintenance/rebuild_index.py
     owner: stable
   - path: polylogue/maintenance/registry.py
@@ -3865,7 +3869,7 @@ files:
     owner: storage-root
     reason: storage-root cross-cutting helper
   - path: polylogue/storage/index_generation.py
-    loc: 773
+    loc: 893
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/insights/__init__.py

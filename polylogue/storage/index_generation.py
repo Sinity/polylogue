@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import TracebackType
 
+from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -24,6 +25,19 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 logger = logging.getLogger(__name__)
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
+_LOCK_HOST_PATTERN = re.compile(r"host=(\S+)")
+
+#: ``raw_session_memberships.decision`` values that mean "this raw is
+#: resolved, durable history" rather than resume debt -- reused directly from
+#: ``classify_membership_revisions``'s own closed vocabulary
+#: (``polylogue.archive.session_revision_membership.MembershipDecision``)
+#: instead of a rebuild-local classifier (polylogue-b5l.1 design note: reuse
+#: the existing revision authority vocabulary, never fork a parallel one).
+_SUPERSEDED_DECISIONS: tuple[str, ...] = (
+    MembershipDecision.SUPERSEDED_EQUIVALENT.value,
+    MembershipDecision.SUPERSEDED_PREFIX.value,
+)
+_SUPERSEDED_DECISION_PLACEHOLDERS = ",".join("?" for _ in _SUPERSEDED_DECISIONS)
 
 #: Superseded generations kept after a promotion.  One is enough to roll back
 #: to the previous index; each costs roughly the size of the index itself
@@ -159,6 +173,16 @@ def _lock_holder_pid(path: Path) -> int | None:
     return int(match.group(1))
 
 
+def _lock_holder_host(path: Path) -> str | None:
+    """Best-effort recorded hostname from an existing lock file; ``None`` if absent/unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _LOCK_HOST_PATTERN.search(text)
+    return match.group(1) if match is not None else None
+
+
 def _pid_is_alive(pid: int) -> bool:
     """Whether ``pid`` still names a live process, best-effort via ``kill(pid, 0)``."""
     if pid <= 0:
@@ -271,6 +295,74 @@ class ActiveWriterLease:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
             os.close(self._fd)
             self._fd = None
+
+
+@dataclass(frozen=True, slots=True)
+class RebuildLeaseStatus:
+    """Read-only snapshot of the archive-root rebuild lease, for status surfaces.
+
+    polylogue-b5l.1 AC5: an operator/agent must be able to see who owns the
+    lease, whether the recorded holder is actually still alive, and whether
+    the lock looks reclaimable, without disturbing a real holder and without
+    duplicating ``RebuildLease``/``ActiveWriterLease`` as the sole exclusion
+    mechanism.
+    """
+
+    held: bool
+    holder_pid: int | None
+    holder_host: str | None
+    #: ``None`` when ``held`` is False (nothing to check liveness against) or
+    #: when no pid could be parsed from the lock file at all.
+    holder_alive: bool | None
+    #: True when the lease is held but its recorded pid is provably dead --
+    #: exactly the ``RebuildLease.__enter__`` reclaim condition
+    #: (``_open_lock_fd``), surfaced here for operator visibility before a
+    #: fresh acquisition would silently reclaim it.
+    stale: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "held": self.held,
+            "holder_pid": self.holder_pid,
+            "holder_host": self.holder_host,
+            "holder_alive": self.holder_alive,
+            "stale": self.stale,
+        }
+
+
+def rebuild_lease_status(archive_root: Path) -> RebuildLeaseStatus:
+    """Probe the rebuild lease without blocking or disturbing a genuine holder.
+
+    Attempts a non-blocking exclusive ``flock``: if it succeeds, nothing
+    currently holds the lease and the probe releases it immediately; if it
+    fails with ``EAGAIN``/``EACCES`` (``BlockingIOError``), the lease is
+    genuinely held and the lock file's recorded pid/host are reported
+    best-effort for diagnosis (the file content may be stale or unreadable).
+    """
+    path = archive_root / ".index-rebuild.lock"
+    if not path.exists():
+        return RebuildLeaseStatus(held=False, holder_pid=None, holder_host=None, holder_alive=None, stale=False)
+    holder_pid = _lock_holder_pid(path)
+    holder_host = _lock_holder_host(path)
+    fd = os.open(path, os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            alive = _pid_is_alive(holder_pid) if holder_pid is not None else None
+            return RebuildLeaseStatus(
+                held=True,
+                holder_pid=holder_pid,
+                holder_host=holder_host,
+                holder_alive=alive,
+                stale=holder_pid is not None and alive is False,
+            )
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return RebuildLeaseStatus(
+            held=False, holder_pid=holder_pid, holder_host=holder_host, holder_alive=None, stale=False
+        )
+    finally:
+        os.close(fd)
 
 
 class IndexGenerationStore:
@@ -495,28 +587,54 @@ class IndexGenerationStore:
         (``ArchiveStore.expand_raw_membership_selection``) already walks the
         full ``raw_sessions``/``raw_session_memberships`` graph regardless of
         which page triggered it -- neither depends on processing order.
+
+        polylogue-b5l.1: a raw whose EVERY persisted
+        ``raw_session_memberships`` row already carries a durable
+        ``superseded_equivalent``/``superseded_prefix`` decision (the
+        classification ``classify_membership_revisions`` itself writes back,
+        durable in ``source.db`` independent of any index generation) is
+        legitimate resolved history, not resume debt: it will never gain an
+        ``index.sessions`` row of its own (only its cohort's accepted head
+        does), so scheduling it wastes a full page slot re-parsing content a
+        prior pass already resolved -- every single rebuild pass would
+        otherwise re-touch it. A raw with no membership row at all (never
+        censused) or with at least one non-superseded row (``applied``/
+        ``ambiguous``/``deferred``/still pending) is left eligible -- this
+        only ever narrows the schedule, it never risks dropping a genuinely
+        unresolved or newly-accepted raw.
         """
         if limit <= 0:
             raise ValueError("rebuild raw page limit must be positive")
         source_db = self.archive_root / "source.db"
+        not_resume_debt_clause = f"""(
+            NOT EXISTS (SELECT 1 FROM raw_session_memberships m WHERE m.raw_id = raw_sessions.raw_id)
+            OR EXISTS (
+                SELECT 1 FROM raw_session_memberships m
+                WHERE m.raw_id = raw_sessions.raw_id
+                  AND (m.decision IS NULL OR m.decision NOT IN ({_SUPERSEDED_DECISION_PLACEHOLDERS}))
+            )
+        )"""
         if transaction.last_blob_hash_hex is None or transaction.last_raw_id is None:
-            query = """
+            query = f"""
                 SELECT raw_id, blob_hash, blob_size FROM raw_sessions
+                WHERE {not_resume_debt_clause}
                 ORDER BY blob_hash, raw_id LIMIT ?
             """
-            params: tuple[object, ...] = (limit + 1,)
+            params: tuple[object, ...] = (*_SUPERSEDED_DECISIONS, limit + 1)
         else:
             last_blob_hash = bytes.fromhex(transaction.last_blob_hash_hex)
-            query = """
+            query = f"""
                 SELECT raw_id, blob_hash, blob_size FROM raw_sessions
-                WHERE blob_hash > ?
-                   OR (blob_hash = ? AND raw_id > ?)
+                WHERE (blob_hash > ?
+                   OR (blob_hash = ? AND raw_id > ?))
+                  AND {not_resume_debt_clause}
                 ORDER BY blob_hash, raw_id LIMIT ?
             """
             params = (
                 last_blob_hash,
                 last_blob_hash,
                 transaction.last_raw_id,
+                *_SUPERSEDED_DECISIONS,
                 limit + 1,
             )
         with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
@@ -766,8 +884,10 @@ __all__ = [
     "IndexGeneration",
     "IndexRebuildTransaction",
     "IndexGenerationStore",
+    "RebuildLeaseStatus",
     "RebuildRawPage",
     "RebuildLease",
     "RebuildLeaseUnavailableError",
+    "rebuild_lease_status",
     "source_revision_snapshot",
 ]
