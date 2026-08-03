@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
-from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
+from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -3608,6 +3608,97 @@ def _branch_type_from_link_type(link_type: object) -> str | None:
         return None
 
 
+# polylogue-4ts.10: cycle detection + quarantine, ported from the dead
+# async engine at storage/sqlite/queries/session_links.py (zero production
+# callers -- test-only) into the sole live writer of session_links rows.
+# Before this, both live resolution entry points (_resolve_outbound_session_links
+# below, and the inbound-parent loop in _resolve_session_graph) resolved
+# every matching edge unconditionally; a real cycle in the parent chain was
+# only ever caught by _refresh_session_projection's seen-set short-circuit
+# and _composed_db_signatures' visited-set truncation, which silently pick
+# an arbitrary root/branch point rather than persisting evidence of the
+# rejected edge -- session_links.status stayed NULL/empty on every row.
+_CYCLE_WALK_BUDGET = 1024
+
+
+def _would_create_cycle(
+    conn: sqlite3.Connection,
+    *,
+    child_id: str,
+    proposed_parent_id: str,
+) -> list[str] | None:
+    """Return the cycle path if resolving child->proposed_parent would close a loop.
+
+    Walks ``sessions.parent_session_id`` upward from ``proposed_parent_id``.
+    Returns ``None`` for a legitimate (acyclic, or not-yet-resolvable) shape.
+    """
+    if proposed_parent_id == child_id:
+        return [child_id, child_id]
+    path: list[str] = [child_id, proposed_parent_id]
+    current = proposed_parent_id
+    steps = 0
+    while True:
+        if steps >= _CYCLE_WALK_BUDGET:
+            path.append("...budget-exceeded")
+            return path
+        row = conn.execute(
+            "SELECT parent_session_id FROM sessions WHERE session_id = ?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            return None
+        next_parent = row[0]
+        if next_parent is None:
+            return None
+        if next_parent == child_id:
+            path.append(child_id)
+            return path
+        path.append(next_parent)
+        current = next_parent
+        steps += 1
+
+
+def _quarantine_session_link(
+    conn: sqlite3.Connection,
+    *,
+    src_session_id: str,
+    dst_origin: str,
+    dst_native_id: str,
+    link_type: str,
+    cycle_path: list[str],
+    observed_at_ms: int,
+) -> None:
+    """Mark one edge quarantined instead of resolving it, with evidence."""
+    evidence = _json_dumps(
+        {
+            "reason": "cycle_rejected",
+            "cycle_path": cycle_path,
+            "detected_at_ms": observed_at_ms,
+        }
+    )
+    conn.execute(
+        """
+        UPDATE session_links
+           SET status = ?,
+               evidence_json = ?,
+               resolved_at_ms = ?
+         WHERE src_session_id = ?
+           AND dst_origin = ?
+           AND dst_native_id = ?
+           AND link_type = ?
+        """,
+        (
+            TopologyEdgeStatus.QUARANTINED.value,
+            evidence,
+            observed_at_ms,
+            src_session_id,
+            dst_origin,
+            dst_native_id,
+            link_type,
+        ),
+    )
+
+
 def _resolve_session_graph(
     conn: sqlite3.Connection,
     session_id: str,
@@ -3643,10 +3734,11 @@ def _resolve_session_graph(
     )
     inbound_rows = conn.execute(
         """
-        SELECT links.src_session_id
+        SELECT links.src_session_id, links.link_type
         FROM session_links links
         WHERE links.dst_native_id = ?
           AND links.resolved_dst_session_id IS NULL
+          AND links.status IS NULL
           AND links.dst_origin = ?
         """,
         (native_id, origin),
@@ -3659,7 +3751,24 @@ def _resolve_session_graph(
     record_substage("root_current_check", t0)
     composed_cache: dict[str, list[tuple[str, str]]] = {}
     t0 = time.perf_counter()
+    resolved_child_ids: list[str] = []
     for row in inbound_rows:
+        child_id, link_type = str(row[0]), str(row[1])
+        # polylogue-4ts.10: session_id is about to become child_id's parent --
+        # refuse (quarantine, with evidence) rather than silently resolve if
+        # that would close a cycle in sessions.parent_session_id.
+        cycle_path = _would_create_cycle(conn, child_id=child_id, proposed_parent_id=session_id)
+        if cycle_path is not None:
+            _quarantine_session_link(
+                conn,
+                src_session_id=child_id,
+                dst_origin=origin,
+                dst_native_id=native_id,
+                link_type=link_type,
+                cycle_path=cycle_path,
+                observed_at_ms=int(time.time() * 1000),
+            )
+            continue
         conn.execute(
             """
             UPDATE session_links
@@ -3667,17 +3776,20 @@ def _resolve_session_graph(
                 resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
             WHERE src_session_id = ?
               AND dst_native_id = ?
+              AND link_type = ?
               AND resolved_dst_session_id IS NULL
+              AND status IS NULL
             """,
-            (session_id, row[0], native_id),
+            (session_id, child_id, native_id, link_type),
         )
+        resolved_child_ids.append(child_id)
         # Deferred tail extraction (#2467): a child ingested before its parent was
         # stored whole (the inherited prefix could not be aligned yet). Now that
         # the parent exists, normalize the child the same way the parent-known
         # write path does — drop the inherited prefix rows and record the edge.
         _reextract_prefix_tail_db(
             conn,
-            str(row[0]),
+            child_id,
             session_id,
             cache=cache,
             composed_cache=composed_cache,
@@ -3687,7 +3799,7 @@ def _resolve_session_graph(
         )
     record_substage("reextract_prefix_tails", t0)
 
-    impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
+    impacted_session_ids = {session_id, *resolved_child_ids}
     t0 = time.perf_counter()
     _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
     record_substage("repair_stale_branch_points", t0)
@@ -3743,28 +3855,53 @@ def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
 
 
 def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, origin: str) -> None:
-    conn.execute(
+    """Resolve ``session_id``'s own unresolved outbound edges (it is the child).
+
+    polylogue-4ts.10: candidates are evaluated one at a time (rather than a
+    single blanket UPDATE) so each can be cycle-checked against
+    ``sessions.parent_session_id`` before being resolved -- a candidate whose
+    resolution would close a loop is quarantined instead, never resolved.
+    """
+    candidates = conn.execute(
         """
-        UPDATE session_links
-        SET resolved_dst_session_id = (
-                SELECT dst.session_id
-                FROM sessions dst
-                WHERE dst.native_id = session_links.dst_native_id
-                  AND dst.origin = session_links.dst_origin
-                LIMIT 1
-            ),
-            resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
-        WHERE src_session_id = ?
-          AND resolved_dst_session_id IS NULL
-          AND EXISTS (
-                SELECT 1
-                FROM sessions dst
-                WHERE dst.native_id = session_links.dst_native_id
-                  AND dst.origin = session_links.dst_origin
-          )
+        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type, dst.session_id
+        FROM session_links
+        JOIN sessions dst
+          ON dst.native_id = session_links.dst_native_id
+         AND dst.origin = session_links.dst_origin
+        WHERE session_links.src_session_id = ?
+          AND session_links.resolved_dst_session_id IS NULL
+          AND session_links.status IS NULL
         """,
         (session_id,),
-    )
+    ).fetchall()
+    for dst_origin, dst_native_id, link_type, proposed_parent_id in candidates:
+        cycle_path = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
+        if cycle_path is not None:
+            _quarantine_session_link(
+                conn,
+                src_session_id=session_id,
+                dst_origin=dst_origin,
+                dst_native_id=dst_native_id,
+                link_type=link_type,
+                cycle_path=cycle_path,
+                observed_at_ms=int(time.time() * 1000),
+            )
+            continue
+        conn.execute(
+            """
+            UPDATE session_links
+               SET resolved_dst_session_id = ?,
+                   resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
+             WHERE src_session_id = ?
+               AND dst_origin = ?
+               AND dst_native_id = ?
+               AND link_type = ?
+               AND resolved_dst_session_id IS NULL
+               AND status IS NULL
+            """,
+            (proposed_parent_id, session_id, dst_origin, dst_native_id, link_type),
+        )
 
 
 def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
