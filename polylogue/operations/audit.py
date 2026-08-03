@@ -167,7 +167,7 @@ class AuditRepository:
         if authorization.token is None:
             raise ValueError("bound authorization requires a token")
         authorization_id = f"authorization:{secrets.token_urlsafe(18)}"
-        issued_at_ms = authorization.expires_at_ms - 60_000 if authorization.expires_at_ms is not None else 0
+        issued_at_ms = int(time.time() * 1000)
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             preview_row = conn.execute(

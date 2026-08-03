@@ -168,3 +168,46 @@ def test_crash_after_intent_is_queryable_unknown_and_never_completed(tmp_path: P
     assert status == "interrupted"
     assert target_state == "unknown"
     assert audit.list_events(operation_id)[-1]["event_type"] == "attempt_unknown"
+
+
+def test_token_consumption_and_initial_attempt_roll_back_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audit = AuditRepository(tmp_path / "audit.db")
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "rollback-token")
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+
+    def fail_event(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("injected audit transaction failure")
+
+    monkeypatch.setattr(AuditRepository, "_append_event", staticmethod(fail_event))
+    with pytest.raises(RuntimeError, match="injected"):
+        audit.consume_authorization_and_start(preview, authorization)
+
+    conn = sqlite3.connect(tmp_path / "audit.db")
+    try:
+        auth_state = str(
+            conn.execute(
+                "SELECT state FROM operation_authorizations WHERE preview_id = ?", (preview.preview_ref,)
+            ).fetchone()[0]
+        )
+        run_count = int(conn.execute("SELECT COUNT(*) FROM operation_runs").fetchone()[0])
+        preview_state = str(
+            conn.execute(
+                "SELECT state FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+            ).fetchone()[0]
+        )
+    finally:
+        conn.close()
+    assert auth_state == "active"
+    assert preview_state == "prepared"
+    assert run_count == 0
