@@ -193,7 +193,7 @@ def read_codex_thread_title_hook_events(source_conn: sqlite3.Connection) -> dict
         if event.event_type != "codex_thread_title":
             continue
         thread_id = event.session_native_id
-        title = event.payload.get("title") if isinstance(event.payload, dict) else None
+        title = event.payload.get("title")
         if isinstance(thread_id, str) and thread_id and isinstance(title, str) and title.strip():
             titles[thread_id] = title.strip()
     return titles
