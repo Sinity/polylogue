@@ -402,3 +402,26 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
                 )
             )
     return messages
+
+
+def mark_last_occurrence_as_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
+    """Flag exactly one message as ``is_active_leaf``: the LAST message in
+    the list, by position -- never by comparing ``provider_message_id``.
+
+    ``provider_message_id`` is not guaranteed unique across a flat message
+    list assembled by concatenating streaming chunks or markdown sections --
+    retries/variants/regenerations can legitimately reuse the same native id
+    at more than one position (bd polylogue-2hwl). Comparing every message's
+    id against ``messages[-1].provider_message_id`` (the naive approach)
+    flags EVERY matching position, not just the true leaf, which then lets
+    more than one ``is_active_leaf=True`` message reach MCP payloads and
+    archive_query message output -- an invariant violation (at most one
+    active leaf per session). Matching by exact list position instead of by
+    id equality alone keeps the flag unique regardless of duplicate ids.
+    """
+    if not messages:
+        return messages
+    leaf_index = len(messages) - 1
+    return [
+        message.model_copy(update={"is_active_leaf": index == leaf_index}) for index, message in enumerate(messages)
+    ]

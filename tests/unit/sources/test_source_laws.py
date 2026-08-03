@@ -1697,6 +1697,91 @@ def test_merge_parsed_session_chunks_keeps_stronger_earlier_title_over_weaker_la
     assert merged[0].title_confidence == 1.0
 
 
+def test_merge_parsed_session_chunks_fills_missing_first_chunk_title_from_later_chunk() -> None:
+    """bd polylogue-2hwl AC1, literal scenario: chunk 1 has no title at all
+    (``title=None``) -- the pre-fix rule froze this permanently since
+    ``None != provider_session_id`` never held true, so a real title
+    arriving in a later chunk was silently dropped. The title-rank merge
+    (bd polylogue-t5lg) must fill it from the later chunk's resolved
+    evidence."""
+    early_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title=None,
+        messages=[],
+    )
+    later_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="Recover what was lost",
+        title_source=TitleSource.ORIGIN,
+        title_ref="claude-ai-title:session-1",
+        title_confidence=1.0,
+        messages=[],
+    )
+
+    merged = merge_parsed_session_chunks([early_chunk, later_chunk])
+
+    assert merged[0].title == "Recover what was lost"
+    assert merged[0].title_source is TitleSource.ORIGIN
+
+
+def test_merge_parsed_session_chunks_marks_exactly_one_active_leaf_with_duplicate_ids() -> None:
+    """bd polylogue-2hwl AC2: a merged session where the SAME
+    ``provider_message_id`` occurs at two different positions (a
+    retry/regenerated variant spanning a chunk boundary) must mark exactly
+    ONE message as ``is_active_leaf`` -- the true final message by position,
+    not every message sharing that id. The pre-fix comparison
+    (``message.provider_message_id == active_leaf_message_provider_id``)
+    flagged every matching position, violating the "at most one active leaf
+    per session" invariant that feeds MCP payloads and archive_query message
+    output.
+    """
+    early_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="session-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="dup",
+                role=Role.ASSISTANT,
+                text="first attempt",
+                position=0,
+                is_active_path=True,
+                is_active_leaf=True,
+            ),
+        ],
+    )
+    later_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="session-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="u-2",
+                role=Role.USER,
+                text="follow up",
+                position=0,
+                is_active_path=True,
+            ),
+            ParsedMessage(
+                provider_message_id="dup",
+                role=Role.ASSISTANT,
+                text="final retry",
+                position=1,
+                is_active_path=True,
+            ),
+        ],
+    )
+
+    merged = merge_parsed_session_chunks([early_chunk, later_chunk])
+
+    leaves = [message for message in merged[0].messages if message.is_active_leaf]
+    assert len(leaves) == 1
+    assert leaves[0].text == "final retry"
+    assert leaves[0] is merged[0].messages[-1]
+
+
 def test_session_emitter_reuses_jsonl_sniff_payloads_for_individual_detection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
