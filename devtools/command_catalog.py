@@ -1137,6 +1137,47 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace tool-result-history-sweep",
+        "workspace",
+        "Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars.",
+        "devtools.tool_result_history_sweep_report",
+        use_when=(
+            "polylogue-omsw: tool-results/<name> tool-call-overflow content and "
+            "file-history-snapshot-only projects/<proj>/<uuid>.jsonl streams were "
+            "historically admitted as independent claude-code-session raw_sessions rows "
+            "instead of sidecars. Both classification gaps are closed for fresh "
+            "acquisition (archive.artifact_taxonomy); this read-only report finds "
+            "already-ingested rows acquired before that fix landed. Never mutates "
+            "source.db."
+        ),
+        examples=(
+            "devtools workspace tool-result-history-sweep",
+            "devtools workspace tool-result-history-sweep --json",
+            "devtools workspace tool-result-history-sweep --limit 5000 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
+        "workspace tool-result-history-reclassify-apply",
+        "workspace",
+        "Persist raw_artifacts classification for tool-result/file-history-shaped raw rows.",
+        "devtools.tool_result_history_reclassify_apply",
+        use_when=(
+            "polylogue-omsw: act on the sweep's report by writing raw_artifacts rows "
+            "(materialize_artifact_observations) for the flagged tool-results/"
+            "file-history-snapshot content, so it carries an explicit non-session "
+            "classification instead of sitting misclassified as "
+            "coordinator_session_stream. Does not touch revision_authority, "
+            "index.db, or delete anything -- default is dry-run; --apply performs "
+            "the write. Per the 2026-07-22 hook-inflation precedent, contaminated "
+            "rows are reclassified, never deleted."
+        ),
+        examples=(
+            "devtools workspace tool-result-history-reclassify-apply",
+            "devtools workspace tool-result-history-reclassify-apply --json",
+            "devtools workspace tool-result-history-reclassify-apply --apply",
+        ),
+    ),
+    CommandSpec(
         "workspace antigravity-phantom-sweep",
         "workspace",
         "List antigravity-session rows that are brain-metadata phantom fragments.",
