@@ -729,6 +729,36 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace merge",
+        "workspace",
+        "Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt.",
+        "devtools.merge_boundary",
+        use_when=(
+            "Replace a bare `gh pr merge --squash` with this at the actual merge boundary "
+            "(polylogue-ct3r2 / polylogue-t6iga: duplicate filings of the same finding -- "
+            "`merge-gate record/check` and the one-full-verify-per-train rule both existed but "
+            "fired only if a coordinator remembered to invoke them). `merge <PR>` auto-records a "
+            "merge-gate receipt if none is fresh for the current head sha (running `--command`, "
+            'default "devtools verify"), runs `merge-gate check` and refuses to merge on any '
+            "BLOCK, strips a doubled `(#N) (#N)` squash-subject suffix (the 2026-07-12/13 "
+            "incident), then runs the actual `gh pr merge --squash`. `--dry-run` runs every check "
+            "without merging. `--with-verify` immediately runs and records the merge-train's "
+            "terminal full-suite verify after merging; otherwise it prints a reminder. "
+            "`train-status` reports (exit 1) any PRs merged since the last recorded full-suite "
+            "verify -- the structural stand-in for 'a merge-train records the full-suite verify "
+            "as its terminal ledger step'. `record-full-verify` runs and records that step "
+            "directly, e.g. once per merge-train session boundary."
+        ),
+        examples=(
+            "devtools workspace merge 3517",
+            'devtools workspace merge 3517 --command "devtools test tests/unit/foo.py"',
+            "devtools workspace merge 3517 --dry-run",
+            'devtools workspace merge 3517 --with-verify --verify-command "devtools verify --all"',
+            "devtools workspace merge train-status",
+            'devtools workspace merge record-full-verify --command "devtools verify --all"',
+        ),
+    ),
+    CommandSpec(
         "workspace merge-conductor",
         "workspace",
         "Mechanical-conflict triage for the PR merge train (dry-run by default).",

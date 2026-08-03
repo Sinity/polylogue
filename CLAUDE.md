@@ -390,16 +390,25 @@ workflow, not optional conveniences — use them at the point named, every time:
   the 2026-08-01 incident this check exists for was a silent worktree-escape
   where ~1700 lines of half-finished output had already landed directly in
   the coordinator's live tree by the time the lane reported back.
-- **Before squash-merging any PR**: `devtools workspace merge-gate record <PR>
-  --command "devtools verify"` (or a narrower test selection) against the
-  PR's current head, then `devtools workspace merge-gate check <PR>` —
-  BLOCKs unless a fresh receipt exists for the exact head sha and no review
-  comment (inline, issue-level, or review-summary) is newer than the head
-  commit's timestamp unless explicitly `ack`'d. This replaces "remember to
-  grace-period-poll and remember to run the broader suite CI skips" with one
-  command; it is not automatic (a coordinator still has to remember to run
-  it), so treat it as a required step in the merge checklist below, not an
-  optional nicety.
+- **To squash-merge any PR**: use `devtools workspace merge <PR>` instead of
+  a bare `gh pr merge --squash` — it wraps `merge-gate record`/`check` at the
+  actual merge boundary instead of leaving them a step a coordinator must
+  remember. It auto-records a receipt if none is fresh for the current head
+  sha (running `--command`, default `devtools verify`), BLOCKs the merge on
+  any `merge-gate check` failure (no fresh receipt, stale receipt, nonzero
+  exit, or an unacked review comment newer than the head commit), strips a
+  doubled `(#N) (#N)` squash-subject suffix, then runs the actual
+  `gh pr merge --squash`. `--dry-run` runs every check without merging;
+  `--with-verify` immediately runs and records the merge-train's terminal
+  full-suite verify after merging. `devtools workspace merge train-status`
+  reports (exit 1) any PRs merged since the last recorded full-suite verify —
+  this is the structural stand-in for "a merge-train records the full-suite
+  verify as its terminal ledger step"; `devtools workspace merge
+  record-full-verify --command "devtools verify --all"` records that step
+  directly once per merge-train session boundary. The lower-level
+  `devtools workspace merge-gate record/check` commands still exist for
+  ad hoc receipt inspection, but the merge action itself should go through
+  `workspace merge`.
 - Sizing/triage input: `devtools workspace backlog-calibration` for
   lead-time/discovery/staleness distributions before deciding batch size.
 
