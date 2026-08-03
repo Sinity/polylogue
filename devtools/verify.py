@@ -55,6 +55,7 @@ from devtools.pytest_supervisor import (
     update_receipt,
     write_termination_request,
 )
+from devtools.testmon_bootstrap import maybe_bootstrap_testmon_seed
 from devtools.verify_runs import (
     CURRENT_CONTAINMENT_PATH,
     CURRENT_EVENTS_DIR,
@@ -2559,6 +2560,12 @@ def main(argv: list[str] | None = None) -> int:
         tier = "testmon"
 
     full_pytest = bool(args.all or args.full)
+    bootstrap_message = maybe_bootstrap_testmon_seed(
+        ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    if bootstrap_message is not None:
+        sys.stderr.write(bootstrap_message + "\n")
     preflight_error = _testmon_preflight(
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
