@@ -18,7 +18,7 @@ def test_schema_evolution_policy_lane_allows_durable_sql_migrations(capsys: pyte
 
 
 def test_live_index_benign_ddl_registry_entries_are_all_valid() -> None:
-    """The real registry (polylogue-v2mg's two drops) passes the policy check."""
+    """The real registry (polylogue-v2mg's two drops + polylogue-resk's price_catalogs drop) passes the policy check."""
     assert verify_schema_upgrade_lane._invalid_benign_ddl_entries() == []
 
 

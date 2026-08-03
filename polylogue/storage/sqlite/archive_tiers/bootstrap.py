@@ -95,9 +95,6 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         ensure_ops_status_checks(conn)
         _ensure_schema_drift_samples_check(conn)
     if tier is ArchiveTier.INDEX:
-        from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
-
-        seed_price_catalog(conn)
         # Fresh init never had a registered drop's target table, and any
         # additive registry entry lands identically to canonical DDL -- this
         # is a no-op today, kept for fresh-init/converged-live parity (see

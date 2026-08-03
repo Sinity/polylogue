@@ -374,7 +374,18 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # already-acquired raw evidence recovers the corrected identity split.
 # `polylogue ops reset --index && polylogued run` is required; deliberately
 # NOT executed by this declaration.
-INDEX_SCHEMA_VERSION = 60
+# v61 (polylogue-resk): drops session_model_usage.priced_with/priced_at_ms
+# and narrows the CHECK that referenced priced_with -- both were write-only
+# outside tests (zero production SELECTs), and the FK target price_catalogs
+# is dropped in the same change via the index-tier benign-DDL registry (see
+# index_convergence.py). CONSTRAINT_ONLY/dead-column-removal, same shape as
+# v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
+# copy-forward on every other column via the fast-forward executor's
+# REPLACE_TABLE path. Does NOT touch session_profiles.priced_with/
+# priced_at_ms, a different pair of columns with a real production reader
+# (daemon/http.py's session-insights panel) -- see the price_catalogs
+# removal comment above session_model_usage's DDL for the full distinction.
+INDEX_SCHEMA_VERSION = 61
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1271,20 +1282,22 @@ CREATE TABLE IF NOT EXISTS paste_spans (
 CREATE INDEX IF NOT EXISTS idx_paste_spans_session
 ON paste_spans(session_id);
 
-CREATE TABLE IF NOT EXISTS price_catalogs (
-    catalog_id       TEXT PRIMARY KEY,
-    catalog_hash     TEXT NOT NULL,
-    source_name      TEXT NOT NULL,
-    effective_at_ms  INTEGER,
-    loaded_at_ms     INTEGER NOT NULL
-) STRICT;
-
 -- model_prices and session_reported_costs were dropped (polylogue-v2mg):
 -- zero-consumer tables converged away by the index-tier same-version
 -- benign-DDL registry (archive_tiers/index_convergence.py) rather than kept
--- in canonical DDL. Cost computation resolves per-model rates from the
--- in-process pricing catalog; price_catalogs (below) remains the genuinely
--- read catalog-identity table.
+-- in canonical DDL. price_catalogs was dropped the same way (polylogue-resk,
+-- v61): v2mg's stated justification for keeping it ("session_model_usage.
+-- priced_with FK, active_price_catalog_id" are genuine reads) measured false
+-- in all three particulars -- priced_with/priced_at_ms had zero production
+-- SELECTs (write-only outside tests), and active_price_catalog_id's only
+-- caller was a test. Cost computation resolves per-model rates from the
+-- in-process pricing catalog (polylogue.archive.semantic.pricing.PRICING),
+-- never round-tripping through a DB-backed mirror or catalog-identity table.
+-- NOTE: session_profiles.priced_with/priced_at_ms are a DIFFERENT, unrelated
+-- pair of columns (no FK to price_catalogs, sourced from cost_compute.py's
+-- _PRICE_SNAPSHOT_VERSION) that genuinely are read back (daemon/http.py's
+-- _profile_panel_payload serves them in the session-insights reader panel)
+-- -- they are kept.
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id              TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -1294,17 +1307,15 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cache_read_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
     cache_write_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
     message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
-    priced_with             TEXT REFERENCES price_catalogs(catalog_id) ON DELETE SET NULL,
-    priced_at_ms            INTEGER,
     cost_usd                REAL,
     cost_credits            REAL,
     cost_provenance         TEXT CHECK(cost_provenance IN ('origin_reported', 'priced', 'estimated') OR cost_provenance IS NULL),
     -- polylogue-shnc (v49): a provenance label that ASSERTS pricing evidence
     -- must actually carry that evidence -- the forensic audit found 5,016
-    -- live rows with cost_provenance='priced' and cost_usd/priced_with both
-    -- NULL (a self-contradiction worse than an honest NULL provenance) and
-    -- 3,417 'origin_reported' rows with cost_usd NULL despite the rollup
-    -- writer's own naming implying a reported dollar figure existed.
+    -- live rows with cost_provenance='priced' and cost_usd NULL (a
+    -- self-contradiction worse than an honest NULL provenance) and 3,417
+    -- 'origin_reported' rows with cost_usd NULL despite the rollup writer's
+    -- own naming implying a reported dollar figure existed.
     -- 'origin_reported' is reserved for a genuine provider-reported dollar
     -- total (sessions.reported_cost_usd, polylogue-gt1z) copied onto a
     -- session_model_usage row; provider-usage-event TOKEN rollups (Codex
@@ -1312,9 +1323,10 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     -- write.py's _price_provider_usage_tokens) -- conflating the two made a
     -- catalog estimate read as if the provider itself reported that dollar
     -- figure downstream (archive.py's list_cost_rollup_insights basis split).
-    CHECK (
-        cost_provenance != 'priced' OR (cost_usd IS NOT NULL AND priced_with IS NOT NULL)
-    ),
+    -- polylogue-resk (v61): the CHECK's ``priced_with IS NOT NULL`` half was
+    -- dropped along with the column itself; ``cost_usd IS NOT NULL`` alone
+    -- still makes the shnc self-contradiction unrepresentable.
+    CHECK (cost_provenance != 'priced' OR cost_usd IS NOT NULL),
     CHECK (cost_provenance != 'origin_reported' OR cost_usd IS NOT NULL),
     PRIMARY KEY(session_id, model_name)
 ) STRICT;

@@ -763,6 +763,27 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # change requires `polylogue ops reset --index && polylogued run`.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=61,
+        # polylogue-resk: session_model_usage.priced_with/priced_at_ms are
+        # dropped (write-only outside tests -- see INDEX_SCHEMA_VERSION's v61
+        # comment, archive_tiers/index.py, for the measured evidence) and the
+        # CHECK that referenced priced_with is narrowed to just cost_usd. A
+        # dead-column removal like v33/v36/v38/v41/v44: existing rows
+        # copy-forward on every surviving column via the fast-forward
+        # executor's REPLACE_TABLE path, no raw reparse. price_catalogs
+        # (the FK target) is dropped separately via the index-tier
+        # same-version benign-DDL registry (index_convergence.py) since a
+        # whole-table drop is already idempotent without a version bump.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v61-drop-session-model-usage-pricing-columns",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "session_model_usage"),),
+            ),
+        ),
+    ),
 )
 
 

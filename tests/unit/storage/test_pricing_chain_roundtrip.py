@@ -1,37 +1,27 @@
 """Round-trip tests: pricing chain from messages → session_model_usage.
 
 Verifies that:
-1. price_catalogs is seeded during archive-init (identity/versioning only --
-   polylogue-v2mg dropped the model_prices DB-backed rate mirror as a
-   zero-consumer table; rates are read from the in-process PRICING dict).
-2. After writing a session with token-bearing messages, session_model_usage
+1. After writing a session with token-bearing messages, session_model_usage
    carries the correct per-model token sums.
-3. cost_usd is computed correctly for known models (rate × tokens).
-4. Models with no price entry get cost_usd = NULL / priced_with = NULL.
-5. Messages with NULL/empty model_name are excluded from aggregation.
+2. cost_usd is computed correctly for known models (rate × tokens), read
+   from the in-process PRICING dict -- there is no DB-backed rate mirror
+   (polylogue-v2mg dropped model_prices, polylogue-resk dropped the
+   price_catalogs catalog-identity table, both as zero-consumer).
+3. Models with no price entry get cost_usd = NULL.
+4. Messages with NULL/empty model_name are excluded from aggregation.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from polylogue.archive.semantic.pricing import (
-    CATALOG_PROVENANCE,
-    PRICING,
-    estimate_cost,
-)
+from polylogue.archive.semantic.pricing import estimate_cost
 from polylogue.core.enums import Provider
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.pricing_seed import (
-    _catalog_hash,
-    _catalog_id,
-    active_price_catalog_id,
-)
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
@@ -80,93 +70,6 @@ def _session(
         messages=messages,
         reported_cost_usd=reported_cost_usd,
     )
-
-
-# ---------------------------------------------------------------------------
-# Part A: catalog seed
-# ---------------------------------------------------------------------------
-
-
-class TestPriceCatalogSeed:
-    def test_price_catalogs_row_present_after_init(self, tmp_path: Path) -> None:
-        conn = _make_archive(tmp_path)
-        rows = conn.execute("SELECT * FROM price_catalogs").fetchall()
-        assert len(rows) == 1
-        row = rows[0]
-        assert row["catalog_id"] == _catalog_id()
-        assert row["source_name"] == CATALOG_PROVENANCE
-        conn.close()
-
-    def test_seed_is_idempotent(self, tmp_path: Path) -> None:
-        """Re-seeding does not duplicate the catalog identity row."""
-        conn = _make_archive(tmp_path)
-        from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
-
-        with conn:
-            seed_price_catalog(conn)
-            seed_price_catalog(conn)
-
-        catalog_count = conn.execute("SELECT COUNT(*) FROM price_catalogs").fetchone()[0]
-        assert catalog_count == 1
-        conn.close()
-
-    def test_seed_versions_changed_pricing_and_writer_uses_new_catalog(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
-    ) -> None:
-        """A catalog correction preserves old evidence and prices new usage by hash."""
-        conn = _make_archive(tmp_path)
-        original_catalog_id = _catalog_id()
-        model_name = "gpt-4o-mini"
-        original_pricing = PRICING[model_name]
-        monkeypatch.setitem(
-            PRICING,
-            model_name,
-            replace(original_pricing, input_usd_per_1m=original_pricing.input_usd_per_1m + 1.0),
-        )
-        # _catalog_hash() is process-lifetime memoized (polylogue-623q: PRICING
-        # is never mutated in production, so re-walking+re-hashing its ~3.5K
-        # entries on every session write was pure redundant CPU). This test is
-        # the one place that legitimately mutates PRICING mid-process via
-        # monkeypatch, so it must invalidate the memo around the mutation --
-        # both so this write observes the revised dict, and so teardown
-        # (monkeypatch reverting PRICING) doesn't leave a stale post-mutation
-        # hash cached for whichever test runs next in this process.
-        _catalog_hash.cache_clear()
-        request.addfinalizer(_catalog_hash.cache_clear)
-
-        with conn:
-            write_parsed_session_to_archive(
-                conn,
-                _session(
-                    provider_session_id="revised-pricing",
-                    messages=[_msg(provider_message_id="m1", model_name=model_name, input_tokens=100)],
-                ),
-            )
-
-        revised_catalog_id = active_price_catalog_id(conn)
-        assert revised_catalog_id is not None
-        assert revised_catalog_id != original_catalog_id
-        assert conn.execute("SELECT COUNT(*) FROM price_catalogs").fetchone()[0] == 2
-        assert (
-            conn.execute(
-                "SELECT catalog_hash FROM price_catalogs WHERE catalog_id = ?", (revised_catalog_id,)
-            ).fetchone()[0]
-            == _catalog_hash()
-        )
-        # No DB-backed model_prices mirror exists to round-trip through
-        # (polylogue-v2mg dropped it as a zero-consumer table); the proof that
-        # the revised rate actually took effect is that the written
-        # session_model_usage.cost_usd matches estimate_cost() against the
-        # *revised* in-memory PRICING dict, not the original rate.
-        row = conn.execute(
-            "SELECT priced_with, cost_usd FROM session_model_usage "
-            "WHERE session_id = 'claude-code-session:revised-pricing'"
-        ).fetchone()
-        original_cost = (original_pricing.input_usd_per_1m * 100) / 1_000_000
-        assert row["priced_with"] == revised_catalog_id
-        assert row["cost_usd"] == pytest.approx(estimate_cost(100, 0, model_name), rel=1e-9)
-        assert row["cost_usd"] != pytest.approx(original_cost, rel=1e-9)
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +182,10 @@ class TestCostUsdComputation:
         with conn:
             write_parsed_session_to_archive(conn, _session(messages=messages))
 
-        row = conn.execute(
-            "SELECT cost_usd, priced_with FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'"
-        ).fetchone()
+        row = conn.execute("SELECT cost_usd FROM session_model_usage WHERE model_name = 'claude-sonnet-4-5'").fetchone()
         assert row is not None
         expected = estimate_cost(1_000_000, 1_000_000, "claude-sonnet-4-5")
         assert row["cost_usd"] == pytest.approx(expected, rel=1e-9)
-        assert row["priced_with"] == _catalog_id()
         conn.close()
 
     def test_unknown_model_gets_null_cost(self, tmp_path: Path) -> None:
@@ -302,30 +202,10 @@ class TestCostUsdComputation:
             write_parsed_session_to_archive(conn, _session(messages=messages))
 
         row = conn.execute(
-            "SELECT cost_usd, priced_with FROM session_model_usage "
-            "WHERE model_name = 'some-future-model-xyz-not-in-catalog'"
+            "SELECT cost_usd FROM session_model_usage WHERE model_name = 'some-future-model-xyz-not-in-catalog'"
         ).fetchone()
         assert row is not None
         assert row["cost_usd"] is None
-        assert row["priced_with"] is None
-        conn.close()
-
-    def test_priced_with_fk_resolves_to_catalog_row(self, tmp_path: Path) -> None:
-        """FK integrity: priced_with must reference an actual price_catalogs row."""
-        conn = _make_archive(tmp_path)
-        messages = [
-            _msg(
-                provider_message_id="m1",
-                model_name="gpt-4o-mini",
-                input_tokens=500,
-                output_tokens=200,
-            ),
-        ]
-        with conn:
-            write_parsed_session_to_archive(conn, _session(messages=messages))
-
-        violations = conn.execute("PRAGMA foreign_key_check(session_model_usage)").fetchall()
-        assert violations == [], f"FK violations: {violations}"
         conn.close()
 
     def test_cost_usd_uses_cache_tokens_when_present(self, tmp_path: Path) -> None:
