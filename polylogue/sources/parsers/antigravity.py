@@ -310,8 +310,9 @@ def iter_language_server_exports(
     root: Path,
     *,
     client: AntigravityLanguageServerClient | None = None,
+    only_cascade_ids: frozenset[str] | None = None,
 ) -> Iterable[ParsedSession]:
-    """Export every real conversation trajectory under ``conversations/``.
+    """Export real conversation trajectories under ``conversations/``.
 
     Ground truth for *which* cascades exist is the ``conversations/*.pb``
     file listing, not ``SearchConversations`` -- the search/list RPCs only
@@ -322,6 +323,14 @@ def iter_language_server_exports(
     whether the language server's live index currently tracks it
     (polylogue-eo81). Search results are still consulted to enrich title /
     workspace / snippet metadata for the cascades that *are* indexed.
+
+    ``only_cascade_ids``, when given, restricts export to that subset of
+    cascade ids (matched against each ``.pb`` file's stem). Used by the
+    daemon's periodic reconciliation loop (``polylogue-3m3de``) to convert
+    only cascades not yet acquired into ``raw_sessions``, instead of paying
+    the language-server subprocess + markdown-conversion cost for the whole
+    corpus on every tick. ``None`` (the default) exports every cascade,
+    preserving the original behavior for the one-shot batch importer.
     """
     owned_client = client is None
     runtime_client = client or AntigravityLanguageServerClient(root)
@@ -329,6 +338,8 @@ def iter_language_server_exports(
         runtime_client.start()
     try:
         pb_paths = _conversation_pb_paths(root)
+        if only_cascade_ids is not None:
+            pb_paths = [pb_path for pb_path in pb_paths if pb_path.stem in only_cascade_ids]
         if not pb_paths:
             return
         try:

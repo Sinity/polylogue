@@ -38,6 +38,7 @@ def iter_antigravity_language_server_sessions(
     capture_raw: bool = False,
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
+    only_cascade_ids: frozenset[str] | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Yield Antigravity language-server export sessions for a source.
 
@@ -54,6 +55,11 @@ def iter_antigravity_language_server_sessions(
     ``hermes_state``'s sqlite snapshot pattern above), so ``source.db`` holds
     real acquired bytes with a stable content hash for idempotent re-ingest,
     not just an ephemeral export that re-runs unconditionally every pass.
+
+    ``only_cascade_ids``, when given, restricts export to that subset of
+    cascade ids (see ``antigravity.iter_language_server_exports``) instead of
+    the whole ``conversations/`` corpus -- used by the daemon's periodic
+    reconciliation loop to convert only not-yet-acquired cascades.
 
     Falls back to walking ``brain/**/*.md.metadata.json`` directly
     (``_iter_antigravity_brain_metadata_fallback``) only when there is
@@ -76,7 +82,7 @@ def iter_antigravity_language_server_sessions(
 
     if conversations_dir.is_dir():
         try:
-            for session in antigravity.iter_language_server_exports(source.path):
+            for session in antigravity.iter_language_server_exports(source.path, only_cascade_ids=only_cascade_ids):
                 exported_any = True
                 raw_data = _antigravity_raw_snapshot(
                     source.path,
