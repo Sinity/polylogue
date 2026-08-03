@@ -37,6 +37,7 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,90 @@ logger = get_logger(__name__)
 
 #: Default cap on per-check sample evidence (worst sessions, offending ids, ...).
 DEFAULT_SAMPLE_LIMIT = 10
+
+
+class ArchiveVerificationCheckClass(str, Enum):
+    """Bug-class taxonomy each registry check is tagged with (polylogue-t0m73).
+
+    Orthogonal to :class:`~polylogue.core.outcomes.OutcomeStatus` (pass/warn/
+    fail/skip is the *outcome*; this is the *kind of invariant* being
+    checked), the tag drives which of the two verification planes
+    (polylogue-60gzo) a check is expected to run under on a schedule:
+    ``liveness``/``freshness`` classes are the daemon health-tier home
+    (Plane 2, production monitoring -- something must have happened
+    recently); the rest are point-in-time coherence checks that make sense
+    on any snapshot including a reindex candidate generation (both planes).
+    """
+
+    STATE_INVARIANT = "state-invariant"
+    """A structural fact that must always hold on any coherent snapshot
+    (pointer targets resolve, no cycles, no orphaned rows)."""
+
+    LIVENESS = "liveness"
+    """A reference/relationship that must remain live -- staleness here means
+    something died without cleaning up after itself (GC bookkeeping,
+    embedding refs outliving their source rows)."""
+
+    FRESHNESS = "freshness"
+    """Not a correctness fact but a recency fact: has required maintenance
+    (ANALYZE, convergence passes) run recently enough to trust the archive's
+    current operating characteristics."""
+
+    COMPLEXITY = "complexity"
+    """Archive-wide shape/size reporting -- not itself a pass/fail invariant,
+    but the numbers an operator needs to judge whether other checks' drift is
+    proportionally significant."""
+
+    FIDELITY = "fidelity"
+    """A derived/shadow representation must exactly mirror its source of
+    truth (FTS index vs the blocks it indexes)."""
+
+    CONSERVATION = "conservation"
+    """A quantity computed two different ways must agree (a write-time
+    projection vs a live COUNT over the rows it summarizes)."""
+
+    CONFIG = "config"
+    """The archive's on-disk schema/vocabulary configuration must be a
+    superset of what current code can write (CHECK constraints vs the
+    Python enum that generated them, tier schema versions vs the canonical
+    spec)."""
+
+
+@dataclass(frozen=True)
+class ArchiveVerificationWaiver:
+    """A known-red-on-live acknowledgement for one registry check.
+
+    Per polylogue-t0m73's design: a waiver exists only to keep the
+    *aggregate* gate (:attr:`ArchiveVerificationReport.blocking`) from
+    tripping on a bug that is already tracked and being worked, not to hide
+    the finding -- the underlying check still reports its true ``error``
+    status and evidence; only the gate's blocking computation treats it as
+    non-blocking. A waiver is a manual, reviewed acknowledgement, not an
+    automatic bd query (this module never calls ``bd``): remove the entry in
+    the same change that closes the bead, and if the check still reports
+    red afterward, the removal makes the gate red again on the next run,
+    which is the intended non-silent failure mode of an unwaived close.
+    """
+
+    bead_id: str
+    reason: str
+
+
+#: Checks with a currently-open, already-tracked live finding: the check
+#: keeps reporting its true ``error`` status (evidence is never suppressed),
+#: but :attr:`ArchiveVerificationReport.blocking` excludes it so an unrelated
+#: gate (e.g. the reindex acceptance run) doesn't trip on a distinct,
+#: separately-owned bug. Remove an entry only alongside closing its bead.
+ARCHIVE_VERIFICATION_WAIVERS: dict[str, ArchiveVerificationWaiver] = {
+    "embeddings-refs-liveness": ArchiveVerificationWaiver(
+        bead_id="polylogue-feu0",
+        reason=(
+            "4,186 message_embedding_refs point at messages no longer in index.db "
+            "(known, undrained catch-up debt as of 2026-08-03; embeddings convergence "
+            "is a separate async lane from index materialization)"
+        ),
+    ),
+}
 
 #: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for
 #: (polylogue-l3tk: fresh generations without stats pick pathological plans).
@@ -69,6 +154,15 @@ class ArchiveVerificationCheck(OutcomeCheck):
     """
 
     evidence: dict[str, Any] = field(default_factory=dict)
+    #: Bug-class tag copied from the owning :class:`ArchiveVerificationCheckSpec`
+    #: by :func:`verify_archive` (the spec is the source of truth; this is a
+    #: read-through convenience for JSON consumers that only see the check).
+    check_class: str = ""
+    #: Set by :func:`verify_archive` when this check's name has an entry in
+    #: :data:`ARCHIVE_VERIFICATION_WAIVERS`. ``status`` is never altered by a
+    #: waiver -- a waived check that is genuinely red still reports ``error``;
+    #: only :attr:`ArchiveVerificationReport.blocking` treats it as non-blocking.
+    waived_bead_id: str | None = None
 
     def to_json(self) -> JSONDocument:
         return archive_verification_check_json(self)
@@ -79,13 +173,16 @@ def archive_verification_check_json(check: OutcomeCheck) -> JSONDocument:
 
     Mirrors :func:`polylogue.schemas.audit.models.audit_check_json`: reads
     the shared :class:`OutcomeCheck` attrs directly and reaches for the
-    subclass-only ``evidence`` field via ``getattr`` so callers holding a
-    plain ``OutcomeCheck``-typed reference (e.g. ``ArchiveVerificationReport
-    .checks``, typed at its base-class element type) can still serialize a
-    concrete :class:`ArchiveVerificationCheck` without a narrowing cast.
+    subclass-only ``evidence``/``check_class``/``waived_bead_id`` fields via
+    ``getattr`` so callers holding a plain ``OutcomeCheck``-typed reference
+    (e.g. ``ArchiveVerificationReport.checks``, typed at its base-class
+    element type) can still serialize a concrete :class:`ArchiveVerificationCheck`
+    without a narrowing cast.
     """
     payload = dict(check.to_dict())
     payload["evidence"] = json_document(getattr(check, "evidence", {}))
+    payload["check_class"] = getattr(check, "check_class", "")
+    payload["waived_bead_id"] = getattr(check, "waived_bead_id", None)
     return payload
 
 
@@ -107,8 +204,18 @@ class ArchiveVerificationReport(OutcomeReport):
 
     @property
     def blocking(self) -> bool:
-        """True when at least one check reports ``error`` -- the gate condition."""
-        return self.error_count > 0
+        """True when at least one *unwaived* check reports ``error``.
+
+        A waived check (see :data:`ARCHIVE_VERIFICATION_WAIVERS`) still
+        contributes to :attr:`error_count` -- the underlying finding is never
+        hidden -- but is excluded from the gate condition itself, so an
+        already-tracked, separately-owned bug doesn't block an unrelated
+        acceptance run (e.g. a reindex candidate promotion).
+        """
+        return any(
+            check.status is OutcomeStatus.ERROR and getattr(check, "waived_bead_id", None) is None
+            for check in self.checks
+        )
 
     def to_json(self) -> JSONDocument:
         return json_document(
@@ -132,6 +239,11 @@ class ArchiveVerificationCheckSpec:
     name: str
     description: str
     run: ArchiveVerificationCheckFn
+    #: One of :class:`ArchiveVerificationCheckClass`'s values -- every spec in
+    #: :data:`ARCHIVE_VERIFICATION_CHECKS` must set this (no default, so a new
+    #: check added without a class tag is a construction-time TypeError, not a
+    #: silent "" that would slip past classification).
+    check_class: ArchiveVerificationCheckClass
 
 
 def _tier_path(archive_root: Path, tier: ArchiveTier) -> Path:
@@ -1159,68 +1271,103 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "tier-schema",
         "Tier presence and PRAGMA user_version vs the canonical ARCHIVE_TIER_SPECS.",
         _check_tier_schema,
+        ArchiveVerificationCheckClass.CONFIG,
     ),
     ArchiveVerificationCheckSpec(
         "pointer-coherence",
         "Conventional index.db path vs the active .index-active-pointer generation (polylogue-k8kj class).",
         _check_pointer_coherence,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "source-index-coverage",
         "Every raw_sessions logical head is indexed or typed (parse_error/non_session/quarantined); "
         "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "fts-parity",
         "messages_fts and blocks_command_trigram exactly cover their source rows, archive-wide.",
         _check_fts_parity,
+        ArchiveVerificationCheckClass.FIDELITY,
     ),
     ArchiveVerificationCheckSpec(
         "lineage-sanity",
         "session_links.resolved_dst_session_id / branch_point_message_id resolve to real sessions/messages.",
         _check_lineage_sanity,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "enum-superset-check",
         "Live origin/dst_origin CHECK lists on disk are a superset of the current Origin enum (polylogue-t0m73 I2).",
         _check_enum_superset,
+        ArchiveVerificationCheckClass.CONFIG,
     ),
     ArchiveVerificationCheckSpec(
         "blob-refs-liveness",
         "Every blob_refs row resolves in its ref_type's referent table -- the GC liveness oracle is a join, "
         "not membership in blob_refs itself (polylogue-t0m73 I3).",
         _check_blob_refs_liveness,
+        ArchiveVerificationCheckClass.LIVENESS,
     ),
     ArchiveVerificationCheckSpec(
         "embeddings-refs-liveness",
         "message_embedding_refs resolve to live index.db messages (feu0-class dead-vector detection, "
         "polylogue-t0m73 I4).",
         _check_embeddings_refs_liveness,
+        ArchiveVerificationCheckClass.LIVENESS,
     ),
     ArchiveVerificationCheckSpec(
         "session-lineage-acyclic",
         "sessions.parent_session_id chains never close a cycle (polylogue-t0m73 I5).",
         _check_session_lineage_acyclic,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "message-count-projection",
         "sessions.message_count matches COUNT(messages) per session (polylogue-t0m73 I8).",
         _check_message_count_projection,
+        ArchiveVerificationCheckClass.CONSERVATION,
     ),
     ArchiveVerificationCheckSpec(
         "planner-stats",
         "sqlite_stat1 covers blocks/messages/action_pairs (polylogue-l3tk class, warn-level).",
         _check_planner_stats,
+        ArchiveVerificationCheckClass.FRESHNESS,
     ),
     ArchiveVerificationCheckSpec(
         "counts-summary",
         "Archive-wide session/message/block counts and origin breakdown (numbers-freeze starter).",
         _check_counts_summary,
+        ArchiveVerificationCheckClass.COMPLEXITY,
     ),
 )
 
 ARCHIVE_VERIFICATION_CHECK_NAMES: tuple[str, ...] = tuple(spec.name for spec in ARCHIVE_VERIFICATION_CHECKS)
+
+#: The subset of ground-truth checks a blue-green reindex candidate generation
+#: is expected to satisfy before promotion (polylogue-t0m73's "reindex
+#: acceptance gate"). Restricted to checks whose universe is satisfiable from
+#: ``index.db`` alone -- a candidate generation directory holds only the new
+#: ``index.db``, not the durable ``source.db``/``user.db``/``embeddings.db``
+#: tiers (those live once at the archive root, not per-generation), so
+#: cross-tier checks (``source-index-coverage``, ``blob-refs-liveness``,
+#: ``embeddings-refs-liveness``, ``tier-schema``) would either report a false
+#: ERROR (missing tiers they're not skip-tolerant of, e.g. tier-schema) or
+#: only ever SKIP (uninformative). Intended use: ``verify_archive(generation_
+#: root, checks=REINDEX_ACCEPTANCE_CHECKS)`` right before promotion, exactly
+#: how :mod:`polylogue.maintenance.rebuild_index` already ran the ``fts-
+#: parity`` singleton -- this constant widens that gate to the rest of the
+#: ground-truth-eligible registry.
+REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "fts-parity",
+    "lineage-sanity",
+    "enum-superset-check",
+    "session-lineage-acyclic",
+    "message-count-projection",
+    "planner-stats",
+)
 
 
 def _select_check_specs(checks: Sequence[str] | None) -> tuple[ArchiveVerificationCheckSpec, ...]:
@@ -1259,10 +1406,22 @@ def verify_archive(
     results: list[OutcomeCheck] = []
     for spec in specs:
         try:
-            results.append(spec.run(archive_root, sample_limit))
+            result = spec.run(archive_root, sample_limit)
         except Exception as exc:  # defense-in-depth: see module/function docstring
             logger.exception("archive verification check %s raised", spec.name)
-            results.append(_error_check(spec.name, f"check raised {type(exc).__name__}: {exc}"))
+            result = _error_check(spec.name, f"check raised {type(exc).__name__}: {exc}")
+        # Stamp class + waiver metadata centrally so every check function
+        # (and every _error_check/_skip_check escape hatch) picks it up
+        # uniformly, rather than every one of the ~12 check bodies having to
+        # remember to thread it through by hand.
+        if isinstance(result, ArchiveVerificationCheck):
+            result.check_class = spec.check_class.value
+            if result.status is OutcomeStatus.ERROR:
+                waiver = ARCHIVE_VERIFICATION_WAIVERS.get(spec.name)
+                if waiver is not None:
+                    result.waived_bead_id = waiver.bead_id
+                    result.evidence.setdefault("waiver", {"bead_id": waiver.bead_id, "reason": waiver.reason})
+        results.append(result)
 
     return ArchiveVerificationReport(
         checks=results,
@@ -1274,9 +1433,13 @@ def verify_archive(
 __all__ = [
     "ARCHIVE_VERIFICATION_CHECKS",
     "ARCHIVE_VERIFICATION_CHECK_NAMES",
+    "ARCHIVE_VERIFICATION_WAIVERS",
+    "REINDEX_ACCEPTANCE_CHECKS",
     "ArchiveVerificationCheck",
+    "ArchiveVerificationCheckClass",
     "ArchiveVerificationCheckSpec",
     "ArchiveVerificationReport",
+    "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
     "verify_archive",
 ]

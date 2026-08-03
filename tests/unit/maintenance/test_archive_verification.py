@@ -14,8 +14,13 @@ import pytest
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECK_NAMES,
+    ARCHIVE_VERIFICATION_CHECKS,
+    ARCHIVE_VERIFICATION_WAIVERS,
+    REINDEX_ACCEPTANCE_CHECKS,
     ArchiveVerificationCheck,
+    ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
+    ArchiveVerificationWaiver,
     verify_archive,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
@@ -505,7 +510,9 @@ def test_one_check_raising_does_not_abort_the_others(tmp_path: Path, monkeypatch
     # how a real regression in one check function would surface: the crash
     # is contained to that check's own result, not the whole report.
     broken_specs = tuple(
-        module.ArchiveVerificationCheckSpec(spec.name, spec.description, _boom) if spec.name == "fts-parity" else spec
+        module.ArchiveVerificationCheckSpec(spec.name, spec.description, _boom, spec.check_class)
+        if spec.name == "fts-parity"
+        else spec
         for spec in module.ARCHIVE_VERIFICATION_CHECKS
     )
     monkeypatch.setattr(module, "ARCHIVE_VERIFICATION_CHECKS", broken_specs)
@@ -738,4 +745,130 @@ def test_report_to_json_is_json_document(tmp_path: Path) -> None:
     for entry in checks_payload:
         assert isinstance(entry, dict)
         names.add(entry["name"])
+        assert entry["check_class"] in {cls.value for cls in ArchiveVerificationCheckClass}
     assert names == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# Registry mechanism: class tagging, waivers, reindex acceptance subset
+# (polylogue-t0m73 productization)
+# ---------------------------------------------------------------------------
+
+
+def test_every_registered_check_has_a_class_tag() -> None:
+    """Construction-time contract: :class:`ArchiveVerificationCheckSpec` has
+    no default for ``check_class``, so a check without a tag is a TypeError
+    at import time -- this test just makes that guarantee explicit and
+    readable rather than relying on incidental import success."""
+    for spec in ARCHIVE_VERIFICATION_CHECKS:
+        assert isinstance(spec.check_class, ArchiveVerificationCheckClass), spec.name
+
+
+def test_check_class_is_stamped_onto_every_report_check(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    by_name = {spec.name: spec for spec in ARCHIVE_VERIFICATION_CHECKS}
+
+    report = verify_archive(tmp_path)
+
+    for check in report.checks:
+        assert isinstance(check, ArchiveVerificationCheck)
+        assert check.check_class == by_name[check.name].check_class.value
+
+
+def test_waived_check_still_reports_error_but_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RED TWIN for the waiver mechanism itself: a waived check must keep
+    reporting its true ``error`` status and evidence (the finding is never
+    hidden) while :attr:`ArchiveVerificationReport.blocking` excludes it --
+    proving the waiver changes the *gate*, not the *check*."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "embeddings.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
+            """,
+            (b"h" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    from polylogue.maintenance import archive_verification as module
+
+    monkeypatch.setattr(
+        module,
+        "ARCHIVE_VERIFICATION_WAIVERS",
+        {"embeddings-refs-liveness": ArchiveVerificationWaiver(bead_id="polylogue-test", reason="synthetic")},
+    )
+
+    report = module.verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
+
+    check = _check(report, "embeddings-refs-liveness")
+    assert check.status is OutcomeStatus.ERROR  # the finding is never hidden
+    assert check.waived_bead_id == "polylogue-test"
+    assert check.evidence["waiver"]["bead_id"] == "polylogue-test"
+    assert not report.blocking  # but the waived finding does not gate
+
+
+def test_unwaived_check_of_the_same_kind_still_blocks(tmp_path: Path) -> None:
+    """Sanity twin for the waiver test above: with the real (unmodified)
+    ``ARCHIVE_VERIFICATION_WAIVERS`` table, the exact same violation blocks,
+    proving the prior test's green result came from the waiver and not from
+    embeddings-refs-liveness being vacuously non-blocking."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "embeddings.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
+            """,
+            (b"h" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert "embeddings-refs-liveness" in ARCHIVE_VERIFICATION_WAIVERS  # documents why this bug is currently waived
+
+    report = verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
+
+    check = _check(report, "embeddings-refs-liveness")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.waived_bead_id == "polylogue-feu0"
+    assert not report.blocking  # waived by the real table too -- consistent with the mechanism test above
+
+
+def test_reindex_acceptance_checks_are_all_registered_and_ground_truth_eligible() -> None:
+    """Every name in :data:`REINDEX_ACCEPTANCE_CHECKS` must be a real
+    registry check, and running it against an index-only root (mirroring a
+    real generation directory, which has no source.db/user.db/embeddings.db)
+    must never report ``error`` from a missing-tier false positive."""
+    assert set(REINDEX_ACCEPTANCE_CHECKS) <= set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+
+
+def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute(
+            """
+            INSERT INTO sessions(native_id, origin, content_hash, message_count)
+            VALUES ('session', 'codex-session', ?, 0)
+            """,
+            (b"s" * 32,),
+        )
+        conn.commit()
+        conn.execute("ANALYZE blocks")
+        conn.execute("ANALYZE messages")
+        conn.execute("ANALYZE action_pairs")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=list(REINDEX_ACCEPTANCE_CHECKS))
+
+    assert not report.blocking, [check.summary for check in report.checks if check.status is OutcomeStatus.ERROR]
+    for check in report.checks:
+        assert check.status is not OutcomeStatus.ERROR, f"{check.name}: {check.summary}"

@@ -577,7 +577,7 @@ async def _rebuild_index_from_source_owned(
     request: RebuildIndexRequest, *, root: Path, owned: OwnedArchiveLocation
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
-    from polylogue.maintenance.archive_verification import verify_archive
+    from polylogue.maintenance.archive_verification import REINDEX_ACCEPTANCE_CHECKS, verify_archive
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
@@ -989,18 +989,29 @@ async def _rebuild_index_from_source_owned(
                     elapsed_s=round(elapsed_s, 3),
                 )
             terminal_started_at = time.perf_counter()
-            parity_report = verify_archive(generation_root, checks=["fts-parity"])
-            terminal_timings_s["terminal.fts_parity"] = time.perf_counter() - terminal_started_at
+            # polylogue-t0m73: the reindex acceptance gate -- every
+            # ground-truth check whose universe is satisfiable from a
+            # generation directory's index.db alone (source.db/user.db/
+            # embeddings.db live once at the archive root, not per
+            # generation, so cross-tier checks are excluded; see
+            # REINDEX_ACCEPTANCE_CHECKS' docstring). This subsumed the older
+            # fts-parity-only gate.
+            acceptance_report = verify_archive(generation_root, checks=list(REINDEX_ACCEPTANCE_CHECKS))
+            terminal_timings_s["terminal.reindex_acceptance"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",
                 generation_id=generation.generation_id,
-                stage="fts_parity",
-                elapsed_s=round(terminal_timings_s["terminal.fts_parity"], 3),
+                stage="reindex_acceptance",
+                elapsed_s=round(terminal_timings_s["terminal.reindex_acceptance"], 3),
             )
-            if parity_report.blocking:
-                failing = "; ".join(check.summary for check in parity_report.checks if check.status.value == "error")
+            if acceptance_report.blocking:
+                failing = "; ".join(
+                    f"{check.name}: {check.summary}"
+                    for check in acceptance_report.checks
+                    if check.status.value == "error"
+                )
                 raise RuntimeError(
-                    f"bulk-build FTS/trigram parity failed for generation {generation.generation_id}: {failing}"
+                    f"reindex acceptance gate failed for generation {generation.generation_id}: {failing}"
                 )
             terminal_started_at = time.perf_counter()
             readiness = archive_readiness_status(generation_root)
