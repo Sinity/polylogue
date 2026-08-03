@@ -33,12 +33,14 @@ class MembershipRevision:
 @dataclass(frozen=True, slots=True)
 class MembershipClassification:
     #: Materialized head(s): an append-only growth chain (oldest to newest,
-    #: by set containment). Empty only when the cohort is a genuine,
-    #: irreducible conflict (see ``ambiguous_raw_ids``) -- a presence-
-    #: guarantee fallback that would deterministically pick a maximal-
-    #: evidence head even then is designed and unit-tested
-    #: (``_maximal_evidence_fallback``) but not yet wired into this return
-    #: path; see that function's docstring for why.
+    #: by set containment). Empty ONLY when the cohort is a genuine,
+    #: irreducible conflict (see ``ambiguous_raw_ids``) AND a head already
+    #: exists for this cohort under any authority -- see
+    #: ``classify_membership_revisions``'s ``existing_accepted_raw_id``
+    #: parameter for the guard that decides this. A cohort with NO prior
+    #: head resolves to a single-element tuple via the presence-guarantee
+    #: fallback (``_maximal_evidence_fallback``) even on irreducible
+    #: conflict.
     accepted_raw_ids: tuple[str, ...]
     #: Raws proven to carry the SAME content as an accepted head (``equal``
     #: per ``_relation``) -- legitimately superseded, not debt.
@@ -217,7 +219,9 @@ def _equal_content_representative(
     return winner, loser
 
 
-def classify_membership_revisions(revisions: list[MembershipRevision]) -> MembershipClassification:
+def classify_membership_revisions(
+    revisions: list[MembershipRevision], *, existing_accepted_raw_id: str | None = None
+) -> MembershipClassification:
     """Accept one total growth chain by set containment; never choose a branch silently.
 
     Two revisions are the same content, contain each other, or conflict --
@@ -229,15 +233,28 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
     with one relation, applied uniformly to every axis.
 
     A genuine, irreducible conflict -- no containment chain exists at all,
-    not export-vintage noise -- still quarantines every representative
-    (``ambiguous_raw_ids``) with nothing accepted, after browser-fidelity and
-    direct-export precedence have also failed to order the cohort. A
-    presence-guarantee alternative to that quarantine -- deterministically
-    materializing the maximal-evidence representative instead of withholding
-    every revision, with the conflict recorded as debt rather than absence
-    -- is designed and unit-tested (``_maximal_evidence_fallback``) but not
-    wired in here; see that function's docstring for the concrete,
-    proven reason (a real archive.py write-back invariant it would violate).
+    not export-vintage noise -- falls back to the presence-guarantee pick
+    (``_maximal_evidence_fallback``, deterministic maximal-evidence
+    representative, conflict recorded as debt rather than absence) ONLY when
+    ``existing_accepted_raw_id`` is ``None`` -- no head exists yet for this
+    cohort under ANY authority, so nothing is retired or downgraded by
+    materializing one. Any existing head at all -- even one that happens to
+    sit at the exact raw_id the fallback would itself pick -- refuses the
+    fallback and quarantines exactly as this cohort always did: every
+    representative in ``ambiguous_raw_ids``, nothing accepted. This is
+    deliberately narrower than "only refuse a DIFFERENT raw_id": re-accepting
+    the SAME raw_id through membership governance still overwrites that
+    head's ``accepted_frontier_kind``/generation metadata (e.g. downgrading
+    a byte-governed head to "semantic"), a real authority downgrade even
+    though the pointed-to raw_id never changed -- proven by a real
+    integration-test regression during development, not a theoretical
+    concern. The guard is a structural guarantee, not a runtime check that
+    could be bypassed: a later membership pass can never silently touch an
+    already-established head just because arbitration could not order the
+    new cohort (polylogue-miwv, PR #3211's write-back invariant). Callers
+    are responsible for passing the CURRENT accepted head's raw_id (via
+    ``archive.raw_revision_head_raw_id(logical_source_key)`` or equivalent)
+    -- omitting it when a head does exist defeats the guard.
     """
     if not revisions:
         return MembershipClassification((), (), ())
@@ -284,11 +301,25 @@ def classify_membership_revisions(revisions: list[MembershipRevision]) -> Member
             tuple(sorted((*equivalents, *browser_capture_raw_ids))),
             (),
         )
-    # _maximal_evidence_fallback (below) is the intended long-term behavior
-    # for a genuine, irreducible conflict -- see its docstring for why it is
-    # not called here yet. Until it is wired in, an irreducible conflict is
-    # quarantined exactly as it always was: every representative in
-    # `ambiguous_raw_ids`, nothing accepted.
+    # Presence-guarantee fallback, guarded against ANY interference with an
+    # already-established head -- see this function's own docstring for why
+    # this is deliberately narrower than "only refuse when the raw_id
+    # differs". Applying the fallback even when its pick happens to be the
+    # SAME raw_id as the existing head is still unsafe: verified directly
+    # during development (a real integration-test regression) that
+    # ``apply_raw_membership_classification`` re-accepting that raw_id
+    # through MEMBERSHIP governance downgrades a byte-governed head's own
+    # ``accepted_frontier_kind``/generation metadata from "byte" to
+    # "semantic", even though the pointed-to raw_id never changed -- a
+    # genuine authority downgrade, not a no-op. So the fallback applies
+    # ONLY when no head exists at all yet.
+    fallback = _maximal_evidence_fallback(representatives)
+    if existing_accepted_raw_id is None:
+        return MembershipClassification(
+            (fallback.raw_id,),
+            tuple(sorted(equivalents)),
+            tuple(sorted(item.raw_id for item in representatives if item.raw_id != fallback.raw_id)),
+        )
     return MembershipClassification(
         (),
         tuple(sorted(equivalents)),
@@ -306,26 +337,30 @@ def _maximal_evidence_fallback(representatives: list[MembershipRevision]) -> Mem
     events, most attachments, most acquired bytes) with a stable raw_id
     tiebreak means the same cohort always resolves to the same head
     regardless of processing order -- verified directly by
-    ``test_presence_guarantee_fallback_is_order_independent``.
+    ``test_maximal_evidence_fallback_is_order_independent``.
 
-    NOT called by ``classify_membership_revisions`` yet. Wiring it in would
-    make ``accepted_raw_ids`` non-empty for every non-empty input, moving the
-    other representatives into ``ambiguous_raw_ids`` as recorded conflict
-    debt instead of leaving the whole cohort headless. That trips a real,
-    carefully-designed invariant in
-    ``archive.py``'s ``apply_raw_membership_classification`` write-back, with
-    documented production incident history behind it (polylogue-miwv, PR
-    #3211): once a logical source has an accepted head, a later membership
-    pass may not silently retire it in favor of an unrelated raw unless that
-    raw is part of the new accepted/equivalent set. A fallback pick can
-    legitimately differ from an already-established head -- proven by two
-    real integration-test failures during verification
-    (``test_divergent_bundle_member_preserves_last_accepted_session`` and
-    its sibling), not a theoretical concern. Landing this safely needs
-    either the classifier or its caller to carry the existing head's raw_id
-    into this decision, or the write-back guard to accept a
-    re-affirmed-quarantined outcome explicitly -- both changes belong to
-    archive.py's write path, out of this lane's scope.
+    Called by ``classify_membership_revisions`` for a genuine, irreducible
+    conflict, but GUARDED there: the caller passes the cohort's current
+    accepted head's raw_id (if any) as ``existing_accepted_raw_id``, and the
+    fallback pick is applied ONLY when no head exists yet. ANY existing head
+    -- even one that happens to sit at the exact raw_id this function would
+    itself pick -- refuses the fallback and preserves plain quarantine
+    (nothing accepted) exactly as before this function was wired in. This
+    guard exists because, unguarded (or guarded only against a DIFFERENT
+    raw_id), a fallback pick can silently damage an already-established
+    head -- proven by real integration-test regressions during development:
+    ``test_divergent_bundle_member_preserves_last_accepted_session`` and its
+    sibling ``test_divergent_bundle_member_does_not_block_safe_members``
+    exercise the DIFFERENT-raw_id case against a real, carefully-designed
+    invariant in ``archive.py``'s ``apply_raw_membership_classification``
+    write-back (polylogue-miwv, PR #3211): once a logical source has an
+    accepted head, a later membership pass may not silently retire it in
+    favor of an unrelated raw. A second, independently-discovered case ruled
+    out even the SAME-raw_id "re-affirmation" shape: re-accepting that exact
+    raw_id through MEMBERSHIP governance still overwrites the head's own
+    ``accepted_frontier_kind``/generation metadata (e.g. downgrading a
+    byte-governed head to "semantic"), a real authority downgrade despite
+    the pointed-to raw_id never changing (``test_live_multi_session_divergence_reopens_raw_authority``).
     """
     return max(representatives, key=lambda item: (_frontier(item.projection), item.raw_id))
 

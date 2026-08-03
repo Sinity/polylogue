@@ -284,7 +284,14 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
             add_member("branch-a-dup", branch_a),
             add_member("branch-b", branch_b),
         ]
-        classification = classify_membership_revisions(members)
+        # existing_accepted_raw_id="branch-a" forces the presence-guarantee
+        # fallback (which would otherwise deterministically pick "branch-b"
+        # here) to be REFUSED -- exercising this test's own invariant (no
+        # fabricated supersession authority when nothing is accepted)
+        # requires the guarded-refusal path, not the now-default
+        # fallback-applies-when-headless path (covered separately in
+        # tests/unit/archive/test_session_revision_membership.py).
+        classification = classify_membership_revisions(members, existing_accepted_raw_id="branch-a")
         assert classification.accepted_raw_ids == ()
         assert classification.equivalent_raw_ids
 

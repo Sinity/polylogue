@@ -3821,11 +3821,16 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     path (``LiveBatchProcessor._ingest_full_paths_sync``, the production
     entry point, not a hand-simulated call). Content-wise raw_c does not
     strictly dominate raw_b (they diverge at message index 1) so the real
-    classifier correctly still refuses to pick a winner -- but critically
-    that decision is reached by weighing raw_c against BOTH retired
-    siblings, and raw_c ends up in ``raw_session_memberships`` with a real,
-    decided outcome alongside raw_a and raw_b, proving reunification
-    happened rather than raw_c being evaluated alone or dropped.
+    classifier still cannot order the full three-way cohort as a clean
+    containment chain -- but critically that decision is reached by
+    weighing raw_c against BOTH retired siblings: since this logical source
+    has never had an accepted head, the presence-guarantee fallback
+    (polylogue-lb39z item 5, ``_maximal_evidence_fallback``) deterministically
+    materializes raw_c (the largest-frontier representative) instead of
+    leaving the reunified cohort headless, with raw_a/raw_b recorded as its
+    conflict debt. All three raws end up in ``raw_session_memberships`` with
+    a real, decided outcome, proving reunification happened rather than
+    raw_c being evaluated alone or dropped.
     """
 
     def conversation(native_id: str, *texts: str) -> dict[str, object]:
@@ -3939,19 +3944,29 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
     assert set(by_path) == {"a.json", "b.json", str(third)}
     assert all(decision is not None for decision in by_path.values())
 
-    # The genuine three-way content divergence still correctly refuses to
-    # pick a winner -- reunification recovers a real resolution when one
-    # exists, it does not fabricate one. The source observation itself was
-    # acquired and parsed successfully, so its cursor is complete rather than
-    # retried as a transient file failure; the durable membership decision
-    # remains ambiguous/fail-closed.
-    assert by_path[str(third)] == "ambiguous"
+    # raw_a/raw_b are a genuine two-way divergence (shared "left"/"right"
+    # message content conflicts), and raw_c neither purely contains nor is
+    # contained by raw_b -- so the cohort as a whole is still an irreducible
+    # conflict; no clean prefix chain exists. This logical source has never
+    # had an accepted head (raw_a/raw_b were both retired straight to
+    # membership governance quarantined, never byte-governed-accepted), so
+    # the presence-guarantee fallback (polylogue-lb39z item 5) is free to
+    # deterministically materialize the maximal-evidence representative
+    # instead of leaving the reunified cohort headless: raw_c strictly
+    # contains raw_a's content plus a further "extra" message, giving it the
+    # largest frontier of the three, so it wins outright (no raw_id tiebreak
+    # needed) and raw_a/raw_b become its recorded conflict debt. The source
+    # observation itself was acquired and parsed successfully, so its cursor
+    # is complete rather than retried as a transient file failure either way.
+    assert by_path[str(third)] == "applied"
+    assert by_path["a.json"] == "ambiguous"
+    assert by_path["b.json"] == "ambiguous"
     assert third_result.failed == []
     assert third_result.succeeded == [third]
     # Direct check of the persisted state backing "cursor is complete rather
     # than retried" above: ``_ingest_full_paths_sync`` has no CursorStore row
     # of its own, so the durable non-retry evidence is raw_sessions.parse_error
-    # staying NULL for third's raw despite the decided-ambiguous membership --
+    # staying NULL for third's raw regardless of its membership decision --
     # what actually stops the daemon from reprocessing this file as a failure
     # on every restart, not just the in-memory succeeded/failed lists.
     with sqlite3.connect(tmp_path / "source.db") as conn:

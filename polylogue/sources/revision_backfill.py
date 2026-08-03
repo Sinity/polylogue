@@ -1358,7 +1358,16 @@ def backfill_historical_revision_evidence(
                 if retention_observer is not None:
                     retention_observer(len(member_sessions), retained_bytes)
                 membership_classify_started = time.perf_counter()
-                classification = classify_membership_revisions(revisions)
+                # existing_accepted_raw_id is passed unconditionally (not
+                # just when head_raw_id's own authority is 'quarantined',
+                # unlike the narrower absorption-into-candidates condition
+                # above) -- the presence-guarantee-fallback guard inside
+                # classify_membership_revisions needs to know about a
+                # chain-governed (non-quarantined) existing head too, to
+                # correctly refuse ever retiring it, even though such a head
+                # is deliberately never absorbed into the comparison cohort
+                # itself.
+                classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
                 stage_timings["membership.classify"] = stage_timings.get("membership.classify", 0.0) + (
                     time.perf_counter() - membership_classify_started
                 )

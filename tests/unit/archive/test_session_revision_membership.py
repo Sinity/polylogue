@@ -51,25 +51,60 @@ def test_classifies_strict_growth_and_semantic_equivalence() -> None:
     assert result.ambiguous_raw_ids == ()
 
 
-def test_refuses_divergent_maxima() -> None:
-    """Genuine divergence stays quarantined ambiguous.
+def test_refuses_divergent_maxima_with_no_prior_head() -> None:
+    """A genuine fork with NO existing accepted head resolves via the
+    presence-guarantee fallback instead of vanishing into quarantine.
 
     raw-b and raw-c both grew from raw-a in incompatible directions (each
     holds a message the other lacks) -- a genuine fork, "conflict" under
-    ``_relation``. See ``_maximal_evidence_fallback`` for the designed,
-    unit-tested presence-guarantee alternative to this quarantine, and its
-    docstring for why it is not wired into ``classify_membership_revisions``
-    yet.
+    ``_relation``. With ``existing_accepted_raw_id`` unset (the default,
+    meaning this logical source has never had an accepted head), nothing is
+    being retired, so ``_maximal_evidence_fallback``'s deterministic pick is
+    safe to apply: see ``classify_membership_revisions``'s docstring for the
+    guard condition.
     """
     result = classify_membership_revisions(
         [_revision("raw-a", "one"), _revision("raw-b", "one", "left"), _revision("raw-c", "one", "right")]
+    )
+    assert result.accepted_raw_ids == ("raw-c",)
+    assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+
+
+def test_refuses_divergent_maxima_when_it_would_retire_a_different_existing_head() -> None:
+    """The SAME fork, but a head already exists at a raw_id the fallback did not pick.
+
+    ``existing_accepted_raw_id="raw-a"`` names a head the fallback (which
+    picks "raw-c") would silently retire -- the guard must refuse the
+    fallback entirely here and preserve plain quarantine, byte-for-byte the
+    same as before the fallback was wired in (polylogue-miwv, PR #3211).
+    """
+    result = classify_membership_revisions(
+        [_revision("raw-a", "one"), _revision("raw-b", "one", "left"), _revision("raw-c", "one", "right")],
+        existing_accepted_raw_id="raw-a",
+    )
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-a", "raw-b", "raw-c")
+
+
+def test_refuses_divergent_maxima_even_when_existing_head_already_matches_the_fallback_pick() -> None:
+    """An existing head refuses the fallback even when its raw_id happens to
+    already BE the fallback's own pick -- a "pure re-affirmation" is NOT
+    safe in practice: re-accepting that raw_id through membership governance
+    still overwrites the head's own ``accepted_frontier_kind``/generation
+    metadata (verified against a real write-back regression,
+    ``test_live_multi_session_divergence_reopens_raw_authority``), so the
+    guard refuses ANY existing head, not just a differing one.
+    """
+    result = classify_membership_revisions(
+        [_revision("raw-a", "one"), _revision("raw-b", "one", "left"), _revision("raw-c", "one", "right")],
+        existing_accepted_raw_id="raw-c",
     )
     assert result.accepted_raw_ids == ()
     assert result.ambiguous_raw_ids == ("raw-a", "raw-b", "raw-c")
 
 
 def test_maximal_evidence_fallback_picks_deterministically() -> None:
-    """The presence-guarantee fallback (not yet wired live) resolves a fork deterministically.
+    """The presence-guarantee fallback resolves a fork deterministically.
 
     Frontier tie among raw-b/raw-c falls through to the raw_id tiebreak
     ("raw-c" > "raw-b"), same as the frontier-sort used elsewhere in this
@@ -91,6 +126,9 @@ def test_maximal_evidence_fallback_is_order_independent() -> None:
     revisions = [_revision("raw-a", "one"), _revision("raw-b", "one", "left"), _revision("raw-c", "one", "right")]
     results = {_maximal_evidence_fallback(list(ordering)).raw_id for ordering in permutations(revisions)}
     assert results == {"raw-c"}
+    for ordering in permutations(revisions):
+        classified = classify_membership_revisions(list(ordering))
+        assert classified.accepted_raw_ids == ("raw-c",)
 
 
 def test_containment_chain_resolves_without_needing_the_fallback() -> None:
@@ -227,27 +265,35 @@ def test_accepts_message_growth_across_a_reordered_prefix() -> None:
 
 
 def test_refuses_message_content_change_under_a_shared_id_despite_reorder() -> None:
-    """A real edit under a shared id is a conflict, not laundered by the set model."""
+    """A real edit under a shared id is a conflict, not laundered by the set model.
+
+    Frontier ties on message count (2 each); the fallback tiebreaks by
+    raw_id ("raw-old" > "raw-new"), and with no existing head to retire the
+    guard allows applying it.
+    """
     older = _ordered_message_revision("raw-old", ("a", "one"), ("b", "two"))
     newer = _ordered_message_revision("raw-new", ("b", "two"), ("a", "EDITED"))
 
     assert _relation(older.projection, newer.projection) == "conflict"
 
     result = classify_membership_revisions([older, newer])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    assert result.accepted_raw_ids == ("raw-old",)
+    assert result.ambiguous_raw_ids == ("raw-new",)
 
 
 def test_refuses_message_id_disappearing_despite_reorder() -> None:
-    """A message id present in older but absent from newer is a real loss (a fork)."""
+    """A message id present in older but absent from newer is a real loss (a fork).
+
+    Frontier ties on message count; fallback tiebreaks to "raw-old".
+    """
     older = _ordered_message_revision("raw-old", ("a", "one"), ("b", "two"))
     newer = _ordered_message_revision("raw-new", ("b", "two"), ("c", "three"))
 
     assert _relation(older.projection, newer.projection) == "conflict"
 
     result = classify_membership_revisions([older, newer])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    assert result.accepted_raw_ids == ("raw-old",)
+    assert result.ambiguous_raw_ids == ("raw-new",)
 
 
 def test_message_reorder_does_change_the_session_content_hash() -> None:
@@ -337,8 +383,8 @@ def test_refuses_conflicting_bytes_under_one_attachment_identity() -> None:
     assert _relation(left.projection, right.projection) == "conflict"
 
     result = classify_membership_revisions([left, right])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+    assert result.accepted_raw_ids == ("raw-b",)
+    assert result.ambiguous_raw_ids == ("raw-a",)
 
 
 def test_attachment_acquisition_does_change_the_session_content_hash() -> None:
@@ -448,8 +494,10 @@ def test_refuses_to_equate_colliding_attachment_identities_with_different_bytes(
     assert _relation(both.projection, left_only.projection) == "conflict"
 
     result = classify_membership_revisions([both, left_only])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-both", "raw-left-only")
+    # "raw-both" carries strictly more attachment_contents (2 vs 1) so the
+    # fallback's frontier order picks it outright, no raw_id tiebreak needed.
+    assert result.accepted_raw_ids == ("raw-both",)
+    assert result.ambiguous_raw_ids == ("raw-left-only",)
 
 
 # ---------------------------------------------------------------------------
@@ -566,8 +614,9 @@ def test_refuses_generation_lifecycle_state_change_despite_duration_tolerance() 
     assert _relation(older.projection, newer.projection) == "conflict"
 
     result = classify_membership_revisions([older, newer])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    # Frontier ties (one event, one message each); fallback tiebreaks to "raw-old".
+    assert result.accepted_raw_ids == ("raw-old",)
+    assert result.ambiguous_raw_ids == ("raw-new",)
 
 
 def test_non_allowlisted_event_type_keeps_its_full_payload_as_content() -> None:
@@ -607,8 +656,9 @@ def test_non_allowlisted_event_type_keeps_its_full_payload_as_content() -> None:
     assert _relation(older.projection, newer.projection) == "conflict"
 
     result = classify_membership_revisions([older, newer])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    # Frontier ties; fallback tiebreaks to "raw-old".
+    assert result.accepted_raw_ids == ("raw-old",)
+    assert result.ambiguous_raw_ids == ("raw-new",)
 
 
 def test_accepts_reordered_events_with_identical_content_as_equivalent() -> None:
@@ -681,8 +731,9 @@ def test_refuses_event_growth_that_loses_an_existing_event() -> None:
     assert _relation(older.projection, newer.projection) == "conflict"
 
     result = classify_membership_revisions([older, newer])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    # Frontier ties (one message, one event each); fallback tiebreaks to "raw-old".
+    assert result.accepted_raw_ids == ("raw-old",)
+    assert result.ambiguous_raw_ids == ("raw-new",)
 
 
 def test_disambiguates_multiple_same_type_events_on_one_message_by_content() -> None:
@@ -803,8 +854,9 @@ def test_browser_observed_generation_lifecycle_duration_is_real_content_not_stri
     assert _relation(left.projection, right.projection) == "conflict"
 
     result = classify_membership_revisions([left, right])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+    # Frontier ties; fallback tiebreaks to "raw-b".
+    assert result.accepted_raw_ids == ("raw-b",)
+    assert result.ambiguous_raw_ids == ("raw-a",)
 
 
 # ---------------------------------------------------------------------------
@@ -854,8 +906,11 @@ def test_mixed_direction_axes_is_a_conflict_not_a_pick() -> None:
     assert _relation(a.projection, b.projection) == "conflict"
 
     result = classify_membership_revisions([a, b])
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-a", "raw-b")
+    # raw-a's frontier tuple leads on message_contents (2 vs 1) -- the
+    # tuple-lexicographic max stops there regardless of raw-b's extra
+    # attachment identity.
+    assert result.accepted_raw_ids == ("raw-a",)
+    assert result.ambiguous_raw_ids == ("raw-b",)
 
 
 # ---------------------------------------------------------------------------
@@ -915,11 +970,12 @@ def test_browser_native_snapshot_refuses_later_revision_that_loses_message_ident
 
     result = classify_membership_revisions(revisions)
 
-    # Genuine divergence (disjoint message identities) stays quarantined
-    # ambiguous -- neither the browser-fidelity ordering nor direct-export
-    # precedence can order it.
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    # Genuine divergence (disjoint message identities) -- neither the
+    # browser-fidelity ordering nor direct-export precedence can order it,
+    # so it falls through to the presence-guarantee fallback. Frontier ties
+    # (2 messages each); fallback tiebreaks to "raw-old".
+    assert result.accepted_raw_ids == ("raw-old",)
+    assert result.ambiguous_raw_ids == ("raw-new",)
 
 
 def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> None:
@@ -956,10 +1012,11 @@ def test_browser_native_upgrade_refuses_any_shrinking_frontier_dimension() -> No
     # Mixed-direction axes (newer gained a message, older's-only attachment
     # is now missing) is a fork -- neither browser-fidelity ordering (the
     # dom->native frontier check requires every dimension to be >=) nor
-    # direct-export precedence can order it, so it stays quarantined
-    # ambiguous.
-    assert result.accepted_raw_ids == ()
-    assert result.ambiguous_raw_ids == ("raw-new", "raw-old")
+    # direct-export precedence can order it, so it falls through to the
+    # presence-guarantee fallback. raw-new leads on message_contents (2 vs
+    # 1), so the frontier tuple picks it outright.
+    assert result.accepted_raw_ids == ("raw-new",)
+    assert result.ambiguous_raw_ids == ("raw-old",)
 
 
 def test_direct_export_outranks_browser_capture_siblings_regardless_of_growth() -> None:
