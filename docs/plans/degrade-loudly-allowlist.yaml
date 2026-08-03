@@ -154,6 +154,12 @@ entries:
   occurrence: 0
   reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
 - path: polylogue/daemon/health.py
+  function: <module>._check_health_tier_coverage_fast
+  exceptions:
+  - Exception
+  occurrence: 0
+  reason: 'See _check_daemon_liveness_fast: same HealthAlert(severity=ERROR) pattern.'
+- path: polylogue/daemon/health.py
   function: <module>._check_heartbeat_staleness_fast
   exceptions:
   - Exception

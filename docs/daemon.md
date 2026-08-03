@@ -518,18 +518,21 @@ These run automatically inside the daemon process:
 | WAL checkpoint | Every 5 minutes | Keeps the WAL file bounded via `PRAGMA wal_checkpoint(TRUNCATE)` |
 | Heartbeat | Every 15 minutes | Logs session/message counts as structured heartbeat |
 | FTS convergence | Every 10 minutes | Verifies FTS coverage, rebuilds if messages are unindexed |
-| Health checks | Configurable (default 5 min) | Runs bounded FAST health checks by default, sends notifications on non-OK status. MEDIUM and EXPENSIVE checks are explicit operator diagnostics. |
+| Health checks | Configurable (default 5 min) | Runs FAST + MEDIUM health checks by default, sends notifications on non-OK status. EXPENSIVE checks remain an explicit operator diagnostic. |
 | FTS startup check | Once at startup | Rebuilds the FTS index if messages exist but aren't indexed (covers gaps from pre-daemon data) |
 | Judgment automation | Configurable (default 1 hour), off by default | Judges auto-judgeable assertion candidates per policy and escalates the residue; see [Judgment Automation](#judgment-automation) below. |
 
 Health check tier and interval are configurable via `polylogue.toml` (the
 `[health]` table's `check_interval_s`/`check_tiers` keys back the
-`health_check_interval_s`/`health_check_tiers` config attributes):
+`health_check_interval_s`/`health_check_tiers` config attributes). The default
+`check_tiers` is `"fast,medium"`; set `"fast,medium,expensive"` to also poll
+the EXPENSIVE tier periodically (DB integrity, blob integrity/reference debt,
+embedding coverage), which is otherwise an explicit operator diagnostic:
 
 ```toml
 [health]
 check_interval_s = 300
-check_tiers = "fast"
+check_tiers = "fast,medium"
 ```
 
 ### Judgment Automation

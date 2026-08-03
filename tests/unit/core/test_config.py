@@ -466,7 +466,7 @@ class TestPolylogueConfigDefaults:
         from polylogue.config import load_polylogue_config
 
         cfg = load_polylogue_config()
-        assert cfg.health_check_tiers == "fast"
+        assert cfg.health_check_tiers == "fast,medium"
 
     def test_source_roots_default(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.config import load_polylogue_config
