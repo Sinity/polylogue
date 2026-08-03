@@ -245,6 +245,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
+| `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
