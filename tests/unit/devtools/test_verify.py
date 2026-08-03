@@ -83,7 +83,6 @@ def test_quick_verify_omits_pytest() -> None:
         "ruff check",
         "mypy",
         "render all",
-        "verify topology",
         "verify layering",
         "verify closure-matrix",
         "lab schema roundtrip",

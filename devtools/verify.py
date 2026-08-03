@@ -1760,8 +1760,12 @@ def build_verify_steps(
     if not commit:
         steps.extend(
             [
+                # "render all" now folds in the topology-projection check
+                # (devtools/generated_surfaces.py's "topology-projection"
+                # surface delegates --check to verify_topology.main) -- a
+                # standalone "verify topology" step here would just re-run
+                # the identical check a second time.
                 ("render all", _devtools_cmd("render all", "--check")),
-                ("verify topology", _devtools_cmd("verify topology")),
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("verify closure-matrix", _devtools_cmd("verify closure-matrix")),
                 ("lab schema roundtrip", _devtools_cmd("lab schema roundtrip", "--all")),

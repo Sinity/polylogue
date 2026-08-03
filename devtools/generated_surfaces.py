@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from devtools import (
+    build_topology_projection,
     render_agent_manual,
     render_cli_output_schemas,
     render_cli_reference,
@@ -20,6 +21,7 @@ from devtools import (
     render_public_claims,
     render_quality_reference,
     render_query_discovery,
+    render_visual_tapes,
     render_webui_client,
     render_webui_design_system,
 )
@@ -295,9 +297,52 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "pyproject.toml",
         ),
     ),
+    GeneratedSurface(
+        name="topology-projection",
+        label="Topology projection",
+        description=(
+            "Regenerate docs/plans/topology-target.yaml from the current tree, or verify the "
+            "realized polylogue/ tree against it (orphans/missing/conflicts/kernel-rule)."
+        ),
+        command=control_plane_argv("render topology-projection"),
+        main=build_topology_projection.generated_surface_main,
+        inputs=(
+            "polylogue/",
+            "devtools/build_topology_projection.py",
+            "devtools/verify_topology.py",
+        ),
+    ),
+    GeneratedSurface(
+        name="visual-tapes",
+        label="Visual evidence tapes",
+        description="Render (or verify) the committed VHS tape files for the default visual evidence specs.",
+        command=control_plane_argv("render visual-tapes"),
+        main=render_visual_tapes.generated_surface_main,
+        inputs=(
+            "devtools/visual_vhs.py",
+            "devtools/render_visual_tapes.py",
+        ),
+    ),
 )
 
 GENERATED_SURFACE_BY_NAME = {surface.name: surface for surface in GENERATED_SURFACES}
 
 
-__all__ = ["GENERATED_SURFACES", "GENERATED_SURFACE_BY_NAME", "GeneratedSurface"]
+# Commands in `devtools/command_catalog.py`'s "generated surfaces" category
+# that are intentionally NOT registered above, because their check semantics
+# genuinely don't fit the hash-stamp render/--check contract every
+# GeneratedSurface.main follows. Each entry names the bespoke gate that covers
+# it instead, so the exemption is auditable rather than a silent gap --
+# `tests/unit/devtools/test_generated_surfaces.py` fails closed if a new
+# "generated surfaces" command shows up here without either a GENERATED_SURFACES
+# entry or a line in this dict (polylogue-bfc7a). "render all" itself is the
+# orchestrator over this registry, not a member of it, and needs no entry.
+GENERATED_SURFACES_CATALOG_EXEMPTIONS: dict[str, str] = {}
+
+
+__all__ = [
+    "GENERATED_SURFACES",
+    "GENERATED_SURFACES_CATALOG_EXEMPTIONS",
+    "GENERATED_SURFACE_BY_NAME",
+    "GeneratedSurface",
+]

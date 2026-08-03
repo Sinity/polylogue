@@ -223,7 +223,6 @@ _STATIC_GATE_NAMES: tuple[str, ...] = (
     "ruff check",
     "mypy",
     "render all",
-    "verify topology",
     "verify layering",
     "lab schema roundtrip",
     "verify manifests",

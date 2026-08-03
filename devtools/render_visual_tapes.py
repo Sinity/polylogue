@@ -148,5 +148,23 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def generated_surface_main(argv: list[str] | None = None) -> int:
+    """Entry point wired into ``devtools.generated_surfaces.GENERATED_SURFACES``.
+
+    ``--check`` behaves exactly like the public CLI: it drift-compares the
+    generated tapes against the committed ``docs/examples/visual-tapes/``
+    directory without writing anything. Render mode, however, writes directly
+    into that committed directory (rather than the public CLI's
+    ``.local/visual-tapes`` staging default) so a plain ``devtools render
+    all`` fixes drift in place, matching every other generated surface. The
+    public ``devtools render visual-tapes`` command keeps its staging default
+    for manual iteration and ``--capture`` GIF runs.
+    """
+    args = list(argv or [])
+    if "--check" in args:
+        return main(args)
+    return main(["--output-dir", str(COMMITTED_TAPES_DIR), *args])
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
