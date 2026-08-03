@@ -123,6 +123,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Query-Action Workflows Design](design/query-action-workflows.md) | Historical design pointer for the workflow contract. |
 | [Query Set Algebra](design/query-set-algebra.md) | Set-composition semantics over query results. |
 | [Session Lineage Model](design/session-lineage-model.md) | Fork, resume, compaction, and composition semantics. |
+| [Content, Identity, and Lineage Architecture](plans/content-identity-lineage-design.md) | Implementation architecture for content hashing, event storage, lineage, origins, and raw byte authority. |
 | [Analysis Rigor](design/analysis-rigor.md) | Rigor mechanisms for agent claims: population validity and comparative judgment. |
 | [Prefix-Blob Reclamation](design/prefix-blob-reclamation.md) | Reference-blob representation for byte-proven superseded revision prefixes. |
 | [Convergence Simplification Inventory](design/convergence-simplification-inventory.md) | Deletion/collapse inventory for the daemon convergence redesign (polylogue-m6tp). |
