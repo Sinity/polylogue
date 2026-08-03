@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.codex_title_census import (
+    CodexHookEventTitleCoverage,
     CodexTitleCensus,
     compare_censuses,
     compute_codex_hook_event_title_coverage,
@@ -200,6 +201,19 @@ def test_hook_event_title_coverage_reports_lower_bound(tmp_path: Path) -> None:
     assert coverage.coverage_fraction == 0.5
     restored = coverage.to_dict()
     assert restored["covered_by_hook_event_count"] == 2
+
+
+def test_hook_event_title_coverage_fraction_reads_complete_at_zero_unresolved() -> None:
+    """Zero unresolved sessions means nothing left to cover -- 1.0, not 0.0.
+
+    Matches the sibling CodexTitleCensus.resolved_fraction convention: an
+    empty denominator means "fully done", never "zero coverage" (an operator
+    reading "0/0 unresolved (0.0%) covered" could otherwise misread complete
+    resolution as no coverage at all).
+    """
+    coverage = CodexHookEventTitleCoverage(unresolved_count=0, covered_by_hook_event_count=0)
+    assert coverage.coverage_fraction == 1.0
+    assert coverage.to_dict()["coverage_fraction"] == 1.0
 
 
 def test_compare_censuses_reports_newly_resolved_delta() -> None:

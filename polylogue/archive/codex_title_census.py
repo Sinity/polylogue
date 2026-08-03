@@ -191,7 +191,9 @@ class CodexHookEventTitleCoverage:
     @property
     def coverage_fraction(self) -> float:
         if self.unresolved_count == 0:
-            return 0.0
+            # Nothing left to cover reads as complete, not zero -- same
+            # convention as the sibling resolved_fraction property above.
+            return 1.0
         return self.covered_by_hook_event_count / self.unresolved_count
 
     def to_dict(self) -> dict[str, object]:
