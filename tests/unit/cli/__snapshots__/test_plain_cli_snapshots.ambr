@@ -1017,8 +1017,8 @@
         "path": "<PATH>",
         "exists": true,
         "size_bytes": <SIZE_BYTES>,
-        "expected_user_version": 22,
-        "user_version": 22,
+        "expected_user_version": 24,
+        "user_version": 24,
         "version_status": "ok",
         "table_counts": {
           "raw_sessions": 2,

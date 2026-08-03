@@ -533,6 +533,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "source",
         "reconciles Hermes lifecycle events against the durable source.db spool",
     ),
+    "reconcile_codex_spawn_edges": (
+        "archive_routed",
+        "index",
+        "reconciles acquired codex_thread_spawn_edge hook events against session_links SUBAGENT rows",
+    ),
 }
 
 

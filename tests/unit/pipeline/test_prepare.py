@@ -276,7 +276,10 @@ async def test_ingest_removes_missing_attachments(
         attachment_count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
         attachment_ref_count = conn.execute("SELECT COALESCE(SUM(ref_count), 0) FROM attachments").fetchone()[0]
         ref_count = conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0]
-    assert attachment_count == 1
+    # PR #3514 swept ref-less attachments rows outright (mirroring
+    # prune_attachments/delete_session_sql) instead of leaving them behind
+    # with ref_count=0 and no reachable attachment_refs row.
+    assert attachment_count == 0
     assert attachment_ref_count == 0
     assert ref_count == 0
 
