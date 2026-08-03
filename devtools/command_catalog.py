@@ -719,12 +719,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "ever flagged -- plus review findings on this tool itself (recording from an unrelated "
             "checkout, a --quick example that would have missed its own motivating regression, a single "
             "comment snapshot instead of a grace-period poll, and no way to triage a false-positive late "
-            "comment without an empty commit)."
+            "comment without an empty commit). `check --post-status` (polylogue-1cbeh) posts the "
+            "verdict as a GitHub commit status (`context=merge-gate`, success/failure) on the PR's "
+            "current head sha via `gh api repos/{owner}/{repo}/statuses/{sha}` -- this is what lets "
+            "branch protection or `gh pr merge --auto` gate on the same verdict instead of a "
+            "coordinator manually cycling checkout->test->check->merge one PR at a time."
         ),
         examples=(
             'devtools workspace merge-gate record 3517 --command "devtools verify"',
             "devtools workspace merge-gate check 3517",
             "devtools workspace merge-gate check 3517 --json --max-age-s 7200 --poll-rounds 1",
+            "devtools workspace merge-gate check 3517 --post-status",
             'devtools workspace merge-gate ack 3517 123456789 --reason "already fixed upstream, false positive"',
         ),
     ),
