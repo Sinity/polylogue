@@ -1,11 +1,17 @@
--- polylogue-zm4w8: 1,777 raw_sessions rows (22.2 GiB, measured 2026-08-03) are
--- pure redundant duplicates -- same source_path AND same blob_hash as another
--- raw_sessions row -- among the codex-session quarantine backlog. ZERO of
--- these duplicate blob_hash values have any non-quarantined ("indexed")
--- twin anywhere in raw_sessions, so raw_byte_duplicate_supersession_apply
--- (which only matches a quarantined raw against an ALREADY-INDEXED twin)
--- does not and cannot catch this class: every member of one of these groups
--- starts out quarantined, with nothing yet materialized for any of them.
+-- polylogue-zm4w8: 1,777 raw_sessions rows (22.2 GiB) were the bead's
+-- original filing-time measurement (2026-08-03, morning) of pure redundant
+-- duplicates -- same source_path AND same blob_hash as another raw_sessions
+-- row -- among the codex-session quarantine backlog. A later, larger
+-- read-only re-measurement the same day via this migration's own actuator
+-- (devtools workspace raw-quarantine-group-dedup-apply --json, live archive,
+-- no mutation) found 1,822 groups / 1,837 duplicate rows (8.22 GiB) --
+-- consistent with ordinary concurrent archive activity between the two
+-- measurements, not a discrepancy in the classifier itself. ZERO of these
+-- duplicate blob_hash values have any non-quarantined ("indexed") twin
+-- anywhere in raw_sessions, so raw_byte_duplicate_supersession_apply (which
+-- only matches a quarantined raw against an ALREADY-INDEXED twin) does not
+-- and cannot catch this class: every member of one of these groups starts
+-- out quarantined, with nothing yet materialized for any of them.
 --
 -- A new, explicitly operator-invoked actuator (devtools workspace
 -- raw-quarantine-group-dedup-apply) promotes exactly ONE representative raw

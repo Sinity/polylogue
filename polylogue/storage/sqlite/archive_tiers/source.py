@@ -265,7 +265,7 @@ ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
 CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
 ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
 
--- v23 (polylogue-zm4w8): one immutable receipt per raw_sessions row marked a
+-- v25 (polylogue-zm4w8): one immutable receipt per raw_sessions row marked a
 -- proven duplicate within a fully-quarantined (source_path, blob_hash) group
 -- -- a group where EVERY member starts out quarantined (unlike v22's
 -- raw_byte_duplicate_supersession_receipts above, which requires an already-
