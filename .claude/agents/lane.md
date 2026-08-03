@@ -109,6 +109,24 @@ close that exact issue from this exact PR.
 **Never merge the PR.** Leave it open for the coordinator to review and
 merge. Do not self-merge even if checks are green.
 
+## Record your own merge-gate receipt
+
+Immediately after opening the PR, while your worktree is still checked out at
+the exact commit you just pushed, run:
+
+```
+devtools workspace merge-gate record <PR-number> --command "<the focused devtools test command you already ran>"
+```
+
+This is not extra work — it re-runs the same focused test command you already
+verified passes, but ties a receipt to the exact head SHA so the coordinator
+doesn't have to re-check-out your branch and re-run your tests from scratch
+before merging. Do this even though you're not the one merging; the receipt
+is what makes the coordinator's merge fast instead of redundant. If the PR
+gets a real code review comment later and you push a fix commit, there is no
+need to re-record — the coordinator (or a future you) records again at
+whatever the final head ends up being.
+
 ## Final report
 
 In your closing message, state: the branch name, the PR URL (or why none was
