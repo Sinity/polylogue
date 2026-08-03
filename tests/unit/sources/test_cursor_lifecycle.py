@@ -221,8 +221,8 @@ def test_soundness_sweep_exclude_then_revive_with_parser_fingerprint_change(tmp_
     assert classify_cursor_lifecycle_state(after) is _S.EXCLUDED
 
     # Same identity, DIFFERENT parser fingerprint: revives.
+    assert after is not None
     before = after
-    assert before is not None
     store.revive_replaced_exclusion(
         path,
         byte_size=before.byte_size,
