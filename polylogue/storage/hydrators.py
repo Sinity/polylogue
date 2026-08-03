@@ -12,12 +12,10 @@ Keeping this logic here preserves the dependency direction:
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
-from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.archive.session.events import SessionEvent
 from polylogue.core.enums import Origin
@@ -30,6 +28,7 @@ from polylogue.storage.runtime import (
     SessionEventRecord,
     SessionRecord,
 )
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
 
 
 def _parse_json_blob(raw: object) -> object | None:
@@ -80,14 +79,6 @@ def message_from_record(
     origin: Origin | str | None = None,
 ) -> Message:
     """Hydrate a Message domain model from a MessageRecord and attachment records."""
-    # Reconstruct timestamp from sort_key (numeric epoch seconds)
-    ts = None
-    if record.sort_key is not None:
-        try:
-            ts = datetime.fromtimestamp(record.sort_key, tz=timezone.utc)
-        except (ValueError, OSError):
-            ts = None
-
     # Domain messages expose semantic content blocks, not storage row identity.
     # #1240: media_type is stored inside the block-metadata JSON (image/document
     # blocks). Lift it back to the top-level for callers that still expect it.
@@ -120,30 +111,10 @@ def message_from_record(
         normalized_origin = origin if isinstance(origin, Origin) else Origin.from_string(origin)
 
     return Message(
-        id=record.message_id,
-        role=Role.normalize((record.role or "").strip() or "unknown"),
-        text=record.text,
-        timestamp=ts,
+        **MESSAGES_SPEC.domain_kwargs(record),
         origin=normalized_origin,
         attachments=[attachment_from_record(a) for a in attachments],
         blocks=blocks,
-        message_type=record.message_type,
-        material_origin=record.material_origin,
-        parent_id=record.parent_message_id,
-        branch_index=record.branch_index,
-        is_active_path=record.is_active_path,
-        position=record.position,
-        is_active_leaf=record.is_active_leaf,
-        has_tool_use=bool(record.has_tool_use),
-        has_thinking=bool(record.has_thinking),
-        has_paste=bool(record.has_paste),
-        paste_boundary_state=record.paste_boundary_state,
-        input_tokens=record.input_tokens,
-        output_tokens=record.output_tokens,
-        cache_read_tokens=record.cache_read_tokens,
-        cache_write_tokens=record.cache_write_tokens,
-        model_name=record.model_name,
-        stop_reason=record.stop_reason,
     )
 
 

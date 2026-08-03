@@ -1781,42 +1781,40 @@ def _build_message_rows(
     for fallback_position, message in enumerate(messages):
         position = position_offset + (message.position if message.position is not None else fallback_position)
         variant_index = message.variant_index if message.variant_index is not None else 0
-        # Build tuple in the order defined by spec.writable_columns, skipping
-        # columns with non-standard placeholders (like parent_message_id=NULL)
-        rows.append(
-            (
-                session_id,
-                _stored_message_native_id(message, duplicate_native_ids),
-                # parent_message_id: skipped (always NULL in VALUES)
-                position,
-                _enum_value(message.role),
-                _enum_value(message.message_type),
-                _enum_value(message.material_origin),
-                _sqlite_text(message.model_name),
-                _sqlite_text(message.model_effort),
-                _sqlite_text(message.sender_name),
-                _sqlite_text(message.recipient),
-                _sqlite_text(message.delivery_status),
-                None if message.end_turn is None else int(message.end_turn),
-                _sqlite_text(message.user_context_text),
-                _has_block(message, BlockType.TOOL_USE),
-                _has_block(message, BlockType.THINKING),
-                _has_paste(message),
-                _paste_boundary(message),
-                variant_index,
-                1 if message.is_active_path is not False else 0,
-                1 if message.is_active_leaf else 0,
-                _word_count(message.text),
-                message.input_tokens,
-                message.output_tokens,
-                message.cache_read_tokens,
-                message.cache_write_tokens,
-                message.duration_ms,
-                _message_content_hash(session_id, message, position=position, variant_index=variant_index),
-                message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
-                _enum_value(message.stop_reason),
-            )
-        )
+        values: dict[str, object] = {
+            "session_id": session_id,
+            "native_id": _stored_message_native_id(message, duplicate_native_ids),
+            "position": position,
+            "role": _enum_value(message.role),
+            "message_type": _enum_value(message.message_type),
+            "material_origin": _enum_value(message.material_origin),
+            "model_name": _sqlite_text(message.model_name),
+            "model_effort": _sqlite_text(message.model_effort),
+            "sender_name": _sqlite_text(message.sender_name),
+            "recipient": _sqlite_text(message.recipient),
+            "delivery_status": _sqlite_text(message.delivery_status),
+            "end_turn": None if message.end_turn is None else int(message.end_turn),
+            "user_context_text": _sqlite_text(message.user_context_text),
+            "has_tool_use": _has_block(message, BlockType.TOOL_USE),
+            "has_thinking": _has_block(message, BlockType.THINKING),
+            "has_paste": _has_paste(message),
+            "paste_boundary": _paste_boundary(message),
+            "variant_index": variant_index,
+            "is_active_path": 1 if message.is_active_path is not False else 0,
+            "is_active_leaf": 1 if message.is_active_leaf else 0,
+            "word_count": _word_count(message.text),
+            "input_tokens": message.input_tokens,
+            "output_tokens": message.output_tokens,
+            "cache_read_tokens": message.cache_read_tokens,
+            "cache_write_tokens": message.cache_write_tokens,
+            "duration_ms": message.duration_ms,
+            "content_hash": _message_content_hash(session_id, message, position=position, variant_index=variant_index),
+            "occurred_at_ms": message.occurred_at_ms
+            if message.occurred_at_ms is not None
+            else _timestamp_ms(message.timestamp),
+            "stop_reason": _enum_value(message.stop_reason),
+        }
+        rows.append(archive_tiers_specs.MESSAGES_SPEC.extract_tuple(values))
     return rows
 
 
@@ -1986,38 +1984,36 @@ def _build_block_rows(
             exit_code = getattr(block, "exit_code", None)
             outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
             signature = getattr(block, "signature", None)
-            # Tuple built in order defined by spec.writable_columns
-            rows.append(
-                (
-                    message_id,
-                    session_id,
-                    position,
-                    block_type.value,
-                    _sqlite_text(block.text),
-                    _sqlite_text(block.tool_name),
-                    _sqlite_text(block.tool_id),
-                    tool_input_json,
-                    _sqlite_text(semantic_type),
-                    _sqlite_text(block.media_type),
-                    _sqlite_text(language),
-                    _sqlite_bool(is_error),
-                    exit_code,
-                    outcome_unknown_reason,
-                    _sqlite_text(signature),
-                    _block_content_hash(
-                        block_type=block_type.value,
-                        text=block.text,
-                        tool_name=block.tool_name,
-                        tool_input_json=tool_input_json,
-                        semantic_type=semantic_type,
-                        media_type=block.media_type,
-                        language=language,
-                        is_error=is_error,
-                        exit_code=exit_code,
-                        outcome_unknown_reason=outcome_unknown_reason,
-                    ),
-                )
-            )
+            values: dict[str, object] = {
+                "message_id": message_id,
+                "session_id": session_id,
+                "position": position,
+                "block_type": block_type.value,
+                "text": _sqlite_text(block.text),
+                "tool_name": _sqlite_text(block.tool_name),
+                "tool_id": _sqlite_text(block.tool_id),
+                "tool_input": tool_input_json,
+                "semantic_type": _sqlite_text(semantic_type),
+                "media_type": _sqlite_text(block.media_type),
+                "language": _sqlite_text(language),
+                "tool_result_is_error": _sqlite_bool(is_error),
+                "tool_result_exit_code": exit_code,
+                "tool_result_outcome_unknown_reason": outcome_unknown_reason,
+                "signature": _sqlite_text(signature),
+                "content_hash": _block_content_hash(
+                    block_type=block_type.value,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_input_json=tool_input_json,
+                    semantic_type=semantic_type,
+                    media_type=block.media_type,
+                    language=language,
+                    is_error=is_error,
+                    exit_code=exit_code,
+                    outcome_unknown_reason=outcome_unknown_reason,
+                ),
+            }
+            rows.append(archive_tiers_specs.BLOCKS_SPEC.extract_tuple(values))
     return rows
 
 
