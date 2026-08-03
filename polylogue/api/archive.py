@@ -182,6 +182,7 @@ _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
     "claim": AssertionKind.DECISION,
     "correction": AssertionKind.CORRECTION,
     "lesson": AssertionKind.LESSON,
+    "caveat": AssertionKind.CAVEAT,
     "highlight": AssertionKind.HIGHLIGHT,
     "prompt_eval": AssertionKind.PROMPT_EVAL,
 }

@@ -87,6 +87,7 @@ def test_terminal_note_kind_options_all_land_as_candidates(cli_workspace: dict[s
         "claim": AssertionKind.DECISION,
         "correction": AssertionKind.CORRECTION,
         "lesson": AssertionKind.LESSON,
+        "caveat": AssertionKind.CAVEAT,
         "highlight": AssertionKind.HIGHLIGHT,
         "prompt_eval": AssertionKind.PROMPT_EVAL,
     }

@@ -16,7 +16,7 @@ from polylogue.surfaces.payloads import AssertionClaimPayload
 
 MAX_NOTE_STDIN_BYTES = 256 * 1024
 
-_KIND_NAMES = ("note", "claim", "correction", "lesson", "highlight", "prompt_eval")
+_KIND_NAMES = ("note", "claim", "correction", "lesson", "caveat", "highlight", "prompt_eval")
 
 
 def _scope_refs(repo: str | None, topic: str | None) -> tuple[str, ...]:
