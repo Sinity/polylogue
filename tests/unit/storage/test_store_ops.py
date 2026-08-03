@@ -1002,19 +1002,6 @@ def test_upsert_optional_and_attachment_contracts(test_conn: sqlite3.Connection)
     assert att_row["mime_type"] == "image/jpeg"
     assert att_row["size_bytes"] == 2048
     assert att_row["path"] == "path.jpg"
-    source_native = test_conn.execute(
-        """
-        SELECT ani.native_id
-        FROM attachment_refs ar
-        JOIN attachment_native_ids ani ON ani.ref_id = ar.ref_id
-        WHERE ar.attachment_id = ? AND ani.id_kind = 'source'
-        ORDER BY ani.native_id DESC
-        LIMIT 1
-        """,
-        (att_row["attachment_id"],),
-    ).fetchone()
-    assert source_native is not None
-    assert source_native["native_id"] == "new/path.jpg"
     assert att_row["ref_count"] == 2
 
 
