@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.fts.freshness import STALE, UNKNOWN, freshness_ready_record_trusted
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
@@ -101,12 +102,12 @@ def _freshness_rows(conn: sqlite3.Connection) -> dict[str, dict[str, int | str |
         record = dict(zip(selected, row, strict=True))
         records[str(record["surface"])] = {
             "state": str(record["state"]),
-            "source_rows": _int_or_zero(record.get("source_rows")),
-            "indexed_rows": _int_or_zero(record.get("indexed_rows")),
-            "missing_rows": _int_or_zero(record.get("missing_rows")),
-            "excess_rows": _int_or_zero(record.get("excess_rows")),
-            "duplicate_rows": _int_or_zero(record.get("duplicate_rows")),
-            "identity_mismatch_rows": _int_or_zero(record.get("identity_mismatch_rows")),
+            "source_rows": _row_int(record.get("source_rows")),
+            "indexed_rows": _row_int(record.get("indexed_rows")),
+            "missing_rows": _row_int(record.get("missing_rows")),
+            "excess_rows": _row_int(record.get("excess_rows")),
+            "duplicate_rows": _row_int(record.get("duplicate_rows")),
+            "identity_mismatch_rows": _row_int(record.get("identity_mismatch_rows")),
             "detail": None if "detail" not in record or record["detail"] is None else str(record["detail"]),
         }
     return records
@@ -137,27 +138,8 @@ def _surface_payload(surface: FtsSurfaceInvariant) -> dict[str, int | bool | str
     }
 
 
-def _int_or_zero(value: object) -> int:
-    if isinstance(value, bool):
-        return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str):
-        try:
-            return int(value)
-        except ValueError:
-            return 0
-    if value is None:
-        return 0
-    try:
-        return int(str(value))
-    except ValueError:
-        return 0
-
-
 def _payload_int(surface: dict[str, int | bool | str | None], key: str) -> int:
-    value = surface.get(key)
-    return _int_or_zero(value)
+    return _row_int(surface.get(key))
 
 
 def _archive_index_path_for(dbf: Path) -> Path | None:
@@ -267,12 +249,12 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
     source_exists = _table_exists(conn, "blocks")
     exists = _table_exists(conn, "messages_fts")
     triggers_present = exists and _triggers_present(conn, _ARCHIVE_BLOCKS_FTS_TRIGGERS)
-    source_rows = 0 if freshness is None else _int_or_zero(freshness.get("source_rows"))
-    indexed_rows = 0 if freshness is None else _int_or_zero(freshness.get("indexed_rows"))
-    missing_rows = 0 if freshness is None else _int_or_zero(freshness.get("missing_rows"))
-    excess_rows = 0 if freshness is None else _int_or_zero(freshness.get("excess_rows"))
-    duplicate_rows = 0 if freshness is None else _int_or_zero(freshness.get("duplicate_rows"))
-    identity_mismatch_rows = 0 if freshness is None else _int_or_zero(freshness.get("identity_mismatch_rows"))
+    source_rows = 0 if freshness is None else _row_int(freshness.get("source_rows"))
+    indexed_rows = 0 if freshness is None else _row_int(freshness.get("indexed_rows"))
+    missing_rows = 0 if freshness is None else _row_int(freshness.get("missing_rows"))
+    excess_rows = 0 if freshness is None else _row_int(freshness.get("excess_rows"))
+    duplicate_rows = 0 if freshness is None else _row_int(freshness.get("duplicate_rows"))
+    identity_mismatch_rows = 0 if freshness is None else _row_int(freshness.get("identity_mismatch_rows"))
     recorded_state = None if freshness is None else str(freshness.get("state"))
     source_has_rows = (
         _source_has_rows(conn, "blocks")
@@ -440,14 +422,12 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
                 exists = _table_exists(conn, fts_table)
                 triggers_present = exists and _triggers_present(conn, triggers)
                 freshness = _freshness_record(freshness_records, name)
-                source_rows = 0 if freshness is None else _int_or_zero(freshness.get("source_rows"))
-                indexed_rows = 0 if freshness is None else _int_or_zero(freshness.get("indexed_rows"))
-                missing_rows = 0 if freshness is None else _int_or_zero(freshness.get("missing_rows"))
-                excess_rows = 0 if freshness is None else _int_or_zero(freshness.get("excess_rows"))
-                duplicate_rows = 0 if freshness is None else _int_or_zero(freshness.get("duplicate_rows"))
-                identity_mismatch_rows = (
-                    0 if freshness is None else _int_or_zero(freshness.get("identity_mismatch_rows"))
-                )
+                source_rows = 0 if freshness is None else _row_int(freshness.get("source_rows"))
+                indexed_rows = 0 if freshness is None else _row_int(freshness.get("indexed_rows"))
+                missing_rows = 0 if freshness is None else _row_int(freshness.get("missing_rows"))
+                excess_rows = 0 if freshness is None else _row_int(freshness.get("excess_rows"))
+                duplicate_rows = 0 if freshness is None else _row_int(freshness.get("duplicate_rows"))
+                identity_mismatch_rows = 0 if freshness is None else _row_int(freshness.get("identity_mismatch_rows"))
                 recorded_state = None if freshness is None else str(freshness.get("state"))
                 source_has_rows = (
                     _source_has_rows(conn, source_table)

@@ -8,6 +8,8 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.archive.session.provenance import date_provenance as _date_provenance
+from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.core.sources import source_name_to_origin
 from polylogue.insights.confidence import ConfidenceBand
 from polylogue.insights.fallback import FallbackReason
@@ -262,24 +264,6 @@ def _normalize_timed_document(value: object) -> object:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
-
-
-def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
-    if start_time is not None and end_time is not None:
-        return "timestamped_range"
-    if start_time is not None:
-        return "start_timestamp_only"
-    if end_time is not None:
-        return "end_timestamp_only"
-    return "untimestamped"
-
-
-def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
-    if canonical_session_date is None:
-        return "none"
-    if start_time is not None or end_time is not None:
-        return "event_timestamp"
-    return "date_only"
 
 
 class ThreadMemberEvidencePayload(ArchiveInsightModel):

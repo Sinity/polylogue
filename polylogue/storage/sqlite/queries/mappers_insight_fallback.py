@@ -9,6 +9,8 @@ from typing import TypeAlias, TypeVar
 from pydantic import BaseModel
 
 from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.archive.session.provenance import date_provenance as _date_provenance
+from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.insights.archive_models import (
     SessionEnrichmentPayload,
@@ -219,24 +221,6 @@ def session_phase_evidence_from_fallback(
             "word_count": _row_int(row, "word_count", fallback_payload, fallback_key="word_count"),
         }
     )
-
-
-def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
-    if start_time is not None and end_time is not None:
-        return "timestamped_range"
-    if start_time is not None:
-        return "start_timestamp_only"
-    if end_time is not None:
-        return "end_timestamp_only"
-    return "untimestamped"
-
-
-def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
-    if canonical_session_date is None:
-        return "none"
-    if start_time is not None or end_time is not None:
-        return "event_timestamp"
-    return "date_only"
 
 
 def session_phase_inference_from_fallback(

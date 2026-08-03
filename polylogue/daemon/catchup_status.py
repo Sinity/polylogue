@@ -279,30 +279,14 @@ def _payload(raw: object) -> dict[str, object]:
 
 def _payload_int(payload: dict[str, object], key: str, default: int = 0) -> int:
     value = payload.get(key)
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
         return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-    return default
+    return _row_int(value)
 
 
 def _payload_float(payload: dict[str, object], key: str, default: float = 0.0) -> float:
-    value = payload.get(key)
-    if isinstance(value, bool):
-        return default
-    if isinstance(value, int | float):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
+    coerced = _row_float(payload.get(key))
+    return default if coerced is None else coerced
 
 
 def _payload_str(payload: dict[str, object], key: str, *, default: str) -> str:
@@ -311,8 +295,7 @@ def _payload_str(payload: dict[str, object], key: str, *, default: str) -> str:
 
 
 def _payload_optional_str(payload: dict[str, object], key: str) -> str | None:
-    value = payload.get(key)
-    return value if isinstance(value, str) else None
+    return _optional_str(payload.get(key))
 
 
 def _epoch_ms_to_iso(value: int) -> str:

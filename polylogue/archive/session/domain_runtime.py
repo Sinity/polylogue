@@ -4,15 +4,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping
-from datetime import datetime
 from typing import TYPE_CHECKING, Self, cast
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import DialoguePair, Message
 from polylogue.archive.message.roles import Role, normalize_message_roles
-from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.session.display_mixin import DisplayTitleTagsMixin
 from polylogue.core.enums import MaterialOrigin
-from polylogue.core.types import SessionId
 
 if TYPE_CHECKING:
     from polylogue.archive.projection.projections import SessionProjection
@@ -20,79 +18,12 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session
 
 
-def _metadata_string(metadata: dict[str, object], key: str) -> str | None:
-    value = metadata.get(key)
-    return str(value) if value is not None else None
-
-
-def _metadata_tags(metadata: dict[str, object]) -> list[str]:
-    raw_tags = metadata.get("tags", [])
-    if not isinstance(raw_tags, list):
-        return []
-    return [str(tag) for tag in raw_tags]
-
-
-class SessionRuntimeMixin:
-    id: SessionId
-    title: str | None
+class SessionRuntimeMixin(DisplayTitleTagsMixin):
     messages: MessageCollection
-    created_at: datetime | None
-    updated_at: datetime | None
-    metadata: dict[str, object]
-    parent_id: SessionId | None
-    branch_type: BranchType | None
-    display_name: str | None
 
     if TYPE_CHECKING:
 
         def model_copy(self, *, update: Mapping[str, object] | None = None, deep: bool = False) -> Self: ...
-
-    @property
-    def display_date(self) -> datetime | None:
-        return self.updated_at or self.created_at
-
-    @property
-    def is_continuation(self) -> bool:
-        return self.branch_type == BranchType.CONTINUATION
-
-    @property
-    def is_sidechain(self) -> bool:
-        return self.branch_type == BranchType.SIDECHAIN
-
-    @property
-    def is_root(self) -> bool:
-        return self.parent_id is None
-
-    @property
-    def user_title(self) -> str | None:
-        return _metadata_string(self.metadata, "title")
-
-    @property
-    def display_title(self) -> str:
-        user_title = self.user_title
-        if user_title:
-            return user_title
-        if self.title:
-            return self.title
-        # polylogue-cgfy: provider-assigned display name (e.g. Claude Code's
-        # slug, "greedy-squishing-hamming") beats the raw id truncation --
-        # the fix for subagent rows showing "<uuid-prefix>" instead of a
-        # human-readable name when no title-worthy sidecar evidence exists.
-        if self.display_name:
-            return self.display_name
-        return self.id[:8]
-
-    @property
-    def summary(self) -> str | None:
-        return _metadata_string(self.metadata, "summary")
-
-    @property
-    def tags(self) -> list[str]:
-        # #1240: M2M-sourced tags are authoritative once hydrated.
-        m2m = getattr(self, "tags_m2m", None)
-        if m2m:
-            return list(m2m)
-        return _metadata_tags(self.metadata)
 
     def filter(self, predicate: Callable[[Message], bool]) -> Self:
         filtered_messages = [message for message in self.messages if predicate(message)]
