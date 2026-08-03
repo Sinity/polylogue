@@ -342,7 +342,9 @@ testmon-affected set.
 - `mypy --strict` (via `devtools verify`) is the primary net for type/identifier
   refactors — trust it. Config in `pyproject.toml`, no exclude list.
 - Seed testmon on a fresh checkout / after harness or dependency changes:
-  `devtools verify --seed-testmon --skip-slow`.
+  `devtools verify --seed-testmon --skip-slow`. A linked worktree auto-bootstraps
+  its testmon cache from the main checkout's valid seed instead (`devtools/testmon_bootstrap.py`),
+  so this is only needed when the main checkout itself has no seed yet.
 - Reserve `devtools verify --all` (full non-integration run) for
   harness/dependency changes or a final pre-PR diagnostic.
 - `devtools verify --quick` = format + lint + mypy + `render all --check`
