@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 24
+SOURCE_SCHEMA_VERSION = 25
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -264,6 +264,39 @@ ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
 ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
+
+-- v23 (polylogue-zm4w8): one immutable receipt per raw_sessions row marked a
+-- proven duplicate within a fully-quarantined (source_path, blob_hash) group
+-- -- a group where EVERY member starts out quarantined (unlike v22's
+-- raw_byte_duplicate_supersession_receipts above, which requires an already-
+-- INDEXED twin). A distinct actuator (devtools workspace
+-- raw-quarantine-group-dedup-apply) promotes exactly one representative raw
+-- per group through the real ingest/materialization path so it becomes a
+-- genuine indexed session, then marks the rest of the group 'byte_proven'
+-- (reusing the existing closed revision_authority vocabulary -- there is no
+-- 'superseded' member and widening it needs a full raw_sessions table
+-- rebuild, migration 021's own precedent) with a receipt here pointing at
+-- the representative raw and its newly materialized session. See
+-- polylogue.storage.raw_quarantine_group_dedup +
+-- polylogue.maintenance.raw_quarantine_group_dedup_apply.
+CREATE TABLE IF NOT EXISTS raw_quarantine_group_dedup_receipts (
+    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    source_path                TEXT NOT NULL,
+    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
+    representative_raw_id      TEXT NOT NULL,
+    representative_session_id  TEXT NOT NULL,
+    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
+    tool_version                TEXT NOT NULL,
+    backup_manifest_path        TEXT NOT NULL,
+    detail                      TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_promoted_at
+ON raw_quarantine_group_dedup_receipts(promoted_at_ms);
+
+CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_representative
+ON raw_quarantine_group_dedup_receipts(representative_raw_id);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither
