@@ -41,7 +41,7 @@ BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision a
 #: non-prefix-chain cohort is retired from byte-revision governance to
 #: membership governance (``ArchiveStore.replace_raw_membership_census``,
 #: ``retire_full_revision_governance=True``). Shared between the writer and
-#: ``ArchiveStore.classify_raw_revision_cohort``'s polylogue-52l2 guard,
+#: ``revision_governance._classify_raw_revision_cohort``'s polylogue-52l2 guard,
 #: which uses it to detect that a logical identity already has retired,
 #: previously-ambiguous sibling evidence before ever accepting a
 #: later-discovered raw as an unconditional singleton byte-proven baseline.

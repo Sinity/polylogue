@@ -175,7 +175,8 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
-    classify_raw_revision_cohort,
+    classify_raw_revision_cohort_for_live_watch,
+    classify_raw_revision_cohort_for_rebuild_repair,
     classify_untyped_full_revision_groups,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
@@ -2187,17 +2188,27 @@ class ArchiveStore:
     def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
         return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
 
-    def classify_raw_revision_cohort(
+    def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
         *,
-        check_source_path_identity_split: bool = False,
         manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
-        return classify_raw_revision_cohort(
+        return classify_raw_revision_cohort_for_rebuild_repair(
             self,
             logical_source_key,
-            check_source_path_identity_split=check_source_path_identity_split,
+            manage_transaction=manage_transaction,
+        )
+
+    def classify_raw_revision_cohort_for_live_watch(
+        self,
+        logical_source_key: str,
+        *,
+        manage_transaction: bool = True,
+    ) -> RevisionReplayPlan:
+        return classify_raw_revision_cohort_for_live_watch(
+            self,
+            logical_source_key,
             manage_transaction=manage_transaction,
         )
 

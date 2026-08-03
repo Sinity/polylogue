@@ -71,18 +71,27 @@ into internals" this module is supposed to make impossible to do by
 accident. The Protocol makes the dependency surface an explicit, readable
 contract instead of "whatever `self` happens to have".
 
-``ArchiveStore`` keeps one-line delegating methods
-(``def classify_raw_revision_cohort(self, ...): return
-classify_raw_revision_cohort(self, ...)``) so every existing external caller
+``ArchiveStore`` keeps one-line delegating methods for the two named
+classification entry points (``def
+classify_raw_revision_cohort_for_rebuild_repair(self, ...): return
+classify_raw_revision_cohort_for_rebuild_repair(self, ...)``, and the
+``_for_live_watch`` twin) so every existing external caller
 (``polylogue/sources/live/batch.py``, ``polylogue/sources/live/append_ingest.py``,
-``polylogue/sources/revision_backfill.py``, ``polylogue/storage/repair.py``,
-``polylogue/pipeline/services/archive_ingest.py``, ``polylogue/api/archive.py``,
-and every test that holds an ``ArchiveStore``/``archive`` instance) keeps
-calling ``archive.classify_raw_revision_cohort(...)`` unchanged. That is not
-a compatibility shim: there is exactly one implementation, it lives here, and
-``ArchiveStore``'s method bodies are the call site — the same shape as any
-other function-then-delegate extraction, not a parallel/duplicated
-implementation kept alive for a deprecated audience.
+``polylogue/sources/revision_backfill.py``, and every test that holds an
+``ArchiveStore``/``archive`` instance) keeps calling
+``archive.classify_raw_revision_cohort_for_*(...)`` unchanged. That is not a
+compatibility shim: there is exactly one shared implementation
+(``_classify_raw_revision_cohort``), it lives here, and ``ArchiveStore``'s
+method bodies are the call site — the same shape as any other
+function-then-delegate extraction, not a parallel/duplicated implementation
+kept alive for a deprecated audience. (polylogue-vp2ky retired the single
+``classify_raw_revision_cohort(..., check_source_path_identity_split: bool)``
+entry point in favor of these two names: the boolean answered two distinct
+questions -- "is this the rebuild/backfill repair path, where a stale-parser
+identity split must be caught" vs. "is this the live-watch path, where an
+atomic same-path content replacement must NOT be mistaken for a split" -- and
+every caller had to independently get the right literal right. Naming the
+question makes it impossible to pass the wrong answer.)
 """
 
 from __future__ import annotations
@@ -785,30 +794,25 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
     return row is not None
 
 
-def classify_raw_revision_cohort(
+def classify_raw_revision_cohort_for_rebuild_repair(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
     *,
-    check_source_path_identity_split: bool = False,
     manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
-    """Promote only a unique byte-prefix full chain and contiguous appends.
+    """Classify a cohort for the offline rebuild/backfill repair path.
 
-    ``check_source_path_identity_split`` (polylogue-eqnv, default
-    ``False`` -- opt in explicitly, see
-    ``_raw_revision_source_path_has_divergent_evidence``) additionally
-    refuses a singleton accept when another 'full' raw shares this raw's
-    ``source_path`` under a DIFFERENT key. That heuristic is sound for a
-    genuine re-acquisition of the same physical document (the offline
-    backfill/rebuild path's use case, where a stale pre-fix parser
-    identity can split one document across two keys) but is NOT sound in
-    general: a watched source path can legitimately be atomically
-    replaced with an entirely different session's content (same path,
-    genuinely different identity, exercised by
-    ``test_full_ingest_does_not_advance_cursor_across_same_size_replacement``
-    et al.) -- the live incremental watcher (``sources/live/batch.py``)
-    must not quarantine that as "divergent evidence", so it leaves this
-    off.
+    This is the caller that must catch a stale-parser identity split
+    (polylogue-eqnv): a re-acquisition of the same physical document can end
+    up under two different ``logical_source_key`` values when an older,
+    now-superseded parser assigned identity inconsistently across passes.
+    Always applies the ``source_path`` cross-key divergent-evidence guard
+    (see ``_raw_revision_source_path_has_divergent_evidence``) so such a
+    split is refused a naive singleton byte-chain accept and instead folds
+    into membership governance, where the real content-based classifier
+    weighs every known sibling together. Never call this from the live
+    watcher -- see ``classify_raw_revision_cohort_for_live_watch`` for why
+    the same guard is unsound there.
 
     ``manage_transaction=False`` (polylogue batched-rebuild path) leaves the
     classification's ``raw_sessions`` authority updates uncommitted in the
@@ -819,6 +823,64 @@ def classify_raw_revision_cohort(
     authority evidence -- the resume re-classifies the same cohorts from
     scratch. The follow-up ``raw_revision_replay_plan`` read runs on the
     SAME source connection and sees the uncommitted updates.
+    """
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=True,
+        manage_transaction=manage_transaction,
+    )
+
+
+def classify_raw_revision_cohort_for_live_watch(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+    *,
+    manage_transaction: bool = True,
+) -> RevisionReplayPlan:
+    """Classify a cohort for the live incremental-watch path.
+
+    This is the caller that must NOT apply the source-path cross-key
+    divergent-evidence guard used by
+    ``classify_raw_revision_cohort_for_rebuild_repair``: a watched source
+    path can legitimately be atomically replaced with an entirely different
+    session's content (same path, genuinely different identity, exercised
+    by
+    ``test_full_ingest_does_not_advance_cursor_across_same_size_replacement``
+    et al.). Applying the rebuild-repair guard here would wrongly quarantine
+    that legitimate replacement as "divergent evidence".
+
+    See ``classify_raw_revision_cohort_for_rebuild_repair`` for the
+    ``manage_transaction`` contract.
+    """
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=False,
+        manage_transaction=manage_transaction,
+    )
+
+
+def _classify_raw_revision_cohort(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+    *,
+    check_source_path_identity_split: bool,
+    manage_transaction: bool = True,
+) -> RevisionReplayPlan:
+    """Promote only a unique byte-prefix full chain and contiguous appends.
+
+    Shared implementation behind ``classify_raw_revision_cohort_for_rebuild_repair``
+    and ``classify_raw_revision_cohort_for_live_watch`` -- callers should use
+    one of those two named entry points, never this function directly, so
+    that ``check_source_path_identity_split`` is always set correctly for
+    the calling context by construction rather than by the caller getting a
+    bare boolean right.
+
+    When ``check_source_path_identity_split`` is set, additionally refuses a
+    singleton accept when another 'full' raw shares this raw's
+    ``source_path`` under a DIFFERENT key (see
+    ``_raw_revision_source_path_has_divergent_evidence``).
     """
     if store._blob_publisher is None:
         raise RuntimeError("raw revision classification requires a writable blob publisher")

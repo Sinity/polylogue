@@ -442,7 +442,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
             ),
         )
 
-        plan = archive.classify_raw_revision_cohort("codex:session")
+        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
 
     assert {item.raw_id: item.decision for item in plan.applications} == {
         baseline_raw_id: ApplicationDecision.SELECTED_BASELINE,
@@ -497,7 +497,7 @@ def test_duplicate_decision_mid_chain_gets_representative_generation_not_zero(tm
             archive, raw_id="raw-011-mid-dup", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=4
         )
 
-        archive.classify_raw_revision_cohort("codex:session")
+        archive.classify_raw_revision_cohort_for_live_watch("codex:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -539,7 +539,7 @@ def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representa
         )
         assert mid < mid_duplicate  # guards the ordering assumption the collision case depends on
 
-        archive.classify_raw_revision_cohort("codex:session")
+        archive.classify_raw_revision_cohort_for_live_watch("codex:session")
 
         assert _acquisition_generation(archive, base) == 0
         assert _acquisition_generation(archive, mid) == 1
@@ -576,7 +576,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
         baseline = _write_full_raw(archive, raw_id="raw-a-baseline", payload=b"hello world", acquired_at_ms=1)
         duplicate = _write_full_raw(archive, raw_id="raw-b-duplicate", payload=b"hello world", acquired_at_ms=2)
 
-        plan = archive.classify_raw_revision_cohort("codex:session")
+        plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
 
         # The cohort has a unique byte-proven baseline -- the duplicate no
         # longer manufactures a false "multiple newest baselines" ambiguity.
@@ -674,7 +674,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        append_plan = archive.classify_raw_revision_cohort("codex:session")
+        append_plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         archive.apply_raw_revision_replay(
             append_plan,
             {
@@ -697,7 +697,7 @@ def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: P
                 "codex:session", RawRevisionKind.FULL, "full-folded", 3, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        folded_plan = archive.classify_raw_revision_cohort("codex:session")
+        folded_plan = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         folded_session = parsed(("full-0", "zero"), ("full-1", "one"), ("full-2", "two"))
         before_hash = archive._conn.execute(
             "SELECT accepted_content_hash FROM raw_revision_heads WHERE logical_source_key = ?", ("codex:session",)
@@ -777,7 +777,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             ),
         )
 
-        first_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
         assert first_plan.accepted_raw_ids == ()
 
         # Both siblings genuinely disagree (no byte-prefix relation) --
@@ -807,7 +807,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
                 "chatgpt:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        second_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
 
     # The isolated raw must not be promoted alone: this identity has known,
     # unresolved ambiguous siblings that a real classifier must weigh it
@@ -1001,7 +1001,7 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
             ),
         )
 
-        first_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
         assert first_plan.accepted_raw_ids == ()
 
         # Retire both siblings under the LEGACY pre-#3234 literal, not the
@@ -1030,7 +1030,7 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
                 "chatgpt:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        second_plan = archive.classify_raw_revision_cohort("chatgpt:s1")
+        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt:s1")
 
     # Same assertion as the shared-constant test: the isolated raw must not
     # be promoted alone against siblings retired under the legacy literal.
@@ -1093,8 +1093,8 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
             ),
         )
 
-        enriched_plan = archive.classify_raw_revision_cohort("gemini:doc", check_source_path_identity_split=True)
-        bare_plan = archive.classify_raw_revision_cohort("gemini:doc-0", check_source_path_identity_split=True)
+        enriched_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("gemini:doc")
+        bare_plan = archive.classify_raw_revision_cohort_for_rebuild_repair("gemini:doc-0")
 
     # Neither key's lone member may be promoted alone: a same-source_path
     # sibling under a different key means this identity is genuinely
@@ -1734,7 +1734,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        plan0 = archive.classify_raw_revision_cohort("codex:session")
+        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         archive.apply_raw_revision_replay(
             plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0, skip_already_applied=True
         )
@@ -1763,7 +1763,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan1 = archive.classify_raw_revision_cohort("codex:session")
+        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         assert plan1.accepted_raw_ids == (baseline, append_one)
         # The real live-watcher hot path always reparses+passes the FULL
         # accepted chain (see append_ingest.py), not just the new tail.
@@ -1803,7 +1803,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan2 = archive.classify_raw_revision_cohort("codex:session")
+        plan2 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         assert plan2.accepted_raw_ids == (baseline, append_one, append_two)
         archive.apply_raw_revision_replay(
             plan2,
@@ -1888,7 +1888,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
                 "codex:session", RawRevisionKind.FULL, "full-0", 0, authority=RawRevisionAuthority.BYTE_PROVEN
             ),
         )
-        plan0 = archive.classify_raw_revision_cohort("codex:session")
+        plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         archive.apply_raw_revision_replay(plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
         indexed_raw_ids.clear()
 
@@ -1914,7 +1914,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        plan1 = archive.classify_raw_revision_cohort("codex:session")
+        plan1 = archive.classify_raw_revision_cohort_for_live_watch("codex:session")
         archive.apply_raw_revision_replay(
             plan1,
             {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},

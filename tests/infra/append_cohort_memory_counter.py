@@ -1,7 +1,8 @@
 """Phase-level evidence collection for watcher append/cohort investigations.
 
 The live incident was in ``_ingest_append_plans_archive`` while
-``classify_raw_revision_cohort`` reread historical full snapshots.  This
+``classify_raw_revision_cohort_for_live_watch`` reread historical full
+snapshots.  This
 helper distinguishes the durable metadata replay-plan hot path from that
 conservative classifier fallback.  It deliberately does not serialize parsed
 object graphs: the observer records kernel-visible process/cgroup/I/O state and
@@ -222,7 +223,7 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
 
     counter = AppendCohortMemoryCounter()
     real_append_ingest = append_ingest._ingest_append_plans_archive
-    real_classify = ArchiveStore.classify_raw_revision_cohort
+    real_classify = ArchiveStore.classify_raw_revision_cohort_for_live_watch
     real_replay_plan = ArchiveStore.raw_revision_replay_plan
     real_read_all = ArchiveBlobPublisher.read_all
     in_cohort_classification = False
@@ -266,7 +267,7 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
 
     with (
         patch.object(append_ingest, "_ingest_append_plans_archive", counted_append_ingest),
-        patch.object(ArchiveStore, "classify_raw_revision_cohort", counted_classify),
+        patch.object(ArchiveStore, "classify_raw_revision_cohort_for_live_watch", counted_classify),
         patch.object(ArchiveStore, "raw_revision_replay_plan", counted_replay_plan),
         patch.object(ArchiveBlobPublisher, "read_all", counted_read_all),
     ):
