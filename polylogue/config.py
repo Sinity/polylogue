@@ -21,7 +21,7 @@ import tomllib
 from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .paths import GEMINI_DRIVE_FOLDER
-from .storage.archive_identity import resolve_active_index_path
+from .storage.archive_identity import archive_file_set_root, resolve_active_index_path
 
 
 class ConfigError(PolylogueError):
@@ -151,6 +151,24 @@ class Config:
             drive_config=self.drive_config,
             index_config=self.index_config,
         )
+
+
+def active_archive_root(config: Config) -> Path:
+    """Return the archive file-set root housing the currently active database.
+
+    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
+    matching the ``polylogue-yla8.1`` split-root contract used by
+    :func:`polylogue.storage.repair._raw_materialization_archive_root` and
+    :func:`polylogue.storage.raw_reconciler._archive_root`: an explicit
+    ``Config(db_path=...)`` override must be honored, and the ordinary case
+    already resolves ``config.db_path`` correctly (``.index-active-pointer``
+    -aware) inside ``Config.__init__``.
+
+    Runtime-root resolution, not facade-specific -- lives in ``config`` (the
+    core of the config ring) rather than ``polylogue.api`` so substrate rings
+    that need it are not forced to import the API facade (polylogue-exb).
+    """
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
