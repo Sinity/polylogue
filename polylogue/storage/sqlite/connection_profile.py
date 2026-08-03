@@ -20,7 +20,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from polylogue.logging import BoundLoggerLike
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +199,165 @@ BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS = BULK_BUILD_WRITE_CONNECTION_PROF
 
 
 # ---------------------------------------------------------------------------
+# Mapped-bytes budget vs. the cgroup memory limit (polylogue-e98k)
+# ---------------------------------------------------------------------------
+#
+# 2026-07-31 incident: the mmap/cache profile sizes above (this file) and the
+# systemd cgroup limits (sinnix repo, `modules/services/polylogue.nix`) were
+# picked independently, in two different repos, with nothing tying them
+# together. A 4 GiB `BULK_BUILD_MMAP_SIZE_BYTES` window over a 38 GB
+# `index.db` fills completely under any scan-heavy work; one bulk-build
+# connection alone therefore accounted for ~4.5 GiB against a 6 GiB
+# `MemoryHigh` ceiling, leaving no headroom for the daemon's own writer and
+# concurrent readers. `MemoryHigh` was the wrong instrument for reclaimable,
+# file-backed mmap'd pages (it throttles anon growth; mapped pages just
+# evict-and-refault under pressure -- the observed `slow_write` signature),
+# not a leak, so pinning at the ceiling was structurally guaranteed rather
+# than a bug in either repo. A runtime bump to `MemoryHigh=14G` stopped the
+# throttling dead; that finding is now the committed default
+# (`MemoryHigh=14G` / `MemoryMax=18G`) -- see the comment beside that
+# override for the measurement. `mapped_bytes_budget` below is the
+# mechanical anchor so nobody has to re-derive that arithmetic from scratch
+# next time either side's constants move: the sinnix `MemoryMax`/`MemoryHigh`
+# override for `polylogued.service` must stay comfortably above the value
+# this returns, and `check_mapped_bytes_budget_against_cgroup_limit` makes
+# that comparison observable at runtime instead of only discoverable hours
+# into an incident.
+#
+# `mmap_size` is an upper bound SQLite MAY map into, never a guaranteed
+# allocation, so `mapped_bytes_budget()` is a conservative ceiling estimate,
+# not a live-RSS prediction -- it will typically overstate actual usage.
+
+
+def mapped_bytes_budget(*, concurrent_read_connections: int = 4) -> int:
+    """Plausible peak concurrent SQLite mmap+cache footprint for one polylogued process.
+
+    Models the worst case that actually bit us: one bulk-build connection
+    (an offline `polylogue ops maintenance rebuild-index`, or a
+    daemon-triggered bulk rebuild via `daemon/bulk_rebuild.py`) running
+    concurrently with the daemon's own long-lived write connection
+    (`DAEMON_WRITE_CONNECTION_PROFILE`) and a handful of concurrent
+    short-lived read connections (CLI/MCP/API reads against the live
+    archive while a rebuild is in flight). It deliberately excludes the
+    ad hoc `WRITE_CONNECTION_PROFILE` (1 GiB mmap) that one-shot
+    maintenance/CLI writers use -- those do not overlap with a
+    daemon-triggered bulk rebuild in the failure mode this budget guards
+    against, and folding it in would inflate the budget past what was ever
+    observed live without adding real signal.
+
+    `concurrent_read_connections` defaults to 4: a conservative but not
+    extreme estimate of simultaneous interactive reads (CLI/MCP/API) during
+    a bulk rebuild. Callers with better knowledge of their own concurrency
+    (e.g. a fixed MCP worker pool size) may override it.
+    """
+    return (
+        BULK_BUILD_MMAP_SIZE_BYTES
+        + BULK_BUILD_CACHE_SIZE_KIB * 1024
+        + DAEMON_WRITE_MMAP_SIZE_BYTES
+        + DAEMON_WRITE_CACHE_SIZE_KIB * 1024
+        + concurrent_read_connections * (READ_MMAP_SIZE_BYTES + READ_CACHE_SIZE_KIB * 1024)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MappedBytesBudgetCheck:
+    """Result of comparing :func:`mapped_bytes_budget` to the detected cgroup limits."""
+
+    budget_bytes: int
+    memory_max_bytes: int | None
+    memory_high_bytes: int | None
+    concurrent_read_connections: int
+
+    @property
+    def budget_mb(self) -> float:
+        return round(self.budget_bytes / (1024 * 1024), 1)
+
+    @property
+    def memory_max_mb(self) -> float | None:
+        return round(self.memory_max_bytes / (1024 * 1024), 1) if self.memory_max_bytes is not None else None
+
+    @property
+    def memory_high_mb(self) -> float | None:
+        return round(self.memory_high_bytes / (1024 * 1024), 1) if self.memory_high_bytes is not None else None
+
+    @property
+    def at_risk_limits(self) -> tuple[str, ...]:
+        """Which cgroup limit file(s), if any, sit at or below the computed budget.
+
+        Either limit landing at or below the budget reproduces the 2026-07-31
+        incident shape: `memory.high` throttles mapped/reclaimable pages before
+        `memory.max` would ever OOM-kill, so `memory.high` is actually the
+        more precise reproduction of what happened -- but a `memory.max` this
+        low is also worth flagging, since it means the hard ceiling itself
+        cannot even hold one worst-case concurrent footprint.
+        """
+        at_risk: list[str] = []
+        if self.memory_max_bytes is not None and self.memory_max_bytes <= self.budget_bytes:
+            at_risk.append("memory.max")
+        if self.memory_high_bytes is not None and self.memory_high_bytes <= self.budget_bytes:
+            at_risk.append("memory.high")
+        return tuple(at_risk)
+
+
+def check_mapped_bytes_budget_against_cgroup_limit(*, concurrent_read_connections: int = 4) -> MappedBytesBudgetCheck:
+    """Compare the computed mmap/cache budget to this process' cgroup v2 memory limits.
+
+    Reads `memory.max`/`memory.high` under `/sys/fs/cgroup/<this process' unified
+    cgroup path>` via `polylogue.core.metrics`. Both are `None` when cgroup v2
+    is not mounted, the controller isn't delegated (e.g. outside a cgroup, or a
+    container without the `memory` controller), or the limit is literally
+    `max` (unlimited) -- callers must treat `None` as "no limit detected", not
+    as an error.
+    """
+    from polylogue.core.metrics import read_cgroup_memory_high_bytes, read_cgroup_memory_max_bytes
+
+    return MappedBytesBudgetCheck(
+        budget_bytes=mapped_bytes_budget(concurrent_read_connections=concurrent_read_connections),
+        memory_max_bytes=read_cgroup_memory_max_bytes(),
+        memory_high_bytes=read_cgroup_memory_high_bytes(),
+        concurrent_read_connections=concurrent_read_connections,
+    )
+
+
+def log_mapped_bytes_budget_check(logger: BoundLoggerLike, check: MappedBytesBudgetCheck | None = None) -> None:
+    """Log the mapped-bytes budget vs. detected cgroup memory limit at startup.
+
+    Call once at daemon startup and once at the start of an offline bulk
+    rebuild -- the two paths that can hold a `BULK_BUILD_WRITE_CONNECTION_PROFILE`
+    connection. Degrades gracefully (a debug-level line, never a raised
+    exception) when no cgroup limit is detected at all, since that is the
+    ordinary case for a dev-machine or non-cgroup-confined run, not an error.
+    """
+    if check is None:
+        check = check_mapped_bytes_budget_against_cgroup_limit()
+    if check.memory_max_bytes is None and check.memory_high_bytes is None:
+        logger.debug(
+            "mmap_budget_no_cgroup_limit_detected",
+            budget_mb=check.budget_mb,
+            concurrent_read_connections=check.concurrent_read_connections,
+        )
+        return
+    at_risk = check.at_risk_limits
+    if at_risk:
+        logger.warning(
+            "mmap_budget_at_or_above_cgroup_limit",
+            budget_mb=check.budget_mb,
+            memory_max_mb=check.memory_max_mb,
+            memory_high_mb=check.memory_high_mb,
+            at_risk_limits=list(at_risk),
+            concurrent_read_connections=check.concurrent_read_connections,
+        )
+    else:
+        logger.info(
+            "mmap_budget_within_cgroup_limit",
+            budget_mb=check.budget_mb,
+            memory_max_mb=check.memory_max_mb,
+            memory_high_mb=check.memory_high_mb,
+            concurrent_read_connections=check.concurrent_read_connections,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Lightweight factory functions — open + apply pragmas, no caching / schema / vec
 # ---------------------------------------------------------------------------
 
@@ -346,6 +508,7 @@ __all__ = [
     "DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "DAEMON_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",
+    "MappedBytesBudgetCheck",
     "READ_CACHE_SIZE_KIB",
     "READ_CONNECTION_PRAGMA_STATEMENTS",
     "READ_CONNECTION_PROFILE",
@@ -357,7 +520,10 @@ __all__ = [
     "WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "WRITE_CONNECTION_PROFILE",
     "WRITE_MMAP_SIZE_BYTES",
+    "check_mapped_bytes_budget_against_cgroup_limit",
     "connection_context",
+    "log_mapped_bytes_budget_check",
+    "mapped_bytes_budget",
     "open_daemon_connection",
     "open_connection",
     "open_readonly_connection",

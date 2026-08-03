@@ -553,6 +553,16 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     the *location* it resolved, catching e.g. a concurrent devtools campaign
     or a foreign/rotated root before this rebuild can act on stale identity).
     """
+    from polylogue.storage.sqlite.connection_profile import (
+        check_mapped_bytes_budget_against_cgroup_limit,
+        log_mapped_bytes_budget_check,
+    )
+
+    # polylogue-e98k: this is the other path (besides daemon startup) that can
+    # hold a ``BULK_BUILD_WRITE_CONNECTION_PROFILE`` connection (4 GiB mmap) --
+    # log the budget-vs-cgroup-limit comparison before replay starts, not only
+    # discoverable by symptom after a throttled/stalled rebuild.
+    log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
     validate_rebuild_index_request(request)
     root = request.archive_root
     location = ArchiveLocation.resolve(root)
