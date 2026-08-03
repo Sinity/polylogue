@@ -259,8 +259,20 @@ async def parse_sources_archive(
         else:
             # Antigravity language-server export stays sequential (it drives a
             # local loopback subprocess); only the file-walk parallelizes.
+            # `capture_raw=True` is required here (polylogue-3m3de): without
+            # it every exported session's `raw_data` is `None`, so
+            # `_archive_raw_payload`/`_archive_raw_source_path` fall back to
+            # a JSON dump of the parsed session and the shared source root
+            # path -- collapsing every conversation's raw provenance onto one
+            # non-unique source_path instead of its actual `.pb` file and
+            # real bytes.
             for source in sources:
-                for raw_data, session in iter_antigravity_language_server_sessions(source):
+                for raw_data, session in iter_antigravity_language_server_sessions(
+                    source,
+                    capture_raw=True,
+                    blob_root=blob_root,
+                    blob_store=parse_blob_publisher,
+                ):
                     await write_pair(source, raw_data, session)
 
             failed = 0
