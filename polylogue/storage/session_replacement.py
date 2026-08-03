@@ -6,25 +6,9 @@ import sqlite3
 
 import aiosqlite
 
+from polylogue.storage.introspection import table_exists as _table_exists_sync
+from polylogue.storage.introspection import table_exists_async as _table_exists_async
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
-
-
-def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ?",
-            (table_name,),
-        )
-    ).fetchone()
-    return row is not None
 
 
 def _trigger_exists_sync(conn: sqlite3.Connection, trigger_name: str) -> bool:

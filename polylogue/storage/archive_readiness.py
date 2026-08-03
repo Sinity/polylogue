@@ -20,6 +20,8 @@ from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.logging import get_logger
 from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw_authority import raw_authority_detail_query_handle
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1007,16 +1009,8 @@ def _schema_object_exists(conn: sqlite3.Connection, name: str, *, types: tuple[s
     return row is not None
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return _schema_object_exists(conn, table_name, types=("table",))
-
-
 def _view_exists(conn: sqlite3.Connection, view_name: str) -> bool:
     return _schema_object_exists(conn, view_name, types=("view",))
-
-
-def _column_exists(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
-    return any(str(row[1]) == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
 
 
 def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:

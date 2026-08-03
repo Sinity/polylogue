@@ -350,13 +350,12 @@ class _VeclessConnection(sqlite3.Connection):
         self._query_count = 0
 
     def execute(self, sql: str, parameters: object = (), /) -> sqlite3.Cursor:
-        del parameters
         self._query_count += 1
         if "message_embeddings" in sql:
             raise sqlite3.OperationalError("no such module: vec0")
         if self._query_count >= 2:
             raise sqlite3.OperationalError("no such table: embedding_status")
-        return super().execute(sql)
+        return super().execute(sql, parameters)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

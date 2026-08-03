@@ -23,13 +23,11 @@ from polylogue.cli.commands.status import (
     _archive_tier_status,
     _archive_unidentified_artifact_count,
     _candidate_daemon_urls,
-    _column_exists,
     _default_daemon_url,
     _direct_archive_counts,
     _fast_count,
     _fmt_bytes,
     _parse_cmdline_api_port,
-    _table_exists,
     _view_exists,
 )
 
@@ -45,6 +43,15 @@ from polylogue.storage.archive_readiness import (
     _archive_readiness_counts,
     _archive_status_surfaces,
 )
+
+# polylogue-48h: _table_exists/_column_exists moved from private status.py
+# definitions to the shared polylogue.storage.introspection module (which now
+# owns the canonical table_exists/column_exists implementation); status.py
+# only re-imports them, and mypy --strict's no-implicit-reexport rule
+# correctly rejects importing a bare re-import through status.py. Import the
+# canonical names directly, matching the _archive_readiness precedent above.
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

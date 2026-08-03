@@ -9,7 +9,6 @@ table to union anymore -- ``include_materialized=True`` raises).
 from __future__ import annotations
 
 import json
-import sqlite3
 from typing import Protocol
 
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
@@ -514,13 +513,4 @@ def row_to_session_context_snapshot_record(row: RowLike) -> SessionContextSnapsh
         source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
         snapshot=context_snapshot_from_row(row),
         search_text=str(row["search_text"] or ""),
-    )
-
-
-def table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    return bool(
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
-            (table_name,),
-        ).fetchone()
     )

@@ -45,7 +45,7 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = logging.getLogger(__name__)
 
@@ -1517,14 +1517,13 @@ def _quote_identifier(name: str) -> str:
 
 
 def _table_exists_in_schema(conn: sqlite3.Connection, schema: str, name: str) -> bool:
+    # Thin wrapper (not a duplicate): callers probe candidate schema aliases
+    # that may not be ATTACHed yet, so unlike `introspection.table_exists`
+    # this swallows sqlite3.Error (e.g. "no such database: <alias>") as False.
     try:
-        row = conn.execute(
-            f"SELECT 1 FROM {_quote_identifier(schema)}.sqlite_master WHERE type = 'table' AND name = ?",
-            (name,),
-        ).fetchone()
+        return _table_exists(conn, name, schema=_quote_identifier(schema))
     except sqlite3.Error:
         return False
-    return row is not None
 
 
 def _base_session_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, int]]:

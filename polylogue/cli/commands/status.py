@@ -27,6 +27,8 @@ from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.archive_readiness import archive_readiness_status as _archive_readiness_status
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 logger = get_logger(__name__)
@@ -200,10 +202,6 @@ def _schema_object_exists(conn: Any, name: str, *, types: Sequence[str]) -> bool
         (*types, name),
     ).fetchone()
     return row is not None
-
-
-def _table_exists(conn: Any, table_name: str) -> bool:
-    return _schema_object_exists(conn, table_name, types=("table",))
 
 
 def _view_exists(conn: Any, view_name: str) -> bool:
@@ -892,10 +890,6 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
             source_conn.close()
     except sqlite3.Error:
         return 0
-
-
-def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
-    return any(str(row[1]) == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
 
 
 # Live ingest workload is read directly from ops.db so it is visible even when

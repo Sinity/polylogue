@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
+from polylogue.storage.introspection import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,14 +242,6 @@ def _select_archive_pending_window(
         recipe=recipe,
     )
     return [(item.session_id, item.message_count) for item in pending]
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def build_preflight_report(
