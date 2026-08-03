@@ -415,6 +415,43 @@ workflow, not optional conveniences — use them at the point named, every time:
 If you build a new tool in this family, add it here in the same sentence —
 a tool without a line in this file is a tool the next session won't use.
 
+### Coordinator dispatch: no poll loops
+
+A coordinator running background subagents (`run_in_background: true`, or a
+teammate/job spawned via `agent-control`) already gets an automatic
+completion notification when the agent finishes (Claude Code >=2.1.211) — the
+harness wakes the coordinator itself; nothing needs to ask "done yet?". A
+2026-08-02 mining pass over six days of fanout sessions counted 101
+`ScheduleWakeup` + 78 `Monitor` calls, almost all of them a coordinator turn
+re-deriving state a notification would have delivered for free, and traced
+part of that session's 16 compactions to this churn (polylogue-kzse6,
+polylogue-ltfj9 report item 2).
+
+The rule the data supports:
+
+- **`Monitor` only with a genuine until-condition** (an until-loop over a
+  concrete, checkable state — e.g. waiting for a lock file to clear, a port
+  to open) — never as a bare "poll and see if it's done yet" against a
+  background agent job.
+- **`ScheduleWakeup` only for a genuine wall-clock deadline** the harness
+  cannot observe on its own (a CI grace window, an external system's SLA) —
+  never as a substitute for the automatic completion notification.
+- If you notice yourself reaching for either tool to check on a background
+  agent's progress, that noticing is itself the signal to stop: let the
+  notification arrive, or use a non-polling progress peek (`/tasks`,
+  tailing the agent's transcript, or an `agent-control` status/read-output
+  call made once out of genuine curiosity, not on a timer) instead of a
+  loop.
+- This doctrine assumes Claude Code >=2.1.211; on an older install
+  completion notifications are best-effort, and a bounded wall-clock
+  `ScheduleWakeup` fallback is legitimate until upgrading.
+
+This is a coordinator-behavior rule, not a code change: `ScheduleWakeup` and
+`Monitor` are harness tools, not something this repo's source controls, so
+there is no lint or detector this repo can ship to enforce it mechanically.
+The `lane`/`triage` agent definitions carry the same rule for the case where
+a dispatched agent itself spawns further background work.
+
 ### Commit / PR discipline
 
 All product code lands via **feature branches + squash-merged PRs** to `master`

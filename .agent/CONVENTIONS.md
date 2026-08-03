@@ -89,6 +89,14 @@ bead's cited facts against master before coding.
   and idle-wait on it across turns (2026-08-01: three lanes each stalled for
   multiple turns "waiting for the background job", burning wall-clock and
   coordinator attention until manually interrupted).
+- **No poll loops on background agents (coordinator).** Completion
+  notifications for background subagents are automatic — never
+  `ScheduleWakeup`/`Monitor` as a "done yet?" poll loop. Full rule + the two
+  legitimate exceptions (genuine `Monitor` until-conditions, genuine
+  wall-clock `ScheduleWakeup` deadlines) live in `CLAUDE.md`'s "Coordinator
+  dispatch: no poll loops" section (polylogue-kzse6) — this is the same rule
+  the `lane`/`triage` agent definitions carry for a dispatched agent that
+  itself spawns background work.
 - **Dispatch hygiene (coordinator).** Immediately after spawning a
   worktree-isolated lane, run
   `devtools workspace verify-worktree <path> --expect-branch <branch>` before

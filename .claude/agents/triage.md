@@ -33,6 +33,14 @@ to produce evidence and a verdict, never a code change.
   than discovering the backgrounding after the fact — this is the same
   mechanical rule the `lane` agent definition carries for its (write-mode)
   verification calls.
+- **No poll loops, including on any further agent you spawn.** If your
+  investigation dispatches a background subagent of your own, do not
+  `ScheduleWakeup`/`Monitor` it as a "done yet?" poll — its completion
+  notification is automatic. `Monitor` is for a genuine until-condition,
+  `ScheduleWakeup` only for a genuine wall-clock deadline the harness can't
+  observe on its own. Reaching for either tool to check on a background
+  job's progress is itself the signal to stop and let the notification
+  arrive instead (polylogue-kzse6).
 
 ## Evidence standard
 
