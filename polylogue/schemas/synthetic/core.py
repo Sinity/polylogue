@@ -215,8 +215,17 @@ class SyntheticCorpus:
         written_files: list[Path] = []
         for idx, artifact in enumerate(batch.artifacts):
             if corpus.provider == "antigravity":
-                file_path = output_dir / f"{prefix}-{idx:0{index_width}d}.md.metadata.json"
-                markdown_path = output_dir / f"{prefix}-{idx:0{index_width}d}.md"
+                # The real acquisition path (iter_antigravity_language_server_sessions /
+                # its brain-metadata fallback, polylogue-eo81) requires a rooted
+                # directory layout: root/brain/<session-dir>/<name>.md.metadata.json,
+                # session identity derived from the immediate parent directory name.
+                # A flat root/<name>.md.metadata.json layout is refused by the
+                # generic per-file walk (deliberately, so real conversations aren't
+                # double-counted as sidecar fragments) and never reaches a parser.
+                session_dir = output_dir / "brain" / f"{prefix}-{idx:0{index_width}d}"
+                session_dir.mkdir(parents=True, exist_ok=True)
+                file_path = session_dir / f"{prefix}-{idx:0{index_width}d}.md.metadata.json"
+                markdown_path = session_dir / f"{prefix}-{idx:0{index_width}d}.md"
                 payload = json_document(loads(artifact.raw_bytes))
                 markdown_path.write_text(
                     str(payload.get("summary") or "Synthetic Antigravity artifact"), encoding="utf-8"

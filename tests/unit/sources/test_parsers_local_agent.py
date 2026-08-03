@@ -1003,8 +1003,9 @@ def test_antigravity_source_walk_prefers_language_server_exports(
         antigravity.AntigravitySessionSummary(cascade_id="cascade-1", title="Session"),
     )
 
-    def fake_exports(root: Path) -> list[ParsedSession]:
+    def fake_exports(root: Path, *, only_cascade_ids: frozenset[str] | None = None) -> list[ParsedSession]:
         assert root == tmp_path
+        del only_cascade_ids
         return [exported]
 
     monkeypatch.setattr("polylogue.sources.source_parsing.antigravity.iter_language_server_exports", fake_exports)

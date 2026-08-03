@@ -1131,6 +1131,15 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
         provider_dir = tmp_path / "synthetic" / provider
         written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synth")
 
+        if provider == "antigravity":
+            # The real acquisition path roots itself at a directory holding
+            # brain/ (and conversations/), not a single file -- see
+            # SyntheticCorpus.write_spec_artifacts's antigravity branch. It
+            # also resolves source.name via Provider.from_string, so the name
+            # must be exactly "antigravity", not "antigravity-test" like
+            # every other provider's synthetic source name.
+            return Source(name=provider, path=provider_dir)
+
         if count == 1:
             return Source(name=f"{provider}-test", path=written.files[0])
         # For multiple files, return Source pointing to first file
