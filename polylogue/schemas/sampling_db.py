@@ -273,6 +273,16 @@ def _iter_schema_units_from_db(
     source_name = Provider.from_string(source_name)
     source_db_path = db_path.parent / "source.db"
     if not source_db_path.exists():
+        # polylogue-es7b: a missing sibling tier file yields the same empty
+        # generator as "genuinely zero matching rows for this provider" --
+        # log so callers/operators can tell the two apart instead of silently
+        # reading zero schema units as a clean, exhaustive result.
+        logger.warning(
+            "schema sampling found no source.db tier file at %s; yielding zero schema units for %s "
+            "(this is a missing tier file, not a genuine zero-row result)",
+            source_db_path,
+            source_name,
+        )
         return
     blob_store = get_blob_store()
     query_provider = config.db_source_name or source_name

@@ -41,6 +41,8 @@ varies on a known-bounded dimension):
   (polylogue-6rvt).
 - ``polylogue_status_snapshot_age_seconds`` (gauge) — cached status age
 - ``polylogue_status_snapshot_state`` (gauge) — labels: state
+- ``polylogue_detached_writer_failures_total`` (counter) — process-lifetime
+  count of detached background daemon-writer tasks that raised (polylogue-es7b)
 - ``polylogue_live_ingest_attempts_total`` (counter) — labels: status
 - ``polylogue_live_ingest_attempts_in_flight`` (gauge)
 - ``polylogue_live_ingest_storage_route_total`` (counter) — labels: route
@@ -1072,6 +1074,21 @@ def format_metrics(
         help_text="1 for the current daemon status snapshot freshness state.",
         metric_type="gauge",
         samples=[({"state": state}, 1 if state == snapshot_state else 0) for state in ("fresh", "stale", "missing")],
+    )
+
+    from polylogue.daemon.write_coordinator import daemon_write_telemetry_payload
+
+    write_telemetry = daemon_write_telemetry_payload()
+    detached_writer_failures = write_telemetry.get("detached_writer_failures", 0)
+    _emit_metric(
+        lines,
+        name="polylogue_detached_writer_failures_total",
+        help_text=(
+            "Total detached background daemon-writer tasks that raised an exception "
+            "since process start (polylogue-es7b)."
+        ),
+        metric_type="counter",
+        samples=[(None, int(detached_writer_failures) if isinstance(detached_writer_failures, (int, float)) else 0)],
     )
 
     if not db.exists():
