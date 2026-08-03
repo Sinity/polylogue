@@ -2456,6 +2456,116 @@ def test_raw_materialization_isolates_failed_component_and_continues_batch(
     assert [outcome.status.value for outcome in result.plan_outcomes].count("executed") == 2
 
 
+def test_raw_materialization_replay_scopes_derived_rebuild_to_touched_component(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-qsagp: replaying ONE authority component must refresh
+    FTS/trigram/action_pairs/delegation_facts only for the session(s) that
+    component touched -- never the archive-wide ``rebuild_fts_index_sync`` /
+    ``rebuild_command_trigram_index_sync`` / ``rebuild_all_action_pairs_sync`` /
+    ``rebuild_all_delegation_facts_sync`` quartet ``maintenance/rebuild_index.py``'s
+    terminal blue-green pass owns. Proven at fixture scale with N pre-existing,
+    fully materialized sessions already holding real ``action_pairs`` rows
+    (each carries one Codex ``function_call``/``function_call_output`` pair):
+    patching all four archive-wide rebuild functions to raise, then replaying
+    exactly one NEW single-session component, must still succeed without
+    tripping any of them. Reverting ``bulk_build=False`` back to ``True`` in
+    ``repair_raw_materialization`` (the exact regression this guards) makes
+    this test fail immediately on the patched raise, not on some indirect
+    symptom.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.fts import fts_lifecycle as fts_lifecycle_mod
+    from polylogue.storage.sqlite import action_pairs as action_pairs_mod
+    from polylogue.storage.sqlite import delegation_facts as delegation_facts_mod
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    def _tool_call_payload(native_id: str) -> bytes:
+        return (
+            f'{{"type":"session_meta","payload":{{"id":"{native_id}"}}}}\n'.encode()
+            + b'{"type":"response_item","payload":{"type":"message","role":"user",'
+            b'"content":[{"type":"input_text","text":"run a command"}]}}\n'
+            b'{"type":"response_item","payload":{"type":"function_call","id":"fc_1",'
+            b'"call_id":"call_abc","name":"exec_command","arguments":"{\\"cmd\\": \\"ls\\"}"}}\n'
+            b'{"type":"response_item","payload":{"type":"function_call_output",'
+            b'"call_id":"call_abc","output":"file1.txt"}}\n'
+        )
+
+    initialize_active_archive_root(tmp_path)
+    existing_native_ids = [f"existing-{index}" for index in range(8)]
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index, native_id in enumerate(existing_native_ids):
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_tool_call_payload(native_id),
+                source_path=f"{native_id}.jsonl",
+                acquired_at_ms=index + 1,
+            )
+
+    config = _config(tmp_path)
+    baseline = repair_mod.repair_raw_materialization(config)
+    assert baseline.success is True
+    assert baseline.repaired_count == len(existing_native_ids)
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        watched_session_id = index_conn.execute(
+            "SELECT session_id FROM sessions WHERE session_id LIKE ? ORDER BY session_id LIMIT 1",
+            (f"%{existing_native_ids[0]}",),
+        ).fetchone()[0]
+        pre_action_pair_rowids = {
+            row[0]
+            for row in index_conn.execute("SELECT rowid FROM action_pairs WHERE session_id = ?", (watched_session_id,))
+        }
+        pre_delegation_fact_count = index_conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0]
+    assert pre_action_pair_rowids, "fixture must actually populate action_pairs for the watched session"
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("archive-wide derived rebuild must not run for a single-component replay")
+
+    monkeypatch.setattr(fts_lifecycle_mod, "rebuild_fts_index_sync", _fail)
+    monkeypatch.setattr(fts_lifecycle_mod, "rebuild_command_trigram_index_sync", _fail)
+    monkeypatch.setattr(action_pairs_mod, "rebuild_all_action_pairs_sync", _fail)
+    monkeypatch.setattr(delegation_facts_mod, "rebuild_all_delegation_facts_sync", _fail)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_tool_call_payload("new-component"),
+            source_path="new-component.jsonl",
+            acquired_at_ms=1000,
+        )
+
+    result = repair_mod.repair_raw_materialization(config)
+
+    assert result.success is True
+    assert result.repaired_count == 1
+
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        post_action_pair_rowids = {
+            row[0]
+            for row in index_conn.execute("SELECT rowid FROM action_pairs WHERE session_id = ?", (watched_session_id,))
+        }
+        post_delegation_fact_count = index_conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0]
+        new_action_pair_rows = index_conn.execute(
+            "SELECT COUNT(*) FROM action_pairs WHERE session_id LIKE '%new-component'"
+        ).fetchone()[0]
+
+    # An archive-wide ``DELETE FROM action_pairs; INSERT ...`` rebuild
+    # reassigns every row (including the untouched watched session's) a fresh
+    # rowid; a session-scoped refresh never touches rows for a session
+    # outside this component at all. Same rowids proves this component's
+    # replay left the unrelated session's action_pairs rows alone.
+    assert post_action_pair_rowids == pre_action_pair_rowids
+    assert new_action_pair_rows > 0
+    # delegation_facts has no rows to rowid-compare in this fixture (no
+    # delegation links), but the count must grow by exactly what the new
+    # component's own session-scoped refresh contributes -- zero here --
+    # not shrink to zero and be rebuilt, which the patched raise already
+    # rules out.
+    assert post_delegation_fact_count == pre_delegation_fact_count
+
+
 def test_raw_materialization_transient_failure_retries_with_same_plan_id_then_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -41,7 +41,6 @@ from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_repair import count_orphaned_blobs_sync, repair_orphaned_blobs_data
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.insights.session.repair_assessment import (
     assess_session_insight_repairs,
 )
@@ -76,8 +75,6 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
-from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
-from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
@@ -6229,9 +6226,12 @@ def repair_raw_materialization(
     duration -- and therefore the writer-coordinator hold a caller runs it
     under -- independently of ``raw_artifact_limit``. Live evidence showed a
     16-64 component limit alone did not bound hold time: per-component cost
-    (parse, replay, then a full FTS/action-pairs/delegation-facts rebuild) is
-    itself long enough that a modest component count still produced 188s+
-    holds. Both the CENSUS loop and the REPLAY loop check elapsed time only
+    (parse, replay, then -- at the time, before polylogue-qsagp rescoped it to
+    a per-session refresh -- a full archive-wide FTS/trigram/action-pairs/
+    delegation-facts rebuild) was itself long enough that a modest component
+    count still produced 188s+ holds. The bound below remains load-bearing
+    independent of that fix: parse/replay cost alone can still vary widely
+    per component. Both the CENSUS loop and the REPLAY loop check elapsed time only
     *between* components, at the same point they already commit and requery
     candidates -- a genuine transaction-boundary checkpoint, not a mid-write
     yield (a mid-hold SQLite transaction cannot safely release the write lock
@@ -6856,10 +6856,30 @@ def repair_raw_materialization(
                 # components through here — per-row trigger mode would
                 # detonate exactly like the 2026-07-22 live-writer stall.
                 bulk_fts=True,
-                # A single authority component can expand into many logical
-                # sessions.  Defer writer-hot derived surfaces for that
-                # component and rebuild them once below.
-                bulk_build=True,
+                # polylogue-qsagp: ``bulk_build=True`` is the broader
+                # bulk-GENERATION-build lifecycle (``maintenance/rebuild_index.py``'s
+                # single from-empty replay that always finishes with one
+                # archive-wide messages_fts/blocks_command_trigram/action_pairs/
+                # delegation_facts repopulate before readiness). This is the
+                # opposite shape: an incremental per-component trickle pass over
+                # an already-live, already-large archive, so there is no
+                # once-at-the-end readiness step to defer to -- the archive-wide
+                # rebuild that used to run after every component here (measured
+                # 8.22 GiB FTS text / 5.07M trigram rows / 1.9M action_pairs
+                # rows, 188s+ writer holds) was that terminal-pass shape
+                # replayed at the wrong scale. ``bulk_build=False`` (with
+                # ``bulk_fts`` still True) keeps every per-session refresh of
+                # those four derived surfaces exactly in sync with each
+                # session write via the already-existing session/component-
+                # scoped writers (``refresh_action_pairs``,
+                # ``refresh_delegation_facts_for_session``,
+                # ``_bulk_fts_session_guard``'s session-scoped FTS/trigram
+                # delete+reinsert) -- O(sessions touched by this component),
+                # not O(archive). Receipt validation
+                # (``raw_authority.py``'s postflight snapshot) reads only raw/
+                # session/heads tables, never these derived surfaces, so this
+                # rescoping changes no validated postcondition.
+                bulk_build=False,
             )
         except RawRevisionReplayResourceBlockedError as exc:
             metrics["raw_materialization_resource_blocked_count"] = max(
@@ -6915,13 +6935,12 @@ def repair_raw_materialization(
             execution_outcomes.append(outcome)
             continue
         replay_parts.append(part)
-        with closing(sqlite3.connect(archive_root / "index.db", timeout=600)) as derived_conn:
-            derived_conn.execute("PRAGMA busy_timeout = 600000")
-            rebuild_fts_index_sync(derived_conn)
-            rebuild_command_trigram_index_sync(derived_conn)
-            rebuild_all_action_pairs_sync(derived_conn)
-            rebuild_all_delegation_facts_sync(derived_conn)
-            derived_conn.commit()
+        # polylogue-qsagp: the archive-wide rebuild_fts_index_sync/
+        # rebuild_command_trigram_index_sync/rebuild_all_action_pairs_sync/
+        # rebuild_all_delegation_facts_sync quartet that used to run here after
+        # every component is gone -- ``backfill_historical_revision_evidence``
+        # above now runs with ``bulk_build=False``, so each session it wrote
+        # already got its own session-scoped derived-surface refresh inline.
         current = _raw_materialization_candidate_ids(
             config,
             raw_artifact_id=raw_artifact_id,
