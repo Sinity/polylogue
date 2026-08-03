@@ -16,7 +16,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.pipeline.services.process_pool import (
     process_pool_executor,
-    resolve_parse_worker_count,
+    resolve_archive_ingest_dispatch,
 )
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
@@ -53,17 +53,6 @@ def _commit_batch_message_threshold() -> int:
         return load_polylogue_config().ingest_commit_batch_messages
     except ValueError:
         return COMMIT_BATCH_MESSAGE_THRESHOLD
-
-
-def _parse_worker_count() -> int:
-    """Resolve the source-parse worker count.
-
-    Parse is ~44% of re-ingest wall time and CPU-bound; the single SQLite
-    writer is I/O-bound. Running file parsing across worker processes overlaps
-    parse CPU with write I/O. A value of 1 disables the pool entirely and
-    preserves the exact sequential behavior as an escape hatch.
-    """
-    return resolve_parse_worker_count()
 
 
 def _parse_source_path_worker(
@@ -122,7 +111,7 @@ async def parse_sources_archive(
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     threshold = _commit_batch_message_threshold()
     batched = threshold > 0
-    workers = _parse_worker_count() if parse_workers is None else max(1, parse_workers)
+    workers = resolve_archive_ingest_dispatch(parse_workers=parse_workers).worker_count
     blob_root = archive_root / "blob"
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 

@@ -93,6 +93,60 @@ def test_warm_parses_pending_candidates_off_writer_hold(tmp_path: Path) -> None:
         assert payload_bytes > 0
 
 
+def test_warm_recovers_append_native_id_not_source_path_stem(tmp_path: Path) -> None:
+    """polylogue-6lyh1: the daemon's off-writer-hold warmer must apply the
+    same APPEND fallback-identity recovery as the sequential path
+    (``parse_retained_raw_sessions``'s ``archive.raw_native_id`` lookup),
+    not silently fall back to ``Path(source_path).stem``.
+
+    The raw is written APPEND-kind, with a payload carrying no
+    ``session_meta`` record (so the parser genuinely has nothing else to
+    fall back on) and a ``source_path`` stem deliberately different from the
+    recorded native_id -- so a regression to stem-based fallback is
+    observable, not silently masked by the two happening to agree.
+    """
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    payload = (
+        b'{"type":"response_item","payload":{"type":"message","id":"m0","role":"user",'
+        b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+    )
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path="stem-does-not-match.jsonl",
+            acquired_at_ms=1,
+            raw_id="raw-append",
+            native_id="session-real-native-id",
+            revision=RawRevisionEnvelope(
+                logical_source_key="codex:session-real-native-id",
+                kind=RawRevisionKind.APPEND,
+                source_revision="raw-append-revision",
+                acquisition_generation=0,
+                predecessor_source_revision="raw-append-predecessor",
+                append_start_offset=0,
+                append_end_offset=len(payload),
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+
+    stage = DaemonParseStage(max_workers=2, max_inflight_bytes=10_000_000)
+    try:
+        warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
+    finally:
+        stage.shutdown()
+
+    assert warmed == 1
+    sessions, _payload_bytes, _kind = stage.cache.pop("raw-append")  # type: ignore[misc]
+    assert len(sessions) == 1
+    assert sessions[0].provider_session_id == "session-real-native-id"
+
+
 def test_warm_dispatches_to_worker_threads_not_the_caller_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -389,6 +443,8 @@ def test_warm_never_retains_a_tree_exceeding_the_whole_cache_budget(
         is_stream: bool,
         blob_root_str: str,
         source_db_path_str: str,
+        kind_token: str,
+        native_id: str | None,
     ) -> object:
         return raw_id, [_session_with_text("session-whale", 50_000)], None
 
@@ -444,6 +500,8 @@ def test_cache_evicts_to_stay_within_tree_bytes_budget_under_pressure(
         is_stream: bool,
         blob_root_str: str,
         source_db_path_str: str,
+        kind_token: str,
+        native_id_arg: str | None,
     ) -> object:
         native_id = source_path_to_native_id[source_path]
         return raw_id, [_session_with_text(native_id, 5_000)], None

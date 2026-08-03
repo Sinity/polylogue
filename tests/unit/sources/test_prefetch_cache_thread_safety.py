@@ -119,7 +119,7 @@ def test_raw_prefetch_content_cache_concurrent_put_get_stays_within_budget() -> 
     mutate, without the GIL to make that atomic)."""
     budget = 1000
     cache = RawParsePrefetchCache(max_inflight_bytes=1_000_000, max_content_cache_bytes=budget)
-    keys = [(Provider.CODEX, f"hash-{i}", "") for i in range(50)]
+    keys = [(Provider.CODEX, f"hash-{i}", "", None) for i in range(50)]
 
     def _worker(_i: int) -> None:
         for key in keys:

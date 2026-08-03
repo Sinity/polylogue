@@ -10,7 +10,7 @@ from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
 from polylogue.core.protocols import ProgressCallback, RawValidationStore
 from polylogue.logging import get_logger
 from polylogue.paths import blob_store_root
-from polylogue.pipeline.services.process_pool import process_pool_executor
+from polylogue.pipeline.services.process_pool import process_pool_executor, resolve_validation_dispatch
 from polylogue.pipeline.services.validation_runtime import _validate_record_sync, _ValidationOutcome
 from polylogue.pipeline.stage_models import ValidatedRawRecord, ValidateResult
 from polylogue.storage.runtime import RawSessionRecord
@@ -176,7 +176,10 @@ async def evaluate_raw_artifacts(
     # ProcessPoolExecutor bypasses the GIL: JSON decode (native C extension
     # accelerator) + Python wrapper code run truly parallel across processes.
     # Measured: Threads(24)=160 MB/s, Process(8)=605 MB/s (3.7x speedup).
-    worker_count = min(len(raw_artifacts), os.cpu_count() or 4, 8)
+    # See resolve_validation_dispatch's docstring for why this ignores
+    # parallel_threads_effective() -- the process-pool preference here is
+    # itself the measurement, not a GIL-avoidance workaround.
+    worker_count = resolve_validation_dispatch(record_count=len(raw_artifacts)).worker_count
     blob_root_str = str(blob_store_root())
     t_batch = _time.perf_counter()
 

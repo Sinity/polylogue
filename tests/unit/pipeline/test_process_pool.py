@@ -7,9 +7,14 @@ from concurrent.futures import as_completed
 import pytest
 
 from polylogue.pipeline.services.process_pool import (
+    PoolKind,
     parallel_threads_effective,
     process_pool_context,
     process_pool_executor,
+    resolve_archive_ingest_dispatch,
+    resolve_ingest_batch_dispatch,
+    resolve_revision_backfill_census_dispatch,
+    resolve_validation_dispatch,
 )
 
 
@@ -106,3 +111,110 @@ def test_parallel_threads_effective_treats_missing_probe_as_gil_enabled(monkeypa
     build to speak of -- the safe default is "GIL enabled", not an error."""
     monkeypatch.delattr(sys, "_is_gil_enabled", raising=False)
     assert parallel_threads_effective() is False
+
+
+# ---------------------------------------------------------------------------
+# polylogue-xecca: unified parse-dispatch decision matrix
+# ---------------------------------------------------------------------------
+#
+# Each of the four sites' formulas moved here verbatim from
+# archive_ingest.py / validation_flow.py / ingest_batch/_core.py /
+# revision_backfill.py -- these matrices pin the exact numbers those sites
+# relied on before the extraction so a future edit to the shared function
+# cannot silently drift any one site's effective behavior without this file
+# failing first.
+
+
+def test_resolve_archive_ingest_dispatch_defaults_to_resolve_parse_worker_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 9)
+    monkeypatch.setattr(sys, "_is_gil_enabled", lambda: True, raising=False)
+    plan = resolve_archive_ingest_dispatch()
+    assert plan.pool_kind is PoolKind.PROCESS
+    # GIL build: min(8, cpus-1) = min(8, 8) = 8.
+    assert plan.worker_count == 8
+
+
+def test_resolve_archive_ingest_dispatch_honors_explicit_override() -> None:
+    """``parse_workers`` (the demo seeder's force-sequential knob) wins over
+    the ambient CPU-based default, clamped to at least 1."""
+    plan = resolve_archive_ingest_dispatch(parse_workers=1)
+    assert plan.pool_kind is PoolKind.PROCESS
+    assert plan.worker_count == 1
+
+    plan_negative = resolve_archive_ingest_dispatch(parse_workers=-5)
+    assert plan_negative.worker_count == 1
+
+
+@pytest.mark.parametrize(
+    ("record_count", "cpu_count", "expected_workers"),
+    [
+        (8, 24, 8),  # capped at 8 regardless of a wider CPU count
+        (3, 24, 3),  # fewer records than the cap: use the record count
+        (12, 4, 4),  # fewer CPUs than records or the cap: use CPU count
+    ],
+)
+def test_resolve_validation_dispatch_matrix(
+    monkeypatch: pytest.MonkeyPatch, record_count: int, cpu_count: int, expected_workers: int
+) -> None:
+    """validation_flow.py's own measured process-pool preference: always a
+    process pool, ``min(record_count, cpus, 8)``, independent of
+    ``parallel_threads_effective`` -- confirmed by never patching the GIL
+    probe in this test at all."""
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: cpu_count)
+    plan = resolve_validation_dispatch(record_count=record_count)
+    assert plan.pool_kind is PoolKind.PROCESS
+    assert plan.worker_count == expected_workers
+
+
+@pytest.mark.parametrize(
+    ("total_blob_bytes", "record_count", "worker_limit", "cpu_count", "expected_kind", "expected_workers"),
+    [
+        (4 * 1024 * 1024, 10, 16, 16, PoolKind.SEQUENTIAL, 1),  # <= 8 MiB: sequential
+        (16 * 1024 * 1024, 10, 16, 16, PoolKind.PROCESS, 4),  # <= 64 MiB: capped at 4
+        (16 * 1024 * 1024, 2, 16, 16, PoolKind.PROCESS, 2),  # <= 64 MiB: record count under the 4-cap
+        (100 * 1024 * 1024, 60, 16, 16, PoolKind.PROCESS, 16),  # > 64 MiB: no 4-cap, limited by worker_limit
+        (100 * 1024 * 1024, 60, 4, 16, PoolKind.PROCESS, 4),  # > 64 MiB: explicit narrower limit wins
+        (100 * 1024 * 1024, 2, 16, 16, PoolKind.PROCESS, 2),  # > 64 MiB: record count under every ceiling
+    ],
+)
+def test_resolve_ingest_batch_dispatch_matrix(
+    monkeypatch: pytest.MonkeyPatch,
+    total_blob_bytes: int,
+    record_count: int,
+    worker_limit: int,
+    cpu_count: int,
+    expected_kind: PoolKind,
+    expected_workers: int,
+) -> None:
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: cpu_count)
+    plan = resolve_ingest_batch_dispatch(
+        total_blob_bytes=total_blob_bytes, record_count=record_count, worker_limit=worker_limit
+    )
+    assert plan.pool_kind is expected_kind
+    assert plan.worker_count == expected_workers
+
+
+@pytest.mark.parametrize(
+    ("ingest_workers", "record_count", "free_threaded", "expected_kind", "expected_workers"),
+    [
+        (1, 10, True, PoolKind.SEQUENTIAL, 1),  # ingest_workers<=1: sequential regardless of build
+        (4, 1, True, PoolKind.SEQUENTIAL, 1),  # record_count<=1: sequential regardless of build
+        (4, 10, False, PoolKind.SEQUENTIAL, 1),  # GIL build: sequential regardless of workers/records
+        (4, 10, True, PoolKind.THREAD, 4),  # free-threaded + eligible: threads, worker_count = min(workers, records)
+        (10, 4, True, PoolKind.THREAD, 4),  # worker_count capped by record_count, not ingest_workers
+    ],
+)
+def test_resolve_revision_backfill_census_dispatch_matrix(
+    ingest_workers: int, record_count: int, free_threaded: bool, expected_kind: PoolKind, expected_workers: int
+) -> None:
+    """``free_threaded`` is an explicit input here (the caller's own
+    ``parallel_threads_effective()`` read), not resolved internally --
+    exercised directly with both booleans rather than monkeypatching the
+    GIL probe, proving the decision is a pure function of its three inputs."""
+    plan = resolve_revision_backfill_census_dispatch(
+        ingest_workers=ingest_workers, record_count=record_count, free_threaded=free_threaded
+    )
+    assert plan.pool_kind is expected_kind
+    assert plan.worker_count == expected_workers
