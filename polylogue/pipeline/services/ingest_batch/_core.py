@@ -68,7 +68,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 )
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     bind_raw_revision,
-    classify_raw_revision_cohort,
+    classify_raw_revision_cohort_for_live_watch,
     raw_membership_raw_ids,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
@@ -654,7 +654,7 @@ def _bind_drive_revision_lineage(
                 authority=RawRevisionAuthority.QUARANTINED,
             ),
         )
-        classify_raw_revision_cohort(adapter, logical_source_key)
+        classify_raw_revision_cohort_for_live_watch(adapter, logical_source_key)
     except Exception:
         logger.warning(
             "drive_revision_lineage_bind_failed",
