@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface
+from tests.infra.storage_records import SessionBuilder
 
 
 @contextmanager
@@ -124,6 +125,50 @@ def test_registered_tools_persist_success_and_typed_failure_through_daemon(
     assert by_tool["read"].error_detail == "not_found"
     session_calls = _read_calls(workspace_env["archive_root"], session_id="codex-session:missing")
     assert [entry.tool_name for entry in session_calls] == ["read"]
+
+
+def test_all_registered_read_transactions_emit_durable_telemetry(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Capture one durable telemetry event for every live read transaction.
+
+    Production dependencies exercised: the actual FastMCP registration, the
+    six cutover handlers, the daemon HTTP telemetry endpoint, and the ops-tier
+    MCP call-log table. Removing a declared handler, changing its telemetry
+    name, bypassing ``_async_safe_call``, or dropping durable delivery makes
+    the complete six-tool set assertion fail.
+    """
+    session_id = "codex-session:mcp-read-telemetry"
+    SessionBuilder(workspace_env["archive_root"] / "index.db", "mcp-read-telemetry").provider(
+        "codex-session"
+    ).add_message(text="mcp read telemetry needle").save()
+
+    with _running_daemon() as daemon_url:
+        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
+        _set_runtime_services(None)
+        try:
+            server = cast(MCPServerUnderTest, build_server())
+            tools = server._tool_manager._tools
+            uri = f"polylogue://session/{session_id}"
+            calls = (
+                ("query", {"expression": "messages where text:telemetry", "limit": 1}),
+                ("read", {"ref": uri}),
+                ("get", {"ref": uri}),
+                ("explain", {"subject": "query", "expression": "messages where text:telemetry"}),
+                ("context", {"intent": "lookup", "recipient_ref": "agent:nobody"}),
+                ("status", {"scope": "archive"}),
+            )
+            for name, arguments in calls:
+                payload = json.loads(invoke_surface(tools[name].fn, **arguments))
+                assert payload.get("is_error") is not True, (name, payload)
+            assert flush_mcp_call_log(timeout=5.0)
+        finally:
+            _set_runtime_services(None)
+
+    read_calls = _read_calls(workspace_env["archive_root"])
+    by_tool = {entry.tool_name: entry for entry in read_calls}
+    assert set(by_tool) >= {"query", "read", "get", "explain", "context", "status"}
+    assert all(by_tool[name].success for name in ("query", "read", "get", "explain", "context", "status"))
 
 
 def test_session_tools_and_successor_preamble_are_queryable_by_session(
