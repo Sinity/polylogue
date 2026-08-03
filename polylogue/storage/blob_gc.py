@@ -24,6 +24,19 @@ A prior revision carried a late write-effects lease mechanism
 that no production caller populated. Source schema v4 replaces it with an
 archive-owned batched publisher over a substrate-neutral BlobStore, closing
 the actual final-path-visibility -> reference-commit window.
+
+Relationship to ``RawAuthorityVerdict`` (polylogue-w6hql/ds4b4 item 4): this
+module deliberately never consults a raw's authority verdict (VERIFIED /
+SOLE_COPY / SUPERSEDED / DIVERGED / UNCHECKED,
+``polylogue.core.enums.RawAuthorityVerdict``) when deciding whether a blob is
+GC-eligible. Invariant #1 above (row reference) is a strictly stronger, cheaper
+check that subsumes verdict semantics: a raw carrying a "non-authoritative"
+verdict (SUPERSEDED/DIVERGED/UNCHECKED) still has a live ``raw_sessions`` row
+(and a ``blob_refs`` row for its payload) for as long as governance keeps that
+history, so its blob stays protected regardless of what the verdict says about
+its authority. See
+``tests/unit/storage/test_blob_gc_raw_authority_verdict_invariant.py`` for the
+regression proof across every verdict value.
 """
 
 from __future__ import annotations
