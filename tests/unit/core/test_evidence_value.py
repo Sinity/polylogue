@@ -21,7 +21,7 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
-from polylogue.declarations import DeclarationRegistry, normalized_derivation_bytes
+from polylogue.declarations import DeclarationRegistry
 
 _NOW = "2026-07-17T08:00:00+00:00"
 _DEFINITION = ObjectRef(kind="insight", object_id="test-quantitative-family:v1")
@@ -442,7 +442,7 @@ def test_fact_family_projects_through_shared_declaration_kernel() -> None:
     """Production dependency: FactFamilySpec uses the shared declaration kernel.
 
     Anti-vacuity mutation: removing the domain projection makes registration
-    and deterministic derivation unavailable to the family completeness path.
+    unavailable to the family completeness path.
     """
 
     declaration = _SPEC.declaration()
@@ -451,4 +451,4 @@ def test_fact_family_projects_through_shared_declaration_kernel() -> None:
 
     assert declaration.declaration_id == "evidence.test.quantitative"
     assert declaration.owner_path == "tests/unit/core/test_evidence_value.py"
-    assert normalized_derivation_bytes(registry)
+    assert registry.declarations() == (declaration,)

@@ -2,17 +2,13 @@
 
 Simulates a fake domain family the way ``polylogue/mcp/declarations`` (the
 real t46.8.1 pilot) does: two compatible declarations that legitimately share
-a family, one declaration that differs on each of the five compatibility
+a family, and one declaration that differs on each of the five compatibility
 dimensions in isolation (so the diagnostic can be checked names exactly that
-dimension and no other), deterministic per-artifact-kind derivation across
-shuffled registration order, and typed-deriver usage for every artifact kind
-the kernel promises (names, contracts, schema/doc fragments, examples,
-discovery text, completeness).
+dimension and no other).
 """
 
 from __future__ import annotations
 
-import random
 from dataclasses import replace
 
 import pytest
@@ -26,13 +22,6 @@ from polylogue.declarations import (
     ExampleSpec,
     HandlerBinding,
     OutputSpec,
-    normalized_completeness_bytes,
-    normalized_contract_bytes,
-    normalized_derivation_bytes,
-    normalized_discovery_bytes,
-    normalized_example_bytes,
-    normalized_name_bytes,
-    normalized_schema_doc_bytes,
 )
 
 _BASE_COMPATIBILITY = CompatibilityKey(
@@ -127,38 +116,3 @@ def test_family_rejects_declaration_differing_on_one_dimension(dimension: str) -
     # The registry must never coerce the incompatible declaration in: the
     # family stays exactly as it was before the failed registration attempt.
     assert registry.declarations() == (_fake_domain_declaration("gauge", family="widget"),)
-
-
-def test_widget_family_derivation_is_order_independent_across_every_artifact_kind() -> None:
-    """Production dependency: per-artifact-kind deterministic derivation (o21.1 AC 3).
-
-    Anti-vacuity mutation: any typed projection function (name/contract/
-    schema-doc/example/discovery/completeness) that leaks dict/set iteration
-    order, or omits sorting by declaration id, would make one of these
-    byte comparisons fail under a shuffled registration order.
-    """
-
-    declarations = [_fake_domain_declaration(name, family=name) for name in ("gauge", "dial", "lever", "switch")]
-
-    forward = DeclarationRegistry()
-    for declaration in declarations:
-        forward.register(declaration)
-
-    shuffled = list(declarations)
-    random.Random(20260721).shuffle(shuffled)
-    reordered = DeclarationRegistry()
-    for declaration in shuffled:
-        reordered.register(declaration)
-
-    assert normalized_derivation_bytes(forward) == normalized_derivation_bytes(reordered)
-    assert normalized_name_bytes(forward) == normalized_name_bytes(reordered)
-    assert normalized_contract_bytes(forward) == normalized_contract_bytes(reordered)
-    assert normalized_schema_doc_bytes(forward) == normalized_schema_doc_bytes(reordered)
-    assert normalized_example_bytes(forward) == normalized_example_bytes(reordered)
-    assert normalized_discovery_bytes(forward) == normalized_discovery_bytes(reordered)
-    assert normalized_completeness_bytes(forward) == normalized_completeness_bytes(reordered)
-
-    # And the registry's own public ordering is also independent of insertion order.
-    assert tuple(item.declaration_id for item in forward.declarations()) == tuple(
-        item.declaration_id for item in reordered.declarations()
-    )

@@ -16,7 +16,6 @@ from polylogue.declarations import (
     ExampleSpec,
     HandlerBinding,
     OutputSpec,
-    normalized_derivation_bytes,
     validate_declaration,
 )
 
@@ -53,10 +52,10 @@ def _declaration(
 
 
 def test_registry_derivation_is_independent_of_registration_order() -> None:
-    """Production dependency: DeclarationRegistry stable ordering and derivation normalization.
+    """Production dependency: DeclarationRegistry stable ordering.
 
-    Anti-vacuity mutation: returning insertion order from ``declarations()`` makes
-    the normalized byte comparison fail.
+    Anti-vacuity mutation: returning insertion order from ``declarations()``
+    makes this comparison fail for the reverse-registered registry.
     """
 
     forward = DeclarationRegistry()
@@ -67,8 +66,8 @@ def test_registry_derivation_is_independent_of_registration_order() -> None:
     for declaration in reversed(declarations):
         reverse.register(declaration)
 
-    assert normalized_derivation_bytes(forward) == normalized_derivation_bytes(reverse)
     assert tuple(item.declaration_id for item in forward.declarations()) == ("test.alpha", "test.beta")
+    assert tuple(item.declaration_id for item in reverse.declarations()) == ("test.alpha", "test.beta")
 
 
 def test_family_rejects_every_incompatible_semantic_dimension() -> None:
