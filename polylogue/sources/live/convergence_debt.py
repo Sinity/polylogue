@@ -12,6 +12,12 @@ class ConvergenceDebt:
     path: Path
     stage: str
     error: str | None = None
+    # True when this row reflects a stage's deliberate bounded-backpressure
+    # deferral (``ConvergenceStage.false_means_pending``, e.g. "insights
+    # deferred until quiet") rather than a genuine check/execute failure.
+    # Drives ``convergence_debt.status`` ("deferred" vs "failed") so daemon
+    # health/alerting doesn't mistake normal backpressure for breakage.
+    deferred: bool = False
 
 
 def debt_by_path(debts: Iterable[ConvergenceDebt]) -> dict[Path, tuple[ConvergenceDebt, ...]]:
@@ -38,6 +44,23 @@ def convergence_debt_from_states(paths: Iterable[Path], states: object) -> list[
     return debt
 
 
+def stage_state_value(value: object) -> str:
+    """Normalize a ``StageState`` (or its plain string mirror) to its value."""
+    return str(getattr(value, "value", value))
+
+
+def is_deferred_stage_state(value: object) -> bool:
+    """Return whether ``value`` reflects a deliberate backpressure deferral.
+
+    ``StageState.PENDING`` (``daemon/convergence.py``) is set only for two
+    non-failure reasons: a ``false_means_pending`` stage returned ``False``
+    after doing bounded successful work, or a downstream stage is queued
+    behind an unfinished barrier stage. Neither is an error, so debt rows
+    carrying this state should read as "deferred", not "failed".
+    """
+    return stage_state_value(value) == "pending"
+
+
 def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDebt]:
     stages = getattr(state, "stages", None)
     last_error = getattr(state, "last_error", None)
@@ -45,7 +68,7 @@ def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDe
         return [ConvergenceDebt(path=path, stage="convergence", error=optional_error(last_error))]
     debts: list[ConvergenceDebt] = []
     for stage_name, stage_state in stages.items():
-        state_value = getattr(stage_state, "value", stage_state)
+        state_value = stage_state_value(stage_state)
         if state_value in {"done", "skipped"}:
             continue
         debts.append(
@@ -53,6 +76,7 @@ def convergence_debt_from_state(path: Path, state: object) -> list[ConvergenceDe
                 path=path,
                 stage=str(stage_name),
                 error=optional_error(last_error) or f"stage state: {state_value}",
+                deferred=state_value == "pending",
             )
         )
     if not debts:
@@ -71,5 +95,7 @@ __all__ = [
     "convergence_debt_from_state",
     "convergence_debt_from_states",
     "debt_by_path",
+    "is_deferred_stage_state",
     "optional_error",
+    "stage_state_value",
 ]
