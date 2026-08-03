@@ -14,6 +14,17 @@ sit in a gitignored, untracked `.agent/archive/devloop-2026-07/` in some
 working checkouts — polylogue-ocby — it is not tracked in this repo and a
 fresh clone will not have it.)
 
+## Dispatch Agent Definitions
+
+`.claude/agents/lane.md` and `.claude/agents/triage.md` are the canonical
+standing contract for dispatched worktree agents in this repo — worktree
+discipline, the no-`bd`-CLI rule, red-first bug fixes, verification commands,
+PR shape, and never-merge. Dispatch prompts that use `subagent_type: lane` or
+`subagent_type: triage` only need to carry task-specific content (which
+bead/files/scope); the operating rules are already loaded from the agent
+definition, not re-typed per dispatch. If the standing contract changes,
+edit those two files, not the per-dispatch prompt template.
+
 ## Directory Shape
 
 ```text

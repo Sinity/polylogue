@@ -25,6 +25,8 @@ venv/
 .claude/*
 !.claude/settings.json
 !.claude/setup.sh
+!.claude/agents/
+!.claude/agents/*.md
 .vscode/
 
 # Legacy cache/output directories that may still appear at the repo root
