@@ -8,6 +8,8 @@ from enum import StrEnum
 from hashlib import sha256
 from typing import BinaryIO, Literal
 
+from polylogue.core.enums import PolylogueStrEnum
+
 
 class RawRevisionKind(StrEnum):
     FULL = "full"
@@ -15,7 +17,19 @@ class RawRevisionKind(StrEnum):
     UNKNOWN = "unknown"
 
 
-class RawRevisionAuthority(StrEnum):
+class RawRevisionAuthority(PolylogueStrEnum):
+    """Closed vocabulary for ``revision_authority``/``previous_revision_authority``.
+
+    ``PolylogueStrEnum`` (not a plain ``StrEnum``) so this generates its SQL
+    CHECK via ``archive_tiers/common.py``'s ``check()``/``nullable_check()``
+    at every column sharing the full 3-value domain, instead of each site
+    hand-copying the literal list (polylogue-h57ic). ``raw_session_
+    memberships.revision_authority`` is a genuinely narrower 2-value domain
+    (``ASSERTED`` never applies there) and uses the separate
+    ``ProvenRevisionAuthority`` literal alias in
+    ``storage/sqlite/archive_tiers/types.py`` instead of this enum.
+    """
+
     ASSERTED = "asserted"
     BYTE_PROVEN = "byte_proven"
     QUARANTINED = "quarantined"

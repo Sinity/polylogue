@@ -6,8 +6,12 @@ live in index.db and are rebuilt from this tier.
 
 from __future__ import annotations
 
+from typing import get_args
+
+from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
-from polylogue.storage.sqlite.archive_tiers.common import check, nullable_check
+from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
+from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
 SOURCE_SCHEMA_VERSION = 21
 
@@ -42,7 +46,7 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
     ,append_end_offset       INTEGER CHECK(append_end_offset > append_start_offset)
     ,acquisition_generation  INTEGER CHECK(acquisition_generation >= 0)
     ,revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
-        CHECK(revision_authority IN ('asserted', 'byte_proven', 'quarantined'))
+        CHECK ({check("revision_authority", RawRevisionAuthority)})
     ,revision_authority_evidence TEXT
         CHECK(revision_authority_evidence IS NULL OR revision_authority_evidence IN ('live_source_verification_v1'))
 ) STRICT;
@@ -114,8 +118,12 @@ CREATE TABLE IF NOT EXISTS raw_session_memberships (
     message_count           INTEGER NOT NULL CHECK(message_count >= 0),
     predecessor_raw_id      TEXT,
     acquisition_generation  INTEGER NOT NULL DEFAULT 0 CHECK(acquisition_generation >= 0),
+    -- Narrower than every other revision_authority/previous_revision_authority
+    -- column: this value is always an OUTPUT of membership classification
+    -- (revision_governance.py's writeback), which never emits ASSERTED --
+    -- see ProvenRevisionAuthority in archive_tiers/types.py (polylogue-h57ic).
     revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
-        CHECK(revision_authority IN ('byte_proven', 'quarantined')),
+        CHECK ({literal_check("revision_authority", *get_args(ProvenRevisionAuthority))}),
     decision                TEXT CHECK(decision IN (
                                 'applied', 'superseded_equivalent', 'superseded_prefix',
                                 'ambiguous', 'deferred'
@@ -150,7 +158,7 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
 CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
     raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     verdict                     TEXT NOT NULL CHECK(verdict IN ('exact_match', 'codex_header_strip_match')),
-    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    previous_revision_authority TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
     source_path                 TEXT NOT NULL,
     blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
     blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
@@ -176,7 +184,7 @@ CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
     membership_decision         TEXT NOT NULL CHECK(membership_decision IN (
                                     'applied', 'superseded_equivalent', 'superseded_prefix'
                                 )),
-    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    previous_revision_authority TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
     promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
     tool_version                TEXT NOT NULL,
     backup_manifest_path        TEXT NOT NULL,
@@ -207,7 +215,7 @@ CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
     append_start_offset              INTEGER NOT NULL CHECK(append_start_offset >= 0),
     append_end_offset                INTEGER NOT NULL CHECK(append_end_offset > append_start_offset),
     matched_after_codex_header_strip INTEGER NOT NULL CHECK(matched_after_codex_header_strip IN (0, 1)),
-    previous_revision_authority      TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
+    previous_revision_authority      TEXT NOT NULL CHECK ({check("previous_revision_authority", RawRevisionAuthority)}),
     compared_at_ms                    INTEGER NOT NULL CHECK(compared_at_ms >= 0),
     tool_version                      TEXT NOT NULL,
     backup_manifest_path              TEXT NOT NULL,
