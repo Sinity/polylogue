@@ -50,6 +50,9 @@ _ENVELOPE_FIELDS: tuple[str, ...] = (
     "content_blocks",
     "parent_id",
     "branch_index",
+    "position",
+    "is_active_path",
+    "is_active_leaf",
     "has_paste_evidence",
     "paste_boundary_state",
     "has_tool_use",
@@ -116,6 +119,9 @@ def test_envelope_minimal_construction_uses_default_envelope_fields() -> None:
     assert payload.timestamp is None
     assert payload.parent_id is None
     assert payload.branch_index == 0
+    assert payload.position == 0
+    assert payload.is_active_path is None
+    assert payload.is_active_leaf is False
     assert payload.has_paste_evidence is False
     assert payload.has_tool_use is False
     assert payload.has_thinking is False
@@ -140,6 +146,46 @@ def test_from_message_propagates_branch_lineage_state() -> None:
     payload = SessionMessagePayload.from_message(msg, session_id="c1")
     assert payload.branch_index == 3
     assert payload.parent_id == "m-parent"
+
+
+def test_from_message_propagates_position_and_active_path_state() -> None:
+    """polylogue-ksgg: position/is_active_path/is_active_leaf must survive
+    the read surface so branch/thread structure can be reconstructed
+    without direct SQL."""
+    msg = _build_message(position=7, is_active_path=True, is_active_leaf=True)
+    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    assert payload.position == 7
+    assert payload.is_active_path is True
+    assert payload.is_active_leaf is True
+
+
+def test_from_message_preserves_unknown_active_path() -> None:
+    """``is_active_path=None`` (unknown) must not collapse to False."""
+    msg = _build_message(is_active_path=None)
+    payload = SessionMessagePayload.from_message(msg, session_id="c1")
+    assert payload.is_active_path is None
+
+
+def test_from_archive_row_propagates_position_and_active_path_state() -> None:
+    # Note: MessageRecord's sibling-order field is named ``branch_index``
+    # while ``from_archive_row`` reads the real ArchiveMessageRow's
+    # ``variant_index`` attribute -- a pre-existing naming mismatch that
+    # means MessageRecord-as-stand-in only exercises the fields whose
+    # attribute names agree (position/is_active_path/is_active_leaf).
+    row = MessageRecord(
+        message_id=MessageId("m1"),
+        session_id=SessionId("c1"),
+        provider_message_id="native-m1",
+        role=Role.USER,
+        content_hash=ContentHash("0" * 64),
+        is_active_path=True,
+        position=5,
+        is_active_leaf=True,
+    )
+    payload = SessionMessagePayload.from_archive_row(row, session_id="c1")
+    assert payload.position == 5
+    assert payload.is_active_path is True
+    assert payload.is_active_leaf is True
 
 
 def test_from_message_propagates_content_flags() -> None:
@@ -294,6 +340,8 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     # Required: typed envelope fields are observable (the test would
     # fail-fast if a new None-default field crept in).
     assert blob["branch_index"] == 0
+    assert blob["position"] == 0
+    assert blob["is_active_leaf"] is False
     assert blob["has_paste_evidence"] is False
     assert blob["input_tokens"] == 0
     assert blob["attachment_refs"] == []
@@ -301,6 +349,7 @@ def test_minimal_payload_serializes_compactly_with_exclude_none() -> None:
     # None defaults are correctly omitted.
     assert "target_ref" not in blob
     assert "parent_id" not in blob
+    assert "is_active_path" not in blob
     assert "raw_id" not in blob
     assert "source_path" not in blob
     assert "model_name" not in blob

@@ -260,6 +260,8 @@ def _message_to_domain(message: ArchiveMessageRow, *, origin: Origin) -> Message
         # concrete bool (schema default), never a guess.
         branch_index=message.variant_index,
         is_active_path=message.is_active_path,
+        position=message.position,
+        is_active_leaf=message.is_active_leaf,
         parent_id=message.parent_message_id,
         stop_reason=message.stop_reason,
     )

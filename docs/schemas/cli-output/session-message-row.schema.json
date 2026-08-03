@@ -215,6 +215,23 @@
       "title": "Input Tokens",
       "type": "integer"
     },
+    "is_active_leaf": {
+      "default": false,
+      "title": "Is Active Leaf",
+      "type": "boolean"
+    },
+    "is_active_path": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Is Active Path"
+    },
     "material_origin": {
       "default": "unknown",
       "title": "Material Origin",
@@ -265,6 +282,11 @@
       ],
       "default": null,
       "title": "Paste Boundary State"
+    },
+    "position": {
+      "default": 0,
+      "title": "Position",
+      "type": "integer"
     },
     "raw_id": {
       "anyOf": [

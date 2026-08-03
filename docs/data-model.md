@@ -88,7 +88,10 @@ wrappers, task notifications, provider-generated context bundles, and tool-resul
 protocol envelopes through `role=user`. Use `material_origin` for authoredness
 accounting and prose projection.
 | `parent_id` | `str?` | Parent message, for branching |
-| `branch_index` | `int` | Branch position among sibling variants |
+| `branch_index` | `int` | Sibling creation order (aka `variant_index`) -- NOT display state |
+| `position` | `int` | Ordinal position of this message within its session |
+| `is_active_path` | `bool?` | Provider-reported "this sibling is the currently-accepted one" signal, authoritative for mainline selection; `None` means unknown, never "not active" |
+| `is_active_leaf` | `bool` | Whether this message is the tip of the currently-active branch |
 | `has_tool_use` / `has_thinking` / `has_paste_evidence` | `bool` | Precomputed content/evidence flags projected from storage |
 | `input_tokens` / `output_tokens` | `int` | Token counts, when reported |
 | `cache_read_tokens` / `cache_write_tokens` | `int` | Cache token counts, when reported |
