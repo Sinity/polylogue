@@ -3,7 +3,7 @@
 A Claude Code resume/fork JSONL file physically carries over ONE boundary
 record from its parent session (same content, but tagged with the PARENT's
 ``sessionId``) before switching to its own session id for the rest of the
-file. `_claude_code_grouped_record_specs` (dispatch.py) correctly splits such
+file. `_claude_code_multiway_parse` (dispatch.py) correctly splits such
 a file into two `ParsedSession`s that share the identical captured raw bytes.
 
 Before this fix, `pipeline/services/archive_ingest.py`'s one-shot importer

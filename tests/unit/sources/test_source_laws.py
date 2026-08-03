@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 import zipfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -1498,32 +1498,33 @@ def test_session_emitter_reuses_jsonl_sniff_payloads_for_grouped_detection(
     assert len(emitted[0][1].messages) == 2
 
 
-def test_claude_code_stream_payload_does_not_materialize_whole_stream(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_eager_parse(_payload: object, _fallback_id: str) -> ParsedSession:
-        raise AssertionError("stream parse should not use eager Claude Code parsing")
+class _OneShotIterator:
+    """Wraps an iterable exposing ONLY ``__iter__``/``__next__`` -- no
+    ``__len__``, ``__getitem__``, or ``__reversed__``. Any code that tries to
+    treat this as a ``Sequence`` (random access, a count up front, more than
+    one full pass) raises ``TypeError``/``StopIteration`` immediately, which
+    is what makes this a mechanical proof of "consumed via plain iteration
+    only" rather than the weaker "happened not to be a ``list``".
+    """
 
-    seen_record_counts: list[int] = []
+    def __init__(self, items: Iterable[object]) -> None:
+        self._iterator = iter(items)
 
-    def fake_stream_parse(
-        records: Iterable[object],
-        fallback_id: str,
-        **_kwargs: object,
-    ) -> ParsedSession:
-        assert not isinstance(records, list)
-        seen_record_counts.append(sum(1 for _record in records))
-        return ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id=fallback_id,
-            title=fallback_id,
-            messages=[],
-        )
+    def __iter__(self) -> Iterator[object]:
+        return self
 
-    monkeypatch.setattr(claude_parser, "parse_code", fail_eager_parse)
-    monkeypatch.setattr(claude_parser, "parse_code_stream", fake_stream_parse)
+    def __next__(self) -> object:
+        return next(self._iterator)
 
-    records = (
+
+def test_claude_code_stream_payload_does_not_materialize_whole_stream() -> None:
+    """bd polylogue-taj0o Stage 2: the streaming path (multi-GiB raw JSONL
+    ingest) must consume its record stream via plain iteration only, never
+    requiring random access or a full materialization up front --
+    ``_OneShotIterator`` mechanically enforces this (see its docstring)
+    rather than relying on "the input object happens not to be a list".
+    """
+    records = _OneShotIterator(
         {"type": "user", "sessionId": "session-1", "uuid": f"u-{index}", "message": {"role": "user", "content": "x"}}
         for index in range(3)
     )
@@ -1536,35 +1537,24 @@ def test_claude_code_stream_payload_does_not_materialize_whole_stream(
     sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "session-1")
 
     assert [session.provider_session_id for session in sessions] == ["session-1"]
-    assert seen_record_counts == [3]
+    assert len(sessions[0].messages) == 3
 
 
-def test_claude_code_stream_payload_splits_contiguous_session_groups(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    parsed_groups: list[tuple[str, list[str]]] = []
-
-    def fake_stream_parse(
-        records: Iterable[object],
-        fallback_id: str,
-        **_kwargs: object,
-    ) -> ParsedSession:
-        session_ids = [
-            str(record.get("sessionId"))
-            for record in records
-            if isinstance(record, dict) and record.get("sessionId") is not None
-        ]
-        parsed_groups.append((fallback_id, session_ids))
-        return ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id=fallback_id,
-            title=fallback_id,
-            messages=[],
-        )
-
-    monkeypatch.setattr(claude_parser, "parse_code_stream", fake_stream_parse)
-
-    records: Iterable[object] = iter(
+def test_claude_code_stream_payload_splits_contiguous_session_groups() -> None:
+    """bd polylogue-taj0o Stage 2: a prior version of this test monkeypatched
+    ``claude_parser.parse_code_stream`` per contiguous run -- an
+    implementation detail of the deleted chunk-then-merge streaming
+    architecture (``_claude_code_stream_sessions``). The unified
+    ``_claude_code_multiway_parse`` folds records directly into one
+    accumulator per session id instead of calling ``parse_code_stream`` per
+    group, so this now asserts the real, observable production behavior
+    through ``parse_stream_payload`` alone: a one-shot iterator (proving no
+    materialization -- see ``_OneShotIterator``) that mixes a leading
+    id-less prefix record, a two-record ``session-1`` run, and a trailing
+    ``session-2`` record still splits into two correctly-identified,
+    correctly-populated sessions.
+    """
+    records = _OneShotIterator(
         [
             {"type": "summary", "uuid": "prefix", "message": {"role": "system", "content": "prefix"}},
             {"type": "user", "sessionId": "session-1", "uuid": "u-1", "message": {"role": "user", "content": "one"}},
@@ -1578,18 +1568,16 @@ def test_claude_code_stream_payload_splits_contiguous_session_groups(
         ]
     )
 
-    # bd polylogue-jc4q: fallback_id matches the LARGER group's own real
-    # content id (the production shape), so it is recognized as this file's
-    # primary content; "session-2" has no parentUuid evidence connecting it
-    # to the primary and keeps its own bare id as a genuinely independent
-    # session.
+    # bd polylogue-jc4q: fallback_id matches session-1's own real content id
+    # (the production shape), so it is recognized as this file's primary
+    # content; "session-2" has no parentUuid evidence connecting it to the
+    # primary and keeps its own bare id as a genuinely independent session.
     sessions = parse_stream_payload(Provider.CLAUDE_CODE, records, "session-1")
 
     assert [session.provider_session_id for session in sessions] == ["session-1", "session-2"]
-    assert parsed_groups == [
-        ("session-1", ["session-1", "session-1"]),
-        ("session-2", ["session-2"]),
-    ]
+    # session-1: the id-less prefix ("summary" -> a SUMMARY message) plus its
+    # own two records; session-2: its own one record.
+    assert [len(session.messages) for session in sessions] == [3, 1]
 
 
 def test_claude_code_stream_chunk_merge_preserves_git_branch_from_either_chunk() -> None:

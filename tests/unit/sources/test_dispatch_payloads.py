@@ -251,6 +251,67 @@ def test_parse_stream_payload_splits_claude_code_aggregate_by_session_id() -> No
     assert [len(session.messages) for session in sessions] == [2, 1]
 
 
+def test_claude_code_primary_identity_is_fallback_id_match_not_max_record_count() -> None:
+    """bd polylogue-taj0o: the canonical "primary group" definition is the
+    group whose own ``sessionId`` equals the caller's ``fallback_id`` --
+    NOT the group with the most records (the former eager-only rule,
+    ``_claude_code_grouped_record_specs``'s deleted ``max(groups, key=len)``).
+
+    This file interleaves ``session-a`` (1 record, matches ``fallback_id``)
+    positioned BEFORE ``session-b`` (5 records -- strictly more). Under the
+    deleted max-by-count rule, eager would have picked ``session-b`` as
+    primary purely by size, which would then classify ``session-a`` -- the
+    file's OWN true identity -- as a boundary carryover of ``session-b``
+    (occurring positionally before the eager-chosen primary's first
+    record): a garbled, self-referential ``"session-a:session-a"`` composed
+    id (since ``fallback_id`` here literally equals ``session-a``'s own raw
+    id) with ``parent_session_provider_id="session-a"`` pointing at itself.
+    That is exactly the "wrong group as primary" bug the bead's notes
+    describe for "a small main session with a huge subagent transcript in
+    the same file".
+
+    The canonical fallback_id-match rule instead always recognizes
+    ``session-a`` as primary regardless of its record count or position,
+    and ``session-b`` -- with no ``parentUuid`` evidence chaining it to
+    ``session-a`` -- stays a genuinely independent session under its own
+    bare id.
+    """
+    payload: list[dict[str, object]] = [
+        {
+            "type": "user",
+            "sessionId": "session-a",
+            "uuid": "a-1",
+            "message": {"role": "user", "content": "the file's own real content"},
+        },
+    ]
+    for index in range(5):
+        payload.append(
+            {
+                "type": "user",
+                "sessionId": "session-b",
+                "uuid": f"b-{index}",
+                "message": {"role": "user", "content": f"unrelated session-b turn {index}"},
+            }
+        )
+
+    eager = parse_payload(Provider.CLAUDE_CODE, payload, "session-a")
+    streamed = parse_stream_payload(Provider.CLAUDE_CODE, iter(payload), "session-a")
+
+    for sessions, label in ((eager, "eager"), (streamed, "streamed")):
+        session_a = next(session for session in sessions if "session-a" in session.provider_session_id)
+        session_b = next(session for session in sessions if "session-b" in session.provider_session_id)
+        assert session_a.provider_session_id == "session-a", label
+        assert session_a.parent_session_provider_id is None, label
+        assert session_b.provider_session_id == "session-b", label
+        assert session_b.parent_session_provider_id is None, label
+        assert len(session_a.messages) == 1, label
+        assert len(session_b.messages) == 5, label
+
+    assert [session.model_dump(mode="json") for session in eager] == [
+        session.model_dump(mode="json") for session in streamed
+    ]
+
+
 _SIDECAR_NEEDLE = "zz_only_in_acquired_sidecar_body"
 
 
@@ -324,15 +385,16 @@ def test_parse_payload_without_source_path_skips_sidecar_join(tmp_path: Path) ->
 def test_parse_stream_payload_wires_claude_code_tool_result_sidecars(tmp_path: Path) -> None:
     """polylogue-wjgf: the streaming path must reach the same coverage as the batch path.
 
-    Production path: dispatch._claude_code_stream_sessions's ``parse_group``
-    closure, which tees each group's records through
+    Production path: dispatch._claude_code_multiway_parse's ``fold_into``
+    closure, which tees each record through
     ``ToolResultIndexAccumulator``/``observe_tool_result_stream`` (since the
-    streaming path never materializes the raw payload) and applies
-    ``apply_tool_result_sidecars`` after the group iterator is exhausted.
-    Mutation that breaks this: making ``parse_group`` always take the
-    ``tool_results_dir is None`` branch (i.e. skip sidecars for the stream
-    path) makes coverage depend on file size -- this test would then fail
-    because the block keeps its truncated preview text.
+    streaming path never materializes the raw payload) into a per-accumulator
+    (per session id) sidecar index, joined via ``apply_tool_result_sidecars``
+    once the whole stream is exhausted. Mutation that breaks this: making
+    the function always take the ``tool_results_dir is None`` branch (i.e.
+    skip sidecars for the stream path) makes coverage depend on file size --
+    this test would then fail because the block keeps its truncated preview
+    text.
     """
     session_path = tmp_path / "sess-sidecar.jsonl"
     session_path.write_text("", encoding="utf-8")
@@ -359,7 +421,7 @@ def test_parse_stream_payload_subagent_source_path_resolves_session_level_tool_r
 
     Production path: ``resolve_tool_results_dir`` in
     ``sources/live/tool_result_sidecars.py``, called from
-    ``dispatch._claude_code_stream_sessions``. Mutation that breaks this:
+    ``dispatch._claude_code_multiway_parse``. Mutation that breaks this:
     deriving the tool-results dir as a sibling of the subagent file itself
     (``.../subagents/tool-results/``, which Claude Code never creates) instead
     of walking up to the session directory -- this test would then find no
