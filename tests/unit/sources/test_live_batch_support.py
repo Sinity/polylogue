@@ -468,7 +468,7 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index_parsed_write",
         "full.index.session_upsert",
         "full.index.full_replace",
-        "full.index.full_replace.clear_projection_rows",
+        "full.index.full_replace.fts_guard_clear",
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
     }.issubset(result.stage_timings_s)
@@ -3416,7 +3416,10 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "append-multi.jsonl"
-    payload = b"{}\n"
+    # Real, parseable content -- not a bare `{}` -- because polylogue-xwkh's
+    # declared-non-session-artifact gate now refuses that shape before this
+    # test's mocked parse_payload (returning two sessions) is ever reached.
+    payload = b'{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}\n'
     path.write_bytes(payload)
     plan = _append_plan(path, payload, payload_hash="multi")
     owner = _append_owner(tmp_path)
