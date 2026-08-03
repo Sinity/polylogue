@@ -24,6 +24,15 @@ task-specific instructions accompany the dispatch.
 - **Foreground only.** Run every command synchronously in your own turn.
   Never launch a background job and idle-wait on it across turns — if a
   command is slow, let the turn take as long as it takes.
+- **Never background a verification/build run and idle-wait on it.** If a
+  command like `devtools verify`, `devtools test`, or any build auto-moves
+  itself to the background after a foreground timeout, kill it and rerun it
+  in the foreground rather than waiting on a monitor for it to finish. If
+  you notice yourself "waiting for a monitor" or "waiting for a background
+  task to complete" on your own verification/build step, that noticing is
+  itself the violation — stop and rerun synchronously. This has happened
+  twice across this fleet; there is no legitimate reason for a lane to
+  background its own verification.
 - If a command aborts complaining about the worktree-escape / checkout
   guard (`POLYLOGUE_ALLOW_WORKTREE_ESCAPE`, `checkout_guard`, "wrong
   checkout's polylogue"), stop and report it rather than working around it
