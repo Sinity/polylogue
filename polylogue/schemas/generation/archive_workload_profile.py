@@ -18,6 +18,7 @@ from polylogue.schemas.generation.workload_profiles import (
     workload_profile_identity,
 )
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
+from polylogue.storage.introspection import table_exists as _table_exists
 
 ARCHIVE_WORKLOAD_PROFILE_FILE = "archive-workload-profile.json.gz"
 _INFERENCE_VERSION = "archive-composition-v1"
@@ -29,16 +30,6 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
-            (table,),
-        ).fetchone()
-        is not None
-    )
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:

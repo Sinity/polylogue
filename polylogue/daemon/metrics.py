@@ -105,8 +105,8 @@ from polylogue.storage.archive_layout import (
     ARCHIVE_STORAGE_LAYOUTS,
 )
 from polylogue.storage.archive_readiness import active_rebuild_index_attempts
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -232,14 +232,10 @@ def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table: st
     if not schema_name.replace("_", "").isalnum() or not table.replace("_", "").isalnum():
         return False
     try:
-        row = conn.execute(
-            f"SELECT 1 FROM {schema_name}.sqlite_master WHERE type='table' AND name=?",
-            (table,),
-        ).fetchone()
+        return _table_exists(conn, table, schema=schema_name)
     except sqlite3.Error as exc:
         logger.warning("metrics: attached-table probe failed for %s.%s: %s", schema_name, table, exc, exc_info=True)
         return False
-    return row is not None
 
 
 def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table: str) -> str:

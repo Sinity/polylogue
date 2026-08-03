@@ -17,7 +17,7 @@ from polylogue.storage.fts.sql import (
     FTS_INDEX_DOC_COUNT_SQL,
     FTS_INDEXABLE_MESSAGE_COUNT_SQL,
 )
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 BOUNDED_REPAIR_PRAGMAS = (
     "PRAGMA temp_store = FILE",

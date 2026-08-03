@@ -27,13 +27,13 @@ from polylogue.daemon.convergence_standing_queries import make_standing_query_st
 from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.insights.session.runtime import session_profile_stale_predicate
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
 from polylogue.storage.sqlite.connection_profile import open_daemon_connection
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
     from polylogue.sinex.service import PublicationService

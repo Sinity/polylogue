@@ -39,6 +39,7 @@ from polylogue.paths import (
     browser_capture_receiver_token_path,
     browser_capture_spool_root,
 )
+from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -333,14 +334,6 @@ def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
         return None
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name=? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def _columns(conn: sqlite3.Connection, table_name: str) -> set[str]:

@@ -22,6 +22,7 @@ from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
 from polylogue.sources.dispatch import is_stream_record_provider
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
@@ -906,14 +907,6 @@ def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
             )
         )
     return debt_rows
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 def _embedding_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:

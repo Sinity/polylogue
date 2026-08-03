@@ -13,6 +13,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.storage.introspection import table_exists as table_exists_sync
 
 logger = get_logger(__name__)
 _ARCHIVE_MESSAGE_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -50,15 +51,6 @@ def missing_fts_triggers_sync(conn: sqlite3.Connection) -> list[str]:
     ).fetchall()
     present = {row[0] for row in rows}
     return [name for name in expected if name not in present]
-
-
-def table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    """Return whether ``table_name`` is present in ``sqlite_master``."""
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
 
 
 def record_fts_freshness_snapshot_sync(conn: sqlite3.Connection) -> None:

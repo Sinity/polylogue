@@ -12,7 +12,8 @@ from typing import Literal
 
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore, get_blob_store
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -119,12 +120,6 @@ class _EligibleRawReceipt:
     source_revision: str
     baseline_raw_id: str | None
     predecessor_raw_id: str | None
-
-
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    if not _table_exists(conn, table):
-        return False
-    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
 def _blob_hash_text(value: object) -> str | None:

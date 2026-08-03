@@ -2174,7 +2174,7 @@ def test_ensure_fts_startup_readiness_skips_old_non_blocks_shape(
                 return FakeCursor(("messages_fts",))
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
                 return FakeCursor(("messages",))
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
                 return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
@@ -2268,7 +2268,7 @@ def test_ensure_fts_startup_readiness_does_not_rebuild_old_non_blocks_shape(
                 return FakeCursor(("messages_fts",))
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
                 return FakeCursor(("messages",))
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
                 return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):
@@ -2337,7 +2337,7 @@ def test_archive_message_fts_startup_large_drift_is_deferred(monkeypatch: pytest
     class FakeConnection:
         def execute(self, sql: str, params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(params[0]) if isinstance(params, tuple) and params else ""
                 return (
                     FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
@@ -2433,7 +2433,7 @@ def test_archive_message_fts_startup_records_known_stale_ledger_without_global_c
         def execute(self, sql: str, params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(params[0]) if isinstance(params, tuple) and params else ""
                 return (
                     FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
@@ -2503,7 +2503,7 @@ def test_archive_message_fts_startup_downgrades_inconsistent_ready_ledger_withou
         def execute(self, sql: str, params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(params[0]) if isinstance(params, tuple) and params else ""
                 return (
                     FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
@@ -2592,7 +2592,7 @@ def test_archive_message_fts_startup_records_poisoned_stale_zero_ledger_without_
         def execute(self, sql: str, params: object = ()) -> FakeCursor:
             query = " ".join(sql.split())
             self.queries.append(query)
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(params[0]) if isinstance(params, tuple) and params else ""
                 return (
                     FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
@@ -2693,7 +2693,7 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
             self.queries.append(query)
             if query == "PRAGMA busy_timeout = 120000":
                 return FakeCursor(None)
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 return FakeCursor(None)
             raise AssertionError(f"unexpected query: {query}")
 
@@ -2718,7 +2718,7 @@ def test_ensure_fts_startup_readiness_skips_when_blocks_table_absent(
 
     asyncio.run(daemon_cli._ensure_fts_startup_readiness())
 
-    assert "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1" in conn.queries
+    assert "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1" in conn.queries
     assert conn.committed is False
     assert conn.closed is True
 
@@ -2775,7 +2775,7 @@ def test_ensure_fts_startup_readiness_trusts_ready_freshness_without_counts(
                         (9, "detail"),
                     ],
                 )
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(params[0]) if isinstance(params, tuple) and params else ""
                 return (
                     FakeCursor((1,)) if name in {"blocks", "messages_fts", "messages_fts_docsize"} else FakeCursor(None)
@@ -2901,7 +2901,7 @@ def test_ensure_fts_startup_readiness_skips_non_current_archive_shape(
                 return FakeCursor(("messages_fts",))
             if query == "SELECT name FROM sqlite_master WHERE type='table' AND name='messages'":
                 return FakeCursor(("messages",))
-            if query == "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1":
+            if query == "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1":
                 name = str(_params[0]) if isinstance(_params, tuple) and _params else ""
                 return FakeCursor((1,)) if name in {"messages", "messages_fts"} else FakeCursor(None)
             if query.startswith("SELECT name FROM sqlite_master WHERE type='trigger'"):

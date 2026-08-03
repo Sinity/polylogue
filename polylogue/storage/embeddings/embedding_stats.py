@@ -31,8 +31,8 @@ from polylogue.storage.embeddings.support import (
     optional_row_sync,
     optional_rows_async,
     optional_rows_sync,
-    table_exists_async,
-    table_exists_sync,
+    table_exists_async_missing_safe,
+    table_exists_sync_missing_safe,
 )
 from polylogue.storage.insights.session.status import (
     session_insight_status_async,
@@ -141,8 +141,8 @@ def _dimension_counts(rows: list[sqlite3.Row]) -> dict[int, int]:
 
 
 def _base_parts_sync(conn: sqlite3.Connection, *, detail: bool) -> _EmbeddingStatsParts:
-    sessions_exist = table_exists_sync(conn, "sessions")
-    status_exists = table_exists_sync(conn, "embedding_status")
+    sessions_exist = table_exists_sync_missing_safe(conn, "sessions")
+    status_exists = table_exists_sync_missing_safe(conn, "embedding_status")
     if not detail:
         return _EmbeddingStatsParts(
             bounds=None,
@@ -192,8 +192,8 @@ def _base_parts_sync(conn: sqlite3.Connection, *, detail: bool) -> _EmbeddingSta
 
 
 async def _base_parts_async(conn: aiosqlite.Connection, *, detail: bool) -> _EmbeddingStatsParts:
-    sessions_exist = await table_exists_async(conn, "sessions")
-    status_exists = await table_exists_async(conn, "embedding_status")
+    sessions_exist = await table_exists_async_missing_safe(conn, "sessions")
+    status_exists = await table_exists_async_missing_safe(conn, "embedding_status")
     if not detail:
         return _EmbeddingStatsParts(
             bounds=None,

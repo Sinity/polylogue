@@ -33,7 +33,8 @@ from polylogue.storage.embeddings.identity import (
     register_embedding_identity_sql,
     sql_string_literal,
 )
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import index_exists as _index_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session
@@ -1698,14 +1699,6 @@ def _should_embed_archive_message(material_origin: object, message_type: object,
     if str(role) not in _PROSE_ROLES:
         return False
     return str(material_origin) in _PROSE_MATERIAL_ORIGINS
-
-
-def _index_exists(conn: sqlite3.Connection, index: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? LIMIT 1",
-        (index,),
-    ).fetchone()
-    return row is not None
 
 
 def _usable_db_path(db_path: object) -> Path | None:

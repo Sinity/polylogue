@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, cast
 
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 
 def _row_int(row: sqlite3.Row | tuple[object, ...] | None, key: int | str) -> int:

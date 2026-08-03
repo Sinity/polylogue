@@ -25,8 +25,8 @@ from typing import Literal, cast
 
 import tomllib
 
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 HookHarness = Literal["claude-code", "codex"]
 HookChangeAction = Literal["install", "uninstall"]

@@ -42,6 +42,8 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
     trigram_insert_session_rows_sql,
 )
+from polylogue.storage.introspection import table_exists as _table_exists_sync
+from polylogue.storage.introspection import table_exists_async as _table_exists_async
 
 _chunked = chunked
 IndexedMessageLike: TypeAlias = tuple[str, str, str | None] | IndexedMessage
@@ -288,15 +290,6 @@ def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tup
     if _table_exists_sync(conn, "threads") and _table_exists_sync(conn, "threads_fts"):
         ddl.extend(_THREAD_FTS_TRIGGER_DDL)
     return tuple(ddl)
-
-
-async def _table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bool:
-    cursor = await conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-        (table_name,),
-    )
-    row = await cursor.fetchone()
-    return row is not None
 
 
 async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connection) -> tuple[str, ...]:
@@ -961,16 +954,6 @@ def check_fts_readiness(readiness: Mapping[str, object], repair_hint: str = MESS
     if bool(readiness["ready"]):
         return
     raise DatabaseError(f"Search index is incomplete. {repair_hint}")
-
-
-def _table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
 
 
 def _trigger_invariant_sync(

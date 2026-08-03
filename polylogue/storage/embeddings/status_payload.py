@@ -25,6 +25,7 @@ from polylogue.storage.embeddings.materialization import (
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.progress import EmbeddingCatchupRunPayload
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,
     VOYAGE_4_COST_PER_1M_TOKENS,
@@ -174,25 +175,9 @@ def _total_sessions(conn: sqlite3.Connection) -> int:
     return optional_count_sync(conn, "SELECT COUNT(*) FROM sessions")
 
 
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    return (
-        conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
-
-
 def _attached_table_exists(conn: sqlite3.Connection, schema_name: str, table_name: str) -> bool:
     quoted_schema = '"' + schema_name.replace('"', '""') + '"'
-    return (
-        conn.execute(
-            f"SELECT 1 FROM {quoted_schema}.sqlite_master WHERE type IN ('table', 'view') AND name = ? LIMIT 1",
-            (table_name,),
-        ).fetchone()
-        is not None
-    )
+    return _table_exists(conn, table_name, schema=quoted_schema)
 
 
 def _attached_table_name(conn: sqlite3.Connection, schema_name: str, table_name: str) -> str:
@@ -1130,7 +1115,7 @@ def embedding_status_payload(
     from polylogue.storage.archive_identity import archive_file_set_root
     from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
     from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
-    from polylogue.storage.embeddings.support import table_exists_sync
+    from polylogue.storage.embeddings.support import table_exists_sync_missing_safe
 
     cfg = load_polylogue_config()
     db_path = Path(env.config.db_path)
@@ -1172,7 +1157,11 @@ def embedding_status_payload(
             include_retrieval_bands=include_retrieval_bands,
             detail=include_detail,
         )
-        latest_run = latest_embedding_catchup_run(conn) if table_exists_sync(conn, "embedding_catchup_runs") else None
+        latest_run = (
+            latest_embedding_catchup_run(conn)
+            if table_exists_sync_missing_safe(conn, "embedding_catchup_runs")
+            else None
+        )
     finally:
         conn.close()
 

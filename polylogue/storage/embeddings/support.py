@@ -8,6 +8,8 @@ from collections.abc import Iterable
 import aiosqlite
 
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists_async as _table_exists_async
 
 StatsRow = sqlite3.Row | tuple[object, ...]
 
@@ -157,30 +159,25 @@ def is_missing_table_error(exc: sqlite3.OperationalError) -> bool:
     )
 
 
-def table_exists_sync(conn: sqlite3.Connection, table: str) -> bool:
-    table_name = table.replace("'", "''")
+def table_exists_sync_missing_safe(conn: sqlite3.Connection, table: str) -> bool:
+    # Thin wrapper (not a duplicate): swallows a still-in-flight
+    # sqlite3.OperationalError ("no such table") that `introspection.table_exists`
+    # itself never raises but a caller mid-migration/attach can still hit.
     try:
-        row = conn.execute(
-            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{table_name}' LIMIT 1",
-        ).fetchone()
+        return _table_exists(conn, table)
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
             return False
         raise
-    return row is not None
 
 
-async def table_exists_async(conn: aiosqlite.Connection, table: str) -> bool:
-    table_name = table.replace("'", "''")
+async def table_exists_async_missing_safe(conn: aiosqlite.Connection, table: str) -> bool:
     try:
-        cursor = await conn.execute(
-            f"SELECT 1 FROM sqlite_master WHERE type='table' AND name='{table_name}' LIMIT 1",
-        )
+        return await _table_exists_async(conn, table)
     except sqlite3.OperationalError as exc:
         if is_missing_table_error(exc):
             return False
         raise
-    return await cursor.fetchone() is not None
 
 
 def optional_count_sync(conn: sqlite3.Connection, sql: str) -> int:
@@ -203,11 +200,11 @@ def embedded_message_count_sync(conn: sqlite3.Connection) -> int:
     per-message count and is checked first; older/legacy shapes fall back to
     the pre-v4 behavior.
     """
-    if table_exists_sync(conn, "message_embedding_refs"):
+    if table_exists_sync_missing_safe(conn, "message_embedding_refs"):
         return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embedding_refs")
-    if table_exists_sync(conn, "message_embeddings_meta"):
+    if table_exists_sync_missing_safe(conn, "message_embeddings_meta"):
         return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
-    if table_exists_sync(conn, "message_embeddings_rowids"):
+    if table_exists_sync_missing_safe(conn, "message_embeddings_rowids"):
         return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
     return optional_count_sync(conn, "SELECT COUNT(*) FROM message_embeddings")
 
@@ -243,11 +240,11 @@ async def optional_count_async(conn: aiosqlite.Connection, sql: str) -> int:
 
 async def embedded_message_count_async(conn: aiosqlite.Connection) -> int:
     """Count messages that have a current embedding (see sync counterpart)."""
-    if await table_exists_async(conn, "message_embedding_refs"):
+    if await table_exists_async_missing_safe(conn, "message_embedding_refs"):
         return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embedding_refs")
-    if await table_exists_async(conn, "message_embeddings_meta"):
+    if await table_exists_async_missing_safe(conn, "message_embeddings_meta"):
         return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings_meta")
-    if await table_exists_async(conn, "message_embeddings_rowids"):
+    if await table_exists_async_missing_safe(conn, "message_embeddings_rowids"):
         return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
     return await optional_count_async(conn, "SELECT COUNT(*) FROM message_embeddings")
 

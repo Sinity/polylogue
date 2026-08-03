@@ -27,6 +27,7 @@ from polylogue.insights.feedback import (
     now_utc,
     parse_correction_kind,
 )
+from polylogue.storage.introspection import table_exists_async
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_AUTHOR_KIND,
     ASSERTION_DEFAULT_AUTHOR_REF,
@@ -43,11 +44,7 @@ if TYPE_CHECKING:
 
 
 async def _attached_table_exists(conn: aiosqlite.Connection, schema_name: str, table_name: str) -> bool:
-    cursor = await conn.execute(
-        f"SELECT 1 FROM {schema_name}.sqlite_master WHERE type='table' AND name = ? LIMIT 1",
-        (table_name,),
-    )
-    return await cursor.fetchone() is not None
+    return await table_exists_async(conn, table_name, schema=schema_name)
 
 
 async def _attach_user_tier_if_present(conn: aiosqlite.Connection) -> bool:

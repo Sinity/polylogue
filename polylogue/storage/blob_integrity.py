@@ -28,8 +28,9 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection import open_read_connection
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -464,12 +465,6 @@ def _blob_hash_text(value: object) -> str | None:
         return None
     text = str(value)
     return text if text else None
-
-
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    if not _table_exists(conn, table):
-        return False
-    return any(row[1] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
 def _archive_source_blob_hashes(conn: sqlite3.Connection) -> list[str]:

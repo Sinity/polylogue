@@ -24,6 +24,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from polylogue.logging import get_logger
+from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
@@ -35,14 +36,6 @@ _FTS_SURFACES = ("messages_fts", "session_work_events_fts", "threads_fts")
 # to roughly 2–4 MiB of WAL writes so the periodic merge never becomes an
 # unbounded write event of its own.
 _PERIODIC_MERGE_WORK_UNITS = 500
-
-
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'shadow') AND name = ? LIMIT 1",
-        (name,),
-    ).fetchone()
-    return row is not None
 
 
 def configure_fts_automerge_sync(conn: sqlite3.Connection) -> list[str]:

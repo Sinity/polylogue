@@ -8,6 +8,7 @@ from typing import Any
 
 import aiosqlite
 
+from polylogue.storage.introspection import table_exists, table_exists_async
 from polylogue.storage.sqlite.archive_tiers.index import FTS_FRESHNESS_STATE_DDL
 
 FRESHNESS_TABLE = "fts_freshness_state"
@@ -91,44 +92,8 @@ def freshness_ready_record_trusted(
     return not (source_rows == 0 and indexed_rows == 0 and source_has_rows is not False)
 
 
-def _table_exists_sync(conn: sqlite3.Connection) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-        (FRESHNESS_TABLE,),
-    ).fetchone()
-    return row is not None
-
-
-def _named_table_exists_sync(conn: sqlite3.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-async def _table_exists_async(conn: aiosqlite.Connection) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-            (FRESHNESS_TABLE,),
-        )
-    ).fetchone()
-    return row is not None
-
-
-async def _named_table_exists_async(conn: aiosqlite.Connection, table_name: str) -> bool:
-    row = await (
-        await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
-            (table_name,),
-        )
-    ).fetchone()
-    return row is not None
-
-
 def _message_fts_source_has_rows_sync(conn: sqlite3.Connection) -> bool | None:
-    if not _named_table_exists_sync(conn, "blocks"):
+    if not table_exists(conn, "blocks"):
         return None
     row = conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1").fetchone()
     return row is not None
@@ -144,7 +109,7 @@ def _message_fts_triggers_present_sync(conn: sqlite3.Connection) -> bool:
 
 
 async def _message_fts_source_has_rows_async(conn: aiosqlite.Connection) -> bool | None:
-    if not await _named_table_exists_async(conn, "blocks"):
+    if not await table_exists_async(conn, "blocks"):
         return None
     row = await (await conn.execute("SELECT 1 FROM blocks WHERE search_text != '' LIMIT 1")).fetchone()
     return row is not None
@@ -368,7 +333,7 @@ async def message_fts_marked_ready_async(conn: aiosqlite.Connection) -> bool:
 
 
 def message_fts_recorded_state_sync(conn: sqlite3.Connection) -> str | None:
-    if not _table_exists_sync(conn):
+    if not table_exists(conn, FRESHNESS_TABLE):
         return None
     row = conn.execute(
         "SELECT state FROM fts_freshness_state WHERE surface=?",
@@ -383,7 +348,7 @@ def message_fts_recorded_state_sync(conn: sqlite3.Connection) -> str | None:
 
 
 async def message_fts_recorded_state_async(conn: aiosqlite.Connection) -> str | None:
-    if not await _table_exists_async(conn):
+    if not await table_exists_async(conn, FRESHNESS_TABLE):
         return None
     row = await (
         await conn.execute(
@@ -400,7 +365,7 @@ async def message_fts_recorded_state_async(conn: aiosqlite.Connection) -> str | 
 
 
 def _message_fts_record_sync(conn: sqlite3.Connection) -> dict[str, object] | None:
-    if not _table_exists_sync(conn):
+    if not table_exists(conn, FRESHNESS_TABLE):
         return None
     columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})").fetchall()}
     selected = ["state"]
@@ -424,7 +389,7 @@ def _message_fts_record_sync(conn: sqlite3.Connection) -> dict[str, object] | No
 
 
 async def _message_fts_record_async(conn: aiosqlite.Connection) -> dict[str, object] | None:
-    if not await _table_exists_async(conn):
+    if not await table_exists_async(conn, FRESHNESS_TABLE):
         return None
     rows = await (await conn.execute(f"PRAGMA table_info({FRESHNESS_TABLE})")).fetchall()
     columns = {str(row[1]) for row in rows}
@@ -499,7 +464,7 @@ def message_fts_recorded_readiness_sync(conn: sqlite3.Connection) -> dict[str, i
     if record is None:
         return None
     state = str(record["state"])
-    exists = _named_table_exists_sync(conn, MESSAGE_SURFACE)
+    exists = table_exists(conn, MESSAGE_SURFACE)
     triggers_present = exists and _message_fts_triggers_present_sync(conn)
     if state == READY:
         if not triggers_present or not _recorded_ready_state_sync(conn, record):
@@ -528,7 +493,7 @@ async def message_fts_recorded_readiness_async(conn: aiosqlite.Connection) -> di
     if record is None:
         return None
     state = str(record["state"])
-    exists = await _named_table_exists_async(conn, MESSAGE_SURFACE)
+    exists = await table_exists_async(conn, MESSAGE_SURFACE)
     triggers_present = exists and await _message_fts_triggers_present_async(conn)
     if state == READY:
         if not triggers_present or not await _recorded_ready_state_async(conn, record):
