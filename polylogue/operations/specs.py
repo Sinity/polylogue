@@ -771,6 +771,75 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-rebuild-index",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Rebuild the derived block-FTS index from persisted blocks. The operation is idempotent and "
+            "routes its real ArchiveStore primitive through OperationExecutor/IndexRebuildActuator."
+        ),
+        consumes=("message_source_rows",),
+        produces=("message_fts",),
+        path_targets=("message-fts-readiness-loop",),
+        code_refs=(
+            "polylogue.api.ingest.PolylogueIngestMixin.rebuild_index",
+            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_index)",
+            "polylogue.operations.mutation_actuators.IndexRebuildActuator",
+        ),
+        surfaces=("facade", "mcp"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-update-index",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Reconcile the derived block-FTS index for the facade update route. The current storage "
+            "primitive rebuilds the complete index, and OperationExecutor binds the caller scope before it runs."
+        ),
+        consumes=("message_source_rows",),
+        produces=("message_fts",),
+        path_targets=("message-fts-readiness-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.update_index",
+            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=update_index)",
+            "polylogue.operations.mutation_actuators.IndexRebuildActuator",
+        ),
+        surfaces=("facade", "mcp"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-rebuild-insights",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Rebuild durable session-insight read models for the requested session set. The canonical "
+            "materializer runs through OperationExecutor/InsightsRebuildActuator with a typed receipt."
+        ),
+        consumes=("session_insight_source_sessions",),
+        produces=("session_insight_rows", "session_insight_fts"),
+        path_targets=("session-insight-repair-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.rebuild_insights",
+            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_insights)",
+            "polylogue.operations.mutation_actuators.InsightsRebuildActuator",
+        ),
+        surfaces=("facade", "mcp"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-resolve-raw-authority-blocker",
         kind=OperationKind.MAINTENANCE,
         description=(

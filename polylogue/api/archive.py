@@ -5341,14 +5341,26 @@ class PolylogueArchiveMixin:
         emits a per-table heartbeat (#1607 parity) so a long rebuild shows
         forward motion instead of hanging silently.
         """
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.operations.mutation_actuators import InsightsRebuildActuator, InsightsRebuildArgs
+        from polylogue.storage.insights.session.runtime import SessionInsightCounts
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return _rebuild_archive_session_insights(
-                archive,
-                session_ids=session_ids,
+        receipt, _plan = self._execute_facade_mutation(
+            InsightsRebuildActuator(),
+            lambda archive: InsightsRebuildArgs(
+                archive=archive,
+                session_ids=None if session_ids is None else tuple(session_ids),
                 progress_callback=progress_callback,
-            )
+            ),
+            capability="archive.rebuild_insights",
+        )
+        domain_receipt = receipt.domain_receipt
+        return SessionInsightCounts(
+            profiles=int(cast("int", domain_receipt.get("profiles", 0))),
+            work_events=int(cast("int", domain_receipt.get("work_events", 0))),
+            phases=int(cast("int", domain_receipt.get("phases", 0))),
+            threads=int(cast("int", domain_receipt.get("threads", 0))),
+            tag_rollups=int(cast("int", domain_receipt.get("tag_rollups", 0))),
+        )
 
     async def resume_brief(
         self,
@@ -5954,12 +5966,14 @@ class PolylogueArchiveMixin:
         with ``index.db`` blocks. ``session_ids`` is accepted for surface
         symmetry but the archive rebuild always reconciles the whole index.
         """
-        del session_ids
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.operations.mutation_actuators import IndexRebuildActuator, IndexRebuildArgs
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            archive.rebuild_index()
-        return True
+        receipt, _plan = self._execute_facade_mutation(
+            IndexRebuildActuator(operation="mutate-update-index"),
+            lambda archive: IndexRebuildArgs(archive=archive, session_ids=tuple(session_ids)),
+            capability="archive.update_index",
+        )
+        return receipt.status in {"applied", "already_satisfied"}
 
     async def neighbor_candidates(
         self,

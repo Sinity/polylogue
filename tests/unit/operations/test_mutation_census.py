@@ -62,3 +62,10 @@ def test_named_t46_9_routes_are_executor_routed() -> None:
     rows = {row["operation"]: row for row in _load_rows()}
     for operation in ("mutate-delete-session", "mutate-session-excision", "mutate-identity-reset"):
         assert rows[operation]["status"] == "executor-routed"
+
+
+def test_derived_maintenance_facade_routes_are_executor_routed() -> None:
+    rows = {row["operation"]: row for row in _load_rows()}
+    for operation in ("rebuild_index", "update_index", "rebuild_insights"):
+        assert rows[operation]["status"] == "executor-routed"
+        assert rows[operation]["actuator"].startswith("polylogue.operations.mutation_actuators.")
