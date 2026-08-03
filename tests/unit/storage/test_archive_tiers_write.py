@@ -2550,7 +2550,7 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
     row = conn.execute(
         """
         SELECT model_name, input_tokens, output_tokens, cost_provenance,
-               cost_usd, priced_with, priced_at_ms
+               cost_usd
         FROM session_model_usage
         WHERE session_id = ?
         """,
@@ -2567,8 +2567,6 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
     assert row_dict["output_tokens"] == 500
     assert row_dict["cost_provenance"] == "priced"
     assert row_dict["cost_usd"] == estimate_cost(1_000, 500, "gpt-4o")
-    assert row_dict["priced_with"] is not None
-    assert row_dict["priced_at_ms"] is not None
 
 
 def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: Path) -> None:

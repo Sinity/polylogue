@@ -398,6 +398,107 @@ def test_replace_table_sanitizes_poisoned_fts_freshness_ready_row(tmp_path: Path
     assert rows["threads_fts"][2:] == (15411, 15401, 10)
 
 
+def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Path) -> None:
+    """polylogue-resk: the v61 REPLACE_TABLE drops priced_with/priced_at_ms.
+
+    Builds a pre-v61 shaped ``session_model_usage`` (the ``priced_with`` FK
+    to ``price_catalogs``, ``priced_at_ms``, and the wider two-column CHECK),
+    seeds a row that satisfies the OLD, stricter CHECK (``cost_provenance =
+    'priced'`` requires both ``cost_usd`` and ``priced_with`` set), then
+    replace-tables it onto the v61 canonical shape.
+
+    ANTI-VACUITY: reverting ``INDEX_DDL``'s ``session_model_usage`` back to
+    declaring ``priced_with``/``priced_at_ms`` (undoing the polylogue-resk
+    DDL edit) makes the ``columns`` assertions below fail (both columns
+    would still be present after the copy-forward).
+    """
+    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import _apply_replace_table
+    from polylogue.storage.sqlite.lifecycle import resolve_canonical_index_objects
+
+    canonical_sql = resolve_canonical_index_objects((("table", "session_model_usage"),))[
+        ("table", "session_model_usage")
+    ]
+
+    path = tmp_path / "scratch.db"
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY,
+                native_id TEXT NOT NULL
+            ) STRICT
+            """
+        )
+        conn.execute("INSERT INTO sessions (session_id, native_id) VALUES ('codex-session:s1', 's1')")
+        conn.execute(
+            """
+            CREATE TABLE price_catalogs (
+                catalog_id TEXT PRIMARY KEY,
+                catalog_hash TEXT NOT NULL,
+                source_name TEXT NOT NULL,
+                effective_at_ms INTEGER,
+                loaded_at_ms INTEGER NOT NULL
+            ) STRICT
+            """
+        )
+        conn.execute(
+            "INSERT INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms) "
+            "VALUES ('legacy-catalog', 'legacy-hash', 'legacy', 0)"
+        )
+        # Pre-v61 shape: priced_with FK + priced_at_ms + the wider CHECK.
+        conn.execute(
+            """
+            CREATE TABLE session_model_usage (
+                session_id              TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+                model_name              TEXT NOT NULL,
+                input_tokens            INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
+                output_tokens           INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
+                cache_read_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
+                cache_write_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
+                message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
+                priced_with             TEXT REFERENCES price_catalogs(catalog_id) ON DELETE SET NULL,
+                priced_at_ms            INTEGER,
+                cost_usd                REAL,
+                cost_credits            REAL,
+                cost_provenance         TEXT CHECK(cost_provenance IN ('origin_reported', 'priced', 'estimated') OR cost_provenance IS NULL),
+                CHECK (
+                    cost_provenance != 'priced' OR (cost_usd IS NOT NULL AND priced_with IS NOT NULL)
+                ),
+                CHECK (cost_provenance != 'origin_reported' OR cost_usd IS NOT NULL),
+                PRIMARY KEY(session_id, model_name)
+            ) STRICT
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO session_model_usage (
+                session_id, model_name, input_tokens, output_tokens,
+                message_count, priced_with, priced_at_ms, cost_usd, cost_provenance
+            ) VALUES (
+                'codex-session:s1', 'gpt-4o', 1000, 500,
+                1, 'legacy-catalog', 1700000000000, 0.05, 'priced'
+            )
+            """
+        )
+        conn.commit()
+
+        _apply_replace_table(conn, "session_model_usage", canonical_sql)
+        conn.commit()
+
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(session_model_usage)").fetchall()}
+        row = conn.execute(
+            "SELECT input_tokens, output_tokens, message_count, cost_usd, cost_provenance "
+            "FROM session_model_usage WHERE model_name = 'gpt-4o'"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert "priced_with" not in columns
+    assert "priced_at_ms" not in columns
+    assert row == (1000, 500, 1, 0.05, "priced")
+
+
 def test_shape_forward_targeted_reprocess_enqueues_bounded_ops_debt(tmp_path: Path) -> None:
     """polylogue-9rw0.1: a SHAPE_FORWARD_TARGETED_REPROCESS fast-forward enqueues real debt.
 

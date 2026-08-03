@@ -34,22 +34,16 @@ def _insert_session(
         (origin, native_id, b"s" * 32),
     )
     session_id = f"{origin}:{native_id}"
-    # polylogue-shnc: 'priced' now requires cost_usd AND priced_with both set
-    # (CHECK constraint, v49) -- this probe doesn't assert on the dollar
-    # figure itself, so any catalog-id placeholder + nonzero cost satisfies
-    # the invariant without changing what's under test.
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
-        VALUES ('test-catalog', 'test-hash', 'test', 0)
-        """
-    )
+    # polylogue-shnc: 'priced' now requires cost_usd set (CHECK constraint,
+    # v49) -- this probe doesn't assert on the dollar figure itself, so any
+    # nonzero cost satisfies the invariant without changing what's under
+    # test.
     conn.execute(
         """
         INSERT INTO session_model_usage (
             session_id, model_name, input_tokens, output_tokens,
-            cache_read_tokens, cache_write_tokens, cost_provenance, cost_usd, priced_with
-        ) VALUES (?, ?, ?, ?, ?, ?, 'priced', 0.01, 'test-catalog')
+            cache_read_tokens, cache_write_tokens, cost_provenance, cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, 'priced', 0.01)
         """,
         (session_id, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens),
     )

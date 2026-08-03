@@ -215,16 +215,10 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         # figure, not merely provider-reported tokens.
         conn.execute(
             """
-            INSERT OR IGNORE INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
-            VALUES ('test-catalog', 'test-hash', 'test', 0)
-            """
-        )
-        conn.execute(
-            """
             INSERT OR REPLACE INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                cost_credits, cost_provenance, cost_usd, priced_with
-            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported', 0.0075, 'test-catalog')
+                cost_credits, cost_provenance, cost_usd
+            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported', 0.0075)
             """,
             (NID_PRICED_COST,),
         )
