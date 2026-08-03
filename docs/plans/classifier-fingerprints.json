@@ -242,11 +242,11 @@
       }
     },
     "polylogue/sources/parsers/drive.py:looks_like": {
-      "fingerprint": "181729c514fdd5b45ede6223c4093caf7c90d3d2dd84673838f33b8e141dbe76",
+      "fingerprint": "c997b2b0853c7f0ba25b4f75e09dda86d6c9ec48279853ab9c6f3d2aa80d7b2b",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "reason": "Only tightens acceptance for a chunkedPrompt.chunks envelope with zero (or wrong-typed) chunks, a shape that never validly represented a real Gemini/Drive conversation -- no genuine session ever had an empty chunk list. Sibling fix to PR #3428/#3537's classifier tightening.",
+        "ref": "polylogue-mvcbi"
       }
     },
     "polylogue/sources/parsers/drive.py:looks_like_chunk": {

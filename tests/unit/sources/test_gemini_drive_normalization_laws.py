@@ -218,6 +218,23 @@ def test_detector_order_is_tight_and_one_document_streams_keep_specificity() -> 
     assert detect_provider([cli_ambiguous]) is Provider.GEMINI_CLI
 
 
+def test_empty_chunked_prompt_envelope_is_not_detected_as_gemini() -> None:
+    """polylogue-mvcbi: a named ``chunkedPrompt`` envelope with zero chunks --
+    or a ``chunks`` key of the wrong type -- used to be accepted on the
+    strength of the key's mere presence (``allow_empty=True`` in
+    ``drive._looks_like_chunks``), the same guess-instead-of-verify shape
+    #3428/#3537 closed for Claude Code/claude.ai. This requires at least one
+    genuine chunk with role/content evidence, matching the bare top-level
+    ``chunks: []`` case already asserted in
+    ``test_detector_order_is_tight_and_one_document_streams_keep_specificity``.
+    """
+    assert detect_provider({"chunkedPrompt": {"chunks": []}}) is None
+    assert detect_provider({"chunkedPrompt": {"chunks": "not-a-list"}}) is None
+    assert detect_provider({"chunkedPrompt": {"chunks": {}}}) is None
+    # A genuine chunk still detects.
+    assert detect_provider({"chunkedPrompt": {"chunks": [{"role": "user", "text": "safe"}]}}) is Provider.GEMINI
+
+
 def test_provider_tokens_survive_the_non_injective_origin_collapse() -> None:
     """Identity-collapse mutation: canonicalizing source_name from Origin must fail."""
     payload = _ai_studio_payload()

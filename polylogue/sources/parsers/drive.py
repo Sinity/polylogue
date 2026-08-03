@@ -471,11 +471,16 @@ def looks_like_chunk(payload: object) -> bool:
     return isinstance(role, str) and bool(role.strip()) and any(key in chunk for key in _CHUNK_CONTENT_KEYS)
 
 
-def _looks_like_chunks(value: object, *, allow_empty: bool) -> bool:
-    if not isinstance(value, list):
+def _looks_like_chunks(value: object) -> bool:
+    """Return whether ``value`` is a non-empty list of genuine chunks.
+
+    An empty (or absent, or wrong-typed) ``chunks`` list is never sufficient
+    evidence on its own (polylogue-mvcbi) -- both the named ``chunkedPrompt``
+    envelope and the bare top-level ``chunks`` key require at least one
+    chunk carrying role/content evidence.
+    """
+    if not isinstance(value, list) or not value:
         return False
-    if not value:
-        return allow_empty
     return all(looks_like_chunk(item) for item in value)
 
 
@@ -497,11 +502,19 @@ def looks_like(payload: object) -> bool:
     Called from ``dispatch._looks_like_gemini_mapping`` -- that is this
     detector's sole auto-detection call site (polylogue-zkmi); it is not
     dead code despite the differently-named wrapper.
+
+    Tightened (polylogue-mvcbi, sibling fix to #3428/#3537): a bare
+    ``chunkedPrompt`` envelope with a present-but-empty (or wrong-typed)
+    ``chunks`` list used to be accepted on the strength of the key's mere
+    presence (``allow_empty=True``) -- the same guess-instead-of-verify
+    shape closed for Claude Code's bare ``type`` check and claude.ai's bare
+    ``chat_messages`` check. This now requires at least one genuine chunk
+    with role/content evidence (see ``looks_like_chunk``), matching the
+    bare top-level ``chunks`` case below.
     """
     record = json_document(payload)
     prompt = json_document(record.get("chunkedPrompt"))
-    if prompt and _looks_like_chunks(prompt.get("chunks"), allow_empty=True):
+    if prompt and _looks_like_chunks(prompt.get("chunks")):
         return True
-    # Older exports expose ``chunks`` at the document top level. Unlike the
-    # named chunkedPrompt envelope, a bare empty list is too generic to detect.
-    return _looks_like_chunks(record.get("chunks"), allow_empty=False)
+    # Older exports expose ``chunks`` at the document top level.
+    return _looks_like_chunks(record.get("chunks"))

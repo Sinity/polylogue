@@ -2691,7 +2691,10 @@ def test_iter_source_raw_data_keeps_source_family_hints_for_mixed_zip_sources(tm
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/chatgpt-export.json", b'{"mapping": {}, "id": "chatgpt-1"}')
-        zf.writestr("nested/gemini-export.json", b'{"chunkedPrompt": {"chunks": []}}')
+        zf.writestr(
+            "nested/gemini-export.json",
+            b'{"chunkedPrompt": {"chunks": [{"role": "user", "text": "hi"}]}}',
+        )
 
     items = list(iter_source_raw_data(Source(name="chatgpt", path=archive_path)))
 
