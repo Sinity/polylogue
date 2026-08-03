@@ -7,6 +7,7 @@ and load_samples_from_sessions with JSON/JSONL fixtures.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -197,6 +198,31 @@ class TestLoadSamplesFromDb:
         db = _archive_index_db(tmp_path)
         result = load_samples_from_db("chatgpt", db_path=db)
         assert result == []
+
+    def test_missing_source_db_tier_logs_warning_distinct_from_zero_rows(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """polylogue-es7b: a missing sibling ``source.db`` tier file previously
+        yielded the exact same empty result as a genuine zero-row scan,
+        silently. ``index.db`` exists here (unlike ``test_nonexistent_db_returns_empty``,
+        whose outer ``db_path.exists()`` check in ``load_samples_from_db``
+        short-circuits before ever reaching ``_iter_schema_units_from_db``),
+        so this reaches the tier-file check inside
+        ``polylogue.schemas.sampling_db._iter_schema_units_from_db`` and must
+        warn instead of returning silently.
+        """
+        db = _archive_index_db(tmp_path)
+        (db.parent / "source.db").unlink()
+        assert db.exists()
+        assert not (db.parent / "source.db").exists()
+
+        with caplog.at_level(logging.WARNING, logger="polylogue.schemas.sampling_db"):
+            result = load_samples_from_db("chatgpt", db_path=db)
+
+        assert result == []
+        assert any("source.db" in record.message and record.levelno == logging.WARNING for record in caplog.records), [
+            record.message for record in caplog.records
+        ]
 
     def test_nonexistent_db_with_default_path(self) -> None:
         # When db_path=None and default doesn't exist, should return []
