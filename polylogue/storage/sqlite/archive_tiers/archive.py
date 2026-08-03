@@ -145,6 +145,7 @@ from polylogue.storage.insights.session.runtime import (
     SessionInsightStatusSnapshot,
 )
 from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
@@ -316,7 +317,6 @@ from polylogue.storage.sqlite.run_projection_relations import (
     run_relation_sql,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(slots=True)

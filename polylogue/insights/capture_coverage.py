@@ -51,7 +51,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from polylogue.insights.measurement.canon import content_ref
-from polylogue.storage.table_existence import table_exists
+from polylogue.storage.introspection import table_exists
 
 CoverageEvidenceSourceKind = Literal[
     "hook_session_start",

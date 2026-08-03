@@ -35,8 +35,8 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)

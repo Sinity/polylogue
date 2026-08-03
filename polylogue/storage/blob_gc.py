@@ -50,8 +50,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 logger = logging.getLogger(__name__)
 

@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from polylogue.logging import get_logger
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 
