@@ -167,7 +167,17 @@ def _branch_child_provider_id(value: object) -> str | None:
     return _string_field(json_document(value), "id", "promptId", "messageId")
 
 
-def _branch_child_parent_map(chunks: Sequence[object]) -> dict[str, str]:
+def _branch_child_parent_map(chunks: Sequence[object]) -> tuple[dict[str, str], frozenset[str]]:
+    """Resolve unambiguous branch parents, plus the set of genuinely ambiguous child ids.
+
+    A child declared under more than one parent's ``branchChildren`` has no
+    real single-parent evidence -- it is excluded from the returned map (as
+    before) AND returned in the ambiguous set so callers can keep it excluded
+    from ``fill_linear_parent_chain``'s later gap-fill pass (bd polylogue-ksgg):
+    that pass cannot distinguish "None because ambiguous" from "None because
+    no branch data existed at all", so it would otherwise invent a parent for
+    a case this function deliberately refused to resolve.
+    """
     candidate_parents: dict[str, set[str]] = {}
     for chunk in chunks:
         chunk_obj = json_document(chunk)
@@ -179,7 +189,9 @@ def _branch_child_parent_map(chunks: Sequence[object]) -> dict[str, str]:
             child_id = _branch_child_provider_id(child)
             if child_id is not None:
                 candidate_parents.setdefault(child_id, set()).add(parent_id)
-    return {child_id: next(iter(parents)) for child_id, parents in candidate_parents.items() if len(parents) == 1}
+    resolved = {child_id: next(iter(parents)) for child_id, parents in candidate_parents.items() if len(parents) == 1}
+    ambiguous = frozenset(child_id for child_id, parents in candidate_parents.items() if len(parents) > 1)
+    return resolved, ambiguous
 
 
 def _instruction_text(payload: JSONDocument) -> str | None:
@@ -327,7 +339,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         models_used.add(default_model_name)
     if model_event := _model_config_event(run_settings, timestamp=default_timestamp):
         session_events.append(model_event)
-    branch_child_parents = _branch_child_parent_map(chunks)
+    branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunks)
     message_position = 0
     for idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
@@ -441,7 +453,27 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     # (0% parented measured) because they're a plain linear chat with no
     # branch. Only fill the remaining gap -- chain to the previous message on
     # the active path -- without touching real branch evidence already set.
-    messages = fill_linear_parent_chain(messages)
+    # A genuinely ambiguous branch child (more than one declared parent, see
+    # _branch_child_parent_map) must keep parent_message_provider_id=None --
+    # fill_linear_parent_chain cannot tell that apart from "no branch data at
+    # all" on its own, so those specific ids are excluded from the gap-fill
+    # and restored to None afterward.
+    # chunkedPrompt's array order is not guaranteed chronological (a Drive
+    # payload can legitimately list chunks in a different order than they
+    # occurred -- ai-studio-drive normalization laws require native facts,
+    # including the reconstructed parent chain, to be order-independent).
+    # fill_linear_parent_chain chains by LIST POSITION, so it must run
+    # against a temporally-sorted view, not the raw chunk-input order.
+    by_position = {id(message): position for position, message in enumerate(messages)}
+    temporally_sorted = sorted(messages, key=lambda message: (message.timestamp or "", by_position[id(message)]))
+    filled_sorted = fill_linear_parent_chain(temporally_sorted)
+    parent_by_id = {message.provider_message_id: message.parent_message_provider_id for message in filled_sorted}
+    messages = [
+        message
+        if message.provider_message_id in ambiguous_branch_child_ids
+        else message.model_copy(update={"parent_message_provider_id": parent_by_id.get(message.provider_message_id)})
+        for message in messages
+    ]
     return ParsedSession(
         source_name=runtime_provider,
         provider_session_id=str(payload.get("id") or fallback_id),

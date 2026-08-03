@@ -428,7 +428,10 @@ def test_native_turn_facts_survive_reordering_while_missing_ids_use_source_posit
         "turn-error-native": (
             Role.ASSISTANT,
             "2026-06-01T10:00:05Z",
-            None,
+            # bd polylogue-ksgg: no real branch evidence for this message, so
+            # fill_linear_parent_chain now correctly chains it to the previous
+            # active-path message instead of leaving it unparented.
+            "turn-failed-result-native",
             0,
             1,
             (BlockType.DOCUMENT, BlockType.DOCUMENT, BlockType.DOCUMENT, BlockType.TEXT),
