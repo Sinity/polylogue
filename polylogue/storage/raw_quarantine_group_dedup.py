@@ -179,6 +179,17 @@ def plan_raw_quarantine_group_dedup(
             if hash_already_resolved.get(blob_hash, False):
                 already_resolved_group_count += 1
                 continue
+            # Check the cap BEFORE appending, not after: an after-the-fact
+            # check appends one group even when limit=0, silently
+            # dishonoring a caller's explicit "zero groups" request (the
+            # apply path iterates plan.groups directly, so a limit=0 dry-run
+            # would still classify -- and a limit=0 apply would still
+            # promote and mark -- exactly one group). Continue rather than
+            # break so already_resolved_group_count still reflects every
+            # remaining already-resolved key, not just the ones seen before
+            # the cap.
+            if limit is not None and len(groups) >= limit:
+                continue
             rows = grouped[key]
             raw_ids = tuple(sorted(str(row["raw_id"]) for row in rows))
             blob_size = int(rows[0]["blob_size"])
@@ -190,8 +201,6 @@ def plan_raw_quarantine_group_dedup(
                     raw_ids=raw_ids,
                 )
             )
-            if limit is not None and len(groups) >= limit:
-                break
 
         return RawQuarantineGroupDedupPlan(
             scanned_count=len(candidate_rows),

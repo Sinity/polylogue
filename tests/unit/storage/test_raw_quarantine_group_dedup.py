@@ -175,3 +175,31 @@ def test_limit_caps_number_of_groups_returned(tmp_path: Path) -> None:
         index_conn.close()
 
     assert len(plan.groups) == 2
+
+
+def test_limit_zero_returns_no_groups(tmp_path: Path) -> None:
+    """Regression (CodeRabbit PR #3697): the cap must be checked BEFORE a
+    group is appended, not after -- an after-the-fact check silently
+    appended exactly one group even when the caller explicitly asked for
+    zero via limit=0. The apply path iterates plan.groups directly, so this
+    bug would have promoted and marked one duplicate group despite a
+    limit=0 dry-run/apply call asking for none."""
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        for raw_id in ("raw-a", "raw-b"):
+            _write_quarantined_raw(
+                archive, raw_id=raw_id, payload=b'{"n":0}\n', source_path=str(tmp_path / "group.jsonl")
+            )
+        archive.commit()
+
+    source_conn = sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
+    index_conn = sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True)
+    try:
+        plan = plan_raw_quarantine_group_dedup(source_conn, index_conn, limit=0)
+    finally:
+        source_conn.close()
+        index_conn.close()
+
+    assert plan.groups == ()
