@@ -3996,6 +3996,10 @@ files:
     loc: 2305
     target: TBD
     owner: storage-domain
+  - path: polylogue/storage/raw_authority_verdict_cache.py
+    loc: 172
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/raw_authority_verdict_projection.py
     loc: 105
     target: TBD
@@ -4318,7 +4322,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 623
+    loc: 657
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
