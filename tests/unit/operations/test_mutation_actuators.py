@@ -21,6 +21,7 @@ above require ``confirm_flag`` and refuse ``role_only``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -28,7 +29,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import AssertionKind, Provider
 from polylogue.insights.feedback import LearningCorrection
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,
@@ -41,6 +42,8 @@ from polylogue.operations.mutation_actuators import (
     BlockerResolveArgs,
     BulkTagActuator,
     BulkTagArgs,
+    CaptureAssertionCandidateActuator,
+    CaptureAssertionCandidateArgs,
     CorrectionDeleteActuator,
     CorrectionDeleteArgs,
     CorrectionRecordActuator,
@@ -760,6 +763,81 @@ class TestAnnotationActuators:
             plan = executor.prepare(actuator, args)
             # Does not raise ConfirmationRequiredError.
             executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+
+
+class TestCaptureAssertionCandidateActuator:
+    """Real user-tier proof for the terminal candidate capture route."""
+
+    def test_executor_lifecycle_writes_and_replays_idempotently(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="candidate-capture")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = CaptureAssertionCandidateActuator()
+            args = CaptureAssertionCandidateArgs(
+                archive=archive,
+                body_text="candidate body",
+                kind=AssertionKind.LESSON,
+                refs=(),
+                scope_refs=("repo:polylogue",),
+                cwd=None,
+                author_ref="agent:test",
+                author_kind="agent",
+                idempotency_key="candidate-key",
+                assertion_id="assertion-terminal-note:" + hashlib.sha256(b"agent:test\0candidate-key").hexdigest(),
+                ttl_seconds=60,
+            )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            first = executor.execute(actuator, plan, authorization, args)
+            replay_plan = executor.prepare(actuator, args)
+            replay_authorization = executor.authorize(
+                actuator,
+                replay_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            replay = executor.execute(actuator, replay_plan, replay_authorization, args)
+
+        assert first.status == "applied"
+        assert replay.status == "already_satisfied"
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            row = conn.execute(
+                "SELECT kind, status, body_text, author_ref, scope_ref FROM assertions WHERE key = 'terminal-note'"
+            ).fetchone()
+        assert row == ("lesson", "candidate", "candidate body", "agent:test", "repo:polylogue")
+
+    def test_role_only_authorize_succeeds(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="candidate-ac4")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = CaptureAssertionCandidateActuator()
+            args = CaptureAssertionCandidateArgs(
+                archive=archive,
+                body_text="candidate body",
+                kind=AssertionKind.NOTE,
+                refs=(),
+                scope_refs=(),
+                cwd=None,
+                author_ref="agent:test",
+                author_kind="agent",
+                idempotency_key=None,
+                assertion_id="assertion-terminal-note:one-shot",
+                ttl_seconds=None,
+            )
+            plan = OperationExecutor().prepare(actuator, args)
+            # Reversible candidate capture does not require an interactive token.
+            OperationExecutor().authorize(
                 actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
             )
 

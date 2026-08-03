@@ -771,6 +771,30 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-capture-assertion-candidate",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Capture one terminal assertion as a private, non-injected candidate. Resolution, idempotency, "
+            "TTL, and the user-tier write are executed through OperationExecutor/"
+            "CaptureAssertionCandidateActuator with role_only confirmation."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("assertion-candidate-capture-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.capture_assertion_candidate",
+            "polylogue.cli.commands.note.capture_note_command",
+            "polylogue.mcp.server_cutover._dispatch_write (operation=capture_assertion_candidate)",
+            "polylogue.operations.mutation_actuators.CaptureAssertionCandidateActuator",
+        ),
+        surfaces=("facade", "cli", "mcp"),
+        mutates_state=True,
+        idempotent=False,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-rebuild-index",
         kind=OperationKind.MAINTENANCE,
         description=(

@@ -48,6 +48,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-save-annotation",
         "mutate-delete-annotation",
         "mutate-blackboard-post",
+        "mutate-capture-assertion-candidate",
         "mutate-rebuild-index",
         "mutate-update-index",
         "mutate-rebuild-insights",

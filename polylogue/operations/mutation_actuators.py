@@ -19,12 +19,17 @@ confirmation, since undo is another write through the same actuator.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.protocols import ProgressCallback
+from polylogue.core.refs import ObjectRef, normalize_object_ref_text, parse_public_ref
 from polylogue.operations.mutation_transaction import (
     ConfirmationStrength,
     DestructiveClass,
@@ -34,6 +39,7 @@ from polylogue.operations.mutation_transaction import (
     build_plan,
     make_target_ref,
 )
+from polylogue.storage.sqlite.connection_profile import open_connection
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -736,6 +742,214 @@ class MarkRemoveActuator:
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={"removed": removed},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Terminal assertion candidate capture (mutate-capture-assertion-candidate)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureAssertionCandidateArgs:
+    """Inputs for one terminal-captured assertion candidate."""
+
+    archive: ArchiveStore
+    body_text: str
+    kind: AssertionKind
+    refs: tuple[str, ...]
+    scope_refs: tuple[str, ...]
+    cwd: Path | None
+    author_ref: str
+    author_kind: str
+    idempotency_key: str | None
+    assertion_id: str
+    ttl_seconds: int | None
+
+
+def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, object]:
+    """Normalize and resolve capture inputs without writing state."""
+
+    normalized_body = args.body_text.strip()
+    if not normalized_body:
+        raise ValueError("note text cannot be empty")
+    normalized_author_ref = normalize_object_ref_text(args.author_ref)
+    normalized_author_kind = args.author_kind.strip().lower()
+    if not normalized_author_kind:
+        raise ValueError("author_kind cannot be empty")
+    if args.ttl_seconds is not None and args.ttl_seconds <= 0:
+        raise ValueError("ttl_seconds must be positive")
+
+    normalized_idempotency_key = None if args.idempotency_key is None else args.idempotency_key.strip()
+    if args.idempotency_key is not None and not normalized_idempotency_key:
+        raise ValueError("idempotency_key cannot be empty")
+    if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
+        raise ValueError("idempotency_key exceeds 240 characters")
+
+    resolved_refs: list[str] = []
+    for ref in args.refs:
+        if ref == "last":
+            resolved_cwd = (args.cwd or Path.cwd()).resolve()
+            repo_root = next(
+                (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
+                resolved_cwd,
+            )
+            summaries = args.archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
+            if not summaries:
+                raise ValueError("--ref last found no archived session for the current repository/cwd")
+            resolved_refs.append(f"session:{summaries[0].session_id}")
+            continue
+        parsed = ObjectRef.parse(ref)
+        if parsed.kind != "session":
+            raise ValueError("--ref must be a session:<id> ref or 'last'")
+        try:
+            session_id = args.archive.resolve_session_id(parsed.object_id)
+        except KeyError:
+            raise ValueError(f"session ref not found: {parsed.object_id}") from None
+        resolved_refs.append(f"session:{session_id}")
+
+    normalized_scope_refs = [parse_public_ref(ref).format() for ref in args.scope_refs]
+    if normalized_idempotency_key is None:
+        assertion_id = args.assertion_id
+    else:
+        identity = hashlib.sha256(
+            f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
+        ).hexdigest()
+        derived_assertion_id = f"assertion-terminal-note:{identity}"
+        if args.assertion_id != derived_assertion_id:
+            raise ValueError("assertion_id does not match idempotency_key")
+        assertion_id = derived_assertion_id
+    target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
+    fingerprint_document = {
+        "author_kind": normalized_author_kind,
+        "author_ref": normalized_author_ref,
+        "body_text": normalized_body,
+        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "kind": args.kind.value,
+        "scope_refs": normalized_scope_refs,
+        "target_ref": target_ref,
+    }
+    capture_fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    return {
+        "assertion_id": assertion_id,
+        "author_kind": normalized_author_kind,
+        "author_ref": normalized_author_ref,
+        "body_text": normalized_body,
+        "capture_fingerprint": capture_fingerprint,
+        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "kind": args.kind.value,
+        "resolved_refs": resolved_refs,
+        "scope_refs": normalized_scope_refs,
+        "target_ref": target_ref,
+        "ttl_seconds": args.ttl_seconds,
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class CaptureAssertionCandidateActuator:
+    """Actuator for the durable terminal assertion candidate capture."""
+
+    operation: str = "mutate-capture-assertion-candidate"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: CaptureAssertionCandidateArgs) -> MutationPlan:
+        context = _capture_candidate_inputs(args)
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=(str(context["target_ref"]),),
+            affected_tiers=("user",),
+            reversible=True,
+            context=context,
+        )
+
+    def apply(self, plan: MutationPlan, args: CaptureAssertionCandidateArgs) -> MutationReceipt:
+        from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope, upsert_assertion
+
+        context = plan.context
+        assertion_id = str(context["assertion_id"])
+        user_db = args.archive.user_db_path
+        try:
+            conn = open_connection(user_db)
+            conn.row_factory = sqlite3.Row
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                existing = read_assertion_envelope(conn, assertion_id)
+                if existing is not None:
+                    existing_value = existing.value if isinstance(existing.value, dict) else {}
+                    existing_scope_refs = existing_value.get("scope_refs")
+                    existing_document = {
+                        "author_kind": existing.author_kind,
+                        "author_ref": existing.author_ref,
+                        "body_text": existing.body_text,
+                        "evidence_refs": existing.evidence_refs,
+                        "kind": existing.kind.value,
+                        "scope_refs": existing_scope_refs if isinstance(existing_scope_refs, list) else [],
+                        "target_ref": existing.target_ref,
+                    }
+                    existing_fingerprint = hashlib.sha256(
+                        json.dumps(
+                            existing_document,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8", errors="surrogatepass")
+                    ).hexdigest()
+                    if existing_fingerprint == str(context["capture_fingerprint"]):
+                        conn.commit()
+                        envelope = existing
+                    else:
+                        raise ValueError("idempotency_key conflicts with a different assertion candidate capture")
+                else:
+                    capture_now_ms = int(datetime.now(UTC).timestamp() * 1000)
+                    ttl_seconds = cast("int | None", context["ttl_seconds"])
+                    staleness = None if ttl_seconds is None else {"expires_at_ms": capture_now_ms + ttl_seconds * 1000}
+                    envelope = upsert_assertion(
+                        conn,
+                        assertion_id=assertion_id,
+                        target_ref=str(context["target_ref"]),
+                        scope_ref=cast("list[str]", context["scope_refs"])[0]
+                        if cast("list[str]", context["scope_refs"])
+                        else None,
+                        kind=AssertionKind.from_string(str(context["kind"])),
+                        key="terminal-note",
+                        value={
+                            "capture_surface": "terminal",
+                            "scope_refs": cast("list[str]", context["scope_refs"]),
+                            "unanchored": not bool(cast("list[str]", context["resolved_refs"])),
+                        },
+                        body_text=str(context["body_text"]),
+                        author_ref=str(context["author_ref"]),
+                        author_kind=str(context["author_kind"]),
+                        evidence_refs=tuple(cast("list[str]", context["evidence_refs"])),
+                        status=AssertionStatus.CANDIDATE,
+                        staleness=staleness,
+                        context_policy={"inject": False, "promotion_required": True},
+                        now_ms=capture_now_ms,
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error as exc:
+            raise RuntimeError(f"failed to capture assertion candidate: {exc}") from exc
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status="already_satisfied" if existing is not None else "applied",
+            target_refs=plan.target_refs,
+            affected_count=0 if existing is not None else 1,
+            detail="idempotent_replay" if existing is not None else None,
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={"envelope": envelope},
         )
 
 
@@ -1755,6 +1969,8 @@ __all__ = [
     "BlockerResolveArgs",
     "BulkTagActuator",
     "BulkTagArgs",
+    "CaptureAssertionCandidateActuator",
+    "CaptureAssertionCandidateArgs",
     "CorrectionDeleteActuator",
     "CorrectionDeleteArgs",
     "CorrectionRecordActuator",

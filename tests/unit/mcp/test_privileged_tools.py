@@ -645,6 +645,18 @@ class TestWriteToolRoutesThroughOperationExecutor:
                 {"fields": {"kind": "finding", "title": "t46.8.3 probe", "content": "evidence"}},
                 "BlackboardPostActuator",
             ),
+            (
+                "capture_assertion_candidate",
+                [],
+                {
+                    "fields": {
+                        "body_text": "MCP candidate",
+                        "author_ref": "agent:mcp-candidate",
+                        "kind": "lesson",
+                    }
+                },
+                "CaptureAssertionCandidateActuator",
+            ),
             ("delete_session", [], {"confirm": True}, "SessionDeleteActuator"),
         ],
     )
@@ -701,6 +713,7 @@ class TestWriteToolRoutesThroughOperationExecutor:
                 "save_workspace",
                 "delete_workspace",
                 "blackboard_post",
+                "capture_assertion_candidate",
             )
             if "session_id" not in call_kwargs and operation not in session_less_operations:
                 call_kwargs["session_id"] = session_id
@@ -752,6 +765,48 @@ class TestWriteToolRoutesThroughOperationExecutor:
         assert result.get("is_error") is True, result
         assert result.get("code") == "internal_error", result
         assert result.get("detail") == "RuntimeError", result
+
+    @pytest.mark.asyncio
+    async def test_capture_candidate_cannot_bypass_executor(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disabled executor must fail the real MCP candidate route.
+
+        Removing the facade's executor dispatch and restoring the direct write
+        would make this route return a candidate instead of an internal error.
+        """
+
+        from polylogue.mcp.server import build_server
+        from polylogue.operations.mutation_transaction import OperationExecutor
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
+        write_fn = server._tool_manager._tools["write"].fn
+
+        def boom(
+            self: OperationExecutor, actuator: object, plan: object, authorization: object, args: object
+        ) -> object:
+            raise RuntimeError("t46.9-capture-executor-bypass-proof")
+
+        monkeypatch.setattr(OperationExecutor, "execute", boom)
+
+        with _installed_runtime_services(archive_root):
+            result = json.loads(
+                await invoke_surface_async(
+                    write_fn,
+                    operation="capture_assertion_candidate",
+                    fields={
+                        "body_text": "must not write",
+                        "author_ref": "agent:mcp-candidate",
+                        "kind": "lesson",
+                    },
+                )
+            )
+
+        assert result["code"] == "internal_error"
+        assert result["detail"] == "RuntimeError"
+        assert result["is_error"] is True
 
 
 class TestJudgeTool:
