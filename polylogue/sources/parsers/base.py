@@ -21,6 +21,7 @@ from .base_support import (
     content_blocks_from_segments,
     extract_messages_from_list,
     fill_linear_parent_chain,
+    mark_last_occurrence_as_active_leaf,
     text_blocks_prose,
 )
 
@@ -40,5 +41,6 @@ __all__ = [
     "extract_messages_from_list",
     "attachment_from_meta",
     "fill_linear_parent_chain",
+    "mark_last_occurrence_as_active_leaf",
     "text_blocks_prose",
 ]

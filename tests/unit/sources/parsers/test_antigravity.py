@@ -8,10 +8,12 @@ from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.antigravity import (
     BRAIN_METADATA_FRAGMENT_FLAG,
     AntigravitySessionSummary,
+    _mark_active_leaf,
     looks_like_brain_metadata,
     parse_brain_metadata,
     parse_markdown_export,
 )
+from polylogue.sources.parsers.base import ParsedMessage
 
 
 def test_parse_markdown_export_splits_known_sections() -> None:
@@ -54,6 +56,26 @@ The focused checks passed.
     assert [message.is_active_path for message in session.messages] == [True, True]
     assert [message.is_active_leaf for message in session.messages] == [False, True]
     assert session.active_leaf_message_provider_id == "cascade-1:1:planner_response"
+
+
+def test_mark_active_leaf_flags_exactly_one_message_with_duplicate_ids() -> None:
+    """bd polylogue-2hwl: a duplicate ``provider_message_id`` (a retried or
+    regenerated section reusing the same id) must not produce more than one
+    ``is_active_leaf=True`` message -- the pre-fix comparison
+    (``message.provider_message_id == active_leaf_message_provider_id``)
+    flagged every position sharing that id, not just the true final one.
+    """
+    messages = [
+        ParsedMessage(provider_message_id="dup", role=Role.USER, text="first", position=0, is_active_path=True),
+        ParsedMessage(provider_message_id="other", role=Role.ASSISTANT, text="middle", position=1, is_active_path=True),
+        ParsedMessage(provider_message_id="dup", role=Role.ASSISTANT, text="final", position=2, is_active_path=True),
+    ]
+
+    marked = _mark_active_leaf(messages)
+
+    leaves = [message for message in marked if message.is_active_leaf]
+    assert len(leaves) == 1
+    assert leaves[0].text == "final"
 
 
 def test_parse_markdown_export_falls_back_to_single_export_message() -> None:

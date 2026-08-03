@@ -20,7 +20,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession, mark_last_occurrence_as_active_leaf
 
 _METADATA_SUFFIX = ".metadata.json"
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
@@ -455,13 +455,11 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
 
 
 def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
-    if not messages:
-        return messages
-    active_leaf_message_provider_id = messages[-1].provider_message_id
-    return [
-        message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id})
-        for message in messages
-    ]
+    # bd polylogue-2hwl: delegate to the shared position-based helper --
+    # flagging by provider_message_id equality (the previous approach here)
+    # flags every message sharing the final message's id, not just the true
+    # leaf, whenever a retried/regenerated section reuses that id.
+    return mark_last_occurrence_as_active_leaf(messages)
 
 
 def _strip_markdown_preamble(markdown: str) -> str:

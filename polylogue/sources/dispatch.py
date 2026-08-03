@@ -32,7 +32,12 @@ from .parsers import (
     hermes_verification,
     local_agent,
 )
-from .parsers.base import ParsedMessage, ParsedSession, extract_messages_from_list
+from .parsers.base import (
+    ParsedMessage,
+    ParsedSession,
+    extract_messages_from_list,
+    mark_last_occurrence_as_active_leaf,
+)
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 
 if TYPE_CHECKING:
@@ -751,16 +756,13 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
 
         messages = [*existing.messages, *session.messages]
         active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-        if active_leaf_message_provider_id is not None:
-            messages = [
-                message.model_copy(
-                    update={
-                        "position": position,
-                        "is_active_leaf": message.provider_message_id == active_leaf_message_provider_id,
-                    }
-                )
-                for position, message in enumerate(messages)
-            ]
+        messages = [message.model_copy(update={"position": position}) for position, message in enumerate(messages)]
+        # bd polylogue-2hwl: flag the active leaf by POSITION (the true last
+        # message), never by comparing provider_message_id -- retries and
+        # regenerated variants can legitimately reuse the same native id at
+        # more than one position across merged chunks, and an id-equality
+        # comparison flags every one of them, not just the real leaf.
+        messages = mark_last_occurrence_as_active_leaf(messages)
 
         reported_cost_usd: float | None
         if existing.reported_cost_usd is None and session.reported_cost_usd is None:
