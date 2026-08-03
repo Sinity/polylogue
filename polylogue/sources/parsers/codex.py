@@ -29,6 +29,7 @@ from .base import (
     ParsedSession,
     ParsedSessionEvent,
     content_blocks_from_segments,
+    fill_linear_parent_chain,
 )
 
 logger = get_logger(__name__)
@@ -2802,6 +2803,12 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             )
             for message in messages
         ]
+    # bd polylogue-ksgg: Codex rollout messages carry no parent-message
+    # evidence at all (0% parented, 0 variant_index>0 rows) -- a strictly
+    # linear turn sequence. Chain each message to the previous one so
+    # readers of `parent_message_id` don't need origin-specific fallback to
+    # position order.
+    messages = fill_linear_parent_chain(messages)
 
     return ParsedSession(
         source_name=Provider.CODEX,

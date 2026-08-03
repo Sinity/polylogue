@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
+    from polylogue.context.codex_spawn_edge_correlation import CodexSpawnEdgeReconciliation
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.core.protocols import ProgressCallback
@@ -1312,6 +1313,49 @@ def _archive_reconcile_hermes_session_lifecycle(
             "hermes_session_lifecycle reconciliation read failed (archive present but unreadable): "
             "hermes_session_native_id=%s source_db=%s index_db=%s",
             hermes_session_native_id,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
+
+
+def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconciliation | None:
+    """Reconcile acquired Codex ``thread_spawn_edge`` evidence against
+    transcript-inferred topology (bd polylogue-foee AC#2).
+
+    Read-only audit seam over ``source.db``'s hook-event spool and
+    ``index.db``'s ``session_links``; see
+    ``context.codex_spawn_edge_correlation`` for the join semantics.
+    Returns ``None``, never raises, when either tier is unavailable --
+    "archive not yet initialized" and "archive present but the read failed"
+    both return ``None`` here, matching
+    ``_archive_reconcile_hermes_session_lifecycle``'s contract, but only the
+    second case logs a warning.
+    """
+
+    from polylogue.context.codex_spawn_edge_correlation import reconcile_codex_spawn_edges
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return None
+    try:
+        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn.row_factory = sqlite3.Row
+            try:
+                return reconcile_codex_spawn_edges(source_conn, index_conn)
+            finally:
+                index_conn.close()
+        finally:
+            source_conn.close()
+    except sqlite3.Error:
+        logger.warning(
+            "codex_spawn_edge reconciliation read failed (archive present but unreadable): source_db=%s index_db=%s",
             source_db,
             index_db,
             exc_info=True,
@@ -2878,6 +2922,24 @@ class PolylogueArchiveMixin:
             self.config,
             hermes_session_native_id=hermes_session_native_id,
         )
+
+    async def reconcile_codex_spawn_edges(self) -> CodexSpawnEdgeReconciliation | None:
+        """Reconcile acquired Codex spawn-edge evidence against inferred topology (bd polylogue-foee AC#2).
+
+        Read-only audit seam over the durable spool (source.db
+        ``raw_hook_events``, ``codex_thread_spawn_edge`` events acquired by
+        polylogue-0jf4) and the ingested topology (index.db
+        ``session_links``, ``BranchType.SUBAGENT`` edges
+        ``sources/parsers/codex.py`` infers structurally from each child
+        session's own transcript). Reports how many transcript-inferred
+        edges are backed by Codex's own orchestration-level record, and how
+        many edges exist in each source but not the other (Codex's own
+        record can carry edges from a crashed or still-running child the
+        transcript never proves). Returns ``None`` only when the archive
+        itself is not yet initialized.
+        """
+
+        return _archive_reconcile_codex_spawn_edges(self.config)
 
     async def hermes_integration_health(self) -> HermesIntegrationHealth:
         """Return the bounded Hermes-to-Polylogue integration health rollup (fs1.15).

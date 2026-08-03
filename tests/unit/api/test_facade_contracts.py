@@ -257,6 +257,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "compile_and_record_context",
         "correlate_hermes_context_deliveries",
         "reconcile_hermes_session_lifecycle",
+        "reconcile_codex_spawn_edges",
         "hermes_integration_health",
         "list_assertion_candidate_reviews",
         "assertion_candidate_queue_health",
@@ -1249,6 +1250,68 @@ async def test_reconcile_hermes_session_lifecycle_resolves_via_the_facade(tmp_pa
         assert empty_report is not None
         assert empty_report.total_events == 0
         assert empty_report.complete
+    finally:
+        await archive.close()
+
+
+async def test_reconcile_codex_spawn_edges_resolves_via_the_facade(tmp_path: Path) -> None:
+    """bd polylogue-foee (AC#2): the facade method reaches the real
+    hook-event spool and ingested ``session_links`` topology."""
+    import json
+
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        ArchiveHookEvent,
+        write_source_hook_event,
+    )
+
+    archive = _archive(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash, message_count) VALUES (?, ?, ?, ?, ?)",
+            ("child-facade-1", "codex-session", "test", _HASH, 1),
+        )
+        index_conn.execute(
+            "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, observed_at_ms) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("codex-session:child-facade-1", "codex-session", "parent-facade-1", "subagent", 1_000),
+        )
+        index_conn.commit()
+
+    payload: dict[str, object] = {
+        "parent_thread_id": "parent-facade-1",
+        "child_thread_id": "child-facade-1",
+        "status": "closed",
+    }
+    encoded = json.dumps(payload).encode("utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        write_source_hook_event(
+            source_conn,
+            origin="codex-session",
+            source_path="synthetic:state-db",
+            payload=encoded,
+            acquired_at_ms=1_000,
+            raw_id="raw-facade-spawn-edge",
+            hook_event=ArchiveHookEvent(
+                hook_event_id="codex-thread-spawn-edge:parent-facade-1:child-facade-1",
+                origin="codex-session",
+                source_path="synthetic:state-db",
+                event_type="codex_thread_spawn_edge",
+                payload=payload,
+                observed_at_ms=1_000,
+                native_id="parent-facade-1:child-facade-1:codex_thread_spawn_edge",
+                session_native_id="parent-facade-1",
+            ),
+        )
+
+    try:
+        report = await archive.reconcile_codex_spawn_edges()
+
+        assert report is not None
+        assert report.total_authoritative_edges == 1
+        assert report.total_inferred_subagent_links == 1
+        assert report.backed_by_authoritative_count == 1
+        assert report.inferred_only_count == 0
+        assert report.authoritative_only_count == 0
     finally:
         await archive.close()
 

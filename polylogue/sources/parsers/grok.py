@@ -45,7 +45,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.timestamps import canonical_timestamp_text
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession, fill_linear_parent_chain
 
 _SENDER_ROLE: dict[str, Role] = {
     "human": Role.USER,
@@ -158,6 +158,11 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
             )
             for message in messages
         ]
+    # bd polylogue-ksgg: Grok exports carry no native conversation/message id
+    # or parent evidence at all (see module docstring) -- a plain ordered
+    # response list. Chain each message to the previous one so this origin
+    # doesn't need a bespoke position-order fallback either.
+    messages = fill_linear_parent_chain(messages)
     updated_at = messages[-1].timestamp if messages and messages[-1].timestamp else created_at
 
     return ParsedSession(
