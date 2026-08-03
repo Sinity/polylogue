@@ -134,17 +134,17 @@ def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
     fake = {
         "session_insights": good("session_insights"),
         "message_type_backfill": bad,
-        "orphaned_messages": good("orphaned_messages"),
+        "empty_sessions": good("empty_sessions"),
     }
     with patch.object(repair_mod, "REPAIR_HANDLERS", fake):
         op = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
+            targets=("session_insights", "message_type_backfill", "empty_sessions"),
             operation_id="op-mixed",
         )
 
     # The bad target failed but the surrounding targets still ran.
-    assert calls == ["session_insights", "message_type_backfill", "orphaned_messages"]
+    assert calls == ["session_insights", "message_type_backfill", "empty_sessions"]
     assert op.status is BackfillStatus.FAILED
     assert op.affected_rows == 6  # only the two good targets contributed
     assert len(op.failure_samples.samples) == 1

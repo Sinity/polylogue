@@ -508,7 +508,6 @@ def _read_verb_kwargs(**overrides: object) -> dict[str, object]:
         "since_hours": 2,
         "confidence_threshold": 0.3,
         "github_api": True,
-        "otlp": False,
         "related_limit": 5,
         "project_path": None,
         "project_repo": None,

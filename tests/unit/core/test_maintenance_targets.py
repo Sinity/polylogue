@@ -38,23 +38,16 @@ def test_maintenance_target_catalog_reports_preview_and_help_semantics() -> None
     )
     assert catalog.help_text() == (
         "Limit maintenance to named targets such as session_insights, "
-        "message_type_backfill, orphaned_messages, "
-        "empty_sessions, orphaned_attachments, orphaned_blobs, or superseded_raw_snapshots"
+        "message_type_backfill, empty_sessions, orphaned_blobs, or superseded_raw_snapshots"
     )
 
 
 def test_maintenance_target_catalog_exposes_archive_readiness_specs() -> None:
     catalog = build_maintenance_target_catalog()
 
-    assert tuple(spec.name for spec in catalog.archive_readiness_specs(deep=False)) == (
-        "orphaned_messages",
-        "empty_sessions",
-        "orphaned_attachments",
-    )
+    assert tuple(spec.name for spec in catalog.archive_readiness_specs(deep=False)) == ("empty_sessions",)
     assert tuple(spec.name for spec in catalog.archive_readiness_specs(deep=True)) == (
-        "orphaned_messages",
         "empty_sessions",
-        "orphaned_attachments",
         "orphaned_blobs",
         "superseded_raw_snapshots",
     )

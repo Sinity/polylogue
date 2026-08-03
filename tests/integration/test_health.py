@@ -11,13 +11,6 @@ CliWorkspace: TypeAlias = dict[str, Path]
 
 TEST_ORIGIN = "codex-session"
 
-RUN_ALL_REPAIRS_EXPECTED = {
-    "session_insights",
-    "orphaned_messages",
-    "empty_sessions",
-    "orphaned_attachments",
-}
-
 
 def _session_id(native_id: str) -> str:
     return native_id if ":" in native_id else f"{TEST_ORIGIN}:{native_id}"
@@ -102,33 +95,18 @@ def _insert_message(
     session_id: str,
     role: str = "user",
     text: str = "Text",
-    allow_orphaned: bool = False,
 ) -> None:
     """Helper to insert a message with all required fields."""
     content_hash = hashlib.sha256(f"{message_id}:{text}".encode()).digest()
     stored_session_id = _session_id(session_id)
     position = _position(message_id)
-    if allow_orphaned:
-        # Temporarily disable foreign keys to insert orphaned message
-        conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            conn.execute(
-                """
-                INSERT INTO messages (session_id, native_id, position, role, content_hash)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (stored_session_id, message_id, position, role, content_hash),
-            )
-        finally:
-            conn.execute("PRAGMA foreign_keys = ON")
-    else:
-        conn.execute(
-            """
-            INSERT INTO messages (session_id, native_id, position, role, content_hash)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (stored_session_id, message_id, position, role, content_hash),
-        )
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, content_hash)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (stored_session_id, message_id, position, role, content_hash),
+    )
 
 
 def _insert_content_block(
@@ -137,134 +115,23 @@ def _insert_content_block(
     message_id: str,
     session_id: str,
     *,
-    allow_orphaned: bool = False,
     type: str = "tool_use",
     tool_name: str | None = "Read",
     text: str | None = None,
 ) -> None:
-    """Helper to insert a content block with optional broken parent references."""
+    """Helper to insert a content block with valid parent references."""
     stored_session_id = _session_id(session_id)
     stored_message_id = _message_id(message_id, session_id)
     position = _position(block_id)
-    if allow_orphaned:
-        conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            conn.execute(
-                """
-                INSERT INTO blocks (
-                    message_id, session_id, position, block_type, text, tool_name
-                )
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (stored_message_id, stored_session_id, position, type, text, tool_name),
-            )
-        finally:
-            conn.execute("PRAGMA foreign_keys = ON")
-    else:
-        conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, text, tool_name
-            )
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (stored_message_id, stored_session_id, position, type, text, tool_name),
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_name
         )
-
-
-class TestRepairOrphanedMessages:
-    """Tests for repair_orphaned_messages function."""
-
-    def test_clean_state_no_orphaned_messages(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_messages should return 0 when no orphans exist."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_messages
-        from polylogue.storage.sqlite.connection import connection_context
-
-        # Setup: create a valid session and message
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1")
-            conn.commit()
-
-        # Act
-        result = repair_orphaned_messages(config, dry_run=False)
-
-        # Assert
-        assert result.name == "orphaned_messages"
-        assert result.repaired_count == 0
-        assert result.success is True
-        assert "No orphaned" in result.detail
-
-    def test_orphaned_messages_found_and_deleted(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_messages should find and delete orphaned messages."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_messages
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Insert orphaned message (references non-existent session)
-            _insert_message(conn, "orphan-1", "nonexistent-conv", "user", "I am orphaned", allow_orphaned=True)
-            _insert_message(conn, "orphan-2", "nonexistent-conv", "assistant", "Also orphaned", allow_orphaned=True)
-            conn.commit()
-
-        # Act
-        result = repair_orphaned_messages(config, dry_run=False)
-
-        # Assert
-        assert result.name == "orphaned_messages"
-        assert result.repaired_count == 2
-        assert result.success is True
-
-        # Verify they were actually deleted
-        with connection_context(None) as conn:
-            remaining = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            assert remaining == 0
-
-    def test_orphaned_messages_dry_run_counts_but_doesnt_delete(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_messages with dry_run=True should count but not delete."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_messages
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_message(conn, "orphan-1", "nonexistent-conv", "user", "I am orphaned", allow_orphaned=True)
-            conn.commit()
-
-        # Act
-        result = repair_orphaned_messages(config, dry_run=True)
-
-        # Assert
-        assert result.repaired_count == 1
-        assert result.success is True
-        assert "Would:" in result.detail
-
-        # Verify data was NOT deleted
-        with connection_context(None) as conn:
-            remaining = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-            assert remaining == 1
-
-    def test_orphaned_messages_idempotency(self, cli_workspace: CliWorkspace) -> None:
-        """Running repair twice should find 0 on second run."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_messages
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_message(conn, "orphan-1", "nonexistent-conv", "user", "I am orphaned", allow_orphaned=True)
-            conn.commit()
-
-        # First repair
-        result1 = repair_orphaned_messages(config, dry_run=False)
-        assert result1.repaired_count == 1
-
-        # Second repair should find nothing
-        result2 = repair_orphaned_messages(config, dry_run=False)
-        assert result2.repaired_count == 0
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (stored_message_id, stored_session_id, position, type, text, tool_name),
+    )
 
 
 class TestRepairEmptySessions:
@@ -421,124 +288,6 @@ class TestRepairEmptySessions:
         assert result2.repaired_count == 0
 
 
-class TestRepairOrphanedAttachments:
-    """Tests for repair_orphaned_attachments function."""
-
-    def test_clean_attachments_state(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_attachments should return 0 when all attachments are referenced."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_attachments
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Create session, message, attachment, and reference
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1", "user", "Text")
-            conn.execute(
-                "INSERT INTO attachments (attachment_id, display_name, media_type, blob_hash) VALUES (?, ?, ?, ?)",
-                ("att-1", "note.txt", "text/plain", b"1" * 32),
-            )
-            conn.execute(
-                "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position) VALUES (?, ?, ?, ?)",
-                ("att-1", _session_id("conv-1"), _message_id("msg-1", "conv-1"), 0),
-            )
-            conn.commit()
-
-        # Act
-        result = repair_orphaned_attachments(config, dry_run=False)
-
-        # Assert
-        assert result.name == "orphaned_attachments"
-        assert result.repaired_count == 0
-        assert result.success is True
-
-    def test_orphaned_attachments_orphaned_refs(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_attachments should detect orphaned attachment refs in dry-run."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_attachments
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Create attachment with no references
-            conn.execute(
-                "INSERT INTO attachments (attachment_id, display_name, media_type, blob_hash) VALUES (?, ?, ?, ?)",
-                ("att-1", "note.txt", "text/plain", b"1" * 32),
-            )
-            _insert_session(conn, "conv-1")
-            _insert_message(conn, "msg-1", "conv-1")
-            # Insert a proper ref
-            conn.execute(
-                "INSERT INTO attachment_refs (attachment_id, session_id, message_id, position) VALUES (?, ?, ?, ?)",
-                ("att-1", _session_id("conv-1"), _message_id("msg-1", "conv-1"), 0),
-            )
-            conn.commit()
-
-        # Act - create another attachment that's unreferenced
-        with connection_context(None) as conn:
-            conn.execute(
-                "INSERT INTO attachments (attachment_id, display_name, media_type, blob_hash) VALUES (?, ?, ?, ?)",
-                ("att-2", "image.png", "image/png", b"2" * 32),
-            )
-            conn.commit()
-
-        # Now run repair
-        result = repair_orphaned_attachments(config, dry_run=False)
-
-        # Assert
-        assert result.name == "orphaned_attachments"
-        # Should delete at least the unreferenced attachment
-        assert result.repaired_count >= 1
-
-    def test_orphaned_attachments_unreferenced_attachment(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_attachments should delete unreferenced attachments."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_attachments
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            # Create attachment with no references
-            conn.execute(
-                "INSERT INTO attachments (attachment_id, display_name, media_type, blob_hash) VALUES (?, ?, ?, ?)",
-                ("att-1", "note.txt", "text/plain", b"1" * 32),
-            )
-            conn.commit()
-
-        # Act
-        result = repair_orphaned_attachments(config, dry_run=False)
-
-        # Assert
-        assert result.name == "orphaned_attachments"
-        assert result.repaired_count >= 1  # Should delete the unreferenced attachment
-
-    def test_orphaned_attachments_dry_run(self, cli_workspace: CliWorkspace) -> None:
-        """repair_orphaned_attachments with dry_run=True should count but not delete."""
-        from polylogue.config import get_config
-        from polylogue.storage.repair import repair_orphaned_attachments
-        from polylogue.storage.sqlite.connection import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            conn.execute(
-                "INSERT INTO attachments (attachment_id, display_name, media_type, blob_hash) VALUES (?, ?, ?, ?)",
-                ("att-1", "note.txt", "text/plain", b"1" * 32),
-            )
-            conn.commit()
-
-        # Act
-        result = repair_orphaned_attachments(config, dry_run=True)
-
-        # Assert
-        assert "Would:" in result.detail
-
-        # Verify not deleted
-        with connection_context(None) as conn:
-            remaining = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
-            assert remaining == 1
-
-
 class TestMaintenanceSelection:
     """Tests for safe repair and archive cleanup orchestration."""
 
@@ -567,9 +316,7 @@ class TestMaintenanceSelection:
         config = get_config()
         results = run_archive_cleanup(config, dry_run=False)
         assert {r.name for r in results} == {
-            "orphaned_messages",
             "empty_sessions",
-            "orphaned_attachments",
             "orphaned_blobs",
             "superseded_raw_snapshots",
         }
@@ -580,14 +327,8 @@ class TestMaintenanceSelection:
         """Selected maintenance dry run should describe pending work explicitly."""
         from polylogue.config import get_config
         from polylogue.storage.repair import run_selected_maintenance
-        from polylogue.storage.sqlite.connection import connection_context
 
         config = get_config()
-
-        # Setup: add some issues
-        with connection_context(None) as conn:
-            _insert_message(conn, "orphan-1", "nonexistent-conv", "user", "Orphaned", allow_orphaned=True)
-            conn.commit()
 
         results = run_selected_maintenance(config, repair=True, cleanup=True, dry_run=True)
 
@@ -606,14 +347,12 @@ class TestMaintenanceSelection:
             dry_run=True,
             preview_counts={
                 "session_insights": 13,
-                "orphaned_messages": 2,
                 "empty_sessions": 5,
             },
         )
 
         by_name = {result.name: result for result in results}
         assert by_name["session_insights"].repaired_count == 13
-        assert by_name["orphaned_messages"].repaired_count == 2
         assert by_name["empty_sessions"].repaired_count == 5
 
     def test_run_selected_maintenance_can_scope_to_session_insights(self, cli_workspace: CliWorkspace) -> None:

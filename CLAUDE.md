@@ -119,7 +119,7 @@ caller; it exists only as test infrastructure (`polylogue-enium`).
 | `index.db` | **rebuildable** | the whole parsed tree, FTS, `session_links`, cost tables, and all materialized insights |
 | `embeddings.db` | rebuildable | `vec0` virtual table (Voyage 1024-dim), meta, status |
 | `user.db` | **durable, irreplaceable** | unified `assertions`, settings/context receipts, immutable annotation schemas + batch provenance |
-| `ops.db` | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs, otlp |
+| `ops.db` | disposable | ingest cursors, attempts, `convergence_debt`, cursor-lag samples, daemon events, embed catch-up runs |
 
 `user.db` is a **single unified `assertions` table** keyed by a closed
 `AssertionKind` (mark / tag / correction / annotation / suppression / metadata /

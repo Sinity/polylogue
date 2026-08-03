@@ -294,7 +294,6 @@ Usage: polylogue read [OPTIONS] [REF]
       polylogue find id:abc then read --view neighbors --window-hours 48
       polylogue --latest read --view neighbors --format json
       polylogue find id:abc then read --view correlation --since-hours 4
-      polylogue --latest read --view correlation --otlp --format json
       polylogue read session:abc123 --format json
 
 Projection:
@@ -373,8 +372,6 @@ Correlation view:
                                   0.3]
   --github-api / --no-github-api  Cross-reference issue/PR refs with the
                                   GitHub API via gh CLI (--view correlation).
-  --otlp                          Add OTLP span evidence to correlation output
-                                  (--view correlation).
 
 Other options:
   --full  Read a full single-session body for views that paginate.
@@ -607,11 +604,10 @@ Options:
   --repair                        Run safe derived-data maintenance repairs
   --cleanup                       Run destructive archive cleanup for orphaned
                                   or empty persisted data
-  --target [session_insights|message_type_backfill|orphaned_messages|empty_sessions|orphaned_attachments|orphaned_blobs|superseded_raw_snapshots]
+  --target [session_insights|message_type_backfill|empty_sessions|orphaned_blobs|superseded_raw_snapshots]
                                   Limit maintenance to named targets such as
                                   session_insights, message_type_backfill,
-                                  orphaned_messages, empty_sessions,
-                                  orphaned_attachments, orphaned_blobs, or
+                                  empty_sessions, orphaned_blobs, or
                                   superseded_raw_snapshots
   --preview                       Preview maintenance without executing
                                   (requires --repair or --cleanup)

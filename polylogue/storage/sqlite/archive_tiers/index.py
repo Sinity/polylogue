@@ -307,7 +307,28 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # correctly-ingested subagent transcript). Brand-new table, no existing
 # archive has any rows to migrate -- CONSTRAINT_ONLY/REPLACE_TABLE fast-
 # forwards to a plain create, same shape as v33's `insight_materialization`.
-INDEX_SCHEMA_VERSION = 57
+# polylogue-omsw: v58 declares the classification change made to
+# `archive.artifact_taxonomy.classify_artifact`/`classify_artifact_path`:
+# (1) a `tool-results/<name>.json` sidecar now refuses session
+# classification even when the caller-supplied provider hint is not
+# Claude Code (a generic/ad-hoc acquisition route resolving "unknown"), and
+# (2) a `projects/<proj>/<uuid>.jsonl` file whose every record is a
+# `file-history-snapshot`/`progress` checkpoint now refuses session
+# classification via positive content evidence overriding the path-only
+# `coordinator_session_stream` rule. Both are pure classification-decision
+# changes over identical input bytes -- the same v42/v44/v45/v46/v48
+# "SEMANTIC_REPARSE, no clone-safe SQL delta" shape: only re-parsing
+# recovers the correct classification for already-acquired raw evidence.
+# Read-only live census at declaration time (source.db, 2026-08-03): 3
+# tool-results rows (toolu_013w7YLBZHwsaNtDn9RVdHKG et al., matching the
+# operator's own prior investigation) found via
+# `devtools workspace tool-result-history-sweep`; 0 file-history-snapshot-
+# only raw rows found in the same scan (that estimate's ~214 count applied
+# to index.db zero-message sessions, not raw_sessions rows -- some or all
+# may already have been swept by an intervening full reindex). `polylogue
+# ops reset --index && polylogued run` is required to apply this;
+# deliberately NOT executed by this declaration.
+INDEX_SCHEMA_VERSION = 58
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

@@ -4401,24 +4401,6 @@ x-polylogue-route-contracts:
   auth_policy: first_party_same_origin
   response_contract: WebCredentialRevocationPayload
   notes: Revokes the current first-party credential and expires its cookie.
-- method: POST
-  pattern: /v1/traces
-  kind: observability
-  stability: private
-  auth_policy: observability_flag_then_loopback_or_bearer
-  response_contract: OTLP protobuf response
-- method: POST
-  pattern: /v1/metrics
-  kind: observability
-  stability: private
-  auth_policy: observability_flag_then_loopback_or_bearer
-  response_contract: OTLP protobuf response
-- method: POST
-  pattern: /v1/logs
-  kind: observability
-  stability: private
-  auth_policy: observability_flag_then_loopback_or_bearer
-  response_contract: OTLP protobuf response
 - method: GET
   pattern: /api/health/check
   kind: operational

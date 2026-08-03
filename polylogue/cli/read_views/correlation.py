@@ -18,12 +18,11 @@ def build_correlation_options(values: ReadViewOptionValues) -> ReadViewCorrelati
         since_hours=cast(int, values.get("since_hours", 2)),
         confidence_threshold=cast(float, values.get("confidence_threshold", 0.3)),
         github_api=cast(bool, values.get("github_api", True)),
-        otlp=cast(bool, values.get("otlp", False)),
     )
 
 
 def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Render GitHub/Git/OTLP correlation evidence around one session."""
+    """Render GitHub/Git correlation evidence around one session."""
 
     from polylogue.insights.correlation_view import run_correlation_view
 
@@ -38,7 +37,6 @@ def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: Read
         output_format=invocation.output_format,
         confidence_threshold=options.confidence_threshold,
         github_api=options.github_api,
-        otlp=options.otlp,
     )
 
 
