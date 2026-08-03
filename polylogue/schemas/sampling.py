@@ -10,7 +10,11 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import resolve_provider_config
-from polylogue.schemas.observation_models import ObservationTerminalRecorder, SchemaUnit
+from polylogue.schemas.observation_models import (
+    ObservationTerminalRecorder,
+    ObservationTerminalStatus,
+    SchemaUnit,
+)
 from polylogue.schemas.sampling_db import (
     _iter_samples_from_db,
     _iter_schema_units_from_db,
@@ -40,11 +44,24 @@ def iter_schema_units(
     yielded_any = False
     row_seen = False
 
-    def _observing_terminal_recorder(**outcome: object) -> None:
+    def _observing_terminal_recorder(
+        *,
+        raw_id: str,
+        status: ObservationTerminalStatus,
+        artifact_kind: str | None,
+        source_path: str | None,
+        reason: str | None,
+    ) -> None:
         nonlocal row_seen
         row_seen = True
         if terminal_recorder is not None:
-            terminal_recorder(**outcome)
+            terminal_recorder(
+                raw_id=raw_id,
+                status=status,
+                artifact_kind=artifact_kind,
+                source_path=source_path,
+                reason=reason,
+            )
 
     if config.db_source_name and db_path.exists():
         for unit in _iter_schema_units_from_db(
