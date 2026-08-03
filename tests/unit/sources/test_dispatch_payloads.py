@@ -447,6 +447,54 @@ def test_parse_one_source_path_treats_jsonl_text_json_wrappers_as_jsonl(tmp_path
     assert [session.provider_session_id for _raw, session in rows] == ["first-session", "second-session"]
 
 
+def test_chatgpt_shared_page_decode_detects_and_parses_end_to_end() -> None:
+    """A ChatGPT shared-page (chatgpt.com/share/<id>) stream decode has no
+    ``mapping`` key -- a flat top-level ``messages`` list instead
+    (polylogue-4zqh3). Before this detector, ``detect_provider`` matched no
+    provider for this shape at all: dispatch's generic "has a messages list"
+    fallback would consider it, but that fallback also requires a payload-
+    asserted ``id`` (absent here), so the whole document silently produced
+    zero sessions. This pins the full detect -> lower -> parse path end to
+    end.
+    """
+    payload: dict[str, object] = {
+        "shared_conversation_id": "shared-conv-e2e",
+        "conversation_id": "shared-conv-e2e",
+        "title": "Shared decode end to end",
+        "create_time": 1700000000.0,
+        "messages": [
+            {
+                "node_id": "user-node",
+                "parent": None,
+                "children": ["assistant-node"],
+                "role": "user",
+                "create_time": 1700000000.0,
+                "metadata": {},
+                "text": "hi from the shared decode",
+            },
+            {
+                "node_id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "role": "assistant",
+                "create_time": 1700000010.0,
+                "metadata": {},
+                "text": "hello back",
+            },
+        ],
+    }
+
+    provider = detect_provider(payload)
+    assert provider is Provider.CHATGPT
+
+    sessions = parse_payload(provider, payload, "shared-decode-fallback")
+
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert session.provider_session_id == "shared-conv-e2e"
+    assert [m.role for m in session.messages] == ["user", "assistant"]
+
+
 def _chatgpt_conversation_record(conversation_id: str) -> dict[str, object]:
     return {
         "id": conversation_id,

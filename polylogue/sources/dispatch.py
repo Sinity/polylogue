@@ -229,6 +229,13 @@ def _detect_provider_from_record_evidence(record: PayloadRecord) -> tuple[Provid
     # ``chatgpt.looks_like``'s document-identity requirements (polylogue-t0ta).
     if chatgpt.looks_like_fragment(record):
         return Provider.CHATGPT, "chatgpt.looks_like_fragment (mapping node shape)"
+    # A ChatGPT shared-page (chatgpt.com/share/<id>) stream decode has no
+    # "mapping" key at all -- a flattened top-level "messages" list instead
+    # (polylogue-4zqh3). Checked here, ahead of the generic "has a messages
+    # list" fallback used elsewhere in dispatch, which would otherwise
+    # silently accept-then-drop it (no payload-asserted "id" field).
+    if chatgpt.looks_like_shared_decode(record):
+        return Provider.CHATGPT, "chatgpt.looks_like_shared_decode (shared-page stream decode)"
     # Claude Design (bd polylogue-tbun) checked before the general claude.ai
     # detector: its shape (messages + project, no chat_messages, camelCase
     # contentBlocks) is a distinct, tighter product signature -- not a
