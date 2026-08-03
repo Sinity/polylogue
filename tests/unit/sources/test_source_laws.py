@@ -2345,8 +2345,16 @@ def test_iter_source_raw_data_streams_grouped_zip_entries_into_blob_store(
             "claude-sessions.json",
             json.dumps(
                 [
-                    {"uuid": "claude-1", "name": "one", "chat_messages": []},
-                    {"uuid": "claude-2", "name": "two", "chat_messages": []},
+                    {
+                        "uuid": "claude-1",
+                        "name": "one",
+                        "chat_messages": [{"uuid": "m1", "sender": "human", "text": "hi"}],
+                    },
+                    {
+                        "uuid": "claude-2",
+                        "name": "two",
+                        "chat_messages": [{"uuid": "m2", "sender": "human", "text": "hi"}],
+                    },
                 ]
             ).encode("utf-8"),
             Provider.CLAUDE_AI,
@@ -2415,7 +2423,7 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
         raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
 
     monkeypatch.setattr(
-        "polylogue.sources.source_acquisition_components._detect_provider_from_raw_bytes",
+        "polylogue.sources.source_acquisition_components.detect_provider_from_raw_bytes_evidence",
         _fail,
     )
 
