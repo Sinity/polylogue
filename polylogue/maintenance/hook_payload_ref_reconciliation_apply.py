@@ -67,15 +67,20 @@ class HookPayloadRefReconciliationApplyReport:
         plan: HookPayloadRefReconciliationPlan,
         *,
         applied: bool,
-        reconciled_hook_event_ids: tuple[str, ...] = (),
+        reconciled_hook_event_ids: tuple[str, ...] | None = None,
         backup_manifest: Path | None = None,
     ) -> HookPayloadRefReconciliationApplyReport:
+        reconciled = (
+            tuple(c.hook_event_id for c in plan.matched)
+            if reconciled_hook_event_ids is None
+            else reconciled_hook_event_ids
+        )
         return cls(
             scanned_count=plan.scanned_count,
             matched_count=len(plan.matched),
             matched_bytes=plan.matched_bytes,
             unmatched_count=plan.unmatched_count,
-            reconciled_hook_event_ids=reconciled_hook_event_ids or tuple(c.hook_event_id for c in plan.matched),
+            reconciled_hook_event_ids=reconciled,
             applied=applied,
             backup_manifest=backup_manifest,
         )
