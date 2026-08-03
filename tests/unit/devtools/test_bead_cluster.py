@@ -61,6 +61,15 @@ def test_extract_footprint_reads_description_text() -> None:
     assert "polylogue/storage/sqlite/connection_profile.py" in fp.files
 
 
+def test_agent_handoffs_package_suppressed_but_file_keys_remain() -> None:
+    bead = _bead("polylogue-a")
+    bead["description"] = "Provenance: .agent/handoffs/2026-08-01-lane7.md covers the prior attempt."
+    fp = bead_cluster._extract_footprint(bead)
+    keys = fp.overlap_keys()
+    assert ".agent/handoffs/" not in keys
+    assert ".agent/handoffs/2026-08-01-lane7.md" in keys
+
+
 def test_extract_footprint_falls_back_to_area_labels_when_no_files() -> None:
     bead = _bead("polylogue-a", design="no file paths here", labels=["area:mcp"])
     fp = bead_cluster._extract_footprint(bead)
