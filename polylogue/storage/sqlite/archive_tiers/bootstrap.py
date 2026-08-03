@@ -65,6 +65,12 @@ ARCHIVE_TIER_SPECS: dict[ArchiveTier, ArchiveTierSpec] = {
         durability="disposable",
         backup_required=False,
     ),
+    ArchiveTier.AUDIT: ArchiveTierSpec(
+        ArchiveTier.AUDIT,
+        filename="audit.db",
+        durability="irreplaceable",
+        backup_required=True,
+    ),
 }
 
 

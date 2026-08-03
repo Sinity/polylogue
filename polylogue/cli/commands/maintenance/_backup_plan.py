@@ -94,6 +94,11 @@ def _backup_plan_payload(root: Path) -> dict[str, Any]:
             "policy": "diagnostics_only",
             "restore_role": "daemon cursors, convergence debt, and runtime telemetry",
         },
+        ArchiveTier.AUDIT: {
+            "backup_class": "critical_authority",
+            "policy": "always_back_up",
+            "restore_role": "mutation previews, authorizations, runs, attempts, and events",
+        },
     }
 
     tier_payloads = []

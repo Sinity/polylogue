@@ -1,9 +1,9 @@
 """Backup and portability operations for the Polylogue archive.
 
 Provides a local-first backup command for tiered archives.
-Backups copy only the precious tiers plus referenced blobs: source.db, user.db,
-embeddings.db, and blob files. Rebuildable index.db and disposable ops.db are
-omitted by design.
+Backups copy the authority and precious tiers plus referenced blobs: audit.db,
+source.db, user.db, embeddings.db, and blob files. Rebuildable index.db and
+disposable ops.db are omitted by profiles that do not request full evidence.
 
 Each SQLite tier is checkpointed and copied while its write lock is held, so
 the copied bytes and recorded source fingerprint describe the same state.
@@ -200,6 +200,7 @@ def _all_archive_tiers(root: Path) -> dict[str, Path]:
         "embeddings": root / "embeddings.db",
         "user": root / "user.db",
         "ops": root / "ops.db",
+        "audit": root / "audit.db",
     }
 
 
@@ -208,21 +209,26 @@ def _profile_archive_tiers(root: Path, profile: BackupProfile) -> dict[str, Path
     if profile == "full_evidence":
         return all_tiers
     if profile == "user_overlays":
-        return {"user": all_tiers["user"]}
+        return {"user": all_tiers["user"], "audit": all_tiers["audit"]}
     if profile == "diagnostics_bundle":
         return {"ops": all_tiers["ops"]}
     return {
         "source": all_tiers["source"],
         "user": all_tiers["user"],
         "embeddings": all_tiers["embeddings"],
+        "audit": all_tiers["audit"],
     }
 
 
 def _optional_profile_tiers(profile: BackupProfile) -> set[str]:
     if profile == "full_evidence":
-        return {"ops"}
+        return {"ops", "audit"}
     if profile == "rebuildable_cache_exclude":
-        return {"embeddings"}
+        return {"embeddings", "audit"}
+    if profile == "user_overlays":
+        return {"audit"}
+    if profile == "diagnostics_bundle":
+        return {"audit"}
     return set()
 
 
