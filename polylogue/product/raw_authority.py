@@ -168,25 +168,6 @@ def read_detail(archive_root: Path, query_handle: str, *, chunk_chars: int, offs
     return read_raw_authority_detail(archive_root, query_handle, chunk_chars=chunk_chars, offset=offset)
 
 
-def resolve_blocker(
-    archive_root: Path,
-    blocker_id: str,
-    *,
-    resolution: str,
-    assertion_id: str | None,
-    judgment_disposition: str | None,
-) -> JSONDocument:
-    from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-
-    return resolve_raw_authority_blocker(
-        archive_root,
-        blocker_id,
-        resolution=resolution,
-        assertion_id=assertion_id,
-        judgment_disposition=judgment_disposition,
-    )
-
-
 def list_blockers(archive_root: Path, *, limit: int = 100, offset: int = 0) -> JSONDocument:
     """Read-only, paginated inventory of unresolved raw-authority blockers (operator discovery surface).
 

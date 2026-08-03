@@ -1994,17 +1994,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify evidence",
         "verification",
-        "Render the pytest-first evidence dashboard or a changed-path trace.",
+        "Render the pytest-first evidence dashboard.",
         "devtools.evidence_dashboard",
         use_when=(
             "Inspect pytest health, contract-evidence inventory, coverage, SLO "
-            "catalog, static-gate status, and campaign freshness, or "
-            "trace which evidence artifacts cover the changed paths in a PR."
+            "catalog, static-gate status, and campaign freshness."
         ),
         examples=(
             "devtools verify evidence --json",
             "devtools verify evidence --markdown",
-            "devtools verify evidence trace --base origin/master --head HEAD --markdown",
         ),
     ),
     CommandSpec(
