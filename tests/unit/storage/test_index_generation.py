@@ -17,6 +17,7 @@ from polylogue.storage.index_generation import (
     IndexGenerationStore,
     RebuildLease,
     RebuildLeaseUnavailableError,
+    rebuild_lease_status,
     source_revision_snapshot,
 )
 
@@ -634,3 +635,81 @@ class TestNextRawPageExcludesSupersededResumeDebt:
         )
         second_page = store.next_raw_page(transaction, limit=1)
         assert [row[0] for row in second_page.rows] == ["raw-b"]
+
+
+class TestRebuildLeaseStatus:
+    """polylogue-b5l.1 AC5: a read-only lease probe for status surfaces --
+    must never block, never disturb a genuine holder, and must distinguish
+    "not held" / "held by a live process" / "held but recorded pid is dead
+    (reclaimable)"."""
+
+    def test_reports_not_held_when_no_lock_file_exists(self, tmp_path: Path) -> None:
+        status = rebuild_lease_status(tmp_path)
+        assert status.held is False
+        assert status.holder_pid is None
+        assert status.stale is False
+
+    def test_reports_not_held_after_a_lease_is_released(self, tmp_path: Path) -> None:
+        with RebuildLease(tmp_path):
+            pass
+        status = rebuild_lease_status(tmp_path)
+        assert status.held is False
+        # The lock file's recorded pid/host from the released lease is still
+        # readable (best-effort diagnosis), but "held" reflects reality now.
+        assert status.holder_pid == os.getpid()
+
+    def test_reports_held_by_this_process_while_a_lease_is_open(self, tmp_path: Path) -> None:
+        with RebuildLease(tmp_path):
+            status = rebuild_lease_status(tmp_path)
+        assert status.held is True
+        assert status.holder_pid == os.getpid()
+        assert status.holder_alive is True
+        assert status.stale is False
+
+    def test_reports_held_by_a_separate_live_process(self, tmp_path: Path) -> None:
+        ready = multiprocessing.Event()
+        release = multiprocessing.Event()
+        process = multiprocessing.Process(target=_hold_lease, args=(str(tmp_path), ready, release))
+        process.start()
+        assert ready.wait(5)
+        try:
+            status = rebuild_lease_status(tmp_path)
+            assert status.held is True
+            assert status.holder_pid == process.pid
+            assert status.holder_alive is True
+            assert status.stale is False
+        finally:
+            release.set()
+            process.join(5)
+        assert process.exitcode == 0
+
+    def test_reports_stale_when_recorded_holder_pid_is_dead(self, tmp_path: Path) -> None:
+        lock_path = tmp_path / ".index-rebuild.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        holder_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(holder_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        os.write(holder_fd, f"pid={_DEFINITELY_DEAD_PID} host=nowhere\n".encode())
+        os.fsync(holder_fd)
+        try:
+            status = rebuild_lease_status(tmp_path)
+            assert status.held is True
+            assert status.holder_pid == _DEFINITELY_DEAD_PID
+            assert status.holder_host == "nowhere"
+            assert status.holder_alive is False
+            assert status.stale is True
+        finally:
+            fcntl.flock(holder_fd, fcntl.LOCK_UN)
+            os.close(holder_fd)
+
+    def test_probe_never_blocks_or_disturbs_a_genuine_holder(self, tmp_path: Path) -> None:
+        """Calling the probe repeatedly while a real lease is held must never
+        raise, never remove the lock file, and never itself release the
+        real holder's lock."""
+        with RebuildLease(tmp_path):
+            for _ in range(3):
+                status = rebuild_lease_status(tmp_path)
+                assert status.held is True
+            # The real holder must still hold it after repeated probing.
+            with pytest.raises(RebuildLeaseUnavailableError):
+                with RebuildLease(tmp_path):
+                    pass

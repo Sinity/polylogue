@@ -25,6 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 logger = logging.getLogger(__name__)
 
 _LOCK_PID_PATTERN = re.compile(r"pid=(\d+)")
+_LOCK_HOST_PATTERN = re.compile(r"host=(\S+)")
 
 #: ``raw_session_memberships.decision`` values that mean "this raw is
 #: resolved, durable history" rather than resume debt -- reused directly from
@@ -172,6 +173,16 @@ def _lock_holder_pid(path: Path) -> int | None:
     return int(match.group(1))
 
 
+def _lock_holder_host(path: Path) -> str | None:
+    """Best-effort recorded hostname from an existing lock file; ``None`` if absent/unreadable."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _LOCK_HOST_PATTERN.search(text)
+    return match.group(1) if match is not None else None
+
+
 def _pid_is_alive(pid: int) -> bool:
     """Whether ``pid`` still names a live process, best-effort via ``kill(pid, 0)``."""
     if pid <= 0:
@@ -284,6 +295,74 @@ class ActiveWriterLease:
             fcntl.flock(self._fd, fcntl.LOCK_UN)
             os.close(self._fd)
             self._fd = None
+
+
+@dataclass(frozen=True, slots=True)
+class RebuildLeaseStatus:
+    """Read-only snapshot of the archive-root rebuild lease, for status surfaces.
+
+    polylogue-b5l.1 AC5: an operator/agent must be able to see who owns the
+    lease, whether the recorded holder is actually still alive, and whether
+    the lock looks reclaimable, without disturbing a real holder and without
+    duplicating ``RebuildLease``/``ActiveWriterLease`` as the sole exclusion
+    mechanism.
+    """
+
+    held: bool
+    holder_pid: int | None
+    holder_host: str | None
+    #: ``None`` when ``held`` is False (nothing to check liveness against) or
+    #: when no pid could be parsed from the lock file at all.
+    holder_alive: bool | None
+    #: True when the lease is held but its recorded pid is provably dead --
+    #: exactly the ``RebuildLease.__enter__`` reclaim condition
+    #: (``_open_lock_fd``), surfaced here for operator visibility before a
+    #: fresh acquisition would silently reclaim it.
+    stale: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "held": self.held,
+            "holder_pid": self.holder_pid,
+            "holder_host": self.holder_host,
+            "holder_alive": self.holder_alive,
+            "stale": self.stale,
+        }
+
+
+def rebuild_lease_status(archive_root: Path) -> RebuildLeaseStatus:
+    """Probe the rebuild lease without blocking or disturbing a genuine holder.
+
+    Attempts a non-blocking exclusive ``flock``: if it succeeds, nothing
+    currently holds the lease and the probe releases it immediately; if it
+    fails with ``EAGAIN``/``EACCES`` (``BlockingIOError``), the lease is
+    genuinely held and the lock file's recorded pid/host are reported
+    best-effort for diagnosis (the file content may be stale or unreadable).
+    """
+    path = archive_root / ".index-rebuild.lock"
+    if not path.exists():
+        return RebuildLeaseStatus(held=False, holder_pid=None, holder_host=None, holder_alive=None, stale=False)
+    holder_pid = _lock_holder_pid(path)
+    holder_host = _lock_holder_host(path)
+    fd = os.open(path, os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            alive = _pid_is_alive(holder_pid) if holder_pid is not None else None
+            return RebuildLeaseStatus(
+                held=True,
+                holder_pid=holder_pid,
+                holder_host=holder_host,
+                holder_alive=alive,
+                stale=holder_pid is not None and alive is False,
+            )
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return RebuildLeaseStatus(
+            held=False, holder_pid=holder_pid, holder_host=holder_host, holder_alive=None, stale=False
+        )
+    finally:
+        os.close(fd)
 
 
 class IndexGenerationStore:
@@ -805,8 +884,10 @@ __all__ = [
     "IndexGeneration",
     "IndexRebuildTransaction",
     "IndexGenerationStore",
+    "RebuildLeaseStatus",
     "RebuildRawPage",
     "RebuildLease",
     "RebuildLeaseUnavailableError",
+    "rebuild_lease_status",
     "source_revision_snapshot",
 ]
