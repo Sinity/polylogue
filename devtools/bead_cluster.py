@@ -169,6 +169,7 @@ _BROAD_PACKAGES: frozenset[str] = frozenset(
         ".agent/",
         ".agent/scratch/",
         ".agent/handoffs/",
+        "polylogue/sources/",
         "storage/sqlite/",
         "pipeline/",
         "docs/",

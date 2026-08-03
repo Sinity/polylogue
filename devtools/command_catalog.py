@@ -661,6 +661,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace lane-init",
+        "workspace",
+        "Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record.",
+        "devtools.lane_init",
+        use_when=(
+            "Before dispatching a lane in a high-concurrency fanout: creates the worktree/branch "
+            "if missing, provisions its OWN venv via uv sync (a shared-venv worktree cannot run "
+            "devtools/pytest -- checkout guard), proves import polylogue resolves inside the lane, "
+            "runs verify-worktree, appends the lane to .cache/fanout/lanes.jsonl (resumable fanout "
+            "state, polylogue-in94), and prints the per-lane POLYLOGUE_PYTEST_WORKERS budget for "
+            "the planned concurrency."
+        ),
+        examples=(
+            "devtools workspace lane-init /realm/worktrees/lane-cursors --branch feature/sources/cursor-catchup --beads polylogue-2qrx,polylogue-ix5r",
+            "devtools workspace lane-init /realm/worktrees/lane-x --branch feature/x --expected-lanes 16 --json",
+        ),
+    ),
+    CommandSpec(
         "workspace verify-worktree",
         "workspace",
         "Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch.",
