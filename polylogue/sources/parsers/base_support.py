@@ -325,7 +325,7 @@ def attachment_from_meta(meta: object, message_id: str | None) -> ParsedAttachme
 
 def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
     messages: list[ParsedMessage] = []
-    for idx, item in enumerate(items, start=1):
+    for _idx, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
 
@@ -391,7 +391,11 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
                 text = "\n".join(block.text for block in content_blocks if block.text) or None
 
         if text:
-            msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or f"msg-{idx}")
+            # polylogue-slshy: no positional fallback -- empty id lets
+            # _message_comparison_id's content-anchor (role + timestamp)
+            # fallback run instead of a position-derived string that would
+            # change identity when array order shifts across re-acquisitions.
+            msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or "")
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,

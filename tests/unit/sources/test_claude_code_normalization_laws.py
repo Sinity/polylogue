@@ -45,10 +45,14 @@ _EXPECTED_ARCHIVE_MESSAGE_IDS = (
     "claude-code-session:claude-normalization-main:main-bg-start",
     "claude-code-session:claude-normalization-main:main-command",
     "claude-code-session:claude-normalization-main:main-context",
-    "claude-code-session:claude-normalization-main:msg-7",
+    # polylogue-slshy: these two wire records carry uuid=None -- the parser
+    # now leaves provider_message_id empty (no positional "msg-N" fallback),
+    # so the generated message_id column falls back to its own
+    # position.variant_index component (COALESCE(native_id, ...)).
+    "claude-code-session:claude-normalization-main:5.0",
     "claude-code-session:claude-normalization-main:main-a2",
     "claude-code-session:claude-normalization-main:main-fg-result",
-    "claude-code-session:claude-normalization-main:msg-11",
+    "claude-code-session:claude-normalization-main:8.0",
 )
 _EXPECTED_MAIN_A1_BLOCK_IDS = (
     "claude-code-session:claude-normalization-main:main-a1:0",
@@ -65,11 +69,19 @@ _EXPECTED_MAIN_MESSAGES = (
     ("main-bg-start", "tool", "tool_result", "tool_result", "2026-07-01T10:00:02+00:00"),
     ("main-command", "user", "protocol", "operator_command", "2026-07-01T10:00:03+00:00"),
     ("main-context", "user", "context", "runtime_context", "2026-07-01T10:00:05+00:00"),
-    ("msg-7", "user", "protocol", "runtime_protocol", "2026-07-01T10:00:06+00:00"),
+    # polylogue-slshy: uuid=None in the wire record -- provider_message_id is
+    # now the empty string (in-memory ParsedMessage), not a positional
+    # "msg-N" fallback. See _EXPECTED_MAIN_NATIVE_IDS below for the distinct
+    # post-storage expectation (empty maps to a stored NULL native_id).
+    ("", "user", "protocol", "runtime_protocol", "2026-07-01T10:00:06+00:00"),
     ("main-a2", "assistant", "tool_use", "assistant_authored", "2026-07-01T10:00:07+00:00"),
     ("main-fg-result", "tool", "tool_result", "tool_result", "2026-07-01T10:00:08+00:00"),
-    ("msg-11", "assistant", "message", "assistant_authored", "2026-07-01T10:00:10+00:00"),
+    ("", "assistant", "message", "assistant_authored", "2026-07-01T10:00:10+00:00"),
 )
+#: Post-storage expectation for envelope.messages[i].native_id -- the writer
+#: maps an empty/whitespace-only provider_message_id to a stored NULL
+#: (_stored_message_native_id), distinct from the in-memory "" above.
+_EXPECTED_MAIN_NATIVE_IDS = tuple(fact[0] or None for fact in _EXPECTED_MAIN_MESSAGES)
 
 
 def _records(path: Path) -> list[object]:
@@ -129,7 +141,7 @@ def test_family_fixture_detector_and_streaming_paths_preserve_one_normalized_ide
     )
     assert observed_facts == _EXPECTED_MAIN_MESSAGES
     assert [message.position for message in main.messages] == list(range(len(_EXPECTED_MAIN_MESSAGES)))
-    assert main.active_leaf_message_provider_id == "msg-11"
+    assert main.active_leaf_message_provider_id == ""  # polylogue-slshy: no positional fallback
     assert main.branch_type is BranchType.SIDECHAIN
     assert main.title == "Review the parser."
     assert main.created_at == "2026-07-01T10:00:00+00:00"
@@ -175,7 +187,7 @@ def test_family_fixture_detector_and_streaming_paths_preserve_one_normalized_ide
 
     assert [(event.event_type, event.source_message_provider_id) for event in main.session_events] == [
         ("message_usage", "main-a1"),
-        ("message_usage", "msg-11"),
+        ("message_usage", ""),  # polylogue-slshy: no positional fallback
         ("background_task_completion", "main-bg-notification"),
     ]
     assert main.session_events[-1].payload == {
@@ -248,7 +260,7 @@ def test_family_fixture_survives_acquire_parse_store_read_and_action_pairing(tmp
     assert session_id == _ARCHIVE_SESSION_ID
     assert envelope.session_id == _ARCHIVE_SESSION_ID
     assert [message.message_id for message in envelope.messages] == list(_EXPECTED_ARCHIVE_MESSAGE_IDS)
-    assert [message.native_id for message in envelope.messages] == [fact[0] for fact in _EXPECTED_MAIN_MESSAGES]
+    assert [message.native_id for message in envelope.messages] == list(_EXPECTED_MAIN_NATIVE_IDS)
     assert [message.material_origin for message in envelope.messages] == [fact[3] for fact in _EXPECTED_MAIN_MESSAGES]
     assert [block.block_id for block in envelope.messages[1].blocks] == list(_EXPECTED_MAIN_A1_BLOCK_IDS)
     assert envelope.messages[2].blocks[0].block_id == ("claude-code-session:claude-normalization-main:main-bg-start:0")
@@ -273,7 +285,7 @@ def test_family_fixture_survives_acquire_parse_store_read_and_action_pairing(tmp
         900,
         300,
     )
-    assert by_native_id["msg-11"] == (
+    assert by_native_id[None] == (  # polylogue-slshy: no positional fallback, stored NULL
         "assistant_authored",
         "claude-opus-4-6",
         25,

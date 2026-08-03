@@ -1402,7 +1402,9 @@ def _parse_code_records(
             summary_text = str(context_compaction.get("summary") or "")
             messages.append(
                 ParsedMessage(
-                    provider_message_id=str(item.get("uuid") or f"summary-{index}"),
+                    # polylogue-slshy: no positional fallback -- empty id lets
+                    # _message_comparison_id's content-anchor fallback run.
+                    provider_message_id=str(item.get("uuid") or ""),
                     role=Role.SYSTEM,
                     text=summary_text,
                     timestamp=compaction_timestamp,
@@ -1617,7 +1619,11 @@ def _parse_code_records(
         # Paste markers only appear in user prompts; restricting detection to the
         # user role avoids false positives from assistant text that quotes a marker.
         paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
-        provider_message_id = str(record_uuid or f"msg-{index}")
+        # polylogue-slshy: no positional fallback -- empty id lets
+        # _message_comparison_id's content-anchor fallback run instead of a
+        # position-derived string that would change identity when array
+        # order shifts across re-acquisitions.
+        provider_message_id = str(record_uuid or "")
         messages.append(
             ParsedMessage(
                 provider_message_id=provider_message_id,
@@ -1770,13 +1776,19 @@ def _parse_code_records(
     else:
         branch_type = None
 
+    # polylogue-slshy: flag the active leaf by POSITION (the true last
+    # message), never by comparing provider_message_id -- with positional
+    # id-fallback strings removed (see the fix above), more than one
+    # id-less message can legitimately share the same empty
+    # provider_message_id, and an equality comparison would flag every one
+    # of them, not just the real leaf. Mirrors
+    # dispatch.merge_parsed_session_chunks/mark_last_occurrence_as_active_leaf's
+    # identical fix for the streaming path (bd polylogue-2hwl).
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     if active_leaf_message_provider_id is not None:
+        leaf_index = len(messages) - 1
         messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
+            message.model_copy(update={"is_active_leaf": index == leaf_index}) for index, message in enumerate(messages)
         ]
 
     # polylogue-pbuh: flush deduplicated agent-dispatch delegation edges

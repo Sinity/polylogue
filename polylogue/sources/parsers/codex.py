@@ -1590,7 +1590,11 @@ def _code_mode_exec_envelopes(records: Sequence[object]) -> dict[int, _CodexExec
                 continue
             raw_tool_id = payload.get("call_id") or payload.get("id")
             tool_id = str(raw_tool_id) if raw_tool_id else None
-            provider_message_id = str(payload.get("id") or raw_tool_id or f"function-call-{index}")
+            # polylogue-slshy: no positional fallback -- an empty id lets
+            # _message_comparison_id's content-anchor (role + timestamp)
+            # fallback run instead of a position-derived string that would
+            # change identity when array order shifts across re-acquisitions.
+            provider_message_id = str(payload.get("id") or raw_tool_id or "")
             envelope = _CodexExecEnvelope(
                 transport_tool_name=tool_name,
                 transport_tool_id=tool_id,
@@ -1893,7 +1897,8 @@ def _codex_tool_message(
         if exec_envelope is not None:
             blocks.extend(_code_mode_child_use_blocks(exec_envelope))
         return ParsedMessage(
-            provider_message_id=str(payload.get("id") or tool_id or f"function-call-{index}"),
+            # polylogue-slshy: see the sibling comment above; no positional fallback.
+            provider_message_id=str(payload.get("id") or tool_id or ""),
             role=Role.ASSISTANT,
             text=tool_name,
             timestamp=timestamp,
@@ -1929,7 +1934,8 @@ def _codex_tool_message(
         if exec_envelope is not None:
             blocks.extend(_code_mode_child_result_blocks(exec_envelope))
         return ParsedMessage(
-            provider_message_id=str(payload.get("id") or tool_id or f"function-call-output-{index}"),
+            # polylogue-slshy: no positional fallback (see above).
+            provider_message_id=str(payload.get("id") or tool_id or ""),
             role=Role.TOOL,
             text=output_text,
             timestamp=timestamp,
@@ -2198,7 +2204,8 @@ def _codex_event_message(
         return None
     message_type = classify_text_message_type(text) or MessageType.MESSAGE
     return ParsedMessage(
-        provider_message_id=str(record.get("client_id") or record.get("id") or f"{record_type}-{index}"),
+        # polylogue-slshy: no positional fallback (see above).
+        provider_message_id=str(record.get("client_id") or record.get("id") or ""),
         role=role,
         text=text,
         timestamp=_iso_or_none(_record_timestamp(record) or timestamp_fallback),

@@ -211,7 +211,9 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         return None
     token_usage = _token_usage_fields(record)
     return ParsedMessage(
-        provider_message_id=_string(record.get("id")) or f"msg-{index}",
+        # polylogue-slshy: no positional fallback -- empty id lets
+        # _message_comparison_id's content-anchor fallback run instead.
+        provider_message_id=_string(record.get("id")) or "",
         role=_role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"}),
         text=text,
         timestamp=_string(record.get("timestamp")),
@@ -258,7 +260,8 @@ def _parse_hermes_message(
         return None
     token_usage = _token_usage_fields(record)
     return ParsedMessage(
-        provider_message_id=tool_call_id or f"msg-{index}",
+        # polylogue-slshy: no positional fallback (see above).
+        provider_message_id=tool_call_id or "",
         role=role,
         text=text,
         timestamp=_string(record.get("timestamp")) or _string(record.get("created_at")),
