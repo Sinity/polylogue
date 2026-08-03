@@ -70,7 +70,7 @@ def patched_dispatch() -> Iterator[dict[str, list[str]]]:
     calls: dict[str, list[str]] = {
         "session_insights": [],
         "message_type_backfill": [],
-        "orphaned_messages": [],
+        "empty_sessions": [],
     }
 
     def stub(name: str):  # type: ignore[no-untyped-def]
@@ -117,19 +117,19 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     fake_dispatch = {
         "session_insights": patched_dispatch_callable(patched_dispatch, "session_insights"),
         "message_type_backfill": boom,
-        "orphaned_messages": patched_dispatch_callable(patched_dispatch, "orphaned_messages"),
+        "empty_sessions": patched_dispatch_callable(patched_dispatch, "empty_sessions"),
     }
 
     with patch.object(repair_module, "REPAIR_HANDLERS", fake_dispatch):
         first = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
+            targets=("session_insights", "message_type_backfill", "empty_sessions"),
             operation_id="op-resume",
         )
 
     assert first.status is BackfillStatus.FAILED
     assert patched_dispatch["session_insights"] == ["live"]
-    assert patched_dispatch["orphaned_messages"] == ["live"]
+    assert patched_dispatch["empty_sessions"] == ["live"]
     assert len(boom_calls) == 1
     # State persists because run did not converge cleanly.
     assert state_path_for(config, "op-resume").exists()
@@ -147,7 +147,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     with patch.object(repair_module, "REPAIR_HANDLERS", patched_dispatch_table(patched_dispatch)):
         second = execute_replay(
             config,
-            targets=("session_insights", "message_type_backfill", "orphaned_messages"),
+            targets=("session_insights", "message_type_backfill", "empty_sessions"),
             operation_id="op-resume",
         )
 
@@ -157,7 +157,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
     assert patched_dispatch["session_insights"] == ["live"]
     # The remaining two targets were executed exactly once on resume.
     assert patched_dispatch["message_type_backfill"] == ["live"]
-    assert patched_dispatch["orphaned_messages"] == ["live", "live"]
+    assert patched_dispatch["empty_sessions"] == ["live", "live"]
     # State cleared after successful resume.
     assert not state_path_for(config, "op-resume").exists()
 

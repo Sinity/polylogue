@@ -5193,33 +5193,8 @@ class RepairResult:
 
 
 # ---------------------------------------------------------------------------
-# Orphan count queries (formerly archive_debt_counts)
+# Archive debt count queries (formerly archive_debt_counts)
 # ---------------------------------------------------------------------------
-
-
-def count_orphaned_messages_sync(conn: sqlite3.Connection) -> int:
-    """Count messages whose parent session row is missing.
-
-    keys each message to ``sessions`` via
-    ``messages.session_id REFERENCES sessions(session_id) ON DELETE
-    CASCADE``. The cascade makes a message without its session
-    structurally impossible — deleting a session deletes its messages in
-    the same statement. This query therefore reports the honest native
-    invariant: it joins ``messages`` to ``sessions`` and counts the rows
-    with no matching session, which is always 0 on a consistent archive
-    archive. It is retained as an integrity probe so a corrupted file
-    (FK disabled during a hand edit) is still observable.
-    """
-    return int(
-        conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM messages m
-            LEFT JOIN sessions s ON s.session_id = m.session_id
-            WHERE s.session_id IS NULL
-            """
-        ).fetchone()[0]
-    )
 
 
 def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
@@ -5259,34 +5234,6 @@ def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
     another (both call ``_empty_session_debris_session_ids``).
     """
     return len(_empty_session_debris_session_ids(conn))
-
-
-def count_orphaned_attachments_sync(conn: sqlite3.Connection) -> int:
-    """Count attachment refs without a parent and attachments without refs.
-
-    Native ``attachment_refs`` keys to ``sessions``/``messages`` with
-    ``ON DELETE CASCADE`` / ``SET NULL``; ``attachments`` carry a
-    materialized ``ref_count``. A ref without a live parent or an
-    attachment with no surviving ref is the archive orphan signature.
-    """
-    orphaned_refs = int(
-        conn.execute(
-            """
-            SELECT COUNT(*) FROM attachment_refs ar
-            WHERE (ar.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ar.message_id))
-               OR NOT EXISTS (SELECT 1 FROM sessions s WHERE s.session_id = ar.session_id)
-            """
-        ).fetchone()[0]
-    )
-    unreferenced_attachments = int(
-        conn.execute(
-            """
-            SELECT COUNT(*) FROM attachments a
-            WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
-            """
-        ).fetchone()[0]
-    )
-    return orphaned_refs + unreferenced_attachments
 
 
 def _table_has_more_than(conn: sqlite3.Connection, table_name: str, row_limit: int) -> bool:
@@ -5454,24 +5401,6 @@ def collect_archive_debt_statuses_sync(
     )
     debt_statuses: dict[str, ArchiveDebtStatus] = {}
 
-    if "orphaned_messages" in selected:
-        orphaned_messages = 0 if skip_large_message_scans else count_orphaned_messages_sync(conn)
-        debt_statuses["orphaned_messages"] = _archive_debt_status(
-            "orphaned_messages",
-            issue_count=orphaned_messages,
-            detail=(
-                "Skipped exact orphaned-message scan in probe mode; use --deep for exact count"
-                if skip_large_message_scans
-                else "No orphaned messages"
-                if orphaned_messages == 0
-                else (
-                    "Orphaned messages present; use --deep for exact count"
-                    if probe_only and not include_expensive
-                    else f"{orphaned_messages:,} orphaned messages"
-                )
-            ),
-            skipped=skip_large_message_scans,
-        )
     if "empty_sessions" in selected:
         empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
         debt_statuses["empty_sessions"] = _archive_debt_status(
@@ -5485,15 +5414,6 @@ def collect_archive_debt_statuses_sync(
                 else f"{empty_sessions:,} empty sessions"
             ),
             skipped=skip_large_message_scans,
-        )
-    if "orphaned_attachments" in selected:
-        orphaned_attachments = count_orphaned_attachments_sync(conn)
-        debt_statuses["orphaned_attachments"] = _archive_debt_status(
-            "orphaned_attachments",
-            issue_count=orphaned_attachments,
-            detail="No orphaned attachments"
-            if orphaned_attachments == 0
-            else f"{orphaned_attachments:,} orphaned attachment rows",
         )
     if "session_insights" in selected:
         session_insights = session_insight_repair_count(statuses)
@@ -5551,69 +5471,8 @@ def preview_counts_from_archive_debt(
 
 
 # ---------------------------------------------------------------------------
-# Cleanup repairs (orphans, empty sessions, attachments)
+# Cleanup repairs (empty sessions, blobs, and raw snapshots)
 # ---------------------------------------------------------------------------
-
-
-def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairResult:
-    """Delete messages whose parent session row is missing.
-
-    On the archive ``messages.session_id`` cascades from
-    ``sessions``, so a session-less message can only exist after a
-    file-level corruption (FK disabled during a hand edit). The repair
-    counts such rows via :func:`count_orphaned_messages_sync` and, when
-    any are found, deletes the orphan ``messages`` rows directly; the
-    ``blocks`` rows beneath them cascade away through
-    ``blocks.message_id REFERENCES messages ON DELETE CASCADE``.
-    """
-    with _open_archive_index_connection() as conn:
-        count = count_orphaned_messages_sync(conn)
-        if count == 0:
-            return _repair_result(
-                "orphaned_messages",
-                repaired_count=0,
-                success=True,
-                detail="No orphaned messages found",
-            )
-        try:
-            if dry_run:
-                return _repair_result(
-                    "orphaned_messages",
-                    repaired_count=count,
-                    success=True,
-                    detail=f"Would: Delete {count} orphaned messages",
-                )
-            result = conn.execute(
-                """
-                DELETE FROM messages
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM sessions s WHERE s.session_id = messages.session_id
-                )
-                """
-            )
-            conn.commit()
-            return _repair_result(
-                "orphaned_messages",
-                repaired_count=result.rowcount,
-                success=True,
-                detail=f"Deleted {result.rowcount} orphaned messages",
-            )
-        except Exception as exc:
-            return _repair_result(
-                "orphaned_messages",
-                repaired_count=0,
-                success=False,
-                detail=f"Failed to delete orphaned messages: {exc}",
-            )
-
-
-def preview_orphaned_messages(*, count: int) -> RepairResult:
-    return _repair_result(
-        "orphaned_messages",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: Delete {count} orphaned messages" if count else "Would: No orphaned messages found",
-    )
 
 
 def _sibling_source_db_path(conn: sqlite3.Connection) -> Path | None:
@@ -5925,93 +5784,6 @@ def preview_superseded_raw_snapshots(*, count: int) -> RepairResult:
             if count
             else "Would: No superseded live raw snapshots found"
         ),
-    )
-
-
-def _relink_orphaned_attachments_best_effort(config: Config, index_conn: sqlite3.Connection) -> int:
-    """polylogue-w06b: try to recover ref-less ``attachments`` rows by
-    re-parsing ``source.db`` raw sessions before the destructive cleanup
-    below deletes them irrecoverably.
-
-    ``attachments`` carries no session/message linkage of its own -- once a
-    ref-less row is deleted, whatever real evidence could have relinked it
-    (the raw bytes still sitting in ``source.db``) is not consulted again by
-    anything downstream. Attempting a relink first is the only way this
-    repair can avoid silently discarding recoverable, already-acquired
-    attachment bytes (1,783 of the 1,858 orphans this bead's forensics found
-    were `acquired`, 440MB of real content) forever.
-
-    Never raises and never blocks the cleanup below: a missing source tier
-    (e.g. a fixture/demo archive with no ``source.db``) or any re-parse
-    failure just means 0 relinked, not a repair failure -- the destructive
-    cleanup still runs on whatever remains ref-less afterward.
-    """
-    from polylogue.storage.attachment_relink import relink_orphaned_attachments
-
-    archive_root = _raw_materialization_archive_root(config)
-    source_db_path = archive_root / "source.db"
-    if not source_db_path.is_file():
-        return 0
-    try:
-        with closing(sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)) as source_conn:
-            result = relink_orphaned_attachments(index_conn, source_conn, archive_root=archive_root, dry_run=False)
-        return result.relinked_count
-    except Exception as exc:
-        logger.warning(
-            "orphaned-attachment relink attempt failed, proceeding to delete-only cleanup: %s", exc, exc_info=True
-        )
-        return 0
-
-
-def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
-    try:
-        with _open_archive_index_connection() as conn:
-            if dry_run:
-                return preview_orphaned_attachments(count=count_orphaned_attachments_sync(conn))
-
-            relinked_count = _relink_orphaned_attachments_best_effort(config, conn)
-
-            ref_result = conn.execute(
-                "DELETE FROM attachment_refs WHERE message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = attachment_refs.message_id)"
-            )
-            refs_deleted = ref_result.rowcount
-
-            conv_ref_result = conn.execute(
-                "DELETE FROM attachment_refs WHERE NOT EXISTS (SELECT 1 FROM sessions c WHERE c.session_id = attachment_refs.session_id)"
-            )
-            conv_refs_deleted = conv_ref_result.rowcount
-
-            att_result = conn.execute(
-                "DELETE FROM attachments WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = attachments.attachment_id)"
-            )
-            atts_deleted = att_result.rowcount
-            conn.commit()
-
-            total = refs_deleted + conv_refs_deleted + atts_deleted
-            return _repair_result(
-                "orphaned_attachments",
-                repaired_count=total + relinked_count,
-                success=True,
-                detail=(
-                    f"Relinked {relinked_count} recoverable attachment(s) via raw re-parse; "
-                    f"cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments"
-                ),
-            )
-    except Exception as exc:
-        return _repair_result(
-            "orphaned_attachments",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to clean orphaned attachments: {exc}",
-        )
-
-
-def preview_orphaned_attachments(*, count: int) -> RepairResult:
-    return _repair_result(
-        "orphaned_attachments",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: Clean {count} orphaned attachment rows" if count else "Would: No orphaned attachments found",
     )
 
 
@@ -7191,9 +6963,7 @@ def repair_message_type_backfill(config: Config, dry_run: bool = False) -> Repai
 PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": preview_session_insights,
     "message_type_backfill": preview_message_type_backfill,
-    "orphaned_messages": preview_orphaned_messages,
     "empty_sessions": preview_empty_sessions,
-    "orphaned_attachments": preview_orphaned_attachments,
     "orphaned_blobs": preview_orphaned_blobs,
     "superseded_raw_snapshots": preview_superseded_raw_snapshots,
 }
@@ -7202,9 +6972,7 @@ PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
 REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
     "session_insights": repair_session_insights,
     "message_type_backfill": repair_message_type_backfill,
-    "orphaned_messages": repair_orphaned_messages,
     "empty_sessions": repair_empty_sessions,
-    "orphaned_attachments": repair_orphaned_attachments,
     "orphaned_blobs": repair_orphaned_blobs,
     "superseded_raw_snapshots": repair_superseded_raw_snapshots,
 }
@@ -7318,29 +7086,23 @@ __all__ = [
     "RepairResult",
     "collect_archive_debt_statuses_sync",
     "count_empty_sessions_sync",
-    "count_orphaned_attachments_sync",
     "count_orphaned_blobs_sync",
     "count_superseded_raw_snapshots_sync",
-    "count_orphaned_messages_sync",
     "count_messages_by_type_sync",
     "count_unclassified_message_type_sync",
     "preview_counts_from_archive_debt",
     "preview_empty_sessions",
-    "preview_orphaned_attachments",
     "preview_orphaned_blobs",
     "preview_superseded_raw_snapshots",
-    "preview_orphaned_messages",
     "preview_message_type_backfill",
     "preview_session_insights",
     "raw_materialization_replay_backlog",
     "raw_materialization_scale_profile",
     "repair_empty_sessions",
     "repair_message_type_backfill",
-    "repair_orphaned_attachments",
     "repair_orphaned_blobs",
     "repair_raw_materialization",
     "repair_superseded_raw_snapshots",
-    "repair_orphaned_messages",
     "repair_session_insights",
     "run_archive_cleanup",
     "run_safe_repairs",

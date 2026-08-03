@@ -22,8 +22,7 @@ Models inventoried:
 * ``transcript_embeddings``, ``retrieval_evidence``,
   ``retrieval_inference``, ``retrieval_enrichment`` — retrieval-layer
   read models.
-* ``orphaned_messages``, ``empty_sessions``, ``orphaned_attachments`` —
-  archive-cleanup scopes (orphan rows only).
+* ``empty_sessions`` — archive-cleanup scope for positively classified debris.
 * ``message_type_backfill`` — message-type classification backlog.
 
 The inventory is produced at the model granularity reported by the
@@ -45,9 +44,7 @@ from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.message_type_backfill import count_unclassified_message_type_sync
 from polylogue.storage.repair import (
     count_empty_sessions_sync,
-    count_orphaned_attachments_sync,
     count_orphaned_blobs_sync,
-    count_orphaned_messages_sync,
 )
 
 
@@ -299,33 +296,16 @@ def _archive_cleanup_items(
                 detail="Exact archive-cleanup count skipped by shallow preview",
                 truncated=True,
             )
-            for model in (
-                "orphaned_messages",
-                "empty_sessions",
-                "orphaned_attachments",
-                "orphaned_blobs",
-            )
+            for model in ("empty_sessions", "orphaned_blobs")
         ]
 
-    orphan_messages = count_orphaned_messages_sync(conn)
     empty_sessions = count_empty_sessions_sync(conn)
-    orphan_attachments = count_orphaned_attachments_sync(conn)
 
     rows: list[tuple[str, int, str]] = [
-        (
-            "orphaned_messages",
-            orphan_messages,
-            "messages referencing missing sessions",
-        ),
         (
             "empty_sessions",
             empty_sessions,
             "sessions with no messages",
-        ),
-        (
-            "orphaned_attachments",
-            orphan_attachments,
-            "attachment refs without parent rows",
         ),
     ]
 
