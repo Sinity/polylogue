@@ -1091,6 +1091,34 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-quarantine-group-dedup-apply",
+        "workspace",
+        "Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group.",
+        "devtools.raw_quarantine_group_dedup_apply",
+        use_when=(
+            "polylogue-zm4w8 (measured live 2026-08-03): 1,777 raw_sessions rows (22.2 GiB) among "
+            "the codex-session quarantine backlog are pure redundant duplicates -- same source_path "
+            "AND same blob_hash as another raw_sessions row -- where EVERY member of the group is "
+            "still quarantined (no indexed twin anywhere), invisible to "
+            "raw-byte-duplicate-supersession-apply (which only matches a quarantined raw against an "
+            "already-INDEXED twin). Default is dry-run; --apply requires --backup-manifest pointing "
+            "at a verified source-tier backup (polylogue backup --output-dir <dir> --verify). "
+            "Materializes exactly one representative raw per group through the real ingest pipeline "
+            "(ParsingService.parse_from_raw -> write_parsed_session_to_archive -> "
+            "refresh_session_insights_bulk) so it becomes a genuine indexed session, then marks the "
+            "rest revision_authority='byte_proven' with an immutable per-row receipt "
+            "(raw_quarantine_group_dedup_receipts) pointing at the promoted representative's raw_id "
+            "and new session_id. Never deletes blobs or runs GC/VACUUM -- those are separate, later "
+            "steps."
+        ),
+        examples=(
+            "devtools workspace raw-quarantine-group-dedup-apply",
+            "devtools workspace raw-quarantine-group-dedup-apply --json",
+            "devtools workspace raw-quarantine-group-dedup-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace binary-artifact-sweep",
         "workspace",
         "Find raw_sessions rows whose bytes are a non-session binary format (SQLite, etc).",
