@@ -205,6 +205,52 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
     return payload
 
 
+#: Marker prefix for a content-derived (role + timestamp) message identity
+#: anchor, used only when a message carries no native ``provider_message_id``.
+#: Namespaced so it can never collide with a real provider id string (a
+#: provider id never contains this literal token by construction).
+_TIMESTAMP_ANCHOR_PREFIX = "__polylogue_msg_ts_anchor__"
+
+
+def _message_comparison_id(message: ParsedMessage, index: int) -> str:
+    """Resolve the id used as both a message's content-payload id and its
+    comparison identity (``message_identity_hash``'s sole input).
+
+    Prefers the provider's own id -- stable across reordering even when the
+    export's array ordering is not (polylogue-c429). When a parser could not
+    populate one (``provider_message_id`` is empty), this used to fall back
+    to ``f"msg-{index}"`` -- positionally-derived, exactly the same failure
+    class the attachment identity fix (polylogue-hith/-d8al) removed for a
+    different field: two parses of the same id-less message in a different
+    array position would get two different fallback "ids" and compare as a
+    conflict instead of the same message (polylogue-gysk3).
+
+    The fix: fall back to a content-derived anchor -- role plus timestamp --
+    instead of array position, so reordering an otherwise-unchanged id-less
+    message no longer changes its comparison identity. Only when a message
+    carries NEITHER a provider id NOR a timestamp does this still fall back
+    to structural position: a known, accepted limit (nothing else
+    distinguishes the message), the same shape as the accepted limit already
+    documented on ``attachment_identity_hash``.
+
+    SCOPE NOTE: this closes the fallback instance local to this module.
+    Several parsers (``sources/parsers/*``, e.g. ``claude/common.py``,
+    ``codex.py``, ``grok.py``) bake a positionally-derived string
+    (``f"msg-{index}"``, ``f"function-call-{index}"``, etc.) directly into
+    ``provider_message_id`` itself, before it ever reaches this function --
+    it arrives here indistinguishable from a genuine native id and is used
+    as-is via the first branch below. Fixing that requires parser-side
+    cooperation (a typed "this id is positionally synthesized" marker) and
+    is out of this module's scope; polylogue-gysk3's own design note records
+    it as a separate, dedicated follow-up.
+    """
+    if message.provider_message_id:
+        return message.provider_message_id
+    if message.timestamp:
+        return f"{_TIMESTAMP_ANCHOR_PREFIX}:{message.role}:{message.timestamp}"
+    return f"msg-{index}"
+
+
 def message_identity_hash(*, id: str) -> bytes:
     """The sole constructor of a message's comparison identity (polylogue-aggz).
 
@@ -436,8 +482,7 @@ def _session_hash_components(
     payload independently -- pure sharing of an already-pure computation.
     """
     messages_payload = [
-        _message_hash_payload(msg, msg.provider_message_id or f"msg-{idx}")
-        for idx, msg in enumerate(convo.messages, start=1)
+        _message_hash_payload(msg, _message_comparison_id(msg, idx)) for idx, msg in enumerate(convo.messages, start=1)
     ]
     attachments_payload = [_attachment_hash_payload(attachment) for attachment in convo.attachments]
     session_events_payload = [
