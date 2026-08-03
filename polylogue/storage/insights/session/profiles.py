@@ -14,6 +14,8 @@ from polylogue.archive.session.documents import (
 )
 from polylogue.archive.session.extraction import WorkEvent, WorkEventPayload
 from polylogue.archive.session.models import SessionPhasePayload
+from polylogue.archive.session.provenance import date_provenance as _date_provenance
+from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.archive.session.session_profile import SessionAnalysis, SessionProfile
 from polylogue.core.payload_coercion import (
     coerce_float,
@@ -642,24 +644,6 @@ def phase_support_signals(phase: SessionPhase) -> tuple[str, ...]:
     if phase.word_count > 0:
         signals.append("word_count")
     return tuple(dict.fromkeys(signals))
-
-
-def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
-    if start_time is not None and end_time is not None:
-        return "timestamped_range"
-    if start_time is not None:
-        return "start_timestamp_only"
-    if end_time is not None:
-        return "end_timestamp_only"
-    return "untimestamped"
-
-
-def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
-    if canonical_session_date is None:
-        return "none"
-    if start_time is not None or end_time is not None:
-        return "event_timestamp"
-    return "date_only"
 
 
 def phase_fallback(phase: SessionPhase) -> bool:

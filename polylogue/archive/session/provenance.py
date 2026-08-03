@@ -6,8 +6,13 @@
 from __future__ import annotations
 
 
-def range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
+def range_timing_provenance(start_time: object | None, end_time: object | None) -> str:
     """Determine the provenance category for session time range.
+
+    Accepts ``object | None`` rather than a specific temporal type because
+    every call site only tests presence/absence — callers pass ``str``,
+    ``datetime``, or other already-parsed timestamp representations
+    interchangeably.
 
     Returns one of:
     - "timestamped_range": both start and end times are present
@@ -25,9 +30,9 @@ def range_timing_provenance(start_time: str | None, end_time: str | None) -> str
 
 
 def date_provenance(
-    canonical_session_date: str | None,
-    start_time: str | None,
-    end_time: str | None,
+    canonical_session_date: object | None,
+    start_time: object | None,
+    end_time: object | None,
 ) -> str:
     """Determine the provenance category for session date.
 

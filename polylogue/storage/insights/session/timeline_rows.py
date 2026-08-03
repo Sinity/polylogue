@@ -7,6 +7,8 @@ from datetime import datetime
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.session.documents import WorkEventDocument
 from polylogue.archive.session.extraction import WorkEvent
+from polylogue.archive.session.provenance import date_provenance as _date_provenance
+from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.hashing import hash_text
 from polylogue.core.types import SessionId
@@ -355,28 +357,6 @@ def hydrate_session_phase(record: SessionPhaseRecord) -> SessionPhase:
             str(value) for value in (payload.get("evidence", record.evidence_reasons) or record.evidence_reasons)
         ),
     )
-
-
-def _range_timing_provenance(start_time: datetime | None, end_time: datetime | None) -> str:
-    if start_time is not None and end_time is not None:
-        return "timestamped_range"
-    if start_time is not None:
-        return "start_timestamp_only"
-    if end_time is not None:
-        return "end_timestamp_only"
-    return "untimestamped"
-
-
-def _date_provenance(
-    canonical_session_date: object | None,
-    start_time: datetime | None,
-    end_time: datetime | None,
-) -> str:
-    if canonical_session_date is None:
-        return "none"
-    if start_time is not None or end_time is not None:
-        return "event_timestamp"
-    return "date_only"
 
 
 __all__ = [
