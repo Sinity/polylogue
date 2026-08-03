@@ -37,6 +37,7 @@ def record_convergence_outcome(
                     subject_type="session_id",
                     subject_id=session_id,
                     error=debt.error,
+                    deferred=debt.deferred,
                 )
         else:
             cursor.record_convergence_debt(
@@ -44,4 +45,5 @@ def record_convergence_outcome(
                 subject_type="source_path",
                 subject_id=str(path),
                 error=debt.error,
+                deferred=debt.deferred,
             )

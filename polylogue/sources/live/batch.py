@@ -2307,6 +2307,7 @@ class LiveBatchProcessor:
                                     subject_type="session_id",
                                     subject_id=session_id,
                                     error="live full ingest deferred FTS to preserve writer availability",
+                                    deferred=True,
                                 )
                                 record_session_ids.append(session_id)
                                 record_session_count = 1
@@ -2631,6 +2632,7 @@ class LiveBatchProcessor:
                     subject_type="session_id",
                     subject_id=membership_session_id,
                     error="live membership ingest deferred FTS to preserve writer availability",
+                    deferred=True,
                 )
                 session_count += 1
                 message_count += len(member_sessions[classification.accepted_raw_ids[-1]].messages)

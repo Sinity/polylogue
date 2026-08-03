@@ -722,6 +722,11 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/cli.py",
+    "import": "polylogue.sources.live.convergence_debt"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/cli.py",
     "import": "polylogue.sources.live.cursor"
   },
   {

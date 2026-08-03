@@ -581,6 +581,7 @@ def test_hot_insight_convergence_debt_uses_quiet_window_retry(
         subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
+        deferred=True,
     )
     frozen_clock.advance(1)
     cursor.record_convergence_debt(
@@ -588,6 +589,7 @@ def test_hot_insight_convergence_debt_uses_quiet_window_retry(
         subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
+        deferred=True,
     )
 
     debt = cursor.list_convergence_debt(limit=1)[0]
@@ -609,6 +611,7 @@ def test_hot_insight_convergence_debt_advances_after_retry_is_due(
         subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
+        deferred=True,
     )
     frozen_clock.advance(61)
     cursor.record_convergence_debt(
@@ -616,6 +619,7 @@ def test_hot_insight_convergence_debt_advances_after_retry_is_due(
         subject_type="session_id",
         subject_id="conv-hot",
         error="insights deferred until source quiet",
+        deferred=True,
     )
 
     debt = cursor.list_convergence_debt(limit=1)[0]
@@ -668,6 +672,7 @@ def test_hot_insight_convergence_debt_uses_source_quiet_deadline(
         subject_type="session_id",
         subject_id="codex-session:conv-hot",
         error="insights deferred until source quiet",
+        deferred=True,
     )
 
     debt = cursor.list_convergence_debt(limit=1)[0]
@@ -718,6 +723,7 @@ def test_hot_insight_convergence_debt_uses_archive_source_quiet_deadline(
         subject_type="session_id",
         subject_id="codex-session:conv-hot-v1",
         error="insights deferred until source quiet",
+        deferred=True,
     )
 
     debt = cursor.list_convergence_debt(limit=1)[0]

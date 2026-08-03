@@ -1679,6 +1679,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
     """
     from polylogue.daemon.convergence import DaemonConverger
     from polylogue.daemon.convergence_stages import make_default_convergence_stages
+    from polylogue.sources.live.convergence_debt import is_deferred_stage_state
     from polylogue.sources.live.cursor import CursorStore
 
     cursor = CursorStore(db)
@@ -1766,6 +1767,8 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
 
         last_error = getattr(state, "last_error", None)
         retry_error = last_error if isinstance(last_error, str) and last_error else "retry did not converge"
+        stages_map = getattr(state, "stages", None)
+        stages_map = stages_map if isinstance(stages_map, dict) else {}
         if debt.stage != "convergence":
             cursor.record_convergence_debt(
                 stage=debt.stage,
@@ -1773,13 +1776,14 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 subject_id=debt.subject_id,
                 error=retry_error,
                 materializer_version=debt.materializer_version,
+                deferred=is_deferred_stage_state(stages_map.get(debt.stage)),
             )
             continue
 
         # Generic rows predate stage-scoped retry identity. Preserve the old
         # migration behavior by replacing only that generic row with the exact
         # stages that remain pending; other stage rows for the subject survive.
-        failed_stages = _failed_convergence_stage_names(getattr(state, "stages", {})) or ("convergence",)
+        failed_stages = _failed_convergence_stage_names(stages_map) or ("convergence",)
         cursor.clear_convergence_debt(
             stage=debt.stage,
             subject_type=debt.subject_type,
@@ -1792,6 +1796,7 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
                 subject_id=debt.subject_id,
                 error=retry_error,
                 materializer_version=debt.materializer_version,
+                deferred=is_deferred_stage_state(stages_map.get(stage)),
             )
     return retried
 

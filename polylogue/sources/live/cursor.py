@@ -48,7 +48,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 
-_INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 _FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
 
@@ -230,12 +229,6 @@ def _storage_route_from_payload(payload: dict[str, object] | None) -> str | None
 
 def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
-
-
-def _convergence_debt_status(*, stage: str, error: str | None) -> str:
-    if stage == "insights" and error == _INSIGHT_DEFERRED_UNTIL_QUIET:
-        return "deferred"
-    return "failed"
 
 
 def _convergence_debt_priority(*, stage: str, subject_type: str, subject_id: str) -> int:
@@ -463,6 +456,7 @@ class CursorStore:
         error: str | None,
         materializer_version: str | None,
         now: str,
+        deferred: bool = False,
     ) -> None:
         """Read the current debt row and write the updated one inside ONE
         connection/transaction (``BEGIN IMMEDIATE`` before the read), so a
@@ -512,7 +506,7 @@ class CursorStore:
                     stage=stage,
                     target_type=subject_type,
                     target_id=subject_id,
-                    status=_convergence_debt_status(stage=stage, error=error),
+                    status="deferred" if deferred else "failed",
                     priority=_convergence_debt_priority(
                         stage=stage,
                         subject_type=subject_type,
@@ -1426,8 +1420,18 @@ class CursorStore:
         subject_id: str,
         error: str | None = None,
         materializer_version: str | None = None,
+        deferred: bool = False,
     ) -> None:
-        """Record derived convergence debt without marking source ingest failed."""
+        """Record derived convergence debt without marking source ingest failed.
+
+        ``deferred`` should be ``True`` only when this row reflects a
+        deliberate bounded-backpressure deferral (a ``false_means_pending``
+        convergence stage, or an explicit "deferred to preserve writer
+        availability" policy choice) rather than a genuine check/execute
+        failure -- it drives whether the row lands as
+        ``convergence_debt.status = 'deferred'`` (excluded from
+        failure-count alerting) or ``'failed'``.
+        """
         now = datetime.now(UTC).isoformat()
         self._sync_convergence_debt_to_ops(
             stage=stage,
@@ -1436,6 +1440,7 @@ class CursorStore:
             error=error,
             materializer_version=materializer_version,
             now=now,
+            deferred=deferred,
         )
 
     def clear_convergence_debt_except(

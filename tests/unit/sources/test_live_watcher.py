@@ -446,6 +446,35 @@ def test_cursor_syncs_convergence_debt_to_archive_ops_db(tmp_path: Path) -> None
     assert count == 0
 
 
+def test_cursor_records_genuine_deferral_as_deferred_not_failed(tmp_path: Path) -> None:
+    """A ``false_means_pending`` stage's deliberate backpressure deferral
+    (polylogue-6krh) must land as ``status = 'deferred'``, not ``'failed'``
+    -- otherwise daemon health/alerting treats routine backpressure as a
+    stage that is broken.
+    """
+    store = CursorStore(tmp_path / "live.sqlite")
+
+    store.record_convergence_debt(
+        stage="insights",
+        subject_type="session_id",
+        subject_id="conv-1",
+        error="insights deferred until source quiet",
+        deferred=True,
+    )
+    store.record_convergence_debt(
+        stage="session_profile",
+        subject_type="session_id",
+        subject_id="conv-2",
+        error="boom",
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = dict(
+            conn.execute("SELECT target_id, status FROM convergence_debt WHERE target_type = 'session_id'").fetchall()
+        )
+    assert rows == {"conv-1": "deferred", "conv-2": "failed"}
+
+
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
 def test_cursor_records_messages_fts_surface_debt_as_immediately_due(
     tmp_path: Path,
