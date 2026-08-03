@@ -323,7 +323,34 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # may already have been swept by an intervening full reindex). `polylogue
 # ops reset --index && polylogued run` is required to apply this;
 # deliberately NOT executed by this declaration.
-INDEX_SCHEMA_VERSION = 58
+# polylogue-4987i: v59 makes Claude Code session_events ordering deterministic
+# and chunk-count-invariant (order_session_events/reconcile_code_session_chunks,
+# code_parser.py). Previously, eager parsing (full-corpus reindex) and
+# streaming/chunked parsing (live incremental ingest of a session interleaved
+# with another session's records in the same JSONL -- a common shape for
+# subagent/resume sessions) could produce the SAME session_events content in a
+# DIFFERENT order for byte-identical raw input, because each streaming chunk
+# independently appended its own end-of-chunk summary events (coverage,
+# background-completion, delegation-progress) instead of a session-wide
+# accumulation. content_hash embeds each event's list position
+# (`event_index`, pipeline/ids.py:_session_hash_components), so this was a
+# genuine content-hash instability: reindexing a session that was originally
+# ingested incrementally could compute a different hash purely from which
+# code path produced it, triggering spurious "content changed" reprocessing.
+# Fix: both paths now sort session_events by (timestamp, event-type tier,
+# encounter index) and streaming's chunk-merge fully accumulates coverage/
+# delegation-progress across chunks (not just background-completion) before
+# that sort, so the order depends only on parsed content, never on chunk
+# count. Read-only live spot-check (source.db, 2026-08-03, 25 smallest
+# claude-code-session rows sampled): eager-parsed content_hash is BYTE-
+# IDENTICAL before/after this change for every non-interleaved (single-
+# chunk) sample -- the fix is a no-op for the common case. Hash drift is
+# expected and acknowledged ONLY for sessions whose raw source file
+# genuinely interleaves two sessions' records (forcing multi-chunk
+# streaming) and that were originally ingested via the streaming path with
+# the old buggy order -- same v42/v44/v45/v46/v48/v58 "SEMANTIC_REPARSE, no
+# clone-safe SQL delta" shape.
+INDEX_SCHEMA_VERSION = 59
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

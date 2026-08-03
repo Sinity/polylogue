@@ -185,12 +185,18 @@ def test_family_fixture_detector_and_streaming_paths_preserve_one_normalized_ide
     assert foreground_result.is_error is True
     assert foreground_result.exit_code is None
 
+    # polylogue-4987i: session_events are ordered by (timestamp, event-type
+    # tier, encounter index) -- see order_session_events -- so
+    # background_task_completion (10:00:09) lands before the second
+    # message_usage/claude_parse_coverage pair (both 10:00:10, tier breaks
+    # the tie in eager's original append-order).
     assert [(event.event_type, event.source_message_provider_id) for event in main.session_events] == [
         ("message_usage", "main-a1"),
-        ("message_usage", ""),  # polylogue-slshy: no positional fallback
         ("background_task_completion", "main-bg-notification"),
+        ("message_usage", ""),  # polylogue-slshy: no positional fallback
+        ("claude_parse_coverage", None),
     ]
-    assert main.session_events[-1].payload == {
+    assert main.session_events[1].payload == {
         "task_id": "task-bg",
         "tool_use_id": "tool-bg",
         "output_file": "/tmp/task-bg.output",
