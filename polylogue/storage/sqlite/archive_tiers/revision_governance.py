@@ -117,7 +117,7 @@ from polylogue.archive.revision_replay import (
     RevisionReplayPlan,
     plan_revision_replay,
 )
-from polylogue.archive.session_revision_membership import MembershipClassification
+from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
@@ -2248,6 +2248,26 @@ def apply_raw_revision_replay(
     return session_id, plan.accepted_raw_ids
 
 
+def _application_decision_for(decision: MembershipDecision) -> ApplicationDecision:
+    """Translate a source-tier membership verdict into an index-tier replay decision.
+
+    ``MembershipDecision`` (source.db, written by the membership-
+    classification pipeline) and ``ApplicationDecision`` (index.db, written
+    by replay) model the same underlying event -- a raw revision's fate
+    within its logical-source cohort -- at two different tiers with two
+    different, non-superset vocabularies; see both enums' docstrings and
+    polylogue-z22ml for why they stay distinct rather than collapsing to
+    one. This is the sole typed translation point between them, replacing a
+    prior comment-only, string-``startswith``-based mapping with no
+    compiler signal if either vocabulary changed.
+    """
+    if decision is MembershipDecision.AMBIGUOUS:
+        return ApplicationDecision.AMBIGUOUS
+    if decision in (MembershipDecision.SUPERSEDED_EQUIVALENT, MembershipDecision.SUPERSEDED_PREFIX):
+        return ApplicationDecision.SUPERSEDED
+    return ApplicationDecision.SELECTED_BASELINE
+
+
 def apply_raw_membership_classification(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
@@ -2279,7 +2299,9 @@ def apply_raw_membership_classification(
     """
     conn = store._ensure_source_conn()
     decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
-    decisions: dict[str, str] = dict.fromkeys(classification.ambiguous_raw_ids, "ambiguous")
+    decisions: dict[str, MembershipDecision] = dict.fromkeys(
+        classification.ambiguous_raw_ids, MembershipDecision.AMBIGUOUS
+    )
     # "superseded_equivalent" asserts an accepted chain superseded the
     # member. With no accepted head, equivalence collapses back into the
     # unresolved cohort: labeling it superseded (and, downstream,
@@ -2289,11 +2311,13 @@ def apply_raw_membership_classification(
     decisions.update(
         dict.fromkeys(
             classification.equivalent_raw_ids,
-            "superseded_equivalent" if classification.accepted_raw_ids else "ambiguous",
+            MembershipDecision.SUPERSEDED_EQUIVALENT
+            if classification.accepted_raw_ids
+            else MembershipDecision.AMBIGUOUS,
         )
     )
     for raw_id in classification.accepted_raw_ids[:-1]:
-        decisions[raw_id] = "superseded_prefix"
+        decisions[raw_id] = MembershipDecision.SUPERSEDED_PREFIX
     session_id: str | None = None
     # Ambiguous evidence is debt, not deletion authority. A later branch
     # must not erase the last accepted session/head; a cold rebuild simply
@@ -2500,7 +2524,7 @@ def apply_raw_membership_classification(
                 )
                 for generation, raw_id in enumerate(cohort_raw_ids):
                     projection = projections_by_raw_id[raw_id]
-                    decisions[raw_id] = "superseded_equivalent"
+                    decisions[raw_id] = MembershipDecision.SUPERSEDED_EQUIVALENT
                     record_revision_application_sync(
                         store._conn,
                         RevisionApplicationReceipt(
@@ -2572,7 +2596,8 @@ def apply_raw_membership_classification(
                 )
                 for generation, raw_id in enumerate(cohort_raw_ids):
                     projection = projections_by_raw_id[raw_id]
-                    decision = decisions.get(raw_id, "applied")
+                    decision = decisions.get(raw_id, MembershipDecision.APPLIED)
+                    is_ambiguous = decision is MembershipDecision.AMBIGUOUS
                     record_revision_application_sync(
                         store._conn,
                         RevisionApplicationReceipt(
@@ -2581,26 +2606,20 @@ def apply_raw_membership_classification(
                             logical_source_key=logical_source_key,
                             source_revision=projection.session_hash.hex(),
                             acquisition_generation=generation,
-                            decision=(
-                                ApplicationDecision.AMBIGUOUS
-                                if decision == "ambiguous"
-                                else ApplicationDecision.SUPERSEDED
-                                if decision.startswith("superseded")
-                                else ApplicationDecision.SELECTED_BASELINE
-                            ),
-                            accepted_raw_id=accepted_raw_id if decision != "ambiguous" else None,
+                            decision=_application_decision_for(decision),
+                            accepted_raw_id=accepted_raw_id if not is_ambiguous else None,
                             accepted_source_revision=(
-                                accepted_projection.session_hash.hex() if decision != "ambiguous" else None
+                                accepted_projection.session_hash.hex() if not is_ambiguous else None
                             ),
-                            accepted_content_hash=stored[0] if decision != "ambiguous" else None,
-                            accepted_frontier_kind="semantic" if decision != "ambiguous" else None,
-                            accepted_frontier=semantic_frontier if decision != "ambiguous" else None,
+                            accepted_content_hash=stored[0] if not is_ambiguous else None,
+                            accepted_frontier_kind="semantic" if not is_ambiguous else None,
+                            accepted_frontier=semantic_frontier if not is_ambiguous else None,
                             detail=f"membership:{decision}",
                         ),
                         decided_at_ms=decided_at_ms,
                     )
         if yield_to_head_raw_id is None:
-            decisions[accepted_raw_id] = "applied"
+            decisions[accepted_raw_id] = MembershipDecision.APPLIED
 
     with conn if manage_transaction else nullcontext():
         for raw_id, decision in decisions.items():
@@ -2615,7 +2634,9 @@ def apply_raw_membership_classification(
                 (
                     decision,
                     decided_at_ms,
-                    "quarantined" if decision in {"ambiguous", "deferred"} else "byte_proven",
+                    "quarantined"
+                    if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
+                    else "byte_proven",
                     classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
                     raw_id,
                     logical_source_key,
