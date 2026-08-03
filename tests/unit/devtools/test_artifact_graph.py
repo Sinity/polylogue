@@ -213,6 +213,7 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "mutate-delete-session",
         "mutate-delete-workspace",
         "mutate-identity-reset",
+        "mutate-import-annotation-batch",
         "mutate-record-correction",
         "mutate-remove-mark",
         "mutate-remove-tag",
