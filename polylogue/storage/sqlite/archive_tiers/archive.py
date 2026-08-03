@@ -159,6 +159,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_application import (
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     ActiveByteRevisionChainError,
     ArchiveRawParsedWriteResult,
+    MembershipReplayConflictError,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
     _index_parsed_for_retained_raw,
@@ -11590,4 +11591,5 @@ __all__ = [
     "ArchiveStore",
     "ArchiveSessionSearchHit",
     "ArchiveSessionSummary",
+    "MembershipReplayConflictError",
 ]

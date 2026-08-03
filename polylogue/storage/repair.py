@@ -103,6 +103,16 @@ RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
 RAW_MATERIALIZATION_COMMIT_BATCH_SIZE = 20
 RAW_MATERIALIZATION_OUTCOME_SAMPLE_LIMIT = 8
 _TRANSIENT_LOCK_PARSE_ERROR = "OperationalError: database is locked"
+#: polylogue-5iz4: ``MembershipReplayConflictError``'s ``parse_error`` text
+#: (``f"{type(exc).__name__}: {exc}"``, set by ``mark_raw_parse_failed`` in
+#: ``storage/sqlite/archive_tiers/revision_governance.py``) always starts
+#: with this exact type name regardless of the exception's own
+#: human-readable message wording, which is not itself stable (it has
+#: already drifted once since PR #2718 introduced this guard under
+#: different phrasing). Matching on the type name here is what keeps a raw
+#: that hit this guard retry-eligible even after the message wording
+#: changes again.
+_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX = "MembershipReplayConflictError:"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_DETAIL = "repair:accepted_quarantined_raw_exact_byte_and_semantic_proof"
 _QUARANTINED_ACCEPTED_RAW_REPAIR_LIMIT = 100
 _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES = 256 * 1024 * 1024
@@ -3910,6 +3920,19 @@ def _raw_materialization_candidate_ids(
                 OR (
                   r.parse_error LIKE 'decode:%No such file or directory:%'
                 )
+                OR (
+                  -- polylogue-5iz4: MembershipReplayConflictError
+                  -- (storage/sqlite/archive_tiers/revision_governance.py) is a
+                  -- transient, retry-eligible refusal by construction -- a
+                  -- later pass over the SAME durable raw bytes can succeed
+                  -- once sibling evidence resolves or the accepted head
+                  -- itself changes. Matching by exception TYPE name (stable)
+                  -- rather than the human-readable message text (which has
+                  -- already drifted twice since #2718 introduced this guard)
+                  -- is what keeps this retry-eligible even after the guard's
+                  -- own wording changes again.
+                  r.parse_error LIKE '{_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX}%'
+                )
               )
               AND NOT (
                 COALESCE(r.validation_status, '') = 'skipped'
@@ -4143,8 +4166,19 @@ def _raw_materialization_component_stream_safe(
 def _raw_materialization_retryable_missing_blob_error(parse_error: object) -> bool:
     if not isinstance(parse_error, str):
         return False
-    return parse_error == _TRANSIENT_LOCK_PARSE_ERROR or (
-        parse_error.startswith("decode:") and "No such file or directory" in parse_error
+    return (
+        parse_error == _TRANSIENT_LOCK_PARSE_ERROR
+        or (parse_error.startswith("decode:") and "No such file or directory" in parse_error)
+        # polylogue-5iz4: MembershipReplayConflictError
+        # (storage/sqlite/archive_tiers/revision_governance.py) is a
+        # transient, retry-eligible refusal by construction -- see the SQL
+        # candidate query's matching clause above for the full rationale.
+        # This Python-side check re-validates every row the SQL WHERE
+        # clause already passed and is the true single source of truth for
+        # retry eligibility (the SQL clause is a pre-filter, not merely an
+        # optimization the SQL and this function must independently agree,
+        # or a row that clears the SQL gate is silently re-excluded here).
+        or parse_error.startswith(_MEMBERSHIP_REPLAY_CONFLICT_ERROR_PREFIX)
     )
 
 

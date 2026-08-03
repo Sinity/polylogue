@@ -416,6 +416,76 @@ def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path
         ).fetchone() == (1, None)
 
 
+def test_raw_materialization_retries_membership_replay_conflict_failure(tmp_path: Path) -> None:
+    """polylogue-5iz4: a MembershipReplayConflictError parse_error is retryable.
+
+    ``apply_raw_membership_classification``'s two head-conflict guards
+    (storage/sqlite/archive_tiers/revision_governance.py) are explicitly
+    transient/retry-eligible refusals, not proof a raw is unparseable -- a
+    later pass over the same durable bytes can succeed once sibling evidence
+    resolves or the accepted head changes. But the raw materialization
+    candidate query only recognizes retry-eligible parse_error text through a
+    literal allowlist; a plain ``RuntimeError`` message (the type both guards
+    raised before this fix, and the type a real production Codex session's
+    parse_error was frozen as under PR #2718's now-superseded wording) is
+    indistinguishable from a genuinely terminal parse failure and is silently
+    excluded from every future rebuild attempt forever. Anti-vacuity: a
+    sibling row carrying the OLD plain-``RuntimeError`` text must remain
+    excluded -- this test would pass vacuously (0 candidates either way) if
+    the candidate query's parse_error filter were simply deleted instead of
+    extended.
+    """
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    retryable_raw_id, retryable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
+    stale_raw_id, stale_size = blob_store.write_from_bytes(b'{"mapping":{"stale":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    retryable_raw_id,
+                    "codex-session",
+                    "native-membership-conflict",
+                    "whale.jsonl",
+                    0,
+                    bytes.fromhex(retryable_raw_id),
+                    retryable_size,
+                    2,
+                    3,
+                    "MembershipReplayConflictError: membership replay cannot replace a head "
+                    "with unresolved byte-append evidence: logical_source_key='codex:whale'",
+                ),
+                (
+                    stale_raw_id,
+                    "codex-session",
+                    "native-stale-plain-runtime-error",
+                    "stale.jsonl",
+                    0,
+                    bytes.fromhex(stale_raw_id),
+                    stale_size,
+                    1,
+                    4,
+                    "RuntimeError: membership replay cannot replace an unconvertible byte head",
+                ),
+            ],
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(retryable_size)
+
+
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:
     configured_root = tmp_path / "configured"
     routed_root = tmp_path / "routed"
