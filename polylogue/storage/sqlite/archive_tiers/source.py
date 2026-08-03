@@ -10,11 +10,18 @@ from typing import get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.archive.session_revision_membership import MembershipDecision
-from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
+from polylogue.core.enums import (
+    ArtifactSupportStatus,
+    Origin,
+    Provider,
+    RawAuthorityVerdict,
+    ValidationMode,
+    ValidationStatus,
+)
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 23
+SOURCE_SCHEMA_VERSION = 24
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -379,6 +386,33 @@ WHERE resolved_at_ms IS NULL;
 -- a hook-event blob ref keyed as 'raw_payload' with a synthetic ref_id could
 -- never join to any raw_sessions row and was therefore permanently
 -- GC-invisible under a naive membership check.
+-- Persisted cache of the closed RawAuthorityVerdict vocabulary (polylogue-w6hql
+-- Phase 2, polylogue-tw4ar). Not a new source of truth: every row here is a
+-- read-through cache of what polylogue.storage.raw_authority_verdict_projection
+-- .project_raw_authority_verdicts would recompute from raw_sessions + blob
+-- storage, kept here only so repeated reads (e.g. blob-GC invariant checks at
+-- scale) don't re-run the full byte-proof classifier every time. Invalidated
+-- by content, not by elapsed time: cohort_fingerprint is a SHA-256 over the
+-- cohort's own (raw_id, revision_kind, blob_hash) rows, so any membership or
+-- content change to the logical_source_key cohort changes the fingerprint and
+-- the cached rows read as stale on the next lookup (see
+-- polylogue.storage.raw_authority_verdict_cache). No write-side actuator
+-- writes here yet -- polylogue.storage.raw_authority_verdict_cache's
+-- get_or_compute_raw_authority_verdicts() populates it lazily on read;
+-- DaemonConverger convergence-stage wiring to keep it warm proactively is
+-- deferred, see polylogue-tw4ar.
+CREATE TABLE IF NOT EXISTS raw_authority_verdicts (
+    raw_id                TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    logical_source_key    TEXT NOT NULL,
+    verdict                TEXT NOT NULL CHECK ({check("verdict", RawAuthorityVerdict)}),
+    cohort_member_count   INTEGER NOT NULL CHECK(cohort_member_count >= 1),
+    cohort_fingerprint    BLOB NOT NULL CHECK(length(cohort_fingerprint) = 32),
+    computed_at_ms        INTEGER NOT NULL CHECK(computed_at_ms >= 0)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_authority_verdicts_logical_source
+ON raw_authority_verdicts(logical_source_key);
+
 CREATE TABLE IF NOT EXISTS blob_refs (
     blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
     ref_id          TEXT NOT NULL,

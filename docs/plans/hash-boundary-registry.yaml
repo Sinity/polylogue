@@ -974,6 +974,12 @@ entries:
   occurrence: 0
   classification: content-hash
   note: 'compares document_sha256 != requested_revision -- offset-continuation validity check.'
+- path: polylogue/storage/raw_authority_verdict_cache.py
+  function: '<module>._cohort_fingerprint'
+  call: hashlib.sha256
+  occurrence: 0
+  classification: identifier
+  note: 'raw_authority_verdicts cache invalidation key -- SHA-256 over a cohort''s (raw_id, revision_kind, blob_hash) rows; a content or membership change to the cohort changes this fingerprint so a prior cache row reads as stale (polylogue-tw4ar).'
 - path: polylogue/storage/raw_reconciler.py
   function: '<module>._digest'
   call: hashlib.sha256
