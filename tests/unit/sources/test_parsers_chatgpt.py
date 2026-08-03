@@ -1436,6 +1436,49 @@ def test_chatgpt_generation_timing_fallback_rejects_malformed_values(
     assert len(lifecycle_events) == (1 if expected_duration_ms is not None else 0)
 
 
+def test_chatgpt_generation_timing_anchor_is_stable_across_mapping_order() -> None:
+    """generation_lifecycle anchors to the same message id regardless of raw
+    mapping key order (bd polylogue-uqwd).
+
+    Two candidate nodes on the same generation branch that fully tie on every
+    real scoring signal (source rank, reasoning-recap flag, start/end
+    presence, end_turn) previously fell through to ``position`` -- the raw
+    ``mapping`` dict's iteration order -- as the deciding tiebreak. ChatGPT
+    re-exports of the SAME conversation are not guaranteed to serialize
+    ``mapping`` keys in the same order every time, so which of the two tied
+    nodes won (and therefore which message id the lifecycle event anchored
+    to) silently flipped between export vintages even though every message's
+    content, including both candidates' own metadata, was byte-identical.
+    That anchor drift is exactly what makes ``event_base_identity_hash``
+    (``pipeline/ids.py``) treat the SAME generation event as two disjoint
+    identities across revisions, producing a spurious revision conflict.
+
+    Both mapping orders below carry the identical node set; only the dict
+    insertion order differs, standing in for two export requests of the same
+    conversation. The winning anchor must be identical in both cases.
+    """
+    user = _branch_node("u1", "user", "do the work", parent=None, children=["node_a"])
+    node_a = _branch_node("node_a", "assistant", "first draft", parent="u1", children=["node_b"])
+    node_b = _branch_node("node_b", "assistant", "final draft", parent="node_a", children=[])
+    for node in (node_a, node_b):
+        node["message"]["metadata"] = {"finished_duration_sec": 5}
+
+    def _anchor(order: list[dict[str, Any]]) -> str | None:
+        payload = {
+            "id": "tie-break-order",
+            "mapping": {n["id"]: n for n in order},
+            "current_node": "node_b",
+        }
+        session = chatgpt_parse(payload, "fallback-id")
+        lifecycle = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
+        assert len(lifecycle) == 1
+        return lifecycle[0].source_message_provider_id
+
+    anchor_forward = _anchor([user, node_a, node_b])
+    anchor_reversed = _anchor([user, node_b, node_a])
+    assert anchor_forward == anchor_reversed
+
+
 # ---------------------------------------------------------------------------
 # #1744 — non-`parts` content is preserved (code interpreter, execution output)
 # ---------------------------------------------------------------------------
