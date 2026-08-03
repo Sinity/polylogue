@@ -13,6 +13,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
+from polylogue.sources.assembly_claude_ai import ClaudeAIAssemblySpec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import (
     CodexAssemblySpec,
@@ -122,7 +123,12 @@ class TestGetAssemblySpec:
         spec = get_assembly_spec(Provider.CHATGPT)
         assert isinstance(spec, ChatGPTAssemblySpec)
 
-    @pytest.mark.parametrize("provider", [Provider.CLAUDE_AI, Provider.UNKNOWN])
+    def test_claude_ai_returns_spec(self) -> None:
+        # bd polylogue-4zqh3: sole-copy attachment recovery sidecar.
+        spec = get_assembly_spec(Provider.CLAUDE_AI)
+        assert isinstance(spec, ClaudeAIAssemblySpec)
+
+    @pytest.mark.parametrize("provider", [Provider.UNKNOWN])
     def test_no_spec_for_other_providers(self, provider: Provider) -> None:
         assert get_assembly_spec(provider) is None
 

@@ -3269,12 +3269,16 @@ files:
     target: polylogue/sources/__init__.py
     owner: stable
   - path: polylogue/sources/assembly.py
-    loc: 130
+    loc: 142
     target: polylogue/sources/assembly.py
     owner: stable
   - path: polylogue/sources/assembly_chatgpt.py
     loc: 380
     target: polylogue/sources/assembly_chatgpt.py
+    owner: stable
+  - path: polylogue/sources/assembly_claude_ai.py
+    loc: 161
+    target: polylogue/sources/assembly_claude_ai.py
     owner: stable
   - path: polylogue/sources/assembly_claude_code.py
     loc: 210
@@ -3309,7 +3313,7 @@ files:
     target: polylogue/sources/decoders.py
     owner: stable
   - path: polylogue/sources/dispatch.py
-    loc: 1789
+    loc: 1796
     target: polylogue/sources/dispatch.py
     owner: stable
   - path: polylogue/sources/drive/__init__.py
@@ -3482,7 +3486,7 @@ files:
     target: polylogue/sources/parsers/browser_capture.py
     owner: stable
   - path: polylogue/sources/parsers/chatgpt.py
-    loc: 1329
+    loc: 1421
     target: polylogue/sources/parsers/chatgpt.py
     owner: stable
   - path: polylogue/sources/parsers/chatgpt_codex_sidecar.py

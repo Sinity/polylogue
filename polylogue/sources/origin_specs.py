@@ -893,6 +893,8 @@ def _claude_ai_spec() -> OriginSpec:
         acquisition_modes=("export-json",),
         parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
         fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),
+        # bd polylogue-4zqh3: sole-copy attachment-byte recovery sidecar.
+        assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
     )
 

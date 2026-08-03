@@ -36,6 +36,15 @@ _CHATGPT_LIKE_RECORD = {
     "conversation_id": "conv-1",
 }
 _CLAUDE_AI_RECORD = {"chat_messages": [{"sender": "human", "text": "hi"}]}
+_CHATGPT_SHARED_DECODE_RECORD = {
+    "shared_conversation_id": "shared-conv-evidence",
+    "conversation_id": "shared-conv-evidence",
+    "title": "Shared decode evidence",
+    "create_time": 1700000000.0,
+    "messages": [
+        {"node_id": "n1", "parent": None, "children": [], "role": "user", "text": "hi"},
+    ],
+}
 
 
 @pytest.mark.parametrize(
@@ -43,6 +52,7 @@ _CLAUDE_AI_RECORD = {"chat_messages": [{"sender": "human", "text": "hi"}]}
     [
         ([_CLAUDE_CODE_RECORD], Provider.CLAUDE_CODE),
         (_CHATGPT_LIKE_RECORD, Provider.CHATGPT),
+        (_CHATGPT_SHARED_DECODE_RECORD, Provider.CHATGPT),
         (_CLAUDE_AI_RECORD, Provider.CLAUDE_AI),
         ({"unrelated": "shape"}, None),
         ([], None),

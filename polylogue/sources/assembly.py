@@ -39,6 +39,13 @@ class _CodexSidecarData(TypedDict, total=False):
     state_titles: CodexHistoryTitles
 
 
+class _ClaudeAISidecarData(TypedDict, total=False):
+    # bd polylogue-4zqh3: attachment native id -> (blob_hash_hex, size_bytes)
+    # for sole-copy attachment bytes recovered out of band and streamed into
+    # the blob store during sidecar discovery. See assembly_claude_ai.py.
+    claude_ai_recovered_blobs: dict[str, tuple[str, int]]
+
+
 class _ChatGPTSidecarData(TypedDict, total=False):
     # bd polylogue-0hwv / polylogue-dt5s: the merged asset-name/sandbox-file
     # resolver built once per source scan from conversation_asset_file_names.json
@@ -52,7 +59,7 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     chatgpt_dat_blobs: dict[str, tuple[str, int]]
 
 
-class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, total=False):
+class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, _ClaudeAISidecarData, total=False):
     pass
 
 
@@ -112,6 +119,10 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
         from .assembly_chatgpt import ChatGPTAssemblySpec
 
         return ChatGPTAssemblySpec()
+    if provider is Provider.CLAUDE_AI:
+        from .assembly_claude_ai import ClaudeAIAssemblySpec
+
+        return ClaudeAIAssemblySpec()
     return None
 
 
@@ -123,6 +134,7 @@ __all__ = [
     "ProviderAssemblySpec",
     "SidecarData",
     "_ChatGPTSidecarData",
+    "_ClaudeAISidecarData",
     "_CodexSidecarData",
     "_ClaudeCodeSidecarData",
     "TitleResolution",

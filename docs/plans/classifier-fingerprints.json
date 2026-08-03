@@ -184,6 +184,14 @@
         "ref": "polylogue-gucv"
       }
     },
+    "polylogue/sources/parsers/chatgpt.py:looks_like_shared_decode": {
+      "fingerprint": "37a68475cdef7916bf2c2552676bb7267f7aa429fc0be78c02690fbfb7ea161e",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "New provider-shape detector for the ChatGPT shared-page stream-decode format (polylogue-4zqh3): flat messages list, no mapping key.",
+        "ref": "polylogue-4zqh3"
+      }
+    },
     "polylogue/sources/parsers/chatgpt_codex_sidecar.py:looks_like": {
       "fingerprint": "273bc13adae90435566dc75ef802a83beae650e03894a2146e44e897394dc8d9",
       "covered_by": {
