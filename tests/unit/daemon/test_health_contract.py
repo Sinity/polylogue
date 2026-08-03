@@ -64,6 +64,9 @@ EXPECTED_FAST_CHECKS: frozenset[str] = frozenset(
         "wal_size",
         "source_availability",
         "hook_flow",
+        # polylogue-y0ven: names which of MEDIUM/EXPENSIVE are switched off
+        # via `health_check_tiers` so degraded coverage is never silent.
+        "health_tier_coverage",
     }
 )
 EXPECTED_MEDIUM_CHECKS: frozenset[str] = frozenset(

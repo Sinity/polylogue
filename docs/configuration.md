@@ -239,7 +239,7 @@ max_per_hour = 12
 
 [health]
 check_interval_s = 300
-check_tiers = "fast"
+check_tiers = "fast,medium" # add ",expensive" to also poll DB/blob/embedding checks
 blob_integrity_sample_size = 100
 
 # Convergence-debt alert thresholds. The daemon raises a typed HealthAlert

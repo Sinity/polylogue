@@ -1,11 +1,20 @@
 """Tiered daemon health checks with typed alerts and severity escalation.
 
 Health checks are grouped into three tiers by cost:
-- FAST: sub-1s checks (liveness, disk space, WAL size, source availability)
+- FAST: sub-1s checks (liveness, disk space, WAL size, source availability,
+  and a tier-coverage notice naming which of MEDIUM/EXPENSIVE are switched
+  off via ``health_check_tiers`` so degraded coverage is never silent)
 - MEDIUM: sub-10s queries (FTS readiness, insight freshness, stale attempts,
-  repeated stage failures, raw failures)
+  repeated stage failures, raw failures, convergence debt, cursor lag)
 - EXPENSIVE: longer-running checks (DB integrity, blob integrity, blob
   reference debt, embedding coverage)
+
+``health_check_tiers`` (:mod:`polylogue.config`) defaults to ``"fast,medium"``
+so the periodic daemon loop actually runs the MEDIUM tier -- previously it
+defaulted to ``"fast"`` alone and MEDIUM (cursor lag, FTS readiness, insight
+freshness, stale attempts, repeated stage failures, convergence debt) never
+ran in production. EXPENSIVE remains opt-in; the FAST-tier coverage check
+above keeps naming it as off so that omission is labeled, not silent.
 
 Each check produces a ``HealthAlert`` with severity, message, and checked_at.
 Alerts accrue a ``consecutive_failures`` counter that carries forward across
@@ -477,6 +486,47 @@ def _check_hook_flow_fast() -> HealthAlert:
         )
 
 
+def _check_health_tier_coverage_fast() -> HealthAlert:
+    """Name which health tiers ``health_check_tiers`` leaves switched off.
+
+    A stalled cursor used to be indistinguishable from "MEDIUM tier never
+    configured" (polylogue-y0ven): both looked like silence. This FAST
+    check reads the same ``health_check_tiers`` config the periodic loop
+    resolves, and reports at OK severity (it never itself pages) which of
+    MEDIUM/EXPENSIVE are not part of that configured set, so the daemon's
+    own health payload always states its coverage instead of quietly
+    omitting it. EXPENSIVE stays off by default (DB integrity, blob
+    integrity/reference debt, and embedding coverage scans are explicit
+    operator diagnostics, not periodic-loop material) so this check is
+    expected to keep naming it.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.config import load_polylogue_config
+
+        cfg = load_polylogue_config()
+        configured = resolve_health_tiers(cfg.health_check_tiers)
+    except Exception as exc:
+        return HealthAlert(
+            check_name="health_tier_coverage",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.ERROR,
+            message=f"could not resolve configured health tiers: {exc}",
+            checked_at=now,
+            consecutive_failures=_record_failure("health_tier_coverage", False),
+        )
+    off = [tier.value for tier in (HealthTier.MEDIUM, HealthTier.EXPENSIVE) if tier not in configured]
+    message = f"health tiers off: {', '.join(off)}" if off else "all health tiers configured (fast, medium, expensive)"
+    return HealthAlert(
+        check_name="health_tier_coverage",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.OK,
+        message=message,
+        checked_at=now,
+        consecutive_failures=_record_failure("health_tier_coverage", True),
+    )
+
+
 def _run_fast_checks() -> list[HealthAlert]:
     return [
         _check_daemon_liveness_fast(),
@@ -486,6 +536,7 @@ def _run_fast_checks() -> list[HealthAlert]:
         _check_wal_size_fast(),
         _check_source_availability_fast(),
         _check_hook_flow_fast(),
+        _check_health_tier_coverage_fast(),
     ]
 
 

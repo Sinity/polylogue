@@ -487,7 +487,7 @@ class PolylogueConfig:
 
     @property
     def health_check_tiers(self) -> str:
-        return str(self._data.get("health_check_tiers", "fast"))
+        return str(self._data.get("health_check_tiers", "fast,medium"))
 
     @property
     def health_blob_integrity_sample_size(self) -> int:
@@ -1813,7 +1813,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "notification_email_use_starttls": True,
         "notification_email_max_per_hour": 12,
         "health_check_interval_s": 300,
-        "health_check_tiers": "fast",
+        "health_check_tiers": "fast,medium",
         "health_blob_integrity_sample_size": 100,
         "health_convergence_debt": {},
         "health_cursor_lag": {},

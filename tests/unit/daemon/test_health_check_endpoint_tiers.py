@@ -67,8 +67,8 @@ def _ok_health() -> DaemonHealth:
     return DaemonHealth(overall_status=HealthSeverity.OK, checked_at="now", alerts=[], tier_summary={})
 
 
-def test_health_check_endpoint_defaults_to_fast_tier(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With the default config the endpoint must run FAST-only checks."""
+def test_health_check_endpoint_defaults_to_fast_and_medium_tiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the default config the endpoint must run FAST+MEDIUM (polylogue-y0ven)."""
     import polylogue.daemon.health as health_module
 
     captured: dict[str, object] = {}
@@ -84,12 +84,12 @@ def test_health_check_endpoint_defaults_to_fast_tier(monkeypatch: pytest.MonkeyP
     handler._send_json = send_json  # type: ignore[method-assign]
     handler._handle_health_check()
 
-    assert captured["tiers"] == {HealthTier.FAST}
+    assert captured["tiers"] == {HealthTier.FAST, HealthTier.MEDIUM}
     assert send_json.call_args.args[1]["status"] == "healthy"
 
 
 def test_health_check_endpoint_honors_config_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Operators can opt into a heavier polled tier set via config."""
+    """Operators can opt into the EXPENSIVE tier via config."""
     import polylogue.daemon.health as health_module
     from polylogue import config as config_module
 
@@ -100,7 +100,7 @@ def test_health_check_endpoint_honors_config_override(monkeypatch: pytest.Monkey
         return _ok_health()
 
     class _Cfg:
-        health_check_tiers = "fast,medium"
+        health_check_tiers = "fast,medium,expensive"
 
     monkeypatch.setattr(health_module, "check_health", _fake_check_health)
     monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _Cfg())
@@ -109,4 +109,62 @@ def test_health_check_endpoint_honors_config_override(monkeypatch: pytest.Monkey
     handler._send_json = MagicMock()  # type: ignore[method-assign]
     handler._handle_health_check()
 
-    assert captured["tiers"] == {HealthTier.FAST, HealthTier.MEDIUM}
+    assert captured["tiers"] == {HealthTier.FAST, HealthTier.MEDIUM, HealthTier.EXPENSIVE}
+
+
+def test_health_tier_coverage_names_off_tiers_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default config runs fast+medium; the FAST notice must name EXPENSIVE as off.
+
+    This is the polylogue-y0ven silence-labeling requirement: a stalled
+    MEDIUM/EXPENSIVE tier used to be indistinguishable from "never
+    configured". The FAST-tier coverage check must always say which tiers
+    are off instead of the daemon's health payload staying quiet about it.
+    """
+    from polylogue import config as config_module
+    from polylogue.daemon.health import HealthSeverity, _check_health_tier_coverage_fast
+
+    class _Cfg:
+        health_check_tiers = "fast,medium"
+
+    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _Cfg())
+
+    alert = _check_health_tier_coverage_fast()
+
+    assert alert.check_name == "health_tier_coverage"
+    assert alert.tier == HealthTier.FAST
+    assert alert.severity == HealthSeverity.OK
+    assert "expensive" in alert.message
+    assert "medium" not in alert.message.split(":", 1)[-1]
+
+
+def test_health_tier_coverage_reports_nothing_off_when_all_tiers_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue import config as config_module
+    from polylogue.daemon.health import HealthSeverity, _check_health_tier_coverage_fast
+
+    class _Cfg:
+        health_check_tiers = "fast,medium,expensive"
+
+    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _Cfg())
+
+    alert = _check_health_tier_coverage_fast()
+
+    assert alert.severity == HealthSeverity.OK
+    assert "off" not in alert.message
+    assert "fast, medium, expensive" in alert.message
+
+
+def test_health_tier_coverage_names_multiple_off_tiers(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue import config as config_module
+    from polylogue.daemon.health import _check_health_tier_coverage_fast
+
+    class _Cfg:
+        health_check_tiers = "fast"
+
+    monkeypatch.setattr(config_module, "load_polylogue_config", lambda: _Cfg())
+
+    alert = _check_health_tier_coverage_fast()
+
+    assert "medium" in alert.message
+    assert "expensive" in alert.message
