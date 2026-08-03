@@ -23,11 +23,45 @@
       "last_seen": "2026-03-16T12:26:09.197335+00:00",
       "bundle_scope_count": 0,
       "bundle_scope_identities": [],
-      "exact_structure_ids": [],
+      "exact_structure_ids": [
+        "0d2a474bdba85bab",
+        "197e92c1ee7d0c0f",
+        "31dc51ea939afdb2",
+        "32f0a5df92ab42c7",
+        "33fe744a06f6eaef",
+        "37c94c285412919f",
+        "47a276aaeb8faf0c",
+        "67f3894f28c3c771",
+        "82e363807408c3bc",
+        "98bb002b4d4b4feb",
+        "a09ccc43ed2b5a31",
+        "c0d7abc602b54366",
+        "eb0ef7b1d082d855"
+      ],
       "profile_family_ids": [
         "2863946d431176d3"
       ],
-      "profile_tokens": [],
+      "profile_tokens": [
+        "anchor:chunkedPrompt",
+        "child:chunkedPrompt:chunks",
+        "child:runSettings:enableBrowseAsATool",
+        "child:runSettings:enableCodeExecution",
+        "child:runSettings:enableSearchAsATool",
+        "child:runSettings:maxOutputTokens",
+        "child:runSettings:model",
+        "child:runSettings:safetySettings",
+        "child:runSettings:temperature",
+        "child:runSettings:topK",
+        "field:chunkedPrompt",
+        "field:runSettings",
+        "field:systemInstruction",
+        "shape:chunkedPrompt:object",
+        "shape:runSettings:object",
+        "shape:systemInstruction:object",
+        "type:chunkedPrompt:object",
+        "type:runSettings:object",
+        "type:systemInstruction:object"
+      ],
       "observed_artifact_count": 13
     }
   ],

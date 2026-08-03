@@ -1,37 +1,76 @@
 {
-  "default_version": "v2",
+  "provider": "gemini",
   "generated_at": "2026-03-16T12:26:09.197335+00:00",
   "latest_version": "v2",
+  "default_version": "v2",
+  "recommended_version": "v2",
   "orphan_adjunct_counts": {},
   "packages": [
     {
+      "provider": "gemini",
+      "version": "v1",
       "anchor_kind": "session_document",
-      "anchor_profile_family_id": "",
-      "bundle_scope_count": 0,
       "default_element_kind": "session_document",
-      "elements": [
-        {
-          "artifact_count": 226,
-          "bundle_scope_count": 0,
-          "element_kind": "session_document",
-          "exact_structure_ids": [],
-          "first_seen": "2026-03-16T12:26:09.197335+00:00",
-          "last_seen": "2026-03-16T12:26:09.197335+00:00",
-          "observed_artifact_count": 226,
-          "profile_family_ids": [],
-          "profile_tokens": [],
-          "sample_count": 226,
-          "schema_file": "session_document.schema.json.gz",
-          "supported": true
-        }
-      ],
       "first_seen": "2026-03-16T12:26:09.197335+00:00",
       "last_seen": "2026-03-16T12:26:09.197335+00:00",
-      "orphan_adjunct_counts": {},
-      "profile_family_ids": [],
-      "provider": "gemini",
+      "bundle_scope_count": 0,
       "sample_count": 226,
-      "version": "v1"
+      "anchor_profile_family_id": "",
+      "bundle_scope_identities": [],
+      "profile_family_ids": [],
+      "elements": [
+        {
+          "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
+          "sample_count": 226,
+          "artifact_count": 0,
+          "supported": true,
+          "first_seen": "2026-03-16T12:26:09.197335+00:00",
+          "last_seen": "2026-03-16T12:26:09.197335+00:00",
+          "bundle_scope_count": 0,
+          "bundle_scope_identities": [],
+          "exact_structure_ids": [
+            "0d2a474bdba85bab",
+            "197e92c1ee7d0c0f",
+            "31dc51ea939afdb2",
+            "32f0a5df92ab42c7",
+            "33fe744a06f6eaef",
+            "37c94c285412919f",
+            "47a276aaeb8faf0c",
+            "67f3894f28c3c771",
+            "82e363807408c3bc",
+            "98bb002b4d4b4feb",
+            "a09ccc43ed2b5a31",
+            "c0d7abc602b54366",
+            "eb0ef7b1d082d855"
+          ],
+          "profile_family_ids": [],
+          "profile_tokens": [
+            "anchor:chunkedPrompt",
+            "child:chunkedPrompt:chunks",
+            "child:runSettings:enableBrowseAsATool",
+            "child:runSettings:enableCodeExecution",
+            "child:runSettings:enableSearchAsATool",
+            "child:runSettings:maxOutputTokens",
+            "child:runSettings:model",
+            "child:runSettings:safetySettings",
+            "child:runSettings:temperature",
+            "child:runSettings:topK",
+            "field:chunkedPrompt",
+            "field:runSettings",
+            "field:systemInstruction",
+            "shape:chunkedPrompt:object",
+            "shape:runSettings:object",
+            "shape:systemInstruction:object",
+            "type:chunkedPrompt:object",
+            "type:runSettings:object",
+            "type:systemInstruction:object"
+          ],
+          "observed_artifact_count": 0
+        }
+      ],
+      "orphan_adjunct_counts": {},
+      "workload_profile_file": null
     },
     {
       "provider": "gemini",
@@ -58,18 +97,50 @@
           "last_seen": "2026-03-16T12:26:09.197335+00:00",
           "bundle_scope_count": 0,
           "bundle_scope_identities": [],
-          "exact_structure_ids": [],
+          "exact_structure_ids": [
+            "0d2a474bdba85bab",
+            "197e92c1ee7d0c0f",
+            "31dc51ea939afdb2",
+            "32f0a5df92ab42c7",
+            "33fe744a06f6eaef",
+            "37c94c285412919f",
+            "47a276aaeb8faf0c",
+            "67f3894f28c3c771",
+            "82e363807408c3bc",
+            "98bb002b4d4b4feb",
+            "a09ccc43ed2b5a31",
+            "c0d7abc602b54366",
+            "eb0ef7b1d082d855"
+          ],
           "profile_family_ids": [
             "2863946d431176d3"
           ],
-          "profile_tokens": [],
+          "profile_tokens": [
+            "anchor:chunkedPrompt",
+            "child:chunkedPrompt:chunks",
+            "child:runSettings:enableBrowseAsATool",
+            "child:runSettings:enableCodeExecution",
+            "child:runSettings:enableSearchAsATool",
+            "child:runSettings:maxOutputTokens",
+            "child:runSettings:model",
+            "child:runSettings:safetySettings",
+            "child:runSettings:temperature",
+            "child:runSettings:topK",
+            "field:chunkedPrompt",
+            "field:runSettings",
+            "field:systemInstruction",
+            "shape:chunkedPrompt:object",
+            "shape:runSettings:object",
+            "shape:systemInstruction:object",
+            "type:chunkedPrompt:object",
+            "type:runSettings:object",
+            "type:systemInstruction:object"
+          ],
           "observed_artifact_count": 13
         }
       ],
       "orphan_adjunct_counts": {},
       "workload_profile_file": null
     }
-  ],
-  "provider": "gemini",
-  "recommended_version": "v2"
+  ]
 }
