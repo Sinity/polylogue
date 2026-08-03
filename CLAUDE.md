@@ -537,7 +537,10 @@ Well-suited to cloud sandboxes: pure Python, all paths overridable via
 - `render all --check` exits 1 even while printing `sync OK` per surface — grep
   for `out of sync`.
 - Adding a `polylogue/` module without regenerating the topology projection
-  breaks `render all --check` (see [Schema regimes](#schema-regimes-durability-keyed)).
+  breaks `render all --check` — the `topology-projection` entry in
+  `GENERATED_SURFACES` delegates its `--check` to `devtools verify_topology`,
+  so it's a real generated-surfaces member, not a bespoke side-gate (see
+  [Schema regimes](#schema-regimes-durability-keyed)).
 - New Click params on query verbs must go **last** — a positional shift silently
   reroutes args.
 - New MCP tool → add its tool contract. `EXPECTED_TOOL_NAMES` is *derived*

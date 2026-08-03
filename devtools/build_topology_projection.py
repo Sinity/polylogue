@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools import repo_root as _get_root
+from devtools import verify_topology
 
 ROOT = _get_root()
 PROJECTION = ROOT / "docs" / "plans" / "topology-target.yaml"
@@ -379,6 +380,26 @@ def main(argv: Iterable[str] | None = None) -> int:
     for owner, count in sorted(by_owner.items(), key=lambda x: -x[1]):
         print(f"  {owner:>20s}  {count:>4d}")
     return 0
+
+
+def generated_surface_main(argv: list[str] | None = None) -> int:
+    """Entry point wired into ``devtools.generated_surfaces.GENERATED_SURFACES``.
+
+    This module (the projection *generator*) and ``devtools.verify_topology``
+    (the projection *check*, run today as its own ``devtools verify topology``
+    step) are two halves of one generated surface, but the check has richer
+    semantics than "did the generator's output change": it diffs the realized
+    ``polylogue/`` tree against the *committed* ``docs/plans/topology-target.yaml``
+    (orphans/missing/conflicts/kernel-rule), which can fail even when nothing
+    about the generator itself changed -- e.g. a new file landed without a
+    regenerate. Delegating ``--check`` to ``verify_topology.main`` here keeps
+    that real check as the gate, while still letting the render/check contract
+    every other ``GeneratedSurface.main`` follows apply uniformly.
+    """
+    args = list(argv or [])
+    if "--check" in args:
+        return verify_topology.main([a for a in args if a != "--check"])
+    return main([a for a in args if a != "--check"])
 
 
 if __name__ == "__main__":

@@ -1420,7 +1420,9 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.build_topology_projection",
         use_when=(
             "Refresh the topology projection after editing placement rules in this script "
-            "or after a topology refactor lands."
+            "or after a topology refactor lands. Use `devtools verify topology` to check without "
+            "writing; `devtools render all --check` also gates this via the generated-surfaces "
+            "registry's topology-projection entry."
         ),
         examples=("devtools render topology-projection",),
     ),
