@@ -1040,6 +1040,30 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-append-chain-backfill-apply",
+        "workspace",
+        "Promote membershipless append raws proven correct by live-source verification.",
+        "devtools.raw_append_chain_backfill_apply",
+        use_when=(
+            "polylogue-lb39z (Phase 1, item 3): 2,712 raw_sessions rows (measured 2026-08-02) are "
+            "revision_kind='append', revision_authority='quarantined', and have no "
+            "raw_session_memberships row at all -- a genuine fixed point, because the only mechanism "
+            "that ever promotes an append raw (_promote_contiguous_append_evidence) requires its "
+            "byte-contiguous predecessor to already be byte_proven. This proves each such row's own "
+            "claimed byte range directly against its live source file's current bytes, independent of "
+            "any ancestor's authority. Default is dry-run; --apply requires --backup-manifest pointing "
+            "at a verified source-tier backup (polylogue backup --output-dir <dir> --verify). Writes an "
+            "immutable per-row receipt (raw_append_chain_backfill_receipts); never runs blob GC or "
+            "VACUUM -- that is a separate, later step."
+        ),
+        examples=(
+            "devtools workspace raw-append-chain-backfill-apply",
+            "devtools workspace raw-append-chain-backfill-apply --json",
+            "devtools workspace raw-append-chain-backfill-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace raw-byte-duplicate-supersession-apply",
         "workspace",
         "Promote quarantined, logical-key-less raws proven byte-identical to an already-indexed raw.",
