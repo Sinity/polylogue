@@ -513,6 +513,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "archive",
     ),
     _entry(
+        "Nine-Bead Decision Adjudication",
+        "plans/decision-adjudication-kea7p-avna-cijx-uh6c-rxdo9-ze5-dx1-fie-ca4.md",
+        "Implementation decisions and dependency graph for nine architecture Beads.",
+        "archive",
+    ),
+    _entry(
         "Semantic Card Tool Map",
         "generated/semantic-card-tool-map.md",
         "Generated map from semantic cards to tools.",

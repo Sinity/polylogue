@@ -149,6 +149,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
 | [Query Pipeline Substrate Plan](plans/query-pipeline-substrate.md) | Historical/active query pipeline design plan. |
+| [Nine-Bead Decision Adjudication](plans/decision-adjudication-kea7p-avna-cijx-uh6c-rxdo9-ze5-dx1-fie-ca4.md) | Implementation decisions and dependency graph for nine architecture Beads. |
 | [Semantic Card Tool Map](generated/semantic-card-tool-map.md) | Generated map from semantic cards to tools. |
 
 ## Contributor Workflow
