@@ -484,6 +484,11 @@ def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
     assert names_by_status["source-index-coverage"] is OutcomeStatus.SKIP
     assert names_by_status["fts-parity"] is OutcomeStatus.SKIP
     assert names_by_status["lineage-sanity"] is OutcomeStatus.SKIP
+    assert names_by_status["enum-superset-check"] is OutcomeStatus.SKIP
+    assert names_by_status["blob-refs-liveness"] is OutcomeStatus.SKIP
+    assert names_by_status["embeddings-refs-liveness"] is OutcomeStatus.SKIP
+    assert names_by_status["session-lineage-acyclic"] is OutcomeStatus.SKIP
+    assert names_by_status["message-count-projection"] is OutcomeStatus.SKIP
     assert names_by_status["planner-stats"] is OutcomeStatus.SKIP
     assert names_by_status["counts-summary"] is OutcomeStatus.SKIP
 
@@ -518,6 +523,183 @@ def test_unknown_check_name_raises_value_error(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unknown archive verification check"):
         verify_archive(tmp_path, checks=("not-a-real-check",))
+
+
+def test_enum_superset_check_passes_on_current_schema(tmp_path: Path) -> None:
+    """Freshly bootstrapped DDL is always generated from the current enum
+    (I2's failure mode requires a DDL frozen at an *older* enum version, which
+    a fresh fixture can't reproduce) -- this proves the check reads clean
+    against the schema this branch actually ships, not just that it never
+    trips."""
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("enum-superset-check",))
+
+    check = _check(report, "enum-superset-check")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["current_origin_vocabulary"]
+
+
+def test_blob_ref_with_no_referent_trips_blob_refs_liveness(tmp_path: Path) -> None:
+    """RED TWIN (I3): a blob_refs row surviving its referent's deletion is
+    exactly the GC-liveness bug class this check exists to catch -- proves
+    it fails on the specific incoherence it claims to detect, not merely
+    that some check fails."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-does-not-exist', 'raw_payload', 10, 100)
+            """,
+            (b"f" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-refs-liveness",))
+
+    check = _check(report, "blob-refs-liveness")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["orphans_by_ref_type"]["raw_payload"] == 1
+    assert "raw-does-not-exist" in check.evidence["orphan_samples_by_ref_type"]["raw_payload"]
+
+
+def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-1', 'raw_payload', 10, 100)
+            """,
+            (b"a" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-refs-liveness",))
+
+    check = _check(report, "blob-refs-liveness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["orphans_by_ref_type"] == {"raw_payload": 0, "attachment": 0, "sidecar": 0}
+
+
+def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "embeddings.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            VALUES ('codex-session:session:no-such-message', 'codex-session:session', 'codex-session', ?)
+            """,
+            (b"g" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
+
+    check = _check(report, "embeddings-refs-liveness")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["orphan_count"] == 1
+    assert "codex-session:session:no-such-message" in check.evidence["orphan_sample"]
+
+
+def test_embeddings_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("embeddings-refs-liveness",))
+
+    check = _check(report, "embeddings-refs-liveness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["orphan_count"] == 0
+
+
+def _insert_bare_session(conn: sqlite3.Connection, native_id: str, content_byte: bytes) -> None:
+    conn.execute(
+        """
+        INSERT INTO sessions(native_id, origin, content_hash, message_count)
+        VALUES (?, 'codex-session', ?, 0)
+        """,
+        (native_id, content_byte * 32),
+    )
+
+
+def test_parent_session_id_cycle_trips_session_lineage_acyclic(tmp_path: Path) -> None:
+    """RED TWIN (I5): two sessions whose parent_session_id point at each
+    other is the exact cycle the lineage-prefix-recomposition walker must
+    never be handed -- proves this check detects it, not merely that some
+    check fails."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _insert_bare_session(conn, "cycle-a", b"\xa1")
+        _insert_bare_session(conn, "cycle-b", b"\xb2")
+        conn.commit()
+        conn.execute("UPDATE sessions SET parent_session_id = 'codex-session:cycle-b' WHERE native_id = 'cycle-a'")
+        conn.execute("UPDATE sessions SET parent_session_id = 'codex-session:cycle-a' WHERE native_id = 'cycle-b'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("session-lineage-acyclic",))
+
+    check = _check(report, "session-lineage-acyclic")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["cycle_member_sample"]
+    assert {"codex-session:cycle-a", "codex-session:cycle-b"} <= set(check.evidence["cycle_member_sample"])
+
+
+def test_session_lineage_acyclic_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _insert_bare_session(conn, "child", b"\xc3")
+        conn.commit()
+        conn.execute("UPDATE sessions SET parent_session_id = 'codex-session:session' WHERE native_id = 'child'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("session-lineage-acyclic",))
+
+    check = _check(report, "session-lineage-acyclic")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["linked_session_count"] == 1
+
+
+def test_drifted_message_count_trips_message_count_projection(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("UPDATE sessions SET message_count = 99 WHERE session_id = 'codex-session:session'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("message-count-projection",))
+
+    check = _check(report, "message-count-projection")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["drifted_session_count"] == 1
+    assert "codex-session:session" in check.evidence["drifted_session_sample"]
+
+
+def test_message_count_projection_passes_on_coherent_archive(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+
+    report = verify_archive(tmp_path, checks=("message-count-projection",))
+
+    check = _check(report, "message-count-projection")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["drifted_session_count"] == 0
 
 
 def test_report_to_json_is_json_document(tmp_path: Path) -> None:
