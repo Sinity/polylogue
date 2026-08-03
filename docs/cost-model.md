@@ -153,6 +153,29 @@ tier.monthly_fee_usd`, default the Pro tier) so every surface reporting a
 subscription-equivalent dollar figure uses the same tier assumption; see the
 [Caveats](#caveats) below — this is not vendor-authoritative billing.
 
+#### Recording your actual subscription tier
+
+`credits_to_usd()`'s default tier assumption (`pro`, the cheapest/most
+conservative plan) is a fallback, not a claim about your real plan. Record
+the tier you actually pay for as a durable `user_settings` row (polylogue-at44)
+so `polylogue analyze usage` / `ProviderUsageReport.subscription_credit_usd`
+price against it instead:
+
+```
+polylogue setting set subscription_tier max_5x   # or pro / max_20x
+polylogue setting get subscription_tier
+polylogue setting list
+```
+
+`setting set` rejects any value outside the closed `SUBSCRIPTION_TIERS`
+registry (`polylogue/archive/semantic/subscription_pricing.py`) — this is
+deliberately a typed key registry (`subscription_tier` is the only key today),
+not a free-form key-value store. `polylogue.api.Polylogue.get_setting` /
+`.set_setting` / `.list_settings` expose the same read/write pair to Python
+callers; `polylogue/storage/sqlite/archive_tiers/user_settings_write.py` is
+the underlying sync storage module both the CLI and the async facade route
+through.
+
 ### Codex disjoint billing lanes
 
 Codex (OpenAI) `token_count` events report **overlapping** token counts:
