@@ -2086,14 +2086,14 @@ def _archive_search_hit_to_payload(
     from polylogue.surfaces.payloads import (
         SessionSearchHitPayload,
         SessionSearchMatchPayload,
-        SessionSummaryPayload,
         TargetRefPayload,
         reader_anchor,
         reader_message_actions,
+        session_summary_envelope_from_summary,
     )
 
     return SessionSearchHitPayload(
-        session=SessionSummaryPayload.from_summary(
+        session=session_summary_envelope_from_summary(
             _archive_summary_to_domain(summary),
             message_count=summary.message_count,
         ),
@@ -3893,7 +3893,11 @@ class PolylogueArchiveMixin:
         object_ref: ObjectRef,
         evidence_ref: EvidenceRef | None,
     ) -> PublicRefResolutionPayload:
-        from polylogue.surfaces.payloads import PublicRefResolutionPayload, SessionSummaryPayload, model_json_document
+        from polylogue.surfaces.payloads import (
+            PublicRefResolutionPayload,
+            model_json_document,
+            session_summary_envelope_from_summary,
+        )
 
         try:
             session_id = archive.resolve_session_id(object_ref.object_id)
@@ -3908,7 +3912,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "session not found", normalized_ref=normalized_ref, kind="session"),
             )
-        summary_payload = SessionSummaryPayload.from_summary(_archive_summary_to_domain(summaries[0]))
+        summary_payload = session_summary_envelope_from_summary(_archive_summary_to_domain(summaries[0]))
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,
@@ -3931,7 +3935,11 @@ class PolylogueArchiveMixin:
         object_ref: ObjectRef,
         evidence_ref: EvidenceRef | None,
     ) -> PublicRefResolutionPayload:
-        from polylogue.surfaces.payloads import PublicRefResolutionPayload, SessionMessagePayload, model_json_document
+        from polylogue.surfaces.payloads import (
+            PublicRefResolutionPayload,
+            message_render_envelope_from_domain,
+            model_json_document,
+        )
 
         row = archive._conn.execute(
             """
@@ -3957,7 +3965,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "message not found", normalized_ref=normalized_ref, kind="message"),
             )
-        payload = SessionMessagePayload.from_message(message, session_id=session_id)
+        payload = message_render_envelope_from_domain(message, session_id=session_id)
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,

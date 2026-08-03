@@ -21,9 +21,9 @@ from typing import TYPE_CHECKING
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.surfaces.payloads import (
     JSONDocument,
-    SessionDetailPayload,
-    SessionListRowPayload,
     model_json_document,
+    session_detail_envelope_from_domain,
+    session_list_envelope_from_domain,
 )
 
 if TYPE_CHECKING:
@@ -93,14 +93,14 @@ def _conv_to_dict(conv: Session, fields: str | None, *, bound_title: bool = True
     lossless (polylogue-x7d PR #3420 follow-up).
     """
     selected = {field.strip() for field in fields.split(",")} if fields else None
-    return SessionListRowPayload.from_session(conv, bound_title=bound_title).selected(selected)
+    return session_list_envelope_from_domain(conv, bound_title=bound_title).selected(selected)
 
 
 def _conv_to_json(conv: Session, fields: str | None) -> str:
     """Convert a single session to full JSON with message content."""
     data = _conv_to_dict(conv, fields, bound_title=False)
     if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
-        detail_payload = SessionDetailPayload.from_session(conv)
+        detail_payload = session_detail_envelope_from_domain(conv)
         data["messages"] = [
             model_json_document(message_payload, exclude_none=True) for message_payload in detail_payload.messages
         ]
@@ -121,7 +121,7 @@ def _conv_to_yaml(conv: Session, fields: str | None) -> str:
 
     data = _conv_to_dict(conv, fields, bound_title=False)
     if fields is None or "messages" in {field.strip() for field in fields.split(",")}:
-        detail_payload = SessionDetailPayload.from_session(conv)
+        detail_payload = session_detail_envelope_from_domain(conv)
         data["messages"] = [
             model_json_document(message_payload, exclude_none=True) for message_payload in detail_payload.messages
         ]

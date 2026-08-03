@@ -22,11 +22,11 @@ from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
-    SessionListRowPayload,
-    SessionMessagePayload,
     SessionSearchHitPayload,
     build_search_envelope,
+    message_render_envelope_from_domain,
     model_json_document,
+    session_list_envelope_from_domain,
 )
 
 REPORT_VERSION = 1
@@ -78,7 +78,7 @@ def _stable_mapping(value: Mapping[str, int]) -> dict[str, int]:
 
 def _archive_stats_payload(stats: Any) -> JSONDocument:
     recent = [
-        model_json_document(SessionListRowPayload.from_session(session), exclude_none=True)
+        model_json_document(session_list_envelope_from_domain(session), exclude_none=True)
         for session in getattr(stats, "recent", [])
     ]
     return require_json_document(
@@ -132,7 +132,7 @@ async def _capture_list_cases(poly: Polylogue, *, limit: int) -> list[JSONDocume
         sessions = await poly.list_sessions_for_spec(spec)
         total = await spec.count(poly.config)
         rows = [
-            model_json_document(SessionListRowPayload.from_session(session), exclude_none=True) for session in sessions
+            model_json_document(session_list_envelope_from_domain(session), exclude_none=True) for session in sessions
         ]
         payloads.append(_query_case_payload(name, spec, rows, total))
     return payloads
@@ -188,7 +188,7 @@ async def _capture_message_cases(
                     "offset": 0,
                     "messages": [
                         model_json_document(
-                            SessionMessagePayload.from_message(message, session_id=session_id),
+                            message_render_envelope_from_domain(message, session_id=session_id),
                             exclude_none=True,
                         )
                         for message in messages

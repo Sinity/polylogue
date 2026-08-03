@@ -823,9 +823,9 @@ The schema files live under `docs/schemas/cli-output/`.
 
 | Schema | Model | Surfaces |
 | --- | --- | --- |
-| `session-list-row` | `SessionListRowPayload` | `polylogue read --all --format json`<br>`polylogue read --all --format ndjson`<br>`polylogue read --all --format yaml` |
-| `session-summary` | `SessionSummaryPayload` | `polylogue analyze --format json (rows)`<br>`polylogue --format json <query> (hits[].session)` |
-| `session-message-row` | `SessionMessageRowPayload` | `polylogue read --view messages --format ndjson`<br>`polylogue read --view messages --format json (messages[])` |
+| `session-list-row` | `SessionListEnvelope` | `polylogue read --all --format json`<br>`polylogue read --all --format ndjson`<br>`polylogue read --all --format yaml` |
+| `session-summary` | `SessionSummaryEnvelope` | `polylogue analyze --format json (rows)`<br>`polylogue --format json <query> (hits[].session)` |
+| `session-message-row` | `MessageRowEnvelope` | `polylogue read --view messages --format ndjson`<br>`polylogue read --view messages --format json (messages[])` |
 | `session-messages-response` | `SessionMessagesResponsePayload` | `polylogue read --view messages --format json` |
 | `session-search-hit` | `SessionSearchHitPayload` | `polylogue --format json <query>`<br>`polylogue --format ndjson <query>` |
 | `search-envelope` | `SearchEnvelope` | `polylogue --format json <query>`<br>`GET /api/sessions?query=...` |
