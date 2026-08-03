@@ -4749,18 +4749,6 @@ files:
     loc: 32
     target: polylogue/ui/tui/widgets/stats.py
     owner: stable
-  - path: polylogue/verification/__init__.py
-    loc: 1
-    target: polylogue/verification/__init__.py
-    owner: stable
-  - path: polylogue/verification/manifests/__init__.py
-    loc: 1
-    target: polylogue/verification/manifests/__init__.py
-    owner: stable
-  - path: polylogue/verification/manifests/models.py
-    loc: 605
-    target: polylogue/verification/manifests/models.py
-    owner: stable
   - path: polylogue/version.py
     loc: 200
     target: polylogue/version.py

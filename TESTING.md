@@ -231,7 +231,7 @@ general) works — it is **not** dependency-graph staleness, and running
 Confirmed reproducible (2026-07-12, polylogue-csg7) with an isolated,
 freshly-seeded testmon run scoped to exactly one test file: after
 `TESTMON_DATAFILE=<scratch> pytest --testmon --testmon-noselect
-tests/unit/devtools/test_verify_manifests.py`, `polylogue/verification/manifests/models.py`
+tests/unit/devtools/test_verify_manifests.py`, `devtools/manifest_models.py`
 still has 0 `file_fp` rows even though a `--cov` run over the same test file
 reports 80% statement coverage on that module — all of it from Pydantic
 model/field declarations executed when `devtools.verify_manifests` is
