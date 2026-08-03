@@ -7,8 +7,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from polylogue.api.archive import _rebuild_archive_session_insights
 from polylogue.cli.click_app import cli
+from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import SessionBuilder
@@ -38,7 +38,7 @@ def _seed_continuation_session(db_path: Path) -> None:
         .save()
     )
     with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
-        _rebuild_archive_session_insights(archive)
+        rebuild_archive_session_insights(archive)
 
 
 def test_continue_emits_interactive_resume_command(cli_workspace: dict[str, Path]) -> None:
