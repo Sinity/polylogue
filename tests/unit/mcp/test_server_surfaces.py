@@ -15,10 +15,10 @@ from tests.infra.mcp import MCP_TOOL_NAME_BASELINE, MCPServerUnderTest, invoke_s
 from tests.infra.storage_records import SessionBuilder
 
 
-def _write_message(archive_root: Path, native_id: str, text: str) -> None:
-    SessionBuilder(archive_root / "index.db", native_id).provider("codex-session").add_message(
-        role="user", text=text
-    ).save()
+def _write_message(archive_root: Path, native_id: str, text: str) -> str:
+    builder = SessionBuilder(archive_root / "index.db", native_id).provider("codex-session")
+    builder.add_message(role="user", text=text).save()
+    return builder.native_session_id()
 
 
 @pytest.fixture
@@ -501,3 +501,140 @@ async def test_get_default_projection_surfaces_display_name_when_title_absent(
         payload = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["get"].fn, ref=uri))
 
     assert payload["title"] == "greedy-squishing-hamming"
+
+
+@pytest.mark.asyncio
+async def test_registered_read_transactions_match_production_goldens(tmp_path: Path) -> None:
+    """Exercise every declared read transaction through its live registration.
+
+    Production dependencies exercised: ``build_server`` creates the declared
+    FastMCP handlers, ``ArchiveStore`` writes the seeded index, and each call
+    resolves through the configured ``RuntimeServices`` facade. Removing a
+    handler registration, changing a stable result identity, routing a read
+    around the bounded transaction, or replacing a production payload with a
+    metadata-only response makes one of these assertions fail.
+    """
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root):
+        session_id = _write_message(archive_root, "read-contract-golden", "read contract golden needle")
+
+    from polylogue import Polylogue
+    from polylogue.mcp.server import build_server
+
+    with (
+        patch(
+            "polylogue.mcp.server._get_config",
+            return_value=SimpleNamespace(archive_root=archive_root, db_path=archive_root / "index.db"),
+        ),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+    ):
+        server = cast(MCPServerUnderTest, build_server())
+        tools = server._tool_manager._tools
+        read_uri = f"polylogue://session/{session_id}"
+        query_expression = "messages where text:golden"
+
+        results = {
+            "query": json.loads(await invoke_surface_async(tools["query"].fn, expression=query_expression, limit=1)),
+            "read": json.loads(await invoke_surface_async(tools["read"].fn, ref=read_uri)),
+            "get": json.loads(await invoke_surface_async(tools["get"].fn, ref=read_uri)),
+            "explain": json.loads(
+                await invoke_surface_async(tools["explain"].fn, subject="query", expression=query_expression)
+            ),
+            "context": json.loads(
+                await invoke_surface_async(
+                    tools["context"].fn,
+                    intent="lookup",
+                    query="read contract golden needle",
+                    budget_tokens=256,
+                )
+            ),
+            "status": json.loads(await invoke_surface_async(tools["status"].fn, scope="archive")),
+        }
+
+        resource = server._resource_manager._templates["polylogue://session/{conv_id}"]
+        resource_body = json.loads(await invoke_surface_async(resource.fn, conv_id=session_id))
+        message_get = json.loads(
+            await invoke_surface_async(
+                tools["get"].fn,
+                ref=f"message:{session_id}:m1",
+            )
+        )
+
+    assert set(results) == {"query", "read", "get", "explain", "context", "status"}
+    assert all(body.get("is_error") is not True for body in results.values()), results
+
+    query = results["query"]
+    assert query["items"] and len(query["items"]) == 1
+    assert query["items"][0]["message_id"].endswith(":m1")
+    assert query["total"] == 1
+    assert query["query_ref"].startswith("query:")
+    assert query["result_ref"].startswith("result:")
+    assert query.get("continuation") is None
+
+    assert results["read"] == results["get"]
+    assert results["read"]["ref"] == f"session:{session_id}"
+    assert results["read"]["payload_kind"] == "session-summary"
+    assert results["read"]["payload"]["id"] == session_id
+    assert results["read"]["payload"]["message_count"] == 1
+    assert results["read"]["payload"]["target_ref"]["identity_key"] == f"session:{session_id}"
+    assert message_get["payload_kind"] == "message"
+    assert message_get["payload"]["id"] == f"{session_id}:m1"
+    assert message_get["payload"]["text"] == "read contract golden needle"
+    assert message_get["payload"]["content_blocks"][0]["text"] == "read contract golden needle"
+    assert results["explain"]["subject"] == "query"
+    assert results["explain"]["explanation"]
+
+    context = results["context"]
+    assert context["spec"]["seed_query"] == "read contract golden needle"
+    assert isinstance(context["segments"], list)
+    assert context["token_estimate"] <= 256
+
+    status = results["status"]
+    assert status["scope"] == "archive"
+    assert status["archive"]["total_sessions"] == 1
+    assert status["archive"]["total_messages"] == 1
+
+    assert resource_body["id"] == session_id
+    assert resource_body["origin"]
+    assert resource_body["title"]
+    assert resource_body["message_count"] == 1
+    assert resource_body["target_ref"]["identity_key"] == f"session:{session_id}"
+
+
+@pytest.mark.asyncio
+async def test_query_resource_golden_fails_when_shared_transaction_is_bypassed(tmp_path: Path) -> None:
+    """Pin live query and URI resource handlers to the shared transaction.
+
+    This is an anti-vacuity mutation: if the registered handler stops calling
+    ``QueryTransaction.run`` and silently invokes a surface-local executor,
+    this injected failure will not reach the MCP response and the assertions
+    below will fail. The resource assertion covers its separate resolver
+    registration, which also owns a bounded transaction.
+    """
+    archive_root = tmp_path / "archive"
+    with ArchiveStore(archive_root):
+        _write_message(archive_root, "shared-transaction", "shared transaction needle")
+
+    from polylogue.mcp.server import build_server
+
+    server = cast(MCPServerUnderTest, build_server())
+    with patch(
+        "polylogue.archive.query.transaction.QueryTransaction.run",
+        side_effect=RuntimeError("shared query transaction disabled"),
+    ):
+        response = json.loads(
+            await invoke_surface_async(
+                server._tool_manager._tools["query"].fn,
+                expression="messages where text:needle",
+                limit=1,
+            )
+        )
+        resource_response = json.loads(
+            await invoke_surface_async(
+                server._resource_manager._templates["polylogue://session/{conv_id}"].fn,
+                conv_id="codex-session:shared-transaction",
+            )
+        )
+
+    assert response["code"] == "internal_error"
+    assert resource_response["code"] == "internal_error"
