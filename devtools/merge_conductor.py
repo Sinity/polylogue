@@ -71,7 +71,6 @@ BEADS_JSONL_PATH = ".beads/issues.jsonl"
 # discard a human's conflicting edit.
 _GENERATED_SURFACE_FILES: frozenset[str] = frozenset(
     {
-        "docs/plans/topology-target.yaml",
         "docs/topology-status.md",
         "docs/cli-reference.md",
         "docs/devtools.md",

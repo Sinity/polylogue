@@ -4084,7 +4084,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         since #2469 but never implemented — any request raised an
         unhandled ``AttributeError`` (polylogue-g9j6). Mirrors the MCP
         ``provider_usage`` tool, which is a thin wrapper over the same
-        ``Polylogue.provider_usage_report`` API method.
+        ``Polylogue.origin_usage_report`` API method.
 
         Defaults to ``detail=headline``, NOT ``full`` (unlike the MCP
         tool): ``full`` walks ``session_provider_usage_events`` with a
@@ -4109,7 +4109,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         archive_root = configured_archive_root()
 
         async def _get(poly: Polylogue) -> object:
-            report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
+            report = await poly.origin_usage_report(origin=origin, limit=limit, detail=detail)
             return report.to_dict()
 
         try:

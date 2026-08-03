@@ -79,11 +79,6 @@ storage in `storage/insights/session/`. Wire rebuild logic and register in
 Run `devtools render all` to update the generated catalog in
 `docs/devtools.md`.
 
-**Adding any new module/file under `polylogue/`**: regenerate the topology
-projection or `verify topology` and `render all --check` will fail on the new
-path. Run `devtools render topology-projection` and commit the updated
-`docs/plans/topology-target.yaml` alongside the code.
-
 ## Schema Versioning Model
 
 Polylogue has two schema-evolution regimes, keyed by tier durability.

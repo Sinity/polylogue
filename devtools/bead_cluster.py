@@ -124,7 +124,6 @@ _MIGRATION_PAT = re.compile(r"\b(?:migration|slot)\s*[#]?(\d{3,4})\b|(\d{3})_\w+
 
 # Regex: generated surface families
 _GENERATED_SURFACES = {
-    "topology-target.yaml": "generated:topology-target",
     "cli-reference.md": "generated:cli-reference",
     "openapi/": "generated:openapi",
 }

@@ -420,7 +420,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "postmortem_bundle": ("archive_routed", "index", "compiles postmortem bundles from archive-routed session reads"),
     "pathology_report": ("archive_routed", "index", "compiles pathology reports from archive-routed projections"),
     "portfolio_bundle": ("archive_routed", "index", "builds portfolio bundles from archive-routed session reads"),
-    "provider_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
+    "origin_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
     "query_units": ("archive_routed", "index", "queries terminal archive units from index.db"),
     "query_completions": ("archive_routed", "index", "returns query DSL completions from index.db metadata"),
