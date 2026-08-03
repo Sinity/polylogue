@@ -49,6 +49,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-delete-annotation",
         "mutate-blackboard-post",
         "mutate-capture-assertion-candidate",
+        "mutate-import-annotation-batch",
         "mutate-rebuild-index",
         "mutate-update-index",
         "mutate-rebuild-insights",
@@ -119,6 +120,11 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         assert specs[operation].idempotent is True
         assert specs[operation].effects == ("DbRead", "DbWrite")
         assert specs[operation].executor_status == "executor-routed"
+    assert specs["mutate-import-annotation-batch"].kind is OperationKind.IMPORT
+    assert specs["mutate-import-annotation-batch"].mutates_state is True
+    assert specs["mutate-import-annotation-batch"].idempotent is True
+    assert specs["mutate-import-annotation-batch"].effects == ("DbWrite",)
+    assert specs["mutate-import-annotation-batch"].executor_status == "executor-routed"
 
 
 def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:

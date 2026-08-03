@@ -326,9 +326,15 @@ rows:
       - polylogue.mcp.server_cutover._dispatch_write (operation=capture_assertion_candidate)
 
   - operation: import_annotation_batch
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: Additive batch import with its own provenance/versioning contract.
+    spec_name: mutate-import-annotation-batch
+    status: executor-routed
+    surfaces: [facade, cli, mcp]
+    actuator: polylogue.annotations.importer.AnnotationBatchImportActuator
+    adapters:
+      - polylogue.annotations.importer.import_annotation_batch
+      - polylogue.api.archive.PolylogueArchiveMixin.import_annotation_batch
+      - polylogue.cli.commands.annotations.import_annotations_command
+      - polylogue.mcp.server_cutover._dispatch_write (operation=import_annotation_batch)
 
   - operation: maintenance_execute (resumable maintenance run)
     status: declared-not-routed

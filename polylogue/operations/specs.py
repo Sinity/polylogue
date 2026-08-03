@@ -795,6 +795,28 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         executor_status="executor-routed",
     ),
     OperationSpec(
+        name="mutate-import-annotation-batch",
+        kind=OperationKind.IMPORT,
+        description=(
+            "Import a bounded JSONL annotation batch with durable schema, provenance, validation outcomes, and "
+            "candidate assertions. Live reference validation stays in the import operation; its atomic user-tier "
+            "write is routed through OperationExecutor/AnnotationBatchImportActuator with role_only confirmation."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("annotation-mutation-loop",),
+        code_refs=(
+            "polylogue.annotations.importer.import_annotation_batch",
+            "polylogue.annotations.importer.AnnotationBatchImportActuator",
+        ),
+        surfaces=("facade", "cli", "mcp"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbWrite",),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
         name="mutate-rebuild-index",
         kind=OperationKind.MAINTENANCE,
         description=(

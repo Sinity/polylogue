@@ -84,6 +84,7 @@ def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> No
         "mutate-delete-session",
         "mutate-delete-workspace",
         "mutate-identity-reset",
+        "mutate-import-annotation-batch",
         "mutate-record-correction",
         "mutate-remove-mark",
         "mutate-remove-tag",
