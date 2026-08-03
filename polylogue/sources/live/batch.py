@@ -1034,6 +1034,26 @@ class LiveBatchProcessor:
         return _throttled_phase_heartbeat(emit)
 
     def _record_failed_cursor(self, path: Path) -> int:
+        # polylogue-awy5: an already-excluded cursor is a poison pill the
+        # daemon has already given up on (5-failure cap,
+        # ``_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE``). Re-running the same
+        # crash-looping batch against it and calling ``mark_failed`` again
+        # every pass has no effect on the cursor's *state* (the lifecycle
+        # table only permits EXCLUDED -> EXCLUDED here) but keeps
+        # incrementing ``failure_count`` forever with no upper bound --
+        # measured live at 689/864/975/1001/2018 on the five ZIPs that hit
+        # this path, i.e. thousands of full acquire+parse+crash cycles
+        # burned re-discovering a fact the cursor already recorded. Consult
+        # ``excluded`` before touching the cursor at all so a poisoned
+        # source stops being re-queued into wasted work.
+        try:
+            preexisting = self._cursor.get_record(path)
+        except sqlite3.OperationalError as exc:
+            if not is_transient_sqlite_lock(exc):
+                raise
+            preexisting = None
+        if preexisting is not None and preexisting.excluded:
+            return 0
         try:
             stat = path.stat()
         except FileNotFoundError:

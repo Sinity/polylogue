@@ -108,6 +108,39 @@ def test_failed_cursor_bookkeeping_does_not_raise_on_transient_sqlite_lock(tmp_p
     assert processor._record_failed_cursor(source) == source.stat().st_size
 
 
+def test_record_failed_cursor_does_not_reincrement_already_excluded_cursor(tmp_path: Path) -> None:
+    """polylogue-awy5: the batch path used to call ``mark_failed`` on every
+    crash-looping pass with no ``excluded`` pre-check, so a poisoned source
+    kept its ``failure_count`` climbing forever after quarantine (measured
+    live at 689/864/975/1001/2018 on five permanently-excluded ZIPs) instead
+    of staying parked at the exclusion threshold."""
+    from polylogue.sources.live.cursor import _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE
+
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    store = CursorStore(tmp_path / "live.sqlite")
+    for _ in range(_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE):
+        store.mark_failed(source)
+    excluded_record = store.get_record(source)
+    assert excluded_record is not None
+    assert excluded_record.excluded
+    failure_count_at_exclusion = excluded_record.failure_count
+
+    processor = LiveBatchProcessor(
+        cast(Any, object()),
+        [],
+        cursor=store,
+        parser_fingerprint="fp:test",
+    )
+    for _ in range(3):
+        processor._record_failed_cursor(source)
+
+    record = store.get_record(source)
+    assert record is not None
+    assert record.excluded
+    assert record.failure_count == failure_count_at_exclusion
+
+
 def test_failed_persistence_preserves_last_committed_cursor_offset(tmp_path: Path) -> None:
     source = tmp_path / "session.jsonl"
     committed = b'{"role":"user","content":"committed"}\n'

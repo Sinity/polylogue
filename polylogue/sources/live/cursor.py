@@ -1312,23 +1312,37 @@ class CursorStore:
         st_dev: int,
         st_ino: int,
         mtime_ns: int,
+        current_parser_fingerprint: str | None = None,
     ) -> None:
-        """Clear a path quarantine only after the observed file was replaced.
+        """Clear a path quarantine after the observed file OR the parser was replaced.
 
         Exclusion belongs to the exact failed file observation, not forever to
-        its pathname.  Keep the prior cursor observation intact so the caller
-        still routes the replacement through full acquisition.
+        its pathname -- but it also should not survive a parser fix that would
+        have parsed the file correctly the first time (polylogue-ix5r): a file
+        whose bytes never change stays permanently dark under identity-only
+        revival, even after the bug that poisoned it is fixed. ``revive`` fires
+        when EITHER the file identity changed OR ``current_parser_fingerprint``
+        differs from the fingerprint recorded at exclusion time; omitting it
+        (``None``, the default) preserves the original identity-only behavior
+        for callers that have not adopted the fingerprint check.
+
+        Keeps the prior cursor observation intact so the caller still routes
+        the replacement through full acquisition.
         """
 
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
             if current is None or not current.excluded:
                 return None
-            if (
+            identity_unchanged = (
                 current.byte_size,
                 current.st_dev,
                 current.st_ino,
                 current.mtime_ns,
-            ) == (byte_size, st_dev, st_ino, mtime_ns):
+            ) == (byte_size, st_dev, st_ino, mtime_ns)
+            parser_changed = (
+                current_parser_fingerprint is not None and current.parser_fingerprint != current_parser_fingerprint
+            )
+            if identity_unchanged and not parser_changed:
                 return None
             return replace(
                 current,
