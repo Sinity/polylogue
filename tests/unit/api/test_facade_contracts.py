@@ -283,6 +283,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "tool_call_latency_distribution",
         "compare_sessions",
         "find_similar_sessions_by_metadata",
+        "search_similar_sessions",
         "correlate_sessions",
         # Comparative judgment storage (rxdo.9.6/.9.7/.9.11/.9.12), wired
         # into the real `polylogue compare` CLI command (tests/unit/cli/
