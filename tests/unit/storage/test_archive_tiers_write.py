@@ -425,11 +425,18 @@ def test_archive_store_connection_applies_canonical_profile(tmp_path: Path) -> N
 def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp_path: Path) -> None:
     """A session whose only working directory is "/" must still ingest.
 
-    ``_repo_name`` returns None when no name can be derived from the cwd (e.g.
-    "/" or "."), but ``repos.repo_name`` is ``NOT NULL``. Passing the None
-    through crashed the write with an IntegrityError, silently dropping the
-    session and retrying it forever. The writer must persist the empty-string
-    sentinel instead and keep the session.
+    Originally a regression test for a crash: ``_repo_name`` returns None
+    when no name can be derived from the cwd (e.g. "/" or "."), but
+    ``repos.repo_name`` is ``NOT NULL`` -- passing the None through used to
+    crash the write with an IntegrityError, silently dropping the session
+    and retrying it forever.
+
+    Since polylogue-cijx.2 AC4 ("a session with no git evidence resolves to
+    a directory, not a repository"), "/" -- which has no discoverable
+    ``.git`` root and no known remote -- no longer synthesizes a ``repos``
+    row at all, so the original NOT NULL crash can no longer occur by
+    construction; this test keeps the "must not raise, session still
+    ingests" assertion and updates the repos-table expectation to match.
     """
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
@@ -452,7 +459,7 @@ def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp
     session_id = write_parsed_session_to_archive(conn, session)
 
     repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
-    assert {"root_path": "/", "repo_name": ""} in repos
+    assert repos == [], "a bare '/' cwd with no git evidence must not synthesize a repos row"
     envelope = read_archive_session_envelope(conn, session_id)
     assert len(envelope.messages) == 1
 
