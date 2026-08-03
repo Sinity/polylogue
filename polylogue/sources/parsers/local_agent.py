@@ -9,7 +9,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, json_document
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
 
 
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
@@ -93,6 +93,10 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
                 models_used.add(parsed.model_name)
             if usage_event := _gemini_message_usage_event(item, parsed):
                 session_events.append(usage_event)
+    # bd polylogue-ksgg: Gemini CLI sessions carry no parent-message evidence
+    # (0% parented, 0 variant_index>0 rows) -- a linear turn sequence. Chain
+    # each message to the previous one on the active path.
+    messages = fill_linear_parent_chain(messages)
     messages = _mark_active_leaf(messages)
     if metadata_event := _gemini_cli_session_metadata_event(payload, message_count=len(messages)):
         session_events.append(metadata_event)
@@ -146,6 +150,11 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
             messages.append(parsed)
             if extras_event := _hermes_message_wire_extras_event(item, parsed):
                 session_events.append(extras_event)
+    # bd polylogue-ksgg: this JSON-sidecar Hermes shape has no parent-message
+    # evidence either -- chain each message to the previous one on the
+    # active path, same as the state-db conversational parser
+    # (hermes_state.py::_parse_session_row).
+    messages = fill_linear_parent_chain(messages)
     messages = _mark_active_leaf(messages)
     if metadata_event := _hermes_session_metadata_event(payload, message_count=len(messages)):
         session_events.append(metadata_event)

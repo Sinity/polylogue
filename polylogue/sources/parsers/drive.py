@@ -11,7 +11,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.sources.providers.gemini import GeminiMessage
 
-from .base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from .base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
 )
@@ -435,6 +435,13 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
             )
             for message in messages
         ]
+    # bd polylogue-ksgg: real Gemini branch evidence (``_branch_parent_provider_id``
+    # / ``branch_child_parents`` above) already sets ``parent_message_provider_id``
+    # for messages that carry it; most AI Studio Drive sessions have none
+    # (0% parented measured) because they're a plain linear chat with no
+    # branch. Only fill the remaining gap -- chain to the previous message on
+    # the active path -- without touching real branch evidence already set.
+    messages = fill_linear_parent_chain(messages)
     return ParsedSession(
         source_name=runtime_provider,
         provider_session_id=str(payload.get("id") or fallback_id),

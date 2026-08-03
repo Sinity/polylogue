@@ -21,7 +21,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument, json_document
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent, fill_linear_parent_chain
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .local_agent import _content_blocks_from_content, _content_text, _tool_use_block
@@ -654,6 +654,12 @@ def _parse_session_row(
         messages.append(parsed)
         state_events.append(_message_state_event(message_row, parsed, message_columns=message_columns))
         state_events.extend(_reasoning_evidence_events(message_row, parsed))
+    # bd polylogue-ksgg: the Hermes state-db conversational transcript is a
+    # linear turn sequence (variant_index is always 0) with no
+    # parent_message_provider_id evidence at all -- chain each message to
+    # the previous one on the active path so readers don't need a
+    # Hermes-specific position-order fallback.
+    messages = fill_linear_parent_chain(messages)
     messages = _mark_active_leaf(messages)
     parent_raw_id = _optional_text(_row_value(row, "parent_session_id"))
     parent_id = _qualified_session_id(parent_raw_id, profile_key) if parent_raw_id else None

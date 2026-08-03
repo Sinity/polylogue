@@ -41,6 +41,40 @@ def text_blocks_prose(blocks: Sequence[ParsedContentBlock]) -> str | None:
     return "\n".join(parts) if parts else None
 
 
+def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
+    """Backfill ``parent_message_provider_id`` for a strictly linear message list.
+
+    bd polylogue-ksgg: five of nine archive origins (Codex, Hermes, Gemini
+    CLI, Grok, and AI Studio Drive's non-branch path) never assert an
+    explicit reply-to edge, because their session shape is a plain ordered
+    turn sequence with no fork/retry concept at the message level -- there is
+    no ``variant_index>0`` row in any of them today (ksgg finding B). Leaving
+    ``parent_message_provider_id`` at ``None`` for every message makes
+    position-order the ONLY way to reconstruct the conversation shape for
+    these origins, unlike Claude Code / ChatGPT where a real parent chain is
+    carried end to end.
+
+    This fills the trivial, unambiguous case -- chaining each message to the
+    previous message on the same active path -- without fabricating branch
+    structure: a message that already carries real parent evidence (e.g.
+    ``parsers/drive.py``'s explicit Gemini branch chunks) is left untouched,
+    and only a message with ``parent_message_provider_id is None`` is
+    chained to the nearest preceding *active-path* message. A session's
+    first message (and any message with no preceding active-path message)
+    keeps ``parent_message_provider_id=None`` -- there is nothing to chain
+    it to.
+    """
+    filled: list[ParsedMessage] = []
+    previous_active_id: str | None = None
+    for message in messages:
+        if message.parent_message_provider_id is None and previous_active_id is not None:
+            message = message.model_copy(update={"parent_message_provider_id": previous_active_id})
+        filled.append(message)
+        if message.is_active_path is not False:
+            previous_active_id = message.provider_message_id
+    return filled
+
+
 def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
     """Convert raw API content (str, list, dict) to ParsedContentBlock list."""
     if isinstance(content, str):
