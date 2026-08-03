@@ -398,12 +398,18 @@ def _admit_non_session_origin_artifacts(
             if classification is None or classification.parse_as_session:
                 continue
             try:
-                archive.write_raw_payload(
+                # polylogue-1fijp arm 4: route through the raw-admission
+                # chokepoint so this configured fact artifact gets its
+                # raw_artifacts classification row immediately, instead of
+                # only a bare raw_sessions row waiting on the next offline
+                # materialize_artifact_observations sweep.
+                archive.admit_raw_artifact_payload(
                     provider=Provider.CLAUDE_CODE,
                     payload=Path(candidate).read_bytes(),
                     source_path=str(candidate),
                     source_index=0,
                     acquired_at_ms=acquired_at_ms,
+                    classification=classification,
                 )
                 admitted += 1
             except Exception:

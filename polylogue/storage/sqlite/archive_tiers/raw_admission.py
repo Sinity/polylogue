@@ -1,0 +1,403 @@
+"""Raw-admission chokepoint: the single typed decision point for ``raw_sessions`` writes.
+
+polylogue-1fijp (aggz Invariant 2): :func:`admit_raw_observation` is designed
+to become the sole creator of ``raw_sessions`` rows, mirroring
+``write.py``'s ``write_parsed_session_to_archive`` on the index side. Given
+freshly (and atomically -- see :mod:`polylogue.sources.atomic_read`) read
+bytes, origin evidence, and the prior accepted head for the payload's
+logical source key, it resolves exactly one of five typed, exhaustive arms
+-- there is no nullable "unknown, figure it out later" limbo:
+
+1. ``SKIP_DUPLICATE`` -- the bytes are byte-equal to the accepted head.
+   Nothing new to record; the caller gets the existing raw_id back.
+2. ``APPEND`` -- the bytes extend the accepted head as a strict byte-prefix
+   (the common case for tailed logs). Recorded as ``revision_kind=append``
+   with a real ``predecessor_raw_id``.
+3. ``SUPERSEDE`` -- the incoming bytes are themselves a strict byte-prefix
+   of the accepted head. This is the reverse of (2): the newly acquired
+   read is a proven-dominated, strictly older/shorter state than what is
+   already on record (e.g. a source file briefly reverted, or this read
+   raced a rewrite and caught an earlier generation than a sibling read
+   already captured). It is recorded as a ``FULL`` revision with
+   ``authority=BYTE_PROVEN`` and ``predecessor_raw_id`` pointing at the
+   fuller head it is provably subsumed by -- a *proven* relationship, not
+   a guess, so it does not go through arm 5's ambiguity handling.
+
+   NOTE ON INTERPRETATION: the bead text describing this arm ("head is
+   byte-prefix of prior full -> supersede") admits more than one reading.
+   This module's interpretation -- new-shorter-bytes proven subsumed by an
+   already-accepted fuller head -- is the one implemented and tested here.
+   It has not been independently confirmed against operator intent beyond
+   the bead text itself; flag for confirmation before treating this arm's
+   exact semantics as load-bearing for anything beyond "don't silently
+   regress the head".
+4. ``ARTIFACT`` -- the payload is not conversational content (the omsw
+   artifact taxonomy's ``ArtifactClassification.parse_as_session is
+   False``: tool-results/*.json, subagents/workflows/*/journal.jsonl,
+   file-history-snapshot, etc). A ``raw_sessions`` row is still written
+   (it remains the acquisition-evidence ledger for every observed byte,
+   session or not -- ``raw_artifacts.raw_id`` has a ``NOT NULL REFERENCES
+   raw_sessions`` foreign key, so an artifact row cannot exist without
+   one), but its classification is attached immediately as a
+   ``raw_artifacts`` row using the SAME deterministic
+   ``artifact_observation_id`` scheme the offline
+   ``materialize_artifact_observations`` sweep uses, so a later sweep
+   upserts onto the same row rather than colliding. The one guarantee
+   this arm gives is the one arm 4 names: this bytes-classified-as-
+   non-conversational content structurally never reaches any code path
+   that could create an ``index.db`` ``sessions`` row -- this module has
+   no import of any index-tier writer.
+5. ``REFUSED_AMBIGUOUS`` -- neither equal, a forward extension, nor a
+   backward prefix. Per the operator's 2026-08-03 correction on the bead,
+   re-acquisition here is OPPORTUNISTIC, never doctrinal: if a caller
+   supplies a ``reacquire`` callback, it is invoked at most once and, if it
+   returns bytes that resolve one of arms 1-3, that outcome wins. If the
+   source is absent/unreadable (callback returns ``None``) or the
+   re-attempt is itself still ambiguous, this falls through to a typed
+   refusal row (``revision_kind=unknown``, ``revision_authority=
+   quarantined``) carrying a machine-readable reason -- never a silent
+   drop, and never a decision that depends on the source file continuing
+   to exist.
+
+The bootstrap case -- no prior head at all for this logical source key --
+is not one of the five named arms (all five presuppose a prior head to
+compare against); it is handled as a distinct ``BASELINE`` outcome: the
+first-ever observation is recorded as a ``FULL``/``ASSERTED`` revision.
+
+This module composes the existing low-level writers in
+``source_write.py`` (``write_source_raw_session``,
+``deterministic_blob_hash``) rather than re-implementing raw-row
+persistence -- it decides *which* revision envelope to write, not how to
+write it.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Literal
+
+from polylogue.archive.artifact_taxonomy import ArtifactClassification
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.storage.artifacts.inspection import artifact_observation_id
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    deterministic_blob_hash,
+    write_source_raw_session,
+)
+
+
+class RawAdmissionArm(StrEnum):
+    """The exhaustive, typed outcome of one :func:`admit_raw_observation` call."""
+
+    BASELINE = "baseline"
+    SKIP_DUPLICATE = "skip_duplicate"
+    APPEND = "append"
+    SUPERSEDE = "supersede"
+    ARTIFACT = "artifact"
+    REFUSED_AMBIGUOUS = "refused_ambiguous"
+
+
+_ByteRelation = Literal["duplicate", "append", "supersede", "ambiguous"]
+
+
+@dataclass(frozen=True, slots=True)
+class PriorRawHead:
+    """The currently-accepted head raw for one logical source key.
+
+    Callers resolve this themselves (this module makes no assumption about
+    how "head" is determined for a given provider/acquisition mode) and
+    pass its bytes in so the byte-relation comparison in arms 1-3/5 is a
+    pure, synchronous, in-memory decision -- no additional DB or blob-store
+    read happens inside :func:`admit_raw_observation` itself.
+    """
+
+    raw_id: str
+    source_revision: str
+    payload: bytes
+    baseline_raw_id: str | None = None
+    acquisition_generation: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class RawAdmissionResult:
+    """The outcome of one admission decision."""
+
+    arm: RawAdmissionArm
+    raw_id: str
+    artifact_id: str | None = None
+    refusal_reason: str | None = None
+    reacquire_attempted: bool = False
+    reacquire_changed_outcome: bool = False
+
+
+def _classify_bytes(payload: bytes, prior_head_payload: bytes) -> _ByteRelation:
+    if payload == prior_head_payload:
+        return "duplicate"
+    if len(payload) > len(prior_head_payload) and payload.startswith(prior_head_payload):
+        return "append"
+    if len(payload) < len(prior_head_payload) and prior_head_payload.startswith(payload):
+        return "supersede"
+    return "ambiguous"
+
+
+def _enum_value(value: object) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "value"):
+        return str(value.value)
+    return str(value)
+
+
+def admit_raw_observation(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    capture_mode: Provider | str | None = None,
+    source_path: str,
+    source_index: int = 0,
+    payload: bytes,
+    acquired_at_ms: int,
+    native_id: str | None = None,
+    logical_source_key: str,
+    prior_head: PriorRawHead | None = None,
+    artifact: ArtifactClassification | None = None,
+    blob_publication_receipt_id: str | None = None,
+    reacquire: Callable[[], bytes | None] | None = None,
+    manage_transaction: bool = True,
+) -> RawAdmissionResult:
+    """Decide and apply exactly one typed resolution arm for one raw observation.
+
+    ``logical_source_key`` is required even for the ``BASELINE``/``ARTIFACT``
+    outcomes that do not compare against a prior head -- every write this
+    function makes carries a real revision envelope, never the nullable
+    ``revision=None`` fallback the lower-level writers otherwise default to.
+    """
+    if not logical_source_key:
+        raise ValueError("logical_source_key is required for raw admission")
+
+    if artifact is not None and not artifact.parse_as_session:
+        return _admit_artifact(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=native_id,
+            artifact=artifact,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            manage_transaction=manage_transaction,
+        )
+
+    if prior_head is None:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=native_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            revision=RawRevisionEnvelope(
+                logical_source_key=logical_source_key,
+                kind=RawRevisionKind.FULL,
+                source_revision=deterministic_blob_hash(payload).hex(),
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+            manage_transaction=manage_transaction,
+        )
+        return RawAdmissionResult(arm=RawAdmissionArm.BASELINE, raw_id=raw_id)
+
+    relation = _classify_bytes(payload, prior_head.payload)
+    reacquire_attempted = False
+    reacquire_changed_outcome = False
+    resolved_payload = payload
+
+    if relation == "ambiguous" and reacquire is not None:
+        reacquire_attempted = True
+        candidate = reacquire()
+        if candidate is not None:
+            candidate_relation = _classify_bytes(candidate, prior_head.payload)
+            if candidate_relation != "ambiguous":
+                reacquire_changed_outcome = True
+                relation = candidate_relation
+                resolved_payload = candidate
+            else:
+                # Still ambiguous, but the refusal row should reflect the
+                # freshest bytes actually observed, not the stale first read.
+                resolved_payload = candidate
+
+    if relation == "duplicate":
+        return RawAdmissionResult(
+            arm=RawAdmissionArm.SKIP_DUPLICATE,
+            raw_id=prior_head.raw_id,
+            reacquire_attempted=reacquire_attempted,
+            reacquire_changed_outcome=reacquire_changed_outcome,
+        )
+
+    if relation == "append":
+        raw_id = write_source_raw_session(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            source_index=source_index,
+            payload=resolved_payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=native_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            revision=RawRevisionEnvelope(
+                logical_source_key=logical_source_key,
+                kind=RawRevisionKind.APPEND,
+                source_revision=deterministic_blob_hash(resolved_payload).hex(),
+                predecessor_source_revision=prior_head.source_revision,
+                predecessor_raw_id=prior_head.raw_id,
+                baseline_raw_id=prior_head.baseline_raw_id or prior_head.raw_id,
+                append_start_offset=len(prior_head.payload),
+                append_end_offset=len(resolved_payload),
+                acquisition_generation=prior_head.acquisition_generation + 1,
+                authority=RawRevisionAuthority.ASSERTED,
+            ),
+            manage_transaction=manage_transaction,
+        )
+        return RawAdmissionResult(
+            arm=RawAdmissionArm.APPEND,
+            raw_id=raw_id,
+            reacquire_attempted=reacquire_attempted,
+            reacquire_changed_outcome=reacquire_changed_outcome,
+        )
+
+    if relation == "supersede":
+        raw_id = write_source_raw_session(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            source_index=source_index,
+            payload=resolved_payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=native_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            revision=RawRevisionEnvelope(
+                logical_source_key=logical_source_key,
+                kind=RawRevisionKind.FULL,
+                source_revision=deterministic_blob_hash(resolved_payload).hex(),
+                predecessor_raw_id=prior_head.raw_id,
+                baseline_raw_id=prior_head.baseline_raw_id or prior_head.raw_id,
+                acquisition_generation=prior_head.acquisition_generation,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+            manage_transaction=manage_transaction,
+        )
+        return RawAdmissionResult(
+            arm=RawAdmissionArm.SUPERSEDE,
+            raw_id=raw_id,
+            reacquire_attempted=reacquire_attempted,
+            reacquire_changed_outcome=reacquire_changed_outcome,
+        )
+
+    # Still ambiguous after the (opportunistic, at-most-one) reacquire
+    # attempt -- or no reacquire callback was supplied at all. Never persist
+    # a nullable "figure it out later" row: this is a typed refusal with a
+    # machine-readable reason, not a bare quarantine.
+    refusal_reason = (
+        "reacquire_still_ambiguous"
+        if reacquire_attempted and reacquire_changed_outcome is False and resolved_payload != payload
+        else "reacquire_unavailable_or_absent"
+        if reacquire_attempted
+        else "no_byte_relation_to_prior_head"
+    )
+    raw_id = write_source_raw_session(
+        conn,
+        origin=origin,
+        capture_mode=capture_mode,
+        source_path=source_path,
+        source_index=source_index,
+        payload=resolved_payload,
+        acquired_at_ms=acquired_at_ms,
+        native_id=native_id,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.UNKNOWN,
+            source_revision=deterministic_blob_hash(resolved_payload).hex(),
+            acquisition_generation=prior_head.acquisition_generation + 1,
+            authority=RawRevisionAuthority.QUARANTINED,
+        ),
+        manage_transaction=manage_transaction,
+    )
+    return RawAdmissionResult(
+        arm=RawAdmissionArm.REFUSED_AMBIGUOUS,
+        raw_id=raw_id,
+        refusal_reason=refusal_reason,
+        reacquire_attempted=reacquire_attempted,
+        reacquire_changed_outcome=reacquire_changed_outcome,
+    )
+
+
+def _admit_artifact(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    capture_mode: Provider | str | None,
+    source_path: str,
+    source_index: int,
+    payload: bytes,
+    acquired_at_ms: int,
+    native_id: str | None,
+    artifact: ArtifactClassification,
+    blob_publication_receipt_id: str | None,
+    manage_transaction: bool,
+) -> RawAdmissionResult:
+    origin_value = _enum_value(origin)
+    artifact_id = artifact_observation_id(
+        source_name=origin_value,
+        source_path=source_path,
+        source_index=source_index,
+    )
+    raw_id = write_source_raw_session(
+        conn,
+        origin=origin,
+        capture_mode=capture_mode,
+        source_path=source_path,
+        source_index=source_index,
+        payload=payload,
+        acquired_at_ms=acquired_at_ms,
+        native_id=native_id,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        # Artifacts are acquisition-evidence, not part of any revision
+        # chain: no logical_source_key/predecessor tracking applies to a
+        # non-conversational sidecar payload.
+        revision=None,
+        artifact=ArchiveSourceArtifact(
+            artifact_id=artifact_id,
+            origin=origin,
+            source_path=source_path,
+            artifact_kind=artifact.cohort,
+            classification_reason=artifact.reason,
+            support_status=ArtifactSupportStatus.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=artifact.schema_eligible,
+            first_observed_at_ms=acquired_at_ms,
+            last_observed_at_ms=acquired_at_ms,
+            source_index=source_index,
+        ),
+        manage_transaction=manage_transaction,
+    )
+    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=raw_id, artifact_id=artifact_id)
+
+
+__all__ = [
+    "PriorRawHead",
+    "RawAdmissionArm",
+    "RawAdmissionResult",
+    "admit_raw_observation",
+]

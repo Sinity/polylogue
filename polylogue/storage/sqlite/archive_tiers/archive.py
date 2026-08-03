@@ -27,6 +27,7 @@ from typing import Any, BinaryIO, Literal, TypedDict, cast
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
+from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -153,6 +154,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionResult
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     FullSnapshotFoldAuthorization,
 )
@@ -172,6 +174,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _raw_revision_payload_digest_and_size,
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
+    admit_raw_artifact_payload,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
     bind_raw_revision,
@@ -2108,6 +2111,32 @@ class ArchiveStore:
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+        )
+
+    def admit_raw_artifact_payload(
+        self,
+        *,
+        provider: Provider,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        classification: ArtifactClassification,
+        source_index: int = 0,
+        blob_publication_receipt_id: str | None = None,
+    ) -> RawAdmissionResult:
+        """Route a non-conversational artifact payload through the raw-admission chokepoint.
+
+        See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_artifact_payload`.
+        """
+        return admit_raw_artifact_payload(
+            self,
+            provider=provider,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            classification=classification,
+            source_index=source_index,
+            blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
     def write_parsed_for_retained_raw(

@@ -110,6 +110,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession
 
+from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
@@ -145,6 +146,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     should_skip_stale_replace,
     stored_message_count,
 )
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionResult, admit_raw_observation
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
@@ -552,6 +554,52 @@ def write_raw_blob_ref(
         raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
+        manage_transaction=True,
+    )
+
+
+def admit_raw_artifact_payload(
+    store: RawRevisionGovernanceHost,
+    *,
+    provider: Provider,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+    classification: ArtifactClassification,
+    source_index: int = 0,
+    blob_publication_receipt_id: str | None = None,
+) -> RawAdmissionResult:
+    """Commit a non-conversational artifact payload through the raw-admission chokepoint.
+
+    polylogue-1fijp arm 4: routes a payload already classified as
+    ``not classification.parse_as_session`` (the omsw artifact taxonomy --
+    tool-results/*.json, subagents/workflows/*/journal.jsonl,
+    file-history-snapshot, etc) through :func:`admit_raw_observation` so its
+    ``raw_artifacts`` classification is attached at admission time rather
+    than deferred to the next offline ``materialize_artifact_observations``
+    sweep. A ``raw_sessions`` row is still written (the acquisition-evidence
+    ledger; ``raw_artifacts.raw_id`` has a NOT NULL FK to it), but this arm
+    guarantees the payload never reaches any index-tier writer.
+    """
+    if store._blob_publisher is None:
+        raise RuntimeError("raw archive writes require a writable archive publisher")
+    if blob_publication_receipt_id is None:
+        raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
+        blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
+    store._blob_publisher.flush()
+    origin = origin_from_provider(provider)
+    return admit_raw_observation(
+        store._ensure_source_conn(),
+        origin=origin,
+        capture_mode=provider,
+        source_path=source_path,
+        source_index=source_index,
+        payload=payload,
+        acquired_at_ms=acquired_at_ms,
+        logical_source_key=f"{origin.value}:{source_path}",
+        prior_head=None,
+        artifact=classification,
+        blob_publication_receipt_id=blob_publication_receipt_id,
         manage_transaction=True,
     )
 
