@@ -132,6 +132,8 @@ def message_from_record(
         parent_id=record.parent_message_id,
         branch_index=record.branch_index,
         is_active_path=record.is_active_path,
+        position=record.position,
+        is_active_leaf=record.is_active_leaf,
         has_tool_use=bool(record.has_tool_use),
         has_thinking=bool(record.has_thinking),
         has_paste=bool(record.has_paste),

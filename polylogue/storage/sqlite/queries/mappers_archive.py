@@ -96,6 +96,8 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         # None (column not selected by this query) means unknown, not "not
         # active" -- see MessageRecord.is_active_path.
         is_active_path=_row_optional_bool(row, "is_active_path"),
+        position=_row_int(row, "position", 0) or 0,
+        is_active_leaf=bool(_row_int(row, "is_active_leaf", 0)),
         source_name=_row_text(row, "source_name") or "",
         word_count=_row_int(row, "word_count", 0) or 0,
         has_tool_use=_row_int(row, "has_tool_use", 0) or 0,

@@ -181,6 +181,12 @@ class MessageRecord(BaseModel):
     # not selected the column (unknown), never a fabricated "not active" --
     # callers must not collapse unknown into hidden.
     is_active_path: bool | None = None
+    # polylogue-ksgg: ordinal position within the session (messages.position)
+    # and whether this row is the tip of the currently-active branch
+    # (messages.is_active_leaf). Distinct from branch_index (sibling creation
+    # order) and is_active_path (interior-path membership).
+    position: int = 0
+    is_active_leaf: bool = False
     blocks: list[BlockRecord] = Field(default_factory=list)
     source_name: str = ""
     word_count: int = 0

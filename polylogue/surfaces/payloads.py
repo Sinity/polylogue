@@ -679,6 +679,19 @@ class SessionMessagePayload(SurfacePayloadModel):
     parent_id: str | None = None
     # #1487 envelope: branch/lineage state.
     branch_index: int = 0
+    # polylogue-ksgg: ordinal position within the session (storage:
+    # messages.position), independent of branch_index (sibling creation
+    # order). Needed to reconstruct display order without direct SQL.
+    position: int = 0
+    # polylogue-ksgg: provider-reported "this sibling is on the live path"
+    # signal (storage: messages.is_active_path). ``None`` means unknown --
+    # the read path did not select the column or the provider has no branch
+    # concept -- never collapse unknown to "not active".
+    is_active_path: bool | None = None
+    # polylogue-ksgg: whether this message is the tip of the currently-active
+    # branch (storage: messages.is_active_leaf) -- the message a reader would
+    # resume from, distinct from interior is_active_path membership.
+    is_active_leaf: bool = False
     # #1487 envelope: per-message content flags. Surface what the storage
     # layer already projects (#1201/#1583) so the reader does not have
     # to re-derive them from the rendered text.
@@ -754,6 +767,9 @@ class SessionMessagePayload(SurfacePayloadModel):
             content_blocks=message.blocks,
             parent_id=message.parent_id,
             branch_index=int(getattr(message, "branch_index", 0) or 0),
+            position=int(getattr(message, "position", 0) or 0),
+            is_active_path=getattr(message, "is_active_path", None),
+            is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
             has_paste_evidence=bool(getattr(message, "has_paste", False)),
             paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),
@@ -823,6 +839,9 @@ class SessionMessagePayload(SurfacePayloadModel):
             content_blocks=content_blocks,
             parent_id=getattr(message, "parent_message_id", None),
             branch_index=int(getattr(message, "variant_index", 0) or 0),
+            position=int(getattr(message, "position", 0) or 0),
+            is_active_path=getattr(message, "is_active_path", None),
+            is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
             has_paste_evidence=bool(getattr(message, "has_paste", False)),
             paste_boundary_state=getattr(message, "paste_boundary_state", None),
             has_tool_use=bool(getattr(message, "has_tool_use", False)),

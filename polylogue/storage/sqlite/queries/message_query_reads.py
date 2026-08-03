@@ -42,6 +42,8 @@ _MESSAGE_RECORD_SELECT = """
     m.parent_message_id,
     m.variant_index AS branch_index,
     m.is_active_path,
+    m.position,
+    m.is_active_leaf,
     s.origin AS source_name,
     m.word_count,
     m.has_tool_use,

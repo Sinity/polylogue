@@ -38,6 +38,16 @@ class Message(MessageRuntimeMixin, BaseModel):
     # provider with no branch concept -- and must NOT be treated as "not
     # active": collapsing unknown to hidden would silently empty transcripts.
     is_active_path: bool | None = None
+    # polylogue-ksgg: ordinal position of this message within its session
+    # (storage: messages.position), independent of branch_index/variant_index
+    # (creation order among siblings at the same position). Needed to
+    # reconstruct display order without re-querying storage directly.
+    position: int = 0
+    # polylogue-ksgg: whether this message sits on the leaf edge of the
+    # currently-active branch (storage: messages.is_active_leaf). Unlike
+    # is_active_path (which can be true for interior messages on the live
+    # path), this marks the tip messages a reader can resume from.
+    is_active_leaf: bool = False
     # Stats projected from the storage layer so reader surfaces can
     # render fold/paste indicators without re-deriving them. See #1201
     # (paste rendering) and the session-level flags in
