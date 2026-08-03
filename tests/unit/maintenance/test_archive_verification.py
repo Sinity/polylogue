@@ -1183,6 +1183,8 @@ RED_TWIN_TESTS: dict[str, str] = {
     "planner-stats": "test_missing_sqlite_stat1_is_warning_not_error",
     "convergence-freshness": "test_stalled_backlog_trips_convergence_freshness",
     "user-tier-refs": "test_dangling_assertion_target_trips_user_tier_refs",
+    "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
+    "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
 }
 
 
