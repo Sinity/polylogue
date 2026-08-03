@@ -14,6 +14,7 @@ class ArchiveTier(StrEnum):
     EMBEDDINGS = "embeddings"
     USER = "user"
     OPS = "ops"
+    AUDIT = "audit"
 
 
 # polylogue-u6tl: these two live here (a dependency-free leaf module) rather
