@@ -489,7 +489,7 @@ def test_source_tier_v1_migrates_to_current_without_native_uniqueness(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 1
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+        assert result.applied_versions == (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info('raw_sessions')")}
         assert "predecessor_source_revision" in columns
@@ -577,8 +577,8 @@ def test_source_publication_backfill_requires_verified_backup(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 9
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 20
-        assert result.applied_versions == (10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+        assert result.applied_versions == (10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
         assert result.backup_receipt == manifest.with_name("verification-receipt.json")
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert {
@@ -732,8 +732,8 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
     with sqlite3.connect(db_path) as conn:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
         assert result.from_version == 7
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 20
-        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+        assert result.applied_versions == (8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
         assert conn.execute(
             """
             SELECT predecessor_source_revision, predecessor_raw_id, baseline_raw_id,
@@ -759,6 +759,221 @@ def test_source_tier_v7_expands_origin_checks_with_verified_backup(
             ("beads-raw", "beads-issue", "polylogue-7fj", "/repo/.beads/interactions.jsonl", 0, b"b" * 32, 1, 2),
         )
         assert conn.execute("SELECT raw_id FROM raw_sessions WHERE origin = 'beads-issue'").fetchone()
+
+
+def _source_v20_ddl_with_stale_origin_check() -> str:
+    """``SOURCE_DDL`` with the origin CHECK narrowed back to its pre-021
+    (v20) eleven-value list, reproducing the exact shape migration 021
+    exists to repair. Reverting migration 021's SQL to drop
+    ``'claude-design-session'`` from any of the five origin CHECKs it
+    widens, or skipping one of the five tables, must make this fixture (and
+    the pre-migration IntegrityError assertion built on it) diverge from a
+    genuine pre-021 archive.
+    """
+    stale = SOURCE_DDL.replace(", 'claude-design-session'", "")
+    assert "claude-design-session" not in stale
+    return stale
+
+
+def _create_source_v20_with_stale_origin_check(path: Path, *, archive_root: Path) -> None:
+    """A v20 source tier whose five origin-bearing tables still carry
+    migration 009's eleven-value CHECK (bd polylogue-052vs)."""
+    path.unlink(missing_ok=True)
+    # A verified backup checks that every raw_sessions.blob_hash resolves to a
+    # real blob-store entry -- write one instead of an arbitrary byte string.
+    blob_hash_hex, blob_size = BlobStore(archive_root / "blob").write_from_bytes(b"preexisting-design-fixture")
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(_source_v20_ddl_with_stale_origin_check())
+        conn.execute("PRAGMA user_version = 20")
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "raw-preexisting",
+                "claude-code-session",
+                "session-1",
+                "/preexisting.jsonl",
+                0,
+                bytes.fromhex(blob_hash_hex),
+                blob_size,
+                1,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "artifact-preexisting",
+                "raw-preexisting",
+                "claude-code-session",
+                "/preexisting.jsonl",
+                "session",
+                "supported_parseable",
+                "ok",
+                1,
+                1,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, session_native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("hook-preexisting", "claude-code-session", "session-1", "/preexisting.jsonl", "PreToolUse", "{}", 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO otlp_spans (
+                span_id, trace_id, origin, session_native_id, name, received_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("span-preexisting", "trace-1", "claude-code-session", "session-1", "op", 1),
+        )
+        conn.execute(
+            """
+            INSERT INTO history_sidecars (
+                sidecar_id, origin, source_path, payload_json, observed_at_ms, content_hash
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("sidecar-preexisting", "claude-code-session", "/preexisting.jsonl", "{}", 1, b"b" * 32),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_source_tier_v20_widens_origin_check_for_claude_design_session(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Migration 021 widens the durable ``origin`` CHECK on all five
+    source-tier tables that carry it (raw_sessions, raw_artifacts,
+    raw_hook_events, otlp_spans, history_sidecars) to accept
+    ``claude-design-session`` (bd polylogue-052vs).
+
+    Anti-vacuity: reverting migration 021's rebuild of any one of the five
+    tables (or narrowing its CHECK literal back to the stale eleven-value
+    list) makes the corresponding post-migration INSERT below raise
+    ``sqlite3.IntegrityError`` again. Dropping the explicit column-name
+    copy-forward in favor of ``SELECT *`` (or getting a column name wrong)
+    makes the pre-existing-row assertions fail instead, since a v20 archive
+    that ran migration 008's ``ALTER TABLE ADD COLUMN`` has ``capture_mode``
+    physically appended, not in its logical/declared position.
+    """
+    db_path = workspace_env["archive_root"] / "source.db"
+    _create_source_v20_with_stale_origin_check(db_path, archive_root=workspace_env["archive_root"])
+
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+                "VALUES ('pre', 'claude-design-session', '/pre.json', ?, 1, 1)",
+                (b"c" * 32,),
+            )
+        conn.rollback()
+
+    manifest = _verified_backup_manifest(tmp_path / "backup-v20-origin")
+
+    with sqlite3.connect(db_path) as conn:
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
+        assert result.from_version == 20
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+        assert result.applied_versions == (21,)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 21
+
+        # Every pre-existing row from the v20 fixture survived the rebuild.
+        assert conn.execute(
+            "SELECT raw_id, origin, source_path FROM raw_sessions WHERE raw_id = 'raw-preexisting'"
+        ).fetchone() == ("raw-preexisting", "claude-code-session", "/preexisting.jsonl")
+        assert conn.execute(
+            "SELECT artifact_id FROM raw_artifacts WHERE artifact_id = 'artifact-preexisting'"
+        ).fetchone() == ("artifact-preexisting",)
+        assert conn.execute(
+            "SELECT hook_event_id FROM raw_hook_events WHERE hook_event_id = 'hook-preexisting'"
+        ).fetchone() == ("hook-preexisting",)
+        assert conn.execute("SELECT span_id FROM otlp_spans WHERE span_id = 'span-preexisting'").fetchone() == (
+            "span-preexisting",
+        )
+        assert conn.execute(
+            "SELECT sidecar_id FROM history_sidecars WHERE sidecar_id = 'sidecar-preexisting'"
+        ).fetchone() == ("sidecar-preexisting",)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        # And every table now accepts claude-design-session.
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES ('design-raw', 'claude-design-session', '/design.json', ?, 1, 2)",
+            (b"d" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts (
+                artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                classification_reason, first_observed_at_ms, last_observed_at_ms
+            ) VALUES ('design-artifact', 'design-raw', 'claude-design-session', '/design.json', 'session',
+                      'supported_parseable', 'ok', 2, 2)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, session_native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES ('design-hook', 'claude-design-session', 'design-session-1', '/design.json', 'PreToolUse', '{}', 2)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO otlp_spans (span_id, trace_id, origin, session_native_id, name, received_at_ms)
+            VALUES ('design-span', 'trace-design', 'claude-design-session', 'design-session-1', 'op', 2)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO history_sidecars (sidecar_id, origin, source_path, payload_json, observed_at_ms, content_hash)
+            VALUES ('design-sidecar', 'claude-design-session', '/design.json', '{}', 2, ?)
+            """,
+            (b"e" * 32,),
+        )
+        conn.commit()
+        assert (
+            conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE origin = 'claude-design-session'").fetchone()[0] == 1
+        )
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_source_tier_fresh_bootstrap_accepts_claude_design_session(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A freshly bootstrapped source.db (``SOURCE_DDL``, no migration
+    involved) already accepts ``claude-design-session`` --
+    ``archive_tiers/source.py`` generates the origin CHECK from
+    ``core.enums.Origin`` directly via ``check()``/``nullable_check()``, so
+    fresh archives never had this bug. Hard-coding any of the five origin
+    CHECKs in ``source.py`` back to a literal list that omits
+    ``claude-design-session`` makes the INSERT below raise
+    ``sqlite3.IntegrityError``.
+    """
+    db_path = workspace_env["archive_root"] / "source.db"
+    with sqlite3.connect(db_path) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
+        conn.execute(
+            "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES ('fresh-design', 'claude-design-session', '/fresh.json', ?, 1, 1)",
+            (b"f" * 32,),
+        )
+        conn.commit()
+        assert conn.execute("SELECT origin FROM raw_sessions WHERE raw_id = 'fresh-design'").fetchone() == (
+            "claude-design-session",
+        )
 
 
 def _create_source_v2_with_pending_blob_refs(path: Path) -> None:
@@ -894,7 +1109,7 @@ def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
 
         assert result.from_version == 2
         assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+        assert result.applied_versions == (3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         assert not conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
@@ -952,7 +1167,7 @@ def test_source_tier_v3_adds_publication_reservations_with_verified_backup_recei
     conn = sqlite3.connect(db_path)
     try:
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20)
+        assert result.applied_versions == (4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
         conn.execute(
             """
@@ -992,6 +1207,12 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
     migrating to "current" also picks up migration 016 (polylogue-buns, added
     after this test), which is not additive-no-backup, so a verified backup
     manifest is required for the full chain.
+
+    ``raw_sessions`` carries every column a real v13 archive would have after
+    migration 009's rebuild (v5/v6/v8 additive columns folded in) -- migration
+    021's explicit column-name copy-forward (unlike 014-020, which never touch
+    ``raw_sessions``'s column shape) fails with "no such column" against a
+    fixture that only carries the handful of columns 014 itself cares about.
     """
     db_path = workspace_env["archive_root"] / "source.db"
     db_path.unlink(missing_ok=True)
@@ -1008,7 +1229,26 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
                 source_index            INTEGER NOT NULL DEFAULT 0,
                 blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
                 blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
-                acquired_at_ms          INTEGER NOT NULL
+                acquired_at_ms          INTEGER NOT NULL,
+                file_mtime_ms           INTEGER,
+                parsed_at_ms            INTEGER,
+                parse_error             TEXT,
+                validated_at_ms         INTEGER,
+                validation_status       TEXT,
+                validation_error        TEXT,
+                validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
+                validation_mode         TEXT,
+                detection_warnings_json TEXT NOT NULL DEFAULT '[]',
+                logical_source_key      TEXT,
+                revision_kind           TEXT NOT NULL DEFAULT 'unknown',
+                source_revision         TEXT,
+                predecessor_source_revision TEXT,
+                predecessor_raw_id      TEXT,
+                baseline_raw_id         TEXT,
+                append_start_offset     INTEGER,
+                append_end_offset       INTEGER,
+                acquisition_generation  INTEGER,
+                revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
             ) STRICT;
             PRAGMA user_version = 13;
             """
@@ -1021,14 +1261,15 @@ def test_source_tier_v13_adds_raw_sessions_blob_hash_index(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 13
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 20
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
         # v13 -> current also picks up migrations 015 (polylogue-hord), 016
         # (polylogue-buns), 017 (polylogue-byw3y), 018 (polylogue-u19l), 019
-        # (polylogue-lb39z item 2), and 020 (polylogue-lb39z item 3), all added
-        # after this test -- a v13 fixture migrating to "current" is exactly
-        # the shape a real archive frozen at v13 would go through.
-        assert result.applied_versions == (14, 15, 16, 17, 18, 19, 20)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 20
+        # (polylogue-lb39z item 2), 020 (polylogue-lb39z item 3), and 021
+        # (polylogue-052vs), all added after this test -- a v13 fixture
+        # migrating to "current" is exactly the shape a real archive frozen
+        # at v13 would go through.
+        assert result.applied_versions == (14, 15, 16, 17, 18, 19, 20, 21)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 21
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash" in indexes_after
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
@@ -1059,6 +1300,12 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
     not additive-no-backup, so a verified backup manifest is required for the
     full chain. Migration 017 (polylogue-byw3y, also added after this test)
     is pure-additive too and does not change that requirement.
+
+    ``raw_sessions`` carries every column a real v14 archive would have after
+    migration 009's rebuild (v5/v6/v8 additive columns folded in) -- migration
+    021's explicit column-name copy-forward (unlike 015-020, which never touch
+    ``raw_sessions``'s column shape) fails with "no such column" against a
+    fixture that only carries the handful of columns 015 itself cares about.
     """
     db_path = workspace_env["archive_root"] / "source.db"
     db_path.unlink(missing_ok=True)
@@ -1075,7 +1322,26 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
                 source_index            INTEGER NOT NULL DEFAULT 0,
                 blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
                 blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
-                acquired_at_ms          INTEGER NOT NULL
+                acquired_at_ms          INTEGER NOT NULL,
+                file_mtime_ms           INTEGER,
+                parsed_at_ms            INTEGER,
+                parse_error             TEXT,
+                validated_at_ms         INTEGER,
+                validation_status       TEXT,
+                validation_error        TEXT,
+                validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
+                validation_mode         TEXT,
+                detection_warnings_json TEXT NOT NULL DEFAULT '[]',
+                logical_source_key      TEXT,
+                revision_kind           TEXT NOT NULL DEFAULT 'unknown',
+                source_revision         TEXT,
+                predecessor_source_revision TEXT,
+                predecessor_raw_id      TEXT,
+                baseline_raw_id         TEXT,
+                append_start_offset     INTEGER,
+                append_end_offset       INTEGER,
+                acquisition_generation  INTEGER,
+                revision_authority      TEXT NOT NULL DEFAULT 'quarantined'
             ) STRICT;
             CREATE INDEX idx_raw_sessions_blob_hash ON raw_sessions(blob_hash);
             PRAGMA user_version = 14;
@@ -1089,9 +1355,9 @@ def test_source_tier_v14_adds_raw_sessions_blob_hash_raw_id_index(
         result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
 
         assert result.from_version == 14
-        assert result.to_version == SOURCE_SCHEMA_VERSION == 20
-        assert result.applied_versions == (15, 16, 17, 18, 19, 20)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 20
+        assert result.to_version == SOURCE_SCHEMA_VERSION == 21
+        assert result.applied_versions == (15, 16, 17, 18, 19, 20, 21)
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 21
         indexes_after = {row[1] for row in conn.execute("PRAGMA index_list('raw_sessions')")}
         assert "idx_raw_sessions_blob_hash_raw_id" in indexes_after
         plan = conn.execute(
