@@ -65,7 +65,12 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
         return inputs.provider_title.strip()
 
     parts: list[str] = []
-    if inputs.repo_name:
+    # polylogue-cijx.2 AC4: a bare directory must not be displayed as if it
+    # were a repository, even defensively -- if ``is_directory`` is ever True
+    # while ``repo_name`` is populated (e.g. stale pre-fix data, or a future
+    # regression in the write/read-path invariant this guards), the read
+    # surface still refuses to print it as a repo name.
+    if inputs.repo_name and not inputs.is_directory:
         parts.append(inputs.repo_name)
 
     if inputs.dominant_path:
@@ -95,7 +100,7 @@ def _session_repo_root(conn: sqlite3.Connection, session_id: str) -> SessionRepo
     """
     row = conn.execute(
         """
-        SELECT r.origin_url, r.root_path, r.repo_name
+        SELECT r.root_path, r.repo_name
         FROM session_repos sr
         JOIN repos r ON r.repo_id = sr.repo_id
         WHERE sr.session_id = ?
@@ -106,12 +111,23 @@ def _session_repo_root(conn: sqlite3.Connection, session_id: str) -> SessionRepo
     ).fetchone()
     if row is None:
         return None
-    origin_url, root_path, repo_name = row[0], row[1], row[2]
-    is_directory = not origin_url
+    root_path, repo_name = row[0], row[1]
+    # A ``session_repos`` row exists at all only because ``_write_repo_edges``
+    # (storage/sqlite/archive_tiers/write.py, polylogue-cijx.2 AC4) refuses to
+    # write one unless real git evidence was found -- either a discovered
+    # ``.git`` root on disk (``root_path`` non-empty) or an explicit remote
+    # (``repos.origin_url`` non-empty). Testing ``not origin_url`` alone was
+    # wrong: it mislabeled every locally-checked-out repo with no configured
+    # remote (root_path set, origin_url empty) as ``is_directory=True``,
+    # exactly the "sinity repo from a bare directory" mislabeling this AC
+    # exists to kill -- just moved one layer down from the write path to the
+    # read path. A row's mere existence is proof of a real repository; the
+    # only genuine "directory" case is no row at all (handled by the
+    # caller's fallback), so this no longer needs ``origin_url`` at all.
     return SessionRepoRootPath(
         repo_name=repo_name or None,
         root_path=root_path or "",
-        is_directory=is_directory,
+        is_directory=False,
     )
 
 
