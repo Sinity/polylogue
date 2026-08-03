@@ -646,6 +646,41 @@
   },
   {
     "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.pipeline.services.archive_ingest"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.sources.live.sqlite_locking"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.sources.source_parsing"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.storage.blob_publication"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.source_write"
+  },
+  {
+    "target": "polylogue/daemon",
+    "file": "polylogue/daemon/antigravity_conversation_acquisition.py",
+    "import": "polylogue.storage.sqlite.connection_profile"
+  },
+  {
+    "target": "polylogue/daemon",
     "file": "polylogue/daemon/backup.py",
     "import": "polylogue.storage.backup_attestation"
   },
