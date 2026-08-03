@@ -289,14 +289,6 @@ entries:
   occurrence: 0
   reason: Captures refresh_error = str(exc) and passes it into _minimal_status_payload(refresh_error=...)
     -- a typed signal.
-- path: polylogue/daemon/write_coordinator.py
-  function: <module>._run_in_daemon_thread.worker
-  exceptions:
-  - BaseException
-  occurrence: 0
-  reason: Propagates the exception itself via loop.call_soon_threadsafe(publish, None, exc) to the awaiting
-    asyncio Future, which re-raises it to the caller -- the exception is not discarded, just marshalled
-    across the thread boundary.
 - path: polylogue/insights/audit.py
   function: <module>.build_insight_rigor_audit_report
   exceptions:
