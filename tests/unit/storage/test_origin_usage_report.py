@@ -15,8 +15,8 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from polylogue.storage.usage import (
     USAGE_LANE_CATALOG_COST_FAMILY,
     USAGE_LANE_EXACT_TOKENS_FAMILY,
+    origin_usage_report_from_connection,
     provider_usage_coverage_matrix,
-    provider_usage_report_from_connection,
 )
 
 
@@ -55,7 +55,7 @@ def _write_blob(archive_root: Path, payload: str) -> bytes:
     return digest
 
 
-def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_path: Path) -> None:
+def test_origin_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -107,7 +107,7 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
         """,
         ("codex-session:provider-usage-report", 99),
     )
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     assert "not a precise cost report" in " ".join(report.caveats)
     row = report.origins[0]
@@ -157,7 +157,7 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
     assert row.sample_missing_model_sessions == ("codex-session:provider-usage-report",)
     assert row.sample_zero_token_sessions == ("codex-session:provider-usage-report",)
 
-    headline = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+    headline = origin_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
 
     assert headline.detail_level == "headline"
     assert "headline detail computes session/source/model-rollup totals only" in " ".join(headline.caveats)
@@ -170,7 +170,7 @@ def test_provider_usage_report_keeps_events_cumulative_and_rollups_separate(tmp_
     assert headline_row.logical_model_rollup_usage == row.logical_model_rollup_usage
 
 
-def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_path: Path) -> None:
+def test_origin_usage_report_labels_physical_and_logical_model_rollups(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     conn.execute(
         """
@@ -219,7 +219,7 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
         ],
     )
 
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = next(item for item in report.origins if item.origin == "claude-code-session")
     assert row.model_rollup_grain == "physical_session"
@@ -266,7 +266,7 @@ def test_provider_usage_report_labels_physical_and_logical_model_rollups(tmp_pat
     assert report_payload["logical_model_rollup_grain"] == "logical_session_model_high_water"
 
 
-def test_provider_usage_report_separates_priced_and_unpriced_repricing(tmp_path: Path) -> None:
+def test_origin_usage_report_separates_priced_and_unpriced_repricing(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     conn.execute(
         """
@@ -304,7 +304,7 @@ def test_provider_usage_report_separates_priced_and_unpriced_repricing(tmp_path:
         ],
     )
 
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
 
     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
     logical_lanes = {lane.provenance: lane for lane in report.logical_pricing_lanes}
@@ -366,7 +366,7 @@ def test_provider_usage_report_separates_priced_and_unpriced_repricing(tmp_path:
     assert cost_payload["value_state"] == "unknown"
 
 
-def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_api_equivalent(
+def test_origin_usage_report_exposes_subscription_credit_view_distinct_from_api_equivalent(
     tmp_path: Path,
 ) -> None:
     """polylogue-f2qv.3 / polylogue-5hf: the ledger reports both cost bases.
@@ -412,7 +412,7 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
         ],
     )
 
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
     lanes = {lane.provenance: lane for lane in report.pricing_lanes}
 
     priced_lane = lanes["priced"]
@@ -444,10 +444,10 @@ def test_provider_usage_report_exposes_subscription_credit_view_distinct_from_ap
     assert first_lane["subscription_credit_usd"] is not None
 
 
-def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
+def test_origin_usage_report_handles_empty_origin_filter(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
 
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path, origin="codex-session")
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path, origin="codex-session")
 
     assert report.origins == ()
     assert report.catalog_api_equivalent_usd is None
@@ -459,7 +459,7 @@ def test_provider_usage_report_handles_empty_origin_filter(tmp_path: Path) -> No
     assert "no sessions found for origin 'codex-session'" in report.caveats
 
 
-def test_provider_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Path) -> None:
+def test_origin_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: Path) -> None:
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
     _insert_raw_session(source_conn, raw_id="raw-materialized", native_id="provider-usage-report")
@@ -511,7 +511,7 @@ def test_provider_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: P
         ("codex-session:provider-usage-report", "gpt-5-codex"),
     )
 
-    report = provider_usage_report_from_connection(index_conn, archive_root=tmp_path)
+    report = origin_usage_report_from_connection(index_conn, archive_root=tmp_path)
 
     row = report.origins[0]
     assert row.coverage_state == "acquired_not_materialized"
@@ -525,7 +525,7 @@ def test_provider_usage_report_exposes_source_debt_and_stale_rollups(tmp_path: P
     assert "stale relative to provider usage events" in " ".join(row.caveats)
 
 
-def test_provider_usage_report_treats_codex_cumulative_as_session_global(tmp_path: Path) -> None:
+def test_origin_usage_report_treats_codex_cumulative_as_session_global(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -561,7 +561,7 @@ def test_provider_usage_report_treats_codex_cumulative_as_session_global(tmp_pat
     )
 
     write_parsed_session_to_archive(conn, session)
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = report.origins[0]
     assert row.stale_rollup_session_count == 0
@@ -576,7 +576,7 @@ def test_provider_usage_report_treats_codex_cumulative_as_session_global(tmp_pat
     }
 
 
-def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: Path) -> None:
+def test_origin_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -610,7 +610,7 @@ def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: 
     )
 
     write_parsed_session_to_archive(conn, session)
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = report.origins[0]
     assert row.stale_rollup_session_count == 0
@@ -624,7 +624,7 @@ def test_provider_usage_report_ignores_reasoning_only_cumulative_rows(tmp_path: 
     }
 
 
-def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_path: Path) -> None:
+def test_origin_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_path: Path) -> None:
     """Full reports keep stale diagnostics in SQLite and preserve lane semantics."""
 
     conn = _connect(tmp_path / "index.db")
@@ -689,7 +689,7 @@ def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_
     traced_sql: list[str] = []
     conn.set_trace_callback(traced_sql.append)
     try:
-        report = provider_usage_report_from_connection(
+        report = origin_usage_report_from_connection(
             conn,
             archive_root=tmp_path,
             origin="codex-session",
@@ -720,7 +720,7 @@ def test_provider_usage_report_stale_rollups_use_one_bounded_sql_diagnostic(tmp_
     assert "LIMIT 1" in cumulative_latest[0]
 
 
-def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(tmp_path: Path) -> None:
+def test_origin_usage_report_preserves_control_characters_in_stale_sample_ids(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     native_id = "stale\x1fsession"
     session_id = f"codex-session:{native_id}"
@@ -752,7 +752,7 @@ def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(
         (session_id,),
     )
 
-    report = provider_usage_report_from_connection(
+    report = origin_usage_report_from_connection(
         conn,
         archive_root=tmp_path,
         origin="codex-session",
@@ -765,7 +765,7 @@ def test_provider_usage_report_preserves_control_characters_in_stale_sample_ids(
     assert report.origins[0].sample_stale_rollup_sessions == (session_id,)
 
 
-def test_provider_usage_report_ignores_whitespace_only_cumulative_tail_for_stale_audit(tmp_path: Path) -> None:
+def test_origin_usage_report_ignores_whitespace_only_cumulative_tail_for_stale_audit(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -810,7 +810,7 @@ def test_provider_usage_report_ignores_whitespace_only_cumulative_tail_for_stale
         """
     )
 
-    report = provider_usage_report_from_connection(
+    report = origin_usage_report_from_connection(
         conn,
         archive_root=tmp_path,
         origin="codex-session",
@@ -825,7 +825,7 @@ def test_provider_usage_report_ignores_whitespace_only_cumulative_tail_for_stale
     assert row.sample_stale_rollup_sessions == ("codex-session:whitespace-model-tail",)
 
 
-def test_provider_usage_report_overflow_fallback_uses_model_whitespace_contract(tmp_path: Path) -> None:
+def test_origin_usage_report_overflow_fallback_uses_model_whitespace_contract(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     event = ParsedSessionEvent(
         event_type="token_count",
@@ -850,7 +850,7 @@ def test_provider_usage_report_overflow_fallback_uses_model_whitespace_contract(
         )
 
     write_session(1)
-    fast_report = provider_usage_report_from_connection(
+    fast_report = origin_usage_report_from_connection(
         conn,
         archive_root=tmp_path,
         origin="codex-session",
@@ -860,7 +860,7 @@ def test_provider_usage_report_overflow_fallback_uses_model_whitespace_contract(
     assert fast_report.origins[0].missing_model_event_count == 1
 
     write_session(2)
-    overflow_report = provider_usage_report_from_connection(
+    overflow_report = origin_usage_report_from_connection(
         conn,
         archive_root=tmp_path,
         origin="codex-session",
@@ -876,7 +876,7 @@ def test_provider_usage_report_overflow_fallback_uses_model_whitespace_contract(
     assert row.stale_rollup_session_count == 0
 
 
-def test_provider_usage_report_does_not_mark_event_only_origin_stale_without_rollup_basis(tmp_path: Path) -> None:
+def test_origin_usage_report_does_not_mark_event_only_origin_stale_without_rollup_basis(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -898,7 +898,7 @@ def test_provider_usage_report_does_not_mark_event_only_origin_stale_without_rol
     write_parsed_session_to_archive(conn, session)
     conn.execute("DELETE FROM session_model_usage WHERE session_id = 'codex-session:event-only-origin'")
 
-    report = provider_usage_report_from_connection(
+    report = origin_usage_report_from_connection(
         conn,
         archive_root=tmp_path,
         origin="codex-session",
@@ -914,7 +914,7 @@ def test_provider_usage_report_does_not_mark_event_only_origin_stale_without_rol
     assert row.coverage_state == "exact_provider_telemetry"
 
 
-def test_provider_usage_report_handles_large_accepted_last_usage_totals(tmp_path: Path) -> None:
+def test_origin_usage_report_handles_large_accepted_last_usage_totals(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     input_tokens = 2**62
     session = ParsedSession(
@@ -944,7 +944,7 @@ def test_provider_usage_report_handles_large_accepted_last_usage_totals(tmp_path
     )
     write_parsed_session_to_archive(conn, session)
 
-    report = provider_usage_report_from_connection(
+    report = origin_usage_report_from_connection(
         conn,
         archive_root=tmp_path,
         origin="codex-session",
@@ -961,7 +961,7 @@ def test_provider_usage_report_handles_large_accepted_last_usage_totals(tmp_path
     assert row.sample_stale_rollup_sessions == ()
 
 
-def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
+def test_origin_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Path) -> None:
     index_conn = _connect(tmp_path / "index.db")
     source_conn = _connect(tmp_path / "source.db", ArchiveTier.SOURCE)
     blob_hash = _write_blob(
@@ -991,7 +991,7 @@ def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Pa
     source_conn.commit()
     source_conn.close()
 
-    report = provider_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
+    report = origin_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
 
     row = report.origins[0]
     assert row.raw_session_count == 1
@@ -1000,7 +1000,7 @@ def test_provider_usage_report_ignores_codex_metadata_only_raw_rows(tmp_path: Pa
     assert row.coverage_state == "no_sessions"
 
 
-def test_provider_usage_report_uses_membership_census_before_raw_blob_probe(
+def test_origin_usage_report_uses_membership_census_before_raw_blob_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     index_conn = _connect(tmp_path / "index.db")
@@ -1037,7 +1037,7 @@ def test_provider_usage_report_uses_membership_census_before_raw_blob_probe(
         raise AssertionError(f"censused raw payload was reopened with limit={limit}")
 
     monkeypatch.setattr("polylogue.storage.usage._raw_jsonl_type_set", fail_blob_probe)
-    report = provider_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
+    report = origin_usage_report_from_connection(index_conn, archive_root=tmp_path, origin="codex-session")
 
     row = report.origins[0]
     # Anti-vacuity: removing any census short-circuit calls fail_blob_probe.
@@ -1073,7 +1073,7 @@ def test_provider_usage_coverage_matrix_marks_estimate_only_exports(tmp_path: Pa
     )
 
     write_parsed_session_to_archive(conn, session)
-    report = provider_usage_report_from_connection(conn, archive_root=tmp_path)
+    report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
 
     row = report.origins[0]
     assert row.origin == "chatgpt-export"

@@ -214,8 +214,7 @@ This pass investigated extraction candidates in #3 and #1 before choosing
 - **Verification**: `mypy --strict` clean on both files;
   `tests/unit/storage/test_archive_tiers_write.py` (the file's dedicated
   suite) passes 63/63 unchanged; `ruff check` clean;
-  `devtools render topology-projection`
-  regenerated for the new module; `devtools render all --check` green.
+  `devtools render all --check` green.
 
 ## Remaining slices — durable child beads
 

@@ -803,7 +803,7 @@ def _round_optional(value: float | None) -> float | None:
     return None if value is None else round(value, 6)
 
 
-def provider_usage_report_for_archive_root(
+def origin_usage_report_for_archive_root(
     archive_root: Path,
     *,
     origin: str | None = None,
@@ -823,14 +823,14 @@ def provider_usage_report_for_archive_root(
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        return provider_usage_report_from_connection(
+        return origin_usage_report_from_connection(
             conn, archive_root=archive_root, origin=origin, limit=limit, detail=detail
         )
     finally:
         conn.close()
 
 
-def provider_usage_report_from_connection(
+def origin_usage_report_from_connection(
     conn: sqlite3.Connection,
     *,
     archive_root: Path | str = "",
@@ -2539,7 +2539,7 @@ def session_usage_reconciliation_for_connection(
 ) -> SessionUsageReconciliation:
     """Reconcile one session's usage/cost from indexed, session-scoped reads.
 
-    Unlike ``provider_usage_report_from_connection`` (an archive-wide audit
+    Unlike ``origin_usage_report_from_connection`` (an archive-wide audit
     that groups every session by origin), this reads exactly the rows for
     ``session_id``: ``session_model_usage`` via an indexed ``session_id IN
     (...)`` lookup and the ``session_profiles`` row by primary key. It is the
@@ -2602,7 +2602,7 @@ __all__ = [
     "UsageCounters",
     "build_session_usage_reconciliation",
     "provider_usage_coverage_matrix",
-    "provider_usage_report_for_archive_root",
-    "provider_usage_report_from_connection",
+    "origin_usage_report_for_archive_root",
+    "origin_usage_report_from_connection",
     "session_usage_reconciliation_for_connection",
 ]

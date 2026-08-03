@@ -14,30 +14,6 @@ from typing import ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # ──────────────────────────────────────────────────────────────────────
-# Topology manifest        (topology-target.yaml)
-# ──────────────────────────────────────────────────────────────────────
-
-
-class TopologyEntry(BaseModel):
-    """A single file entry in the topology projection."""
-
-    model_config = ConfigDict(extra="forbid")
-    path: str
-    loc: int | None = None
-    target: str | None = None
-    owner: str
-    reason: str | None = None
-    cross_cut: dict[str, str] = Field(default_factory=dict)
-
-
-class TopologyManifest(BaseModel):
-    """Root of topology-target.yaml."""
-
-    model_config = ConfigDict(extra="forbid")
-    files: list[TopologyEntry]
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Coverage Gap  (shared fragment in many *coverage*.yaml manifests)
 # ──────────────────────────────────────────────────────────────────────
 
@@ -515,7 +491,6 @@ class TestQualityCoverageManifest(BaseModel):
 
 # Maps YAML filename → Pydantic model class for structural validation.
 MANIFEST_MODELS: dict[str, type[BaseModel]] = {
-    "topology-target.yaml": TopologyManifest,
     "scenario-coverage.yaml": ScenarioCoverageManifest,
     "campaign-coverage.yaml": CampaignCoverageManifest,
     "layering.yaml": LayeringManifest,
@@ -599,7 +574,5 @@ __all__ = [
     "TestLocations",
     "TestQualityCoverageManifest",
     "TestQualityDimension",
-    "TopologyEntry",
-    "TopologyManifest",
     "validate_manifest",
 ]

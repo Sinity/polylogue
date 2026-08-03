@@ -14,7 +14,6 @@ def test_classify_file_beads_jsonl() -> None:
 
 
 def test_classify_file_generated_surface() -> None:
-    assert merge_conductor.classify_file("docs/plans/topology-target.yaml") == "generated-surface"
     assert merge_conductor.classify_file("docs/topology-status.md") == "generated-surface"
     assert merge_conductor.classify_file("docs/generated/mcp-tool-index.md") == "generated-surface"
 

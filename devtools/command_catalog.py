@@ -1431,34 +1431,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify topology",
-        "verification",
-        "Verify the realized polylogue tree against the topology projection.",
-        "devtools.verify_topology",
-        use_when=(
-            "Detect orphans, conflicts, kernel-rule violations, or stale TBD cells against "
-            "docs/plans/topology-target.yaml after moving files between packages."
-        ),
-        examples=(
-            "devtools verify topology",
-            "devtools verify topology --json",
-            "devtools verify topology --strict-tbd",
-        ),
-    ),
-    CommandSpec(
-        "render topology-projection",
-        "generated surfaces",
-        "Generate docs/plans/topology-target.yaml from the current tree using placement rules.",
-        "devtools.build_topology_projection",
-        use_when=(
-            "Refresh the topology projection after editing placement rules in this script "
-            "or after a topology refactor lands. Use `devtools verify topology` to check without "
-            "writing; `devtools render all --check` also gates this via the generated-surfaces "
-            "registry's topology-projection entry."
-        ),
-        examples=("devtools render topology-projection",),
-    ),
-    CommandSpec(
         "verify closure-matrix",
         "verification",
         "Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree.",
@@ -1812,20 +1784,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
     ),
     CommandSpec(
-        "verify hash-boundary-census",
-        "verification",
-        "Verify every hashlib/core.hashing call site in polylogue/ is registered in the hash-boundary registry.",
-        "devtools.verify_hash_boundary_census",
-        use_when=(
-            "Enforce the hash-boundary census follow-up (polylogue-okpn, docs/audits/"
-            "2026-07-09-hash-boundary-census.md): a new hashlib.sha256/sha1/md5/blake2*/sha3_* call "
-            "or a new hash_text/hash_text_short/hash_payload/hash_bytes/hash_file call site must be "
-            "registered (path/function/call/classification/note) in "
-            "docs/plans/hash-boundary-registry.yaml, or the lint fails."
-        ),
-        examples=("devtools verify hash-boundary-census", "devtools verify hash-boundary-census --json"),
-    ),
-    CommandSpec(
         "release verify-distribution",
         "release",
         "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
@@ -2036,17 +1994,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify evidence",
         "verification",
-        "Render the pytest-first evidence dashboard or a changed-path trace.",
+        "Render the pytest-first evidence dashboard.",
         "devtools.evidence_dashboard",
         use_when=(
             "Inspect pytest health, contract-evidence inventory, coverage, SLO "
-            "catalog, static-gate status, and campaign freshness, or "
-            "trace which evidence artifacts cover the changed paths in a PR."
+            "catalog, static-gate status, and campaign freshness."
         ),
         examples=(
             "devtools verify evidence --json",
             "devtools verify evidence --markdown",
-            "devtools verify evidence trace --base origin/master --head HEAD --markdown",
         ),
     ),
     CommandSpec(

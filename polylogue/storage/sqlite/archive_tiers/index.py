@@ -223,7 +223,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # raw evidence recovers the corrected identity split. `polylogue ops reset
 # --index && polylogued run` is required; deliberately NOT executed by this
 # declaration.
-INDEX_SCHEMA_VERSION = 55
 
 # PR #3537: tightened `claude.looks_like_ai` (polylogue/sources/parsers/
 # claude/ai_parser.py) to require at least one `chat_messages` entry

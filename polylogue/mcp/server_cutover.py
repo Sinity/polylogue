@@ -1167,7 +1167,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     stats, include_embedded=False, include_db_size=False
                 ).model_dump(mode="json")
             if "provider_usage" in include:
-                report_usage = await hooks.get_polylogue().provider_usage_report(
+                report_usage = await hooks.get_polylogue().origin_usage_report(
                     origin=ref,
                     limit=10,
                     detail="headline",

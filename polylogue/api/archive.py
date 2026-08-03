@@ -5126,7 +5126,7 @@ class PolylogueArchiveMixin:
             vector_provider=vector_provider,
         )
 
-    async def provider_usage_report(
+    async def origin_usage_report(
         self,
         *,
         origin: str | None = None,
@@ -5134,7 +5134,7 @@ class PolylogueArchiveMixin:
         detail: str = "full",
     ) -> ProviderUsageReport:
         """Return provider usage accounting diagnostics for the active archive."""
-        from polylogue.storage.usage import provider_usage_report_from_connection
+        from polylogue.storage.usage import origin_usage_report_from_connection
 
         if detail not in {"headline", "full"}:
             raise ValueError("detail must be 'headline' or 'full'")
@@ -5143,7 +5143,7 @@ class PolylogueArchiveMixin:
             _active_archive_root(self.config),
             operation="archive.provider_usage",
             arguments={"origin": origin, "limit": limit, "detail": detail},
-            work=lambda archive: provider_usage_report_from_connection(
+            work=lambda archive: origin_usage_report_from_connection(
                 archive._conn,
                 archive_root=_active_archive_root(self.config),
                 origin=origin,
@@ -5160,7 +5160,7 @@ class PolylogueArchiveMixin:
 
         Reads only ``session_id``-indexed rows (``session_model_usage``,
         ``session_profiles`` PK lookup) instead of the archive-wide
-        ``provider_usage_report`` audit, so it stays cheap regardless of
+        ``origin_usage_report`` audit, so it stays cheap regardless of
         archive size (polylogue-zumd).
         """
         from polylogue.storage.usage import session_usage_reconciliation_for_connection
