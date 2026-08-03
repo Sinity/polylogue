@@ -111,7 +111,7 @@ async def _resolve_reference_query_pipeline(
     if not user_db.exists() or not index_db.exists():
         return hooks.error_json("archive is not initialized", code="not_found", tool="query")
 
-    evaluator = ArchiveCanonicalPlanEvaluator(index_db, surface="mcp")
+    evaluator = ArchiveCanonicalPlanEvaluator(index_db)
     try:
         with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
             from polylogue.archive.query.evaluator import DurableRefResolver

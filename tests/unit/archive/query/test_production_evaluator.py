@@ -7,9 +7,7 @@ same ``SessionFilter`` execution path every real surface uses -- no test
 double stands in for the planner. Removing the predicate reconstruction (or
 the ``SessionFilter`` call) makes ``test_evaluate_matches_real_archive_rows``
 fail, since the assertion depends on the archive actually filtering by
-origin. Removing the ``record_query_run`` call makes
-``test_evaluate_records_a_production_query_run`` fail, since it reads the
-row back from ``ops.db``.
+origin.
 """
 
 from __future__ import annotations
@@ -126,7 +124,6 @@ def test_evaluate_does_not_truncate_at_the_default_page_limit(tmp_path: Path) ->
                 )
             )
     initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
-    initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)
 
     with sqlite3.connect(archive_root / "user.db") as conn:
         query = _origin_query(conn, origin="codex-session")
@@ -137,10 +134,6 @@ def test_evaluate_does_not_truncate_at_the_default_page_limit(tmp_path: Path) ->
 
     assert evaluation.exactness == "exact"
     assert len(evaluation.member_refs) == session_count
-
-    with sqlite3.connect(archive_root / "ops.db") as conn:
-        (member_count,) = conn.execute("SELECT member_count FROM query_runs").fetchone()
-    assert member_count == session_count
 
 
 def test_evaluate_excludes_origin_prefix(tmp_path: Path) -> None:
@@ -175,25 +168,6 @@ def test_evaluate_excludes_scope_refs(tmp_path: Path) -> None:
         QueryEvaluationRequest(query=query, purpose="standing-watch", excluded_scope_refs=(baseline.member_refs[0],))
     )
     assert evaluation.member_refs == ()
-
-
-def test_evaluate_records_a_production_query_run(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
-    _seed_archive(archive_root)
-    with sqlite3.connect(archive_root / "user.db") as conn:
-        query = _origin_query(conn, origin="claude-code-session")
-        conn.commit()
-
-    evaluator = ArchiveCanonicalPlanEvaluator(archive_root / "index.db")
-    evaluator.evaluate(QueryEvaluationRequest(query=query, purpose="reference"))
-
-    with sqlite3.connect(archive_root / "ops.db") as conn:
-        rows = conn.execute("SELECT query_hash, surface, member_count, exactness FROM query_runs").fetchall()
-    assert len(rows) == 1
-    assert rows[0][0] == query.query_hash
-    assert rows[0][1] == "daemon-internal"
-    assert rows[0][2] == 1
-    assert rows[0][3] == "exact"
 
 
 def test_evaluate_rejects_legacy_protocol_v0() -> None:

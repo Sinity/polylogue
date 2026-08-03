@@ -922,9 +922,8 @@ def latency_command(
 
     Groups ``route_observations`` (CLI invocations, MCP sub-route detail)
     and ``mcp_call_log`` (whole MCP tool calls) by (surface, route).
-    ``query_runs`` is a separate exactness/degraded-membership record, not
-    included here. Buckets with fewer than 5 samples are marked
-    low-confidence rather than presented as a reliable percentile.
+    Buckets with fewer than 5 samples are marked low-confidence rather than
+    presented as a reliable percentile.
     """
     import json as _json
     import sqlite3
