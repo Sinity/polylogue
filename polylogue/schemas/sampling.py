@@ -34,8 +34,19 @@ def iter_schema_units(
     max_samples: int | None = None,
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
+    allow_session_dir_fallback: bool = False,
 ) -> Iterator[SchemaUnit]:
-    """Yield schema units for a provider from DB, with session fallback."""
+    """Yield schema units for a provider from DB, with optional session fallback.
+
+    ``allow_session_dir_fallback`` is opt-in and defaults to ``False``: an
+    explicitly-passed ``db_path`` means DB-authoritative, so a zero-unit DB
+    result never silently substitutes a scan of the real
+    ``config.session_dir`` (e.g. the operator's live ``~/.codex/sessions``).
+    Callers that genuinely want the legacy "empty archive, scan the real
+    session directory" CLI behavior (only sensible when the caller never
+    supplied a ``db_path`` of its own -- i.e. the default archive path is in
+    play) must set this explicitly (polylogue-kmqwm).
+    """
     source_name = Provider.from_string(source_name)
     if db_path is None:
         db_path = index_db_path()
@@ -84,7 +95,12 @@ def iter_schema_units(
     # contexts (tests, cloud sandboxes) that never intended to touch local
     # session directories at all. `row_seen` distinguishes "the DB had zero
     # matching rows" from "the DB had rows but none produced a unit".
-    if yielded_any or row_seen or config.session_dir is None:
+    #
+    # polylogue-kmqwm: on top of that, the fallback is opt-in
+    # (`allow_session_dir_fallback`). A zero-unit DB result must never
+    # silently widen into a real filesystem scan unless the caller
+    # explicitly asked for that legacy behavior.
+    if yielded_any or row_seen or config.session_dir is None or not allow_session_dir_fallback:
         return
 
     yield from _iter_schema_units_from_sessions(
