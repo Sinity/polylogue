@@ -425,11 +425,18 @@ def test_archive_store_connection_applies_canonical_profile(tmp_path: Path) -> N
 def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp_path: Path) -> None:
     """A session whose only working directory is "/" must still ingest.
 
-    ``_repo_name`` returns None when no name can be derived from the cwd (e.g.
-    "/" or "."), but ``repos.repo_name`` is ``NOT NULL``. Passing the None
-    through crashed the write with an IntegrityError, silently dropping the
-    session and retrying it forever. The writer must persist the empty-string
-    sentinel instead and keep the session.
+    Originally a regression test for a crash: ``_repo_name`` returns None
+    when no name can be derived from the cwd (e.g. "/" or "."), but
+    ``repos.repo_name`` is ``NOT NULL`` -- passing the None through used to
+    crash the write with an IntegrityError, silently dropping the session
+    and retrying it forever.
+
+    Since polylogue-cijx.2 AC4 ("a session with no git evidence resolves to
+    a directory, not a repository"), "/" -- which has no discoverable
+    ``.git`` root and no known remote -- no longer synthesizes a ``repos``
+    row at all, so the original NOT NULL crash can no longer occur by
+    construction; this test keeps the "must not raise, session still
+    ingests" assertion and updates the repos-table expectation to match.
     """
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
@@ -452,7 +459,7 @@ def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp
     session_id = write_parsed_session_to_archive(conn, session)
 
     repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
-    assert {"root_path": "/", "repo_name": ""} in repos
+    assert repos == [], "a bare '/' cwd with no git evidence must not synthesize a repos row"
     envelope = read_archive_session_envelope(conn, session_id)
     assert len(envelope.messages) == 1
 
@@ -4717,5 +4724,84 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
         assert row["content_hash"] != original_hash, (
             "content_hash must be recomputed once blocks change, not reused from either acquisition's own write"
         )
+    finally:
+        conn.close()
+
+
+def test_repo_edges_skip_bare_directory_with_no_git_evidence(tmp_path: Path) -> None:
+    """polylogue-cijx.2 AC4: a directory with no git evidence is a directory, not a repository.
+
+    A session whose only location signal is a cwd that resolves to no
+    discoverable git root, and carries no ``git_repository_url``, must not
+    synthesize a ``repos``/``session_repos`` row -- the historic bug this
+    guards was ``dir:/home/sinity`` being recorded as the "sinity" repo for
+    every session merely cd'd there.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        bare_dir = tmp_path / "not_a_repo"
+        bare_dir.mkdir()
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="bare-directory-session",
+            working_directories=[str(bare_dir)],
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="hello from a bare directory",
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        repos_count = conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
+        session_repos_count = conn.execute(
+            "SELECT COUNT(*) FROM session_repos WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+        assert repos_count == 0, "a bare directory with no git evidence must not synthesize a repos row"
+        assert session_repos_count == 0
+    finally:
+        conn.close()
+
+
+def test_repo_edges_write_repo_for_discovered_git_root(tmp_path: Path) -> None:
+    """A cwd inside an on-disk git checkout (``.git`` discoverable) still
+    resolves to a real repository, keyed on the discovered root -- this is
+    the positive case the AC4 fix above must not break.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        repo_root = tmp_path / "real_repo"
+        (repo_root / ".git").mkdir(parents=True)
+        subdir = repo_root / "src"
+        subdir.mkdir()
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="real-repo-session",
+            working_directories=[str(subdir)],
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="hello from inside a real checkout",
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        repo_rows = conn.execute("SELECT repo_id, root_path, repo_name FROM repos").fetchall()
+        assert len(repo_rows) == 1
+        assert repo_rows[0]["root_path"] == str(repo_root)
+        assert repo_rows[0]["repo_name"] == "real_repo"
+        assert repo_rows[0]["repo_id"] == f"dir:{repo_root}"
+
+        session_repo_row = conn.execute(
+            "SELECT repo_id, root_path FROM session_repos WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert session_repo_row is not None
+        assert session_repo_row["root_path"] == str(repo_root)
     finally:
         conn.close()
