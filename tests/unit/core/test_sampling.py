@@ -539,6 +539,53 @@ class TestLoadSamplesFromDb:
             }
         ]
 
+    def test_explicit_db_path_zero_units_does_not_scan_session_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """polylogue-kmqwm: an explicitly-passed ``db_path`` is DB-authoritative.
+
+        Before the fix, a zero-unit result from an explicit ``db_path`` (no
+        matching ``raw_sessions`` rows at all) unconditionally fell through
+        to scanning the provider's real ``config.session_dir`` -- e.g. the
+        operator's actual ``~/.codex/sessions`` -- silently substituting
+        real, unrelated filesystem data for what should be an empty,
+        DB-scoped result. This proves the filesystem fallback is never
+        reached implicitly: only an explicit
+        ``allow_session_dir_fallback=True`` opt-in may trigger it.
+        """
+        from collections.abc import Iterator as _Iterator
+
+        from polylogue.schemas.observation_models import SchemaUnit as _SchemaUnit
+
+        db = _archive_index_db(tmp_path)  # genuinely empty: no raw_sessions rows inserted
+
+        scan_calls: list[object] = []
+
+        def _fake_session_scan(*args: object, **kwargs: object) -> _Iterator[_SchemaUnit]:
+            scan_calls.append(kwargs.get("session_dir", args[1] if len(args) > 1 else None))
+            yield from ()
+
+        monkeypatch.setattr(
+            "polylogue.schemas.sampling._iter_schema_units_from_sessions",
+            _fake_session_scan,
+        )
+
+        # Default: no opt-in -> must stay empty and must never scan.
+        result = list(iter_schema_units("codex", db_path=db))
+        assert result == []
+        assert scan_calls == [], (
+            "iter_schema_units scanned the session_dir despite an explicit db_path "
+            "and no allow_session_dir_fallback opt-in"
+        )
+
+        # Explicit opt-in still reaches the (mocked) fallback -- proves the
+        # capability is preserved, just no longer automatic.
+        result_with_fallback = list(iter_schema_units("codex", db_path=db, allow_session_dir_fallback=True))
+        assert result_with_fallback == []
+        assert len(scan_calls) == 1
+
 
 class TestLoadSamplesFromSessions:
     def test_nonexistent_dir_returns_empty(self, tmp_path: Path) -> None:

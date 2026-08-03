@@ -38,6 +38,7 @@ def _collect_cluster_accumulators(
     full_corpus: bool = False,
     journal: ObservationJournal | None = None,
     progress_callback: Callable[[JSONDocument], None] | None = None,
+    allow_session_dir_fallback: bool = False,
 ) -> tuple[dict[str, _ClusterAccumulator], Sequence[_UnitMembership], int, dict[str, int]]:
     result = collect_cluster_analysis(
         provider,
@@ -45,6 +46,7 @@ def _collect_cluster_accumulators(
         max_samples=max_samples,
         full_corpus=full_corpus,
         journal=journal,
+        allow_session_dir_fallback=allow_session_dir_fallback,
         progress_callback=progress_callback,
     )
     return result.clusters, result.memberships, result.sample_count, result.artifact_counts
@@ -58,6 +60,7 @@ def collect_cluster_analysis(
     full_corpus: bool = False,
     journal: ObservationJournal | None = None,
     progress_callback: Callable[[JSONDocument], None] | None = None,
+    allow_session_dir_fallback: bool = False,
 ) -> ClusterCollectionResult:
     from polylogue.schemas.sampling import iter_schema_units
 
@@ -106,6 +109,7 @@ def collect_cluster_analysis(
         max_samples=max_samples,
         full_corpus=full_corpus,
         terminal_recorder=journal.record_terminal if journal is not None else None,
+        allow_session_dir_fallback=allow_session_dir_fallback,
     )
     if journal is None:
         retained_units = list(observed_units)

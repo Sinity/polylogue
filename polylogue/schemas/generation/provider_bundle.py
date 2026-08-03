@@ -81,6 +81,11 @@ def _build_provider_bundle(
             str(provider_token),
             error=f"Unknown provider: {provider}. Known: {[str(item) for item in PROVIDERS]}",
         )
+    # polylogue-kmqwm: only a caller-omitted (``None``) db_path -- i.e. "use
+    # the default archive path" -- may fall back to a real session-directory
+    # scan on a zero-unit result. An explicitly-supplied db_path is
+    # DB-authoritative and must never widen into a filesystem scan.
+    allow_session_dir_fallback = db_path is None
     if db_path is None:
         db_path = index_db_path()
     if not GENSON_AVAILABLE:
@@ -141,6 +146,7 @@ def _build_provider_bundle(
                 full_corpus=full_corpus,
                 journal=journal,
                 progress_callback=observe_progress,
+                allow_session_dir_fallback=allow_session_dir_fallback,
             )
             complete_phase(
                 "observe_and_cluster",

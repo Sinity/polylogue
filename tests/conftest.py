@@ -518,6 +518,27 @@ def _clear_polylogue_env(
     SchemaValidator._cache.clear()
     reset_registry_cache()
 
+    # polylogue-kmqwm: PROVIDERS' ``session_dir`` entries are computed once at
+    # import time from ``Path.home()`` (e.g. ``~/.codex/sessions``,
+    # ``~/.gemini/tmp``) -- long before any per-test XDG/env patching above
+    # takes effect. Point every provider's session_dir at an inert per-test
+    # tmp path so any residual schema-inference session-directory fallback
+    # (opt-in via ``allow_session_dir_fallback``, see
+    # ``polylogue/schemas/sampling.py``) can never read this operator's real
+    # local session directories from inside the test suite, even from a test
+    # that deliberately exercises the fallback path.
+    from polylogue.schemas.observation_models import PROVIDERS
+
+    harness_session_dir_root = tmp_path / "harness-session-dir-guard"
+    for provider_config in PROVIDERS.values():
+        if provider_config.session_dir is not None:
+            monkeypatch.setattr(
+                provider_config,
+                "session_dir",
+                harness_session_dir_root / provider_config.name.value,
+                raising=False,
+            )
+
     # Reset blob store singleton to prevent cross-test pollution when
     # tests write blobs to the temp XDG_DATA_HOME. Only reset if we're
     # about to set new XDG paths (i.e., after we've set up the env above).
