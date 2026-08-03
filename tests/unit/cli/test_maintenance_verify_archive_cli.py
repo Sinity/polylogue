@@ -9,6 +9,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.maintenance.archive_verification import ARCHIVE_VERIFICATION_CHECK_NAMES
 
 
 def test_verify_archive_cli_plain_exits_zero_on_empty_archive(
@@ -35,15 +36,13 @@ def test_verify_archive_cli_json_reports_every_registered_check(
     payload = json.loads(result.stdout)
     assert payload["blocking"] is False
     names = {check["name"] for check in payload["checks"]}
-    assert names == {
-        "tier-schema",
-        "pointer-coherence",
-        "source-index-coverage",
-        "fts-parity",
-        "lineage-sanity",
-        "planner-stats",
-        "counts-summary",
-    }
+    # Sourced from the registry itself (not a hand-maintained literal set)
+    # so a new check added to ARCHIVE_VERIFICATION_CHECKS is caught by this
+    # test automatically instead of the CLI JSON surface silently drifting
+    # out of sync with the registry -- exactly the staleness this assertion
+    # itself suffered from before polylogue-t0m73 (missing five checks
+    # landed by an earlier PR that never updated this literal).
+    assert names == set(ARCHIVE_VERIFICATION_CHECK_NAMES)
 
 
 def test_verify_archive_cli_exits_nonzero_on_schema_drift(

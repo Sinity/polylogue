@@ -5,7 +5,7 @@ Prior work already lands most of this bead's original scope: planner-stats
 refresh, byte-skip, batched commits, pool floor, and dedup shipped via
 sibling beads, and polylogue-o56w already threads terminal-stage timings
 (``terminal.session_insights``/``terminal.bulk_build.*``/``terminal.
-fts_parity``/``terminal.readiness``/``terminal.promote``) plus
+reindex_acceptance``/``terminal.readiness``/``terminal.promote``) plus
 ``parse_s``/``apply_s`` onto every rebuild receipt. The one piece the bead's
 own notes call out as still unowned is a SELECTION-phase timing: the live
 full rebuild that motivated this bead spent ~86s of one CPU core choosing
