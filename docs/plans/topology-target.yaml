@@ -546,7 +546,7 @@ files:
     target: polylogue/archive/revision_authority.py
     owner: stable
   - path: polylogue/archive/revision_replay.py
-    loc: 243
+    loc: 252
     target: polylogue/archive/revision_replay.py
     owner: stable
   - path: polylogue/archive/semantic/__init__.py
@@ -704,7 +704,7 @@ files:
     owner: archive-session
     reason: archive-domain semantics
   - path: polylogue/archive/session_revision_membership.py
-    loc: 467
+    loc: 493
     target: polylogue/archive/session_revision_membership.py
     owner: stable
   - path: polylogue/archive/stats.py
@@ -2242,6 +2242,10 @@ files:
   - path: polylogue/maintenance/raw_authority_reset.py
     loc: 109
     target: polylogue/maintenance/raw_authority_reset.py
+    owner: stable
+  - path: polylogue/maintenance/raw_byte_duplicate_supersession_apply.py
+    loc: 230
+    target: polylogue/maintenance/raw_byte_duplicate_supersession_apply.py
     owner: stable
   - path: polylogue/maintenance/raw_live_source_reconciliation_apply.py
     loc: 286
@@ -3989,15 +3993,19 @@ files:
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_authority.py
-    loc: 2295
+    loc: 2305
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_authority_verdict_projection.py
     loc: 105
     target: TBD
     owner: storage-domain
+  - path: polylogue/storage/raw_byte_duplicate_supersession.py
+    loc: 203
+    target: TBD
+    owner: storage-domain
   - path: polylogue/storage/raw_membership_writeback.py
-    loc: 124
+    loc: 133
     target: TBD
     owner: storage-domain
   - path: polylogue/storage/raw_reconciler.py
@@ -4270,7 +4278,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/embeddings.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index.py
-    loc: 2307
+    loc: 2305
     target: polylogue/storage/sqlite/archive_tiers/index.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/index_convergence.py
@@ -4302,7 +4310,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/revision_application.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
-    loc: 2931
+    loc: 2952
     target: polylogue/storage/sqlite/archive_tiers/revision_governance.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
@@ -4310,7 +4318,7 @@ files:
     target: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source.py
-    loc: 590
+    loc: 623
     target: polylogue/storage/sqlite/archive_tiers/source.py
     owner: stable
   - path: polylogue/storage/sqlite/archive_tiers/source_write.py
