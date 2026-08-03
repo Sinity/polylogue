@@ -7,8 +7,7 @@ is the first production evaluator -- it turns a durable :class:`QueryObject`'s
 canonical, protocol-versioned AST back into an executable
 :class:`~polylogue.archive.query.plan.SessionQueryPlan` and runs it through the
 same :class:`~polylogue.archive.filter.filters.SessionFilter` every other
-surface (CLI/MCP/API) uses, then records a bounded ``ops.db`` ``query_runs``
-telemetry row for the execution (surface ``daemon-internal``).
+surface (CLI/MCP/API) uses.
 
 Only the ``session`` grain and the current (v1) definition protocol are
 evaluated. Legacy protocol v0 identities (opaque saved-view JSON, not this
@@ -21,7 +20,6 @@ identity JSON" doctrine: this module only inverts the *same* typed
 from __future__ import annotations
 
 import sqlite3
-import time
 import uuid
 from contextlib import closing
 from importlib.metadata import PackageNotFoundError
@@ -97,14 +95,13 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
     """Evaluate durable canonical query definitions against the live archive.
 
     ``db_path`` is the ``index.db`` path (the same convention used throughout
-    ``daemon/convergence_stages.py``); ``source.db``/``user.db``/``ops.db``
-    are resolved as siblings.
+    ``daemon/convergence_stages.py``); ``source.db``/``user.db`` are resolved
+    as siblings.
     """
 
-    def __init__(self, db_path: Path, *, surface: str = "daemon-internal") -> None:
+    def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         self._archive_root = db_path.parent
-        self._surface = surface
 
     def evaluate(self, request: QueryEvaluationRequest) -> QueryEvaluation:
         query = request.query
@@ -132,17 +129,16 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
 
         from polylogue.api.sync.bridge import run_coroutine_sync
 
-        started_at_ms = int(time.time() * 1000)
         try:
             # NOT list_summaries(): that caps at the default page limit (50,
             # see SessionFilter.list_summaries docstring) and this evaluation
             # is unconditionally labeled exactness="exact" below. A watched
             # query matching more than 50 sessions would silently drop
             # members past the first page from both the returned evaluation
-            # and the query_runs telemetry row while still claiming an exact
-            # enumeration -- and standing-query drift detection computes its
-            # membership merkle root directly from member_refs, so it would
-            # never notice new members added past the cap. list_all_summaries
+            # and the enumeration while still claiming an exact enumeration
+            # -- and standing-query drift detection computes its membership
+            # merkle root directly from member_refs, so it would never
+            # notice new members added past the cap. list_all_summaries
             # resolves every matching summary (default_limit=1_000_000,
             # functionally unbounded for any real archive), mirroring the
             # same exact-enumeration requirement count_archive/delete/mark
@@ -151,7 +147,6 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
         except Exception:
             logger.warning("production-evaluator: evaluation failed for query:%s", query.query_hash, exc_info=True)
             raise
-        duration_ms = int(time.time() * 1000) - started_at_ms
 
         excluded_prefixes = tuple(request.excluded_origin_prefixes)
         member_refs = tuple(
@@ -178,59 +173,12 @@ class ArchiveCanonicalPlanEvaluator(CanonicalPlanEvaluator):
             exactness="exact",
             receipt=receipt,
         )
-        self._record_query_run(
-            query_hash=query.query_hash,
-            purpose=request.purpose,
-            started_at_ms=started_at_ms,
-            duration_ms=duration_ms,
-            evaluation=evaluation,
-        )
         return evaluation
 
     def resolve_cohort(self, operand: RefOperand) -> QueryEvaluation:
         raise NotImplementedError(
             f"cohort substrate is not implemented yet ({operand.reference.format()}); see polylogue-rxdo.6"
         )
-
-    def _record_query_run(
-        self,
-        *,
-        query_hash: str,
-        purpose: str,
-        started_at_ms: int,
-        duration_ms: int,
-        evaluation: QueryEvaluation,
-    ) -> None:
-        """Best-effort ops-tier telemetry. Never lets a recording failure fail a read."""
-        ops_db = self._archive_root / "ops.db"
-        if not ops_db.exists():
-            return
-        try:
-            from polylogue.storage.sqlite.archive_tiers.ops_write import record_query_run
-
-            with closing(sqlite3.connect(ops_db, timeout=5.0)) as conn:
-                record_query_run(
-                    conn,
-                    run_id=f"qr_{uuid.uuid4().hex}",
-                    query_hash=query_hash,
-                    actor=None,
-                    surface=self._surface,
-                    verb=purpose,
-                    request=None,
-                    lowered_spec=None,
-                    archive_epoch=evaluation.corpus_epoch,
-                    started_at_ms=started_at_ms,
-                    duration_ms=duration_ms,
-                    status="ok",
-                    degraded=None,
-                    unit=evaluation.grain,
-                    member_count=len(evaluation.member_refs),
-                    exactness=evaluation.exactness,
-                    result_fingerprint=None,
-                    sample_refs=evaluation.member_refs[:20],
-                )
-        except Exception:
-            logger.warning("production-evaluator: query_run recording failed", exc_info=True)
 
 
 Surface = Literal["cli", "mcp", "daemon-web", "api", "daemon-internal"]

@@ -49,7 +49,6 @@ def _seed_archive_with_one_codex_session(archive_root: Path) -> str:
             )
         )
     initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
-    initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)
     return session_id
 
 
@@ -85,7 +84,3 @@ def test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake(tm
             "SELECT COUNT(*) FROM assertions WHERE kind = ?", (AssertionKind.FINDING.value,)
         ).fetchone()[0]
         assert finding_count == 0
-
-    with sqlite3.connect(archive_root / "ops.db") as conn:
-        run_count = conn.execute("SELECT COUNT(*) FROM query_runs WHERE surface = 'daemon-internal'").fetchone()[0]
-        assert run_count == 1

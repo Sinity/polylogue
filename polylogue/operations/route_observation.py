@@ -1,16 +1,13 @@
 """Bounded route-latency observation (polylogue-jtwu / polylogue-20d.17 AC #4).
 
-Covers the routes ``query_runs`` (query-DSL executions) and ``mcp_call_log``
-(whole MCP tool calls, durably delivered via an outbox) do not: CLI command
-invocations and MCP sub-route detail a caller wants to time without routing
-through either of those. Best-effort telemetry, not audit evidence -- a
-caller that cannot reach ``ops.db`` (no archive configured, disposable tier
-missing, locked) drops the observation rather than blocking or retrying the
-operation being observed. :func:`compute_latency_percentiles` federates
-``route_observations`` with ``mcp_call_log`` into one grouped p50/p95 view;
-``query_runs`` is intentionally not included here (see the module's own
-exactness/degraded-membership semantics, a different concern from raw
-latency) -- a documented, not silent, scope decision.
+Covers the routes ``mcp_call_log`` (whole MCP tool calls, durably delivered
+via an outbox) does not: CLI command invocations and MCP sub-route detail a
+caller wants to time without routing through it. Best-effort telemetry, not
+audit evidence -- a caller that cannot reach ``ops.db`` (no archive
+configured, disposable tier missing, locked) drops the observation rather
+than blocking or retrying the operation being observed.
+:func:`compute_latency_percentiles` federates ``route_observations`` with
+``mcp_call_log`` into one grouped p50/p95 view.
 """
 
 from __future__ import annotations

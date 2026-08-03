@@ -459,65 +459,6 @@ def summarize_schema_drift_since(
     return tuple(summaries)
 
 
-def record_query_run(
-    conn: sqlite3.Connection,
-    *,
-    run_id: str,
-    query_hash: str,
-    actor: str | None,
-    surface: str,
-    verb: str | None,
-    request: dict[str, object] | None,
-    lowered_spec: dict[str, object] | None,
-    archive_epoch: str | None,
-    started_at_ms: int,
-    duration_ms: int,
-    status: str,
-    degraded: dict[str, object] | None,
-    unit: str | None,
-    member_count: int | None,
-    exactness: str | None,
-    result_fingerprint: str | None,
-    sample_refs: tuple[str, ...] = (),
-) -> None:
-    """Write one bounded operational query run; never stores full membership."""
-    if len(sample_refs) > 20:
-        raise ValueError("query run sample refs are capped at 20")
-    conn.execute(
-        """
-        INSERT INTO query_runs (
-            run_id, query_hash, actor, surface, verb, request_json, lowered_spec_json,
-            archive_epoch, started_at_ms, duration_ms, status, degraded_json, unit,
-            member_count, exactness, result_fingerprint, sample_refs_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            run_id,
-            query_hash,
-            actor,
-            surface,
-            verb,
-            _json_or_none(request),
-            _json_or_none(lowered_spec),
-            archive_epoch,
-            started_at_ms,
-            duration_ms,
-            status,
-            _json_or_none(degraded),
-            unit,
-            member_count,
-            exactness,
-            result_fingerprint,
-            json.dumps(sample_refs, separators=(",", ":")),
-        ),
-    )
-    conn.commit()
-
-
-def _json_or_none(value: dict[str, object] | None) -> str | None:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")) if value is not None else None
-
-
 def upsert_ingest_cursor(
     conn: sqlite3.Connection,
     *,
@@ -1678,7 +1619,6 @@ __all__ = [
     "record_daemon_stage_event",
     "record_fts_drift_sample",
     "record_ingest_attempt",
-    "record_query_run",
     "record_route_observation",
     "record_schema_drift_sample",
     "summarize_schema_drift_since",
