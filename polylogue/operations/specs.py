@@ -817,8 +817,8 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("assertion-candidate-capture-loop",),
         code_refs=(
             "polylogue.api.archive.PolylogueArchiveMixin.capture_assertion_candidate",
-            "polylogue.cli.commands.note.capture_note_command",
-            "polylogue.mcp.server_cutover._dispatch_write (operation=capture_assertion_candidate)",
+            "polylogue.cli.commands.note.note_command",
+            "polylogue.mcp.server_cutover._dispatch_write",
             "polylogue.operations.mutation_actuators.CaptureAssertionCandidateActuator",
         ),
         surfaces=("facade", "cli", "mcp"),
@@ -862,7 +862,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("message-fts-readiness-loop",),
         code_refs=(
             "polylogue.api.ingest.PolylogueIngestMixin.rebuild_index",
-            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_index)",
+            "polylogue.mcp.server_cutover._dispatch_maintenance",
             "polylogue.operations.mutation_actuators.IndexRebuildActuator",
         ),
         surfaces=("facade", "mcp"),
@@ -885,7 +885,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("message-fts-readiness-loop",),
         code_refs=(
             "polylogue.api.archive.PolylogueArchiveMixin.update_index",
-            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=update_index)",
+            "polylogue.mcp.server_cutover._dispatch_maintenance",
             "polylogue.operations.mutation_actuators.IndexRebuildActuator",
         ),
         surfaces=("facade", "mcp"),
@@ -908,7 +908,7 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         path_targets=("session-insight-repair-loop",),
         code_refs=(
             "polylogue.api.archive.PolylogueArchiveMixin.rebuild_insights",
-            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_insights)",
+            "polylogue.mcp.server_cutover._dispatch_maintenance",
             "polylogue.operations.mutation_actuators.InsightsRebuildActuator",
         ),
         surfaces=("facade", "mcp"),
