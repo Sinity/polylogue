@@ -227,6 +227,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
     ArchiveSourceBlobRef,
+    delete_source_hook_event,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
@@ -2151,6 +2152,10 @@ class ArchiveStore:
             blob_publication_receipt_id=receipt_id,
             manage_transaction=True,
         )
+
+    def delete_hook_event(self, hook_event_id: str) -> bool:
+        """Delete a hook event and its source-tier payload reference."""
+        return delete_source_hook_event(self._ensure_source_conn(), hook_event_id)
 
     def write_raw_blob_ref(
         self,

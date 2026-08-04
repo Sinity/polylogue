@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
+    deterministic_blob_hash,
     deterministic_raw_session_id,
 )
 
@@ -74,6 +75,11 @@ def _write_hook_event(archive_root: Path, *, hook_event_id: str, source_path: st
         )
 
 
+def _delete_hook_event(archive_root: Path, *, hook_event_id: str) -> bool:
+    with ArchiveStore(archive_root) as archive:
+        return archive.delete_hook_event(hook_event_id)
+
+
 def test_hook_payload_ref_written_as_hook_payload_not_raw_payload(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -84,6 +90,22 @@ def test_hook_payload_ref_written_as_hook_payload_not_raw_payload(tmp_path: Path
         assert rows == [("hook_payload", "hook-1")]
         blob_hash = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = 'hook-1'").fetchone()[0]
         assert blob_hash is not None
+
+
+def test_hook_payload_replacement_removes_previous_ref(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    _write_hook_event(archive_root, hook_event_id="hook-replaced", source_path="/hooks/a.jsonl", payload=b"old")
+    _write_hook_event(archive_root, hook_event_id="hook-replaced", source_path="/hooks/a.jsonl", payload=b"new")
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        refs = conn.execute("SELECT ref_type, ref_id, blob_hash FROM blob_refs ORDER BY ref_type, ref_id").fetchall()
+        event_hash = conn.execute(
+            "SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = 'hook-replaced'"
+        ).fetchone()[0]
+
+    assert refs == [("hook_payload", "hook-replaced", event_hash)]
+    assert event_hash == deterministic_blob_hash(b"new")
 
 
 def test_hook_payload_ref_survives_gc_while_hook_event_row_exists_then_is_reclaimed_once_deleted(
@@ -107,12 +129,13 @@ def test_hook_payload_ref_survives_gc_while_hook_event_row_exists_then_is_reclai
     assert deleted == 0
     assert blob_store.exists(blob_hash)
 
-    # Simulate the hook event row being gone (a since-deleted/repaired row --
-    # exactly the shape a genuinely dead ref takes): the blob_refs row is now
-    # a true orphan and must no longer protect the blob.
+    # Delete through the source-tier route. The hook event's own ref must be
+    # removed with the event, so GC sees the payload as truly dead.
+    assert _delete_hook_event(archive_root, hook_event_id="hook-live") is True
     with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("DELETE FROM raw_hook_events WHERE hook_event_id = 'hook-live'")
-        conn.commit()
+        assert conn.execute(
+            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = 'hook-live'"
+        ).fetchone() == (0,)
 
     deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
     assert deleted == 1

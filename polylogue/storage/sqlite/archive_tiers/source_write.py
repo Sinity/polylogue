@@ -669,6 +669,14 @@ def write_source_hook_event(
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     blob_size = len(payload)
     with conn if manage_transaction else nullcontext():
+        # A replay can update an existing hook_event_id with a newer payload.
+        # Remove the previous content-addressed ref first so the upsert cannot
+        # leave an old hook_payload ref with no matching raw_hook_events blob.
+        conn.execute(
+            "DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
+            (hook_event.hook_event_id,),
+        )
+        _insert_hook_event(conn, hook_event, blob_hash=blob_hash)
         _insert_blob_ref(
             conn,
             ArchiveSourceBlobRef(
@@ -681,8 +689,30 @@ def write_source_hook_event(
                 publication_receipt_id=blob_publication_receipt_id,
             ),
         )
-        _insert_hook_event(conn, hook_event, blob_hash=blob_hash)
     return raw_id
+
+
+def delete_source_hook_event(
+    conn: sqlite3.Connection,
+    hook_event_id: str,
+    *,
+    manage_transaction: bool = True,
+) -> bool:
+    """Delete one hook event and its owned payload ref as one source-tier write.
+
+    Hook events do not have a foreign key to ``blob_refs`` because the source
+    tier stores the reference by ``ref_type``/``ref_id``. Keep their delete
+    route paired with the reference cleanup so a removed event cannot leave a
+    durable ``hook_payload`` row behind to pin its blob.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+    with conn if manage_transaction else nullcontext():
+        cursor = conn.execute("DELETE FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,))
+        conn.execute(
+            "DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
+            (hook_event_id,),
+        )
+    return cursor.rowcount == 1
 
 
 def write_source_raw_session_blob_ref(
