@@ -475,6 +475,42 @@ def test_archive_fts_global_repair_defers_sqlite_lock(
     assert stages.repair_messages_fts_surface(archive_db) is False
 
 
+def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real archive repair route must not map its attached sibling tiers."""
+    from polylogue.storage.fts import dangling_repair
+    from polylogue.storage.sqlite.connection_profile import (
+        BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+        DAEMON_WRITE_MMAP_SIZE_BYTES,
+    )
+
+    archive_db = tmp_path / "index.db"
+    source_path = tmp_path / "codex.jsonl"
+    _seed_minimal_archive(archive_db, source_path)
+    for tier_name in ("user.db", "embeddings.db", "ops.db"):
+        sqlite3.connect(tmp_path / tier_name).close()
+
+    observed: dict[str, int] = {}
+    real_configure = dangling_repair.configure_bounded_repair_connection
+
+    def configure_and_capture(conn: sqlite3.Connection) -> None:
+        real_configure(conn)
+        for schema_name in ("main", "source_tier", "user_tier", "embeddings", "ops_tier"):
+            observed[schema_name] = int(conn.execute(f"PRAGMA {schema_name}.mmap_size").fetchone()[0])
+
+    monkeypatch.setattr(dangling_repair, "configure_bounded_repair_connection", configure_and_capture)
+
+    assert stages.repair_messages_fts_surface(archive_db) is True
+    assert observed == {
+        "main": BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+        "source_tier": DAEMON_WRITE_MMAP_SIZE_BYTES,
+        "user_tier": DAEMON_WRITE_MMAP_SIZE_BYTES,
+        "embeddings": DAEMON_WRITE_MMAP_SIZE_BYTES,
+        "ops_tier": DAEMON_WRITE_MMAP_SIZE_BYTES,
+    }
+
+
 def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -26,7 +26,7 @@ from polylogue.storage.sqlite.connection_profile import (
 BOUNDED_REPAIR_PRAGMAS = (
     "PRAGMA temp_store = FILE",
     f"PRAGMA cache_size = -{BOUNDED_REPAIR_CACHE_SIZE_KIB}",
-    f"PRAGMA mmap_size = {BOUNDED_REPAIR_MMAP_SIZE_BYTES}",
+    f"PRAGMA main.mmap_size = {BOUNDED_REPAIR_MMAP_SIZE_BYTES}",
 )
 
 
