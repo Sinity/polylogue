@@ -9,12 +9,13 @@ receipt path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import platform
 import sqlite3
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any, cast
 
 from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -29,48 +31,32 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.version import POLYLOGUE_VERSION
 
 RECEIPT_SCHEMA = "polylogue.schema-inference-gate.v1"
-BLOB_HASH_RECEIPT_SCHEMA = "polylogue.blob-hash-verification.v1"
-GATE_VERSION = "1"
+GATE_VERSION = "2"
 DEFAULT_SAMPLE_LIMIT = 10
+RECEIPT_FILENAME = "schema-inference-gate-receipt.json"
 
 _ALLOWED_RESIDUAL_EXPLANATIONS = frozenset(
     {"materialized", "superseded-duplicate", "legitimately-excluded-non-conversation"}
 )
 _CAUSE_EXPLANATIONS = {"byte-revision-governed": "superseded-duplicate"}
 
-# These are declared inputs for the existing corpus reconciliation. The gate
-# records them in every receipt so a later run cannot be mistaken for a run
-# against a different acquisition corpus. Hooks and browser capture are the
-# explicit no-external-ground-truth exceptions from r9xsj.
+# Hooks and browser capture are the explicit no-external-ground-truth
+# exceptions from r9xsj. Every other origin present in source.db must receive
+# a caller-declared, readable external root and is reconciled by content hash.
 GROUND_TRUTH_INPUTS: dict[str, dict[str, object]] = {
     "codex-session": {
-        "paths": [
-            "~/.codex/sessions",
-            "~/.codex/state_5.sqlite",
-            "~/.codex/goals_1.sqlite",
-            "~/.codex/memories_1.sqlite",
-        ],
         "exempt": False,
     },
     "claude-code-session": {
-        "paths": ["~/.claude/projects", "source.db:raw_artifacts", "source.db:history_sidecars"],
         "exempt": False,
     },
-    "chatgpt-export": {"paths": ["/realm/data/exports/chatlog"], "exempt": False},
-    "claude-ai-export": {"paths": ["/realm/data/exports/chatlog"], "exempt": False},
-    "aistudio-drive": {"paths": ["/realm/data/exports/chatlog"], "exempt": False},
-    "grok-export": {"paths": ["/realm/data/exports/chatlog"], "exempt": False},
-    "hermes-session": {
-        "paths": [
-            "~/.hermes/sessions",
-            "~/.hermes/state.db",
-            "~/.hermes/verification_evidence.db",
-            "~/.hermes/observability",
-        ],
-        "exempt": False,
-    },
-    "antigravity-session": {"paths": ["~/.gemini/antigravity/brain"], "exempt": False},
-    "gemini-cli-session": {"paths": ["~/.gemini/tmp"], "exempt": False},
+    "chatgpt-export": {"exempt": False},
+    "claude-ai-export": {"exempt": False},
+    "aistudio-drive": {"exempt": False},
+    "grok-export": {"exempt": False},
+    "hermes-session": {"exempt": False},
+    "antigravity-session": {"exempt": False},
+    "gemini-cli-session": {"exempt": False},
     "hooks": {
         "paths": ["source.db:raw_hook_events"],
         "exempt": True,
@@ -152,18 +138,19 @@ def _source_counts(conn: sqlite3.Connection) -> dict[str, dict[str, int]]:
     }
 
 
+def _referenced_blob_hashes(conn: sqlite3.Connection) -> set[str]:
+    """Return the durable source-tier blob universe as canonical hashes."""
+
+    sql = "SELECT blob_hash FROM raw_sessions"
+    if table_exists(conn, "blob_refs"):
+        sql += " UNION SELECT blob_hash FROM blob_refs"
+    return {bytes(row[0]).hex() for row in conn.execute(sql) if row[0] is not None}
+
+
 def _source_blob_denominators(conn: sqlite3.Connection) -> dict[str, int]:
     """Return the source-tier hash universe an independent blob scan must cover."""
 
-    if table_exists(conn, "blob_refs"):
-        distinct_hashes = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM (SELECT blob_hash FROM raw_sessions UNION SELECT blob_hash FROM blob_refs)"
-            ).fetchone()[0]
-        )
-    else:
-        distinct_hashes = int(conn.execute("SELECT COUNT(DISTINCT blob_hash) FROM raw_sessions").fetchone()[0])
-    return {"distinct_referenced_blob_hashes": distinct_hashes}
+    return {"distinct_referenced_blob_hashes": len(_referenced_blob_hashes(conn))}
 
 
 def _duplicate_gate(
@@ -252,7 +239,46 @@ def _duplicate_gate(
                 continue
 
             if str(row["census_status"] or "") == "non_session":
-                resolved_by_rule["legitimately-excluded-non-conversation"] += 1
+                exclusion = source.execute(
+                    """
+                    SELECT blob_hash, blob_size, indexed_twin_raw_id,
+                           indexed_twin_session_id, parser_fingerprint
+                    FROM raw_non_session_duplicate_exclusion_receipts
+                    WHERE raw_id = ?
+                    """,
+                    (raw_id,),
+                ).fetchone()
+                if exclusion is not None:
+                    exclusion_hash = bytes(exclusion[0]).hex()
+                    exclusion_twin_ok = source.execute(
+                        """
+                        SELECT 1
+                        FROM raw_sessions twin
+                        JOIN idx_tier.sessions twin_session ON twin_session.raw_id = twin.raw_id
+                        WHERE twin.raw_id = ? AND twin_session.session_id = ?
+                          AND twin.blob_hash = ? AND twin.blob_size = ?
+                        """,
+                        (
+                            str(exclusion[2]),
+                            str(exclusion[3]),
+                            bytes.fromhex(str(row["blob_hash"])),
+                            int(row["blob_size"]),
+                        ),
+                    ).fetchone()
+                    if (
+                        exclusion_hash == str(row["blob_hash"]).lower()
+                        and int(exclusion[1]) == int(row["blob_size"])
+                        and bool(str(exclusion[4]).strip())
+                        and exclusion_twin_ok
+                    ):
+                        resolved_by_rule["legitimately-excluded-non-conversation"] += 1
+                        continue
+                invalid_receipts.append(
+                    {
+                        "raw_id": raw_id,
+                        "reason": "non-session exclusion lacks a content-bound receipt to an indexed twin",
+                    }
+                )
                 continue
             unresolved.append(
                 {
@@ -402,82 +428,173 @@ def _tier_schema_identity(archive_root: Path, location: ArchiveLocation) -> dict
     return {"archive": ArchiveIdentity.resolve_location(location).as_dict(), "tiers": tiers}
 
 
-def _required_string(mapping: Mapping[str, object], key: str) -> str:
-    value = mapping.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise SchemaInferenceGateError(f"blob hash receipt field {key!r} must be a non-empty string")
-    return value
+def _resolve_receipt_path(receipt_path: Path, *, archive_root: Path) -> Path:
+    """Accept only the dedicated receipt filename outside the archive file set."""
 
-
-def _validate_blob_hash_receipt(
-    path: Path,
-    *,
-    archive_root: Path,
-    source_version: int | None,
-    expected_referenced_hashes: int,
-) -> dict[str, object]:
-    result: dict[str, object] = {"path": str(path), "schema": BLOB_HASH_RECEIPT_SCHEMA, "passed": False}
+    target = receipt_path.expanduser().resolve()
+    root = archive_root.resolve()
+    if target.name != RECEIPT_FILENAME:
+        raise SchemaInferenceGateError(f"receipt filename must be {RECEIPT_FILENAME!r}")
     try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        result["reason"] = f"could not read full blob-hash receipt: {exc}"
-        return result
-    if not isinstance(document, dict):
-        result["reason"] = "full blob-hash receipt root must be an object"
-        return result
-    result["input"] = document
+        target.relative_to(root)
+    except ValueError:
+        return target
+    raise SchemaInferenceGateError("receipt path must be outside the archive root")
+
+
+def _snapshot_blob_root(blob_root: Path) -> dict[str, object]:
+    """Fingerprint the canonical namespace before and after full verification."""
+
+    entries: list[dict[str, object]] = []
+    for entry in BlobStore(blob_root).iter_namespace():
+        item: dict[str, object] = {
+            "path": entry.relative_path,
+            "kind": entry.kind.value,
+            "hash": entry.hash_hex,
+            "issue": entry.issue.value if entry.issue is not None else None,
+        }
+        try:
+            stat = entry.path.stat()
+            item["size"] = stat.st_size
+            item["inode"] = stat.st_ino
+            item["mtime_ns"] = stat.st_mtime_ns
+        except OSError as exc:
+            item["stat_error"] = str(exc)
+        entries.append(item)
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return {
+        "path": str(blob_root),
+        "entry_count": len(entries),
+        "canonical_blob_count": sum(1 for entry in entries if entry["kind"] == "blob"),
+        "digest": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _full_blob_hash_evidence(archive_root: Path, *, referenced_hashes: set[str]) -> dict[str, object]:
+    """Run the production BlobStore full verification route and bind its snapshot."""
+
+    blob_root = archive_root / "blob"
+    before = _snapshot_blob_root(blob_root)
+    verification = BlobStore(blob_root).verify_all(max_failures=100)
+    after = _snapshot_blob_root(blob_root)
+    canonical_hashes = set(BlobStore(blob_root).iter_all())
+    missing_references = sorted(referenced_hashes - canonical_hashes)
     errors: list[str] = []
-    if document.get("schema") != BLOB_HASH_RECEIPT_SCHEMA:
-        errors.append(f"schema must be {BLOB_HASH_RECEIPT_SCHEMA!r}")
-    if document.get("archive_root") != str(archive_root.absolute()):
-        errors.append("archive_root does not match the requested archive")
-    if document.get("source_schema_version") != source_version:
-        errors.append("source_schema_version does not match source.db")
-    if document.get("mode") != "full":
-        errors.append("mode must be 'full'")
-    if document.get("verdict") != "PASS":
-        errors.append("verdict must be PASS")
-    if document.get("findings") not in ([], None):
-        errors.append("findings must be empty")
-    try:
-        tool_version = _required_string(document, "tool_version")
-        result["tool_version"] = tool_version
-    except SchemaInferenceGateError as exc:
-        errors.append(str(exc))
-    input_paths = document.get("input_paths")
-    if not isinstance(input_paths, dict) or not input_paths:
-        errors.append("input_paths must be a non-empty object")
-    else:
-        result["input_paths"] = input_paths
-    counts = document.get("counts")
-    if not isinstance(counts, dict):
-        errors.append("counts must be an object")
-    else:
-        for name in ("scanned_blobs", "total_blobs_seen", "scanned_references", "total_references_seen"):
-            value = counts.get(name)
-            if not isinstance(value, int) or value < 0:
-                errors.append(f"counts.{name} must be a non-negative integer")
-        if all(isinstance(counts.get(name), int) for name in ("scanned_blobs", "total_blobs_seen")) and counts.get(
-            "scanned_blobs"
-        ) != counts.get("total_blobs_seen"):
-            errors.append("full scan must scan every blob seen")
-        if all(
-            isinstance(counts.get(name), int) for name in ("scanned_references", "total_references_seen")
-        ) and counts.get("scanned_references") != counts.get("total_references_seen"):
-            errors.append("full scan must scan every reference seen")
-        total_references = counts.get("total_references_seen")
-        total_blobs = counts.get("total_blobs_seen")
-        if isinstance(total_references, int) and total_references != expected_referenced_hashes:
-            errors.append(
-                "total_references_seen does not match the source-tier distinct referenced blob-hash denominator"
-            )
-        if isinstance(total_blobs, int) and total_blobs < expected_referenced_hashes:
-            errors.append("total_blobs_seen is smaller than the source-tier distinct referenced blob-hash denominator")
-    result["errors"] = errors
-    result["passed"] = not errors
-    if errors:
-        result["reason"] = "; ".join(errors)
-    return result
+    if before["digest"] != after["digest"]:
+        errors.append("blob-root snapshot changed during full verification")
+    if verification.failures:
+        errors.append("BlobStore.verify_all reported integrity failures")
+    if verification.truncated:
+        errors.append("BlobStore.verify_all truncated before a complete result")
+    if missing_references:
+        errors.append("referenced source blobs are absent from the verified blob root")
+    return {
+        "passed": not errors,
+        "verifier": {
+            "identity": "polylogue.storage.blob_store.BlobStore.verify_all",
+            "polylogue_version": POLYLOGUE_VERSION,
+        },
+        "before_snapshot": before,
+        "after_snapshot": after,
+        "counts": {
+            "scanned_blobs": verification.checked,
+            "scanned_bytes": verification.checked_bytes,
+            "referenced_hashes": len(referenced_hashes),
+            "missing_referenced_hashes": len(missing_references),
+        },
+        "failures": [
+            {"hash": failure.hash, "reason": failure.reason, "detail": failure.detail, "path": failure.path}
+            for failure in verification.failures
+        ],
+        "missing_references": _sample(missing_references, DEFAULT_SAMPLE_LIMIT),
+        "errors": errors,
+        "reason": "; ".join(errors) if errors else None,
+    }
+
+
+def _iter_ground_truth_files(root: Path) -> Iterable[Path]:
+    if root.is_file():
+        yield root
+        return
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            yield path
+
+
+def _file_hash(path: Path) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            hasher.update(chunk)
+            size += len(chunk)
+    return hasher.hexdigest(), size
+
+
+def _ground_truth_evidence(
+    archive_root: Path,
+    *,
+    source_counts: Mapping[str, Mapping[str, int]],
+    roots: Mapping[str, Sequence[Path]] | None,
+) -> dict[str, object]:
+    """Compare source raw blobs with the files actually present under declared roots."""
+
+    root_map = roots or {}
+    source_path = archive_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
+    evidence: dict[str, object] = {}
+    errors: list[str] = []
+    with open_readonly_connection(source_path) as source:
+        for origin in sorted(source_counts):
+            declared = GROUND_TRUTH_INPUTS.get(origin, {"exempt": False})
+            if bool(declared.get("exempt")):
+                evidence[origin] = {"exempt": True, "reason": declared.get("reason")}
+                continue
+            declared_roots = tuple(Path(path).expanduser().resolve() for path in root_map.get(origin, ()))
+            unavailable = [str(path) for path in declared_roots if not path.exists()]
+            if not declared_roots or unavailable:
+                errors.append(f"ground truth for {origin} is unavailable or undeclared")
+                evidence[origin] = {
+                    "exempt": False,
+                    "declared_roots": [str(path) for path in declared_roots],
+                    "unavailable_roots": unavailable,
+                    "passed": False,
+                }
+                continue
+            files = [path for root in declared_roots for path in _iter_ground_truth_files(root)]
+            hashes: set[str] = set()
+            bytes_total = 0
+            try:
+                for path in files:
+                    digest, size = _file_hash(path)
+                    hashes.add(digest)
+                    bytes_total += size
+            except OSError as exc:
+                errors.append(f"ground truth for {origin} could not be fully scanned: {exc}")
+                evidence[origin] = {
+                    "exempt": False,
+                    "declared_roots": [str(path) for path in declared_roots],
+                    "passed": False,
+                }
+                continue
+            source_hashes = {
+                bytes(row[0]).hex()
+                for row in source.execute("SELECT DISTINCT blob_hash FROM raw_sessions WHERE origin = ?", (origin,))
+            }
+            missing = sorted(source_hashes - hashes)
+            if missing:
+                errors.append(f"ground truth for {origin} does not verify every source raw blob")
+            evidence[origin] = {
+                "exempt": False,
+                "declared_roots": [str(path) for path in declared_roots],
+                "external_files": len(files),
+                "external_bytes": bytes_total,
+                "external_hashes": len(hashes),
+                "source_blob_hashes": len(source_hashes),
+                "unverified_source_blob_hashes": len(missing),
+                "unverified_samples": _sample(missing, DEFAULT_SAMPLE_LIMIT),
+                "passed": not missing,
+            }
+    return {"passed": not errors, "origins": evidence, "reasons": errors}
 
 
 def _fidelity_evidence(report: object) -> dict[str, object]:
@@ -630,8 +747,8 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 def run_schema_inference_gate(
     archive_root: Path,
     *,
-    blob_hash_receipt: Path,
     receipt_path: Path,
+    ground_truth_roots: Mapping[str, Sequence[Path]] | None = None,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
 ) -> SchemaInferenceGateResult:
     """Run and persist the schema-inference prerequisite receipt."""
@@ -639,6 +756,7 @@ def run_schema_inference_gate(
     if sample_limit <= 0:
         raise SchemaInferenceGateError("sample_limit must be positive")
     root = Path(archive_root).absolute()
+    safe_receipt_path = _resolve_receipt_path(Path(receipt_path), archive_root=root)
     try:
         location = ArchiveLocation.resolve(root)
         index_path = location.active_index_path
@@ -648,27 +766,40 @@ def run_schema_inference_gate(
         index_path = root / "index.db"
 
     source_entry = _as_dict(_as_dict(schema_identity.get("tiers")).get("source"))
-    source_version = source_entry.get("actual_user_version")
-    source_schema_version = int(source_version) if isinstance(source_version, int) else None
     source_schema_ok = bool(source_entry.get("matches_expected"))
 
     try:
         source_gates = _run_source_gates(root, index_path=index_path, sample_limit=sample_limit)
     except (OSError, sqlite3.Error) as exc:
         source_gates = _failed_source_gates(f"source-tier read failed: {exc}")
+    blob_denominators = _as_dict(source_gates.get("blob_denominators"))
     try:
         corpus_report = verify_archive(root, checks=CORPUS_FIDELITY_CHECKS, sample_limit=sample_limit)
         fidelity = _fidelity_evidence(corpus_report)
     except Exception as exc:
         fidelity = {"report": {}, "typed_residuals": [], "passed": False, "reasons": [f"corpus audit raised: {exc}"]}
-    blob_denominators = _as_dict(source_gates.get("blob_denominators"))
-    expected_referenced_hashes = _int_or_zero(blob_denominators.get("distinct_referenced_blob_hashes"))
-    hash_receipt = _validate_blob_hash_receipt(
-        Path(blob_hash_receipt),
-        archive_root=root,
-        source_version=source_schema_version,
-        expected_referenced_hashes=expected_referenced_hashes,
-    )
+    try:
+        with open_readonly_connection(root / "source.db") as source:
+            referenced_hashes = _referenced_blob_hashes(source)
+        full_blob_hash_verification = _full_blob_hash_evidence(root, referenced_hashes=referenced_hashes)
+    except (OSError, sqlite3.Error) as exc:
+        full_blob_hash_verification = {
+            "passed": False,
+            "errors": [f"full BlobStore verification could not read source evidence: {exc}"],
+            "reason": f"full BlobStore verification could not read source evidence: {exc}",
+        }
+    try:
+        ground_truth = _ground_truth_evidence(
+            root,
+            source_counts=cast(Mapping[str, Mapping[str, int]], source_gates.get("source_counts", {})),
+            roots=ground_truth_roots,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        ground_truth = {
+            "passed": False,
+            "origins": {},
+            "reasons": [f"ground truth reconciliation could not read source evidence: {exc}"],
+        }
 
     gate_results = _as_dict(source_gates.get("gates"))
     duplicate_gate = source_gates.get("duplicate_gate", {})
@@ -684,8 +815,12 @@ def run_schema_inference_gate(
         fidelity_reasons = fidelity.get("reasons", [])
         if isinstance(fidelity_reasons, list):
             reasons.extend(str(reason) for reason in fidelity_reasons)
-    if not bool(hash_receipt.get("passed")):
-        reasons.append(str(hash_receipt.get("reason") or "full blob-hash verification receipt is not a PASS"))
+    if not bool(full_blob_hash_verification.get("passed")):
+        reasons.append(str(full_blob_hash_verification.get("reason") or "full BlobStore verification is not a PASS"))
+    if not bool(ground_truth.get("passed")):
+        ground_truth_reasons = ground_truth.get("reasons", [])
+        if isinstance(ground_truth_reasons, list):
+            reasons.extend(str(reason) for reason in ground_truth_reasons)
 
     payload: dict[str, object] = {
         "schema": RECEIPT_SCHEMA,
@@ -699,15 +834,15 @@ def run_schema_inference_gate(
         "source_denominators": source_gates.get("source_counts", {}),
         "blob_denominators": blob_denominators,
         "ground_truth_denominators": fidelity.get("denominators", {}),
-        "ground_truth_inputs": GROUND_TRUTH_INPUTS,
+        "ground_truth_inputs": ground_truth,
         "exemptions": {name: value for name, value in GROUND_TRUTH_INPUTS.items() if bool(value.get("exempt"))},
         "corpus_fidelity": fidelity,
-        "full_blob_hash_verification": hash_receipt,
+        "full_blob_hash_verification": full_blob_hash_verification,
         "input_paths": {
             "archive_root": str(root),
             "source_db": str(root / "source.db"),
             "active_index_db": str(index_path),
-            "blob_hash_receipt": str(Path(blob_hash_receipt).absolute()),
+            "receipt": str(safe_receipt_path),
         },
         "tool_versions": {
             "polylogue": POLYLOGUE_VERSION,
@@ -718,14 +853,14 @@ def run_schema_inference_gate(
         },
         "pass_fail_reasons": reasons,
     }
-    _write_json(Path(receipt_path), payload)
+    _write_json(safe_receipt_path, payload)
     return SchemaInferenceGateResult(payload)
 
 
 __all__ = [
-    "BLOB_HASH_RECEIPT_SCHEMA",
     "DEFAULT_SAMPLE_LIMIT",
     "GROUND_TRUTH_INPUTS",
+    "RECEIPT_FILENAME",
     "RECEIPT_SCHEMA",
     "SchemaInferenceGateError",
     "SchemaInferenceGateResult",

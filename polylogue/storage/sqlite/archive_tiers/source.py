@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 26
+SOURCE_SCHEMA_VERSION = 27
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -264,6 +264,24 @@ ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
 ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
+
+-- v27 (polylogue-r9xsj): a non-session classification alone is not a
+-- duplicate disposition. This immutable receipt binds an excluded raw blob to
+-- the indexed twin whose bytes make the exclusion safe.
+CREATE TABLE IF NOT EXISTS raw_non_session_duplicate_exclusion_receipts (
+    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
+    indexed_twin_raw_id        TEXT NOT NULL,
+    indexed_twin_session_id    TEXT NOT NULL,
+    parser_fingerprint         TEXT NOT NULL,
+    excluded_at_ms             INTEGER NOT NULL CHECK(excluded_at_ms >= 0),
+    tool_version               TEXT NOT NULL,
+    detail                     TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_non_session_duplicate_exclusion_receipts_twin
+ON raw_non_session_duplicate_exclusion_receipts(indexed_twin_raw_id);
 
 -- v25 (polylogue-zm4w8): one immutable receipt per raw_sessions row marked a
 -- proven duplicate within a fully-quarantined (source_path, blob_hash) group

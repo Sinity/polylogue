@@ -15,20 +15,32 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive-root", type=Path, required=True, help="Archive root to inspect read-only.")
     parser.add_argument(
-        "--blob-hash-receipt",
+        "--ground-truth-root",
+        action="append",
+        default=[],
+        metavar="ORIGIN=PATH",
+        help="External source root to scan and reconcile for an origin; repeat for each origin in source.db.",
+    )
+    parser.add_argument(
+        "--receipt",
         type=Path,
         required=True,
-        help="Required receipt from a separate full blob-hash verification run.",
+        help="External destination named schema-inference-gate-receipt.json.",
     )
-    parser.add_argument("--receipt", type=Path, required=True, help="Destination for the durable gate receipt.")
     parser.add_argument("--sample-limit", type=int, default=10, help="Maximum evidence rows per failure class.")
     parser.add_argument("--json", action="store_true", help="Emit the durable receipt as JSON.")
     args = parser.parse_args(argv)
+    ground_truth_roots: dict[str, list[Path]] = {}
+    for raw in args.ground_truth_root:
+        origin, separator, path = raw.partition("=")
+        if not separator or not origin or not path:
+            parser.error("--ground-truth-root must be ORIGIN=PATH")
+        ground_truth_roots.setdefault(origin, []).append(Path(path))
     output = stdout if stdout is not None else sys.stdout
     result = run_schema_inference_gate(
         args.archive_root,
-        blob_hash_receipt=args.blob_hash_receipt,
         receipt_path=args.receipt,
+        ground_truth_roots=ground_truth_roots,
         sample_limit=args.sample_limit,
     )
     if args.json:

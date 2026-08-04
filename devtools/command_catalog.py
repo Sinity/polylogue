@@ -354,14 +354,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
         "devtools.schema_inference_gate",
         use_when=(
-            "Run before schema inference or the 818fy rebuild. Supply a receipt from a separate full blob-hash "
-            "verification run; this command never invents hash evidence or mutates the archive."
+            "Run before schema inference or the 818fy rebuild. Declare every external source root represented in "
+            "source.db; the command scans those roots and runs BlobStore's full verifier without mutating the archive."
         ),
         examples=(
             "devtools verify schema-inference-gate --archive-root /path/to/archive "
-            "--blob-hash-receipt /path/to/blob-hash.json --receipt /path/to/gate.json",
+            "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json",
             "devtools verify schema-inference-gate --archive-root /path/to/archive "
-            "--blob-hash-receipt /path/to/blob-hash.json --receipt /path/to/gate.json --json",
+            "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json --json",
         ),
     ),
     CommandSpec(
