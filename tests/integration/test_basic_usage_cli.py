@@ -44,7 +44,16 @@ def _run(args: list[str], *, env: dict[str, str]) -> CliResult:
 
 def test_find_query_covers_fielded_filter_and_pipeline_aggregate(cli_env: dict[str, str]) -> None:
     fielded = _run(
-        ["--origin", "codex-session", "find", "sessions where origin:codex-session", "then", "select", "--json"],
+        [
+            "--origin",
+            "codex-session",
+            "find",
+            "sessions where origin:codex-session",
+            "then",
+            "select",
+            "--format",
+            "json",
+        ],
         env=cli_env,
     )
     rows = json.loads(fielded.stdout)
@@ -63,10 +72,36 @@ def test_read_renders_the_seeded_transcript(cli_env: dict[str, str]) -> None:
 
 
 def test_search_spans_multiple_origins(cli_env: dict[str, str]) -> None:
-    result = _run(["find", "clock", "then", "select", "--json"], env=cli_env)
+    result = _run(["find", "clock", "then", "select", "--format", "json"], env=cli_env)
     rows = json.loads(result.stdout)
     assert rows
     assert len({row["origin"] for row in rows}) >= 2
+
+
+@pytest.mark.parametrize(
+    ("action", "post_verb_args"),
+    [
+        pytest.param(
+            "select",
+            ["find", "id:codex-session:demo-receipts", "then", "select"],
+            id="select",
+        ),
+        pytest.param(
+            "continue",
+            ["find", "id:codex-session:demo-receipts", "then", "continue"],
+            id="continue",
+        ),
+    ],
+)
+def test_root_json_matches_post_verb_format_json(
+    action: str,
+    post_verb_args: list[str],
+    cli_env: dict[str, str],
+) -> None:
+    root_json = _run(["--json", *post_verb_args], env=cli_env)
+    post_verb_format_json = _run([*post_verb_args, "--format", "json"], env=cli_env)
+
+    assert json.loads(root_json.stdout) == json.loads(post_verb_format_json.stdout), action
 
 
 def test_continue_generates_a_resume_command(cli_env: dict[str, str]) -> None:
