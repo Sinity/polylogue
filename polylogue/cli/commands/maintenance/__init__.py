@@ -66,6 +66,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Report consolidated raw-replay rebuild status (lease/generation/cursor/delta/recovery). Read-only.",
     ),
     (
+        "reindex-canary",
+        "_reindex_canary",
+        "reindex_canary_command",
+        "Replay a representative inactive canary and persist its reviewed diff report.",
+    ),
+    (
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",

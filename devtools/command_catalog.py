@@ -393,6 +393,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "reindex-canary",
+        "verification",
+        "Run the product's representative inactive-generation reindex canary.",
+        "devtools.reindex_canary",
+        use_when="Exercise the bounded semantic reindex canary before paying for a full rebuild.",
+        examples=(
+            "devtools reindex-canary --input /path/to/index.db --sample 100 --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
+        ),
+    ),
+    CommandSpec(
         "verify coverage",
         "verification",
         "Run pytest with the repository coverage floor from pyproject.toml.",
