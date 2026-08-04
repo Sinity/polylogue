@@ -87,14 +87,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Fail with exit 1 if any artifacts, operations, or maintenance targets are uncovered.",
+        help="Fail with exit 1 if any runtime artifact, declared operation, maintenance target, or operation path is uncovered.",
     )
     args = parser.parse_args(argv)
     sys.stdout.write(render_artifact_graph(as_json=args.json))
     sys.stdout.write("\n")
     if args.strict:
         coverage = build_runtime_scenario_coverage()
-        if coverage.uncovered_artifacts or coverage.uncovered_operations or coverage.uncovered_maintenance_targets:
+        if (
+            coverage.uncovered_artifacts
+            or coverage.uncovered_operations
+            or coverage.uncovered_declared_operations
+            or coverage.uncovered_maintenance_targets
+            or any(not path.complete for path in coverage.paths.values())
+        ):
             return 1
     return 0
 

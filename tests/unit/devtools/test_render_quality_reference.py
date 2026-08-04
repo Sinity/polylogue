@@ -170,6 +170,7 @@ def test_build_document_includes_live_registry_sections() -> None:
     assert "| `validation-lane` | `runtime-substrate-hardening` |" in rendered
     assert "| `inferred-corpus-scenario` | `chatgpt:v1` |" in rendered
     assert "`session-insight-repair-loop`" in rendered
+    assert "Conceptual Artifact Targets" in rendered
     assert "When adding a new domain, parser, or surface, add or update its row in the matrix" in rendered
     assert "legacy free-text catalog" not in rendered
 

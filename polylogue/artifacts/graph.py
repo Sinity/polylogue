@@ -51,19 +51,19 @@ class ArtifactGraph:
 
     def resolve_artifacts(self, names: tuple[str, ...]) -> tuple[ArtifactNode, ...]:
         by_name = self.by_name()
-        return tuple(by_name[name] for name in names if name in by_name)
+        return tuple(by_name[name] for name in names)
 
     def resolve_operations(self, names: tuple[str, ...]) -> tuple[OperationSpec, ...]:
         by_name = self.operation_by_name()
-        return tuple(by_name[name] for name in names if name in by_name)
+        return tuple(by_name[name] for name in names)
 
     def resolve_paths(self, names: tuple[str, ...]) -> tuple[ArtifactPath, ...]:
         by_name = self.path_by_name()
-        return tuple(by_name[name] for name in names if name in by_name)
+        return tuple(by_name[name] for name in names)
 
     def resolve_maintenance_targets(self, names: tuple[str, ...]) -> tuple[MaintenanceTargetSpec, ...]:
         by_name = self.maintenance_target_by_name()
-        return tuple(by_name[name] for name in names if name in by_name)
+        return tuple(by_name[name] for name in names)
 
     def operations_for_path(self, path: ArtifactPath | str) -> tuple[OperationSpec, ...]:
         path_name = path if isinstance(path, str) else path.name
@@ -92,7 +92,58 @@ def build_artifact_graph() -> ArtifactGraph:
     paths = build_runtime_artifact_paths()
     operations = build_runtime_operation_catalog().specs
     maintenance_targets = build_maintenance_target_catalog().specs
+    node_names = {node.name for node in nodes}
+    path_names = {path.name for path in paths}
     maintenance_target_names = {target.name for target in maintenance_targets}
+    invalid_dependencies = {
+        node.name: tuple(dependency for dependency in node.depends_on if dependency not in node_names)
+        for node in nodes
+        if any(dependency not in node_names for dependency in node.depends_on)
+    }
+    if invalid_dependencies:
+        raise ValueError(f"Artifact graph declared unknown node dependencies: {invalid_dependencies}")
+    invalid_path_nodes = {
+        path.name: tuple(node for node in path.nodes if node not in node_names)
+        for path in paths
+        if any(node not in node_names for node in path.nodes)
+    }
+    if invalid_path_nodes:
+        raise ValueError(f"Artifact graph declared unknown path nodes: {invalid_path_nodes}")
+    invalid_operation_artifacts = {
+        operation.name: tuple(
+            artifact for artifact in (*operation.consumes, *operation.produces) if artifact not in node_names
+        )
+        for operation in operations
+        if any(artifact not in node_names for artifact in (*operation.consumes, *operation.produces))
+    }
+    if invalid_operation_artifacts:
+        raise ValueError(f"Artifact graph declared unknown OperationSpec artifact refs: {invalid_operation_artifacts}")
+    invalid_operation_paths = {
+        operation.name: tuple(path for path in operation.path_targets if path not in path_names)
+        for operation in operations
+        if any(path not in path_names for path in operation.path_targets)
+    }
+    if invalid_operation_paths:
+        raise ValueError(f"Artifact graph declared unknown OperationSpec path refs: {invalid_operation_paths}")
+    path_nodes = {path.name: set(path.nodes) for path in paths}
+    invalid_operation_path_edges = {
+        operation.name: {
+            path: tuple(
+                artifact for artifact in (*operation.consumes, *operation.produces) if artifact not in path_nodes[path]
+            )
+            for path in operation.path_targets
+            if any(artifact not in path_nodes[path] for artifact in (*operation.consumes, *operation.produces))
+        }
+        for operation in operations
+        if any(
+            any(artifact not in path_nodes[path] for artifact in (*operation.consumes, *operation.produces))
+            for path in operation.path_targets
+        )
+    }
+    if invalid_operation_path_edges:
+        raise ValueError(
+            f"Artifact graph declared OperationSpec refs absent from target paths: {invalid_operation_path_edges}"
+        )
     invalid_refs = {
         node.name: tuple(target for target in node.repair_targets if target not in maintenance_target_names)
         for node in nodes

@@ -62,8 +62,8 @@ class TestLaneParsing:
 
         assert lane.execution is not None
         assert lane.execution.kind is ExecutionKind.PYTEST
-        assert lane.path_targets == ("verification-fixture-substrate",)
-        assert lane.artifact_targets == (
+        assert lane.conceptual_path_targets == ("verification-fixture-substrate",)
+        assert lane.conceptual_artifact_targets == (
             "archive_scenario_fixtures",
             "storage_record_fixtures",
             "json_contract_helpers",

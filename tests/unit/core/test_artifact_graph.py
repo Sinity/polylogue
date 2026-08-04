@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
+import polylogue.artifacts.graph as artifact_graph_module
 from polylogue.artifacts import build_runtime_artifact_nodes, build_runtime_artifact_paths
 from polylogue.artifacts.graph import ArtifactLayer, build_artifact_graph
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document_list
 from polylogue.maintenance.targets import MAINTENANCE_TARGET_NAMES
-from polylogue.operations import OperationKind, build_runtime_operation_catalog
+from polylogue.operations import OperationCatalog, OperationKind, OperationSpec, build_runtime_operation_catalog
 
 
 def _document_list_field(payload: JSONDocument, field: str) -> JSONDocumentList:
@@ -189,7 +192,7 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
     graph = build_artifact_graph()
     node_names = set(graph.by_name())
 
-    assert {path.name for path in graph.paths} == {
+    assert {path.name for path in graph.paths} >= {
         "source-acquisition-loop",
         "raw-reparse-loop",
         "raw-archive-ingest-loop",
@@ -213,6 +216,9 @@ def test_artifact_graph_paths_reference_only_declared_nodes() -> None:
         "inferred-corpus-compilation-loop",
         "schema-list-query-loop",
         "schema-explain-query-loop",
+        "tag-mutation-loop",
+        "metadata-mutation-loop",
+        "session-excision-loop",
     }
     for path in graph.paths:
         assert path.nodes
@@ -240,55 +246,10 @@ def test_artifact_graph_serializes_layers_as_strings() -> None:
 
 def test_artifact_graph_operations_reference_only_declared_nodes() -> None:
     graph = build_artifact_graph()
-    node_names = set(graph.by_name())
-    path_names = set(graph.path_names())
-    # Mutation operations reference conceptual artifacts (metadata assertions,
-    # tag counts, etc.) that are not modelled as full graph nodes. The operation
-    # catalog is the authority for their input/output contracts; the graph check
-    # below only applies to materialization and query operations.
-    node_names |= {
-        "assertions",
-        "sessions",
-        "tag_counts",
-        "metadata_keys",
-        "session_tags",
-        "session_list",
-        "archive_deleted_session",
-        "blob_refs",
-        "raw_authority_blockers",
-        "raw_authority_plans",
-        "raw_sessions",
-        "excision_receipt",
-        "raw_authority_blocker_resolution",
-        "suppression_rows",
-    }
-    # Mutation operations declare path targets that aren't full graph paths.
-    path_names |= {
-        "tag-mutation-loop",
-        "metadata-mutation-loop",
-        "session-delete-loop",
-        "mark-mutation-loop",
-        "annotation-mutation-loop",
-        "correction-mutation-loop",
-        "recall-pack-mutation-loop",
-        "saved-view-mutation-loop",
-        "workspace-mutation-loop",
-        "blackboard-post-loop",
-        "identity-reset-loop",
-        "raw-authority-blocker-resolution-loop",
-        "session-excision-loop",
-    }
-
     for operation in graph.operations:
-        assert set(operation.consumes).issubset(node_names), (
-            f"operation {operation.name} consumes {set(operation.consumes) - node_names}"
-        )
-        assert set(operation.produces).issubset(node_names), (
-            f"operation {operation.name} produces {set(operation.produces) - node_names}"
-        )
-        assert set(operation.path_targets).issubset(path_names), (
-            f"operation {operation.name} path_targets {set(operation.path_targets) - path_names}"
-        )
+        assert tuple(node.name for node in graph.resolve_artifacts(operation.consumes)) == operation.consumes
+        assert tuple(node.name for node in graph.resolve_artifacts(operation.produces)) == operation.produces
+        assert tuple(path.name for path in graph.resolve_paths(operation.path_targets)) == operation.path_targets
 
 
 def test_artifact_graph_resolves_runtime_targets() -> None:
@@ -296,12 +257,72 @@ def test_artifact_graph_resolves_runtime_targets() -> None:
 
     assert "session_insight_rows" in graph.artifact_names()
     assert "materialize-session-insights" in graph.operation_names()
-    assert tuple(artifact.name for artifact in graph.resolve_artifacts(("session_insight_rows", "missing"))) == (
+    assert tuple(artifact.name for artifact in graph.resolve_artifacts(("session_insight_rows",))) == (
         "session_insight_rows",
     )
-    assert tuple(
-        operation.name for operation in graph.resolve_operations(("project-session-insight-readiness", "missing"))
-    ) == ("project-session-insight-readiness",)
+    assert tuple(path.name for path in graph.resolve_paths(("session-query-loop",))) == ("session-query-loop",)
+    with pytest.raises(KeyError, match="missing"):
+        graph.resolve_artifacts(("missing",))
+    with pytest.raises(KeyError, match="missing"):
+        graph.resolve_paths(("missing",))
+    with pytest.raises(KeyError, match="missing"):
+        graph.resolve_operations(("project-session-insight-readiness", "missing"))
+    with pytest.raises(KeyError, match="missing"):
+        graph.resolve_maintenance_targets(("session_insights", "missing"))
+
+
+def test_artifact_graph_rejects_unknown_operation_references(monkeypatch: pytest.MonkeyPatch) -> None:
+    unknown_artifact = OperationSpec(
+        name="unknown-artifact",
+        kind=OperationKind.MAINTENANCE,
+        description="test-only invalid graph reference",
+        consumes=("missing-artifact",),
+    )
+    monkeypatch.setattr(
+        artifact_graph_module,
+        "build_runtime_operation_catalog",
+        lambda: OperationCatalog(specs=(unknown_artifact,)),
+    )
+
+    with pytest.raises(ValueError, match=r"unknown-artifact.*missing-artifact"):
+        artifact_graph_module.build_artifact_graph()
+
+
+def test_artifact_graph_rejects_unknown_operation_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    unknown_path = OperationSpec(
+        name="unknown-path",
+        kind=OperationKind.MAINTENANCE,
+        description="test-only invalid graph reference",
+        path_targets=("missing-path",),
+    )
+    monkeypatch.setattr(
+        artifact_graph_module,
+        "build_runtime_operation_catalog",
+        lambda: OperationCatalog(specs=(unknown_path,)),
+    )
+
+    with pytest.raises(ValueError, match=r"unknown-path.*missing-path"):
+        artifact_graph_module.build_artifact_graph()
+
+
+def test_artifact_graph_rejects_operation_artifacts_absent_from_its_declared_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_path_edge = OperationSpec(
+        name="missing-path-edge",
+        kind=OperationKind.MAINTENANCE,
+        description="test-only invalid graph edge",
+        consumes=("message_fts",),
+        path_targets=("session-insight-repair-loop",),
+    )
+    monkeypatch.setattr(
+        artifact_graph_module,
+        "build_runtime_operation_catalog",
+        lambda: OperationCatalog(specs=(missing_path_edge,)),
+    )
+
+    with pytest.raises(ValueError, match=r"missing-path-edge.*message_fts"):
+        artifact_graph_module.build_artifact_graph()
 
 
 def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
@@ -321,6 +342,8 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     )
     assert tuple(operation.name for operation in graph.operations_for_path("message-fts-readiness-loop")) == (
         "index-message-fts",
+        "mutate-rebuild-index",
+        "mutate-update-index",
         "project-archive-readiness",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("embedding-materialization-loop")) == (
@@ -340,6 +363,7 @@ def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     assert tuple(operation.name for operation in graph.operations_for_path("session-insight-repair-loop")) == (
         "materialize-session-insights",
         "project-session-insight-readiness",
+        "mutate-rebuild-insights",
     )
     assert tuple(operation.name for operation in graph.operations_for_path("session-profile-query-loop")) == (
         "query-session-profiles",

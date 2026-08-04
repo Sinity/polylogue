@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+
+import pytest
 
 from devtools import artifact_graph
+from devtools.scenario_coverage import build_runtime_scenario_coverage
 
 
 def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None:
@@ -47,8 +51,10 @@ def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None
     assert "validation-lane:live-insights-status" in rendered
     assert "validation-lane:live-insights-debt" in rendered
     assert "maintenance session_insights:" in rendered
-    assert "uncovered maintenance targets: empty_sessions, message_type_backfill, superseded_raw_snapshots" in rendered
-    assert "uncovered artifacts: thread_results, tool_usage_results" in rendered
+    assert "validation-lane:mutation-routes" in rendered
+    assert "validation-lane:insight-query-routes" in rendered
+    assert "validation-lane:maintenance-target-routes" in rendered
+    assert "uncovered " not in rendered
 
 
 def test_render_artifact_graph_json_is_machine_readable() -> None:
@@ -68,6 +74,9 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
         "archive-coverage-query-loop",
         "session-insight-status-query-loop",
         "archive-debt-query-loop",
+        "tag-mutation-loop",
+        "metadata-mutation-loop",
+        "session-excision-loop",
     }
     assert any(node["name"] == "raw_validation_state" for node in payload["nodes"])
     assert any(node["name"] == "archive_session_rows" for node in payload["nodes"])
@@ -183,14 +192,10 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-profile-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-work-event-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-phase-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["paths"]["thread-query-loop"]["complete"] is False
+    assert payload["scenario_coverage"]["paths"]["thread-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-tag-rollup-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-coverage-query-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == [
-        "empty_sessions",
-        "message_type_backfill",
-        "superseded_raw_snapshots",
-    ]
+    assert payload["scenario_coverage"]["uncovered_maintenance_targets"] == []
     assert payload["scenario_coverage"]["paths"]["session-insight-status-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["archive-debt-query-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["message-fts-readiness-loop"]["complete"] is True
@@ -198,32 +203,17 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["raw-reparse-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["raw-archive-ingest-loop"]["complete"] is True
     assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
-    assert payload["scenario_coverage"]["uncovered_artifacts"] == ["thread_results", "tool_usage_results"]
-    assert payload["scenario_coverage"]["uncovered_operations"] == [
-        "mutate-add-mark",
-        "mutate-add-tag",
-        "mutate-blackboard-post",
-        "mutate-bulk-tag-sessions",
-        "mutate-clear-corrections",
-        "mutate-delete-annotation",
-        "mutate-delete-correction",
-        "mutate-delete-metadata",
-        "mutate-delete-recall-pack",
-        "mutate-delete-saved-view",
-        "mutate-delete-session",
-        "mutate-delete-workspace",
-        "mutate-identity-reset",
-        "mutate-import-annotation-batch",
-        "mutate-record-correction",
-        "mutate-remove-mark",
-        "mutate-remove-tag",
-        "mutate-resolve-raw-authority-blocker",
-        "mutate-save-annotation",
-        "mutate-save-recall-pack",
-        "mutate-save-saved-view",
-        "mutate-save-workspace",
-        "mutate-session-excision",
-        "mutate-set-metadata",
-        "query-threads",
-        "query-tool-usage",
-    ]
+    assert payload["scenario_coverage"]["uncovered_artifacts"] == []
+    assert payload["scenario_coverage"]["uncovered_operations"] == []
+    assert payload["scenario_coverage"]["uncovered_declared_operations"] == []
+
+
+def test_strict_graph_rejects_an_uncovered_declared_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    coverage = build_runtime_scenario_coverage()
+    monkeypatch.setattr(
+        artifact_graph,
+        "build_runtime_scenario_coverage",
+        lambda: replace(coverage, uncovered_declared_operations=("cross-surface-operation",)),
+    )
+
+    assert artifact_graph.main(["--strict"]) == 1

@@ -126,6 +126,8 @@ class ScenarioMetadata:
     origin: str = "authored"
     path_targets: tuple[str, ...] = ()
     artifact_targets: tuple[str, ...] = ()
+    conceptual_path_targets: tuple[str, ...] = ()
+    conceptual_artifact_targets: tuple[str, ...] = ()
     operation_targets: tuple[str, ...] = ()
     maintenance_targets: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
@@ -144,6 +146,8 @@ class ScenarioMetadata:
             origin=payload_string(payload.get("origin"), "authored"),
             path_targets=payload_string_tuple(payload.get("path_targets")),
             artifact_targets=payload_string_tuple(payload.get("artifact_targets")),
+            conceptual_path_targets=payload_string_tuple(payload.get("conceptual_path_targets")),
+            conceptual_artifact_targets=payload_string_tuple(payload.get("conceptual_artifact_targets")),
             operation_targets=payload_string_tuple(payload.get("operation_targets")),
             maintenance_targets=payload_string_tuple(payload.get("maintenance_targets")),
             tags=payload_string_tuple(payload.get("tags")),
@@ -163,6 +167,8 @@ class ScenarioMetadata:
             origin=_object_string_attribute(obj, "origin", "authored"),
             path_targets=_object_string_tuple_attribute(obj, "path_targets"),
             artifact_targets=_object_string_tuple_attribute(obj, "artifact_targets"),
+            conceptual_path_targets=_object_string_tuple_attribute(obj, "conceptual_path_targets"),
+            conceptual_artifact_targets=_object_string_tuple_attribute(obj, "conceptual_artifact_targets"),
             operation_targets=_object_string_tuple_attribute(obj, "operation_targets"),
             maintenance_targets=_object_string_tuple_attribute(obj, "maintenance_targets"),
             tags=_object_string_tuple_attribute(obj, "tags"),
@@ -182,6 +188,10 @@ class ScenarioMetadata:
             payload["path_targets"] = list(self.path_targets)
         if self.artifact_targets:
             payload["artifact_targets"] = list(self.artifact_targets)
+        if self.conceptual_path_targets:
+            payload["conceptual_path_targets"] = list(self.conceptual_path_targets)
+        if self.conceptual_artifact_targets:
+            payload["conceptual_artifact_targets"] = list(self.conceptual_artifact_targets)
         if self.operation_targets:
             payload["operation_targets"] = list(self.operation_targets)
         if self.maintenance_targets:
@@ -215,6 +225,12 @@ class ScenarioMetadata:
             artifact_targets=merge_unique_string_tuples(
                 self.artifact_targets, *(other.artifact_targets for other in others)
             ),
+            conceptual_path_targets=merge_unique_string_tuples(
+                self.conceptual_path_targets, *(other.conceptual_path_targets for other in others)
+            ),
+            conceptual_artifact_targets=merge_unique_string_tuples(
+                self.conceptual_artifact_targets, *(other.conceptual_artifact_targets for other in others)
+            ),
             operation_targets=merge_unique_string_tuples(
                 self.operation_targets, *(other.operation_targets for other in others)
             ),
@@ -243,6 +259,8 @@ class ScenarioMetadata:
             origin=self.origin,
             path_targets=self.path_targets or defaults.path_targets,
             artifact_targets=self.artifact_targets or defaults.artifact_targets,
+            conceptual_path_targets=self.conceptual_path_targets or defaults.conceptual_path_targets,
+            conceptual_artifact_targets=self.conceptual_artifact_targets or defaults.conceptual_artifact_targets,
             operation_targets=(
                 self.operation_targets
                 if preserve_explicit_operations
@@ -276,7 +294,8 @@ class ScenarioMetadata:
         return tuple(target.name for target in self.resolve_runtime_maintenance_targets())
 
     def declared_operation_targets(self) -> tuple[str, ...]:
-        return tuple(operation.name for operation in self.resolve_declared_operations())
+        self.resolve_declared_operations()
+        return self.operation_targets
 
     def resolve_runtime_paths(self) -> tuple[ArtifactPath, ...]:
         return runtime_artifact_graph().resolve_paths(self.path_targets)
@@ -285,7 +304,13 @@ class ScenarioMetadata:
         return runtime_artifact_graph().resolve_artifacts(self.artifact_targets)
 
     def resolve_runtime_operations(self) -> tuple[OperationSpec, ...]:
-        return runtime_artifact_graph().resolve_operations(self.operation_targets)
+        runtime_targets, declared_only_targets = _partition_runtime_operation_targets(self.operation_targets)
+        if declared_only_targets:
+            declared_names = set(declared_operation_target_names())
+            for name in declared_only_targets:
+                if name not in declared_names:
+                    raise KeyError(name)
+        return runtime_artifact_graph().resolve_operations(runtime_targets)
 
     def resolve_runtime_maintenance_targets(self) -> tuple[MaintenanceTargetSpec, ...]:
         return runtime_artifact_graph().resolve_maintenance_targets(self.maintenance_targets)
@@ -293,7 +318,13 @@ class ScenarioMetadata:
     def resolve_declared_operations(self) -> tuple[OperationSpec, ...]:
         from polylogue.operations import build_declared_operation_catalog
 
-        return build_declared_operation_catalog().resolve(self.operation_targets)
+        catalog = build_declared_operation_catalog()
+        by_name = catalog.by_name()
+        declared_names = set(declared_operation_target_names())
+        for name in self.operation_targets:
+            if name not in declared_names:
+                raise KeyError(name)
+        return tuple(by_name[name] for name in self.operation_targets if name in by_name)
 
 
 __all__ = [
