@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 from subprocess import CompletedProcess
+
+import pytest
 
 from devtools import lane_init
 
@@ -55,7 +58,7 @@ def test_guard_check_runs_lane_interpreter_from_lane_root(tmp_path: Path) -> Non
     assert lane_init._guard_check(lane) is None
 
 
-def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch) -> None:
+def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     lane = tmp_path / "lane"
     lane.mkdir()
     monkeypatch.setenv("VIRTUAL_ENV", "/coordinator/.venv")
@@ -64,7 +67,7 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch)
     captured: dict[str, object] = {}
 
     def fake_run(
-        cmd: object,
+        cmd: Sequence[str],
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
