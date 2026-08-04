@@ -294,7 +294,8 @@ class ScenarioMetadata:
         return tuple(target.name for target in self.resolve_runtime_maintenance_targets())
 
     def declared_operation_targets(self) -> tuple[str, ...]:
-        return tuple(operation.name for operation in self.resolve_declared_operations())
+        self.resolve_declared_operations()
+        return self.operation_targets
 
     def resolve_runtime_paths(self) -> tuple[ArtifactPath, ...]:
         return runtime_artifact_graph().resolve_paths(self.path_targets)

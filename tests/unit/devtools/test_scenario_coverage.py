@@ -41,6 +41,15 @@ def test_runtime_coverage_opens_when_a_declared_route_scenario_is_removed() -> N
     assert not coverage.paths["tag-mutation-loop"].complete
 
 
+def test_runtime_coverage_opens_when_a_declared_only_operation_scenario_is_removed() -> None:
+    projections = build_scenario_projection_entries()
+    coverage = build_runtime_scenario_coverage(
+        projections=tuple(projection for projection in projections if projection.name != "scale-regression")
+    )
+
+    assert "materialize-run-projection" in coverage.uncovered_declared_operations
+
+
 def test_runtime_coverage_rejects_a_missing_declared_runtime_target() -> None:
     projections = build_scenario_projection_entries()
     mutation_routes = next(projection for projection in projections if projection.name == "mutation-routes")

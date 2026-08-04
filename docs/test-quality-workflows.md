@@ -28,7 +28,7 @@ Current registry snapshot:
 - covered runtime artifacts: `57`
 - covered runtime operations: `55`
 - covered maintenance targets: `5`
-- covered declared operation targets: `76`
+- covered declared operation targets: `77`
 - uncovered runtime paths: —
 - uncovered runtime artifacts: —
 - uncovered runtime operations: —

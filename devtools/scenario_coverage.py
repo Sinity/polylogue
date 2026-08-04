@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from devtools.scenario_projection_catalog import build_scenario_projection_entries
 from polylogue.artifacts.graph import build_artifact_graph
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.operations import build_declared_operation_catalog
-from polylogue.scenarios import ScenarioProjectionEntry
+from polylogue.scenarios import ScenarioProjectionEntry, declared_operation_target_names
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,14 +93,13 @@ def build_runtime_scenario_coverage(
 ) -> RuntimeScenarioCoverage:
     scenario_projections = projections or build_scenario_projection_entries()
     graph = build_artifact_graph()
-    declared_operation_catalog = build_declared_operation_catalog()
     artifact_refs: dict[str, list[ScenarioCoverageRef]] = {name: [] for name in graph.by_name()}
     operation_refs: dict[str, list[ScenarioCoverageRef]] = {operation.name: [] for operation in graph.operations}
     maintenance_target_refs: dict[str, list[ScenarioCoverageRef]] = {
         target.name: [] for target in graph.maintenance_targets
     }
     declared_operation_refs: dict[str, list[ScenarioCoverageRef]] = {
-        operation.name: [] for operation in declared_operation_catalog.specs
+        name: [] for name in declared_operation_target_names()
     }
     path_refs: dict[str, list[ScenarioCoverageRef]] = {path.name: [] for path in graph.paths}
     path_operation_refs: dict[str, dict[str, list[ScenarioCoverageRef]]] = {
@@ -127,8 +125,8 @@ def build_runtime_scenario_coverage(
         }
         for target in maintenance_targets:
             maintenance_target_refs[target.name].append(ref)
-        for operation in projection.resolve_declared_operations():
-            declared_operation_refs[operation.name].append(ref)
+        for operation_name in projection.declared_operation_targets():
+            declared_operation_refs[operation_name].append(ref)
 
     covered_artifacts = {name: tuple(refs) for name, refs in artifact_refs.items() if refs}
     covered_operations = {name: tuple(refs) for name, refs in operation_refs.items() if refs}
