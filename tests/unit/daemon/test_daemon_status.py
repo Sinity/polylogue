@@ -1690,6 +1690,89 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
         assert "unknown debt" in str(claim_guard["converged"]["signal"])
 
 
+@pytest.mark.parametrize("collector_state", ["timeout", "error", "empty"])
+def test_build_daemon_status_claim_guard_uses_real_registry_convergence_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, collector_state: str
+) -> None:
+    """A registry failure cannot be converted into a healthy empty ledger."""
+    import time
+
+    storage = status_module.ArchiveStorageStatus(
+        active_store="archive_file_set",
+        active_db_path=str(tmp_path / "index.db"),
+        archive_root=str(tmp_path),
+        configured_archive_root=str(tmp_path),
+        archive_ready=True,
+        archive_materialization_ready=True,
+        final_shape_ready=True,
+        archive_schema_ready=True,
+        present_tiers=["source", "index", "embeddings", "user", "ops"],
+    )
+    raw_readiness = status_module.RawMaterializationReadiness(
+        available=True,
+        raw_authority_frontier={"lifecycle_status": "completed"},
+    )
+    frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
+
+    def convergence_collector(*_args: object, **_kwargs: object) -> status_module.ConvergenceDebtSummary:
+        if collector_state == "timeout":
+            time.sleep(1.0)
+        if collector_state == "error":
+            raise RuntimeError("simulated convergence collector failure")
+        return status_module.ConvergenceDebtSummary()
+
+    monkeypatch.setattr(status_module, "_db_size_info", lambda: {})
+    monkeypatch.setattr(status_module, "_blob_size_info", lambda: 0)
+    monkeypatch.setattr(status_module, "_archive_storage_info", lambda: storage)
+    monkeypatch.setattr(status_module, "_fts_readiness_info", lambda: {"messages_ready": True})
+    monkeypatch.setattr(status_module, "_insight_freshness_info", lambda: {})
+    monkeypatch.setattr(status_module, "_raw_materialization_readiness_info", lambda **_: raw_readiness)
+    monkeypatch.setattr(status_module, "_raw_replay_backlog_info", lambda **_: {})
+    monkeypatch.setattr(status_module, "_live_cursor_summary_info", lambda: status_module.LiveCursorSummary())
+    monkeypatch.setattr(
+        status_module,
+        "_live_ingest_attempt_summary_info",
+        lambda: status_module.LiveIngestAttemptSummary(),
+    )
+    monkeypatch.setattr(status_module, "convergence_debt_summary_info", convergence_collector)
+    monkeypatch.setattr(status_module, "cursor_lag_summary_info", lambda **_: status_module.CursorLagSummary())
+    monkeypatch.setattr(status_module, "_raw_failure_info", lambda: {})
+    monkeypatch.setattr(
+        status_module,
+        "_blob_publication_reservation_info",
+        lambda: status_module.BlobPublicationReservationStatus(),
+    )
+    monkeypatch.setattr(status_module, "embedding_readiness_info", lambda *_: {})
+    monkeypatch.setattr(status_module, "_active_status_db_path", lambda: tmp_path / "index.db")
+    monkeypatch.setattr(status_module, "archive_root", lambda: tmp_path)
+    monkeypatch.setattr(status_module, "_raw_frontier_integrity_info", lambda _: frontier)
+    monkeypatch.setattr(status_module, "catchup_status_info", lambda *_a, **_k: status_module.CatchupStatus())
+    monkeypatch.setattr(status_module, "_check_daemon_liveness", lambda *_: False)
+    monkeypatch.setattr(status_module, "check_health", lambda **_: DaemonHealth())
+
+    specs = status_module._daemon_status_component_specs(
+        checked_health=lambda: DaemonHealth(),
+        include_raw_replay_backlog=False,
+        include_exact_raw_materialization_readiness=False,
+    )
+    status = build_daemon_status(
+        sources=(),
+        browser_capture_enabled=False,
+        include_raw_replay_backlog=False,
+        include_exact_raw_materialization_readiness=False,
+        registry=StatusComponentRegistry(specs),
+    )
+
+    claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
+    if collector_state == "empty":
+        assert status.convergence.available is True
+        assert claim_guard["converged"]["value"] is True
+        assert claim_guard["converged"]["reason"] == "ready"
+    else:
+        assert status.convergence.available is False
+        assert claim_guard["converged"]["value"] is False
+
+
 def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
     """polylogue-yla8.7 AC: a current accepted append head whose predecessor
     chain is broken must surface through ``raw_frontier_integrity``, render
