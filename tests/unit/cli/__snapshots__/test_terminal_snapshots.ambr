@@ -204,6 +204,7 @@
       agent        Install executable agent guidance.
       annotations  Import typed annotation batches.
       compare      Blind pairwise comparative judgment and calibration.
+      setting      Get, set, and list durable user settings.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_narrow_width
@@ -493,6 +494,7 @@
       annotations  Import typed annotation batches.
       compare      Blind pairwise comparative judgment and
                    calibration.
+      setting      Get, set, and list durable user settings.
   '''
 # ---
 # name: TestTerminalDimensions.test_help_at_wide_width
@@ -684,5 +686,6 @@
       agent        Install executable agent guidance.
       annotations  Import typed annotation batches.
       compare      Blind pairwise comparative judgment and calibration.
+      setting      Get, set, and list durable user settings.
   '''
 # ---

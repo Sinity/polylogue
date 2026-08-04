@@ -44,7 +44,7 @@ def setting_command() -> None:
 
 @setting_command.command("get")
 @click.argument("setting_key")
-@click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
+@click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
 def setting_get_command(setting_key: str, output_format: str) -> None:
     """Print one setting's stored value, or report it as unset."""
 
@@ -67,7 +67,7 @@ def setting_get_command(setting_key: str, output_format: str) -> None:
 @setting_command.command("set")
 @click.argument("setting_key")
 @click.argument("value")
-@click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
+@click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
 def setting_set_command(setting_key: str, value: str, output_format: str) -> None:
     """Insert-or-update one typed setting row (rejects unknown keys/values)."""
 
@@ -85,7 +85,7 @@ def setting_set_command(setting_key: str, value: str, output_format: str) -> Non
 
 
 @setting_command.command("list")
-@click.option("--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
+@click.option("-f", "--format", "output_format", type=click.Choice(("text", "json")), default="text", show_default=True)
 def setting_list_command(output_format: str) -> None:
     """List every stored setting row."""
 
