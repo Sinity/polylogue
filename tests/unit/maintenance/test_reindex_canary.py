@@ -11,11 +11,19 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.maintenance.reindex_canary import (
+    CanaryDifferenceReview,
+    CanarySelectionError,
     DifferenceClassification,
     DifferenceOperation,
     ExpectedDifference,
+    UnclassifiedCanaryDiffError,
     compare_reindex_generations,
+    load_canary_report,
+    select_canary_sessions,
+    write_canary_report,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -28,17 +36,20 @@ def _seed_index(
     block_text: str = "stable transcript",
     profile_materialized_at: str = "first-run",
     profile_message_count: int = 1,
+    origins: tuple[str, ...] | None = None,
 ) -> None:
     initialize_archive_database(path, ArchiveTier.INDEX)
     with sqlite3.connect(path) as connection:
-        for native_id in sessions:
-            session_id = f"codex-session:{native_id}"
+        session_origins = origins or ("codex-session",) * len(sessions)
+        assert len(session_origins) == len(sessions)
+        for native_id, origin in zip(sessions, session_origins, strict=True):
+            session_id = f"{origin}:{native_id}"
             connection.execute(
                 """
-                INSERT INTO sessions(native_id, origin, content_hash, message_count)
-                VALUES (?, 'codex-session', ?, 1)
+                INSERT INTO sessions(native_id, origin, raw_id, content_hash, message_count)
+                VALUES (?, ?, ?, ?, 1)
                 """,
-                (native_id, native_id.encode().ljust(32, b"-")),
+                (native_id, origin, f"raw-{native_id}", native_id.encode().ljust(32, b"-")),
             )
             connection.execute(
                 """
@@ -160,3 +171,106 @@ def test_canary_comparison_is_read_only(tmp_path: Path) -> None:
 
     after = current.stat().st_ino, current.stat().st_size, candidate.stat().st_ino, candidate.stat().st_size
     assert after == before
+
+
+def test_selector_samples_each_origin_and_keeps_explicit_inputs(tmp_path: Path) -> None:
+    index = tmp_path / "index.db"
+    _seed_index(
+        index,
+        sessions=("codex-a", "codex-pathology", "chat-a", "chat-sample", "claude-a", "claude-pathology"),
+        origins=(
+            "codex-session",
+            "codex-session",
+            "chatgpt-export",
+            "chatgpt-export",
+            "claude-ai-export",
+            "claude-ai-export",
+        ),
+    )
+
+    selection = select_canary_sessions(
+        index,
+        sessions_per_origin=1,
+        pathology_session_ids=("codex-session:codex-pathology", "claude-ai-export:claude-pathology"),
+        sample_session_ids=("chatgpt-export:chat-sample",),
+    )
+
+    assert selection.origin_counts == (
+        ("chatgpt-export", 2),
+        ("claude-ai-export", 2),
+        ("codex-session", 2),
+    )
+    assert selection.selected_session_ids == (
+        "chatgpt-export:chat-a",
+        "chatgpt-export:chat-sample",
+        "claude-ai-export:claude-a",
+        "claude-ai-export:claude-pathology",
+        "codex-session:codex-a",
+        "codex-session:codex-pathology",
+    )
+    assert selection.selected_raw_ids == (
+        "raw-chat-a",
+        "raw-chat-sample",
+        "raw-claude-a",
+        "raw-claude-pathology",
+        "raw-codex-a",
+        "raw-codex-pathology",
+    )
+
+
+def test_selector_refuses_unknown_or_non_replayable_explicit_sessions(tmp_path: Path) -> None:
+    index = tmp_path / "index.db"
+    _seed_index(index)
+    with pytest.raises(CanarySelectionError, match="not indexed"):
+        select_canary_sessions(index, pathology_session_ids=("codex-session:missing",))
+    with sqlite3.connect(index) as connection:
+        connection.execute("UPDATE sessions SET raw_id = NULL")
+        connection.commit()
+    with pytest.raises(CanarySelectionError, match="no raw_id"):
+        select_canary_sessions(index, pathology_session_ids=("codex-session:alpha",))
+
+
+def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="classification is incomplete"):
+        write_canary_report(report_path, selection=selection, comparison=comparison, reviews=())
+    assert not report_path.exists()
+
+
+def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+
+    durable = write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+    loaded = load_canary_report(report_path)
+
+    assert durable.unclassified_count == 0
+    assert report_path.exists()
+    assert loaded["schema_version"] == 1
+    comparison_payload = loaded["comparison"]
+    assert isinstance(comparison_payload, dict)
+    summary = comparison_payload["summary"]
+    assert isinstance(summary, dict)
+    assert summary["unclassified_count"] == 0
+    assert summary["unexpected_count"] == len(reviews)

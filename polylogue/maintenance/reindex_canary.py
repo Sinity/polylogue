@@ -10,13 +10,14 @@ repair, or otherwise mutate a generation.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from collections import Counter
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 class DifferenceOperation(StrEnum):
@@ -32,6 +33,14 @@ class DifferenceClassification(StrEnum):
 
     EXPECTED = "expected"
     UNEXPECTED = "unexpected"
+
+
+class CanarySelectionError(ValueError):
+    """The requested representative canary cannot be built from this index."""
+
+
+class UnclassifiedCanaryDiffError(ValueError):
+    """A durable report was requested without one review per diff row."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +144,257 @@ class CanaryDiffReport:
             },
             "differences": [item.to_dict() for item in self.differences],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CanarySelection:
+    """Deterministic, read-only input selection for one canary rebuild."""
+
+    index_path: Path
+    sessions_per_origin: int
+    selected_session_ids: tuple[str, ...]
+    selected_raw_ids: tuple[str, ...]
+    sampled_session_ids: tuple[str, ...]
+    pathology_session_ids: tuple[str, ...]
+    sample_session_ids: tuple[str, ...]
+    origin_counts: tuple[tuple[str, int], ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "index_path": str(self.index_path),
+            "sessions_per_origin": self.sessions_per_origin,
+            "selected_session_ids": list(self.selected_session_ids),
+            "selected_raw_ids": list(self.selected_raw_ids),
+            "sampled_session_ids": list(self.sampled_session_ids),
+            "pathology_session_ids": list(self.pathology_session_ids),
+            "sample_session_ids": list(self.sample_session_ids),
+            "origin_counts": dict(self.origin_counts),
+        }
+
+
+def select_canary_sessions(
+    index_path: Path,
+    *,
+    sessions_per_origin: int = 100,
+    pathology_session_ids: Iterable[str] = (),
+    sample_session_ids: Iterable[str] = (),
+) -> CanarySelection:
+    """Select a representative raw-id set from a real active index.
+
+    The automatic portion takes the newest deterministic ``N`` sessions for
+    every origin. Explicit pathology and sample sessions are always included,
+    even when they fall outside that sample. Every explicit id must resolve to
+    an indexed session with a non-null ``raw_id`` because the existing rebuild
+    route accepts raw ids, not summaries or synthetic session descriptions.
+    """
+
+    if sessions_per_origin <= 0:
+        raise CanarySelectionError("sessions_per_origin must be positive")
+    path = Path(index_path)
+    pathology = tuple(dict.fromkeys(str(value) for value in pathology_session_ids))
+    explicit_samples = tuple(dict.fromkeys(str(value) for value in sample_session_ids))
+    explicit = set(pathology).union(explicit_samples)
+    with _open_read_only(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT session_id, origin, raw_id, sort_key_ms
+            FROM sessions
+            ORDER BY origin, (sort_key_ms IS NULL), sort_key_ms DESC, session_id
+            """
+        ).fetchall()
+
+    records: dict[str, tuple[str, str | None]] = {
+        str(row["session_id"]): (
+            str(row["origin"]),
+            str(row["raw_id"]) if row["raw_id"] is not None else None,
+        )
+        for row in rows
+    }
+    missing = sorted(explicit.difference(records))
+    if missing:
+        raise CanarySelectionError(f"explicit canary session(s) are not indexed: {', '.join(missing)}")
+    without_raw = sorted(session_id for session_id in explicit if records[session_id][1] is None)
+    if without_raw:
+        raise CanarySelectionError(
+            "explicit canary session(s) have no raw_id and cannot be replayed: " + ", ".join(without_raw)
+        )
+
+    sampled: list[str] = []
+    origin_seen: dict[str, int] = {}
+    for row in rows:
+        if row["raw_id"] is None:
+            continue
+        origin = str(row["origin"])
+        if origin_seen.get(origin, 0) >= sessions_per_origin:
+            continue
+        session_id = str(row["session_id"])
+        sampled.append(session_id)
+        origin_seen[origin] = origin_seen.get(origin, 0) + 1
+
+    selected = set(sampled).union(explicit)
+    selected_session_ids = tuple(sorted(selected))
+    selected_raw_ids = tuple(
+        sorted(raw_id for session_id in selected if (raw_id := records[session_id][1]) is not None)
+    )
+    origin_counts = Counter(records[session_id][0] for session_id in selected)
+    return CanarySelection(
+        index_path=path,
+        sessions_per_origin=sessions_per_origin,
+        selected_session_ids=selected_session_ids,
+        selected_raw_ids=selected_raw_ids,
+        sampled_session_ids=tuple(sorted(sampled)),
+        pathology_session_ids=tuple(sorted(pathology)),
+        sample_session_ids=tuple(sorted(explicit_samples)),
+        origin_counts=tuple(sorted(origin_counts.items())),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CanaryDifferenceReview:
+    """An explicit operator classification for one diff row."""
+
+    table: str
+    operation: DifferenceOperation
+    identity: tuple[tuple[str, object], ...]
+    classification: DifferenceClassification
+    reference: str
+    rationale: str
+
+    @classmethod
+    def for_difference(
+        cls,
+        difference: RowDifference,
+        *,
+        classification: DifferenceClassification,
+        reference: str,
+        rationale: str,
+    ) -> CanaryDifferenceReview:
+        return cls(
+            table=difference.table,
+            operation=difference.operation,
+            identity=difference.identity,
+            classification=classification,
+            reference=reference,
+            rationale=rationale,
+        )
+
+    @property
+    def key(self) -> tuple[str, DifferenceOperation, tuple[tuple[str, object], ...]]:
+        return self.table, self.operation, self.identity
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "table": self.table,
+            "operation": self.operation.value,
+            "identity": dict(self.identity),
+            "classification": self.classification.value,
+            "reference": self.reference,
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DurableCanaryReport:
+    """The reviewed, persisted canary changelog."""
+
+    selection: CanarySelection
+    comparison: CanaryDiffReport
+    reviews: tuple[CanaryDifferenceReview, ...]
+
+    @property
+    def unclassified_count(self) -> int:
+        return self.comparison.unclassified_count
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 1,
+            "selection": self.selection.to_dict(),
+            "comparison": self.comparison.to_dict(),
+            "reviews": [review.to_dict() for review in self.reviews],
+        }
+
+
+def write_canary_report(
+    output_path: Path,
+    *,
+    selection: CanarySelection,
+    comparison: CanaryDiffReport,
+    reviews: Iterable[CanaryDifferenceReview],
+) -> DurableCanaryReport:
+    """Persist a reviewed report, refusing any incomplete classification.
+
+    Reviews must cover exactly the comparator's row identities. This prevents
+    a report from becoming a durable green-light artifact while a diff was
+    silently omitted from review. The write is atomic and touches only the
+    requested report path, never either SQLite generation.
+    """
+
+    review_list = tuple(reviews)
+    review_by_key: dict[tuple[str, DifferenceOperation, tuple[tuple[str, object], ...]], CanaryDifferenceReview] = {}
+    duplicate_keys: list[object] = []
+    for review in review_list:
+        if not review.reference.strip() or not review.rationale.strip():
+            raise UnclassifiedCanaryDiffError("every canary review needs a non-empty reference and rationale")
+        if review.key in review_by_key:
+            duplicate_keys.append(review.key)
+        review_by_key[review.key] = review
+    difference_keys = {
+        (
+            difference.table,
+            difference.operation,
+            difference.identity,
+        )
+        for difference in comparison.differences
+    }
+    missing_keys = difference_keys.difference(review_by_key)
+    extra_keys = set(review_by_key).difference(difference_keys)
+    if duplicate_keys or missing_keys or extra_keys:
+        detail = [
+            f"duplicate={len(duplicate_keys)}",
+            f"missing={len(missing_keys)}",
+            f"extra={len(extra_keys)}",
+        ]
+        raise UnclassifiedCanaryDiffError("canary report classification is incomplete (" + ", ".join(detail) + ")")
+
+    reviewed_differences = tuple(
+        replace(
+            difference,
+            classification=review_by_key[(difference.table, difference.operation, difference.identity)].classification,
+            rationale=(
+                f"{review_by_key[(difference.table, difference.operation, difference.identity)].reference}: "
+                f"{review_by_key[(difference.table, difference.operation, difference.identity)].rationale}"
+            ),
+        )
+        for difference in comparison.differences
+    )
+    reviewed_comparison = replace(comparison, differences=reviewed_differences)
+    durable = DurableCanaryReport(selection=selection, comparison=reviewed_comparison, reviews=review_list)
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    payload = json.dumps(durable.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
+    with temporary.open("w", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    return durable
+
+
+def load_canary_report(path: Path) -> dict[str, object]:
+    """Read a durable report and reject any persisted unclassified summary."""
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise UnclassifiedCanaryDiffError("canary report root must be an object")
+    comparison = payload.get("comparison")
+    if not isinstance(comparison, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no comparison object")
+    summary = comparison.get("summary")
+    if not isinstance(summary, dict) or summary.get("unclassified_count"):
+        raise UnclassifiedCanaryDiffError("canary report contains unclassified differences")
+    return cast(dict[str, object], payload)
 
 
 # These are SQLite implementation details rather than semantic read models.
@@ -387,10 +647,18 @@ def _quote_identifier(value: str) -> str:
 
 
 __all__ = [
+    "CanaryDifferenceReview",
     "CanaryDiffReport",
+    "CanarySelection",
+    "CanarySelectionError",
+    "DurableCanaryReport",
     "DifferenceClassification",
     "DifferenceOperation",
     "ExpectedDifference",
     "RowDifference",
+    "UnclassifiedCanaryDiffError",
     "compare_reindex_generations",
+    "load_canary_report",
+    "select_canary_sessions",
+    "write_canary_report",
 ]
