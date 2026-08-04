@@ -29,11 +29,19 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.maintenance.blob_ref_liveness_reconciliation import (
+    BlobRefLivenessReconciliationError,
+    reconcile_blob_ref_liveness,
+)
 from polylogue.storage.blob_gc import census_orphaned_blob_refs, run_blob_gc
+from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveHookEvent,
+    deterministic_raw_session_id,
+)
 
 pytestmark = pytest.mark.uses_real_clock(
     "backdates a real blob mtime via os.utime; blob_gc.py's age gate compares it against a real time.time() call"
@@ -109,6 +117,73 @@ def test_hook_payload_ref_survives_gc_while_hook_event_row_exists_then_is_reclai
     deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
     assert deleted == 1
     assert not blob_store.exists(blob_hash)
+
+
+def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hook hash without its canonical ref remains live and rekeyable.
+
+    This creates the state through the production hook writer, then removes
+    its canonical ref and restores the legacy raw-payload reference as an
+    interrupted historical re-key would leave it. The generic liveness
+    classifier must block deletion of that reference, and real blob GC must
+    keep the payload based on ``raw_hook_events.blob_hash`` until repair.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_path = "/hooks/interrupted.jsonl"
+    hook_event_id = "hook-interrupted"
+    native_id = f"{hook_event_id}:native"
+    payload = b'{"event":"PostToolUse","n":2}'
+    _write_hook_event(archive_root, hook_event_id=hook_event_id, source_path=source_path, payload=payload)
+
+    blob_store = BlobStore(archive_root / "blob")
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        blob_hash = conn.execute(
+            "SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)
+        ).fetchone()[0]
+        legacy_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
+        conn.execute("DELETE FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?", (hook_event_id,))
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, ?, ?)
+            """,
+            (blob_hash, legacy_ref_id, source_path, len(payload), 1_700_000_000_000),
+        )
+        classification = classify_blob_ref_liveness(conn)
+        conn.commit()
+
+    assert classification.rekeyable_hook_payload_count == 1
+    assert classification.safe_to_apply is False
+    assert all(candidate.ref_id != legacy_ref_id for candidate in classification.candidates)
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.validate_migration_backup_manifest",
+        lambda *args, **kwargs: args[0],
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.offline_maintenance_block_reason",
+        lambda *args, **kwargs: None,
+    )
+    with pytest.raises(BlobRefLivenessReconciliationError, match="rekeyable_hook_payloads=1"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=tmp_path / "liveness.jsonl",
+            dry_run=False,
+        )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?", (legacy_ref_id,)
+        ).fetchone() == (1,)
+
+    blob_hash_hex = blob_hash.hex()
+    _backdate(blob_store, blob_hash_hex)
+    deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
+    assert deleted == 0
+    assert blob_store.exists(blob_hash_hex)
 
 
 def test_attachment_ref_type_joins_against_raw_sessions_not_raw_artifacts(tmp_path: Path) -> None:

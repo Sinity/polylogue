@@ -201,6 +201,10 @@ def _blob_refs_has_ref_type_column(conn: sqlite3.Connection) -> bool:
     return "ref_type" in columns and "ref_id" in columns
 
 
+def _table_has_blob_hash_column(conn: sqlite3.Connection, table: str) -> bool:
+    return any(str(row[1]) == "blob_hash" for row in conn.execute(f"PRAGMA table_info({table})"))
+
+
 def _blob_refs_still_live(conn: sqlite3.Connection, blob_bytes: bytes) -> bool:
     """Return True if some ``blob_refs`` row for this hash has a live referent.
 
@@ -243,8 +247,8 @@ def _archive_reference_surfaces(
         return []
 
     surfaces: list[str] = []
-    for table in ("raw_sessions", "attachments"):
-        if not _table_exists(conn, table):
+    for table in ("raw_sessions", "attachments", "raw_hook_events"):
+        if not _table_exists(conn, table) or not _table_has_blob_hash_column(conn, table):
             continue
         row = conn.execute(f"SELECT 1 FROM {table} WHERE blob_hash = ? LIMIT 1", (blob_bytes,)).fetchone()
         if row is not None:
