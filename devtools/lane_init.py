@@ -151,6 +151,11 @@ def _lane_env(worktree: Path) -> dict[str, str]:
     env.pop("VIRTUAL_ENV", None)
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
+    # uv's project-routing environment variables override subprocess.cwd.
+    # Leaving either behind can install the coordinator checkout into this
+    # lane's otherwise correctly selected .venv.
+    env.pop("UV_PROJECT", None)
+    env.pop("UV_WORKING_DIR", None)
     env["UV_PROJECT_ENVIRONMENT"] = str(worktree / ".venv")
     return env
 

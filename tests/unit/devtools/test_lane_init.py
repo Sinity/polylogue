@@ -10,6 +10,28 @@ import pytest
 from devtools import lane_init
 
 
+def _write_minimal_uv_project(root: Path) -> None:
+    (root / "polylogue").mkdir(parents=True)
+    (root / "polylogue" / "__init__.py").write_text("", encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        """\
+[project]
+name = "polylogue"
+version = "0.0.0"
+requires-python = ">=3.14"
+
+[project.optional-dependencies]
+dev-common = []
+speed = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+""",
+        encoding="utf-8",
+    )
+
+
 def test_recommended_workers_fair_share_floor_and_cap() -> None:
     assert lane_init.recommended_workers(16, cpu_count=24) == 1
     assert lane_init.recommended_workers(8, cpu_count=24) == 3
@@ -95,3 +117,18 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch:
     assert "PYTHONHOME" not in env
     assert "PYTHONPATH" not in env
     assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
+
+
+def test_provision_venv_ignores_inherited_uv_project_and_guard_uses_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A coordinator's UV_PROJECT must not install its editable source in a lane venv."""
+    coordinator = tmp_path / "coordinator"
+    lane = tmp_path / "lane"
+    _write_minimal_uv_project(coordinator)
+    _write_minimal_uv_project(lane)
+    monkeypatch.setenv("UV_PROJECT", str(coordinator))
+    monkeypatch.setenv("UV_WORKING_DIR", str(coordinator))
+
+    assert lane_init._provision_venv(lane) is None
+    assert lane_init._guard_check(lane) is None
