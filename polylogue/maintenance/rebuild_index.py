@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_fac
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.storage.index_generation import IndexGeneration, IndexRebuildTransaction
 
 _PLANNER_STATS_ANALYSIS_LIMIT = 1000
 # A fresh generation begins with representative bootstrap statistics, but a
@@ -387,6 +388,11 @@ class RebuildIndexReceipt:
     readiness: dict[str, object]
     replay: dict[str, object]
     transaction: dict[str, object] | None = None
+    # Explicit operation evidence, retained in every pass receipt as well as
+    # returned to CLI/HTTP callers.  ``transaction`` remains the backwards
+    # compatible full checkpoint payload; this compact view is the stable
+    # operator contract for ownership, heartbeat, cursor, delta, and recovery.
+    operation: dict[str, object] = field(default_factory=dict)
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -410,9 +416,51 @@ class RebuildIndexReceipt:
             "generation": self.generation,
             "readiness": self.readiness,
             "transaction": self.transaction,
+            "operation": self.operation,
             "timings_s": self.timings_s,
             **self.replay,
         }
+
+
+def _operation_evidence(
+    root: Path,
+    *,
+    generation: IndexGeneration | None,
+    transaction: IndexRebuildTransaction | None,
+    recovery_state: str,
+) -> dict[str, object]:
+    """Return the compact, durable operation receipt shared by every pass.
+
+    This is intentionally assembled from the existing archive-root lease and
+    transaction checkpoint.  It adds no competing ownership mechanism and
+    keeps the full checkpoint in ``transaction`` for callers that need it.
+    """
+    from polylogue.storage.index_generation import rebuild_lease_status, source_revision_snapshot
+
+    transaction_payload = asdict(transaction) if transaction is not None else {}
+    generation_payload = asdict(generation) if generation is not None else {}
+    source_snapshot = transaction_payload.get("source_snapshot") or generation_payload.get("source_snapshot")
+    current_snapshot = source_revision_snapshot(root) if (root / "source.db").exists() else None
+    return {
+        "owner": {
+            "generation_owner_id": transaction_payload.get("generation_owner_id") or generation_payload.get("owner_id"),
+            "pid": transaction_payload.get("owner_pid"),
+            "host": transaction_payload.get("owner_host"),
+            "lease": rebuild_lease_status(root).to_dict(),
+        },
+        "generation": {
+            "generation_id": generation_payload.get("generation_id"),
+            "state": generation_payload.get("state"),
+        },
+        "heartbeat": {"at_ms": transaction_payload.get("heartbeat_at_ms")},
+        "cursor": transaction.cursor if transaction is not None else None,
+        "delta": {
+            "source_snapshot_matches": current_snapshot == source_snapshot if current_snapshot is not None else None,
+            "current_source_snapshot": current_snapshot,
+            "transaction_source_snapshot": source_snapshot,
+        },
+        "recovery_state": recovery_state,
+    }
 
 
 def validate_rebuild_index_request(request: RebuildIndexRequest) -> None:
@@ -553,6 +601,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     the *location* it resolved, catching e.g. a concurrent devtools campaign
     or a foreign/rotated root before this rebuild can act on stale identity).
     """
+    from polylogue.storage.index_generation import RebuildLease
     from polylogue.storage.sqlite.connection_profile import (
         check_mapped_bytes_budget_against_cgroup_limit,
         log_mapped_bytes_budget_check,
@@ -575,12 +624,17 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
         raise RuntimeError(reason)
 
-    owned = OwnedArchiveLocation.acquire(location)
-    try:
-        assert_owns_archive_location(owned, location)
-        return await _rebuild_index_from_source_owned(request, root=root, owned=owned)
-    finally:
-        owned.release()
+    # This is deliberately outside archive-location acquisition and
+    # generation-store construction.  Those steps can create/rewrite archive
+    # bookkeeping, so a competing ArchiveStore writer must fail before the
+    # rebuild's first lifecycle mutation, not only during replay.
+    with RebuildLease(root):
+        owned = OwnedArchiveLocation.acquire(location)
+        try:
+            assert_owns_archive_location(owned, location)
+            return await _rebuild_index_from_source_owned(request, root=root, owned=owned)
+        finally:
+            owned.release()
 
 
 async def _rebuild_index_from_source_owned(
@@ -591,11 +645,15 @@ async def _rebuild_index_from_source_owned(
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
-    from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
+    from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
     from polylogue.storage.repair import repair_session_insights
 
     generation_store = IndexGenerationStore(owned.location)
-    with RebuildLease(root):
+    # ``rebuild_index_from_source`` already acquired this root's
+    # ``RebuildLease`` before any operation mutation.  Retain this scope only
+    # to preserve the body's indentation and make the outer ownership boundary
+    # explicit at the public entry point.
+    with contextlib.nullcontext():
         raw_count = count_source_raw_sessions(root)
         if raw_count == 0:
             return RebuildIndexReceipt(
@@ -609,6 +667,7 @@ async def _rebuild_index_from_source_owned(
                 generation={},
                 readiness={},
                 replay={},
+                operation=_operation_evidence(root, generation=None, transaction=None, recovery_state="empty-source"),
             )
         resumable_full_source = not request.raw_ids and not request.only_missing and request.max_blob_mb is None
         transaction = None
@@ -868,6 +927,9 @@ async def _rebuild_index_from_source_owned(
                             "deferred_reason": "pass-deadline-mid-replay",
                         },
                         transaction=cast(dict[str, object], asdict(transaction)),
+                        operation=_operation_evidence(
+                            root, generation=generation, transaction=transaction, recovery_state="deferred"
+                        ),
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
@@ -944,6 +1006,9 @@ async def _rebuild_index_from_source_owned(
                         readiness={},
                         replay=replay,
                         transaction=cast(dict[str, object], asdict(transaction)),
+                        operation=_operation_evidence(
+                            root, generation=generation, transaction=transaction, recovery_state=status
+                        ),
                         timings_s=cast(dict[str, float], pass_cost.to_dict()),
                     )
                     generation_store.save_pass_receipt(transaction.operation_id, pass_receipt.to_dict())
@@ -1067,6 +1132,12 @@ async def _rebuild_index_from_source_owned(
         except Exception:
             if transaction is not None and not source_drifted:
                 with contextlib.suppress(Exception):
+                    # A process can fail after ``checkpoint_transaction`` has
+                    # atomically published the output batch but before this
+                    # frame receives its returned replacement object.  Never
+                    # let this stale local value rewind that committed cursor
+                    # while recording recovery state.
+                    transaction = generation_store.load_transaction(transaction.operation_id)
                     generation_store.checkpoint_transaction(
                         transaction,
                         status="failed",
@@ -1088,6 +1159,12 @@ async def _rebuild_index_from_source_owned(
         readiness=cast(dict[str, object], readiness),
         replay=replay,
         transaction=cast(dict[str, object], asdict(transaction)) if transaction is not None else None,
+        operation=_operation_evidence(
+            root,
+            generation=generation,
+            transaction=transaction,
+            recovery_state="promoted" if request.promote else "ready",
+        ),
         timings_s={key: round(value, 3) for key, value in terminal_timings_s.items()},
     )
     if transaction is not None:
@@ -1162,6 +1239,7 @@ def rebuild_status(
 
     transaction_payload: dict[str, object] | None = None
     delta: dict[str, object] | None = None
+    transaction = None
     if resolved_operation_id is not None:
         try:
             transaction = store.load_transaction(resolved_operation_id)
@@ -1205,6 +1283,12 @@ def rebuild_status(
         "schema_version": schema_version,
         "operation_id": resolved_operation_id,
         "transaction": transaction_payload,
+        "operation": _operation_evidence(
+            archive_root,
+            generation=None,
+            transaction=transaction,
+            recovery_state=(str(transaction_payload["status"]) if transaction_payload is not None else "idle"),
+        ),
         "delta": delta,
         "recovery": recovery,
     }
