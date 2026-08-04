@@ -44,6 +44,13 @@
 #   git-push: false    # Disable git push (export locally only)
 #   git-repo: ""       # Separate git repo for backups (default: project repo)
 
+# A linked worktree keeps the JSONL snapshot from its branch point while all
+# worktrees share one live Dolt database. The Beads post-checkout/post-merge
+# importer is a blind upsert, so importing that snapshot can revert newer
+# coordinator writes. JSONL remains an export and explicit reconciliation
+# input; automatic hook imports stay disabled.
+import.auto: false
+
 # Integration settings (access with 'bd config get/set')
 # Non-secret keys (stored in the database):
 # - jira.url, jira.project

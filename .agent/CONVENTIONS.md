@@ -103,10 +103,10 @@ bead's cited facts against master before coding.
   trusting anything the lane reports — a 2026-08-01 dispatch silently ran in
   the main checkout and left ~1700 uncommitted lines in the live tree. The
   same check warns when the worktree's frozen `.beads/issues.jsonl` has gone
-  stale relative to the main checkout (any bd invocation or checkout hook in
-  that worktree can then time-machine live bead state — polylogue-2ara);
-  prefer lanes that make no bd writes at all, reporting bead-state changes
-  back to the coordinator instead.
+  stale relative to the main checkout. Hook auto-import is disabled because it
+  would blindly upsert that snapshot into shared live state. Lanes still make
+  no bd writes; coordinators audit and re-apply their Beads writes at
+  merge-train boundaries before exporting state (polylogue-2ara).
 - **Serial heavy, parallel light.** Serialize anything sharing the pytest
   temp DBs (`/realm/tmp/polylogue-pytest`) or the archive DB; parallel tool
   calls are for reads/searches only.
