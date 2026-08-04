@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from devtools import corpus_fidelity
-from polylogue.maintenance.archive_verification import (
-    CORPUS_FIDELITY_CHECKS,
-    verify_archive,
-)
-from tests.infra.workload_artifacts import SeededArchiveArtifact
+from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
 
 def test_command_runs_registered_gate_against_real_seeded_archive(
@@ -30,34 +28,79 @@ def test_command_runs_registered_gate_against_real_seeded_archive(
     assert "clear" in output
 
 
-def test_command_binds_exact_registry_selection_and_json_contract(
+def _clone(artifact: SeededArchiveArtifact, destination: Path) -> Path:
+    return clone_seeded_archive(artifact, destination).root
+
+
+@pytest.mark.parametrize(
+    ("violation", "expected_check"),
+    (
+        ("absent", "corpus-absences"),
+        ("attachment", "corpus-attachment-fidelity"),
+        ("revision", "corpus-revision-fidelity"),
+    ),
+)
+def test_command_blocks_real_seeded_archive_fidelity_violations(
+    corpus_fidelity_archive: SeededArchiveArtifact,
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    violation: str,
+    expected_check: str,
 ) -> None:
-    captured: dict[str, object] = {}
+    """The command drives the production registry over a writable clone of
+    the real seeded SQLite archive. Removing its ``verify_archive`` call or
+    any selected checker leaves the corresponding archive mutation green.
+    """
+    root = _clone(corpus_fidelity_archive, tmp_path / violation)
+    with sqlite3.connect(root / "index.db") as index:
+        session_row = index.execute("SELECT session_id FROM sessions ORDER BY session_id LIMIT 1").fetchone()
+        message_row = index.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1",
+            session_row,
+        ).fetchone()
+        assert session_row is not None
+        assert message_row is not None
+        session_id = str(session_row[0])
+        if violation == "attachment":
+            index.execute(
+                "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('fixture-unfetched', 'unfetched')"
+            )
+            index.execute(
+                "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin) "
+                "VALUES ('fixture-unfetched', ?, ?, 99, 'drive')",
+                (session_id, message_row[0]),
+            )
+    if violation in {"absent", "revision"}:
+        origin, native_id = session_id.split(":", 1)
+        raw_id = f"fixture-{violation}"
+        provider_session_id = native_id if violation == "revision" else "absent"
+        with sqlite3.connect(root / "source.db") as source:
+            source.execute(
+                "INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, "
+                "acquired_at_ms, logical_source_key) VALUES (?, ?, ?, ?, ?, 10, 100, ?)",
+                (
+                    raw_id,
+                    origin,
+                    provider_session_id,
+                    f"/fixture/{raw_id}",
+                    hashlib.sha256(raw_id.encode()).digest(),
+                    f"fixture:{provider_session_id}",
+                ),
+            )
+            source.execute(
+                "INSERT INTO raw_session_memberships(raw_id, logical_source_key, provider_session_id, "
+                "source_revision, normalized_content_hash, message_count) VALUES (?, ?, ?, 'fixture-revision', ?, ?)",
+                (
+                    raw_id,
+                    f"fixture:{provider_session_id}",
+                    provider_session_id,
+                    b"f" * 32,
+                    100_000 if violation == "revision" else 4,
+                ),
+            )
 
-    def fake_verify_archive(
-        archive_root: Path,
-        *,
-        checks: tuple[str, ...],
-        sample_limit: int,
-    ) -> object:
-        captured["archive_root"] = archive_root
-        captured["checks"] = checks
-        captured["sample_limit"] = sample_limit
-        return verify_archive(tmp_path / "missing", checks=checks, sample_limit=sample_limit)
-
-    monkeypatch.setattr(corpus_fidelity, "verify_archive", fake_verify_archive)
-    exit_code = corpus_fidelity.main(["--archive-root", str(tmp_path / "requested"), "--sample-limit", "3", "--json"])
-
+    exit_code = corpus_fidelity.main(["--archive-root", str(root), "--json"])
     assert exit_code == 1
-    assert captured == {
-        "archive_root": tmp_path / "requested",
-        "checks": CORPUS_FIDELITY_CHECKS,
-        "sample_limit": 3,
-    }
     payload = json.loads(capsys.readouterr().out)
     assert payload["blocking"] is True
-    assert [check["name"] for check in payload["checks"]] == list(CORPUS_FIDELITY_CHECKS)
-    assert all(check["status"] == "skip" for check in payload["checks"])
+    assert {check["name"]: check["status"] for check in payload["checks"]}[expected_check] == "error"

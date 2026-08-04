@@ -235,6 +235,7 @@ class ArchiveVerificationReport(OutcomeReport):
 
 
 ArchiveVerificationCheckFn = Callable[[Path, int], ArchiveVerificationCheck]
+ArchiveVerificationCandidateCheckFn = Callable[[Path, Path, int], ArchiveVerificationCheck]
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,9 @@ class ArchiveVerificationCheckSpec:
     #: check added without a class tag is a construction-time TypeError, not a
     #: silent "" that would slip past classification).
     check_class: ArchiveVerificationCheckClass
+    #: Optional candidate-index execution path for checks that combine the
+    #: durable archive root with an inactive generation before promotion.
+    candidate_run: ArchiveVerificationCandidateCheckFn | None = None
 
 
 def _tier_path(archive_root: Path, tier: ArchiveTier) -> Path:
@@ -1448,8 +1452,13 @@ def _gib_str(byte_count: int) -> str:
 
 
 def _check_corpus_absences(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_corpus_absences_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_corpus_absences_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
-    index_path = _resolve_index_path(archive_root)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("corpus-absences", "source.db or index.db not present")
     try:
@@ -1483,7 +1492,14 @@ def _check_corpus_absences(archive_root: Path, sample_limit: int) -> ArchiveVeri
 
 
 def _check_corpus_attachment_fidelity(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
-    index_path = _resolve_index_path(archive_root)
+    return _check_corpus_attachment_fidelity_at_index_path(
+        archive_root, _resolve_index_path(archive_root), _sample_limit
+    )
+
+
+def _check_corpus_attachment_fidelity_at_index_path(
+    _archive_root: Path, index_path: Path, _sample_limit: int
+) -> ArchiveVerificationCheck:
     if not index_path.exists():
         return _skip_check("corpus-attachment-fidelity", "index.db not present")
     try:
@@ -1515,8 +1531,13 @@ def _check_corpus_attachment_fidelity(archive_root: Path, _sample_limit: int) ->
 
 
 def _check_corpus_revision_fidelity(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_corpus_revision_fidelity_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_corpus_revision_fidelity_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
-    index_path = _resolve_index_path(archive_root)
     if not source_path.exists() or not index_path.exists():
         return _skip_check("corpus-revision-fidelity", "source.db or index.db not present")
     try:
@@ -2049,18 +2070,21 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "Every source-backed logical corpus document is represented by an indexed session (polylogue-f1vg).",
         _check_corpus_absences,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_corpus_absences_at_index_path,
     ),
     ArchiveVerificationCheckSpec(
         "corpus-attachment-fidelity",
         "Every attachment reference is acquired or explicitly typed unavailable, bucketed by origin and upload origin (polylogue-f1vg).",
         _check_corpus_attachment_fidelity,
         ArchiveVerificationCheckClass.FIDELITY,
+        _check_corpus_attachment_fidelity_at_index_path,
     ),
     ArchiveVerificationCheckSpec(
         "corpus-revision-fidelity",
         "Indexed comparable evidence is not smaller than the best recorded source revision (polylogue-f1vg).",
         _check_corpus_revision_fidelity,
         ArchiveVerificationCheckClass.FIDELITY,
+        _check_corpus_revision_fidelity_at_index_path,
     ),
 )
 
@@ -2118,6 +2142,7 @@ def verify_archive(
     *,
     checks: Sequence[str] | None = None,
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
+    index_path_override: Path | None = None,
 ) -> ArchiveVerificationReport:
     """Run every selected archive-coherence check and return the aggregate report.
 
@@ -2127,15 +2152,26 @@ def verify_archive(
     outcome rather than aborting the remaining checks. ``checks=None`` (the
     default) runs the full registry in :data:`ARCHIVE_VERIFICATION_CHECKS`
     order; a name not in the registry raises :class:`ValueError` immediately.
+    ``index_path_override`` runs only checks with a candidate runner against
+    that inactive generation's real index while retaining durable tiers from
+    ``archive_root``.
     """
     specs = _select_check_specs(checks)
+    if index_path_override is not None:
+        unsupported = [spec.name for spec in specs if spec.candidate_run is None]
+        if unsupported:
+            raise ValueError("candidate index verification is unsupported for check(s): " + ", ".join(unsupported))
     # Typed at the OutcomeCheck base so this list assigns cleanly into
     # ArchiveVerificationReport.checks (inherited, invariant list[OutcomeCheck])
     # without a redundant narrower field redeclaration on the report dataclass.
     results: list[OutcomeCheck] = []
     for spec in specs:
         try:
-            result = spec.run(archive_root, sample_limit)
+            result = (
+                spec.candidate_run(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None and spec.candidate_run is not None
+                else spec.run(archive_root, sample_limit)
+            )
         except Exception as exc:  # defense-in-depth: see module/function docstring
             logger.exception("archive verification check %s raised", spec.name)
             result = _error_check(spec.name, f"check raised {type(exc).__name__}: {exc}")
