@@ -198,6 +198,37 @@ def test_audit_runs_the_parser_to_classifier_route_read_only_and_is_sanitized(tm
     assert (root / "index.db").read_bytes() == index_before
 
 
+def test_audit_validates_git_before_opening_candidate_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = _archive_with_ordered_exports(tmp_path)
+    events: list[str] = []
+    original_connect_read_only = audit._connect_read_only
+    original_blob_snapshot = audit._blob_store_snapshot
+
+    def tracked_git_provenance() -> dict[str, object]:
+        events.append("git")
+        return {
+            "git_revision": "test-revision",
+            "working_tree_clean": True,
+            "working_tree_status_sha256": "test-status",
+        }
+
+    def tracked_connect_read_only(path: Path) -> sqlite3.Connection:
+        events.append(f"open:{path.name}")
+        return original_connect_read_only(path)
+
+    def tracked_blob_snapshot(blob_store: BlobStore) -> dict[str, object]:
+        events.append("scan:blob")
+        return original_blob_snapshot(blob_store)
+
+    monkeypatch.setattr(audit, "_git_provenance", tracked_git_provenance)
+    monkeypatch.setattr(audit, "_connect_read_only", tracked_connect_read_only)
+    monkeypatch.setattr(audit, "_blob_store_snapshot", tracked_blob_snapshot)
+
+    run_audit(root)
+
+    assert events == ["git", "open:source.db", "open:index.db", "scan:blob"]
+
+
 def test_audit_matches_historical_moved_anchor_and_current_parser_is_green(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -275,6 +306,32 @@ def test_target_normalizes_lifecycle_measurements_and_rejects_other_event_change
     unrelated_relation = _relation(left_member.revision.projection, unrelated_member.revision.projection)
     assert unrelated_relation == "conflict"
     assert not audit._matches_target(left_member, unrelated_member, unrelated_relation)
+
+
+def test_target_rejects_red_twin_with_equal_attachment_contents_and_different_identities(tmp_path: Path) -> None:
+    _archive_with_ordered_exports(tmp_path)
+    payloads = [_payload(["u1", "node_a", "node_b"]), _payload(["u1", "node_b", "node_a"])]
+    left = _historical_parse_one(Provider.CHATGPT, payloads[0], "export.json", fallback_id_override="tie-break-order")[
+        0
+    ]
+    right = _historical_parse_one(Provider.CHATGPT, payloads[1], "export.json", fallback_id_override="tie-break-order")[
+        0
+    ]
+    left_member = audit._ParsedMember(MembershipRevision("raw-left", session_revision_projection(left)), left)
+    right_projection = session_revision_projection(right)
+    red_twin_projection = replace(right_projection, attachment_identities=frozenset({b"red-twin-identity"}))
+    red_twin_member = audit._ParsedMember(MembershipRevision("raw-right", red_twin_projection), right)
+
+    assert (
+        left_member.revision.projection.attachment_contents == red_twin_member.revision.projection.attachment_contents
+    )
+    assert (
+        left_member.revision.projection.attachment_identities
+        != red_twin_member.revision.projection.attachment_identities
+    )
+    relation = _relation(left_member.revision.projection, red_twin_member.revision.projection)
+    assert relation == "conflict"
+    assert not audit._matches_target(left_member, red_twin_member, relation)
 
 
 def test_audit_receipt_is_deterministic_and_cli_registers_the_command(

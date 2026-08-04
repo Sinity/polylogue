@@ -35,7 +35,8 @@ SCHEMA = "polylogue.chatgpt-lifecycle-anchor-audit.v2"
 TARGET_PREDICATE = (
     "A pair in one persisted logical_source_key cohort where each parsed session has exactly one "
     "generation_lifecycle event (other session events are allowed), their source_message_provider_id "
-    "anchors differ, message_contents and attachment_contents are equal, generation_lifecycle event "
+    "anchors differ, message_contents, attachment_identities, and attachment_contents are equal, "
+    "generation_lifecycle event "
     "content hashes after removing source_message_provider_id are equal, all normalized event content "
     "is equal after that same lifecycle-only exception, and the production _relation is conflict."
 )
@@ -205,6 +206,7 @@ def _matches_target(left: _ParsedMember, right: _ParsedMember, relation: _Relati
     return (
         left_event.source_message_provider_id != right_event.source_message_provider_id
         and left_projection.message_contents == right_projection.message_contents
+        and left_projection.attachment_identities == right_projection.attachment_identities
         and left_projection.attachment_contents == right_projection.attachment_contents
         and _session_event_content_signatures(left.session) == _session_event_content_signatures(right.session)
         and _anchor_independent_event_content(left_event) == _anchor_independent_event_content(right_event)
@@ -246,6 +248,7 @@ def _cohorts(rows: Iterable[_RawMember]) -> dict[str, list[_RawMember]]:
 
 def run_audit(archive_root: Path) -> dict[str, object]:
     """Run the full current-corpus census without opening an archive writer."""
+    producer = _git_provenance()
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
     blob_store = BlobStore(archive_root / "blob")
@@ -267,7 +270,6 @@ def run_audit(archive_root: Path) -> dict[str, object]:
         parsed_raw_count = 0
         heads = _load_existing_heads(index_conn)
         blob_snapshot = _blob_store_snapshot(blob_store)
-        producer = _git_provenance()
         for logical_source_key in sorted(cohorts):
             revisions = [
                 _parse_member(member, blob_store, archive_root)
