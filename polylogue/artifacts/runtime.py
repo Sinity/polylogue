@@ -569,7 +569,7 @@ RUNTIME_ARTIFACT_NODES: tuple[ArtifactNode, ...] = (
         name="assertions",
         layer=ArtifactLayer.DURABLE,
         description="Durable user-tier assertions written by marks, tags, annotations, corrections, and saved state.",
-        code_refs=("polylogue.storage.sqlite.archive_tiers.assertions",),
+        code_refs=("polylogue.storage.sqlite.archive_tiers.user_write.upsert_assertion",),
         readiness_surfaces=("api", "mcp", "cli"),
     ),
     ArtifactNode(
