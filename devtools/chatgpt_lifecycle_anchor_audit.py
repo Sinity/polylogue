@@ -349,6 +349,11 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive-root", type=Path, required=True, help="Archive root to inspect without mutation.")
     parser.add_argument("--receipt", type=Path, help="Optional worktree-local path for the sanitized JSON receipt.")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the machine-readable JSON audit report (the default output format).",
+    )
     args = parser.parse_args(argv)
     archive_root = args.archive_root.resolve()
     if args.receipt is not None:

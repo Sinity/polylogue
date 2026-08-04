@@ -651,6 +651,36 @@ def test_chatgpt_block_content_type_routes_to_session_events() -> None:
     assert event.payload == {"block_index": 0, "content_type": "reasoning_recap"}
 
 
+def test_chatgpt_attachment_payload_preserves_known_bytes_and_unknown_reference() -> None:
+    mapping = {
+        "node1": make_chatgpt_node("msg1", "assistant", ["answer"]),
+    }
+    node = mapping["node1"]
+    assert isinstance(node, dict)
+    message = node["message"]
+    assert isinstance(message, dict)
+    message["metadata"] = {
+        "attachments": [
+            {
+                "id": "known-attachment",
+                "name": "report.txt",
+                "mime_type": "text/plain",
+                "extracted_content": "known bytes",
+            },
+            {"name": "unknown-report.txt", "mime_type": "text/plain"},
+        ]
+    }
+
+    session = chatgpt_parse({"id": "attachment-fixture", "mapping": mapping}, "fallback")
+
+    assert len(session.attachments) == 2
+    known, unknown = session.attachments
+    assert known.provider_attachment_id == "known-attachment"
+    assert known.inline_bytes == b"known bytes"
+    assert unknown.provider_attachment_id.startswith("att-")
+    assert unknown.inline_bytes is None
+
+
 @pytest.mark.parametrize("metadata,expected_type,desc", CHATGPT_METADATA_CASES)
 def test_chatgpt_metadata_extraction(metadata: object, expected_type: str | None, desc: str) -> None:
     """Test metadata extraction from message metadata field.

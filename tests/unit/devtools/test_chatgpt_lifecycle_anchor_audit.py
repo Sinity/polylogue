@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+import devtools.__main__ as devtools_main
 import devtools.chatgpt_lifecycle_anchor_audit as audit
 from devtools.chatgpt_lifecycle_anchor_audit import SCHEMA, TARGET_PREDICATE, main, run_audit
 from devtools.command_catalog import COMMANDS
@@ -24,7 +25,18 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 
 
-def _node(node_id: str, role: str, text: str, parent: str | None, children: list[str]) -> dict[str, object]:
+def _node(
+    node_id: str,
+    role: str,
+    text: str,
+    parent: str | None,
+    children: list[str],
+    *,
+    attachment: dict[str, object] | None = None,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {"finished_duration_sec": 5} if role == "assistant" else {}
+    if attachment is not None:
+        metadata["attachments"] = [attachment]
     return {
         "id": node_id,
         "parent": parent,
@@ -33,17 +45,17 @@ def _node(node_id: str, role: str, text: str, parent: str | None, children: list
             "id": node_id,
             "author": {"role": role},
             "content": {"content_type": "text", "parts": [text]},
-            "metadata": {"finished_duration_sec": 5} if role == "assistant" else {},
+            "metadata": metadata,
             "end_turn": role == "assistant",
         },
     }
 
 
-def _payload(order: list[str]) -> bytes:
+def _payload(order: list[str], *, attachment: dict[str, object] | None = None) -> bytes:
     nodes = {
         "u1": _node("u1", "user", "do the work", None, ["node_a"]),
         "node_a": _node("node_a", "assistant", "first draft", "u1", ["node_b"]),
-        "node_b": _node("node_b", "assistant", "final draft", "node_a", []),
+        "node_b": _node("node_b", "assistant", "final draft", "node_a", [], attachment=attachment),
     }
     return json.dumps(
         {"id": "tie-break-order", "mapping": {node_id: nodes[node_id] for node_id in order}, "current_node": "node_b"},
@@ -308,30 +320,72 @@ def test_target_normalizes_lifecycle_measurements_and_rejects_other_event_change
     assert not audit._matches_target(left_member, unrelated_member, unrelated_relation)
 
 
-def test_target_rejects_red_twin_with_equal_attachment_contents_and_different_identities(tmp_path: Path) -> None:
-    _archive_with_ordered_exports(tmp_path)
-    payloads = [_payload(["u1", "node_a", "node_b"]), _payload(["u1", "node_b", "node_a"])]
-    left = _historical_parse_one(Provider.CHATGPT, payloads[0], "export.json", fallback_id_override="tie-break-order")[
-        0
-    ]
-    right = _historical_parse_one(Provider.CHATGPT, payloads[1], "export.json", fallback_id_override="tie-break-order")[
-        0
-    ]
+def test_target_rejects_parsed_attachment_red_twin_and_unknown_reference() -> None:
+    attachment_bytes = "same known attachment bytes"
+    left = _historical_parse_one(
+        Provider.CHATGPT,
+        _payload(
+            ["u1", "node_a", "node_b"],
+            attachment={
+                "id": "attachment-left",
+                "name": "report.txt",
+                "mime_type": "text/plain",
+                "extracted_content": attachment_bytes,
+            },
+        ),
+        "export.json",
+        fallback_id_override="tie-break-order",
+    )[0]
+    right = _historical_parse_one(
+        Provider.CHATGPT,
+        _payload(
+            ["u1", "node_b", "node_a"],
+            attachment={
+                "id": "attachment-right",
+                "name": "renamed-report.txt",
+                "mime_type": "text/plain",
+                "extracted_content": attachment_bytes,
+            },
+        ),
+        "export.json",
+        fallback_id_override="tie-break-order",
+    )[0]
     left_member = audit._ParsedMember(MembershipRevision("raw-left", session_revision_projection(left)), left)
-    right_projection = session_revision_projection(right)
-    red_twin_projection = replace(right_projection, attachment_identities=frozenset({b"red-twin-identity"}))
-    red_twin_member = audit._ParsedMember(MembershipRevision("raw-right", red_twin_projection), right)
+    right_member = audit._ParsedMember(MembershipRevision("raw-right", session_revision_projection(right)), right)
 
-    assert (
-        left_member.revision.projection.attachment_contents == red_twin_member.revision.projection.attachment_contents
-    )
-    assert (
-        left_member.revision.projection.attachment_identities
-        != red_twin_member.revision.projection.attachment_identities
-    )
-    relation = _relation(left_member.revision.projection, red_twin_member.revision.projection)
+    assert [attachment.inline_bytes for attachment in left.attachments] == [attachment_bytes.encode()]
+    assert [attachment.inline_bytes for attachment in right.attachments] == [attachment_bytes.encode()]
+    left_projection = left_member.revision.projection
+    right_projection = right_member.revision.projection
+    assert left_projection.attachment_identities != right_projection.attachment_identities
+    assert {content for _identity, content in left_projection.attachment_contents} == {
+        content for _identity, content in right_projection.attachment_contents
+    }
+    relation = _relation(left_projection, right_projection)
     assert relation == "conflict"
-    assert not audit._matches_target(left_member, red_twin_member, relation)
+    assert not audit._matches_target(left_member, right_member, relation)
+
+    unknown = _historical_parse_one(
+        Provider.CHATGPT,
+        _payload(
+            ["u1", "node_a", "node_b"],
+            attachment={"name": "report.txt", "mime_type": "text/plain"},
+        ),
+        "export.json",
+        fallback_id_override="tie-break-order",
+    )[0]
+    unknown_member = audit._ParsedMember(
+        MembershipRevision("raw-unknown", session_revision_projection(unknown)), unknown
+    )
+    unknown_projection = unknown_member.revision.projection
+    assert len(unknown.attachments) == 1
+    assert unknown.attachments[0].provider_attachment_id.startswith("att-")
+    assert unknown.attachments[0].inline_bytes is None
+    assert unknown_projection.attachment_identities == left_projection.attachment_identities
+    assert unknown_projection.attachment_contents == frozenset()
+    unknown_relation = _relation(left_projection, unknown_projection)
+    assert unknown_relation in {"a_contains_b", "b_contains_a"}
+    assert not audit._matches_target(left_member, unknown_member, unknown_relation)
 
 
 def test_audit_receipt_is_deterministic_and_cli_registers_the_command(
@@ -348,6 +402,30 @@ def test_audit_receipt_is_deterministic_and_cli_registers_the_command(
     assert json.loads(capsys.readouterr().out) == first
     command = COMMANDS["workspace chatgpt-lifecycle-anchor-audit"]
     assert command.module == "devtools.chatgpt_lifecycle_anchor_audit"
+
+
+def test_audit_accepts_shared_json_flag_through_real_devtools_dispatch(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _archive_with_ordered_exports(tmp_path)
+    monkeypatch.setenv("POLYLOGUE_TASK_HISTORY_DISABLE", "1")
+
+    assert (
+        devtools_main.main(
+            [
+                "--json",
+                "workspace",
+                "chatgpt-lifecycle-anchor-audit",
+                "--archive-root",
+                str(root),
+            ]
+        )
+        == 0
+    )
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["schema"] == SCHEMA
+    assert receipt["provenance"]["archive_access"].startswith("SQLite source.db")
 
 
 def test_blob_integrity_identity_includes_observed_content_and_receipt_stays_outside_archive(
