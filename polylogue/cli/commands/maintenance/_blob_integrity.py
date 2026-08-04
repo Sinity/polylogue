@@ -77,6 +77,11 @@ def _render_blob_reference_liveness_plain(report: BlobRefLivenessReconciliationR
     click.echo(f"Orphans:      {len(report.classification.candidates):,} row(s)")
     click.echo(f"Deleted:      {report.deleted_count:,} row(s)")
     click.echo(f"Safe to apply: {'yes' if report.classification.safe_to_apply else 'no'}")
+    if report.classification.rekeyable_hook_payload_count:
+        click.echo(
+            "Hook refs:    "
+            f"{report.classification.rekeyable_hook_payload_count:,} legacy raw_payload ref(s) require re-keying"
+        )
     if report.classification.orphaned_by_ref_type:
         click.echo(
             "By ref type:  "

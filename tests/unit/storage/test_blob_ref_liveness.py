@@ -8,12 +8,14 @@ from pathlib import Path
 
 import pytest
 
+import polylogue.maintenance.blob_ref_liveness_reconciliation as liveness_reconciliation
 from polylogue.maintenance.blob_ref_liveness_reconciliation import (
     BlobRefLivenessReconciliationError,
     reconcile_blob_ref_liveness,
 )
 from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_raw_session_id
 
 
 def _source_archive(tmp_path: Path) -> Path:
@@ -100,12 +102,118 @@ def test_dry_run_is_read_only_and_reports_attachment_parent_join(tmp_path: Path)
     assert after == before
 
 
+def test_legacy_hook_payload_ref_is_rekeyable_not_a_delete_candidate(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    blob_hash = b"h" * 32
+    source_path = "/legacy-hook.jsonl"
+    native_id = "tool-call-1"
+    legacy_ref_id = deterministic_raw_session_id("codex-session", source_path, 0, blob_hash, native_id)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, source_path, event_type, payload_json, observed_at_ms
+            ) VALUES ('hook-legacy', 'codex-session', ?, ?, 'PostToolUse', '{}', 1)
+            """,
+            (native_id, source_path),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'raw_payload', ?, 1, 1)
+            """,
+            (blob_hash, legacy_ref_id, source_path),
+        )
+        classification = classify_blob_ref_liveness(conn)
+
+    assert classification.rekeyable_hook_payload_count == 1
+    assert classification.safe_to_apply is False
+    assert all(candidate.ref_id != legacy_ref_id for candidate in classification.candidates)
+
+
 def test_apply_requires_backup_and_receipt_before_mutation(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     with pytest.raises(BlobRefLivenessReconciliationError, match="backup manifest"):
         reconcile_blob_ref_liveness(archive_root, dry_run=False, receipt_path=tmp_path / "receipt.jsonl")
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
+def test_restart_recovers_prepared_receipt_after_committed_delete(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "interrupted.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        classification = classify_blob_ref_liveness(conn)
+    liveness_reconciliation._write_prepared_receipt(
+        receipt, archive_root / "source.db", classification, tmp_path / "backup.json"
+    )
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        for candidate in classification.candidates:
+            conn.execute(
+                "DELETE FROM blob_refs WHERE blob_hash = ? AND ref_type = ? AND ref_id = ?",
+                (bytes.fromhex(candidate.blob_hash), candidate.ref_type, candidate.ref_id),
+            )
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="recovered_committed"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+    rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["phase"] == "recovered_committed"
+
+
+def test_restart_recovers_prepared_receipt_after_rollback(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "rolled-back.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        classification = classify_blob_ref_liveness(conn)
+    liveness_reconciliation._write_prepared_receipt(
+        receipt, archive_root / "source.db", classification, tmp_path / "backup.json"
+    )
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="recovered_rolled_back"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+    rows = [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["phase"] == "recovered_rolled_back"
+
+
+def test_restart_marks_partial_prepared_plan_indeterminate(tmp_path: Path) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "partial.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        classification = classify_blob_ref_liveness(conn)
+    liveness_reconciliation._write_prepared_receipt(
+        receipt, archive_root / "source.db", classification, tmp_path / "backup.json"
+    )
+    candidate = classification.candidates[0]
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            "DELETE FROM blob_refs WHERE blob_hash = ? AND ref_type = ? AND ref_id = ?",
+            (bytes.fromhex(candidate.blob_hash), candidate.ref_type, candidate.ref_id),
+        )
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="indeterminate"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+    with pytest.raises(BlobRefLivenessReconciliationError, match="already terminal"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
 
 
 def test_apply_deletes_only_join_proven_orphans_and_persists_receipt(

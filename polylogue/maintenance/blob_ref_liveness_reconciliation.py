@@ -72,6 +72,14 @@ def _candidate_digest(classification: BlobRefLivenessClassification) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_prepared_receipt(
     receipt_path: Path,
     source_db: Path,
@@ -103,6 +111,7 @@ def _write_prepared_receipt(
                 handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
+        _fsync_directory(receipt_path.parent)
     except FileExistsError as exc:
         raise BlobRefLivenessReconciliationError(f"receipt already exists: {receipt_path}") from exc
 
@@ -128,6 +137,48 @@ def _append_receipt_footer(
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
+    _fsync_directory(receipt_path.parent)
+
+
+def _recover_prepared_receipt(source_db: Path, receipt_path: Path) -> str:
+    """Resolve the only crash window between SQLite commit and receipt footer.
+
+    The DELETE is one SQLite transaction, so every prepared candidate is either
+    still present (the transaction rolled back) or absent (it committed). A
+    mixture is external interference and remains deliberately indeterminate.
+    Recovery appends durable evidence but never performs another mutation.
+    """
+
+    rows = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines() if line]
+    if not rows or rows[0].get("kind") != "blob_ref_liveness_reconciliation":
+        raise BlobRefLivenessReconciliationError(f"receipt is not a liveness reconciliation receipt: {receipt_path}")
+    phases = [str(row.get("phase")) for row in rows if row.get("kind") == "blob_ref_liveness_reconciliation"]
+    if not phases or phases[0] != "prepared":
+        raise BlobRefLivenessReconciliationError(f"receipt does not contain a prepared plan: {receipt_path}")
+    if any(
+        phase in {"committed", "aborted", "recovered_committed", "recovered_rolled_back", "indeterminate"}
+        for phase in phases[1:]
+    ):
+        raise BlobRefLivenessReconciliationError(f"receipt is already terminal: {receipt_path}")
+    candidates = [row for row in rows if row.get("kind") == "candidate"]
+    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        still_present = [
+            candidate
+            for candidate in candidates
+            if conn.execute(
+                "SELECT 1 FROM blob_refs WHERE blob_hash = ? AND ref_type = ? AND ref_id = ?",
+                (bytes.fromhex(str(candidate["blob_hash"])), candidate["ref_type"], candidate["ref_id"]),
+            ).fetchone()
+            is not None
+        ]
+    if len(still_present) == len(candidates):
+        outcome = "recovered_rolled_back"
+    elif not still_present:
+        outcome = "recovered_committed"
+    else:
+        outcome = "indeterminate"
+    _append_receipt_footer(receipt_path, phase=outcome)
+    return outcome
 
 
 def _delete_candidates(conn: sqlite3.Connection, classification: BlobRefLivenessClassification) -> int:
@@ -200,6 +251,11 @@ def reconcile_blob_ref_liveness(
         raise BlobRefLivenessReconciliationError(
             "applying blob-ref liveness reconciliation requires a receipt path (--receipt-file)"
         )
+    if receipt_path.exists():
+        outcome = _recover_prepared_receipt(source_db, receipt_path)
+        raise BlobRefLivenessReconciliationError(
+            f"recovered existing prepared receipt as {outcome}: {receipt_path}; choose a fresh receipt path before retrying"
+        )
     if reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False):
         raise BlobRefLivenessReconciliationError(reason)
 
@@ -217,7 +273,9 @@ def reconcile_blob_ref_liveness(
                 raise BlobRefLivenessReconciliationError(
                     "ref types cannot be proven with source-tier joins: "
                     f"unknown={classification.unknown_ref_types!r}, "
-                    f"unavailable={classification.unavailable_ref_types!r}"
+                    f"unavailable={classification.unavailable_ref_types!r}, "
+                    f"rekeyable_hook_payloads={classification.rekeyable_hook_payload_count!r}. "
+                    "Run hook-payload reference reconciliation before deleting orphan refs."
                 )
             _write_prepared_receipt(receipt_path, source_db, classification, backup_manifest)
             prepared = True

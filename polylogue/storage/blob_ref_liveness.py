@@ -12,6 +12,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
+from polylogue.storage.hook_payload_ref_reconciliation import plan_hook_payload_ref_reconciliation
 from polylogue.storage.introspection import table_exists
 
 
@@ -55,11 +56,12 @@ class BlobRefLivenessClassification:
     ref_type_joins: tuple[tuple[str, str, str], ...]
     unknown_ref_types: tuple[str, ...]
     unavailable_ref_types: tuple[str, ...]
+    rekeyable_hook_payload_count: int
     candidates: tuple[BlobRefLivenessCandidate, ...]
 
     @property
     def safe_to_apply(self) -> bool:
-        return not self.unknown_ref_types and not self.unavailable_ref_types
+        return not self.unknown_ref_types and not self.unavailable_ref_types and not self.rekeyable_hook_payload_count
 
     def to_dict(self, *, include_candidates: bool = False, sample_limit: int = 30) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -73,6 +75,7 @@ class BlobRefLivenessClassification:
             ],
             "unknown_ref_types": list(self.unknown_ref_types),
             "unavailable_ref_types": list(self.unavailable_ref_types),
+            "rekeyable_hook_payload_count": self.rekeyable_hook_payload_count,
             "safe_to_apply": self.safe_to_apply,
         }
         if include_candidates:
@@ -100,7 +103,7 @@ def classify_blob_ref_liveness(conn: sqlite3.Connection) -> BlobRefLivenessClass
     """
 
     if not table_exists(conn, "blob_refs"):
-        return BlobRefLivenessClassification(0, {}, {}, (), (), (), ())
+        return BlobRefLivenessClassification(0, {}, {}, (), (), (), 0, ())
     columns = _blob_ref_columns(conn)
     required = {"blob_hash", "ref_id", "ref_type", "source_path", "size_bytes", "acquired_at_ms"}
     missing = sorted(required - columns)
@@ -135,16 +138,27 @@ def classify_blob_ref_liveness(conn: sqlite3.Connection) -> BlobRefLivenessClass
         params.append(ref_type)
         ref_type_joins.append((ref_type, table, column))
 
+    rekeyable_hook_payloads = {
+        (candidate.blob_hash.hex(), candidate.orphaned_ref_id)
+        for candidate in plan_hook_payload_ref_reconciliation(conn).matched
+    }
     candidates: list[BlobRefLivenessCandidate] = []
     if branches:
         query = " UNION ALL ".join(branches) + " ORDER BY 2, 3, 1"
         for row in conn.execute(query, tuple(params)):
             blob_hash = bytes(row[0]).hex()
+            ref_type = str(row[1])
+            ref_id = str(row[2])
+            # Pre-v22 hook refs were stored as raw_payload with a synthetic
+            # raw id. They are durable live payloads awaiting a provable
+            # re-key to hook_payload, never deletion candidates.
+            if (blob_hash, ref_id) in rekeyable_hook_payloads:
+                continue
             candidates.append(
                 BlobRefLivenessCandidate(
                     blob_hash=blob_hash,
-                    ref_type=str(row[1]),
-                    ref_id=str(row[2]),
+                    ref_type=ref_type,
+                    ref_id=ref_id,
                     source_path=str(row[3]) if row[3] is not None else None,
                     size_bytes=int(row[4]),
                     acquired_at_ms=int(row[5]),
@@ -162,6 +176,7 @@ def classify_blob_ref_liveness(conn: sqlite3.Connection) -> BlobRefLivenessClass
         ref_type_joins=tuple(ref_type_joins),
         unknown_ref_types=unknown,
         unavailable_ref_types=tuple(sorted(unavailable)),
+        rekeyable_hook_payload_count=len(rekeyable_hook_payloads),
         candidates=tuple(candidates),
     )
 
