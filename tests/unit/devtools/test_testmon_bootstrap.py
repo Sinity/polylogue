@@ -228,6 +228,27 @@ def test_bootstrap_seed_files_copies_db_and_stamp(tmp_path: Path) -> None:
     assert sorted(p.name for p in local_data.parent.iterdir()) == ["seed.json", "testmondata"]
 
 
+def test_bootstrap_seed_files_marks_destination_and_source_checkout(tmp_path: Path) -> None:
+    main_data = tmp_path / "main" / "testmondata"
+    main_stamp = tmp_path / "main" / "seed.json"
+    _write_sqlite_db(main_data)
+    _write_valid_seed_stamp(main_stamp)
+    local_data = tmp_path / "lane" / "testmondata"
+    local_stamp = tmp_path / "lane" / "seed.json"
+
+    bootstrap_testmon_seed_files(
+        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        checkout_root=tmp_path / "lane",
+        inherited_from=tmp_path / "main",
+    )
+
+    payload = json.loads(local_stamp.read_text())
+    assert payload["checkout_root"] == str((tmp_path / "lane").resolve())
+    assert payload["inherited_from"] == str((tmp_path / "main").resolve())
+
+
 def test_bootstrap_seed_files_noop_when_decision_says_no(tmp_path: Path) -> None:
     local_data = tmp_path / "local" / "testmondata"
     local_stamp = tmp_path / "local" / "seed.json"

@@ -171,6 +171,7 @@ class VerifyRun:
         git_head: str | None,
         root: Path | None = None,
         polylogue_import_path: str | None = None,
+        environment_fingerprint: Mapping[str, Any] | None = None,
     ) -> None:
         self.root = root or Path.cwd()
         self.run_id = make_run_id(tier=tier)
@@ -187,6 +188,7 @@ class VerifyRun:
             # even where the live preflight already refused for an in-process
             # caller and this fired for a different process boundary.
             "polylogue_import_path": polylogue_import_path,
+            "environment_fingerprint": dict(environment_fingerprint) if environment_fingerprint is not None else None,
             "owner_pid": os.getpid(),
             "started_at": utc_now(),
             "status": "running",

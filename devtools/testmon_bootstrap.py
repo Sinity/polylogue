@@ -125,6 +125,18 @@ def _atomic_copy_bytes(src: Path, dst: Path) -> None:
     tmp.replace(dst)
 
 
+def _stamp_seed_checkout_origin(seed_stamp: Path, *, checkout_root: Path, inherited_from: Path) -> None:
+    """Mark a copied seed with its destination checkout and source provenance."""
+    payload = json.loads(seed_stamp.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"testmon seed stamp has invalid shape: {seed_stamp}")
+    payload["checkout_root"] = str(checkout_root.resolve())
+    payload["inherited_from"] = str(inherited_from.resolve())
+    tmp = seed_stamp.with_name(f"{seed_stamp.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(seed_stamp)
+
+
 def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
     """Copy a (possibly concurrently-written) sqlite db via the online backup API.
 
@@ -154,6 +166,8 @@ def bootstrap_testmon_seed_files(
     *,
     local_testmon_data: Path,
     local_seed_stamp: Path,
+    checkout_root: Path | None = None,
+    inherited_from: Path | None = None,
 ) -> None:
     """Perform the copy `decision` describes. No-op unless `should_bootstrap`."""
     if not decision.should_bootstrap:
@@ -162,6 +176,8 @@ def bootstrap_testmon_seed_files(
     assert decision.main_seed_stamp is not None
     _atomic_copy_sqlite_db(decision.main_testmon_data, local_testmon_data)
     _atomic_copy_bytes(decision.main_seed_stamp, local_seed_stamp)
+    if checkout_root is not None and inherited_from is not None:
+        _stamp_seed_checkout_origin(local_seed_stamp, checkout_root=checkout_root, inherited_from=inherited_from)
 
 
 def _git_worktree_info(repo_root: Path) -> tuple[bool, Path] | None:
@@ -233,6 +249,8 @@ def maybe_bootstrap_testmon_seed(
         decision,
         local_testmon_data=local_testmon_data,
         local_seed_stamp=local_seed_stamp,
+        checkout_root=repo_root,
+        inherited_from=main_checkout,
     )
     return (
         f"verify: bootstrapped pytest-testmon seed from main checkout {main_checkout} "

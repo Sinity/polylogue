@@ -41,7 +41,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.checkout_guard import (
+    CheckoutImportMismatchError,
+    assert_polylogue_matches_checkout,
+    checkout_environment_fingerprint,
+)
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
@@ -2489,6 +2493,7 @@ def _finalize_testmon_seed_attempt(
             "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
             "status": "complete",
             "timestamp": payload["finished_at"],
+            "checkout_root": str(ROOT.resolve()),
             "git_head": dict(prepared["identity"]).get("git_head"),
             "identity": prepared["identity"],
             "expected_count": payload["expected_count"],
@@ -2543,6 +2548,10 @@ def main(argv: list[str] | None = None) -> int:
     except CheckoutImportMismatchError as exc:
         sys.stderr.write(f"verify: {exc}\n")
         return 125
+    environment_fingerprint = checkout_environment_fingerprint(
+        ROOT,
+        polylogue_import_path=polylogue_import_path,
+    ).as_dict()
     sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
 
     if args.history:
@@ -2590,6 +2599,7 @@ def main(argv: list[str] | None = None) -> int:
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
         polylogue_import_path=str(polylogue_import_path),
+        environment_fingerprint=environment_fingerprint,
     )
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False

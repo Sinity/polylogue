@@ -31,7 +31,11 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.checkout_guard import (
+    CheckoutImportMismatchError,
+    assert_polylogue_matches_checkout,
+    checkout_environment_fingerprint,
+)
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
     PYTEST_EVENTS_PATH,
@@ -127,6 +131,10 @@ def main(argv: list[str] | None = None) -> int:
     except CheckoutImportMismatchError as exc:
         sys.stderr.write(f"{exc}\n")
         return 125
+    environment_fingerprint = checkout_environment_fingerprint(
+        ROOT,
+        polylogue_import_path=polylogue_import_path,
+    ).as_dict()
     sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
     selection = list(sys.argv[1:] if argv is None else argv)
@@ -153,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
             git_head=git_head(ROOT),
             root=ROOT,
             polylogue_import_path=str(polylogue_import_path),
+            environment_fingerprint=environment_fingerprint,
         )
         started = time.monotonic()
         rc, _elapsed, metadata = _run("pytest focused", cmd, cwd=str(ROOT), run=run)
