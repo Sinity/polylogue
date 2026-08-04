@@ -324,6 +324,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify corpus-fidelity",
+        "verification",
+        "Run the production corpus-fidelity acceptance gate against an archive root.",
+        "devtools.corpus_fidelity",
+        use_when=(
+            "Run after a promoted index rebuild, alongside `polylogue ops maintenance verify-archive`, "
+            "to prove source-backed corpus absence, attachment, and revision fidelity from the registry."
+        ),
+        examples=(
+            "devtools verify corpus-fidelity --archive-root /path/to/archive",
+            "devtools verify corpus-fidelity --archive-root /path/to/archive --json",
+        ),
+    ),
+    CommandSpec(
         "release readiness",
         "release",
         "Validate the externally-presentable release gate definition.",

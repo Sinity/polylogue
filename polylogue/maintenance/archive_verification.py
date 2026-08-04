@@ -2062,6 +2062,15 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
 
 ARCHIVE_VERIFICATION_CHECK_NAMES: tuple[str, ...] = tuple(spec.name for spec in ARCHIVE_VERIFICATION_CHECKS)
 
+#: The corpus-fidelity checks exposed by the post-rebuild acceptance command.
+#: Keeping this selection beside the registry prevents a surface from
+#: re-declaring the check names or drifting away from the production gate.
+CORPUS_FIDELITY_CHECKS: tuple[str, ...] = (
+    "corpus-absences",
+    "corpus-attachment-fidelity",
+    "corpus-revision-fidelity",
+)
+
 #: The subset of ground-truth checks a blue-green reindex candidate generation
 #: is expected to satisfy before promotion (polylogue-t0m73's "reindex
 #: acceptance gate"). Restricted to checks whose universe is satisfiable from
@@ -2150,6 +2159,7 @@ __all__ = [
     "ARCHIVE_VERIFICATION_CHECKS",
     "ARCHIVE_VERIFICATION_CHECK_NAMES",
     "ARCHIVE_VERIFICATION_WAIVERS",
+    "CORPUS_FIDELITY_CHECKS",
     "REINDEX_ACCEPTANCE_CHECKS",
     "ArchiveVerificationCheck",
     "ArchiveVerificationCheckClass",
