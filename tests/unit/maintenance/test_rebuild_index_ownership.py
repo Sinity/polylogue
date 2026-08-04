@@ -11,6 +11,7 @@ holding the general archive-location ownership lock.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -50,6 +51,24 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
     # Releasing the concurrent holder's ownership lets the rebuild proceed.
     receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
     assert receipt.status == "empty-source"
+
+
+def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_creation(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-that-does-not-exist', 'raw_payload', 10, 100)
+            """,
+            (b"o" * 32,),
+        )
+
+    with pytest.raises(RuntimeError, match="reindex source preflight gate failed: blob-refs-liveness"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert not (root / ".index-generations").exists()
 
 
 def test_rebuild_releases_ownership_lock_after_completion(tmp_path: Path) -> None:

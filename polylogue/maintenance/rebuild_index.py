@@ -623,6 +623,16 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
     )
     if reason := offline_maintenance_block_reason(active_config, active=True, dry_run=False):
         raise RuntimeError(reason)
+    from polylogue.maintenance.archive_verification import verify_archive
+
+    source_liveness = verify_archive(root, checks=("blob-refs-liveness",))
+    if source_liveness.blocking:
+        failing = "; ".join(
+            f"{check.name}: {check.summary}"
+            for check in source_liveness.checks
+            if check.status.value == "error" and getattr(check, "waived_bead_id", None) is None
+        )
+        raise RuntimeError(f"reindex source preflight gate failed: {failing}")
 
     # This is deliberately outside archive-location acquisition and
     # generation-store construction.  Those steps can create/rewrite archive

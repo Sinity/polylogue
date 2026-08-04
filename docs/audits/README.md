@@ -11,3 +11,4 @@ and [Developer Tools](../devtools.md) references for present-tense behavior.
 - [Hash boundary census](2026-07-09-hash-boundary-census.md)
 - [Race window audit](2026-07-09-race-window-audit.md)
 - [Reindex forcing-class audit](2026-08-04-reindex-forcing-class-audit.md)
+- [Blob-reference liveness closure audit](2026-08-04-blob-ref-liveness-closure.md)

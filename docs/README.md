@@ -136,6 +136,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Hash Boundary Census](audits/2026-07-09-hash-boundary-census.md) | Hash-boundary investigation record. |
 | [Race Window Audit](audits/2026-07-09-race-window-audit.md) | Race-window investigation record. |
 | [Reindex Forcing-Class Audit](audits/2026-08-04-reindex-forcing-class-audit.md) | Forcing-class and reindex-gate evidence audit. |
+| [Blob-Reference Liveness Closure Audit](audits/2026-08-04-blob-ref-liveness-closure.md) | I3 live evidence, source-tier reconciliation safeguards, and the direct-reindex gate. |
 | [Audit Record Index](audits/README.md) | Index of dated investigation records. |
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |

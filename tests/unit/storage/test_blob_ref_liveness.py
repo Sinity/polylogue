@@ -139,6 +139,29 @@ def test_apply_requires_backup_and_receipt_before_mutation(tmp_path: Path) -> No
         assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
 
 
+def test_apply_refuses_a_running_daemon_before_receipt_or_blob_ref_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _source_archive(tmp_path)
+    receipt = tmp_path / "receipts" / "liveness.jsonl"
+    monkeypatch.setattr(
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
+        lambda _config: 1234,
+    )
+
+    with pytest.raises(BlobRefLivenessReconciliationError, match="while polylogued PID 1234 is running"):
+        reconcile_blob_ref_liveness(
+            archive_root,
+            backup_manifest=tmp_path / "backup.json",
+            receipt_path=receipt,
+            dry_run=False,
+        )
+
+    assert not receipt.exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (8,)
+
+
 def test_restart_recovers_prepared_receipt_after_committed_delete(tmp_path: Path) -> None:
     archive_root = _source_archive(tmp_path)
     receipt = tmp_path / "receipts" / "interrupted.jsonl"
@@ -232,8 +255,8 @@ def test_apply_deletes_only_join_proven_orphans_and_persists_receipt(
         fake_validate,
     )
     monkeypatch.setattr(
-        "polylogue.maintenance.blob_ref_liveness_reconciliation.offline_maintenance_block_reason",
-        lambda *args, **kwargs: None,
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
+        lambda _config: None,
     )
 
     report = reconcile_blob_ref_liveness(
@@ -286,8 +309,8 @@ def test_unknown_ref_type_blocks_apply_fail_closed(tmp_path: Path, monkeypatch: 
         lambda *args, **kwargs: args[0],
     )
     monkeypatch.setattr(
-        "polylogue.maintenance.blob_ref_liveness_reconciliation.offline_maintenance_block_reason",
-        lambda *args, **kwargs: None,
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
+        lambda _config: None,
     )
     with pytest.raises(BlobRefLivenessReconciliationError, match="cannot be proven"):
         reconcile_blob_ref_liveness(
