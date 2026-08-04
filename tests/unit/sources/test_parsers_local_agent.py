@@ -294,6 +294,43 @@ def test_gemini_cli_session_metadata_and_scratchpad_survive_as_session_events() 
     assert scratchpad_event.payload["memory_scratchpad"] == payload["memoryScratchpad"]
 
 
+@pytest.mark.parametrize(
+    ("source_name", "payload"),
+    [
+        (
+            "gemini-cli",
+            {
+                "sessionId": "idless-gemini",
+                "kind": "chat",
+                "messages": [
+                    {"type": "user", "content": ["first"]},
+                    {"type": "gemini", "content": "second"},
+                ],
+            },
+        ),
+        (
+            "hermes",
+            {
+                "session_id": "idless-hermes",
+                "platform": "linux",
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "second"},
+                ],
+            },
+        ),
+    ],
+)
+def test_local_agent_idless_messages_have_exactly_one_active_leaf(
+    source_name: str,
+    payload: JSONDocument,
+) -> None:
+    [session] = parse_payload(source_name, payload, "fallback")
+
+    assert [message.provider_message_id for message in session.messages] == ["", ""]
+    assert [message.is_active_leaf for message in session.messages] == [False, True]
+
+
 def test_hermes_session_document_parses_through_dispatch() -> None:
     payload: JSONDocument = {
         "session_id": "hermes-session-1",

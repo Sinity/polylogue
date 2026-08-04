@@ -5276,10 +5276,9 @@ def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
     active_leaf_count = sum(1 for message in messages if message.is_active_leaf)
     if active_leaf_count == 1 or not messages:
         return messages
-    active_leaf_message_id = messages[-1].provider_message_id
     return [
-        message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_id})
-        for message in messages
+        message.model_copy(update={"is_active_leaf": position == len(messages) - 1})
+        for position, message in enumerate(messages)
     ]
 
 
