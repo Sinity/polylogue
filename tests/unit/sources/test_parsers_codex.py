@@ -151,6 +151,36 @@ class TestSessionStreamContract:
             == []
         )
 
+    def test_mixed_envelope_and_direct_stream_fails_admission_and_evidence_gate(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+
+        payload = [
+            {"type": "session_meta", "payload": {"id": "mixed-stream"}},
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "envelope"}],
+                },
+            },
+            {
+                "type": "message",
+                "id": "legacy-user",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "direct"}],
+            },
+        ]
+
+        assert not is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "fallback", source_path="/tmp/mixed.jsonl")
+
+        assert sessions[0].messages
+        assert (
+            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/mixed.jsonl")
+            == sessions
+        )
+
 
 # =============================================================================
 # Session Metadata

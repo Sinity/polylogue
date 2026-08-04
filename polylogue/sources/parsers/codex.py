@@ -2324,6 +2324,10 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
 
     if not has_message:
         return False
+    if has_direct_record and has_envelope_record:
+        # The parser supports these wire formats independently, but their
+        # records cannot be combined into one trustworthy session stream.
+        return False
     # The legacy direct-message format has no session header. Its parser uses
     # the acquisition fallback id, so a complete stream of direct records is
     # still materializable. Header-bearing streams must prove their header;

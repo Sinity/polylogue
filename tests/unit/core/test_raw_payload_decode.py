@@ -142,6 +142,27 @@ def test_build_raw_payload_envelope_admits_legacy_direct_codex_stream() -> None:
     assert envelope.artifact.schema_eligible is True
 
 
+def test_build_raw_payload_envelope_refuses_mixed_codex_envelope_and_direct_stream() -> None:
+    raw_content = (
+        b'{"type":"session_meta","payload":{"id":"mixed-stream"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","role":"user",'
+        b'"content":[{"type":"input_text","text":"envelope"}]}}\n'
+        b'{"type":"message","id":"legacy-user","role":"user",'
+        b'"content":[{"type":"input_text","text":"direct"}]}\n'
+    )
+
+    envelope = build_raw_payload_envelope(
+        raw_content,
+        source_path="/tmp/mixed-envelope-direct.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.UNKNOWN
+    assert envelope.artifact.parse_as_session is False
+    assert envelope.artifact.schema_eligible is False
+
+
 def test_jsonl_sampling_can_stop_after_bounded_prefix(tmp_path: Path) -> None:
     path = tmp_path / "bounded.jsonl"
     path.write_text('{"ok": 1}\n{"ok": 2}\n{"broken": \n', encoding="utf-8")
