@@ -681,7 +681,7 @@ def _check_raw_failures_medium() -> HealthAlert:
         deferred = int(raw_deferred) if isinstance(raw_deferred, (int, float)) else 0
         raw_terminal = info.get("terminal_rejections", 0)
         terminal = int(raw_terminal) if isinstance(raw_terminal, (int, float)) else 0
-        raw_unexplained = info.get("unexplained_failures", 0)
+        raw_unexplained = info.get("unexplained_failures")
         unexplained = int(raw_unexplained) if isinstance(raw_unexplained, (int, float)) else parse + validation
         total_failures = unexplained + maintenance
 
