@@ -288,6 +288,19 @@ polylogue ops maintenance blob-reference-prune-orphans \
   --quarantine-file /tmp/quarantine.jsonl --output-format json
 ```
 
+### `polylogue ops maintenance reindex-canary` — inactive-generation semantic diff
+
+Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`, writes a durable report, and refuses a report with unclassified differences. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+
+```bash
+polylogue ops maintenance reindex-canary \
+  --input /realm/db/polylogue/index.db \
+  --sample 100 \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --no-promote \
+  --output-format json
+```
+
 ### `polylogue ops maintenance verify-archive` — coherence gate
 
 Read-only. Runs a fixed registry of independent checks over the whole
