@@ -32,6 +32,8 @@ from polylogue.cli.commands.status import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.maintenance.failure_routing import route_failure_sample
+from polylogue.maintenance.planner import FailureSample
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
@@ -735,6 +737,36 @@ class TestNoArchiveStatus:
         assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
         assert payload["archive_tiers"]["user"]["exists"] is False
         assert payload["raw_records"] == 1
+
+    def test_direct_status_json_reads_maintenance_failure_from_configured_root_with_external_index(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        configured_root = tmp_path / "archive"
+        generation = tmp_path / "generation"
+        configured_root.mkdir()
+        generation.mkdir()
+        index_db = generation / "index.db"
+        initialize_archive_database(configured_root / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        (configured_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
+        route_failure_sample(
+            FailureSample(kind="RuntimeError", locator="target:session_insights", message="root maintenance failure"),
+            operation_id="root-maintenance",
+            archive_root=configured_root,
+            target="session_insights",
+        )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=configured_root / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=configured_root),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["active_db_path"] == str(index_db)
+        assert payload["raw_failures"]["maintenance"] == 1
 
     def test_direct_status_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
         env = _make_app_env()

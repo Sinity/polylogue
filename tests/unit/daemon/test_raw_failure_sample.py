@@ -500,6 +500,9 @@ class TestRawFailureInfoProducesTypedSamples:
                 return self._cursor.fetchall()
 
             def __iter__(self) -> object:
+                normalized = " ".join(self._sql.split()).lower()
+                if "from raw_sessions as r" in normalized and "limit 50" not in normalized:
+                    raise AssertionError("raw-failure lifecycle totals must aggregate in SQL")
                 return iter(self._cursor)
 
             def __getattr__(self, name: str) -> object:
@@ -509,8 +512,8 @@ class TestRawFailureInfoProducesTypedSamples:
             def __init__(self, connection: sqlite3.Connection) -> None:
                 self._connection = connection
 
-            def execute(self, sql: str) -> GuardedCursor:
-                return GuardedCursor(self._connection.execute(sql), sql)
+            def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> GuardedCursor:
+                return GuardedCursor(self._connection.execute(sql, parameters), sql)
 
             def close(self) -> None:
                 self._connection.close()

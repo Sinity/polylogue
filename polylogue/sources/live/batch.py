@@ -185,13 +185,14 @@ def _hot_capture_prefix_is_proven(
         return False
     source = Path(path)
     try:
-        stat = source.stat()
-        if stat.st_size <= blob_size:
+        proof_start = source.stat()
+        if proof_start.st_size <= blob_size:
             return False
         fingerprint, _bytes_read = sha256_range_from_path(source, start_offset=0, end_offset=blob_size)
+        proof_end = source.stat()
     except (EOFError, OSError):
         return False
-    return fingerprint == expected_fingerprint
+    return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
 
 
 def _write_codex_thread_state_evidence(
@@ -1183,7 +1184,15 @@ class LiveBatchProcessor:
         assert prefix_proof.stat is not None
         stat = prefix_proof.stat
         if source_revision is not None:
-            fp = source_revision
+            # Ordinary append cursors use the blob-backed source revision as
+            # their byte-proof identity. A retained raw failure instead binds
+            # the cursor to its durable source-tier ID so the next growth can
+            # find typed failure evidence and force full replay.
+            fp = (
+                raw_fingerprint
+                if raw_fingerprint is not None and self._raw_failure_requires_full_replay(path, raw_fingerprint)
+                else source_revision
+            )
             last_nl = byte_size
             tail_hash = source_revision
             if captured_content_hash is not None:
@@ -3046,8 +3055,14 @@ class LiveBatchProcessor:
         When the file subsequently grows, replay the complete source so the
         parser receives its header and preceding messages intact.
         """
+        if cursor.content_fingerprint is None:
+            return False
+        return self._raw_failure_requires_full_replay(path, cursor.content_fingerprint)
+
+    def _raw_failure_requires_full_replay(self, path: Path, raw_id: str) -> bool:
+        """Return whether one durable raw ID carries replay-blocking evidence."""
         source_db = self._archive_source_db_path()
-        if not source_db.exists() or cursor.content_fingerprint is None:
+        if not source_db.exists():
             return False
         placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
         try:
@@ -3059,13 +3074,13 @@ class LiveBatchProcessor:
                         SELECT 1
                         FROM raw_sessions AS r
                         JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
-                        WHERE lower(hex(r.blob_hash)) = ?
+                        WHERE r.raw_id = ?
                           AND r.source_path = ?
                           AND r.parse_error IS NOT NULL
                           AND a.artifact_kind IN ({placeholders})
                         LIMIT 1
                         """,
-                        (cursor.content_fingerprint, str(path), *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
+                        (raw_id, str(path), *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
                     ).fetchone()
                     is not None
                 )

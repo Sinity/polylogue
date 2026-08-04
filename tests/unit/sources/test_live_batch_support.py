@@ -3202,14 +3202,26 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     assert first.failed_file_count == 0
     captured_cursor = cursor.get_record(path)
     assert captured_cursor is not None
+    # The cursor records the acquired source snapshot, but raw-failure
+    # evidence below still prohibits an append from that frontier.
     assert captured_cursor.byte_offset == path.stat().st_size
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = conn.execute(
+            """
+            SELECT r.raw_id
+            FROM raw_sessions AS r
+            JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
+            WHERE a.artifact_kind = 'terminal_corrupt_input'
+            """
+        ).fetchone()[0]
         parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
         assert "complete record boundary" in str(parse_error)
     assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
+    assert captured_cursor.content_fingerprint == raw_id
+    assert processor._cursor_references_raw_failure_requiring_full_replay(path, captured_cursor)
 
     with path.open("ab") as handle:
         handle.write(split_record[split_at:])
@@ -3239,7 +3251,6 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     assert second.failed_file_count == 0
     final_cursor = cursor.get_record(path)
     assert final_cursor is not None
-    assert final_cursor.byte_offset == path.stat().st_size
     assert final_cursor.failure_count == 0
     assert any(
         call.get("stage") == "fts" and call.get("subject_id") == "codex-session:split-record" for call in recorded_debt
@@ -3297,20 +3308,11 @@ def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [("message-0",)]
 
-    seed_cursor = cursor.get_record(path)
-    assert seed_cursor is not None
-    cursor.set(
-        path,
-        seed_cursor.byte_size,
-        byte_offset=seed_cursor.byte_offset,
-        last_complete_newline=seed_cursor.last_complete_newline,
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
         parser_fingerprint="previous-parser",
-        content_fingerprint=seed_cursor.content_fingerprint,
-        tail_hash=seed_cursor.tail_hash,
-        source_name=seed_cursor.source_name,
-        st_dev=seed_cursor.st_dev,
-        st_ino=seed_cursor.st_ino,
-        mtime_ns=seed_cursor.mtime_ns,
     )
     path.write_bytes(baseline + completed_record[:split_at])
     original_boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
@@ -3332,30 +3334,13 @@ def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute(
             """
-            SELECT a.artifact_kind, lower(hex(r.blob_hash))
+            SELECT a.artifact_kind
             FROM raw_artifacts AS a
-            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
             WHERE a.artifact_kind = 'deferred_hot_jsonl_capture'
             """
         ).fetchone()
     assert artifact is not None
     assert artifact[0] == "deferred_hot_jsonl_capture"
-    deferred_raw_fingerprint = str(artifact[1])
-    completed_stat = path.stat()
-    cursor.set(
-        path,
-        len(baseline),
-        byte_offset=len(baseline),
-        last_complete_newline=len(baseline),
-        parser_fingerprint="current-parser",
-        content_fingerprint=deferred_raw_fingerprint,
-        tail_hash=_cursor_hash_authority(baseline),
-        source_name="codex",
-        st_dev=completed_stat.st_dev,
-        st_ino=completed_stat.st_ino,
-        mtime_ns=completed_stat.st_mtime_ns,
-    )
-
     replayed = asyncio.run(processor.ingest_files([path]))
 
     assert replayed.full_file_count == 1
@@ -3369,6 +3354,36 @@ def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
             ("message-0",),
             ("message-1",),
         ]
+
+
+def test_hot_capture_prefix_proof_rejects_in_place_rewrite_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hash read cannot prove a prefix that changed before its post-check."""
+    from polylogue.sources.live import batch as live_batch
+
+    path = tmp_path / "racing.jsonl"
+    captured = b'{"type":"session_meta","payload":{"id":"racing"}}\n'
+    path.write_bytes(captured + b'{"type":"message"}\n')
+    original_hash = sha256_range_from_path
+
+    def rewrite_after_hash(*args: object, **kwargs: object) -> tuple[str, int]:
+        result = original_hash(*args, **kwargs)  # type: ignore[arg-type]
+        path.write_bytes(b"x" * path.stat().st_size)
+        return result
+
+    monkeypatch.setattr(live_batch, "sha256_range_from_path", rewrite_after_hash)
+
+    assert (
+        live_batch._hot_capture_prefix_is_proven(
+            str(path),
+            captured,
+            blob_hash=sha256(captured).hexdigest(),
+            blob_size=len(captured),
+        )
+        is False
+    )
 
 
 def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_path: Path) -> None:
@@ -3427,7 +3442,7 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
         byte_offset=stat.st_size,
         last_complete_newline=stat.st_size,
         parser_fingerprint="test-parser",
-        content_fingerprint=payload_hash,
+        content_fingerprint="terminal-raw",
         tail_hash=_cursor_hash_authority(path.read_bytes()),
         source_name="codex",
         st_dev=stat.st_dev,

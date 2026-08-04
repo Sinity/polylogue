@@ -1682,7 +1682,7 @@ def _show_direct_json(
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
-    payload.update(_direct_raw_failure_status(active_root))
+    payload.update(_direct_raw_failure_status(root))
     if active_db is not None and active_db.exists():
         payload["active_db_path"] = str(active_db)
         try:
@@ -2270,7 +2270,7 @@ def _show_direct_status(
         env.ui.console.print(f"  Sessions: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
-        raw_failure_status = _direct_raw_failure_status(active_root)
+        raw_failure_status = _direct_raw_failure_status(root)
         raw_total = (
             raw_failure_status["raw_parse_failures"]
             + raw_failure_status["raw_validation_failures"]

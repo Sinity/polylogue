@@ -1025,10 +1025,38 @@ def _archive_raw_failure_info(
                 ).fetchone()[0]
                 or 0
             )
+            deferred_kinds = tuple(sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS))
+            terminal_kinds = tuple(sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS))
+            known_kinds = deferred_kinds + terminal_kinds
+            deferred_placeholders = ", ".join("?" for _ in deferred_kinds)
+            terminal_placeholders = ", ".join("?" for _ in terminal_kinds)
+            known_placeholders = ", ".join("?" for _ in known_kinds)
+            lifecycle_totals = conn.execute(
+                f"""
+                WITH raw_failures AS (
+                    SELECT (
+                        SELECT a.artifact_kind
+                        FROM raw_artifacts AS a
+                        WHERE a.raw_id = r.raw_id
+                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
+                        LIMIT 1
+                    ) AS artifact_kind
+                    FROM raw_sessions AS r
+                    WHERE r.parse_error IS NOT NULL OR r.validation_status = 'failed'
+                )
+                SELECT
+                    COALESCE(SUM(artifact_kind IN ({deferred_placeholders})), 0),
+                    COALESCE(SUM(artifact_kind IN ({terminal_placeholders})), 0),
+                    COALESCE(SUM(artifact_kind IS NULL OR artifact_kind NOT IN ({known_placeholders})), 0)
+                FROM raw_failures
+                """,
+                (*deferred_kinds, *terminal_kinds, *known_kinds),
+            ).fetchone()
+            assert lifecycle_totals is not None
+            deferred_failures = int(lifecycle_totals[0] or 0)
+            terminal_rejections = int(lifecycle_totals[1] or 0)
+            unexplained_failures = int(lifecycle_totals[2] or 0)
             samples: list[RawFailureSample] = []
-            deferred_failures = 0
-            terminal_rejections = 0
-            unexplained_failures = 0
             for row in conn.execute(
                 """
                 SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error,
@@ -1042,6 +1070,7 @@ def _archive_raw_failure_info(
                 FROM raw_sessions AS r
                 WHERE parse_error IS NOT NULL OR validation_status = 'failed'
                 ORDER BY acquired_at_ms DESC
+                LIMIT 50
                 """
             ):
                 parse_err = str(row[2] or "") if row[2] else ""
@@ -1050,14 +1079,6 @@ def _archive_raw_failure_info(
                 origin = str(row[1]) if row[1] else None
                 artifact_kind = str(row[5]) if row[5] is not None else None
                 lifecycle = _raw_failure_lifecycle(artifact_kind)
-                if lifecycle == "deferred":
-                    deferred_failures += 1
-                elif lifecycle == "terminal":
-                    terminal_rejections += 1
-                else:
-                    unexplained_failures += 1
-                if len(samples) >= 50:
-                    continue
                 if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
                     kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
                 elif val_status == "failed":
