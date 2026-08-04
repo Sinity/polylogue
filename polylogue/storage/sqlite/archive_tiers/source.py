@@ -21,7 +21,7 @@ from polylogue.core.enums import (
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 from polylogue.storage.sqlite.archive_tiers.types import ProvenRevisionAuthority
 
-SOURCE_SCHEMA_VERSION = 25
+SOURCE_SCHEMA_VERSION = 26
 
 SOURCE_DDL = f"""
 CREATE TABLE IF NOT EXISTS raw_sessions (
@@ -297,6 +297,30 @@ ON raw_quarantine_group_dedup_receipts(promoted_at_ms);
 
 CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_representative
 ON raw_quarantine_group_dedup_receipts(representative_raw_id);
+
+-- v26 (polylogue-s8s54): durable receipt for the narrow browser-capture
+-- unknown-export repair. The actuator changes only source.db's origin and
+-- capture_mode. The index.db generated session identity is intentionally
+-- repaired later by the normal reparse route, never by this source-tier pass.
+CREATE TABLE IF NOT EXISTS raw_unknown_export_reclassification_receipts (
+    raw_id                  TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+    previous_origin         TEXT NOT NULL CHECK(previous_origin = 'unknown-export'),
+    new_origin              TEXT NOT NULL CHECK(new_origin = 'chatgpt-export'),
+    previous_capture_mode   TEXT,
+    new_capture_mode        TEXT NOT NULL CHECK(new_capture_mode = 'chatgpt'),
+    embedded_provider       TEXT NOT NULL CHECK(embedded_provider = 'chatgpt'),
+    source_path             TEXT NOT NULL,
+    blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
+    blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
+    reclassified_at_ms      INTEGER NOT NULL CHECK(reclassified_at_ms >= 0),
+    tool_version            TEXT NOT NULL,
+    backup_manifest_path    TEXT NOT NULL,
+    index_reparse_required  INTEGER NOT NULL CHECK(index_reparse_required = 1),
+    detail                  TEXT NOT NULL DEFAULT ''
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_raw_unknown_export_reclassification_receipts_reclassified_at
+ON raw_unknown_export_reclassification_receipts(reclassified_at_ms);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither
