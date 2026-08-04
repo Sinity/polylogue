@@ -252,6 +252,14 @@ def test_archive_facade_route_catalog_covers_public_async_facade() -> None:
     assert routing["routes"]["health_check"]["route"] == "archive_routed"
     assert routing["routes"]["get_session"]["route"] == "archive_routed"
     assert routing["routes"]["search"]["route"] == "archive_routed"
+    assert routing["routes"]["search_similar_sessions"] == {
+        "route": "archive_routed",
+        "tier": "embeddings",
+        "detail": "ranks archived sessions through embeddings.db vectors",
+    }
+    for method in ("get_setting", "list_settings", "set_setting"):
+        assert routing["routes"][method]["route"] == "archive_routed"
+        assert routing["routes"][method]["tier"] == "user"
     assert routing["unsupported_methods"] == []
 
 

@@ -438,6 +438,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "archive_count_sessions": ("archive_direct", "index", "current archive helper"),
     "archive_get_session": ("archive_direct", "index", "current archive helper"),
     "search": ("archive_routed", "index", "searches index.db block FTS"),
+    "search_similar_sessions": (
+        "archive_routed",
+        "embeddings",
+        "ranks archived sessions through embeddings.db vectors",
+    ),
     "search_session_hits": ("archive_direct", "index", "projects FTS/hybrid search hits from index.db"),
     "search_envelope": ("archive_routed", "index", "builds envelopes from index.db"),
     "session_correlation_payload": (
@@ -451,6 +456,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "reads session-scoped usage/cost reconciliation from index.db",
     ),
     "set_metadata": ("archive_routed", "user", "writes user metadata through user.db"),
+    "set_setting": ("archive_routed", "user", "writes a typed durable user setting through user.db"),
     "stats": ("archive_routed", "index", "reads archive stats from index.db"),
     "storage_stats": ("archive_direct", "index", "reads lightweight archive counts from index.db"),
     "tool_call_latency_distribution": (
@@ -465,6 +471,8 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "index",
         "summarizes workflow-shape profiles from index.db",
     ),
+    "get_setting": ("archive_routed", "user", "reads one typed durable user setting from user.db"),
+    "list_settings": ("archive_routed", "user", "lists typed durable user settings from user.db"),
     "capture_assertion_candidate": (
         "archive_routed",
         "user",
