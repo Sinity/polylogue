@@ -1976,7 +1976,8 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
     config = Config(archive_root=archive_root(), render_root=render_root(), sources=[])
 
     if operation in ("preview", "execute"):
-        from polylogue.maintenance.planner import BackfillStatus, execute_backfill, preview_backfill
+        from polylogue.core.enums import OperationStatus
+        from polylogue.maintenance.planner import execute_backfill, preview_backfill
 
         targets = kwargs.get("targets")
         session_ids = kwargs.get("session_ids")
@@ -2007,7 +2008,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
                     return confirm_error
             result = execute_backfill(config, targets=resolved_targets, dry_run=dry_run, scope_filter=scope_filter)
             envelope = envelope_from_operation(result, origin="mcp", mode="execute")
-            if result.status is BackfillStatus.FAILED:
+            if result.status is OperationStatus.FAILED:
                 # Typed failure: surface as an MCP error payload (not a
                 # bare 200-shaped success envelope) while still carrying
                 # the operation id and first failure/error detail so a

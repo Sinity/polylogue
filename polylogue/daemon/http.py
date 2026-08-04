@@ -5236,8 +5236,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         dry_run: bool = bool(body.get("dry_run", False))
 
         from polylogue.config import Config
+        from polylogue.core.enums import OperationStatus
         from polylogue.maintenance.envelope import envelope_from_operation
-        from polylogue.maintenance.planner import BackfillStatus, execute_backfill
+        from polylogue.maintenance.planner import execute_backfill
         from polylogue.maintenance.scope import MaintenanceScopeFilter
         from polylogue.paths import archive_root, render_root
 
@@ -5258,7 +5259,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # request, not a successful response describing a failure --
         # surface it as 422 so callers do not have to parse the body to
         # notice (polylogue-71ey AC 4).
-        status = HTTPStatus.UNPROCESSABLE_ENTITY if result.status is BackfillStatus.FAILED else HTTPStatus.OK
+        status = HTTPStatus.UNPROCESSABLE_ENTITY if result.status is OperationStatus.FAILED else HTTPStatus.OK
         self._send_json(status, envelope.to_dict())
 
     @daemon_safe_handler

@@ -10,7 +10,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 
-from polylogue.core.enums import IngestOutcome, OperationStatus, Origin
+from polylogue.core.enums import IngestOutcome, OperationStatus, Origin, require_operation_lifecycle_status
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
@@ -575,7 +575,7 @@ def record_ingest_attempt(
     """
     if attempt_id is None:
         attempt_id = str(uuid.uuid4())
-    status_value = status.value if isinstance(status, OperationStatus) else status
+    status_value = require_operation_lifecycle_status(status).value
     has_storage_route = _table_has_column(conn, "ingest_attempts", "storage_route")
     route_column = "storage_route,\n            " if has_storage_route else ""
     route_value = "?, " if has_storage_route else ""
@@ -1016,7 +1016,7 @@ def upsert_embedding_catchup_run(
     """Create or replace one ``embedding_catchup_runs`` row and return ``run_id``."""
     if run_id is None:
         run_id = str(uuid.uuid4())
-    status_value = status.value if isinstance(status, OperationStatus) else status
+    status_value = require_operation_lifecycle_status(status).value
     ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
@@ -1070,7 +1070,7 @@ def upsert_embedding_catchup_run(
 def list_embedding_catchup_runs(
     conn: sqlite3.Connection,
     *,
-    status: str | None = None,
+    status: OperationStatus | str | None = None,
 ) -> tuple[ArchiveEmbeddingCatchupRun, ...]:
     """Return embedding catchup runs ordered by newest start first."""
     outcome_columns = _embedding_catchup_run_outcome_columns(conn)
@@ -1084,7 +1084,7 @@ def list_embedding_catchup_runs(
     params: tuple[object, ...] = ()
     if status is not None:
         query += " WHERE status = ?"
-        params = (status,)
+        params = (require_operation_lifecycle_status(status).value,)
     query += " ORDER BY started_at_ms DESC, run_id DESC"
 
     return tuple(ArchiveEmbeddingCatchupRun(*row) for row in conn.execute(query, params).fetchall())

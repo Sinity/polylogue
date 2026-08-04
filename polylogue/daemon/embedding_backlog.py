@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import load_polylogue_config
+from polylogue.core.enums import OperationStatus
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -233,7 +234,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
     started_at_ms = int(time.time() * 1000)
     run_id = _upsert_archive_embedding_catchup_run(
         ops_db,
-        status="running",
+        status=OperationStatus.RUNNING,
         started_at_ms=started_at_ms,
         scanned_sessions=0,
         embedded_messages=0,
@@ -250,7 +251,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
         _upsert_archive_embedding_catchup_run(
             ops_db,
             run_id=run_id,
-            status="failed",
+            status=OperationStatus.FAILED,
             started_at_ms=started_at_ms,
             finished_at_ms=int(time.time() * 1000),
             error_message="vector provider unavailable",
@@ -306,7 +307,7 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
     _upsert_archive_embedding_catchup_run(
         ops_db,
         run_id=run_id,
-        status="failed" if errors else "completed",
+        status=OperationStatus.FAILED if errors else OperationStatus.COMPLETED,
         started_at_ms=started_at_ms,
         finished_at_ms=int(time.time() * 1000),
         scanned_sessions=processed,
@@ -343,7 +344,7 @@ def _archive_embedding_catchup_estimated_cost_this_month(ops_db: Path) -> float:
 def _upsert_archive_embedding_catchup_run(
     ops_db: Path,
     *,
-    status: str,
+    status: OperationStatus,
     started_at_ms: int,
     run_id: str | None = None,
     finished_at_ms: int | None = None,

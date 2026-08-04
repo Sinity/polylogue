@@ -441,7 +441,7 @@ class TestFormatMetricsReadsArchiveState:
                 conn,
                 started_at_ms=1,
                 finished_at_ms=2,
-                status="cancelled",
+                status="interrupted",
                 scanned_sessions=3,
                 embedded_sessions=2,
                 error_count=1,
@@ -680,7 +680,7 @@ class TestFormatMetricsReadsArchiveState:
         assert "polylogue_embedding_retrieval_ready 1" in body
         # Archive catch-up runs track outcome session counts but not rebuild
         # mode, planned/skipped breakdowns, or planned message counts.
-        assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="cancelled"} 1' in body
+        assert 'polylogue_embedding_latest_catchup_run_info{rebuild="false",status="interrupted"} 1' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="planned"} 3' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="processed"} 3' in body
         assert 'polylogue_embedding_latest_catchup_sessions{state="embedded"} 2' in body

@@ -32,6 +32,7 @@ from pydantic import ValidationError
 
 from polylogue.cli.commands.maintenance import maintenance_group
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.maintenance.envelope import (
     EnvelopeMode,
     EnvelopeOrigin,
@@ -42,7 +43,6 @@ from polylogue.maintenance.envelope import (
 from polylogue.maintenance.planner import (
     BackfillKind,
     BackfillOperation,
-    BackfillStatus,
     BoundedFailureSamples,
     FailureSample,
     MaintenanceScope,
@@ -285,7 +285,7 @@ def _example_operation(
         operation_id="op-1",
         kind=BackfillKind.DERIVED_REBUILD,
         targets=("session_insights",),
-        status=BackfillStatus.PENDING,
+        status=OperationStatus.PENDING,
         progress=0.0,
         started_at=None,
         completed_at=None,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.enums import Origin
+from polylogue.core.enums import OperationStatus, Origin
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ROUTE_OBSERVATION_ROW_CAP,
@@ -93,11 +93,6 @@ def test_existing_ops_db_converges_old_status_checks_and_preserves_rows(tmp_path
             PRAGMA user_version = 1;
             """
         )
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                "INSERT INTO embedding_catchup_runs (run_id, started_at_ms, status) "
-                "VALUES ('rejected', 1, 'interrupted')"
-            )
         conn.execute(
             "INSERT INTO ingest_attempts (attempt_id, status, started_at_ms) VALUES ('legacy-attempt', 'completed', 1)"
         )
@@ -126,8 +121,8 @@ def test_existing_ops_db_converges_old_status_checks_and_preserves_rows(tmp_path
             "completed",
         )
 
-        record_ingest_attempt(conn, attempt_id="new-attempt", status="interrupted", started_at_ms=3)
-        upsert_embedding_catchup_run(conn, run_id="new-run", status="interrupted", started_at_ms=4)
+        record_ingest_attempt(conn, attempt_id="new-attempt", status=OperationStatus.INTERRUPTED, started_at_ms=3)
+        upsert_embedding_catchup_run(conn, run_id="new-run", status=OperationStatus.INTERRUPTED, started_at_ms=4)
 
         assert conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id = 'new-attempt'").fetchone() == (
             "interrupted",
@@ -171,11 +166,37 @@ def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:
     assert conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0] == 1
 
 
+def test_ops_lifecycle_checks_reject_non_lifecycle_statuses(tmp_path: Path) -> None:
+    """The fresh disposable bootstrap DDL rejects values outside the lifecycle subset."""
+    conn = _connect(tmp_path / "ops.db")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO ingest_attempts (attempt_id, status, started_at_ms) VALUES (?, ?, ?)",
+            ("pending-attempt", OperationStatus.PENDING.value, 1),
+        )
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO embedding_catchup_runs (run_id, status, started_at_ms) VALUES (?, ?, ?)",
+            ("cancelled-run", "cancelled", 1),
+        )
+
+
+def test_ops_writers_reject_admission_only_statuses(tmp_path: Path) -> None:
+    """Writer validation keeps admission states from bypassing the ledger contract."""
+    conn = _connect(tmp_path / "ops.db")
+
+    with pytest.raises(ValueError, match="not a run lifecycle status"):
+        record_ingest_attempt(conn, attempt_id="pending-attempt", status=OperationStatus.PENDING, started_at_ms=1)
+    with pytest.raises(ValueError, match="not a run lifecycle status"):
+        upsert_embedding_catchup_run(conn, run_id="pending-run", status=OperationStatus.PENDING, started_at_ms=1)
+
+
 def test_record_ingest_attempt_records_one_row(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "ops.db")
     attempt_id = record_ingest_attempt(
         conn,
-        status="running",
+        status=OperationStatus.RUNNING,
         source_path="/tmp/source-a.jsonl",
         origin=Origin.CHATGPT_EXPORT,
         phase="planning",
@@ -337,7 +358,7 @@ def test_record_daemon_stage_event_writes_reads_and_filters(tmp_path: Path) -> N
         event_id="stage-1",
         attempt_id="attempt-1",
         stage="parse",
-        status="running",
+        status=OperationStatus.RUNNING,
         observed_at_ms=1_700_000_070,
         payload={"queued": 3},
     )
@@ -394,7 +415,7 @@ def test_read_compact_state_reads_one_row_per_ops_helper(tmp_path: Path) -> None
     attempt_id = record_ingest_attempt(
         conn,
         attempt_id="attempt-1",
-        status="running",
+        status=OperationStatus.RUNNING,
         source_path="/tmp/source-a.jsonl",
         origin=Origin.CLAUDE_CODE_SESSION,
         started_at_ms=1_700_000_101,
@@ -433,7 +454,7 @@ def test_upsert_embedding_catchup_run_writes_and_reads_row(tmp_path: Path) -> No
     run_id = upsert_embedding_catchup_run(
         conn,
         run_id="run-1",
-        status="running",
+        status=OperationStatus.RUNNING,
         started_at_ms=1_700_000_500,
         finished_at_ms=None,
         origin=Origin.CLAUDE_CODE_SESSION,
@@ -450,7 +471,7 @@ def test_upsert_embedding_catchup_run_writes_and_reads_row(tmp_path: Path) -> No
         run_id="run-1",
         started_at_ms=1_700_000_500,
         finished_at_ms=None,
-        status="running",
+        status=OperationStatus.RUNNING,
         origin=Origin.CLAUDE_CODE_SESSION.value,
         scanned_sessions=2,
         embedded_sessions=1,
@@ -475,7 +496,7 @@ def test_upsert_embedding_catchup_run_refreshes_status_and_list_filters(tmp_path
     upsert_embedding_catchup_run(
         conn,
         run_id="run-2",
-        status="completed",
+        status=OperationStatus.COMPLETED,
         started_at_ms=1_700_000_600,
         finished_at_ms=1_700_000_700,
         scanned_sessions=2,
@@ -486,12 +507,12 @@ def test_upsert_embedding_catchup_run_refreshes_status_and_list_filters(tmp_path
     upsert_embedding_catchup_run(
         conn,
         run_id="run-3",
-        status="failed",
+        status=OperationStatus.FAILED,
         started_at_ms=1_700_000_501,
         error_message="temporary issue",
     )
 
-    completed_runs = list_embedding_catchup_runs(conn, status="completed")
+    completed_runs = list_embedding_catchup_runs(conn, status=OperationStatus.COMPLETED)
     assert len(completed_runs) == 1
     assert completed_runs[0] == ArchiveEmbeddingCatchupRun(
         run_id="run-2",

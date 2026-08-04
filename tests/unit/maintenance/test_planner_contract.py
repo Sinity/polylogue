@@ -14,13 +14,13 @@ from typing import cast
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.maintenance.planner import (
     MAX_FAILURE_SAMPLES,
     BackfillKind,
     BackfillOperation,
-    BackfillStatus,
     BoundedFailureSamples,
     FailureSample,
     MaintenanceScope,
@@ -325,7 +325,7 @@ class TestEmptyTargetsFastFail:
     def test_preview_with_no_resolvable_targets_returns_failed(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
         op = preview_backfill(config, targets=("does-not-exist",))
-        assert op.status is BackfillStatus.FAILED
+        assert op.status is OperationStatus.FAILED
         assert op.targets == ()
         assert op.scope is not None
         assert op.scope.targets == ()
@@ -333,7 +333,7 @@ class TestEmptyTargetsFastFail:
     def test_execute_with_no_resolvable_targets_returns_failed(self, tmp_path: Path) -> None:
         config = _make_config(tmp_path)
         op = execute_backfill(config, targets=("does-not-exist",))
-        assert op.status is BackfillStatus.FAILED
+        assert op.status is OperationStatus.FAILED
         assert op.targets == ()
 
 
@@ -383,7 +383,7 @@ class TestConfigThreading:
 
         operation = execute_backfill(config, targets=("empty_sessions",), dry_run=True)
 
-        assert operation.status is BackfillStatus.COMPLETED
+        assert operation.status is OperationStatus.COMPLETED
         assert operation.affected_rows == 1
         assert operation.results[0]["name"] == "empty_sessions"
 

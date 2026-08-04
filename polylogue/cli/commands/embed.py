@@ -168,7 +168,7 @@ class BackfillSessionPayload(TypedDict):
 
 
 class BackfillResultPayload(TypedDict):
-    status: str
+    status: Literal["complete", "stopped"]
     embedded_sessions: int
     skipped_sessions: int
     error_count: int
@@ -180,7 +180,7 @@ class BackfillResultPayload(TypedDict):
     sessions: list[BackfillSessionPayload]
 
 
-_ARCHIVE_BACKFILL_STATUS_MAP: dict[str, OperationStatus] = {
+_ARCHIVE_BACKFILL_STATUS_MAP: dict[Literal["complete", "stopped"], OperationStatus] = {
     "complete": OperationStatus.COMPLETED,
     "stopped": OperationStatus.INTERRUPTED,
 }
@@ -822,18 +822,22 @@ def _run_archive_backfill(
         if stopped_reason:
             break
 
-    payload = {
-        "status": "stopped" if stopped_reason else "complete",
-        "embedded_sessions": embedded,
-        "skipped_sessions": skipped,
-        "error_count": errors,
-        "estimated_cost_usd": round(cumulative_cost, 8),
-        "stopped_reason": stopped_reason,
-        "candidate_sessions": len(pending),
-        "processed_sessions": processed,
-        "preflight": _preflight_payload(report),
-        "sessions": session_payloads,
-    }
+    display_status: Literal["complete", "stopped"] = "stopped" if stopped_reason else "complete"
+    payload = cast(
+        BackfillResultPayload,
+        {
+            "status": display_status,
+            "embedded_sessions": embedded,
+            "skipped_sessions": skipped,
+            "error_count": errors,
+            "estimated_cost_usd": round(cumulative_cost, 8),
+            "stopped_reason": stopped_reason,
+            "candidate_sessions": len(pending),
+            "processed_sessions": processed,
+            "preflight": _preflight_payload(report),
+            "sessions": session_payloads,
+        },
+    )
     _record_archive_backfill_run(
         index_db,
         started_at_ms=started_at_ms,
@@ -858,7 +862,7 @@ def _record_archive_backfill_run(
     index_db: Path,
     *,
     started_at_ms: int,
-    status: str,
+    status: Literal["complete", "stopped"],
     processed_sessions: int,
     embedded_sessions: int,
     skipped_sessions: int,
