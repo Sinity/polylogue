@@ -284,10 +284,16 @@ def run_reindex_canary(
 
     if not no_promote:
         raise CanarySelectionError("reindex canary requires --no-promote")
+    from polylogue.config import resolve_archive_root
     from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
     from polylogue.storage.archive_identity import ArchiveLocation
 
     root = Path(archive_root)
+    if root.resolve() == resolve_archive_root().resolve():
+        raise CanarySelectionError(
+            "reindex canary refuses the configured live archive root; "
+            "run it against an explicitly provisioned isolated canary archive"
+        )
     current_index = Path(input_index) if input_index is not None else ArchiveLocation.resolve(root).active_index_path
     selection = select_canary_sessions(
         current_index,
