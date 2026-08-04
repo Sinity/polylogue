@@ -470,6 +470,7 @@ def test_archive_tiers_writer_does_not_collapse_duplicate_message_native_ids(tmp
         source_name=Provider.CODEX,
         provider_session_id="codex-duplicate-native-ids",
         title="Duplicate native IDs",
+        active_leaf_message_provider_id="dup",
         messages=[
             ParsedMessage(
                 provider_message_id="dup",

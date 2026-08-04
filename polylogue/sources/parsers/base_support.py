@@ -65,6 +65,25 @@ def text_blocks_prose(blocks: Sequence[ParsedContentBlock]) -> str | None:
     return "\n".join(parts) if parts else None
 
 
+def synthetic_message_id(
+    *,
+    role: Role,
+    text: str | None,
+    timestamp: str | None,
+    namespace: str = "",
+    kind: str = "",
+) -> str:
+    """Build a reorder-stable id for a message with no provider id.
+
+    This is reserved for parser-produced rows that are inherently synthetic,
+    such as an exported summary or a transcript section. Native-id fallback
+    paths must pass an empty string instead, so ``pipeline.ids`` can use its
+    role/timestamp comparison anchor.
+    """
+    seed = "\x1f".join((namespace, str(role), timestamp or "", text or "", kind))
+    return f"synthetic-{hash_text(seed)[:24]}"
+
+
 def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
     """Backfill ``parent_message_provider_id`` for a strictly linear message list.
 

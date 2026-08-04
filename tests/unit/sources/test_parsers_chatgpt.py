@@ -12,6 +12,7 @@ import pytest
 
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
@@ -363,6 +364,58 @@ def test_chatgpt_message_extraction_sorts_iso_timestamps() -> None:
     messages, _attachments = extract_messages_from_mapping(mapping)
 
     assert [message.provider_message_id for message in messages] == ["early", "late"]
+
+
+def test_chatgpt_idless_message_does_not_get_a_positional_provider_id() -> None:
+    mapping = {
+        "node": {
+            "message": {
+                "author": {"role": "user"},
+                "content": {"parts": ["hello"]},
+                "create_time": "2024-01-15T10:30:00Z",
+            }
+        }
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert [message.provider_message_id for message in messages] == [""]
+
+
+def test_chatgpt_idless_message_reordering_keeps_revision_identity_and_native_ids() -> None:
+    idless: ChatGPTMapping = {
+        "message": {
+            "author": {"role": "user"},
+            "content": {"parts": ["Question"]},
+            "create_time": 1_700_000_000.0,
+        },
+        "parent": None,
+        "children": [],
+    }
+    native: ChatGPTMapping = {
+        "id": "native-node",
+        "message": {
+            "id": "native-message",
+            "author": {"role": "assistant"},
+            "content": {"parts": ["Answer"]},
+            "create_time": 1_700_000_001.0,
+        },
+        "parent": None,
+        "children": [],
+    }
+    forward = chatgpt_parse(
+        {"id": "chatgpt-order", "mapping": {"idless": idless, "native": native}},
+        "fallback",
+    )
+    reordered = chatgpt_parse(
+        {"id": "chatgpt-order", "mapping": {"native": native, "idless": idless}},
+        "fallback",
+    )
+
+    assert [message.provider_message_id for message in forward.messages] == ["", "native-message"]
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
 
 
 # MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 17)
@@ -1182,6 +1235,31 @@ def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
     assert by_id["a_old"].is_active_leaf is False
     assert by_id["a_new"].is_active_leaf is True
     assert conv.active_leaf_message_provider_id == "a_new"
+
+
+def test_idless_active_path_marks_only_the_current_node_as_leaf() -> None:
+    payload = {
+        "title": "Id-less active path",
+        "mapping": {
+            "first": {
+                "message": {"author": {"role": "user"}, "content": {"parts": ["First"]}},
+                "parent": None,
+                "children": ["last"],
+            },
+            "last": {
+                "message": {"author": {"role": "assistant"}, "content": {"parts": ["Last"]}},
+                "parent": "first",
+                "children": [],
+            },
+        },
+        "current_node": "last",
+    }
+
+    conv = chatgpt_parse(payload, "fallback-id")
+
+    assert [message.provider_message_id for message in conv.messages] == ["", ""]
+    assert sum(message.is_active_leaf is True for message in conv.messages) == 1
+    assert conv.messages[-1].is_active_leaf is True
 
 
 def test_chatgpt_position_stays_mapping_order_when_active_path_timestamps_are_scrambled() -> None:

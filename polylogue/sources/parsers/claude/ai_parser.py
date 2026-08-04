@@ -32,6 +32,8 @@ from ..base import (
     ParsedSessionEvent,
     attachment_from_meta,
     human_authored_override,
+    mark_last_occurrence_as_active_leaf,
+    synthetic_message_id,
 )
 from .common import (
     _first_identity_field,
@@ -239,7 +241,7 @@ def _design_assistant_messages(
     incrementing positions, so the interjection lands as a real ``role=user``
     message physically between the two half-turns.
     """
-    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or f"design-{start_position}")
+    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or "")
     raw_blocks_value = content_payload.get("contentBlocks")
     raw_blocks = raw_blocks_value if isinstance(raw_blocks_value, list) else []
     has_interjection = any(
@@ -255,20 +257,30 @@ def _design_assistant_messages(
     messages: list[ParsedMessage] = []
     position = start_position
     current_blocks: list[ParsedContentBlock] = []
-    segment_index = 0
     # turn-level facts (turnInputTokens) are attributed to the FIRST emitted
     # segment of the turn -- an arbitrary but documented single anchor point,
     # since the count describes the whole turn, not any one segment.
     first_segment_emitted = False
 
     def flush() -> None:
-        nonlocal current_blocks, segment_index, position, first_segment_emitted
+        nonlocal current_blocks, position, first_segment_emitted
         if not current_blocks:
             return
-        provider_message_id = f"{message_uuid}#{segment_index}" if has_interjection else message_uuid
         text_parts = [
             block.text for block in current_blocks if block.type is BlockType.TEXT and not block.is_error and block.text
         ]
+        segment_text = "\n".join(text_parts) if text_parts else None
+        provider_message_id = (
+            message_uuid
+            if message_uuid and not has_interjection
+            else synthetic_message_id(
+                namespace=message_uuid,
+                role=Role.ASSISTANT,
+                text=segment_text,
+                timestamp=timestamp_str,
+                kind="claude-design-assistant-segment",
+            )
+        )
         input_tokens = 0
         if not first_segment_emitted and isinstance(turn_input_tokens, int):
             input_tokens = turn_input_tokens
@@ -277,7 +289,7 @@ def _design_assistant_messages(
             ParsedMessage(
                 provider_message_id=provider_message_id,
                 role=Role.ASSISTANT,
-                text="\n".join(text_parts) if text_parts else None,
+                text=segment_text,
                 timestamp=timestamp_str,
                 blocks=list(current_blocks),
                 position=position,
@@ -287,7 +299,6 @@ def _design_assistant_messages(
             )
         )
         position += 1
-        segment_index += 1
         current_blocks = []
 
     for raw_block in raw_blocks:
@@ -336,16 +347,28 @@ def _design_assistant_messages(
                 )
                 continue
             flush()
-            interjection_id = str(interjection_message.get("id") or f"{message_uuid}-interjection-{position}")
             interjection_text = interjection_message.get("content")
             interjection_timestamp = interjection_message.get("timestamp")
             interjection_role = Role.normalize(str(interjection_message.get("role") or "user"))
+            interjection_text_value = (
+                str(interjection_text) if isinstance(interjection_text, str) and interjection_text else None
+            )
+            interjection_timestamp_value = (
+                str(interjection_timestamp) if isinstance(interjection_timestamp, str) else None
+            )
+            interjection_id = str(interjection_message.get("id") or "") or synthetic_message_id(
+                namespace=message_uuid,
+                role=interjection_role,
+                text=interjection_text_value,
+                timestamp=interjection_timestamp_value,
+                kind="claude-design-interjection",
+            )
             messages.append(
                 ParsedMessage(
                     provider_message_id=interjection_id,
                     role=interjection_role,
-                    text=str(interjection_text) if isinstance(interjection_text, str) and interjection_text else None,
-                    timestamp=str(interjection_timestamp) if isinstance(interjection_timestamp, str) else None,
+                    text=interjection_text_value,
+                    timestamp=interjection_timestamp_value,
                     position=position,
                     is_active_path=True,
                     # polylogue-gzgyl: a user_interjection is unambiguously a
@@ -398,7 +421,6 @@ def _design_user_message(
     *,
     position: int,
 ) -> tuple[ParsedMessage, list[ParsedAttachment], ParsedSessionEvent | None]:
-    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or f"design-{position}")
     text = content_payload.get("content")
     timestamp = content_payload.get("timestamp")
     author_name = content_payload.get("authorName")
@@ -406,14 +428,20 @@ def _design_user_message(
 
     attachments: list[ParsedAttachment] = []
     raw_attachments = content_payload.get("attachments")
-    for meta in raw_attachments if isinstance(raw_attachments, list) else []:
-        attachment = _design_attachment_from_meta(meta, message_uuid)
-        if attachment is not None:
-            attachments.append(attachment)
 
     sender_name = str(author_name) if isinstance(author_name, str) and author_name else None
     timestamp_str = str(timestamp) if isinstance(timestamp, str) and timestamp else None
     design_message_text = str(text) if isinstance(text, str) and text else None
+    message_uuid = str(raw_message.get("uuid") or content_payload.get("id") or "") or synthetic_message_id(
+        role=Role.USER,
+        text=design_message_text,
+        timestamp=timestamp_str,
+        kind="claude-design-user",
+    )
+    for meta in raw_attachments if isinstance(raw_attachments, list) else []:
+        attachment = _design_attachment_from_meta(meta, message_uuid)
+        if attachment is not None:
+            attachments.append(attachment)
     message = ParsedMessage(
         provider_message_id=message_uuid,
         role=Role.USER,
@@ -490,13 +518,7 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
             )
 
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    if active_leaf_message_provider_id is not None:
-        messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
-        ]
+    messages = mark_last_occurrence_as_active_leaf(messages)
 
     title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
         payload, resolved_session_id, ref_prefix="claude-design-title"

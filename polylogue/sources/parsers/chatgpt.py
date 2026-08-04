@@ -590,7 +590,7 @@ def extract_messages_from_mapping(
     mapping: Mapping[str, object],
     current_node: str | None = None,
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
-    entries: list[tuple[float | None, int, ParsedMessage]] = []
+    entries: list[tuple[float | None, int, str, ParsedMessage]] = []
     attachments: list[ParsedAttachment] = []
     active_path_ids = _active_path_node_ids(mapping, current_node)
     active_path_id_set = set(active_path_ids)
@@ -615,9 +615,7 @@ def extract_messages_from_mapping(
             continue
         role = Role.normalize(str(raw_role))
         timestamp = msg.get("create_time")
-        msg_id = msg.get("id") or node.get("id") or ""
-        if not msg_id:
-            msg_id = f"msg-{idx}"
+        msg_id = str(msg.get("id") or node.get("id") or "")
 
         # Extract parent message reference and calculate branch index
         parent_id = node.get("parent")
@@ -1065,11 +1063,11 @@ def extract_messages_from_mapping(
             ),
         )
         emitted_by_node_id[node_id] = parsed.provider_message_id
-        entries.append((_coerce_float(timestamp), idx, parsed))
-    if any(value is not None for value, _, _ in entries):
+        entries.append((_coerce_float(timestamp), idx, node_id, parsed))
+    if any(value is not None for value, _, _, _ in entries):
         # Use explicit None check instead of `or` to handle zero/negative timestamps correctly
         entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
-    messages = [entry[2] for entry in entries]
+    messages = [entry[3] for entry in entries]
     emitted_message_ids = {message.provider_message_id for message in messages}
     messages = [
         message.model_copy(
@@ -1088,15 +1086,14 @@ def extract_messages_from_mapping(
         else message
         for message in messages
     ]
-    active_leaf_message_provider_id = next(
-        (emitted_by_node_id[node_id] for node_id in reversed(active_path_ids) if node_id in emitted_by_node_id),
+    active_leaf_node_id = next(
+        (node_id for node_id in reversed(active_path_ids) if node_id in emitted_by_node_id),
         None,
     )
-    if active_leaf_message_provider_id is not None:
+    if active_leaf_node_id is not None:
+        active_leaf_position = next(entry[3].position for entry in entries if entry[2] == active_leaf_node_id)
         messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
+            message.model_copy(update={"is_active_leaf": message.position == active_leaf_position})
             for message in messages
         ]
     return (messages, attachments)
