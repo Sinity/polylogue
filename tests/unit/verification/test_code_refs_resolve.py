@@ -41,6 +41,8 @@ from polylogue.operations.specs import (
     RUNTIME_OPERATION_SPECS,
 )
 
+_DOTTED_SYMBOL_RE = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+$")
+
 
 class _NestedFunctionRef:
     """Marker sentinel: an attr resolved via the nested-def source-scan fallback."""
@@ -94,9 +96,9 @@ def _resolve_code_ref(ref: str) -> object:
     ``Class`` then ``method`` via getattr), falling back to shorter prefixes.
     """
 
+    if not _DOTTED_SYMBOL_RE.fullmatch(ref):
+        raise ValueError(f"code_ref must be an unannotated dotted symbol: {ref!r}")
     parts = ref.split(".")
-    if len(parts) < 2:
-        raise ValueError(f"code_ref has no dotted module component: {ref!r}")
 
     try:
         return importlib.import_module(ref)
@@ -167,3 +169,17 @@ def test_code_ref_resolves_to_a_real_symbol(owner: str, ref: str) -> None:
         _resolve_code_ref(ref)
     except (ImportError, AttributeError, ValueError) as exc:
         pytest.fail(f"{owner} declares unresolvable code_ref {ref!r}: {exc}")
+
+
+def test_code_ref_rejects_missing_symbol() -> None:
+    """The shared resolver rejects a stale symbol instead of importing only its module."""
+
+    with pytest.raises(AttributeError, match="missing_symbol"):
+        _resolve_code_ref("polylogue.operations.specs.missing_symbol")
+
+
+def test_code_ref_rejects_annotated_prose() -> None:
+    """Operation identity belongs to the owning spec, never an annotated code_ref."""
+
+    with pytest.raises(ValueError, match="unannotated dotted symbol"):
+        _resolve_code_ref("polylogue.mcp.server_cutover._dispatch_write (operation=write)")
