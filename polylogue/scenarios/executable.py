@@ -25,7 +25,10 @@ class ExecutableScenario(NamedScenarioSource):
         merged = ScenarioMetadata.from_object(self).with_default_targets(self.execution.metadata)
         object.__setattr__(self, "path_targets", merged.path_targets)
         object.__setattr__(self, "artifact_targets", merged.artifact_targets)
+        object.__setattr__(self, "conceptual_path_targets", merged.conceptual_path_targets)
+        object.__setattr__(self, "conceptual_artifact_targets", merged.conceptual_artifact_targets)
         object.__setattr__(self, "operation_targets", merged.operation_targets)
+        object.__setattr__(self, "maintenance_targets", merged.maintenance_targets)
         object.__setattr__(self, "tags", merged.tags)
 
     @property

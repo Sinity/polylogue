@@ -212,6 +212,7 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "tests/unit/operations/test_mutation_actuators.py",
             "tests/unit/operations/test_operation_bindings.py",
             "tests/unit/annotations/test_importer.py::test_import_roundtrip_keeps_failures_candidates_and_independent_batches",
+            "tests/unit/cli/test_excise.py::TestExciseStandalone::test_yes_applies_excision",
         ),
         path_targets=(
             "tag-mutation-loop",
@@ -228,6 +229,8 @@ CONTRACT_LANES: dict[str, LaneEntry] = {
             "session-delete-loop",
             "session-excision-loop",
             "identity-reset-loop",
+            "message-fts-readiness-loop",
+            "session-insight-repair-loop",
         ),
         artifact_targets=(
             "sessions",

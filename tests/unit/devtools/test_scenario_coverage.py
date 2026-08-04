@@ -66,3 +66,22 @@ def test_runtime_coverage_opens_when_a_declared_route_path_is_removed() -> None:
 
     assert coverage.paths["tag-mutation-loop"].missing_route_declaration
     assert not coverage.paths["tag-mutation-loop"].complete
+
+
+def test_runtime_coverage_requires_each_operation_to_share_its_declared_path_route() -> None:
+    projections = build_scenario_projection_entries()
+    mutation_routes = next(projection for projection in projections if projection.name == "mutation-routes")
+    operation_removed = replace(
+        mutation_routes,
+        operation_targets=tuple(
+            operation for operation in mutation_routes.operation_targets if operation != "mutate-add-tag"
+        ),
+    )
+    coverage = build_runtime_scenario_coverage(
+        projections=tuple(
+            operation_removed if projection.name == "mutation-routes" else projection for projection in projections
+        )
+    )
+
+    assert coverage.paths["tag-mutation-loop"].uncovered_route_operations == ("mutate-add-tag",)
+    assert not coverage.paths["tag-mutation-loop"].complete

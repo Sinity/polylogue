@@ -676,7 +676,10 @@ class CorpusSpec(ScenarioProjectionSource, ScenarioMetadata):
             origin=metadata.origin,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
+            conceptual_path_targets=metadata.conceptual_path_targets,
+            conceptual_artifact_targets=metadata.conceptual_artifact_targets,
             operation_targets=metadata.operation_targets,
+            maintenance_targets=metadata.maintenance_targets,
             tags=metadata.tags,
         )
 
@@ -810,7 +813,14 @@ def build_corpus_scenarios(
                 origin=origin,
                 path_targets=merge_unique_string_tuples(*(spec.path_targets for spec in ordered_specs)),
                 artifact_targets=merge_unique_string_tuples(*(spec.artifact_targets for spec in ordered_specs)),
+                conceptual_path_targets=merge_unique_string_tuples(
+                    *(spec.conceptual_path_targets for spec in ordered_specs)
+                ),
+                conceptual_artifact_targets=merge_unique_string_tuples(
+                    *(spec.conceptual_artifact_targets for spec in ordered_specs)
+                ),
                 operation_targets=merge_unique_string_tuples(*(spec.operation_targets for spec in ordered_specs)),
+                maintenance_targets=merge_unique_string_tuples(*(spec.maintenance_targets for spec in ordered_specs)),
                 tags=merge_unique_string_tuples(tags, *(spec.tags for spec in ordered_specs)),
             )
         )
@@ -1364,7 +1374,10 @@ def _cluster_to_corpus_spec(
         origin=metadata.origin,
         path_targets=metadata.path_targets,
         artifact_targets=metadata.artifact_targets,
+        conceptual_path_targets=metadata.conceptual_path_targets,
+        conceptual_artifact_targets=metadata.conceptual_artifact_targets,
         operation_targets=metadata.operation_targets,
+        maintenance_targets=metadata.maintenance_targets,
         tags=metadata.tags,
     )
 
@@ -1410,7 +1423,10 @@ def build_inferred_corpus_specs(
             origin=metadata.origin,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
+            conceptual_path_targets=metadata.conceptual_path_targets,
+            conceptual_artifact_targets=metadata.conceptual_artifact_targets,
             operation_targets=metadata.operation_targets,
+            maintenance_targets=metadata.maintenance_targets,
             tags=metadata.tags,
         ),
     )
