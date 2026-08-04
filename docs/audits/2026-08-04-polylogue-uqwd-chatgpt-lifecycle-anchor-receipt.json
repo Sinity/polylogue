@@ -45,6 +45,8 @@
       "sqlite_user_version": 24
     }
   },
+  "receipt_status": "historical_pre_repair",
+  "repair_note": "Captured before the producer-cleanliness and blob-snapshot provenance contract. Retained as historical evidence only; do not use as a post-repair rerun receipt.",
   "schema": "polylogue.chatgpt-lifecycle-anchor-audit.v1",
   "scope": {
     "conclusion_limit": "A zero target_pair_count describes only this current parser-and-corpus snapshot. It does not establish the historical pre-fix replay required to reclassify or remove any graph gate.",

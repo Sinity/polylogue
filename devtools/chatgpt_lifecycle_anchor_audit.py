@@ -10,6 +10,7 @@ sanitized JSON receipt outside the archive.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -22,18 +23,21 @@ from typing import Literal, TextIO
 
 from polylogue.archive.session_revision_membership import MembershipRevision, _relation, classify_membership_revisions
 from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_revision_projection
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.core.hashing import hash_payload
+from polylogue.pipeline.ids import _event_content_payload, session_revision_projection
+from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 
 _Relation = Literal["equal", "a_contains_b", "b_contains_a", "conflict"]
 
-SCHEMA = "polylogue.chatgpt-lifecycle-anchor-audit.v1"
+SCHEMA = "polylogue.chatgpt-lifecycle-anchor-audit.v2"
 TARGET_PREDICATE = (
     "A pair in one persisted logical_source_key cohort where each parsed session has exactly one "
-    "generation_lifecycle event, their source_message_provider_id anchors differ, message_contents and "
-    "attachment_contents are equal, non-anchor lifecycle content hashes are equal, and the production _relation is conflict."
+    "generation_lifecycle event (other session events are allowed), their source_message_provider_id "
+    "anchors differ, message_contents and attachment_contents are equal, generation_lifecycle event "
+    "content hashes after removing source_message_provider_id are equal, all normalized event content "
+    "is equal after that same lifecycle-only exception, and the production _relation is conflict."
 )
 SELECTION_SQL = """
 SELECT r.raw_id, r.source_path, lower(hex(r.blob_hash)) AS blob_hash,
@@ -80,30 +84,130 @@ def _database_provenance(conn: sqlite3.Connection, path: Path) -> dict[str, int]
     }
 
 
-def _git_revision() -> str | None:
+def _git_provenance() -> dict[str, object]:
     repo_root = Path(__file__).resolve().parents[1]
     try:
-        return subprocess.check_output(
-            ["git", "-C", os.fspath(repo_root), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        revision = subprocess.check_output(
+            ["git", "-C", os.fspath(repo_root), "rev-parse", "--verify", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
         ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return None
+        status = subprocess.run(
+            ["git", "-C", os.fspath(repo_root), "status", "--porcelain=v1", "--untracked-files=all"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=5,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("ChatGPT lifecycle-anchor audit requires a readable git producer checkout") from error
+    return {
+        "git_revision": revision,
+        "working_tree_clean": not bool(status),
+        "working_tree_status_sha256": hashlib.sha256(status.encode("utf-8")).hexdigest(),
+    }
+
+
+def _generation_events(session: ParsedSession) -> list[ParsedSessionEvent]:
+    return [event for event in session.session_events if event.event_type == "generation_lifecycle"]
+
+
+def _anchor_independent_event_content(event: ParsedSessionEvent) -> bytes:
+    """Hash one lifecycle event without its provider-message anchor."""
+    payload = _event_content_payload(event)
+    payload.pop("source_message_provider_id", None)
+    return bytes.fromhex(hash_payload(payload))
+
+
+def _event_content_signature(event: ParsedSessionEvent) -> bytes:
+    """Hash normalized event content, retaining anchors except for lifecycle events."""
+    if event.event_type == "generation_lifecycle":
+        return _anchor_independent_event_content(event)
+    return bytes.fromhex(hash_payload(_event_content_payload(event)))
+
+
+def _session_event_content_signatures(session: ParsedSession) -> Counter[bytes]:
+    """Return normalized event content as a multiset, independent of array order."""
+    return Counter(_event_content_signature(event) for event in session.session_events)
+
+
+def _blob_store_snapshot(blob_store: BlobStore) -> dict[str, object]:
+    """Capture a deterministic, read-only identity and integrity scan of blobs."""
+    snapshot_digest = hashlib.sha256()
+    integrity_digest = hashlib.sha256()
+    canonical_blob_count = 0
+    canonical_blob_bytes = 0
+    verified_blob_count = 0
+    hash_mismatch_count = 0
+    invalid_namespace_entry_count = 0
+
+    for entry in blob_store.iter_namespace():
+        if entry.hash_hex is None:
+            invalid_namespace_entry_count += 1
+            record = {
+                "kind": entry.kind.value,
+                "issue": entry.issue.value if entry.issue is not None else None,
+                "relative_path": entry.relative_path,
+            }
+            encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            snapshot_digest.update(encoded)
+            snapshot_digest.update(b"\n")
+            integrity_digest.update(encoded)
+            integrity_digest.update(b"\n")
+            continue
+
+        size_bytes = entry.path.stat().st_size
+        actual_digest = hashlib.sha256()
+        with entry.path.open("rb") as blob:
+            while chunk := blob.read(1024 * 1024):
+                actual_digest.update(chunk)
+        verified = actual_digest.hexdigest() == entry.hash_hex
+        canonical_blob_count += 1
+        canonical_blob_bytes += size_bytes
+        verified_blob_count += int(verified)
+        hash_mismatch_count += int(not verified)
+        snapshot_record = {"hash": entry.hash_hex, "size_bytes": size_bytes}
+        integrity_record = {
+            **snapshot_record,
+            "verified": verified,
+            "observed_sha256": actual_digest.hexdigest(),
+        }
+        snapshot_encoded = json.dumps(snapshot_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        integrity_encoded = json.dumps(integrity_record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        snapshot_digest.update(snapshot_encoded)
+        snapshot_digest.update(b"\n")
+        integrity_digest.update(integrity_encoded)
+        integrity_digest.update(b"\n")
+
+    return {
+        "snapshot_sha256": snapshot_digest.hexdigest(),
+        "canonical_blob_count": canonical_blob_count,
+        "canonical_blob_bytes": canonical_blob_bytes,
+        "integrity": {
+            "scan": "full_read_only_namespace_and_content_hash",
+            "verified_blob_count": verified_blob_count,
+            "hash_mismatch_count": hash_mismatch_count,
+            "invalid_namespace_entry_count": invalid_namespace_entry_count,
+            "integrity_sha256": integrity_digest.hexdigest(),
+        },
+    }
 
 
 def _matches_target(left: _ParsedMember, right: _ParsedMember, relation: _Relation) -> bool:
-    if len(left.session.session_events) != 1 or len(right.session.session_events) != 1:
+    left_generation_events = _generation_events(left.session)
+    right_generation_events = _generation_events(right.session)
+    if len(left_generation_events) != 1 or len(right_generation_events) != 1:
         return False
-    left_event, right_event = left.session.session_events[0], right.session.session_events[0]
+    left_event, right_event = left_generation_events[0], right_generation_events[0]
     left_projection = left.revision.projection
     right_projection = right.revision.projection
     return (
-        left_event.event_type == right_event.event_type == "generation_lifecycle"
-        and left_event.source_message_provider_id != right_event.source_message_provider_id
+        left_event.source_message_provider_id != right_event.source_message_provider_id
         and left_projection.message_contents == right_projection.message_contents
         and left_projection.attachment_contents == right_projection.attachment_contents
-        and left_projection.event_contents != right_projection.event_contents
-        and {content for _, content in left_projection.event_contents}
-        == {content for _, content in right_projection.event_contents}
+        and _session_event_content_signatures(left.session) == _session_event_content_signatures(right.session)
+        and _anchor_independent_event_content(left_event) == _anchor_independent_event_content(right_event)
         and relation == "conflict"
     )
 
@@ -162,6 +266,8 @@ def run_audit(archive_root: Path) -> dict[str, object]:
         target_pair_count = 0
         parsed_raw_count = 0
         heads = _load_existing_heads(index_conn)
+        blob_snapshot = _blob_store_snapshot(blob_store)
+        producer = _git_provenance()
         for logical_source_key in sorted(cohorts):
             revisions = [
                 _parse_member(member, blob_store, archive_root)
@@ -185,7 +291,9 @@ def run_audit(archive_root: Path) -> dict[str, object]:
             "schema": SCHEMA,
             "provenance": {
                 "archive_access": "SQLite source.db and index.db opened mode=ro; blob files read only; no archive writer created.",
-                "producer_git_revision": _git_revision(),
+                "producer_git_revision": producer["git_revision"],
+                "producer_working_tree_clean": producer["working_tree_clean"],
+                "producer_working_tree_status_sha256": producer["working_tree_status_sha256"],
                 "production_route": [
                     "polylogue.sources.revision_backfill._parse_one",
                     "polylogue.pipeline.ids.session_revision_projection",
@@ -194,6 +302,7 @@ def run_audit(archive_root: Path) -> dict[str, object]:
                 ],
                 "source_db": _database_provenance(source_conn, source_db),
                 "index_db": _database_provenance(index_conn, index_db),
+                "blob_store": blob_snapshot,
             },
             "selection": {"sql": SELECTION_SQL, "population_sql": POPULATION_SQL},
             "target_predicate": TARGET_PREDICATE,
@@ -239,9 +348,18 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument("--archive-root", type=Path, required=True, help="Archive root to inspect without mutation.")
     parser.add_argument("--receipt", type=Path, help="Optional worktree-local path for the sanitized JSON receipt.")
     args = parser.parse_args(argv)
-    receipt = run_audit(args.archive_root)
+    archive_root = args.archive_root.resolve()
     if args.receipt is not None:
-        _write_receipt(args.receipt, receipt)
+        receipt_path = args.receipt.resolve()
+        try:
+            receipt_path.relative_to(archive_root)
+        except ValueError:
+            pass
+        else:
+            parser.error("--receipt must resolve outside --archive-root")
+    receipt = run_audit(archive_root)
+    if args.receipt is not None:
+        _write_receipt(args.receipt.resolve(), receipt)
     print(json.dumps(receipt, indent=2, sort_keys=True), file=stdout)
     return 0
 
