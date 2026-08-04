@@ -924,7 +924,7 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     try:
         conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
     except sqlite3.Error as exc:
-        return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
+        return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
     try:
         try:
             if not _table_exists(conn, "ingest_attempts"):

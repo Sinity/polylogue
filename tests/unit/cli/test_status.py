@@ -1558,6 +1558,23 @@ class TestNoArchiveStatus:
             "reason": "ops workload status unavailable: no such column: phase",
         }
 
+    def test_ops_workload_status_connection_failure_is_not_a_ledger_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ops_db = tmp_path / "ops.db"
+        ops_db.touch()
+        monkeypatch.setattr(
+            "polylogue.cli.commands.status.sqlite3.connect",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(sqlite3.OperationalError("simulated open failure")),
+        )
+
+        workload = _ops_workload_status(tmp_path, now_ms=1_770_000_000_000)
+
+        assert workload == {
+            "available": False,
+            "reason": "ops workload status unavailable: simulated open failure",
+        }
+
     def test_direct_status_requires_raw_frontier_component_presence(self) -> None:
         assert _direct_status_ok({}) is False
         assert _direct_status_ok({"raw_frontier_integrity": {"state": "unknown"}}) is False
