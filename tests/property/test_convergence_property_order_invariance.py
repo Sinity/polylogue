@@ -17,13 +17,14 @@ from tests.infra.convergence_harness import (
     converge_convergence_archive,
     ingest_convergence_pathology,
     initialize_active_archive,
+    replay_convergence_archive,
     rich_convergence_pathology,
     rotated_session_order,
 )
 
 
 @settings(
-    max_examples=1,
+    max_examples=8,
     phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target),
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
@@ -47,6 +48,8 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
         self._pathology = rich_convergence_pathology()
         initialize_active_archive(self._root)
         self._dirty = True
+        self._ingest_indexes = [0]
+        self._resume_count = 0
         self._archive = ingest_convergence_pathology(
             self._root,
             self._pathology,
@@ -63,12 +66,20 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
             session_indexes=(index,),
             converge_after_each=False,
         )
+        self._ingest_indexes.append(index)
         self._dirty = True
 
     @rule()
     def resume_convergence(self) -> None:
         converge_convergence_archive(self._archive)
         assert_archive_verification_green(self._root)
+        self._resume_count += 1
+        canonical = replay_convergence_archive(
+            self._root / f"canonical-resume-{self._resume_count}",
+            self._pathology,
+            session_indexes=tuple(self._ingest_indexes),
+        )
+        assert_archives_equivalent(canonical, self._archive)
         self._dirty = False
 
     def teardown(self) -> None:
@@ -79,7 +90,7 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
 
 
 TestConvergencePropertyInterruptionMachine = ConvergencePropertyInterruptionMachine.TestCase
-TestConvergencePropertyInterruptionMachine.settings = settings(max_examples=1, stateful_step_count=3, deadline=None)
+TestConvergencePropertyInterruptionMachine.settings = settings(max_examples=2, stateful_step_count=3, deadline=None)
 
 
 def test_convergence_property_order_mutation_red_twin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

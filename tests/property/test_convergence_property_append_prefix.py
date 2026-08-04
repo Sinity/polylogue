@@ -19,7 +19,7 @@ from tests.infra.convergence_harness import (
 
 
 @settings(
-    max_examples=1,
+    max_examples=8,
     phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target),
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
@@ -31,7 +31,7 @@ from tests.infra.convergence_harness import (
 def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: int, split: int) -> None:
     pathology = rich_convergence_pathology()
     order = rotated_session_order(pathology, shift)
-    full = build_converged_archive(tmp_path / "full", pathology, session_order=order)
+    full = build_converged_archive(tmp_path / "full", pathology, session_order=order, append_only=True)
 
     prefix_root = tmp_path / "prefix"
     initialize_active_archive(prefix_root)
@@ -40,6 +40,7 @@ def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: 
         pathology,
         session_indexes=order[:split],
         converge_after_each=False,
+        append_only=True,
     )
     converge_convergence_archive(prefix)
     combined = ingest_convergence_pathology(
@@ -47,6 +48,7 @@ def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: 
         pathology,
         session_indexes=order[split:],
         converge_after_each=False,
+        append_only=True,
     )
     converge_convergence_archive(combined)
     assert_archives_equivalent(full, combined)
