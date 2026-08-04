@@ -349,6 +349,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify schema-inference-gate",
+        "verification",
+        "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
+        "devtools.schema_inference_gate",
+        use_when=(
+            "Run before schema inference or the 818fy rebuild. Supply a receipt from a separate full blob-hash "
+            "verification run; this command never invents hash evidence or mutates the archive."
+        ),
+        examples=(
+            "devtools verify schema-inference-gate --archive-root /path/to/archive "
+            "--blob-hash-receipt /path/to/blob-hash.json --receipt /path/to/gate.json",
+            "devtools verify schema-inference-gate --archive-root /path/to/archive "
+            "--blob-hash-receipt /path/to/blob-hash.json --receipt /path/to/gate.json --json",
+        ),
+    ),
+    CommandSpec(
         "release readiness",
         "release",
         "Validate the externally-presentable release gate definition.",
