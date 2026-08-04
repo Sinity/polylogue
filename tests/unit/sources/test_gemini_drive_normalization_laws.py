@@ -374,7 +374,7 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
     assert len(session.attachments) == 8
 
 
-def test_native_turn_facts_survive_reordering_while_missing_ids_use_source_position() -> None:
+def test_native_turn_facts_survive_reordering_while_missing_ids_stay_absent() -> None:
     payload = _ai_studio_payload()
     [ordered] = parse_payload(Provider.GEMINI, payload, "ordered")
     reordered_payload = deepcopy(payload)
@@ -464,7 +464,8 @@ def test_native_turn_facts_survive_reordering_while_missing_ids_use_source_posit
     }
     [missing_id_session] = parse_payload(Provider.GEMINI, missing_id_payload, "missing-id-session")
     assert missing_id_session.provider_session_id == "missing-id-session"
-    assert [message.provider_message_id for message in missing_id_session.messages] == ["chunk-1", "chunk-2"]
+    assert [message.provider_message_id for message in missing_id_session.messages] == ["", ""]
+    assert [message.position for message in missing_id_session.messages] == [0, 1]
 
 
 def test_ambiguous_branch_child_declarations_do_not_invent_a_parent() -> None:
@@ -514,7 +515,8 @@ def test_nested_drive_like_wrappers_lower_through_the_production_dispatch_route(
     assert [session.provider_session_id for session in sessions] == ["nested-session-one", "nested-session-two"]
     assert [session.source_name for session in sessions] == [Provider.DRIVE, Provider.DRIVE]
     assert [session.messages[0].text for session in sessions] == ["first nested turn", "second nested turn"]
-    assert [session.messages[0].provider_message_id for session in sessions] == ["chunk-1", "chunk-1"]
+    assert [session.messages[0].provider_message_id for session in sessions] == ["", ""]
+    assert [session.messages[0].position for session in sessions] == [0, 0]
     assert [session.models_used for session in sessions] == [
         ["models/gemini-nested-safe"],
         ["models/gemini-nested-safe"],
