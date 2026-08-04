@@ -19,8 +19,11 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
-from polylogue.daemon.convergence import FileState, StageState
+from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger, FileState, StageState
+from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
+from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.sources.live.convergence_debt import (
     ConvergenceDebt,
     convergence_debt_from_state,
@@ -152,3 +155,115 @@ def test_record_convergence_outcome_persists_deferred_and_failed_statuses(tmp_pa
         str(deferred_path): "deferred",
         str(failed_path): "failed",
     }
+
+
+def test_real_converger_outcomes_reach_status_and_read_surfaces(tmp_path: Path) -> None:
+    """The real converger route preserves pending and failed stage outcomes.
+
+    This is deliberately a red twin for the production handoff: a stage that
+    returns False with ``false_means_pending`` must remain deferred all the way
+    through the ops ledger and status projections, while an exception remains
+    failed. A test of ``StageState`` or ``ConvergenceDebt.deferred`` alone
+    would miss either writer or read-surface regressions.
+    """
+    deferred_path = tmp_path / "deferred.jsonl"
+    failed_path = tmp_path / "failed.jsonl"
+
+    def execute(path: Path) -> bool:
+        if path == deferred_path:
+            return False
+        raise RuntimeError("fts writer failed")
+
+    converger = DaemonConverger(
+        (
+            ConvergenceStage(
+                name="fts",
+                description="bounded FTS convergence",
+                check=lambda _path: True,
+                execute=execute,
+                false_means_pending=True,
+            ),
+        )
+    )
+    states, _timings = converger.converge_batch((deferred_path, failed_path))
+    assert states[deferred_path].stages == {"fts": StageState.PENDING}
+    assert states[failed_path].stages == {"fts": StageState.FAILED}
+
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    record_convergence_outcome(
+        cursor,
+        deferred_path,
+        convergence_debt_from_states((deferred_path,), states),
+    )
+    record_convergence_outcome(
+        cursor,
+        failed_path,
+        convergence_debt_from_states((failed_path,), states),
+    )
+
+    summary = convergence_debt_summary_info(index_db)
+    assert summary.failed_count == 1
+    assert summary.deferred_count == 1
+    assert {item.status for item in summary.recent} == {"failed", "deferred"}
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+        patch("polylogue.daemon.status._blob_size_info", return_value=0),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+    ):
+        payload = daemon_status_payload(sources=())
+
+    convergence = payload["convergence"]
+    assert isinstance(convergence, dict)
+    assert convergence["failed_count"] == 1
+    assert convergence["deferred_count"] == 1
+    lines = format_daemon_status_lines(payload)
+    assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
+
+
+def test_convergence_debt_status_transition_updates_same_pending_row(tmp_path: Path) -> None:
+    """A status change cannot be hidden by the same-error retry fast path."""
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    subject_id = str(tmp_path / "source.jsonl")
+    error = "stage fts returned False"
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="source_path",
+        subject_id=subject_id,
+        error=error,
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            """
+            UPDATE convergence_debt
+            SET next_retry_at = '9999-01-01T00:00:00+00:00'
+            WHERE stage = 'fts' AND target_type = 'source_path' AND target_id = ?
+            """,
+            (subject_id,),
+        )
+        conn.commit()
+
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="source_path",
+        subject_id=subject_id,
+        error=error,
+        deferred=True,
+    )
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        row = conn.execute(
+            """
+            SELECT status, attempts
+            FROM convergence_debt
+            WHERE stage = 'fts' AND target_type = 'source_path' AND target_id = ?
+            """,
+            (subject_id,),
+        ).fetchone()
+    assert row == ("deferred", 1)

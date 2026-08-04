@@ -472,7 +472,7 @@ class CursorStore:
                 conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute(
                     """
-                    SELECT attempts, next_retry_at, last_error
+                    SELECT attempts, next_retry_at, last_error, status
                     FROM convergence_debt
                     WHERE stage = ? AND target_type = ? AND target_id = ?
                     """,
@@ -488,7 +488,13 @@ class CursorStore:
                     archive_root=self._db_path.parent,
                 )
                 if row is not None and same_pending_convergence_debt(
-                    row[1], row[2], error=error, now=now, retry_at=retry_at
+                    row[1],
+                    row[2],
+                    status=row[3],
+                    error=error,
+                    deferred=deferred,
+                    now=now,
+                    retry_at=retry_at,
                 ):
                     return
                 attempts_delta = 0 if row is not None and retry_is_future(row[1], now=now) and row[2] == error else 1
