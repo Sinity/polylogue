@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -59,15 +60,20 @@ def test_lane_record_shape_and_ledger_append(tmp_path: Path) -> None:
     assert len(lines) == 2 and lines[0]["branch"] == "feature/x"
 
 
-def test_guard_check_flags_escaped_resolution(tmp_path: Path) -> None:
+def test_guard_check_rejects_a_true_foreign_environment(tmp_path: Path) -> None:
     lane = tmp_path / "lane"
     python = lane / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    # a fake "python" that reports a module path OUTSIDE the worktree
-    python.write_text("#!/bin/sh\necho /somewhere/else/polylogue/__init__.py\n")
+    python.write_text(
+        "#!/bin/sh\n"
+        "echo 'devtools workspace lane-init: import resolved outside lane: /foreign/polylogue/__init__.py' >&2\n"
+        "exit 125\n"
+    )
     python.chmod(0o755)
     error = lane_init._guard_check(lane)
-    assert error is not None and "guard violation" in error
+    assert error is not None
+    assert "lane checkout guard failed" in error
+    assert "/foreign/polylogue/__init__.py" in error
 
 
 def test_guard_check_runs_lane_interpreter_from_lane_root(tmp_path: Path) -> None:
@@ -119,9 +125,7 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch:
     assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
 
 
-def test_provision_venv_ignores_inherited_uv_project_and_guard_uses_lane(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_provision_venv_ignores_inherited_uv_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A coordinator's UV_PROJECT must not install its editable source in a lane venv."""
     coordinator = tmp_path / "coordinator"
     lane = tmp_path / "lane"
@@ -131,4 +135,60 @@ def test_provision_venv_ignores_inherited_uv_project_and_guard_uses_lane(
     monkeypatch.setenv("UV_WORKING_DIR", str(coordinator))
 
     assert lane_init._provision_venv(lane) is None
-    assert lane_init._guard_check(lane) is None
+
+
+def test_main_verifies_a_new_lane_with_its_own_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The production command must leave a main-checkout shell before verifying.
+
+    Mutation proof: restoring the former ``sys.executable``/coordinator-cwd
+    verification route makes the simulated checkout guard return 125 before
+    lane-init can report the lane as ready.
+    """
+    coordinator = tmp_path / "main"
+    lane = tmp_path / "lane"
+    coordinator.mkdir()
+    lane.mkdir()
+    lane_python = lane / ".venv" / "bin" / "python"
+    lane_python.parent.mkdir(parents=True)
+    lane_python.touch()
+    coordinator_python = coordinator / ".venv" / "bin" / "python"
+
+    monkeypatch.setattr(lane_init, "repo_root", lambda: coordinator)
+    monkeypatch.setattr(lane_init, "_ensure_worktree", lambda *_: None)
+    monkeypatch.setattr(sys, "executable", str(coordinator_python))
+    monkeypatch.setenv("VIRTUAL_ENV", str(coordinator / ".venv"))
+    monkeypatch.setenv("PYTHONPATH", str(coordinator))
+    monkeypatch.setattr(lane_init, "coordinator_root", lambda root: root)
+    monkeypatch.setattr(lane_init, "append_ledger", lambda root, record: root / lane_init.LEDGER_RELPATH)
+
+    events: list[str] = []
+
+    def provision(worktree: Path) -> None:
+        assert worktree == lane
+        events.append("provision")
+        return None
+
+    def guard(worktree: Path) -> None:
+        assert worktree == lane
+        events.append("guard")
+        return None
+
+    def run(cmd: Sequence[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> CompletedProcess[str]:
+        if "verify-worktree" in cmd:
+            events.append("verify")
+            if cmd[0] != str(lane_python) or cwd != lane or env is None:
+                return CompletedProcess(cmd, 125, "", "guard: coordinator editable import\n")
+            assert "VIRTUAL_ENV" not in env
+            assert "PYTHONPATH" not in env
+            assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
+            return CompletedProcess(cmd, 0, "", "")
+        if cmd[:4] == ["git", "-C", str(lane), "rev-parse"]:
+            return CompletedProcess(cmd, 0, "abcdef123\n", "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(lane_init, "_provision_venv", provision)
+    monkeypatch.setattr(lane_init, "_guard_check", guard)
+    monkeypatch.setattr(lane_init, "_run", run)
+
+    assert lane_init.main([str(lane), "--branch", "feature/test/lane-env"]) == 0
+    assert events == ["provision", "guard", "verify"]

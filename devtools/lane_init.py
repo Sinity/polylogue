@@ -177,18 +177,23 @@ def _guard_check(worktree: Path) -> str | None:
     if not python.exists():
         return f"no venv python at {python}"
     result = _run(
-        [str(python), "-P", "-c", "import polylogue; print(polylogue.__file__)"],
+        [
+            str(python),
+            "-P",
+            "-c",
+            (
+                "from pathlib import Path; "
+                "from devtools.checkout_guard import assert_polylogue_matches_checkout; "
+                "fingerprint = assert_polylogue_matches_checkout("
+                "Path.cwd(), context='devtools workspace lane-init'); "
+                "print(fingerprint.polylogue_import_path)"
+            ),
+        ],
         cwd=worktree,
         env=_lane_env(worktree),
     )
     if result.returncode != 0:
-        return f"lane venv cannot import polylogue: {result.stderr.strip()[-400:]}"
-    resolved = result.stdout.strip()
-    if not resolved.startswith(str(worktree) + os.sep):
-        return (
-            f"guard violation: lane venv resolves polylogue to {resolved!r}, "
-            f"outside the lane worktree -- the shared-venv hijack this command exists to prevent"
-        )
+        return f"lane checkout guard failed: {result.stderr.strip()[-800:]}"
     return None
 
 
@@ -203,24 +208,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"lane-init: {error}", file=sys.stderr)
         return 1
 
-    verify = _run(
-        [
-            sys.executable,
-            "-m",
-            "devtools",
-            "workspace",
-            "verify-worktree",
-            str(worktree),
-            "--expect-branch",
-            args.branch,
-        ],
-        cwd=root,
-    )
-    if verify.returncode != 0:
-        sys.stderr.write(verify.stdout + verify.stderr)
-        print("lane-init: verify-worktree failed", file=sys.stderr)
-        return 1
-
     if not args.no_venv:
         error = _provision_venv(worktree)
         if error:
@@ -230,6 +217,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         if error:
             print(f"lane-init: {error}", file=sys.stderr)
             return 1
+
+    verify_python = worktree / ".venv" / "bin" / "python" if not args.no_venv else Path(sys.executable)
+    verify = _run(
+        [
+            str(verify_python),
+            "-m",
+            "devtools",
+            "workspace",
+            "verify-worktree",
+            str(worktree),
+            "--expect-branch",
+            args.branch,
+        ],
+        cwd=worktree if not args.no_venv else root,
+        env=_lane_env(worktree) if not args.no_venv else None,
+    )
+    if verify.returncode != 0:
+        sys.stderr.write(verify.stdout + verify.stderr)
+        print("lane-init: verify-worktree failed", file=sys.stderr)
+        return 1
 
     base_sha = _run(["git", "-C", str(worktree), "rev-parse", "--short=9", "HEAD"]).stdout.strip()
     workers = recommended_workers(args.expected_lanes)
