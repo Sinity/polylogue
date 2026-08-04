@@ -6,6 +6,35 @@ This guide is for operators choosing between
 daemon will catch up." It also collects runbook recipes for the most
 common operational incidents.
 
+## Applying a durable schema change train
+
+Durable schema changes are an offline release operation. Before applying a
+`source.db` or `user.db` migration above its adoption floor, confirm that the
+release contains the matching `migrations/{source,user}/NNN.train.json`
+sidecar. The sidecar reserves the exact slot and SQL hash and records the
+runtime and restart evidence needed for the change.
+
+Stop `polylogued`, create a fresh verified backup with the normal
+`backup_archive(..., verify=True)` route, then invoke the existing maintenance
+command with that manifest:
+
+```bash
+polylogue ops maintenance migrate-tier source \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --output-format json
+```
+
+The command refuses before opening SQLite when a live daemon pidfile is found.
+The migration runner then validates the package sidecar, revalidates the
+backup against the current database, and performs the numbered SQL step in
+the existing transaction. It verifies row and schema parity, SQLite
+integrity, foreign keys, and canonical DDL parity before commit. A failed
+transaction is rolled back and may be retried after the cause is repaired.
+
+After restart, inspect daemon health and the train proof in the JSON output.
+The train is not complete until the daemon has reopened the migrated tier and
+the recorded runtime consumers converge successfully.
+
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and
 [internals.md](internals.md). For daemon ownership of the inline

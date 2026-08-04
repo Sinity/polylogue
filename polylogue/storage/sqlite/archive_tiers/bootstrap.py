@@ -10,7 +10,7 @@ from typing import Literal
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS, migrate_archive_tier
+from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 DurabilityClass = Literal["irreplaceable", "rebuildable", "expensive_rebuild", "human", "disposable"]
@@ -219,9 +219,7 @@ def _ensure_ops_cursor_lag_sample_columns(conn: sqlite3.Connection) -> None:
     )
 
 
-def initialize_archive_database(
-    path: Path, tier: ArchiveTier, *, migration_backup_manifest: Path | None = None
-) -> None:
+def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
     """Create or initialize one archive tier database file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -246,14 +244,6 @@ def initialize_archive_database(
                 # archive converges without touching INDEX_SCHEMA_VERSION.
                 apply_index_benign_ddl_convergence(conn)
                 conn.commit()
-            return
-        if (
-            current_version != 0
-            and current_version < expected_version
-            and tier in DURABLE_MIGRATION_TIERS
-            and migration_backup_manifest is not None
-        ):
-            migrate_archive_tier(conn, tier, backup_manifest=migration_backup_manifest)
             return
         if current_version != 0:
             if current_version < expected_version and tier in DURABLE_MIGRATION_TIERS:

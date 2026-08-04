@@ -6,6 +6,8 @@ import itertools
 import json
 import os
 import sqlite3
+import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1420,6 +1422,37 @@ def test_backup_verify_then_migrate_tier_cli_applies_user_migration_with_receipt
         assert conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='context_deliveries'"
         ).fetchone()
+
+
+def test_migrate_tier_cli_refuses_live_daemon_before_sql(
+    cli_workspace: dict[str, Path],
+    cli_runner: CliRunner,
+) -> None:
+    user_db = cli_workspace["archive_root"] / "user.db"
+    _create_user_v3(user_db)
+    daemon = subprocess.Popen(
+        ["bash", "-c", "exec -a polylogued python3 -c 'import time; time.sleep(30)'"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        (cli_workspace["archive_root"] / "daemon.pid").write_text(f"{daemon.pid}\n", encoding="utf-8")
+        time.sleep(0.1)
+        result = cli_runner.invoke(
+            cli,
+            ["--plain", "ops", "maintenance", "migrate-tier", "user", "--output-format", "json"],
+            catch_exceptions=False,
+        )
+    finally:
+        daemon.terminate()
+        daemon.wait(timeout=5)
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False
+    assert "daemon to be stopped" in payload["error"]
+    with sqlite3.connect(user_db) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 3
 
 
 def test_migrate_tier_cli_rejects_unverified_backup_before_user_version_changes(

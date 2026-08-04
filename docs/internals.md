@@ -110,6 +110,17 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
   Destructive durable-tier changes require a copy-forward design and explicit
   operator consent.
+- **Durable change trains** make that migration window machine-readable.
+  Every source migration above v26 and every user migration above v10 must
+  ship beside the SQL resource as `migrations/{source,user}/NNN.train.json`.
+  The frozen manifest binds the tier, shipped and target versions, slot,
+  exact SQL filename and SHA-256, owner, schema/runtime riders, behavior
+  proofs, ordering, row-count exceptions, restart convergence proof, and
+  drop policy. Package-resource discovery rejects missing, malformed,
+  stale, noncontiguous, hash-mismatched, or orphaned sidecars before SQL
+  runs. The lifecycle is declare, admit, reserve, authorize, apply, prove,
+  and release. It uses the existing migration transaction and verified backup
+  receipt, with no train state database and no second migration engine.
 - **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
   chains. They are rebuildable products over durable source/user evidence:
   schema mismatches are handled by rebuilding or blue-green replacing the

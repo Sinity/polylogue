@@ -21,7 +21,7 @@ over the `CREATE TABLE` statement.
 
 | Tier file | Tier | Version constant |
 |-----------|------|------------------|
-| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 18` |
+| `source.py` | `source.db` | `SOURCE_SCHEMA_VERSION = 26` |
 | `index.py` | `index.db` | `INDEX_SCHEMA_VERSION = 53` |
 | `embeddings.py` | `embeddings.db` | `EMBEDDINGS_SCHEMA_VERSION = 4` |
 | `user.py` | `user.db` | `USER_SCHEMA_VERSION = 10` |
@@ -29,6 +29,28 @@ over the `CREATE TABLE` statement.
 
 There is no single global "schema version" number. Each tier is versioned and
 bootstrapped independently.
+
+### Durable migration change trains
+
+`source.db` and `user.db` migrations above the adoption floors source v26 and
+user v10 require a deterministic package sidecar beside the SQL resource:
+`migrations/{source,user}/NNN.train.json`. The sidecar is a frozen manifest,
+not a second migration store. It binds the tier, shipped and target versions,
+slot, exact SQL filename and SHA-256, owner/reference, schema objects, runtime
+consumers, behavior proofs, dependency order, row-count exceptions, restart
+proof, and drop policy. The existing migration runner discovers these package
+resources before opening the migration transaction and rejects missing,
+malformed, stale, noncontiguous, hash-mismatched, or unproven trains.
+
+Slot paths are part of the merge contract. Two branches reserving the same
+`<tier>/<NNN>.train.json` path produce a Git add/add conflict that must be
+resolved by renumbering or combining the train, rather than silently choosing
+one migration. Schema policy JSON reports every reservation and violation.
+
+Applying a train still uses the existing stopped-daemon gate, verified backup
+receipt, SQLite transaction, integrity and foreign-key checks, canonical DDL
+parity checks, and restart convergence proof. No train state table and no
+parallel migration engine are created.
 
 The runtime table inventory per tier is also enumerated in
 `polylogue/cli/commands/status.py` (`_ARCHIVE_TIER_TABLES`), which `polylogue
