@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import pytest
+
 import devtools.reindex_canary as reindex_canary
 from polylogue.scenarios import ExecutionSpec
 
 
-def test_devtools_reindex_canary_delegates_to_product_cli(monkeypatch, capsys) -> None:
+def test_devtools_reindex_canary_delegates_to_product_cli(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     captured: dict[str, object] = {}
 
-    def fake_invoke(execution: ExecutionSpec):
+    def fake_invoke(execution: ExecutionSpec) -> object:
         captured["execution"] = execution
 
         class Result:
