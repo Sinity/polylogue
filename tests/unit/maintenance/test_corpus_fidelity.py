@@ -297,18 +297,19 @@ def test_candidate_index_corpus_gate_reads_durable_source_and_inactive_index(
 ) -> None:
     """Each candidate runner reads the real inactive index, not active state.
 
-    This mutates a separate candidate ``index.db`` plus the durable source
-    clone where the check needs source evidence. Removing a candidate runner,
-    or accidentally routing it through the active index, leaves the matching
-    mutation green instead of reporting the selected gate as blocking.
+    Each case leaves default verification of the active index clear. The
+    revision case adds matching durable source evidence before reducing only
+    the candidate, so removing a candidate runner, or accidentally routing
+    it through the active index, leaves the selected candidate gate green.
     """
     root = _clone(corpus_fidelity_archive, tmp_path / violation)
     candidate_index = tmp_path / f"{violation}-candidate-index.db"
     shutil.copy2(root / "index.db", candidate_index)
     session_id = _first_session_id(root)
 
-    if violation == "attachment":
-        with _connect(candidate_index) as conn:
+    assert not verify_archive(root, checks=(expected_check,)).blocking
+    with _connect(candidate_index) as conn:
+        if violation == "attachment":
             message_row = conn.execute(
                 "SELECT message_id FROM messages WHERE session_id = ? LIMIT 1", (session_id,)
             ).fetchone()
@@ -321,36 +322,40 @@ def test_candidate_index_corpus_gate_reads_durable_source_and_inactive_index(
                 "VALUES ('candidate-unfetched', ?, ?, 99, 'drive')",
                 (session_id, message_row[0]),
             )
-    else:
-        origin, native_id = session_id.split(":", 1)
-        raw_id = f"candidate-{violation}"
-        provider_session_id = native_id if violation == "revision" else "candidate-absent"
-        with _connect(root / "source.db") as conn:
-            _insert_raw(
-                conn,
-                raw_id=raw_id,
-                origin=origin,
-                native_id=provider_session_id,
-                logical_source_key=f"fixture:{provider_session_id}",
-            )
-            conn.execute(
-                """
-                INSERT INTO raw_session_memberships(
-                    raw_id, logical_source_key, provider_session_id, source_revision,
-                    normalized_content_hash, message_count
-                ) VALUES (?, ?, ?, 'candidate-revision', ?, ?)
-                """,
-                (
-                    raw_id,
-                    f"fixture:{provider_session_id}",
-                    provider_session_id,
-                    b"c" * 32,
-                    100_000 if violation == "revision" else 4,
-                ),
-            )
+        elif violation == "absent":
+            conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        else:
+            origin, native_id = session_id.split(":", 1)
+            message_row = conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1", (session_id,)
+            ).fetchone()
+            assert message_row is not None
+            with _connect(root / "source.db") as source:
+                _insert_raw(
+                    source,
+                    raw_id="candidate-revision-source",
+                    origin=origin,
+                    native_id=native_id,
+                    logical_source_key=f"fixture:{native_id}",
+                )
+                message_count = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
+                ).fetchone()[0]
+                source.execute(
+                    """
+                    INSERT INTO raw_session_memberships(
+                        raw_id, logical_source_key, provider_session_id, source_revision,
+                        normalized_content_hash, message_count
+                    ) VALUES ('candidate-revision-source', ?, ?, 'candidate-revision', ?, ?)
+                    """,
+                    (f"fixture:{native_id}", native_id, b"c" * 32, message_count),
+                )
+            conn.execute("DELETE FROM messages WHERE session_id = ? AND message_id != ?", (session_id, message_row[0]))
+            conn.execute("DELETE FROM session_events WHERE session_id = ?", (session_id,))
 
     report = verify_archive(root, checks=(expected_check,), index_path_override=candidate_index)
 
+    assert not verify_archive(root, checks=(expected_check,)).blocking
     assert report.blocking
     assert len(report.checks) == 1
     check = report.checks[0]

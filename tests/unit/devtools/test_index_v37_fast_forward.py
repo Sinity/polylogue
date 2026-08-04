@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -51,6 +52,10 @@ def _archive(tmp_path: Path) -> tuple[Path, int]:
         conn.execute(
             "INSERT INTO sessions(native_id, origin, content_hash) VALUES ('session', 'chatgpt-export', ?)",
             (b"s" * 32,),
+        )
+        conn.execute(
+            "INSERT INTO messages(session_id, native_id, position, role, content_hash) VALUES (?, 'message', 0, 'user', ?)",
+            ("chatgpt-export:session", b"m" * 32),
         )
         conn.commit()
     (storage / "index.db").symlink_to(active)
@@ -281,6 +286,79 @@ def test_activate_refuses_in_place_clone_mutation_with_preserved_stat_identity(
     assert clone.stat().st_size == before.st_size
     assert clone.stat().st_mtime_ns == before.st_mtime_ns
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == f"v{ffw_version}"
+
+
+def _add_unfetched_candidate_attachment(candidate_index: Path) -> None:
+    with sqlite3.connect(candidate_index) as conn:
+        session_row = conn.execute("SELECT session_id FROM sessions LIMIT 1").fetchone()
+        assert session_row is not None
+        message_row = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? LIMIT 1", (session_row[0],)
+        ).fetchone()
+        assert message_row is not None
+        conn.execute(
+            "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('candidate-unfetched', 'unfetched')"
+        )
+        conn.execute(
+            "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin) "
+            "VALUES ('candidate-unfetched', ?, ?, 99, 'drive')",
+            (session_row[0], message_row[0]),
+        )
+
+
+def _refresh_receipt_clone_identity(receipt_path: Path, clone: Path) -> None:
+    receipt = forward._load_receipt(receipt_path)
+    receipt["clone_identity"] = forward._proven_clone_identity(clone)
+    forward._write_receipt(receipt_path, receipt)
+
+
+def test_activate_refuses_corpus_invalid_inactive_candidate_before_pointer_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
+) -> None:
+    root, ffw_version = _archive(tmp_path)
+    receipt = tmp_path / "receipt.json"
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    prepared = prepare_forward(archive_root=root, receipt_path=receipt)
+    generation = prepared["generation"]
+    assert isinstance(generation, dict)
+    clone = Path(str(generation["index_path"]))
+    _add_unfetched_candidate_attachment(clone)
+    _refresh_receipt_clone_identity(receipt, clone)
+
+    with pytest.raises(
+        IndexV37FastForwardError, match="candidate corpus fidelity gate failed.*corpus-attachment-fidelity"
+    ):
+        activate_forward(receipt_path=receipt)
+
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == f"v{ffw_version}"
+
+
+def test_activate_recovery_refuses_corpus_invalid_inactive_candidate_before_pointer_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_lifecycle_for_v36_upgrade: None
+) -> None:
+    root, ffw_version = _archive(tmp_path)
+    receipt = tmp_path / "receipt.json"
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    prepared = prepare_forward(archive_root=root, receipt_path=receipt)
+    generation_payload = prepared["generation"]
+    assert isinstance(generation_payload, dict)
+    clone = Path(str(generation_payload["index_path"]))
+    _add_unfetched_candidate_attachment(clone)
+    _refresh_receipt_clone_identity(receipt, clone)
+    activating = forward._load_receipt(receipt)
+    activating["status"] = "activating"
+    forward._write_receipt(receipt, activating)
+    store = IndexGenerationStore.for_archive_root(root)
+    generation = store.load(str(generation_payload["generation_id"]))
+    store._write(replace(generation, state="promoting"))
+
+    with pytest.raises(
+        IndexV37FastForwardError, match="candidate corpus fidelity gate failed.*corpus-attachment-fidelity"
+    ):
+        activate_forward(receipt_path=receipt)
+
+    assert store.active_pointer.resolve().parent.name == f"v{ffw_version}"
+    assert store.load(generation.generation_id).state == "inactive"
 
 
 def test_activate_recovers_after_pointer_swap_before_final_receipt(
