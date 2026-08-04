@@ -3,8 +3,6 @@ description = "Rare architectural adjudicator for load-bearing polylogue decisio
 
 model = "gpt-5.6-sol"
 model_reasoning_effort = "xhigh"
-sandbox_mode = "read-only"
-approval_policy = "never"
 
 developer_instructions = """
 Resolve one architectural conflict or ambiguous-epic decomposition supplied
