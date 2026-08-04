@@ -1772,7 +1772,6 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
             "indexed_surface": "messages_fts",
             "messages_ready": True,
             "session_work_events_ready": True,
-            "threads_ready": True,
             "invariant_ready": True,
             "message_indexed_count": 4,
             "message_indexable_count": 4,
@@ -1808,7 +1807,6 @@ def test_daemon_status_payload_reuses_bounded_probe_results(tmp_path: Path) -> N
     assert isinstance(fts_readiness, dict)
     assert fts_readiness["messages_ready"] is True
     assert fts_readiness["session_work_events_ready"] is True
-    assert fts_readiness["threads_ready"] is True
     assert fts_readiness["invariant_ready"] is True
     assert fts_readiness["message_indexed_count"] == 4
     assert fts_readiness["message_indexable_count"] == 4
