@@ -765,6 +765,8 @@ def test_archive_verification_registry_only_schedules_liveness_and_freshness_cla
         "planner_stats",
         "convergence_freshness",
         "user_tier_refs",
+        "excluded_cursor_vocabulary_honesty",
+        "stalled_append_cursor_freshness",
     }
 
 
