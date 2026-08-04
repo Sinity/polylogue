@@ -508,6 +508,37 @@ class TestLoadSamplesFromDb:
             "reason": "duplicate_blob_content",
         }
 
+    def test_schema_observation_includes_repeated_bare_codex_session_meta_records(self, tmp_path: Path) -> None:
+        """The DB-backed record sampler reaches the shared envelope eligibility route."""
+        db = _archive_index_db(tmp_path)
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/rollout-repeated.jsonl",
+            raw_content=b'{"type":"session_meta"}\n' * 1024,
+        )
+        outcomes: list[dict[str, object]] = []
+
+        units = list(
+            iter_schema_units(
+                "codex",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+
+        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(raw_id, "session_record_stream")]
+        assert [outcome for outcome in outcomes if outcome["raw_id"] == raw_id] == [
+            {
+                "raw_id": raw_id,
+                "status": "included",
+                "artifact_kind": "session_record_stream",
+                "source_path": "/tmp/rollout-repeated.jsonl",
+                "reason": "observed_schema_units",
+            }
+        ]
+
     def test_schema_observation_excludes_hermes_sqlite_evidence_before_json_decode(self, tmp_path: Path) -> None:
         db = _archive_index_db(tmp_path)
         raw_id = _insert_raw_session(
