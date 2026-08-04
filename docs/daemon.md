@@ -641,7 +641,7 @@ no writer-hold interaction and degrades safely on any interpreter.
 ### SQLite memory budget
 
 The optional `POLYLOGUE_MEMORY_BUDGET_BYTES` startup setting declares the
-process memory budget in bytes. The SQLite read, write, daemon-write, and bulk-build mmap and cache limits scale together from that value. The same setting is available through the layered config contract as `[resource].memory_budget_bytes`. When absent, the measured 18 GiB default preserves the existing profile constants. Values must be positive base-10 integers; invalid values fail configuration resolution loudly. Daemon startup observability reports both the mapped SQLite budget and the effective declared memory budget before comparing the mapped budget with cgroup limits.
+process memory budget in bytes. The SQLite read, write, daemon-write, bulk-build, bounded FTS-repair, and schema-observation-journal cache/mmap limits scale together from that value. The mapped budget includes one concurrent instance of every production profile plus the configured concurrent read allowance. The same setting is available through the layered config contract as `[resource].memory_budget_bytes`. When absent, the measured 18 GiB default preserves the existing profile constants. Values must be positive base-10 integers no larger than 64 GiB; invalid values fail configuration resolution loudly before SQLite profile construction. Daemon startup observability reports the raw mapped budget, its concurrent allowance components, and the effective declared memory budget before comparing the mapped budget with cgroup limits.
 
 ### Operator-Owned Tasks
 

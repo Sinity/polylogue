@@ -19,15 +19,21 @@ import sys
 
 import pytest
 
+from polylogue.config import MAX_MEMORY_BUDGET_BYTES
 from polylogue.storage.sqlite.connection_profile import (
+    BOUNDED_REPAIR_CACHE_SIZE_KIB,
+    BOUNDED_REPAIR_MMAP_SIZE_BYTES,
     BULK_BUILD_CACHE_SIZE_KIB,
     BULK_BUILD_MMAP_SIZE_BYTES,
     DAEMON_WRITE_CACHE_SIZE_KIB,
     DAEMON_WRITE_MMAP_SIZE_BYTES,
     DEFAULT_MEMORY_BUDGET_BYTES,
     MEMORY_BUDGET_BYTES,
+    OBSERVATION_JOURNAL_CACHE_SIZE_KIB,
     READ_CACHE_SIZE_KIB,
     READ_MMAP_SIZE_BYTES,
+    WRITE_CACHE_SIZE_KIB,
+    WRITE_MMAP_SIZE_BYTES,
     MappedBytesBudgetCheck,
     check_mapped_bytes_budget_against_cgroup_limit,
     log_mapped_bytes_budget_check,
@@ -43,11 +49,14 @@ def _import_profile_values(*, budget_bytes: int | None) -> dict[str, int]:
         env["POLYLOGUE_MEMORY_BUDGET_BYTES"] = str(budget_bytes)
     code = """
 from polylogue.storage.sqlite.connection_profile import (
+    BOUNDED_REPAIR_CACHE_SIZE_KIB,
+    BOUNDED_REPAIR_MMAP_SIZE_BYTES,
     BULK_BUILD_CACHE_SIZE_KIB,
     BULK_BUILD_MMAP_SIZE_BYTES,
     DAEMON_WRITE_CACHE_SIZE_KIB,
     DAEMON_WRITE_MMAP_SIZE_BYTES,
     MEMORY_BUDGET_BYTES,
+    OBSERVATION_JOURNAL_CACHE_SIZE_KIB,
     READ_CACHE_SIZE_KIB,
     READ_MMAP_SIZE_BYTES,
     WRITE_CACHE_SIZE_KIB,
@@ -63,6 +72,9 @@ print(" ".join(str(value) for value in (
     DAEMON_WRITE_MMAP_SIZE_BYTES,
     READ_MMAP_SIZE_BYTES,
     BULK_BUILD_MMAP_SIZE_BYTES,
+    BOUNDED_REPAIR_CACHE_SIZE_KIB,
+    BOUNDED_REPAIR_MMAP_SIZE_BYTES,
+    OBSERVATION_JOURNAL_CACHE_SIZE_KIB,
 )))
 """
     completed = subprocess.run(
@@ -83,6 +95,9 @@ print(" ".join(str(value) for value in (
         "daemon_write_mmap_size_bytes",
         "read_mmap_size_bytes",
         "bulk_build_mmap_size_bytes",
+        "bounded_repair_cache_size_kib",
+        "bounded_repair_mmap_size_bytes",
+        "observation_journal_cache_size_kib",
     )
     return dict(zip(keys, values, strict=True))
 
@@ -99,6 +114,9 @@ def test_declared_budget_preserves_defaults_when_absent() -> None:
         "daemon_write_mmap_size_bytes": 67108864,
         "read_mmap_size_bytes": 134217728,
         "bulk_build_mmap_size_bytes": 4294967296,
+        "bounded_repair_cache_size_kib": 32768,
+        "bounded_repair_mmap_size_bytes": 134217728,
+        "observation_journal_cache_size_kib": 65536,
     }
 
 
@@ -114,7 +132,39 @@ def test_declared_budget_scales_all_profile_mmap_and_cache_sizes() -> None:
         "daemon_write_mmap_size_bytes": 33554432,
         "read_mmap_size_bytes": 67108864,
         "bulk_build_mmap_size_bytes": 2147483648,
+        "bounded_repair_cache_size_kib": 16384,
+        "bounded_repair_mmap_size_bytes": 67108864,
+        "observation_journal_cache_size_kib": 32768,
     }
+
+
+def test_declared_budget_reaches_omitted_profile_routes() -> None:
+    env = os.environ.copy()
+    env["POLYLOGUE_MEMORY_BUDGET_BYTES"] = str(DEFAULT_MEMORY_BUDGET_BYTES // 2)
+    code = """
+import sqlite3
+import tempfile
+from pathlib import Path
+from polylogue.schemas.generation.observation_journal import ObservationJournal
+from polylogue.storage.fts.dangling_repair import configure_bounded_repair_connection
+with tempfile.TemporaryDirectory() as root:
+    repair = sqlite3.connect(Path(root) / 'repair.db')
+    configure_bounded_repair_connection(repair)
+    with ObservationJournal.create(root=Path(root)) as journal:
+        print(
+            repair.execute('PRAGMA cache_size').fetchone()[0],
+            repair.execute('PRAGMA mmap_size').fetchone()[0],
+            journal._connection.execute('PRAGMA cache_size').fetchone()[0],
+        )
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert completed.stdout.strip() == "-16384 67108864 -32768"
 
 
 def test_scaled_budget_drives_startup_warning_threshold() -> None:
@@ -146,7 +196,7 @@ print(check.memory_budget_bytes, check.budget_bytes, check.at_risk_limits)
     assert thresholds == "('memory.max', 'memory.high')"
 
 
-@pytest.mark.parametrize("raw_budget", ["", "0", "-1", "not-a-number"])
+@pytest.mark.parametrize("raw_budget", ["", "0", "-1", "not-a-number", str(MAX_MEMORY_BUDGET_BYTES + 1)])
 def test_invalid_declared_budget_fails_loudly(raw_budget: str) -> None:
     env = os.environ.copy()
     env["POLYLOGUE_MEMORY_BUDGET_BYTES"] = raw_budget
@@ -163,7 +213,7 @@ def test_invalid_declared_budget_fails_loudly(raw_budget: str) -> None:
 
 
 def test_mapped_bytes_budget_reflects_documented_worst_case() -> None:
-    """Budget = bulk-build + daemon-write + N concurrent read connections.
+    """Budget includes all modeled concurrent SQLite profile allowances.
 
     Not just the single largest constant (``BULK_BUILD_MMAP_SIZE_BYTES``) --
     that was exactly the gap the 2026-07-31 incident exposed: one bulk-build
@@ -173,9 +223,14 @@ def test_mapped_bytes_budget_reflects_documented_worst_case() -> None:
     expected = (
         BULK_BUILD_MMAP_SIZE_BYTES
         + BULK_BUILD_CACHE_SIZE_KIB * 1024
+        + WRITE_MMAP_SIZE_BYTES
+        + WRITE_CACHE_SIZE_KIB * 1024
         + DAEMON_WRITE_MMAP_SIZE_BYTES
         + DAEMON_WRITE_CACHE_SIZE_KIB * 1024
         + 4 * (READ_MMAP_SIZE_BYTES + READ_CACHE_SIZE_KIB * 1024)
+        + BOUNDED_REPAIR_MMAP_SIZE_BYTES
+        + BOUNDED_REPAIR_CACHE_SIZE_KIB * 1024
+        + OBSERVATION_JOURNAL_CACHE_SIZE_KIB * 1024
     )
     assert mapped_bytes_budget() == expected
     # Strictly greater than the single largest constant alone -- proves this
@@ -200,6 +255,10 @@ def test_check_reads_cgroup_limits_via_core_metrics(monkeypatch: pytest.MonkeyPa
     assert check.memory_high_bytes == 16 * 1024 * 1024 * 1024
     assert check.budget_bytes == mapped_bytes_budget()
     assert check.memory_budget_bytes == MEMORY_BUDGET_BYTES
+    assert (
+        check.concurrent_allowance_bytes == check.concurrent_read_budget_bytes + check.concurrent_profile_budget_bytes
+    )
+    assert check.concurrent_allowance_bytes == check.budget_bytes
 
 
 def test_at_risk_when_limit_at_or_below_budget() -> None:
@@ -292,6 +351,8 @@ def test_warns_when_at_risk() -> None:
     assert message == "mmap_budget_at_or_above_cgroup_limit"
     assert kw["at_risk_limits"] == ["memory.high"]
     assert kw["memory_budget_bytes"] == MEMORY_BUDGET_BYTES
+    assert kw["budget_bytes"] == budget
+    assert kw["concurrent_allowance_bytes"] == check.concurrent_allowance_bytes
 
 
 def test_warning_threshold_uses_effective_budget() -> None:

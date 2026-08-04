@@ -217,6 +217,10 @@ def _thaw_config_value(value: object) -> object:
 _TRUE_TOKENS = ("1", "true", "yes", "on")
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
+# Keep pathological values from producing SQLite PRAGMA settings that are
+# accepted by the Python config layer but lose their meaning in SQLite.
+MAX_MEMORY_BUDGET_BYTES = 64 * 1024**3
+
 
 def _parse_bool_token(value: str) -> bool | None:
     """Parse a canonical boolean string token, or ``None`` if unrecognized."""
@@ -240,6 +244,10 @@ def _parse_memory_budget_bytes(value: object, *, source: str) -> int | None:
         raise ConfigError(f"{source}={value!r} is not a valid positive integer byte budget.") from exc
     if parsed <= 0:
         raise ConfigError(f"{source}={value!r} must be greater than zero.")
+    if parsed > MAX_MEMORY_BUDGET_BYTES:
+        raise ConfigError(
+            f"{source}={value!r} exceeds the maximum supported memory budget of {MAX_MEMORY_BUDGET_BYTES} bytes."
+        )
     return parsed
 
 
