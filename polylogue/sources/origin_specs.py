@@ -18,13 +18,16 @@ compatibility-only.
 
 from __future__ import annotations
 
+import ast
 import gzip
+import hashlib
 import json
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from polylogue.core.enums import Origin, Provider
 from polylogue.declarations import (
@@ -41,6 +44,137 @@ from polylogue.declarations import (
 OriginLifecycle = Literal["executable", "reserved", "unsupported", "compatibility-only"]
 OriginCompletenessMaturity = Literal["accepted", "proposed", "reserved", "unsupported"]
 ArtifactParsePolicy = Literal["session", "fact", "raw-only"]
+
+_SOURCE_ROOT = Path(__file__).resolve().parents[2]
+_LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
+    "polylogue/sources/dispatch.py",
+    "polylogue/pipeline/ids.py",
+    "polylogue/storage/sqlite/archive_tiers/write.py",
+    "polylogue/archive/session_revision_membership.py",
+)
+
+
+def _without_leading_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+class _DocstringStripper(ast.NodeTransformer):
+    """Apply the classifier-fingerprint AST convention to whole modules."""
+
+    def visit_Module(self, node: ast.Module) -> ast.Module:
+        node = cast(ast.Module, self.generic_visit(node))
+        node.body = _without_leading_docstring(node.body)
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.ClassDef:
+        node = cast(ast.ClassDef, self.generic_visit(node))
+        node.body = _without_leading_docstring(node.body)
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
+        node = cast(ast.FunctionDef, self.generic_visit(node))
+        node.body = _without_leading_docstring(node.body)
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AsyncFunctionDef:
+        node = cast(ast.AsyncFunctionDef, self.generic_visit(node))
+        node.body = _without_leading_docstring(node.body)
+        return node
+
+
+def _source_path(path: str) -> Path:
+    candidate = Path(path)
+    return (candidate if candidate.is_absolute() else _SOURCE_ROOT / candidate).resolve()
+
+
+def _source_signature(path: Path) -> tuple[str, int, int]:
+    stat = path.stat()
+    return str(path), stat.st_mtime_ns, stat.st_size
+
+
+def _fingerprint_path_label(path: Path) -> str:
+    """Describe repository sources without binding a stamp to one checkout."""
+    try:
+        return path.relative_to(_SOURCE_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _module_path(base: Path) -> Path | None:
+    module_file = base.with_suffix(".py")
+    if module_file.is_file():
+        return module_file.resolve()
+    package_init = base / "__init__.py"
+    return package_init.resolve() if package_init.is_file() else None
+
+
+@lru_cache(maxsize=512)
+def _local_import_paths(signature: tuple[str, int, int]) -> tuple[str, ...]:
+    """Return local Python dependencies of one parser-semantic source file."""
+    path = Path(signature[0])
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: set[Path] = set()
+    for node in ast.walk(tree):
+        candidate: Path | None = None
+        if isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = path.parent
+                for _ in range(node.level - 1):
+                    base = base.parent
+                candidate = _module_path(base / Path(*(node.module or "").split(".")))
+            elif node.module and node.module.startswith("polylogue."):
+                candidate = _module_path(_SOURCE_ROOT / Path(*node.module.split(".")))
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("polylogue."):
+                    resolved = _module_path(_SOURCE_ROOT / Path(*alias.name.split(".")))
+                    if resolved is not None:
+                        found.add(resolved)
+        if candidate is not None:
+            found.add(candidate)
+    return tuple(sorted(str(item) for item in found))
+
+
+def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
+    pending = [_source_path(path) for path in paths]
+    found: set[Path] = set()
+    while pending:
+        path = pending.pop()
+        if path in found:
+            continue
+        found.add(path)
+        for dependency in _local_import_paths(_source_signature(path)):
+            pending.append(Path(dependency))
+    return tuple(sorted(found))
+
+
+@lru_cache(maxsize=128)
+def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
+    fragments: list[dict[str, str]] = []
+    for path_string, _mtime_ns, _size in signatures:
+        tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
+        normalized = _DocstringStripper().visit(tree)
+        fragments.append(
+            {
+                "path": _fingerprint_path_label(Path(path_string)),
+                "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
+            }
+        )
+    payload = {"namespace": namespace, "sources": fragments}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _fingerprint_sources(paths: tuple[str, ...], *, namespace: str) -> str:
+    source_paths = _semantic_source_paths(paths)
+    signatures = tuple(_source_signature(path) for path in source_paths)
+    return _fingerprint_sources_cached(signatures, namespace)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +390,15 @@ class OriginSpec:
     #: ``get_assembly_spec`` registry by :func:`validate_assembly_spec_parity`
     #: rather than replacing that registry with a second one.
     assembly_spec_path: str | None = None
+
+    def parser_fingerprint(self) -> str:
+        """Return the origin-scoped fingerprint of parser output semantics."""
+        return _fingerprint_sources(self.parser_paths, namespace=f"parser:{self.origin.value}")
+
+
+def lowering_fingerprint() -> str:
+    """Return the shared lowering, identity, revision, and lineage fingerprint."""
+    return _fingerprint_sources(_LOWERING_FINGERPRINT_PATHS, namespace="lowering")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1305,12 +1448,19 @@ for _spec in (
 ):
     ORIGIN_SPEC_REGISTRY.register(_with_completeness_modes(_spec))
 ORIGIN_SPECS = ORIGIN_SPEC_REGISTRY.specs()
+_ORIGIN_SPECS_BY_ORIGIN = {spec.origin: spec for spec in ORIGIN_SPECS}
 
 
 def origin_specs() -> tuple[OriginSpec, ...]:
     """Return the stable public-origin admission projection."""
 
     return ORIGIN_SPECS
+
+
+def parser_fingerprint_for_origin(origin: Origin | str) -> str:
+    """Return the current parser fingerprint for one normalized archive origin."""
+    normalized = Origin.from_string(origin)
+    return _ORIGIN_SPECS_BY_ORIGIN[normalized].parser_fingerprint()
 
 
 def validate_dispatch_precedence(provider_order: tuple[Provider, ...]) -> tuple[OriginSpecDiagnostic, ...]:
@@ -1441,6 +1591,8 @@ __all__ = [
     "artifact_suffixes_for_provider",
     "schema_observed_leaf_values",
     "undeclared_schema_values",
+    "lowering_fingerprint",
+    "parser_fingerprint_for_origin",
     "validate_assembly_spec_parity",
     "validate_dispatch_precedence",
     "validate_stream_parser_parity",

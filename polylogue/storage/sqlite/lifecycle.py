@@ -858,6 +858,13 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=64,
+        # The new session stamps are derived from parser/lowering semantics.
+        # Existing rows require raw replay for trustworthy values, so nullable
+        # DDL cannot take the clone-safe fast-forward route.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

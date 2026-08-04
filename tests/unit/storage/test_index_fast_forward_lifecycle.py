@@ -89,6 +89,13 @@ def test_v61_pricing_column_drop_is_a_clone_safe_constraint_copy_forward() -> No
     assert declaration.operations[0].objects == (("table", "session_model_usage"),)
 
 
+def test_v64_fingerprint_stamp_delta_requires_semantic_reparse() -> None:
+    declaration = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 64)
+
+    assert declaration.classes == (DerivedDeltaClass.SEMANTIC_REPARSE,)
+    assert lifecycle.index_fast_forward_plan(63, 64) is None
+
+
 def test_current_index_schema_has_a_complete_delta_declaration() -> None:
     """Exercise the exact declaration report consumed by the schema policy lint."""
     report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)

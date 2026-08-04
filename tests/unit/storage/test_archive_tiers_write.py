@@ -18,6 +18,7 @@ from polylogue.core.enums import (
     TitleSource,
     WebConstructType,
 )
+from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -4841,5 +4842,42 @@ def test_repo_edges_write_repo_for_discovered_git_root(tmp_path: Path) -> None:
         ).fetchone()
         assert session_repo_row is not None
         assert session_repo_row["root_path"] == str(repo_root)
+    finally:
+        conn.close()
+
+
+def test_real_writer_persists_current_semantic_fingerprints_on_replay(tmp_path: Path) -> None:
+    """The ordinary parsed-session write path stamps both initial and replay writes."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="fingerprint-session",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="m1",
+                    role=Role.USER,
+                    text="fingerprint stamp proof",
+                    material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                )
+            ],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session, raw_id="raw-first")
+        first = conn.execute(
+            "SELECT parser_fingerprint, lowering_fingerprint FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert first is not None
+        assert tuple(first) == (
+            parser_fingerprint_for_origin("codex-session"),
+            lowering_fingerprint(),
+        )
+
+        write_parsed_session_to_archive(conn, session, raw_id="raw-replay", force_replace=True)
+        replay = conn.execute(
+            "SELECT parser_fingerprint, lowering_fingerprint, raw_id FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert replay is not None
+        assert tuple(replay) == (*tuple(first), "raw-replay")
     finally:
         conn.close()
