@@ -8,6 +8,7 @@ green, while the real blocks read model must report the changed row.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -566,6 +567,45 @@ def test_run_reindex_canary_refuses_the_configured_live_archive_root(
     with pytest.raises(CanarySelectionError, match="refuses the configured live archive root"):
         run_reindex_canary(tmp_path, no_promote=True)
     assert not rebuild_called
+
+
+def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt inactive lineage candidate is rejected without touching active data."""
+    from tests.infra.pathology_zoo import build_pathology_zoo
+
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    active_index = zoo.archive_root / "index.db"
+    active_digest = hashlib.sha256(active_index.read_bytes()).hexdigest()
+    from polylogue.maintenance import rebuild_index
+
+    real_repopulate = rebuild_index._repopulate_bulk_build_derived_state
+
+    def corrupt_candidate_after_replay(candidate_index: Path) -> dict[str, float]:
+        timings = real_repopulate(candidate_index)
+        with sqlite3.connect(candidate_index) as connection:
+            connection.execute(
+                "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+                ("codex-session:zoo-cycle-b", "codex-session:zoo-cycle-a"),
+            )
+            connection.execute(
+                "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+                ("codex-session:zoo-cycle-a", "codex-session:zoo-cycle-b"),
+            )
+            connection.commit()
+        return timings
+
+    def unexpected_insight_repair(*args: object, **kwargs: object) -> object:
+        raise AssertionError("invalid lineage candidate reached session insight materialization")
+
+    monkeypatch.setattr(rebuild_index, "_repopulate_bulk_build_derived_state", corrupt_candidate_after_replay)
+    monkeypatch.setattr("polylogue.storage.repair.repair_session_insights", unexpected_insight_repair)
+
+    with pytest.raises(RuntimeError, match="session-lineage-acyclic"):
+        run_reindex_canary(zoo.archive_root, sessions_per_origin=1, no_promote=True)
+
+    assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
 
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
