@@ -1,0 +1,1688 @@
+audit:
+  bead: polylogue-gvzkr
+  date: 2026-08-04
+  phase: bounded read-only evidence gathering
+  scope: Fresh-create executable DDL only. No archive or production data was opened or changed.
+  method:
+    canonical_inventory: Execute canonical DDL in memory and enumerate sqlite_master plus PRAGMA table_xinfo. The vec0 declaration is read directly because the vector extension is not loaded by stdlib SQLite.
+    reader_writer_evidence: Index and embeddings evidence is a static production-code scan. Tests and DDL declarations are excluded. reader_columns and writer_columns are field-level results mapped to the sites on their owning object row. A field with no reader is UNCLEAR.
+    non_goals: [production queries, migrations, code deletion, standing audit lint]
+  finding_reuse:
+    polylogue-664l: Retired index objects below are imported from its merged finding.
+    polylogue-lr6dx: Named raw-authority rows are pre-classified pending its consumer cutover, without a duplicate audit.
+    polylogue-oj4oo: Ops run statuses are vocabulary-unification work, not removal evidence.
+  disposition_rules:
+    KEEP: A production reader exists, or the object is structural machinery for a kept object.
+    PURGE: An existing finding names the exact owning change train and removable code.
+    UNCLEAR: Missing, incomplete, conflicted, or deferred evidence. It never authorizes a deletion.
+objects:
+- tier: source
+  object_type: table
+  name: blob_publication_reservations
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:486
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - publication_id
+  - blob_hash
+  - size_bytes
+  - publisher_id
+  - reserved_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: blob_refs
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:473
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - blob_hash
+  - ref_id
+  - ref_type
+  - source_path
+  - size_bytes
+  - acquired_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: excised_content
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:684
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - removed_hash
+  - hash_kind
+  - reason
+  - actor
+  - prior_revision
+  - span_start
+  - span_end
+  - excised_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: gc_generations
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:497
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - generation_id
+  - started_at_ms
+  - completed_at_ms
+  - reclaimed_count
+  - reclaimed_bytes
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: history_sidecars
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:573
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - sidecar_id
+  - origin
+  - source_path
+  - payload_json
+  - observed_at_ms
+  - content_hash
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: otlp_spans
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:551
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - span_id
+  - trace_id
+  - parent_span_id
+  - origin
+  - session_native_id
+  - name
+  - kind
+  - attributes_json
+  - events_json
+  - started_at_ms
+  - ended_at_ms
+  - received_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_append_chain_backfill_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:219
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - logical_source_key
+  - source_path
+  - blob_hash
+  - blob_size
+  - append_start_offset
+  - append_end_offset
+  - matched_after_codex_header_strip
+  - previous_revision_authority
+  - compared_at_ms
+  - tool_version
+  - backup_manifest_path
+  - detail
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_artifacts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:505
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - artifact_id
+  - raw_id
+  - origin
+  - source_path
+  - source_index
+  - artifact_kind
+  - support_status
+  - classification_reason
+  - parse_as_session
+  - schema_eligible
+  - malformed_jsonl_lines
+  - decode_error
+  - cohort_id
+  - link_group_key
+  - sidecar_agent_type
+  - first_observed_at_ms
+  - last_observed_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_blockers
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:422
+  disposition: PURGE
+  execution_owner: polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  reader_sites: []
+  writer_sites: []
+  finding_reuse:
+  - polylogue-lr6dx
+  conflicts:
+  - raw_authority_parser_census has an intentional-retention note in polylogue/maintenance/raw_authority_reset.py:20
+  purge_unlocks:
+  - polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  columns:
+  - blocker_id
+  - plan_id
+  - census_id
+  - reason
+  - expected_json
+  - observed_json
+  - created_at_ms
+  - resolved_at_ms
+  - resolution
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_census_plans
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:389
+  disposition: PURGE
+  execution_owner: polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  reader_sites: []
+  writer_sites: []
+  finding_reuse:
+  - polylogue-lr6dx
+  conflicts:
+  - raw_authority_parser_census has an intentional-retention note in polylogue/maintenance/raw_authority_reset.py:20
+  purge_unlocks:
+  - polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  columns:
+  - census_id
+  - plan_id
+  - ordinal
+  - selected
+  - outcome_status
+  - reason
+  - next_action
+  - application_receipt_json
+  - outcome_recorded
+  - recorded_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_census_post_plans
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:414
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - census_id
+  - plan_id
+  - ordinal
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_censuses
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:337
+  disposition: PURGE
+  execution_owner: polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  reader_sites: []
+  writer_sites: []
+  finding_reuse:
+  - polylogue-lr6dx
+  conflicts:
+  - raw_authority_parser_census has an intentional-retention note in polylogue/maintenance/raw_authority_reset.py:20
+  purge_unlocks:
+  - polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  columns:
+  - census_id
+  - sequence_no
+  - scope_json
+  - residual_json
+  - parser_fingerprint
+  - mode
+  - lifecycle_status
+  - quiescent
+  - inventory_digest
+  - residual_digest
+  - plan_count
+  - post_inventory_digest
+  - post_residual_json
+  - post_residual_digest
+  - post_plan_count
+  - postflight_at_ms
+  - executable_plan_count
+  - residual_plan_count
+  - predecessor_census_id
+  - fixed_point
+  - created_at_ms
+  - completed_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_parser_census
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:328
+  disposition: PURGE
+  execution_owner: polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  reader_sites: []
+  writer_sites: []
+  finding_reuse:
+  - polylogue-lr6dx
+  conflicts:
+  - raw_authority_parser_census has an intentional-retention note in polylogue/maintenance/raw_authority_reset.py:20
+  purge_unlocks:
+  - polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  columns:
+  - raw_id
+  - parser_fingerprint
+  - status
+  - logical_keys_json
+  - detail
+  - censused_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_plans
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:378
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - plan_id
+  - input_digest
+  - input_raw_ids_json
+  - logical_keys_json
+  - authority_witness_json
+  - source_preconditions_json
+  - index_preconditions_json
+  - created_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_authority_verdicts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:461
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - logical_source_key
+  - verdict
+  - cohort_member_count
+  - cohort_fingerprint
+  - computed_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_byte_duplicate_supersession_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:249
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - blob_hash
+  - blob_size
+  - duplicate_of_raw_id
+  - duplicate_of_session_id
+  - previous_revision_authority
+  - promoted_at_ms
+  - tool_version
+  - backup_manifest_path
+  - detail
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_capture_observations
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:110
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - capture_mode
+  - first_observed_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_hook_events
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:531
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - hook_event_id
+  - origin
+  - native_id
+  - session_native_id
+  - source_path
+  - event_type
+  - payload_json
+  - observed_at_ms
+  - blob_hash
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_live_source_reconciliation_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:163
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - verdict
+  - previous_revision_authority
+  - source_path
+  - blob_hash
+  - blob_size
+  - compared_at_ms
+  - tool_version
+  - backup_manifest_path
+  - detail
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_membership_census
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:148
+  disposition: PURGE
+  execution_owner: polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  reader_sites: []
+  writer_sites: []
+  finding_reuse:
+  - polylogue-lr6dx
+  conflicts:
+  - raw_authority_parser_census has an intentional-retention note in polylogue/maintenance/raw_authority_reset.py:20
+  purge_unlocks:
+  - polylogue-lr6dx source-tier cutover, then polylogue-6kur repair.py identity-block removal
+  columns:
+  - raw_id
+  - parser_fingerprint
+  - status
+  - member_count
+  - censused_at_ms
+  - detail
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_membership_writeback_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:185
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - logical_source_key
+  - provider_session_id
+  - membership_decision
+  - previous_revision_authority
+  - promoted_at_ms
+  - tool_version
+  - backup_manifest_path
+  - detail
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_quarantine_group_dedup_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:282
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - source_path
+  - blob_hash
+  - blob_size
+  - representative_raw_id
+  - representative_session_id
+  - promoted_at_ms
+  - tool_version
+  - backup_manifest_path
+  - detail
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_session_memberships
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:120
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - logical_source_key
+  - provider_session_id
+  - source_revision
+  - normalized_content_hash
+  - message_count
+  - predecessor_raw_id
+  - acquisition_generation
+  - revision_authority
+  - decision
+  - decided_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: raw_sessions
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:27
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - raw_id
+  - origin
+  - capture_mode
+  - native_id
+  - source_path
+  - source_index
+  - blob_hash
+  - blob_size
+  - acquired_at_ms
+  - file_mtime_ms
+  - parsed_at_ms
+  - parse_error
+  - validated_at_ms
+  - validation_status
+  - validation_error
+  - validation_drift_count
+  - validation_mode
+  - detection_warnings_json
+  - logical_source_key
+  - revision_kind
+  - source_revision
+  - predecessor_source_revision
+  - predecessor_raw_id
+  - baseline_raw_id
+  - append_start_offset
+  - append_end_offset
+  - acquisition_generation
+  - revision_authority
+  - revision_authority_evidence
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: sinex_publication_obligations
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:585
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - object_id
+  - protocol_version
+  - revision_id
+  - manifest_digest
+  - mode
+  - status
+  - attempt_count
+  - last_attempt_at_ms
+  - last_receipt_state
+  - last_error
+  - created_at_ms
+  - updated_at_ms
+  - retired_at_ms
+  - next_attempt_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: sinex_publication_payloads
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:611
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - object_id
+  - protocol_version
+  - revision_id
+  - manifest_digest
+  - manifest_bytes
+  - manifest_sha256
+  - manifest_size_bytes
+  - segment_count
+  - total_size_bytes
+  - staged_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: sinex_publication_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:647
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - object_id
+  - protocol_version
+  - revision_id
+  - manifest_digest
+  - attempt_number
+  - request_id
+  - receipt_state
+  - receipt_detail
+  - error_code
+  - received_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: sinex_publication_segments
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:629
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - object_id
+  - protocol_version
+  - revision_id
+  - manifest_digest
+  - position
+  - segment_name
+  - segment_bytes
+  - segment_sha256
+  - size_bytes
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: table
+  name: verified_blob_receipts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:701
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites: []
+  writer_sites: []
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+  columns:
+  - blob_hash
+  - st_dev
+  - st_ino
+  - st_size
+  - st_mtime_ns
+  - st_ctime_ns
+  - verified_at_ms
+  column_audit: deferred after index and embeddings; current-DDL object evidence only
+
+- tier: source
+  object_type: index
+  name: idx_blob_publication_reservations_hash
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:494
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for blob_publication_reservations
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_blob_refs_ref_id
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:483
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for blob_refs
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_history_sidecars_path_hash
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:582
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for history_sidecars
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_otlp_spans_session
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:569
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for otlp_spans
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_otlp_spans_trace
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:566
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for otlp_spans
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_append_chain_backfill_receipts_compared_at
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:235
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_append_chain_backfill_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_artifacts_raw_id
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:528
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_artifacts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_artifacts_source_identity
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:525
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_artifacts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_authority_blockers_open_plan
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:435
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_authority_blockers
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_authority_census_plans_attempts
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:410
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_authority_census_plans
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_authority_census_plans_status
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:407
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_authority_census_plans
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_authority_verdicts_logical_source
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:470
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_authority_verdicts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_byte_duplicate_supersession_receipts_duplicate_of
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:265
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_byte_duplicate_supersession_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_byte_duplicate_supersession_receipts_promoted_at
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:262
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_byte_duplicate_supersession_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_capture_observations_raw_id
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:117
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_capture_observations
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_hook_events_session
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:548
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_hook_events
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_live_source_reconciliation_receipts_compared_at
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:176
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_live_source_reconciliation_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_membership_writeback_receipts_promoted_at
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:204
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_membership_writeback_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_quarantine_group_dedup_receipts_promoted_at
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:295
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_quarantine_group_dedup_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_quarantine_group_dedup_receipts_representative
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:298
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_quarantine_group_dedup_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_session_memberships_logical
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:141
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_session_memberships
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_session_memberships_pending
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:144
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_session_memberships
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_blob_hash
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:91
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_blob_hash_raw_id
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:98
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_logical_revision
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:78
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_origin
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:62
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_origin_native
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:65
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_parse_ready
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:72
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_raw_sessions_source_path
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:69
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for raw_sessions
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_sinex_publication_obligations_object
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:608
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for sinex_publication_obligations
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_sinex_publication_obligations_pending
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:604
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for sinex_publication_obligations
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+
+- tier: source
+  object_type: index
+  name: idx_sinex_publication_receipts_recent
+  ddl_anchor: polylogue/storage/sqlite/archive_tiers/source.py:668
+  disposition: UNCLEAR
+  execution_owner: polylogue-60i5 durable change train
+  reader_sites:
+  - SQLite query planner for sinex_publication_receipts
+  writer_sites:
+  - SQLite index maintenance
+  finding_reuse: []
+  conflicts: []
+  purge_unlocks: []
+- {tier: index, object_type: table, name: action_pairs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:24', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/insights/session_label.py:150'], writer_sites: ['polylogue/storage/sqlite/action_pairs.py:23'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [tool_use_block_id, session_id, message_id, tool_id, use_rank, tool_name, semantic_type, tool_command, tool_path, tool_result_block_id, is_error, exit_code], reader_columns: [tool_use_block_id, session_id, message_id, tool_id, use_rank, tool_name, semantic_type, tool_command, tool_path, tool_result_block_id, is_error, exit_code], writer_columns: [tool_use_block_id, session_id, message_id, tool_id, use_rank, tool_name, semantic_type, tool_command, tool_path, tool_result_block_id, is_error, exit_code], unclear_columns: []}
+- {tier: index, object_type: table, name: agent_meta_sidecar_purge_receipts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:296', disposition: UNCLEAR, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [], writer_sites: ['polylogue/maintenance/agent_meta_sidecar_purge_apply.py:127'], finding_reuse: [], conflicts: [writer receipt exists without application reader], purge_unlocks: [], columns: [session_id, origin, native_id, raw_id, source_path, purged_at_ms, tool_version, backup_manifest_path, detail], reader_columns: [session_id, origin, native_id, raw_id, source_path, detail], writer_columns: [session_id, origin, native_id, raw_id, source_path, purged_at_ms, tool_version, backup_manifest_path, detail], unclear_columns: [purged_at_ms, tool_version, backup_manifest_path]}
+
+- {tier: index, object_type: table, name: attachment_native_ids, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:401', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/maintenance/corpus_fidelity.py:129'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:2524'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [ref_id, id_kind, native_id], reader_columns: [ref_id, id_kind, native_id], writer_columns: [ref_id, native_id], unclear_columns: []}
+
+- {tier: index, object_type: table, name: attachment_refs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:772', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/cli/query_stats.py:162'], writer_sites: ['polylogue/storage/attachment_relink.py:347'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [ref_id, attachment_id, session_id, message_id, position, upload_origin, source_url, caption], reader_columns: [ref_id, attachment_id, session_id, message_id, position, upload_origin, source_url, caption], writer_columns: [ref_id, attachment_id, session_id, message_id, position, upload_origin, source_url, caption], unclear_columns: []}
+
+- {tier: index, object_type: table, name: attachments, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1259', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/archive.py:2073'], writer_sites: ['polylogue/api/archive.py:2073'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count], reader_columns: [attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count], writer_columns: [attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count], unclear_columns: []}
+
+- {tier: index, object_type: table, name: blocks, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:42', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/archive.py:2005'], writer_sites: ['polylogue/api/archive.py:2054'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [block_id, message_id, session_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type, media_type, language, tool_result_is_error, tool_result_exit_code, tool_result_outcome_unknown_reason, signature, content_hash, tool_command, tool_path, search_text, tool_detail_text], reader_columns: [block_id, message_id, session_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type, media_type, language, tool_result_is_error, tool_result_exit_code, tool_result_outcome_unknown_reason, signature, content_hash, tool_command, tool_path, search_text, tool_detail_text], writer_columns: [block_id, message_id, session_id, position, block_type, text, tool_name, tool_id, tool_input, semantic_type, media_type, language, tool_result_is_error, tool_result_exit_code, tool_result_outcome_unknown_reason, signature, content_hash, tool_command, tool_path, search_text, tool_detail_text], unclear_columns: []}
+
+- {tier: index, object_type: virtual_table, name: blocks_command_trigram, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:433', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/maintenance/archive_verification.py:657'], writer_sites: ['polylogue/storage/fts/sql.py:462'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [tool_detail_text, blocks_command_trigram, rank], reader_columns: [tool_detail_text, blocks_command_trigram, rank], writer_columns: [tool_detail_text, blocks_command_trigram, rank], unclear_columns: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: blocks_command_trigram_config, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: blocks_command_trigram_data, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: blocks_command_trigram_docsize, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: blocks_command_trigram_idx, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: table, name: delegation_facts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:35', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/insights/delegation_work_evidence.py:7'], writer_sites: ['polylogue/storage/sqlite/delegation_facts.py:19'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [delegation_id, parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance, branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload, dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code, result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family, parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd, child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state], reader_columns: [parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance, branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload, dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code, result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family, parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd, child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state], writer_columns: [parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance, branch_point_message_id, instruction_message_id, instruction_tool_use_block_id, instruction_payload, dispatch_turn_model, requested_model, artifact_block_id, artifact_text, result_is_error, result_exit_code, result_status, parent_origin, parent_session_dominant_model, parent_session_dominant_model_family, parent_terminal_state, child_session_dominant_model, child_session_dominant_model_family, child_cost_usd, child_cost_is_estimated, child_tokens, child_wall_ms, child_terminal_state], unclear_columns: [delegation_id]}
+
+- {tier: index, object_type: table, name: delegation_refresh_scope, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1830', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/delegation_facts.py:57'], writer_sites: ['polylogue/storage/sqlite/delegation_facts.py:47'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [parent_session_id], reader_columns: [parent_session_id], writer_columns: [parent_session_id], unclear_columns: []}
+
+- {tier: index, object_type: table, name: derived_refresh_guard, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:446', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/maintenance/sharded_rebuild.py:377'], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [guard_name], reader_columns: [guard_name], writer_columns: [], unclear_columns: []}
+
+- {tier: index, object_type: table, name: file_edits, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:52', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/cli/read_view_handlers.py:41'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:2526'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [tool_use_block_id, session_id, message_id, file_path, structured_patch_json, original_file, old_string, new_string, replace_all, user_modified, observed_at_ms], reader_columns: [tool_use_block_id, session_id, message_id, file_path, structured_patch_json, original_file, old_string, new_string, replace_all, user_modified, observed_at_ms], writer_columns: [tool_use_block_id, session_id, message_id, file_path, original_file, old_string, new_string, replace_all, user_modified, observed_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: fts_freshness_state, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:178', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/fts_startup.py:293'], writer_sites: ['polylogue/storage/fts/freshness.py:162'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail], reader_columns: [surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail], writer_columns: [surface, state, checked_at, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, detail], unclear_columns: []}
+
+- {tier: index, object_type: table, name: insight_materialization, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:304', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/convergence_stages.py:1985'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:1116'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [insight_type, session_id, materializer_version, materialized_at_ms, source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_high_water_mark_source, input_row_count], reader_columns: [insight_type, session_id, materializer_version, materialized_at_ms, source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_high_water_mark_source, input_row_count], writer_columns: [insight_type, session_id, materializer_version, materialized_at_ms, source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms, input_high_water_mark_source, input_row_count], unclear_columns: []}
+
+- {tier: index, object_type: table, name: messages, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:39', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/archive.py:20'], writer_sites: ['polylogue/api/archive.py:2094'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [message_id, session_id, native_id, parent_message_id, position, role, message_type, material_origin, model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text, has_tool_use, has_thinking, has_paste, paste_boundary, variant_index, is_active_path, is_active_leaf, word_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms, content_hash, occurred_at_ms, stop_reason], reader_columns: [message_id, session_id, native_id, parent_message_id, position, role, message_type, material_origin, model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text, has_tool_use, has_thinking, has_paste, paste_boundary, variant_index, is_active_path, is_active_leaf, word_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms, content_hash, occurred_at_ms, stop_reason], writer_columns: [message_id, session_id, native_id, parent_message_id, position, role, message_type, material_origin, model_name, model_effort, sender_name, recipient, delivery_status, end_turn, user_context_text, has_tool_use, has_thinking, has_paste, paste_boundary, variant_index, is_active_path, is_active_leaf, word_count, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, duration_ms, content_hash, occurred_at_ms, stop_reason], unclear_columns: []}
+
+- {tier: index, object_type: virtual_table, name: messages_fts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:181', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/convergence_stages.py:1235'], writer_sites: ['polylogue/storage/fts/sql.py:119'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [block_id, message_id, session_id, block_type, text, messages_fts, rank], reader_columns: [block_id, message_id, session_id, block_type, text, messages_fts, rank], writer_columns: [block_id, message_id, session_id, block_type, text, messages_fts, rank], unclear_columns: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_config, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_data, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_docsize, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:733', disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_identity, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_idx, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: table, name: paste_spans, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:772', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/web_shell_paste.py:205'], writer_sites: ['polylogue/daemon/http.py:2523'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [paste_id, message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms], reader_columns: [paste_id, message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms], writer_columns: [paste_id, message_id, session_id, position, start_offset, end_offset, boundary_state, source_marker, content_hash, observed_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: query_unit_frame_state, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:483', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/archive/query/transaction.py:100'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/archive.py:5803'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [singleton, epoch], reader_columns: [singleton, epoch], writer_columns: [singleton, epoch], unclear_columns: []}
+
+- {tier: index, object_type: table, name: raw_revision_applications, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:490', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/archive_readiness.py:356'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/revision_application.py:223'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, decision, accepted_raw_id, accepted_source_revision, accepted_content_hash, baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms], reader_columns: [decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, decision, accepted_raw_id, accepted_source_revision, accepted_content_hash, baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms], writer_columns: [decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, decision, accepted_raw_id, accepted_source_revision, accepted_content_hash, baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: raw_revision_heads, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:524', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/raw_authority.py:669'], writer_sites: ['polylogue/storage/repair.py:2680'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [logical_source_key, session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms], reader_columns: [logical_source_key, session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms], writer_columns: [logical_source_key, session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: repo_checkouts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1195', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/insights/session/repo_observations.py:291'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:5213'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [repo_id, root_path, first_seen_at_ms, last_seen_at_ms], reader_columns: [repo_id, root_path, first_seen_at_ms, last_seen_at_ms], writer_columns: [repo_id, root_path, first_seen_at_ms, last_seen_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: repos, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1129', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/archive.py:775'], writer_sites: ['polylogue/api/archive.py:775'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [repo_id, origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms], reader_columns: [repo_id, origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms], writer_columns: [repo_id, origin_url, root_path, repo_name, first_seen_at_ms, last_seen_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: session_agent_policies, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:773', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:297'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:6071'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [policy_id, session_id, source_message_id, position, approval_policy, sandbox_policy, network_policy, observed_at_ms], reader_columns: [policy_id, session_id, source_message_id, position, approval_policy, sandbox_policy, network_policy, observed_at_ms], writer_columns: [policy_id, session_id, source_message_id, position, approval_policy, sandbox_policy, network_policy, observed_at_ms], unclear_columns: []}
+- {tier: embeddings, object_type: virtual_table, name: message_embeddings, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:11', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/metrics.py:693'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/embedding_write.py:333'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [embedding_input_hash, embedding, model], reader_columns: [embedding_input_hash, embedding, model], writer_columns: [embedding_input_hash, embedding, model], unclear_columns: []}
+
+- {tier: embeddings, object_type: table, name: message_embeddings_meta, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:11', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/convergence_stages.py:1057'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/embedding_write.py:327'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash], reader_columns: [embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash], writer_columns: [embedding_input_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash], unclear_columns: []}
+
+- {tier: embeddings, object_type: table, name: message_embedding_refs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:46', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/metrics.py:692'], writer_sites: ['polylogue/storage/embeddings/reconcile.py:334'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [message_id, session_id, origin, embedding_input_hash, embedded_at_ms], reader_columns: [message_id, session_id, origin, embedding_input_hash, embedded_at_ms], writer_columns: [message_id, session_id, origin, embedding_input_hash, embedded_at_ms], unclear_columns: []}
+
+- {tier: embeddings, object_type: table, name: embedding_status, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:60', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/convergence_stages.py:1057'], writer_sites: ['polylogue/daemon/convergence_stages.py:1164'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message], reader_columns: [session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message], writer_columns: [session_id, origin, message_count_embedded, last_embedded_at_ms, needs_reindex, error_message], unclear_columns: []}
+
+- {tier: embeddings, object_type: table, name: embedding_derivation_state, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:69', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/embedding_write.py:435'], writer_sites: ['polylogue/daemon/convergence_stages.py:1106'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [session_id, origin, generation, derivation_key, source_hash, recipe_hash, output_contract_hash, attempt_state, message_count, updated_at_ms], reader_columns: [session_id, origin, generation, derivation_key, source_hash, recipe_hash, output_contract_hash, attempt_state, message_count, updated_at_ms], writer_columns: [session_id, origin, generation, derivation_key, source_hash, recipe_hash, output_contract_hash, attempt_state, message_count, updated_at_ms], unclear_columns: []}
+
+- {tier: embeddings, object_type: table, name: embedding_failures, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:87', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/embedding_write.py:695'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/embedding_write.py:497'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message, retryable, lifecycle_state, created_at_ms, updated_at_ms, resolved_at_ms, resolution_action, resolution_note, superseded_by, generation, derivation_key, source_hash, recipe_hash], reader_columns: [failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message, retryable, lifecycle_state, created_at_ms, updated_at_ms, resolved_at_ms, resolution_action, resolution_note, superseded_by, generation, derivation_key, source_hash, recipe_hash], writer_columns: [failure_id, session_id, origin, message_refs_json, provider, model, error_class, error_message, retryable, lifecycle_state, created_at_ms, updated_at_ms, resolved_at_ms, resolution_action, resolution_note, superseded_by, generation, derivation_key, source_hash, recipe_hash], unclear_columns: []}
+
+- {tier: embeddings, object_type: index, name: idx_message_embedding_refs_hash, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:54', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for message_embedding_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: embeddings, object_type: index, name: idx_message_embedding_refs_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:57', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for message_embedding_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: embeddings, object_type: index, name: idx_embedding_derivation_pending, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:84', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for embedding_derivation_state], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: embeddings, object_type: index, name: idx_embedding_failures_active, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/embeddings.py:112', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for embedding_failures], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: user, object_type: table, name: annotation_batches, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:265', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [batch_id, schema_id, schema_version, target_ref, source_result_ref, actor_ref, model_ref, prompt_ref, total_count, valid_count, invalid_count, abstained_count, assertion_refs_json, validation_failures_json, metadata_json, created_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: annotation_schemas, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:236', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [schema_id, schema_version, definition_json, definition_sha256, registered_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: assertions, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:19', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [assertion_id, scope_ref, target_ref, key, kind, value_json, body_text, author_ref, author_kind, evidence_refs_json, status, visibility, confidence, staleness_json, context_policy_json, supersedes_json, created_at_ms, updated_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: context_deliveries, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:318', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode, context_image_json, context_image_sha256, segment_refs_json, evidence_refs_json, assertion_refs_json, omissions_json, caveats_json, metadata_json, delivered_by_ref, delivered_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: holdout_access_receipts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:221', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [receipt_id, result_set_id, accessor_ref, declared_confirmation, contamination, reason, accessed_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: queries, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:67', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [query_hash, canonical_plan_json, grain, lane, rank_policy, created_at_ms, definition_protocol_version], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: query_edges, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:116', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [src_query_hash, dst_query_hash, edge_kind, created_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: query_evaluation_receipts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:136', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [receipt_id, query_hash, result_set_id, source_generation, user_generation, index_generation, runtime_build_ref, model_refs_json, resolved_bounds_json, degradation_json, created_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: query_names, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:78', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [name, query_hash, supersedes_query_hash, updated_at_ms, watch], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: query_unit_frame_state, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:8', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [singleton, epoch], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: result_set_holdout_policies, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:206', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [result_set_id, frame, selection_definition_json, intended_confirmation_use, authority, created_epoch, created_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: result_set_members, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:108', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [result_set_id, rank, member_ref], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: result_sets, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:92', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [result_set_id, query_hash, grain, corpus_epoch, member_count, membership_merkle_root, ordered_rank_hash, exactness, persistence_class, created_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: retained_query_runs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:129', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [run_id, query_hash, result_set_id, retained_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: user_settings, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:308', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [setting_key, value_json, updated_at_ms, author_ref], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: table, name: watched_query_baselines, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:155', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [query_hash, result_set_id, updated_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: user, object_type: trigger, name: query_evaluation_receipts_result_set_query_match_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:173', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on query_evaluation_receipts], writer_sites: [fires on writes to query_evaluation_receipts], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: query_evaluation_receipts_result_set_query_match_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:180', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on query_evaluation_receipts], writer_sites: [fires on writes to query_evaluation_receipts], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: query_unit_frame_assertions_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:60', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on assertions], writer_sites: [fires on writes to assertions], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: query_unit_frame_assertions_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:52', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on assertions], writer_sites: [fires on writes to assertions], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: query_unit_frame_assertions_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:56', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on assertions], writer_sites: [fires on writes to assertions], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: retained_query_runs_result_set_query_match_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:161', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on retained_query_runs], writer_sites: [fires on writes to retained_query_runs], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: retained_query_runs_result_set_query_match_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:167', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on retained_query_runs], writer_sites: [fires on writes to retained_query_runs], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: watched_query_baselines_result_set_query_match_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:187', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on watched_query_baselines], writer_sites: [fires on writes to watched_query_baselines], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: trigger, name: watched_query_baselines_result_set_query_match_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:193', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite trigger program on watched_query_baselines], writer_sites: [fires on writes to watched_query_baselines], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_annotation_batches_schema_target_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:299', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for annotation_batches], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_annotation_batches_source_result_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:302', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for annotation_batches], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_assertions_kind_status_updated, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:43', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for assertions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_assertions_scope_kind_status, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:49', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for assertions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_assertions_target_kind, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:40', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for assertions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_assertions_target_kind_status_visibility, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:46', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for assertions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_context_deliveries_recipient_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:336', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for context_deliveries], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_context_deliveries_run_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:339', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for context_deliveries], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_holdout_access_receipts_result_set, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:230', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for holdout_access_receipts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_query_edges_dst_kind, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:124', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for query_edges], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_query_evaluation_receipts_query_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:150', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for query_evaluation_receipts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_query_names_query_hash, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:86', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for query_names], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_query_names_watch, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:89', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for query_names], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: user, object_type: index, name: idx_result_sets_query_epoch, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/user.py:105', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for result_sets], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: ops, object_type: table, name: convergence_debt, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:136', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [debt_id, stage, target_type, target_id, status, priority, attempts, last_error, next_retry_at, materializer_version, created_at_ms, updated_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: cursor_lag_samples, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:155', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [sample_id, family, source_path, lag_ms, stuck_file_count, p50_lag_ms, p95_lag_ms, severity, sampled_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: daemon_events, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:182', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [id, ts_ms, kind, operation_id, payload_json], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: daemon_lifecycle, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:193', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [run_id, started_at_ms, stopped_at_ms, last_heartbeat_at_ms, signal, exit_kind, details_json], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: daemon_stage_events, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:170', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [event_id, attempt_id, stage, status, observed_at_ms, payload_json], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: embedding_catchup_runs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:67', disposition: KEEP, execution_owner: polylogue-oj4oo vocabulary-unification change train, reader_sites: [], writer_sites: [], finding_reuse: [polylogue-oj4oo], conflicts: [status remains live while its vocabulary is unified], purge_unlocks: [], columns: [run_id, started_at_ms, finished_at_ms, status, origin, scanned_sessions, embedded_sessions, skipped_sessions, error_count, embedded_messages, estimated_cost_usd, error_message], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: fts_drift_samples, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:307', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [sample_id, surface, state, source_rows, indexed_rows, missing_rows, excess_rows, duplicate_rows, identity_mismatch_rows, sampled_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: ingest_attempts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:39', disposition: KEEP, execution_owner: polylogue-oj4oo vocabulary-unification change train, reader_sites: [], writer_sites: [], finding_reuse: [polylogue-oj4oo], conflicts: [status remains live while its vocabulary is unified], purge_unlocks: [], columns: [attempt_id, source_path, origin, status, phase, storage_route, started_at_ms, heartbeat_at_ms, finished_at_ms, parsed_raw_count, materialized_count, error_message, source_paths_json, outcome_code, retryable, evidence_ref, diagnostic, remediation], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: ingest_cursor, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:84', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [source_path, origin, stat_size, byte_offset, last_complete_newline, record_count, last_record_ts_ms, parser_fingerprint, content_fingerprint, tail_hash, st_dev, st_ino, mtime_ns, failure_count, next_retry_at, excluded, deferred_end_offset, updated_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: mcp_call_log, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:236', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [call_id, tool_name, session_id, started_at_ms, finished_at_ms, duration_ms, success, error_detail], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: mcp_call_session_refs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:256', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [call_id, session_id, relation], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: route_observations, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:274', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [observation_id, trace_id, surface, route, verb, daemon_path, phase, started_at_ms, duration_ms, status, git_head, archive_epoch, attributes_json, sampled], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: schema_drift_samples, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:20', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [sample_id, origin, element_kind, classification, unseen_key_signature, native_id_example, raw_id, observed_at_ms], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: table, name: secret_scan_status, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:225', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [session_id, scanner_version, scanned_at_ms, blocks_scanned, candidates_found], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+
+- {tier: ops, object_type: index, name: idx_convergence_debt_stage, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:152', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for convergence_debt], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_cursor_lag_samples_family_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:167', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for cursor_lag_samples], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_daemon_events_kind, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:190', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for daemon_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_daemon_events_ts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:191', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for daemon_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_daemon_lifecycle_latest, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:203', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for daemon_lifecycle], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_daemon_stage_events_attempt_observed, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:179', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for daemon_stage_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_fts_drift_samples_surface_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:320', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for fts_drift_samples], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ingest_attempts_status, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:119', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for ingest_attempts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ingest_attempts_storage_route, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:122', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for ingest_attempts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ingest_cursor_attention, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:114', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for ingest_cursor], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ops_mcp_call_log_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:247', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for mcp_call_log], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ops_mcp_call_log_started, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:253', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for mcp_call_log], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ops_mcp_call_log_tool, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:250', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for mcp_call_log], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_ops_mcp_call_session_refs_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:263', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for mcp_call_session_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_route_observations_started, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:297', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for route_observations], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_route_observations_surface_route, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:291', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for route_observations], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_route_observations_trace, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:294', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for route_observations], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_schema_drift_samples_origin_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:31', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for schema_drift_samples], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_schema_drift_samples_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:34', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for schema_drift_samples], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: ops, object_type: index, name: idx_secret_scan_status_version, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/ops.py:233', disposition: UNCLEAR, execution_owner: unassigned ops-tier disposition, reader_sites: [SQLite query planner for secret_scan_status], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: virtual_table, name: messages_fts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:181', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/convergence_stages.py:1235'], writer_sites: ['polylogue/storage/fts/sql.py:119'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [block_id, message_id, session_id, block_type, text, messages_fts, rank], reader_columns: [block_id, message_id, session_id, block_type, text, messages_fts, rank], writer_columns: [block_id, message_id, session_id, block_type, text, messages_fts, rank], unclear_columns: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_config, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_data, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_docsize, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:733', disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_identity, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: messages_fts_idx, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: table, name: paste_spans, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:772', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/web_shell_paste.py:205'], writer_sites: ['polylogue/daemon/http.py:2523'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [paste_id, message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms], reader_columns: [paste_id, message_id, session_id, position, start_offset, end_offset, boundary_state, source_event_id, source_marker, content_hash, observed_at_ms], writer_columns: [paste_id, message_id, session_id, position, start_offset, end_offset, boundary_state, source_marker, content_hash, observed_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: query_unit_frame_state, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:483', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/archive/query/transaction.py:100'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/archive.py:5803'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [singleton, epoch], reader_columns: [singleton, epoch], writer_columns: [singleton, epoch], unclear_columns: []}
+
+- {tier: index, object_type: table, name: raw_revision_applications, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:490', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/archive_readiness.py:356'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/revision_application.py:223'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, decision, accepted_raw_id, accepted_source_revision, accepted_content_hash, baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms], reader_columns: [decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, decision, accepted_raw_id, accepted_source_revision, accepted_content_hash, baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms], writer_columns: [decision_id, raw_id, session_id, logical_source_key, source_revision, acquisition_generation, decision, accepted_raw_id, accepted_source_revision, accepted_content_hash, baseline_raw_id, predecessor_raw_id, append_end_offset, detail, decided_at_ms], unclear_columns: []}
+
+- {tier: index, object_type: table, name: raw_revision_heads, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:524', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/raw_authority.py:669'], writer_sites: ['polylogue/storage/repair.py:2680'], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [logical_source_key, session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms], reader_columns: [logical_source_key, session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms], writer_columns: [logical_source_key, session_id, accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, acquisition_generation, append_end_offset, decided_at_ms], unclear_columns: []}
+- {tier: index, object_type: table, name: session_tag_rollups, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:421', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/insights.py:346'], writer_sites: ['polylogue/storage/sqlite/queries/session_insight_summary_queries.py:59'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {tag: KEEP, bucket_day: KEEP, source_name: KEEP, materializer_version: KEEP, materialized_at: KEEP, source_updated_at: KEEP, source_sort_key: KEEP, input_high_water_mark: KEEP, input_high_water_mark_source: KEEP, input_row_count: KEEP, session_count: KEEP, logical_session_count: KEEP, logical_session_ids_json: UNCLEAR, explicit_count: KEEP, auto_count: KEEP, repo_breakdown_json: KEEP, search_text: KEEP}}
+
+- {tier: index, object_type: table, name: session_tags, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1411', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/antigravity_phantom_sweep.py:84'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/session_annotations_write.py:144'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, tag: KEEP, tag_source: KEEP, method: KEEP, confidence: KEEP, evidence_json: KEEP}}
+
+- {tier: index, object_type: table, name: session_work_events, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1485', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/insights.py:370'], writer_sites: ['polylogue/storage/fts/dangling_repair.py:107'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {event_id: KEEP, session_id: KEEP, position: KEEP, work_event_type: KEEP, summary: KEEP, confidence: KEEP, start_index: KEEP, end_index: KEEP, started_at_ms: KEEP, ended_at_ms: KEEP, duration_ms: KEEP, file_paths_json: KEEP, tools_used_json: KEEP, input_high_water_mark: KEEP, input_high_water_mark_source: KEEP, evidence_json: KEEP, inference_json: KEEP, search_text: KEEP}}
+
+- {tier: index, object_type: virtual_table, name: session_work_events_fts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1513', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/fts_status.py:473'], writer_sites: ['polylogue/storage/fts/dangling_repair.py:108'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {event_id: KEEP, session_id: KEEP, work_event_type: KEEP, text: KEEP, session_work_events_fts: KEEP, rank: KEEP}}
+
+- {tier: index, object_type: virtual_shadow_table, name: session_work_events_fts_config, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: session_work_events_fts_content, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: session_work_events_fts_data, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: session_work_events_fts_docsize, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: virtual_shadow_table, name: session_work_events_fts_idx, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: owning declared FTS virtual table, reader_sites: [SQLite-managed FTS shadow], writer_sites: [SQLite FTS maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: table, name: session_working_dirs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1171', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/archive.py:4076'], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, path: KEEP, position: KEEP}}
+
+- {tier: index, object_type: table, name: sessions, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:45', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/agent_integration/spec.py:274'], writer_sites: ['polylogue/archive/write_effects.py:226'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, native_id: KEEP, origin: KEEP, parent_session_id: KEEP, root_session_id: KEEP, raw_id: KEEP, branch_type: KEEP, active_leaf_message_id: KEEP, title: KEEP, session_kind: KEEP, title_source: KEEP, title_ref: KEEP, title_confidence: KEEP, display_name: KEEP, run_settings_json: KEEP, pending_drafts_json: KEEP, git_branch: KEEP, git_repository_url: KEEP, provider_project_ref: KEEP, commit_hash: KEEP, instructions_text: KEEP, reported_duration_ms: KEEP, reported_cost_usd: KEEP, message_count: KEEP, word_count: KEEP, tool_use_count: KEEP, thinking_count: KEEP, paste_count: KEEP, user_message_count: KEEP, authored_user_message_count: KEEP, assistant_message_count: KEEP, system_message_count: KEEP, tool_message_count: KEEP, user_word_count: KEEP, authored_user_word_count: KEEP, assistant_word_count: KEEP, content_hash: KEEP, created_at_ms: KEEP, updated_at_ms: KEEP, sort_key_ms: KEEP}}
+
+- {tier: index, object_type: table, name: thread_sessions, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1164', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/archive.py:3088'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:3984'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {thread_id: KEEP, session_id: KEEP, position: KEEP}}
+
+- {tier: index, object_type: table, name: threads, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1127', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/user_state_resolver.py:49'], writer_sites: ['polylogue/api/archive.py:5398'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {thread_id: KEEP, dominant_repo_id: UNCLEAR, materializer_version: KEEP, materialized_at: KEEP, source_updated_at: KEEP, input_high_water_mark: KEEP, input_high_water_mark_source: KEEP, input_row_count: KEEP, start_time: KEEP, end_time: KEEP, dominant_repo: KEEP, session_ids_json: KEEP, session_count: KEEP, depth: KEEP, branch_count: KEEP, total_messages: KEEP, total_cost_usd: KEEP, wall_duration_ms: KEEP, work_event_breakdown_json: KEEP, payload_json: KEEP, search_text: KEEP, created_at_ms: KEEP}}
+
+- {tier: index, object_type: table, name: web_content_constructs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:740', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/cli/read_view_handlers.py:51'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:2527'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {construct_id: KEEP, session_id: KEEP, message_id: KEEP, block_id: KEEP, position: KEEP, provider: KEEP, construct_type: KEEP, provider_key: KEEP, title: KEEP, url: KEEP, text: KEEP, source_id: KEEP, group_id: KEEP, group_title: KEEP, query: KEEP, asset_pointer: KEEP, mime_type: KEEP, status: KEEP, task_id: KEEP, task_type: KEEP, rank: KEEP, start_index: KEEP, end_index: KEEP}}
+
+- {tier: index, object_type: table, name: work_evidence_edges, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1866', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/queries/work_evidence.py:169'], writer_sites: ['polylogue/insights/claude_workflow_materializer.py:667'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {graph_id: KEEP, edge_ref: KEEP, edge_kind: KEEP, source_ref: KEEP, target_ref: KEEP, evidence_refs_json: KEEP, corpus_snapshot_ref: KEEP, authority: KEEP, confidence: KEEP, occurred_at_ms: KEEP, association_state: KEEP}}
+- {tier: index, object_type: table, name: work_evidence_graphs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1841', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/insights/claude_workflow_materializer.py:528'], writer_sites: ['polylogue/insights/claude_workflow_materializer.py:620'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {graph_id: KEEP, corpus_snapshot_ref: KEEP}}
+
+- {tier: index, object_type: table, name: work_evidence_nodes, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1846', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/queries/work_evidence.py:164'], writer_sites: ['polylogue/insights/claude_workflow_materializer.py:628'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {graph_id: KEEP, node_ref: KEEP, node_kind: KEEP, label: KEEP, evidence_refs_json: KEEP, corpus_snapshot_ref: KEEP, authority: KEEP, confidence: KEEP, occurred_at_ms: KEEP, actor_ref: KEEP, execution_context_id: KEEP, execution_context_known_json: KEEP, execution_context_unknown_json: KEEP, execution_context_addressed: KEEP, association_state: KEEP, claim_text: KEEP}}
+
+- {tier: index, object_type: view, name: actions, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:715', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/agent_integration/spec.py:266'], writer_sites: [read-only derived view], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: view, name: delegation_facts_source, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1888', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/archive.py:704'], writer_sites: [read-only derived view], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: view, name: delegations, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1112', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/archive_tiers/archive.py:723'], writer_sites: [read-only derived view], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: blocks_action_pairs_ad, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2176', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: blocks_action_pairs_ai, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2165', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: blocks_action_pairs_au, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2187', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: blocks_command_trigram_ad, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:919', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: blocks_command_trigram_ai, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:904', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: blocks_command_trigram_au, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:926', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: messages_fts_ad, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: messages_fts_ai, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: messages_fts_au, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_blocks_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1453', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: trigger, name: query_unit_frame_blocks_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1445', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_blocks_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1449', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on blocks], writer_sites: [fires on writes to blocks], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_delegation_facts_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1825', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on delegation_facts], writer_sites: [fires on writes to delegation_facts], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_delegation_facts_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1817', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on delegation_facts], writer_sites: [fires on writes to delegation_facts], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_delegation_facts_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1821', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on delegation_facts], writer_sites: [fires on writes to delegation_facts], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_messages_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1441', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on messages], writer_sites: [fires on writes to messages], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_messages_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1433', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on messages], writer_sites: [fires on writes to messages], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_messages_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1437', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on messages], writer_sites: [fires on writes to messages], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_links_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1122', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_links], writer_sites: [fires on writes to session_links], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_links_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1114', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_links], writer_sites: [fires on writes to session_links], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_links_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1118', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_links], writer_sites: [fires on writes to session_links], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_profiles_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1682', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_profiles], writer_sites: [fires on writes to session_profiles], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_profiles_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1674', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_profiles], writer_sites: [fires on writes to session_profiles], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_profiles_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1678', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_profiles], writer_sites: [fires on writes to session_profiles], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_tags_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1465', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_tags], writer_sites: [fires on writes to session_tags], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: trigger, name: query_unit_frame_session_tags_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1457', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_tags], writer_sites: [fires on writes to session_tags], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_session_tags_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1461', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_tags], writer_sites: [fires on writes to session_tags], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_sessions_delete, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1429', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on sessions], writer_sites: [fires on writes to sessions], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_sessions_insert, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1421', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on sessions], writer_sites: [fires on writes to sessions], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: query_unit_frame_sessions_update, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1425', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on sessions], writer_sites: [fires on writes to sessions], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_links_delegation_facts_ai, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2198', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_links], writer_sites: [fires on writes to session_links], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_links_delegation_facts_au, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2217', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_links], writer_sites: [fires on writes to session_links], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_profiles_delegation_facts_ai, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2208', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_profiles], writer_sites: [fires on writes to session_profiles], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_profiles_delegation_facts_au, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2234', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_profiles], writer_sites: [fires on writes to session_profiles], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_work_events_fts_ad, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_work_events], writer_sites: [fires on writes to session_work_events], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_work_events_fts_ai, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_work_events], writer_sites: [fires on writes to session_work_events], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: trigger, name: session_work_events_fts_au, ddl_anchor: polylogue/storage/sqlite/archive_tiers/index.py, disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite trigger program on session_work_events], writer_sites: [fires on writes to session_work_events], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_action_pairs_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:964', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_action_pairs_outcome, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:973', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_action_pairs_path, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:970', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: index, name: idx_action_pairs_semantic, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:968', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_action_pairs_session_order, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:962', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_action_pairs_tool, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:966', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_action_pairs_tool_result_block, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:989', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for action_pairs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_agent_meta_sidecar_purge_receipts_purged_at, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2306', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for agent_meta_sidecar_purge_receipts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_attachment_native_ids_native, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1305', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for attachment_native_ids], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_attachment_refs_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1297', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for attachment_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_attachment_refs_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1294', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for attachment_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_attachment_refs_upload_origin, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1301', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for attachment_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_blocks_content_hash, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:707', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_blocks_search_text_populated, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:736', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_blocks_session_position, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:704', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_blocks_tool_id, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:728', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_blocks_tool_result_outcome, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:718', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_blocks_type, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:710', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: index, name: idx_blocks_type_tool, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:722', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for blocks], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_delegation_facts_model, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1811', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for delegation_facts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_delegation_facts_parent_order, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1807', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for delegation_facts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_delegation_facts_state, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1809', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for delegation_facts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_file_edits_file_path, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:831', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for file_edits], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_file_edits_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:828', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for file_edits], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_file_edits_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:821', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for file_edits], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_active_leaf, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:695', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_active_path, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:691', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_embedding_prose, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:684', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_material_origin, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:676', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_message_type, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:673', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_parent, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:660', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_role, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:667', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_session_material_origin, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:670', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: index, name: idx_messages_session_position, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:645', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_session_role, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:664', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_messages_session_sortkey, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:657', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for messages], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_paste_spans_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1329', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for paste_spans], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_raw_revision_applications_identity, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:515', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for raw_revision_applications], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_raw_revision_applications_logical, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:521', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for raw_revision_applications], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_repos_root_path, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1205', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for repos], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_agent_policies_source_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1055', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_agent_policies], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_commits_hash, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1252', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_commits], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_commits_repo, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1255', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_commits], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_events_source_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1039', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_latency_profiles_date, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1574', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_latency_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_latency_profiles_provider, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1571', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_latency_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_latency_profiles_stuck, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1577', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_latency_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_links_dst, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1105', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_links], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: index, name: idx_session_links_dst_native, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1109', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_links], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_phases_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1543', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_phases], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_profiles_canonical_date, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1669', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_profiles_first_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1666', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_profiles_logical_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1660', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_profiles_provider, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1657', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_profiles_sort, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1663', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_profiles], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_provider_usage_events_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1404', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_provider_usage_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_provider_usage_events_source_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1407', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_provider_usage_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_refs_kind, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:850', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_refs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_repos_repo, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1237', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_repos], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_tag_rollups_day, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2283', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_tag_rollups], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_tag_rollups_provider, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:2286', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_tag_rollups], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_work_events_session, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1507', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_work_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_session_work_events_type, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1510', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for session_work_events], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: index, name: idx_sessions_origin_sort, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:625', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for sessions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_sessions_parent, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:628', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for sessions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_sessions_raw_id, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:636', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for sessions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_sessions_root, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:632', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for sessions], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_threads_time, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1152', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for threads], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_web_constructs_message, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:786', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for web_content_constructs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_web_constructs_query, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:793', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for web_content_constructs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_web_constructs_session_type, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:767', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for web_content_constructs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_web_constructs_url, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:789', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for web_content_constructs], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_work_evidence_edges_source, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1883', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for work_evidence_edges], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+
+- {tier: index, object_type: index, name: idx_work_evidence_edges_target, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1885', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: [SQLite query planner for work_evidence_edges], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: source, object_type: table, name: raw_unknown_export_reclassification_receipts, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/source.py:684', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], columns: [raw_id, previous_origin, new_origin, previous_capture_mode, new_capture_mode, embedded_provider, source_path, blob_hash, blob_size, reclassified_at_ms, tool_version, backup_manifest_path, index_reparse_required, detail], column_audit: deferred after index and embeddings; current-DDL object evidence only}
+- {tier: source, object_type: index, name: idx_raw_unknown_export_reclassification_receipts_reclassified_at, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/source.py:681', disposition: UNCLEAR, execution_owner: polylogue-60i5 durable change train, reader_sites: [SQLite query planner for raw_unknown_export_reclassification_receipts], writer_sites: [SQLite index maintenance], finding_reuse: [], conflicts: [], purge_unlocks: []}
+- {tier: index, object_type: table, name: session_commits, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1240', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/sqlite/queries/session_commits.py:39'], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, commit_sha: KEEP, repo_id: KEEP, detection_type: KEEP, method: KEEP, confidence: KEEP, evidence_json: KEEP, created_at_ms: KEEP}}
+
+- {tier: index, object_type: table, name: session_events, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:81', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/archive.py:5644'], writer_sites: ['polylogue/pipeline/ids.py:546'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {event_id: KEEP, session_id: KEEP, source_message_id: KEEP, source_message_provider_id: KEEP, position: KEEP, event_type: KEEP, summary: KEEP, payload_json: KEEP, occurred_at_ms: KEEP}}
+
+- {tier: index, object_type: table, name: session_latency_profiles, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1546', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/repair.py:5076'], writer_sites: [], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, materializer_version: KEEP, materialized_at: KEEP, source_updated_at: KEEP, source_sort_key: KEEP, input_high_water_mark: KEEP, input_high_water_mark_source: KEEP, input_row_count: KEEP, source_name: KEEP, title: KEEP, first_message_at: KEEP, last_message_at: KEEP, canonical_session_date: KEEP, median_tool_call_ms: KEEP, p90_tool_call_ms: KEEP, max_tool_call_ms: KEEP, stuck_tool_count: KEEP, median_agent_response_ms: KEEP, median_user_response_ms: KEEP, tool_call_count_by_category_json: KEEP, evidence_payload_json: KEEP, search_text: KEEP}}
+
+- {tier: index, object_type: table, name: session_links, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:49', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/insights.py:227'], writer_sites: ['polylogue/api/archive.py:2552'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {src_session_id: KEEP, dst_origin: KEEP, dst_native_id: KEEP, link_type: KEEP, resolved_dst_session_id: KEEP, branch_point_message_id: KEEP, inheritance: KEEP, status: KEEP, parent_tool_use_block_id: KEEP, method: KEEP, confidence: KEEP, evidence_json: KEEP, observed_at_ms: KEEP, resolved_at_ms: KEEP}}
+
+- {tier: index, object_type: table, name: session_model_usage, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:124', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/daemon/convergence_stages.py:2014'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/index_convergence.py:98'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, model_name: KEEP, input_tokens: KEEP, output_tokens: KEEP, cache_read_tokens: KEEP, cache_write_tokens: KEEP, message_count: KEEP, cost_usd: KEEP, cost_credits: KEEP, cost_provenance: KEEP}}
+
+- {tier: index, object_type: table, name: session_phases, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1524', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/insights.py:420'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/session_annotations_write.py:381'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {phase_id: KEEP, session_id: KEEP, position: KEEP, start_index: KEEP, end_index: KEEP, started_at_ms: KEEP, ended_at_ms: KEEP, duration_ms: KEEP, tool_counts_json: KEEP, word_count: KEEP, input_high_water_mark: KEEP, input_high_water_mark_source: KEEP, evidence_json: KEEP, inference_json: KEEP, search_text: KEEP}}
+
+- {tier: index, object_type: table, name: session_profiles, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:384', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/user_state_resolver.py:47'], writer_sites: ['polylogue/demo/seed.py:1351'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, logical_session_id: KEEP, materializer_version: KEEP, materialized_at: KEEP, source_updated_at: KEEP, source_sort_key: KEEP, input_high_water_mark: KEEP, input_high_water_mark_source: KEEP, input_row_count: KEEP, source_name: KEEP, title: KEEP, first_message_at: KEEP, last_message_at: KEEP, canonical_session_date: KEEP, repo_paths_json: UNCLEAR, repo_names_json: KEEP, tags_json: KEEP, auto_tags_json: KEEP, message_count: KEEP, substantive_count: KEEP, attachment_count: KEEP, work_event_count: KEEP, phase_count: KEEP, word_count: KEEP, tool_use_count: KEEP, thinking_count: KEEP, total_cost_usd: KEEP, total_duration_ms: KEEP, engaged_duration_ms: KEEP, tool_active_duration_ms: KEEP, wall_duration_ms: KEEP, workflow_shape: KEEP, workflow_shape_method: UNCLEAR, workflow_shape_confidence: KEEP, workflow_shape_features_json: KEEP, terminal_state: KEEP, terminal_state_method: KEEP, terminal_state_confidence: KEEP, terminal_state_evidence_json: KEEP, cost_is_estimated: KEEP, thinking_duration_ms: KEEP, output_duration_ms: KEEP, tool_duration_ms: KEEP, latency_percentiles_ms_json: KEEP, tool_calls_per_minute: KEEP, timing_provenance: KEEP, total_input_tokens: KEEP, total_output_tokens: KEEP, total_cache_read_tokens: KEEP, total_cache_write_tokens: KEEP, total_credit_cost: KEEP, cost_provenance: KEEP, per_model_cost_json: KEEP, evidence_payload_json: KEEP, inference_payload_json: KEEP, enrichment_payload_json: KEEP, evidence_search_text: KEEP, inference_search_text: KEEP, enrichment_search_text: KEEP, enrichment_version: KEEP, enrichment_family: KEEP, inference_version: KEEP, inference_family: KEEP, search_text: KEEP, duration_ms: KEEP, cost_credits: KEEP, cost_usd: KEEP, priced_with: KEEP, priced_at_ms: KEEP, primary_model_name: KEEP, primary_model_family: KEEP}}
+
+- {tier: index, object_type: table, name: session_provider_usage_events, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:391', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/storage/usage.py:1347'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:6202'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {usage_event_id: UNCLEAR, session_id: KEEP, source_message_id: KEEP, position: KEEP, provider_event_type: KEEP, model_name: KEEP, last_input_tokens: KEEP, last_output_tokens: KEEP, last_cached_input_tokens: KEEP, last_cache_write_tokens: KEEP, last_reasoning_output_tokens: KEEP, last_total_tokens: KEEP, total_input_tokens: KEEP, total_output_tokens: KEEP, total_cached_input_tokens: KEEP, total_cache_write_tokens: KEEP, total_reasoning_output_tokens: KEEP, total_tokens: KEEP, occurred_at_ms: KEEP}}
+
+- {tier: index, object_type: table, name: session_refs, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:56', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/insights/hermes_integration_health.py:259'], writer_sites: ['polylogue/sources/import_explain.py:169'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {ref_id: KEEP, session_id: KEEP, position: KEEP, kind: KEEP, repo: KEEP, ref_number: UNCLEAR, url: KEEP, observed_at_ms: KEEP}}
+
+- {tier: index, object_type: table, name: session_repos, ddl_anchor: 'polylogue/storage/sqlite/archive_tiers/index.py:1223', disposition: KEEP, execution_owner: polylogue-818fy derived-tier rebuild change train, reader_sites: ['polylogue/api/archive.py:827'], writer_sites: ['polylogue/storage/sqlite/archive_tiers/write.py:5223'], finding_reuse: [], conflicts: [], purge_unlocks: [], column_dispositions: {session_id: KEEP, repo_id: KEEP, root_path: KEEP, branch_name: KEEP, observed_at_ms: KEEP}}
+retired_objects:
+- {tier: index, object_type: retired_column_batch, name: session_provider_usage_events Hermes billing columns and model_context_window, disposition: PURGED, evidence: [polylogue-664l, 'polylogue/storage/sqlite/archive_tiers/index.py:391'], execution_owner: 'polylogue-664l, merged PR #3698', purge_unlocks: [already executed], conflicts: []}
+- {tier: index, object_type: retired_check_member, name: attachment_native_ids.id_kind source, disposition: PURGED, evidence: [polylogue-664l, 'polylogue/storage/sqlite/archive_tiers/index.py:401'], execution_owner: 'polylogue-664l, merged PR #3698', purge_unlocks: [already executed], conflicts: ['664l corrected its original URL write-only hypothesis after finding a production identity-search reader']}
+- {tier: index, object_type: retired_table, name: price_catalogs, disposition: PURGED, evidence: ['polylogue/storage/sqlite/archive_tiers/index_convergence.py:94'], execution_owner: polylogue-resk index fast-forward change train, purge_unlocks: [already executed], conflicts: []}
+- {tier: index, object_type: retired_table, name: threads_fts, disposition: PURGED, evidence: ['polylogue/storage/sqlite/archive_tiers/index.py:1335'], execution_owner: polylogue-eizc index change train, purge_unlocks: [already executed], conflicts: []}
