@@ -1021,7 +1021,10 @@ def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_
     metadata_path.parent.mkdir(parents=True)
     metadata_payload: JSONDocument = {
         "artifactType": "ARTIFACT_TYPE_OTHER",
-        "summary": "Plan",
+        # Keep this as a valid brain metadata document while forcing the
+        # ``_ingest_full_paths_sync`` large-file branch. The sidecar must be
+        # excluded before its bytes are copied or parsed as a session.
+        "summary": "Plan " + ("x" * _STREAMING_FULL_INGEST_BYTES),
         "updatedAt": "2026-08-04T08:00:00Z",
     }
     metadata_path.write_text(json.dumps(metadata_payload), encoding="utf-8")
@@ -1058,7 +1061,7 @@ def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_
     assert session.provider_session_id == "cascade-json"
     assert [message.text for message in session.messages] == ["hello", "hi"]
 
-    assert metadata_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
+    assert metadata_path.stat().st_size > _STREAMING_FULL_INGEST_BYTES
     assert conversation_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
