@@ -784,6 +784,56 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=62,
+        # polylogue-664l: batches two column-level dead-weight removals from
+        # the 2026-07-31 producer/consumer audit -- see INDEX_SCHEMA_VERSION's
+        # v62 comment (archive_tiers/index.py) for the full writeup and
+        # re-audit evidence for all four originally-named findings.
+        #  - session_provider_usage_events drops 9 write-only columns
+        #    (model_context_window + 8 Hermes billing-provenance columns).
+        #    No reader ever selected them; the remaining columns (the
+        #    last_*/total_* token counters every production reader actually
+        #    uses) are unaffected -- CACHE_REMOVAL, the v41 `action_pairs`
+        #    text-copy-removal precedent.
+        #  - attachment_native_ids.id_kind's CHECK drops the 'source' member,
+        #    which has zero producers anywhere in the repo, so zero live rows
+        #    can exist with that value on any real archive -- CONSTRAINT_ONLY,
+        #    the v33/v36/v51/v52 "tightening over unchanged values" precedent.
+        # Both REPLACE_TABLE operations below use the generic shared-column
+        # copy-forward (`_apply_replace_table`): it naturally drops columns
+        # the canonical DDL no longer declares while preserving every
+        # remaining column's values byte-for-byte, so this whole version is
+        # eligible for fast-forward with no reprocess debt.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL, DerivedDeltaClass.CONSTRAINT_ONLY),
+        operations=(
+            FastForwardOperation(
+                name="v62-provider-usage-events-billing-columns",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "session_provider_usage_events"),),
+            ),
+            # _apply_replace_table's DROP TABLE step also drops every index
+            # defined on the table; re-declare them explicitly instead of
+            # relying on runtime_indexes.py's narrower ensure-on-connect list
+            # (which only covers the source_message/time_model pair, not the
+            # base session_id/position index).
+            FastForwardOperation(
+                name="v62-provider-usage-events-billing-columns",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_session_provider_usage_events_session"),),
+            ),
+            FastForwardOperation(
+                name="v62-attachment-native-ids-source-kind",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "attachment_native_ids"),),
+            ),
+            FastForwardOperation(
+                name="v62-attachment-native-ids-source-kind",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_attachment_native_ids_native"),),
+            ),
+        ),
+    ),
 )
 
 

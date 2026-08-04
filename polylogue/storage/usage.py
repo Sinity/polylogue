@@ -252,7 +252,6 @@ _PROVIDER_USAGE_COVERAGE: tuple[ProviderUsageCoverage, ...] = (
         request_semantics="Codex last_token_usage is request/current-window telemetry and can be summed by request when present.",
         cumulative_semantics="Codex total_token_usage is cumulative and session-global; rollups take the latest total per session to avoid double-counting.",
         cache_semantics="cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
-        notes=("model_context_window is carried on token_count events when the provider supplies it.",),
     ),
     ProviderUsageCoverage(
         origin=Origin.CHATGPT_EXPORT.value,

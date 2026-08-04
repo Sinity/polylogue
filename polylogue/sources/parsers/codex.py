@@ -489,11 +489,6 @@ def _compact_response_payload(
             compact["last_token_usage"] = last_usage
         if total_usage:
             compact["total_token_usage"] = total_usage
-        context_window = _optional_int_field(info, "model_context_window") or _optional_int_field(
-            payload, "model_context_window"
-        )
-        if context_window is not None:
-            compact["model_context_window"] = context_window
         # Rate-limit windows are quota telemetry Codex reports alongside each
         # token_count tick -- small, bounded, and otherwise invisible.
         rate_limits = _dict_record(payload.get("rate_limits"))

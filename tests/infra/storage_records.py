@@ -668,8 +668,6 @@ def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> boo
             native_rows.append((ref_id, "file", record.file_native_id))
         if record.drive_native_id:
             native_rows.append((ref_id, "drive", record.drive_native_id))
-        if record.path:
-            native_rows.append((ref_id, "source", record.path))
         conn.executemany(
             """
             INSERT OR IGNORE INTO attachment_native_ids (ref_id, id_kind, native_id)
