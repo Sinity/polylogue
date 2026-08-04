@@ -1,7 +1,8 @@
 # Beads Configuration File
 # This file configures default behavior for all bd commands in this repository
 # All settings can also be set via environment variables (BD_* prefix)
-# or overridden with command-line flags
+# or overridden with command-line flags. The repository hook clears
+# BD_IMPORT_AUTO so this worktree safety policy cannot be overridden there.
 
 # Issue prefix for this repository (used by bd init)
 # If not set, bd init will auto-detect from directory name

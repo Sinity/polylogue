@@ -37,7 +37,14 @@ def _bd_environment(tmp_path: Path) -> dict[str, str]:
         path.mkdir()
 
     env = os.environ.copy()
-    for key in ("BD_DB", "BEADS_DB", "BEADS_DIR", "BEADS_DOLT_SERVER_DATABASE", "BEADS_DOLT_SERVER_PORT"):
+    for key in (
+        "BD_DB",
+        "BD_IMPORT_AUTO",
+        "BEADS_DB",
+        "BEADS_DIR",
+        "BEADS_DOLT_SERVER_DATABASE",
+        "BEADS_DOLT_SERVER_PORT",
+    ):
         env.pop(key, None)
     env.update(
         {
@@ -77,20 +84,25 @@ def _write_import_policy(repo: Path, import_auto: bool) -> None:
         production_config,
     )
     assert replacements == 1, "the production config must declare exactly one import.auto policy"
+    updated, removed = re.subn(r'(?m)^sync\.remote: ".*"\n?', "", updated)
+    assert removed == 1, "the fixture must not have a Dolt sync remote"
     config_path.write_text(updated)
 
 
-def test_stale_worktree_hook_then_read_preserves_coordinator_write(tmp_path: Path) -> None:
-    """A stale branch cannot overwrite a coordinator close before its read.
+def _set_export_timestamp(repo: Path, issue_id: str, updated_at: str) -> None:
+    export_path = repo / ".beads" / "issues.jsonl"
+    rows = [json.loads(line) for line in export_path.read_text().splitlines()]
+    matching_rows = [row for row in rows if row.get("id") == issue_id]
+    assert len(matching_rows) == 1
+    matching_rows[0]["updated_at"] = updated_at
+    export_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
 
-    Production dependency exercised: ``.beads-hooks/post-checkout`` delegates
-    to Beads' real ``bd hooks run post-checkout`` import gate. The wrapper only
-    records the process boundary, then delegates unchanged to
-    the installed binary. Changing the committed ``import.auto`` policy back to
-    ``true`` is the pre-fix mutation: older Beads releases delegate to a blind
-    ``bd import`` here, so the test's no-import assertion catches the unsafe
-    path before the stale-worktree read.
-    """
+
+def _setup_stale_worktree(
+    tmp_path: Path,
+    import_auto: bool,
+    stale_snapshot_updated_at: str | None = None,
+) -> tuple[str, dict[str, str], Path, Path, Path]:
     bd = shutil.which("bd")
     if bd is None:
         pytest.skip("bd is not installed")
@@ -113,9 +125,7 @@ def test_stale_worktree_hook_then_read_preserves_coordinator_write(tmp_path: Pat
     _run(["git", "config", "user.email", "test@example.invalid"], repo, env)
     _run(["git", "config", "user.name", "Beads guard test"], repo, env)
     _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], repo, env)
-    _write_import_policy(repo, False)
-    configured_policy = _run([bd, "config", "get", "import.auto"], repo, env).stdout
-    assert "false" in configured_policy.lower()
+    _write_import_policy(repo, import_auto)
 
     hooks_dir = repo / ".githooks"
     hooks_dir.mkdir()
@@ -125,24 +135,63 @@ def test_stale_worktree_hook_then_read_preserves_coordinator_write(tmp_path: Pat
     _run(["git", "config", "core.hooksPath", str(hooks_dir)], repo, env)
 
     _run([bd, "create", "coordinator-owned issue", "--type", "bug"], repo, env)
-    _run([bd, "export"], repo, env)
+    _run([bd, "export", "-o", ".beads/issues.jsonl"], repo, env)
     issue_rows = _json_from_output(_run([bd, "list", "--json"], repo, env).stdout)
     assert isinstance(issue_rows, list) and len(issue_rows) == 1
     issue_id = issue_rows[0]["id"]
+    if stale_snapshot_updated_at is not None:
+        _set_export_timestamp(repo, issue_id, stale_snapshot_updated_at)
 
     _run(["git", "add", ".beads", ".githooks"], repo, env)
     _run(["git", "commit", "-m", "baseline Beads snapshot"], repo, env)
     _run(["git", "branch", "stale-lane"], repo, env)
     _run(["git", "worktree", "add", str(lane), "stale-lane"], repo, env)
-
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
     invocation_log.write_text("")
-    _run([str(hook_path), "old-head", "new-head", "1"], lane, env)
+    return issue_id, env, repo, lane, invocation_log
 
-    shown = _json_from_output(_run([bd, "show", issue_id, "--json"], lane, env).stdout)
+
+def test_stale_worktree_plain_read_preserves_coordinator_write_when_env_reenables_import(tmp_path: Path) -> None:
+    """A stale branch cannot overwrite a coordinator close before its read.
+
+    Production dependency exercised: Git invokes the committed
+    ``.beads-hooks/post-checkout`` shim, which invokes Beads' real hook import
+    gate. The fixture clears ambient ``BD_IMPORT_AUTO`` before setup, then sets
+    it to ``true`` only for the stale lane. The production shim must clear that
+    unsafe Viper override before it can re-enable imports.
+    """
+    issue_id, env, _repo, lane, invocation_log = _setup_stale_worktree(tmp_path, import_auto=False)
+    env["BD_IMPORT_AUTO"] = "true"
+    _run(["git", "switch", "--detach", "HEAD"], lane, env)
+
+    shown = _json_from_output(_run([env["BD_GUARD_REAL_BD"], "show", issue_id, "--json"], lane, env).stdout)
     assert isinstance(shown, list) and len(shown) == 1
     assert shown[0]["status"] == "closed"
 
     delegated_commands = invocation_log.read_text().splitlines()
     imported = any(command.startswith("import --quiet ") for command in delegated_commands)
     assert not imported
+
+
+def test_unsafe_import_auto_control_reverts_clock_skewed_stale_snapshot(tmp_path: Path) -> None:
+    """The config mutation reaches the importer and reopens the stale issue.
+
+    This is the causal negative control for the protected test. It removes the
+    production ``import.auto: false`` mutation while retaining the same actual
+    git checkout and installed Beads engine. A clock-skewed branch snapshot
+    has a later ``updated_at`` despite containing the old open status, so the
+    importer accepts it over the coordinator's close.
+    """
+    issue_id, env, _repo, lane, invocation_log = _setup_stale_worktree(
+        tmp_path,
+        import_auto=True,
+        stale_snapshot_updated_at="2099-01-01T00:00:00Z",
+    )
+    _run(["git", "switch", "--detach", "HEAD"], lane, env)
+
+    shown = _json_from_output(_run([env["BD_GUARD_REAL_BD"], "show", issue_id, "--json"], lane, env).stdout)
+    assert isinstance(shown, list) and len(shown) == 1
+    assert shown[0]["status"] == "open"
+
+    delegated_commands = invocation_log.read_text().splitlines()
+    assert any(command.startswith("import --quiet ") for command in delegated_commands)

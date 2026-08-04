@@ -2,6 +2,9 @@
 # --- BEGIN BEADS INTEGRATION v1.0.4 ---
 # This section is managed by beads. Do not remove these markers.
 if command -v bd >/dev/null 2>&1; then
+  # Linked worktrees share a live Beads store but retain branch-point JSONL.
+  # Do not let a caller re-enable hook imports through Viper's BD_* override.
+  unset BD_IMPORT_AUTO
   export BD_GIT_HOOK=1
   _bd_timeout=${BEADS_HOOK_TIMEOUT:-300}
   if command -v timeout >/dev/null 2>&1; then
