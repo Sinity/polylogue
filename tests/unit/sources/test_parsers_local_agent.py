@@ -1011,6 +1011,49 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     assert session.source_name is Provider.ANTIGRAVITY
 
 
+def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_json(tmp_path: Path) -> None:
+    metadata_path = tmp_path / "brain" / "work-session" / "plan.metadata.json"
+    metadata_path.parent.mkdir(parents=True)
+    metadata_payload: JSONDocument = {
+        "artifactType": "ARTIFACT_TYPE_OTHER",
+        "summary": "Plan",
+        "updatedAt": "2026-08-04T08:00:00Z",
+    }
+    metadata_path.write_text(json.dumps(metadata_payload), encoding="utf-8")
+
+    path_classification = classify_artifact_path(metadata_path, provider=Provider.ANTIGRAVITY)
+    assert path_classification is not None
+    assert path_classification.kind is ArtifactKind.AGENT_SIDECAR_META
+    assert path_classification.parse_as_session is False
+    assert (
+        classify_artifact(
+            metadata_payload,
+            provider=Provider.ANTIGRAVITY,
+            source_path=metadata_path,
+        ).parse_as_session
+        is False
+    )
+    assert _parse_path_as_session_artifact(metadata_path, provider=Provider.ANTIGRAVITY) is False
+
+    conversation_payload = antigravity.markdown_export_payload(
+        antigravity.AntigravitySessionSummary(cascade_id="cascade-json", title="Conversation"),
+        "### User Input\n\nhello\n\n### Planner Response\n\nhi",
+    )
+    conversation_path = tmp_path / "conversations" / "cascade-json.json"
+    conversation_path.parent.mkdir()
+    conversation_path.write_text(json.dumps(conversation_payload), encoding="utf-8")
+
+    assert _parse_path_as_session_artifact(conversation_path, provider=Provider.ANTIGRAVITY) is True
+    [session] = parse_payload(
+        Provider.ANTIGRAVITY,
+        conversation_payload,
+        "cascade-json",
+        source_path=str(conversation_path),
+    )
+    assert session.provider_session_id == "cascade-json"
+    assert [message.text for message in session.messages] == ["hello", "hi"]
+
+
 def test_antigravity_language_server_markdown_export_parses_turns() -> None:
     markdown = """# Chat Session
 

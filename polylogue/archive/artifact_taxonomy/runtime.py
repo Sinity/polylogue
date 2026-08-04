@@ -181,14 +181,13 @@ def _classify_artifact_path_strong(
             reason="Hermes SQLite evidence sidecar",
         )
     if provider_token is Provider.ANTIGRAVITY:
-        if inner_name.endswith(".md.metadata.json"):
-            # Per-artifact brain metadata is a sidecar, never a primary
-            # session: fragmenting one file per artifact produced 116
-            # single-message "sessions" that were 100% noise (all real
-            # conversation content lives in the .pb trajectories the
-            # language-server export route now acquires directly --
-            # polylogue-eo81, GH #1764). Still accounted for via
-            # ``raw_artifacts.artifact_kind`` rather than silently dropped.
+        if inner_name.endswith(".metadata.json"):
+            # Brain metadata is a sidecar, never a primary session: fragmenting
+            # one file per artifact produced single-message sessions that were
+            # noise (all real conversation content lives in the .pb trajectories
+            # the language-server export route acquires directly -- polylogue-eo81,
+            # GH #1764). Still accounted for via ``raw_artifacts.artifact_kind``
+            # rather than silently dropped.
             return ArtifactClassification(
                 provider=provider_token,
                 kind=ArtifactKind.AGENT_SIDECAR_META,
