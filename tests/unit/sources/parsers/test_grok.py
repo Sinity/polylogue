@@ -195,6 +195,17 @@ def test_parse_conversation_reordered_idless_responses_keep_revision_identity() 
     )
 
 
+def test_duplicate_grok_response_ids_keep_one_active_leaf() -> None:
+    payload = _flat_conversation()
+    payload["responses"].append(dict(payload["responses"][-1]))
+
+    session = grok.parse_conversation(payload, "grok-duplicate")
+
+    assert session.messages[-2].provider_message_id == session.messages[-1].provider_message_id
+    assert sum(message.is_active_leaf is True for message in session.messages) == 1
+    assert session.messages[-1].is_active_leaf is True
+
+
 # ---------------------------------------------------------------------------
 # Dispatch integration: detect_provider / parse_payload through the real path
 # ---------------------------------------------------------------------------

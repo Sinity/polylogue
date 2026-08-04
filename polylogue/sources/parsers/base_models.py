@@ -243,6 +243,9 @@ class ParsedAttachment(BaseModel):
 
     provider_attachment_id: str
     message_provider_id: str | None = None
+    # Transport-only linkage for id-less source messages. This is parser-local
+    # bookkeeping, never a provider identity or stored attachment column.
+    message_position: int | None = Field(default=None, exclude=True, repr=False)
     name: str | None = None
     mime_type: str | None = None
     size_bytes: int | None = None

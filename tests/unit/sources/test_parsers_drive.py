@@ -12,10 +12,13 @@ direct contracts.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.drive import (
     _attachment_from_doc,
@@ -24,6 +27,9 @@ from polylogue.sources.parsers.drive import (
 )
 from polylogue.sources.parsers.drive_support import extract_text_from_chunk
 from polylogue.sources.parsers.drive_support_attachments import DRIVE_LIVE_FETCH_DATA_KEY
+from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.pipeline_roundtrip import PipelineRoundtrip, write_and_hydrate
+from tests.infra.storage_records import db_setup
 
 
 @pytest.fixture
@@ -161,6 +167,77 @@ def test_parse_chunked_prompt_idless_chunk_does_not_get_a_positional_provider_id
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
     assert [message.provider_message_id for message in result.messages] == [""]
+
+
+def test_parse_chunked_prompt_reordering_keeps_idless_revision_identity_and_native_ids() -> None:
+    idless: JSONDocument = {"role": "user", "text": "Question", "createTime": "2024-01-15T10:30:00Z"}
+    native: JSONDocument = {
+        "id": "native-chunk",
+        "role": "model",
+        "text": "Answer",
+        "createTime": "2024-01-15T10:30:01Z",
+    }
+    forward = parse_chunked_prompt(
+        "gemini",
+        {"id": "gemini-order", "chunkedPrompt": {"chunks": [idless, native]}},
+        "fallback",
+    )
+    reordered = parse_chunked_prompt(
+        "gemini",
+        {"id": "gemini-order", "chunkedPrompt": {"chunks": [native, idless]}},
+        "fallback",
+    )
+
+    assert [message.provider_message_id for message in forward.messages] == ["", "native-chunk"]
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
+
+
+def test_parse_chunked_prompt_idless_messages_keep_one_active_leaf() -> None:
+    result = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-idless-leaf",
+            "chunkedPrompt": {
+                "chunks": [
+                    {"role": "user", "text": "First"},
+                    {"role": "user", "text": "Second"},
+                ]
+            },
+        },
+        "fallback",
+    )
+
+    assert [message.provider_message_id for message in result.messages] == ["", ""]
+    assert sum(message.is_active_leaf is True for message in result.messages) == 1
+    assert result.messages[-1].is_active_leaf is True
+
+
+def test_parse_chunked_prompt_idless_attachment_survives_archive_write(workspace_env: Mapping[str, Path]) -> None:
+    result = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-idless-attachment",
+            "chunkedPrompt": {
+                "chunks": [
+                    {
+                        "role": "user",
+                        "text": "Read this file",
+                        "inlineFile": {"data": "YXR0YWNobWVudA==", "mimeType": "text/plain"},
+                    }
+                ]
+            },
+        },
+        "fallback",
+    )
+    assert result.messages[0].provider_message_id == ""
+    assert result.attachments[0].message_position == 0
+
+    db_path = db_setup(workspace_env)
+    with open_connection(db_path) as conn:
+        write_and_hydrate(PipelineRoundtrip(result, session_content_hash(result)), conn)
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 1
 
 
 def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:

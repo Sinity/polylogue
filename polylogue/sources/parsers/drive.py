@@ -20,6 +20,7 @@ from .base import (
     ParsedSessionEvent,
     fill_linear_parent_chain,
     human_authored_override,
+    mark_last_occurrence_as_active_leaf,
 )
 from .drive_support import (
     _attachment_from_doc as _attachment_from_doc_impl,
@@ -377,6 +378,9 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         ):
             session_events.append(usage_event)
         chunk_attachments = _collect_chunk_attachments(chunk_obj, msg_id)
+        chunk_attachments = [
+            attachment.model_copy(update={"message_position": message_position}) for attachment in chunk_attachments
+        ]
         observed_timestamps.append(message_timestamp)
         used_typed_model = False
 
@@ -474,13 +478,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     )
     pending_drafts = _pending_drafts(prompt.get("pendingInputs"))
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    if active_leaf_message_provider_id is not None:
-        messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
-        ]
+    messages = mark_last_occurrence_as_active_leaf(messages)
     # bd polylogue-ksgg: real Gemini branch evidence (``_branch_parent_provider_id``
     # / ``branch_child_parents`` above) already sets ``parent_message_provider_id``
     # for messages that carry it; most AI Studio Drive sessions have none

@@ -3340,12 +3340,25 @@ def _write_attachments(
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
+    by_message_position = {
+        message.position: _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        for fallback_position, message in enumerate(messages)
+        if message.position is not None
+    }
     touched_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
         message_id = (
             by_native_message_id.get(attachment.message_provider_id) if attachment.message_provider_id else None
         )
+        if message_id is None and attachment.message_position is not None:
+            message_id = by_message_position.get(attachment.message_position)
         if message_id is None:
             continue
         touched_attachment_ids.add(attachment_id)
