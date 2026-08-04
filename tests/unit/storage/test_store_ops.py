@@ -276,94 +276,9 @@ def _record_query(**kwargs: Unpack[RecordQueryKwargs]) -> SessionRecordQuery:
     return SessionRecordQuery(**kwargs)
 
 
-class _MessageStats(TypedDict):
-    total: int
-    user: int
-    assistant: int
-    system: int
-    words_approx: int
-    attachment_refs: int
-    distinct_attachments: int
-    providers: dict[str, int]
-
-
-def _aggregate_message_stats_native(db_path: Path, session_ids: list[str] | None = None) -> _MessageStats:
-    """Aggregate message stats read directly from the archive `index.db`.
-
-    Mirrors the legacy ``backend.queries.aggregate_message_stats`` contract over
-    the archive ``messages`` / ``sessions`` / ``attachment_refs`` tables.
-    """
-    from tests.infra.archive_scenarios import open_index_db
-
-    with open_index_db(db_path) as conn:
-        where = ""
-        params: tuple[str, ...] = ()
-        if session_ids is not None:
-            placeholders = ", ".join("?" for _ in session_ids)
-            where = f" WHERE m.session_id IN ({placeholders})"
-            params = tuple(session_ids)
-        rows = conn.execute(
-            f"SELECT m.role AS role, m.word_count AS word_count FROM messages m{where}",
-            params,
-        ).fetchall()
-        total = len(rows)
-        by_role = {"user": 0, "assistant": 0, "system": 0, "tool": 0}
-        words = 0
-        for row in rows:
-            role = str(row["role"])
-            if role in by_role:
-                by_role[role] += 1
-            words += int(row["word_count"] or 0)
-
-        ref_where = ""
-        if session_ids is not None:
-            placeholders = ", ".join("?" for _ in session_ids)
-            ref_where = f" WHERE ar.session_id IN ({placeholders})"
-        attachment_refs = int(
-            conn.execute(
-                f"SELECT COUNT(*) FROM attachment_refs ar{ref_where}",
-                params,
-            ).fetchone()[0]
-        )
-        distinct_attachments = int(
-            conn.execute(
-                f"SELECT COUNT(DISTINCT ar.attachment_id) FROM attachment_refs ar{ref_where}",
-                params,
-            ).fetchone()[0]
-        )
-
-        provider_where = ""
-        if session_ids is not None:
-            placeholders = ", ".join("?" for _ in session_ids)
-            provider_where = f" WHERE s.session_id IN ({placeholders})"
-        provider_rows = conn.execute(
-            f"SELECT s.origin AS origin, COUNT(*) AS count FROM sessions s{provider_where} GROUP BY s.origin",
-            params,
-        ).fetchall()
-        providers = {_origin_to_provider(str(row["origin"])): int(row["count"]) for row in provider_rows}
-
-    return {
-        "total": total,
-        "user": by_role["user"],
-        "assistant": by_role["assistant"],
-        "system": by_role["system"],
-        "words_approx": words,
-        "attachment_refs": attachment_refs,
-        "distinct_attachments": distinct_attachments,
-        "providers": providers,
-    }
-
-
-def _origin_to_provider(origin: str) -> str:
-    from polylogue.core.enums import Origin
-    from polylogue.core.sources import provider_from_origin
-
-    return provider_from_origin(Origin.from_string(origin)).value
-
-
 @pytest.mark.asyncio
 async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_env: dict[str, Path]) -> None:
-    from tests.infra.archive_scenarios import native_session_id_for
+    from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
     from tests.infra.storage_records import SessionBuilder, db_setup
 
     db_path = db_setup(workspace_env)
@@ -384,26 +299,30 @@ async def test_aggregate_message_stats_reports_role_counts_and_words(workspace_e
         .save()
     )
 
-    unfiltered = _aggregate_message_stats_native(db_path)
-    filtered = _aggregate_message_stats_native(db_path, [native_session_id_for("chatgpt", "conv-stats-a")])
+    archive = archive_for_scenario_db(db_path)
+    try:
+        unfiltered = await archive.repository.aggregate_message_stats()
+        filtered = await archive.repository.aggregate_message_stats([native_session_id_for("chatgpt", "conv-stats-a")])
+    finally:
+        await archive.close()
 
     assert unfiltered["total"] == 4
     assert unfiltered["user"] == 2
     assert unfiltered["assistant"] == 1
     assert unfiltered["system"] == 1
-    assert unfiltered["words_approx"] > 0
+    assert unfiltered["words_approx"] == 9
     assert unfiltered["attachment_refs"] == 1
     assert unfiltered["distinct_attachments"] == 1
-    assert unfiltered["providers"] == {"chatgpt": 1, "codex": 1}
+    assert unfiltered["origins"] == {"chatgpt-export": 1, "codex-session": 1}
 
     assert filtered["total"] == 2
     assert filtered["user"] == 1
     assert filtered["assistant"] == 1
     assert filtered["system"] == 0
-    assert filtered["words_approx"] > 0
+    assert filtered["words_approx"] == 5
     assert filtered["attachment_refs"] == 1
     assert filtered["distinct_attachments"] == 1
-    assert filtered["providers"] == {"chatgpt": 1}
+    assert filtered["origins"] == {"chatgpt-export": 1}
 
 
 def _file_read_block(*, message_id: str, session_id: str, path: str, block_index: int = 0) -> BlockRecord:
