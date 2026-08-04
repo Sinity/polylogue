@@ -3126,17 +3126,20 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     first = asyncio.run(processor.ingest_files([path]))
 
     assert first.full_file_count == 1
-    assert first.succeeded_file_count == 0
-    assert first.failed_file_count == 1
-    failed_cursor = cursor.get_record(path)
-    assert failed_cursor is not None
-    assert failed_cursor.byte_offset == 0
-    assert failed_cursor.content_fingerprint is None
+    # Retaining and classifying the captured raw bytes is a successful source
+    # write, even though the incomplete session is terminally unmaterialized.
+    assert first.succeeded_file_count == 1
+    assert first.failed_file_count == 0
+    captured_cursor = cursor.get_record(path)
+    assert captured_cursor is not None
+    assert captured_cursor.byte_offset == path.stat().st_size
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
         assert "complete record boundary" in str(parse_error)
+    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
 
     with path.open("ab") as handle:
         handle.write(split_record[split_at:])
@@ -3220,16 +3223,19 @@ def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
 
     result = asyncio.run(processor.ingest_files([path]))
 
-    assert result.succeeded_file_count == 0
-    assert result.failed_file_count == 1
-    failed_cursor = cursor.get_record(path)
-    assert failed_cursor is None or failed_cursor.byte_offset == 0
+    # The acquired bytes were durably retained with a terminal classification;
+    # source disappearance cannot turn that completed archive write into a
+    # retryable transport failure.
+    assert result.succeeded_file_count == 1
+    assert result.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
         assert "complete record boundary" in str(parse_error)
+    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
 
 
 def test_append_persistence_failure_preserves_frontier_for_next_tick(

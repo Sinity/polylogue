@@ -47,7 +47,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -3024,6 +3024,43 @@ class LiveBatchProcessor:
             mtime_ns=None,
         )
 
+    def _cursor_references_terminal_raw_failure(self, path: Path, cursor: CursorRecord) -> bool:
+        """Return whether this cursor's complete prefix was terminally rejected.
+
+        A terminally typed full capture is durably useful evidence, but it has
+        no materialized session from which an append-only parser can recover
+        the missing prefix. When the same file subsequently grows, route it
+        through full replay so the completed record is parsed with its header
+        and preceding messages intact.
+        """
+        source_db = self._cursor._db_path.with_name("source.db")
+        if not source_db.exists() or cursor.content_fingerprint is None:
+            return False
+        placeholders = ", ".join("?" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_KINDS)
+        try:
+            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
+                return (
+                    conn.execute(
+                        f"""
+                        SELECT 1
+                        FROM raw_sessions AS r
+                        JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
+                        WHERE lower(hex(r.blob_hash)) = ?
+                          AND r.source_path = ?
+                          AND r.parse_error IS NOT NULL
+                          AND a.artifact_kind IN ({placeholders})
+                        LIMIT 1
+                        """,
+                        (cursor.content_fingerprint, str(path), *sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS)),
+                    ).fetchone()
+                    is not None
+                )
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+
     def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
         # Append planning is safe only for newline-delimited record streams.
         # Watch-source names describe acquisition routes, not file semantics:
@@ -3060,6 +3097,8 @@ class LiveBatchProcessor:
             or cursor.parser_fingerprint != self._current_parser_fingerprint()
             or cursor.content_fingerprint is None
         ):
+            return None
+        if self._cursor_references_terminal_raw_failure(path, cursor):
             return None
         expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
         if expected_prefix_hash is None:
