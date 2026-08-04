@@ -40,7 +40,7 @@ from polylogue.daemon.cursor_lag_status import CursorLagSummary as CursorLagSumm
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import FTSReadiness, fts_readiness_info
-from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, check_health
+from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier, check_health
 from polylogue.daemon.live_ingest_attempt_models import (
     LiveIngestAttemptState,
 )
@@ -91,6 +91,37 @@ _LIVE_CURSOR_FAILURE_SAMPLE_LIMIT = 50
 # same way coordination/envelope.py's _ARCHIVE_EVIDENCE_DEADLINE_S is patched
 # to exercise the timed-out/refreshing/fresh resumability sequence quickly.
 _EMBEDDING_READINESS_DEADLINE_S = 2.0
+
+
+def _configured_health_tiers(*, include_expensive: bool = False) -> set[HealthTier]:
+    """Resolve the tier set shared by status and the periodic health loop."""
+    from polylogue.config import load_polylogue_config
+    from polylogue.daemon.health import resolve_health_tiers
+
+    tiers = resolve_health_tiers(load_polylogue_config().health_check_tiers)
+    if include_expensive:
+        tiers.add(HealthTier.EXPENSIVE)
+    return tiers
+
+
+def _health_tier_states(health: DaemonHealth, configured: set[HealthTier]) -> dict[str, str]:
+    """Classify every tier so disabled coverage never resembles healthy work."""
+    states: dict[str, str] = {}
+    for tier in HealthTier:
+        tier_name = tier.value
+        if tier not in configured:
+            states[tier_name] = "disabled"
+            continue
+        summary = health.tier_summary.get(tier_name)
+        if summary is None:
+            states[tier_name] = "not_run"
+            continue
+        states[tier_name] = (
+            "healthy"
+            if all(summary.get(severity, 0) == 0 for severity in ("warning", "error", "critical"))
+            else "degraded"
+        )
+    return states
 
 
 def _active_status_db_path() -> Path:
@@ -458,6 +489,7 @@ class DaemonStatus(BaseModel):
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
+    health_tiers: set[HealthTier] = Field(default_factory=set)
     # Whether the running interpreter has the GIL enabled; False means a
     # free-threaded (PEP 703) build such as 3.14t (polylogue-dcz5).
     gil_enabled: bool = True
@@ -2366,20 +2398,20 @@ def periodic_status_component_registry() -> StatusComponentRegistry:
     Built once per process (lazily, on first call) with the same collection
     parameters ``refresh_status_snapshot`` always passes
     (``include_raw_replay_backlog=False``,
-    ``include_exact_raw_materialization_readiness=False``, fast-tier health
-    only) -- direct one-shot CLI/API status calls are unaffected, since they
-    never pass a ``registry`` into ``build_daemon_status``/
-    ``daemon_status_payload`` and keep their existing fresh-per-call
-    ephemeral-registry contract.
+    ``include_exact_raw_materialization_readiness=False``). Its health
+    collector resolves ``health_check_tiers`` on every refresh, matching the
+    daemon's periodic health loop. Direct one-shot CLI/API status calls are
+    unaffected, since they never pass a ``registry`` into
+    ``build_daemon_status``/``daemon_status_payload`` and keep their existing
+    fresh-per-call ephemeral-registry contract.
     """
     global _PERIODIC_STATUS_REGISTRY
     with _PERIODIC_STATUS_REGISTRY_LOCK:
         if _PERIODIC_STATUS_REGISTRY is None:
-            from polylogue.daemon.health import HealthTier
 
             def _checked_health() -> DaemonHealth:
                 try:
-                    return check_health(tiers={HealthTier.FAST})
+                    return check_health(tiers=_configured_health_tiers())
                 except Exception as exc:
                     logger.warning("status: check_health() failed: %s", exc, exc_info=True)
                     return DaemonHealth(
@@ -2455,13 +2487,10 @@ def build_daemon_status(
     )
     active_db = _active_status_db_path()
 
-    # Build health status. Keep the default bounded; medium includes exact
-    # FTS invariant scans and must be requested explicitly by operator paths.
-    from polylogue.daemon.health import HealthTier
-
-    health_tiers: set[HealthTier] = {HealthTier.FAST}
-    if include_expensive_health:
-        health_tiers.update({HealthTier.MEDIUM, HealthTier.EXPENSIVE})
+    # Status observes the configured health schedule. This keeps MEDIUM
+    # readiness and cursor-lag evidence visible by default, while a deliberate
+    # ``check_tiers = "fast"`` configuration remains an explicit opt-out.
+    health_tiers = _configured_health_tiers(include_expensive=include_expensive_health)
 
     def _checked_health() -> DaemonHealth:
         try:
@@ -2663,6 +2692,7 @@ def build_daemon_status(
             live_ingest_attempts=live_ingest_attempts,
         ),
         health=health,
+        health_tiers=health_tiers,
         browser_capture_active=browser_capture_active,
         rss_current_mb=rss_current_mb,
         rss_peak_mb=rss_peak_mb,
@@ -2819,6 +2849,8 @@ def daemon_status_payload(
                 "alert_count": sum(1 for a in status.health.alerts if a.severity != HealthSeverity.OK),
                 "checks_run": len(status.health.alerts),
                 "tier_summary": status.health.tier_summary,
+                "configured_tiers": [tier.value for tier in HealthTier if tier in status.health_tiers],
+                "tiers": _health_tier_states(status.health, status.health_tiers),
             },
             "raw_parse_failures": status.raw_parse_failures,
             "raw_validation_failures": status.raw_validation_failures,
@@ -3220,6 +3252,13 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     if isinstance(health, dict):
         health_overall = str(health.get("overall_status", "unknown"))
         lines.append(f"Health: {health_overall} ({health.get('alert_count', 0)} alerts)")
+        tier_states = health.get("tiers")
+        if isinstance(tier_states, dict):
+            rendered_tiers = [
+                f"{tier}={tier_states[tier]}" for tier in ("fast", "medium", "expensive") if tier in tier_states
+            ]
+            if rendered_tiers:
+                lines.append("  Tiers: " + ", ".join(rendered_tiers))
     # Raw failure summary
     raw_parse = _safe_int(payload.get("raw_parse_failures"))
     raw_val = _safe_int(payload.get("raw_validation_failures"))

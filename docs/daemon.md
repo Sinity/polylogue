@@ -534,6 +534,11 @@ check_interval_s = 300
 check_tiers = "fast,medium"
 ```
 
+`polylogued status` reports every tier as `healthy`, `degraded`, `not_run`, or
+`disabled`. Set `check_tiers = "fast"` only when an operator deliberately
+wants to disable MEDIUM probes; status will show `medium=disabled` rather than
+presenting it as a healthy tier.
+
 ### Judgment Automation
 
 `polylogue/daemon/judgment_automation.py` (polylogue-6qjc) is the automated
