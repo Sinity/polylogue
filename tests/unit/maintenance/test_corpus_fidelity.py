@@ -53,7 +53,14 @@ def _insert_raw(
             acquired_at_ms, logical_source_key
         ) VALUES (?, ?, ?, ?, ?, 10, 100, ?)
         """,
-        (raw_id, origin, native_id, f"/fixture/{raw_id}", raw_id.encode().ljust(32, b"x"), logical_source_key),
+        (
+            raw_id,
+            origin,
+            native_id,
+            f"/fixture/{raw_id}",
+            hashlib.sha256(raw_id.encode()).digest(),
+            logical_source_key,
+        ),
     )
 
 
@@ -212,3 +219,61 @@ def test_revision_gate_catches_smaller_index_than_best_recorded_revision(
     assert check.evidence["unexplained_shortfall"] == 1
     assert check.evidence["worst"][0]["session_id"] == session_id
     assert check.evidence["worst"][0]["best_recorded_messages"] == 100000
+
+
+def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    tmp_path: Path,
+) -> None:
+    root = _clone(corpus_fidelity_archive, tmp_path / "event-reclassification")
+    session_id = _first_session_id(root)
+    origin, native_id = session_id.split(":", 1)
+    with _connect(root / "index.db") as conn:
+        message_count = int(
+            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+        )
+        event_count = int(
+            conn.execute("SELECT COUNT(*) FROM session_events WHERE session_id = ?", (session_id,)).fetchone()[0]
+        )
+        next_position = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM session_events WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+        )
+        conn.execute(
+            """
+            INSERT INTO session_events(session_id, position, event_type, summary)
+            VALUES (?, ?, 'fixture-reclassified', 'event represented a historical message')
+            """,
+            (session_id, next_position),
+        )
+    with _connect(root / "source.db") as conn:
+        _insert_raw(
+            conn,
+            raw_id="raw-event-reclassification",
+            origin=origin,
+            native_id=native_id,
+            logical_source_key=f"fixture:{native_id}",
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES (?, ?, ?, 'rev-reclassified', ?, ?)
+            """,
+            (
+                "raw-event-reclassification",
+                f"fixture:{native_id}",
+                native_id,
+                b"g" * 32,
+                message_count + event_count + 1,
+            ),
+        )
+
+    report, check = _check(root, "corpus-revision-fidelity")
+
+    assert not report.blocking
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["unexplained_shortfall"] == 0
+    assert check.evidence["explained_by_event_reclassification"] == 1
