@@ -3520,10 +3520,23 @@ def _write_parent_links(
         for fallback_position, message in enumerate(messages)
         if message.provider_message_id and message.provider_message_id not in duplicate_native_ids
     }
+    by_message_position = {
+        message.position: _message_id(
+            session_id,
+            message,
+            fallback_position,
+            position_offset=position_offset,
+            duplicate_native_ids=duplicate_native_ids,
+        )
+        for fallback_position, message in enumerate(messages)
+        if message.position is not None
+    }
     for fallback_position, message in enumerate(messages):
-        if not message.parent_message_provider_id:
-            continue
-        parent_message_id = by_native_id.get(message.parent_message_provider_id)
+        parent_message_id = (
+            by_native_id.get(message.parent_message_provider_id) if message.parent_message_provider_id else None
+        )
+        if parent_message_id is None and message.parent_message_position is not None:
+            parent_message_id = by_message_position.get(message.parent_message_position)
         if parent_message_id is None:
             continue
         conn.execute(

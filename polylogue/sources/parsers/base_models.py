@@ -145,6 +145,11 @@ class ParsedMessage(BaseModel):
     message_type: MessageType = MessageType.MESSAGE
     material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN
     parent_message_provider_id: str | None = None
+    # Parser-local linkage for a parent that has no provider-issued id. The
+    # writer resolves this coordinate against this parsed batch, then stores
+    # only the resulting archive message id. It is never provider identity or
+    # persisted parser data.
+    parent_message_position: int | None = Field(default=None, exclude=True, repr=False)
     position: int | None = None
     branch_index: int = 0
     variant_index: int | None = None
@@ -192,7 +197,7 @@ class ParsedMessage(BaseModel):
     def coerce_material_origin(cls, v: object) -> MaterialOrigin:
         return MaterialOrigin.normalize(v)
 
-    @field_validator("occurred_at_ms", "position", "variant_index", "duration_ms")
+    @field_validator("occurred_at_ms", "parent_message_position", "position", "variant_index", "duration_ms")
     @classmethod
     def non_negative_optional_int(cls, value: int | None) -> int | None:
         if value is not None and value < 0:

@@ -260,6 +260,65 @@ def test_parse_chunked_prompt_idless_attachment_survives_archive_write(workspace
         assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 1
 
 
+def test_parse_chunked_prompt_idless_turns_resolve_parent_coordinates_in_archive(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    result = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-idless-parent-chain",
+            "chunkedPrompt": {
+                "chunks": [
+                    {"role": "user", "text": "one", "createTime": "2026-01-01T00:00:00Z"},
+                    {"role": "model", "text": "two", "createTime": "2026-01-01T00:00:01Z"},
+                    {"role": "user", "text": "three", "createTime": "2026-01-01T00:00:02Z"},
+                ]
+            },
+        },
+        "fallback",
+    )
+
+    assert [message.provider_message_id for message in result.messages] == ["", "", ""]
+    assert [message.parent_message_position for message in result.messages] == [None, 0, 1]
+
+    with open_connection(db_setup(workspace_env)) as conn:
+        write_and_hydrate(PipelineRoundtrip(result, session_content_hash(result)), conn)
+        rows = conn.execute(
+            "SELECT message_id, native_id, parent_message_id FROM messages ORDER BY position"
+        ).fetchall()
+
+    assert [row["native_id"] for row in rows] == [None, None, None]
+    assert [row["parent_message_id"] for row in rows] == [None, rows[0]["message_id"], rows[1]["message_id"]]
+
+
+def test_idless_drive_attachment_owner_changes_hash_and_revision_identity() -> None:
+    first: JSONDocument = {"role": "user", "text": "first", "createTime": "2026-01-01T00:00:00Z"}
+    second: JSONDocument = {"role": "model", "text": "second", "createTime": "2026-01-01T00:00:01Z"}
+    attachment: JSONDocument = {"id": "drive-doc", "name": "note.txt", "mimeType": "text/plain"}
+    first_owner = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-idless-attachment-owner",
+            "chunkedPrompt": {"chunks": [{**first, "driveDocument": attachment}, second]},
+        },
+        "fallback",
+    )
+    second_owner = parse_chunked_prompt(
+        "gemini",
+        {
+            "id": "gemini-idless-attachment-owner",
+            "chunkedPrompt": {"chunks": [first, {**second, "driveDocument": attachment}]},
+        },
+        "fallback",
+    )
+
+    first_projection = session_revision_projection(first_owner)
+    second_projection = session_revision_projection(second_owner)
+
+    assert session_content_hash(first_owner) != session_content_hash(second_owner)
+    assert first_projection.attachment_identities != second_projection.attachment_identities
+
+
 def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:
     """runSettings (polylogue-2qx.4 / polylogue-cgfy) must reach ``ParsedSession.run_settings``.
 

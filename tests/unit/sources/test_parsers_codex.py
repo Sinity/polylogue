@@ -6,16 +6,22 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, cast
 
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
+from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
-from polylogue.pipeline.ids import session_revision_projection
+from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.storage_records import db_setup
 
 
 def looks_like(payload: object) -> bool:
@@ -561,6 +567,61 @@ class TestMessageParsing:
         assert result.messages[0].provider_message_id == result.messages[1].provider_message_id
         assert sum(message.is_active_leaf is True for message in result.messages) == 1
         assert result.messages[-1].is_active_leaf is True
+
+    def test_timestamp_less_duplicate_reasoning_is_membership_growth(self) -> None:
+        record = {
+            "type": "response_item",
+            "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Repeat"}]},
+        }
+        one = parse([record], "codex-duplicate-membership")
+        two = parse([record, record], "codex-duplicate-membership")
+
+        classification = classify_membership_revisions(
+            [
+                MembershipRevision(raw_id="one", projection=session_revision_projection(one)),
+                MembershipRevision(raw_id="two", projection=session_revision_projection(two)),
+            ]
+        )
+
+        assert classification.accepted_raw_ids == ("one", "two")
+        assert not classification.equivalent_raw_ids
+
+    def test_idless_linear_turns_resolve_parent_coordinates_in_archive(self, workspace_env: Mapping[str, Path]) -> None:
+        result = parse(
+            [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "content": [{"type": "input_text", "text": "one"}],
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "timestamp": "2026-01-01T00:00:01Z",
+                    "content": [{"type": "output_text", "text": "two"}],
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "timestamp": "2026-01-01T00:00:02Z",
+                    "content": [{"type": "input_text", "text": "three"}],
+                },
+            ],
+            "codex-idless-parent-chain",
+        )
+
+        assert [message.provider_message_id for message in result.messages] == ["", "", ""]
+        assert [message.parent_message_position for message in result.messages] == [None, 0, 1]
+
+        with open_connection(db_setup(workspace_env)) as conn:
+            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            rows = conn.execute(
+                "SELECT message_id, native_id, parent_message_id FROM messages ORDER BY position"
+            ).fetchall()
+
+        assert [row["native_id"] for row in rows] == [None, None, None]
+        assert [row["parent_message_id"] for row in rows] == [None, rows[0]["message_id"], rows[1]["message_id"]]
 
     def test_reasoning_with_only_encrypted_content_still_recorded(self) -> None:
         """No recoverable text (summary absent, content null) -- the block

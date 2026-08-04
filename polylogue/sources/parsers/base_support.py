@@ -85,7 +85,7 @@ def synthetic_message_id(
 
 
 def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
-    """Backfill ``parent_message_provider_id`` for a strictly linear message list.
+    """Backfill linear parent evidence for a strictly linear message list.
 
     bd polylogue-ksgg: five of nine archive origins (Codex, Hermes, Gemini
     CLI, Grok, and AI Studio Drive's non-branch path) never assert an
@@ -108,13 +108,18 @@ def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMe
     it to.
     """
     filled: list[ParsedMessage] = []
-    previous_active_id: str | None = None
+    previous_active_message: ParsedMessage | None = None
     for message in messages:
-        if message.parent_message_provider_id is None and previous_active_id is not None:
-            message = message.model_copy(update={"parent_message_provider_id": previous_active_id})
+        if message.parent_message_provider_id is None and previous_active_message is not None:
+            if previous_active_message.provider_message_id:
+                message = message.model_copy(
+                    update={"parent_message_provider_id": previous_active_message.provider_message_id}
+                )
+            elif previous_active_message.position is not None:
+                message = message.model_copy(update={"parent_message_position": previous_active_message.position})
         filled.append(message)
         if message.is_active_path is not False:
-            previous_active_id = message.provider_message_id
+            previous_active_message = message
     return filled
 
 

@@ -7,7 +7,7 @@ from typing import Literal, TypeAlias
 
 from polylogue.core.enums import PolylogueStrEnum
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.pipeline.ids import SessionRevisionProjection
+from polylogue.pipeline.ids import MessageContent, SessionRevisionProjection
 
 
 class MembershipDecision(PolylogueStrEnum):
@@ -85,6 +85,37 @@ def _identities(contents: frozenset[tuple[bytes, bytes]]) -> frozenset[bytes]:
     return frozenset(identity for identity, _content in contents)
 
 
+def _message_identities(contents: frozenset[MessageContent]) -> frozenset[bytes]:
+    return frozenset(identity for identity, _content, _multiplicity in contents)
+
+
+def _message_axis_relation(contents_a: frozenset[MessageContent], contents_b: frozenset[MessageContent]) -> _Relation:
+    """Compare message content as an unordered multiset.
+
+    Reordering remains equivalent, while a repeated id-less message is an
+    additional persisted turn rather than a duplicate that set semantics can
+    erase. A shared identity carrying different content remains a conflict.
+    """
+    counts_a = {(identity, content): multiplicity for identity, content, multiplicity in contents_a}
+    counts_b = {(identity, content): multiplicity for identity, content, multiplicity in contents_b}
+    identities_a = _message_identities(contents_a)
+    identities_b = _message_identities(contents_b)
+    for identity in identities_a & identities_b:
+        content_values_a = {content for candidate_identity, content in counts_a if candidate_identity == identity}
+        content_values_b = {content for candidate_identity, content in counts_b if candidate_identity == identity}
+        if content_values_a != content_values_b:
+            return "conflict"
+    a_richer = bool(identities_a - identities_b) or any(count > counts_b.get(key, 0) for key, count in counts_a.items())
+    b_richer = bool(identities_b - identities_a) or any(count > counts_a.get(key, 0) for key, count in counts_b.items())
+    if a_richer and b_richer:
+        return "conflict"
+    if a_richer:
+        return "a_contains_b"
+    if b_richer:
+        return "b_contains_a"
+    return "equal"
+
+
 def _content_by_identity(contents: frozenset[tuple[bytes, bytes]]) -> dict[bytes, frozenset[bytes]]:
     """Group content hashes by identity, retaining EVERY value under a colliding identity.
 
@@ -152,9 +183,7 @@ def _relation(a: SessionRevisionProjection, b: SessionRevisionProjection) -> _Re
     any single axis already is.
     """
     axes = (
-        _axis_relation(
-            _identities(a.message_contents), a.message_contents, _identities(b.message_contents), b.message_contents
-        ),
+        _message_axis_relation(a.message_contents, b.message_contents),
         _axis_relation(a.attachment_identities, a.attachment_contents, b.attachment_identities, b.attachment_contents),
         _axis_relation(
             _identities(a.event_contents), a.event_contents, _identities(b.event_contents), b.event_contents
@@ -181,7 +210,7 @@ def _frontier(projection: SessionRevisionProjection) -> tuple[int, int, int, int
     the same cohort to the same head).
     """
     return (
-        len(projection.message_contents),
+        sum(multiplicity for _identity, _content, multiplicity in projection.message_contents),
         len(projection.event_contents),
         len(projection.attachment_identities),
         len(projection.attachment_contents),
