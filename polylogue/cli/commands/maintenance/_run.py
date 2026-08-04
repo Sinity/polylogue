@@ -129,8 +129,8 @@ def _execute_and_render(
     ``run-preview``) rather than exposed as a CLI flag -- the command name
     is the read/write signal, not an option an operator can forget.
     """
+    from polylogue.core.enums import OperationStatus
     from polylogue.maintenance.envelope import envelope_from_operation
-    from polylogue.maintenance.planner import BackfillStatus
     from polylogue.maintenance.replay import execute_replay
 
     configure_logging()
@@ -172,7 +172,7 @@ def _execute_and_render(
     if output_format == "json":
         envelope = envelope_from_operation(result, origin="cli", mode="execute")
         click.echo(json.dumps(envelope.to_dict(), indent=2, sort_keys=True))
-        if result.status is BackfillStatus.FAILED:
+        if result.status is OperationStatus.FAILED:
             raise SystemExit(1)
         return
 
@@ -214,5 +214,5 @@ def _execute_and_render(
             elapsed = (completed - started).total_seconds()
             click.echo(f"\nElapsed: {elapsed:.1f}s")
 
-    if result.status is BackfillStatus.FAILED:
+    if result.status is OperationStatus.FAILED:
         raise SystemExit(1)

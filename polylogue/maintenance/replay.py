@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.core.json import JSONDocument, dumps, json_document, loads
 from polylogue.core.protocols import ProgressCallback as StageProgressCallback
 from polylogue.logging import get_logger
@@ -54,7 +55,6 @@ from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import (
     BackfillKind,
     BackfillOperation,
-    BackfillStatus,
     BoundedFailureSamples,
     FailureSample,
     MaintenanceScope,
@@ -514,7 +514,7 @@ def execute_replay(
             operation_id=op_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=(),
-            status=BackfillStatus.FAILED,
+            status=OperationStatus.FAILED,
             error="No valid targets resolved from input",
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
@@ -540,7 +540,7 @@ def execute_replay(
             operation_id=op_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
-            status=BackfillStatus.FAILED,
+            status=OperationStatus.FAILED,
             progress=0.0,
             started_at=started_at,
             completed_at=started_at,
@@ -607,7 +607,7 @@ def execute_replay(
 
     completed_at = datetime.now(timezone.utc).isoformat()
     successful = not state.failures
-    status = BackfillStatus.COMPLETED if successful else BackfillStatus.FAILED
+    status = OperationStatus.COMPLETED if successful else OperationStatus.FAILED
 
     progress = (len(resolved_names) - start_index) / len(resolved_names)
     logger.info(
@@ -843,20 +843,20 @@ def _build_in_progress_snapshot(
     Used by :func:`_checkpoint_state` to make sure every state file
     carries a rehydratable snapshot even mid-run (before
     :func:`execute_replay` has assembled its final return value). The
-    snapshot status is :data:`BackfillStatus.RUNNING` unless the
+    snapshot status is :data:`OperationStatus.RUNNING` unless the
     executor has finished all targets, in which case it surfaces as
-    :data:`BackfillStatus.COMPLETED` / :data:`BackfillStatus.FAILED`
+    :data:`OperationStatus.COMPLETED` / :data:`OperationStatus.FAILED`
     based on the in-flight failure count.
     """
 
     total = len(state.targets)
     cursor = state.cursor
     if cursor == CURSOR_DONE:
-        status = BackfillStatus.FAILED if state.failures else BackfillStatus.COMPLETED
+        status = OperationStatus.FAILED if state.failures else OperationStatus.COMPLETED
         progress = 1.0
         completed_at: str | None = datetime.now(timezone.utc).isoformat()
     else:
-        status = BackfillStatus.RUNNING
+        status = OperationStatus.RUNNING
         processed = _decode_cursor(cursor, total_targets=total)
         progress = processed / total if total > 0 else 0.0
         completed_at = None

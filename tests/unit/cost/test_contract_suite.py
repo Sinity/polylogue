@@ -37,6 +37,7 @@ from polylogue.archive.semantic.pricing import (
     CostEstimatePayload,
     estimate_session_cost,
 )
+from polylogue.core.enums import OperationStatus
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import (
     CycleOutlook,
@@ -68,7 +69,7 @@ from polylogue.maintenance.cost_backfill import (
     plan_cost_backfill,
 )
 from polylogue.maintenance.invalidation import InvalidationReason
-from polylogue.maintenance.planner import BackfillKind, BackfillStatus
+from polylogue.maintenance.planner import BackfillKind
 from tests.infra.builders import make_conv, make_msg
 
 # ---------------------------------------------------------------------------
@@ -616,7 +617,7 @@ def test_plan_cost_backfill_emits_typed_backfill() -> None:
     )
     op = plan_cost_backfill(rows)
     assert op.kind is BackfillKind.DERIVED_REBUILD
-    assert op.status is BackfillStatus.PENDING
+    assert op.status is OperationStatus.PENDING
     assert op.targets == (SESSION_PROFILES_REBUILD_TARGET,)
     assert op.affected_rows == 2
     assert op.reason is InvalidationReason.STALE_MATERIALIZER_VERSION
@@ -636,5 +637,5 @@ def test_plan_cost_backfill_empty_input_produces_zero_affected() -> None:
     op = plan_cost_backfill(())
     assert op.affected_rows == 0
     assert op.estimated_time_s == 0.0
-    assert op.status is BackfillStatus.PENDING
+    assert op.status is OperationStatus.PENDING
     assert op.results == []

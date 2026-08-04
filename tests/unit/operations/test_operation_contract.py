@@ -13,6 +13,10 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from polylogue.core.enums import (
+    OPERATION_LIFECYCLE_STATUSES,
+    require_operation_lifecycle_status,
+)
 from polylogue.core.enums import OperationStatus as CoreOperationStatus
 from polylogue.operations import (
     ImportAck,
@@ -256,3 +260,14 @@ class TestOperationStatusEnum:
             "failed",
             "interrupted",
         }
+
+    def test_lifecycle_subset_excludes_admission_states(self) -> None:
+        assert OPERATION_LIFECYCLE_STATUSES == (
+            OperationStatus.RUNNING,
+            OperationStatus.COMPLETED,
+            OperationStatus.FAILED,
+            OperationStatus.INTERRUPTED,
+        )
+        assert require_operation_lifecycle_status(OperationStatus.INTERRUPTED) is OperationStatus.INTERRUPTED
+        with pytest.raises(ValueError, match="not a run lifecycle status"):
+            require_operation_lifecycle_status(OperationStatus.ACCEPTED)

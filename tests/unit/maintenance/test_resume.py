@@ -20,8 +20,8 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.maintenance.models import MaintenanceCategory
-from polylogue.maintenance.planner import BackfillStatus
 from polylogue.maintenance.replay import (
     CURSOR_DONE,
     ReplayProgress,
@@ -93,7 +93,7 @@ def test_clean_run_persists_done_and_clears_state(tmp_path: Path, patched_dispat
         operation_id="op-clean",
     )
 
-    assert op.status is BackfillStatus.COMPLETED
+    assert op.status is OperationStatus.COMPLETED
     assert op.resume_cursor == CURSOR_DONE
     # State file is removed after successful completion.
     assert not state_path_for(config, "op-clean").exists()
@@ -127,7 +127,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
             operation_id="op-resume",
         )
 
-    assert first.status is BackfillStatus.FAILED
+    assert first.status is OperationStatus.FAILED
     assert patched_dispatch["session_insights"] == ["live"]
     assert patched_dispatch["empty_sessions"] == ["live"]
     assert len(boom_calls) == 1
@@ -151,7 +151,7 @@ def test_kill_mid_run_resumes_from_persisted_cursor(tmp_path: Path, patched_disp
             operation_id="op-resume",
         )
 
-    assert second.status is BackfillStatus.COMPLETED
+    assert second.status is OperationStatus.COMPLETED
     assert second.resume_cursor == CURSOR_DONE
     # session_insights was not invoked a second time.
     assert patched_dispatch["session_insights"] == ["live"]
@@ -177,7 +177,7 @@ def test_explicit_resume_cursor_overrides_persisted_state(
         resume_cursor="target:1",
     )
 
-    assert op.status is BackfillStatus.COMPLETED
+    assert op.status is OperationStatus.COMPLETED
     # Only the second target was executed (skipped session_insights).
     assert patched_dispatch["session_insights"] == []
     assert patched_dispatch["message_type_backfill"] == ["live"]
@@ -194,7 +194,7 @@ def test_progress_callback_fires_per_target(tmp_path: Path, patched_dispatch: di
         progress_callback=snapshots.append,
     )
 
-    assert op.status is BackfillStatus.COMPLETED
+    assert op.status is OperationStatus.COMPLETED
     assert [s.target for s in snapshots] == ["session_insights", "message_type_backfill"]
     assert snapshots[0].processed == 1 and snapshots[0].total == 2
     assert snapshots[-1].cursor == CURSOR_DONE
@@ -236,7 +236,7 @@ def test_session_insight_progress_is_forwarded_within_target(
         progress_callback=snapshots.append,
     )
 
-    assert op.status is BackfillStatus.COMPLETED
+    assert op.status is OperationStatus.COMPLETED
     assert [snapshot.progress_desc for snapshot in snapshots] == [
         "rebuild: materialized 17/42 session profiles",
         None,
@@ -277,7 +277,7 @@ def test_replay_operation_metrics_include_result_metrics(
         operation_id="op-metrics",
     )
 
-    assert op.status is BackfillStatus.COMPLETED
+    assert op.status is OperationStatus.COMPLETED
     assert op.metrics["repaired_count"] == 2.0
     assert op.metrics["rebuilt_profiles"] == 100.0
     assert op.metrics["source_sessions"] == 1_609_582_167.0
@@ -290,7 +290,7 @@ def test_replay_operation_metrics_include_result_metrics(
 def test_unresolved_targets_short_circuit(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
     op = execute_replay(config, targets=("does-not-exist",))
-    assert op.status is BackfillStatus.FAILED
+    assert op.status is OperationStatus.FAILED
     assert op.targets == ()
     assert op.error == "No valid targets resolved from input"
 

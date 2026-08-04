@@ -126,11 +126,6 @@ def _coerce_backfill_kind(value: object) -> BackfillKind:
         return _RETIRED_STORED_KIND_MAP.get(text, BackfillKind.DERIVED_REBUILD)
 
 
-# Compatibility name for callers that imported the former planner-local enum.
-# The operation model itself uses the canonical enum directly below.
-BackfillStatus = OperationStatus
-
-
 @dataclass(frozen=True)
 class MaintenanceScope:
     """Typed scope (target ids + typed filter) for a backfill.
@@ -446,7 +441,7 @@ def preview_backfill(
             operation_id=operation_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=(),
-            status=BackfillStatus.FAILED,
+            status=OperationStatus.FAILED,
             error="No valid targets resolved from input",
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
@@ -459,7 +454,7 @@ def preview_backfill(
             operation_id=operation_id,
             kind=BackfillKind.ARCHIVE_SUBSET,
             targets=resolved_names,
-            status=BackfillStatus.PENDING,
+            status=OperationStatus.PENDING,
             affected_rows=preview_result.repaired_count,
             estimated_time_s=0.0,
             results=[preview_result.to_dict()],
@@ -512,7 +507,7 @@ def preview_backfill(
         operation_id=operation_id,
         kind=BackfillKind.DERIVED_REBUILD,
         targets=resolved_names,
-        status=BackfillStatus.PENDING,
+        status=OperationStatus.PENDING,
         affected_rows=total_rows,
         estimated_time_s=estimated_time_s,
         results=preview_results,
@@ -549,7 +544,7 @@ def execute_backfill(
             operation_id=operation_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=(),
-            status=BackfillStatus.FAILED,
+            status=OperationStatus.FAILED,
             error="No valid targets resolved from input",
             scope=MaintenanceScope(targets=(), filter=effective_filter),
         )
@@ -610,7 +605,7 @@ def execute_backfill(
             operation_id=operation_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
-            status=BackfillStatus.COMPLETED if all_success else BackfillStatus.FAILED,
+            status=OperationStatus.COMPLETED if all_success else OperationStatus.FAILED,
             progress=1.0,
             started_at=started_at,
             completed_at=completed_at,
@@ -632,7 +627,7 @@ def execute_backfill(
             operation_id=operation_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
-            status=BackfillStatus.FAILED,
+            status=OperationStatus.FAILED,
             progress=0.0,
             started_at=started_at,
             error=f"Backfill failed: {exc}",
@@ -681,7 +676,6 @@ __all__ = [
     "MAX_FAILURE_SAMPLES",
     "BackfillKind",
     "BackfillOperation",
-    "BackfillStatus",
     "BoundedFailureSamples",
     "FailureSample",
     "InvalidationReason",

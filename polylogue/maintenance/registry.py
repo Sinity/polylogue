@@ -39,9 +39,10 @@ from pathlib import Path
 from typing import Final
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.core.json import JSONDocument, json_document, loads
 from polylogue.logging import get_logger
-from polylogue.maintenance.planner import BackfillOperation, BackfillStatus
+from polylogue.maintenance.planner import BackfillOperation
 
 logger = get_logger(__name__)
 
@@ -81,7 +82,7 @@ class OperationRecord:
         return self.operation.operation_id
 
     @property
-    def status(self) -> BackfillStatus:
+    def status(self) -> OperationStatus:
         return self.operation.status
 
     def to_dict(self) -> JSONDocument:
@@ -163,7 +164,7 @@ def _legacy_record_to_operation(raw: dict[str, object], path: Path) -> BackfillO
         operation_id=op_id,
         kind=BackfillKind.DERIVED_REBUILD,
         targets=targets,
-        status=BackfillStatus.RUNNING,
+        status=OperationStatus.RUNNING,
         started_at=started,
         resume_cursor=cursor,
         scope=MaintenanceScope(targets=targets),
@@ -246,7 +247,7 @@ class MaintenanceOperationRegistry:
             record = _load_record(path)
             if record is None:
                 continue
-            if record.status is not BackfillStatus.COMPLETED:
+            if record.status is not OperationStatus.COMPLETED:
                 continue
             updated_dt = _parse_updated_at(record.updated_at)
             if updated_dt is None:

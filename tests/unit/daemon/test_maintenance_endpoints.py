@@ -94,13 +94,14 @@ class TestMaintenanceAPIRoutes:
         handler = _make_handler("/api/maintenance/plan", body={"targets": ["session_insights"]})
         with patch.object(handler, "_send_json") as mock:
             with patch("polylogue.maintenance.planner.preview_backfill") as mock_preview:
-                from polylogue.maintenance.planner import BackfillKind, BackfillOperation, BackfillStatus
+                from polylogue.core.enums import OperationStatus
+                from polylogue.maintenance.planner import BackfillKind, BackfillOperation
 
                 fake_op = BackfillOperation(
                     operation_id="test-001",
                     kind=BackfillKind.DERIVED_REBUILD,
                     targets=("session_insights",),
-                    status=BackfillStatus.PENDING,
+                    status=OperationStatus.PENDING,
                     affected_rows=10,
                     estimated_time_s=0.2,
                 )
@@ -117,13 +118,14 @@ class TestMaintenanceAPIRoutes:
         handler = _make_handler("/api/maintenance/run", body={"targets": ["fts_repair"], "dry_run": False})
         with patch.object(handler, "_send_json") as mock:
             with patch("polylogue.maintenance.planner.execute_backfill") as mock_exec:
-                from polylogue.maintenance.planner import BackfillKind, BackfillOperation, BackfillStatus
+                from polylogue.core.enums import OperationStatus
+                from polylogue.maintenance.planner import BackfillKind, BackfillOperation
 
                 fake_op = BackfillOperation(
                     operation_id="test-002",
                     kind=BackfillKind.INDEX_REPAIR,
                     targets=("fts_repair",),
-                    status=BackfillStatus.COMPLETED,
+                    status=OperationStatus.COMPLETED,
                     affected_rows=42,
                     started_at="2026-01-01T00:00:00+00:00",
                     completed_at="2026-01-01T00:00:01+00:00",
@@ -239,11 +241,11 @@ class TestMaintenanceRegistryEndpoints:
     def test_status_returns_envelope_with_metadata(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """A persisted op returns the shared envelope plus updated_at / state_path."""
         from polylogue.config import Config
+        from polylogue.core.enums import OperationStatus
         from polylogue.core.json import dumps as json_dumps
         from polylogue.maintenance.planner import (
             BackfillKind,
             BackfillOperation,
-            BackfillStatus,
             MaintenanceScope,
         )
         from polylogue.maintenance.replay import state_path_for
@@ -256,7 +258,7 @@ class TestMaintenanceRegistryEndpoints:
             operation_id="op-h1",
             kind=BackfillKind.DERIVED_REBUILD,
             targets=("session_insights",),
-            status=BackfillStatus.RUNNING,
+            status=OperationStatus.RUNNING,
             scope=MaintenanceScope(targets=("session_insights",)),
         )
         path = state_path_for(config, "op-h1")

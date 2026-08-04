@@ -34,6 +34,20 @@ OPERATION_LIFECYCLE_STATUSES: tuple[OperationStatus, ...] = (
 )
 
 
+def require_operation_lifecycle_status(value: OperationStatus | str) -> OperationStatus:
+    """Return one persisted run status, rejecting admission-only operation states.
+
+    ``cancelled`` remains a client-side cancellation term. A run that ends
+    before completion without an execution failure is recorded as
+    ``interrupted`` across the ops ledgers and planner-facing lifecycle.
+    """
+    status = value if isinstance(value, OperationStatus) else OperationStatus(value)
+    if status not in OPERATION_LIFECYCLE_STATUSES:
+        choices = ", ".join(item.value for item in OPERATION_LIFECYCLE_STATUSES)
+        raise ValueError(f"{status.value!r} is not a run lifecycle status; expected one of: {choices}")
+    return status
+
+
 def enum_values(enum_type: type[PolylogueStrEnum]) -> tuple[str, ...]:
     """Return persisted values for a closed enum."""
     return tuple(item.value for item in enum_type)
@@ -762,6 +776,7 @@ __all__ = [
     "Origin",
     "OperationStatus",
     "OPERATION_LIFECYCLE_STATUSES",
+    "require_operation_lifecycle_status",
     "PasteBoundary",
     "PlanStage",
     "PolylogueStrEnum",

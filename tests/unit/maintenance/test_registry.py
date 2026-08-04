@@ -20,11 +20,11 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.core.json import dumps
 from polylogue.maintenance.planner import (
     BackfillKind,
     BackfillOperation,
-    BackfillStatus,
     BoundedFailureSamples,
     FailureSample,
     MaintenanceScope,
@@ -48,7 +48,7 @@ def _write_legacy_state(config: Config, operation_id: str, *, updated_at: str, s
         operation_id=operation_id,
         kind=BackfillKind.DERIVED_REBUILD,
         targets=("session_insights",),
-        status=BackfillStatus(status),
+        status=OperationStatus(status),
         progress=1.0 if status != "running" else 0.5,
         started_at="2026-05-17T00:00:00+00:00",
         completed_at=updated_at if status != "running" else None,
@@ -84,7 +84,7 @@ class TestRegistryRoundTrip:
         record = registry.get_operation("op-1")
         assert record is not None
         assert record.operation_id == "op-1"
-        assert record.status is BackfillStatus.COMPLETED
+        assert record.status is OperationStatus.COMPLETED
         assert record.operation.targets == ("session_insights",)
         assert record.operation.affected_rows == 7
 
@@ -230,7 +230,7 @@ class TestRegistryPreservesScope:
             operation_id="op-scope",
             kind=BackfillKind.DERIVED_REBUILD,
             targets=("session_insights",),
-            status=BackfillStatus.RUNNING,
+            status=OperationStatus.RUNNING,
             scope=MaintenanceScope(
                 targets=("session_insights",),
                 filter=MaintenanceScopeFilter(origin="claude-code-session"),
@@ -268,7 +268,7 @@ class TestRegistryFailureSamplesPersist:
             operation_id="op-fails",
             kind=BackfillKind.DERIVED_REBUILD,
             targets=("session_insights",),
-            status=BackfillStatus.FAILED,
+            status=OperationStatus.FAILED,
             failure_samples=BoundedFailureSamples.from_samples(
                 [FailureSample(kind="RuntimeError", locator="target:session_insights", message="boom")]
             ),

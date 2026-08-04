@@ -22,10 +22,10 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.maintenance.planner import (
     MAX_FAILURE_SAMPLES,
-    BackfillStatus,
 )
 from polylogue.maintenance.replay import (
     UnsupportedReplayTargetError,
@@ -98,7 +98,7 @@ def test_second_run_makes_no_further_changes(tmp_path: Path, converging_dispatch
         targets=("session_insights", "message_type_backfill"),
         operation_id="op-first",
     )
-    assert first.status is BackfillStatus.COMPLETED
+    assert first.status is OperationStatus.COMPLETED
     assert first.affected_rows == 7 + 5
 
     # A fresh operation id on the same converged archive must report
@@ -108,7 +108,7 @@ def test_second_run_makes_no_further_changes(tmp_path: Path, converging_dispatch
         targets=("session_insights", "message_type_backfill"),
         operation_id="op-second",
     )
-    assert second.status is BackfillStatus.COMPLETED
+    assert second.status is OperationStatus.COMPLETED
     assert second.affected_rows == 0
     # Each target was called exactly twice (once per op), not more.
     assert converging_dispatch["session_insights"] == 2
@@ -145,7 +145,7 @@ def test_single_target_failure_does_not_abort_others(tmp_path: Path) -> None:
 
     # The bad target failed but the surrounding targets still ran.
     assert calls == ["session_insights", "message_type_backfill", "empty_sessions"]
-    assert op.status is BackfillStatus.FAILED
+    assert op.status is OperationStatus.FAILED
     assert op.affected_rows == 6  # only the two good targets contributed
     assert len(op.failure_samples.samples) == 1
     failure = op.failure_samples.samples[0]
@@ -173,7 +173,7 @@ def test_repair_reported_failure_surfaces_as_failure_sample(tmp_path: Path) -> N
             operation_id="op-soft-fail",
         )
 
-    assert op.status is BackfillStatus.FAILED
+    assert op.status is OperationStatus.FAILED
     assert op.failure_samples.samples[0].kind == "RepairReportedFailure"
     assert "schema mismatch" in op.failure_samples.samples[0].message
 
@@ -188,7 +188,7 @@ def test_replay_refuses_offline_repair_while_daemon_runs(monkeypatch: pytest.Mon
         operation_id="op-live-daemon",
     )
 
-    assert op.status is BackfillStatus.FAILED
+    assert op.status is OperationStatus.FAILED
     assert op.affected_rows == 0
     assert op.results[0]["name"] == "session_insights"
     assert op.failure_samples.samples[0].kind == "OfflineMaintenanceBlocked"
@@ -205,7 +205,7 @@ def test_unwired_target_is_typed_failure_not_silent(tmp_path: Path) -> None:
             operation_id="op-unsupported",
         )
 
-    assert op.status is BackfillStatus.FAILED
+    assert op.status is OperationStatus.FAILED
     sample = op.failure_samples.samples[0]
     assert sample.kind == UnsupportedReplayTargetError.__name__
     assert sample.locator == "target:session_insights"
@@ -268,6 +268,6 @@ def test_failure_samples_remain_bounded(tmp_path: Path) -> None:
             persist_state=False,
         )
 
-    assert op.status is BackfillStatus.FAILED
+    assert op.status is OperationStatus.FAILED
     assert len(op.failure_samples.samples) == MAX_FAILURE_SAMPLES
     assert op.failure_samples.truncated is True

@@ -33,11 +33,11 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.maintenance import maintenance_group
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import (
     BackfillKind,
     BackfillOperation,
-    BackfillStatus,
     MaintenanceScope,
 )
 from polylogue.maintenance.scope import MaintenanceScopeFilter
@@ -68,7 +68,7 @@ def _operation_for(scope_filter: MaintenanceScopeFilter) -> BackfillOperation:
         operation_id="op-fixed",
         kind=BackfillKind.DERIVED_REBUILD,
         targets=("session_insights",),
-        status=BackfillStatus.PENDING,
+        status=OperationStatus.PENDING,
         scope=MaintenanceScope(targets=("session_insights",), filter=scope_filter),
     )
 

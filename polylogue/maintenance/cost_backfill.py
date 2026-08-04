@@ -37,12 +37,12 @@ import uuid
 from dataclasses import dataclass
 from typing import Protocol
 
+from polylogue.core.enums import OperationStatus
 from polylogue.core.json import json_document
 from polylogue.maintenance.invalidation import InvalidationReason
 from polylogue.maintenance.planner import (
     BackfillKind,
     BackfillOperation,
-    BackfillStatus,
     MaintenanceScope,
 )
 from polylogue.maintenance.scope import MaintenanceScopeFilter
@@ -179,7 +179,7 @@ def plan_cost_backfill(
         operation_id=operation_id,
         kind=BackfillKind.DERIVED_REBUILD,
         targets=(SESSION_PROFILES_REBUILD_TARGET,),
-        status=BackfillStatus.PENDING,
+        status=OperationStatus.PENDING,
         affected_rows=affected,
         estimated_time_s=estimated_time_s,
         results=results,
