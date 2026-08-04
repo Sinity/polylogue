@@ -164,6 +164,32 @@ def _fake_linked_checkout(tmp_path: Path) -> Path:
     return root
 
 
+def _write_in_progress_seed_attempt(root: Path, *, status: str = "running", **overrides: object) -> Path:
+    payload: dict[str, object] = {
+        "protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION,
+        "status": status,
+        "identity": {
+            "git_head": "head",
+            "worktree_fingerprint": "fingerprint",
+            "python": "3.14",
+            "skip_slow": True,
+            "lab": False,
+        },
+        "resume": False,
+        "expected_nodeids": [],
+        "expected_count": 0,
+        "started_at": "2026-08-05T12:00:00+00:00",
+        "run_id": "seed-testmon-20260805T120000Z",
+        "artifact_dir": ".cache/verify/runs/seed-testmon-20260805T120000Z",
+        "testmon_data_before": "missing",
+    }
+    payload.update(overrides)
+    attempt = root / ".cache" / "testmon" / "seed-attempt.json"
+    attempt.parent.mkdir(parents=True, exist_ok=True)
+    attempt.write_text(json.dumps(payload))
+    return attempt
+
+
 def test_checkout_environment_fingerprint_accepts_clean_linked_worktree(tmp_path: Path) -> None:
     root = _fake_linked_checkout(tmp_path)
     fingerprint = checkout_environment_fingerprint(
@@ -175,6 +201,82 @@ def test_checkout_environment_fingerprint_accepts_clean_linked_worktree(tmp_path
     assert fingerprint.clean
     assert fingerprint.linked_worktree is True
     assert fingerprint.python_environment_root == root
+
+
+def test_checkout_environment_fingerprint_accepts_current_in_progress_seed_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    attempt = _write_in_progress_seed_attempt(root)
+    (root / ".cache" / "testmon" / "testmondata").write_text("partial")
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    fingerprint = assert_polylogue_matches_checkout(
+        root,
+        context="seed-testmon bootstrap",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.testmon_state_origin is None
+    assert attempt.is_file()
+
+
+@pytest.mark.parametrize(
+    ("status", "overrides"),
+    [
+        ("running", {"identity": {}}),
+        ("running", {"expected_count": 1}),
+        ("running", {"artifact_dir": "/foreign/.cache/verify/runs/seed"}),
+        ("complete", {}),
+    ],
+)
+def test_checkout_environment_fingerprint_rejects_invalid_or_completed_seed_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    overrides: dict[str, object],
+) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    attempt = _write_in_progress_seed_attempt(root, status=status, **overrides)
+    (root / ".cache" / "testmon" / "testmondata").write_text("foreign or incomplete")
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
+        assert_polylogue_matches_checkout(
+            root,
+            context="invalid testmon state",
+            python_executable=root / ".venv" / "bin" / "python",
+        )
+
+    message = str(excinfo.value)
+    assert str(attempt.parent) in message
+    assert "no verifiable checkout-root marker" in message
+
+
+def test_checkout_environment_fingerprint_requires_provenance_for_completed_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    seed_dir = root / ".cache" / "testmon"
+    seed_dir.mkdir(parents=True)
+    (seed_dir / "testmondata").write_text("complete")
+    (seed_dir / "seed.json").write_text(
+        json.dumps({"protocol_version": verify.TESTMON_SEED_PROTOCOL_VERSION, "status": "complete"})
+    )
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
+        assert_polylogue_matches_checkout(
+            root,
+            context="completed testmon state",
+            python_executable=root / ".venv" / "bin" / "python",
+        )
+
+    assert str(seed_dir / "seed.json") in str(excinfo.value)
 
 
 def test_checkout_preflight_reports_seeded_artifacts_and_main_interpreter(

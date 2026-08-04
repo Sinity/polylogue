@@ -129,6 +129,7 @@ class CheckoutEnvironmentFingerprint:
 
 _TESTMON_STATE_DIR = Path(".cache/testmon")
 _TESTMON_STATE_MARKER = _TESTMON_STATE_DIR / "seed.json"
+_TESTMON_SEED_ATTEMPT = _TESTMON_STATE_DIR / "seed-attempt.json"
 _VERIFY_STATE_DIR = Path(".cache/verify")
 _VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
 
@@ -257,6 +258,59 @@ def _marker_origin(marker: Path) -> Path | None:
     return Path(raw).resolve()
 
 
+def _is_valid_in_progress_testmon_seed_attempt(attempt: Path) -> bool:
+    """Recognize the live seed ledger before its completion marker exists.
+
+    ``verify --seed-testmon`` writes this receipt before pytest starts and
+    rewrites it after the run. It is the only unmarked testmon state that a
+    linked worktree may trust. Keep this contract local to the guard so a
+    random JSON file cannot turn an inherited cache into accepted state.
+    """
+    try:
+        payload = json.loads(attempt.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, Mapping) or payload.get("status") not in {"running", "incomplete"}:
+        return False
+    protocol_version = payload.get("protocol_version")
+    if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version <= 0:
+        return False
+    identity = payload.get("identity")
+    if not isinstance(identity, Mapping):
+        return False
+    if not isinstance(identity.get("worktree_fingerprint"), str) or not identity["worktree_fingerprint"]:
+        return False
+    if not isinstance(identity.get("python"), str) or not identity["python"]:
+        return False
+    if not isinstance(identity.get("skip_slow"), bool) or not isinstance(identity.get("lab"), bool):
+        return False
+    git_head = identity.get("git_head")
+    if git_head is not None and (not isinstance(git_head, str) or not git_head):
+        return False
+    if "checkout_root" in payload:
+        return False
+    expected_nodeids = payload.get("expected_nodeids")
+    if not isinstance(expected_nodeids, list) or any(
+        not isinstance(nodeid, str) or not nodeid for nodeid in expected_nodeids
+    ):
+        return False
+    expected_count = payload.get("expected_count")
+    if (
+        not isinstance(expected_count, int)
+        or isinstance(expected_count, bool)
+        or expected_count != len(expected_nodeids)
+    ):
+        return False
+    if not isinstance(payload.get("resume"), bool):
+        return False
+    for key in ("started_at", "run_id", "artifact_dir", "testmon_data_before"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            return False
+    artifact_dir = Path(payload["artifact_dir"])
+    return not artifact_dir.is_absolute() and artifact_dir.parts[:3] == (".cache", "verify", "runs")
+
+
 def _cache_artifact(
     *,
     repo_root: Path,
@@ -274,9 +328,17 @@ def _cache_artifact(
             return None, None
     except OSError:
         pass
-    origin = _marker_origin(repo_root / marker)
+    marker_path = repo_root / marker
+    origin = _marker_origin(marker_path)
     if origin == repo_root:
         return origin, None
+    if (
+        origin is None
+        and not marker_path.exists()
+        and state_dir == _TESTMON_STATE_DIR
+        and _is_valid_in_progress_testmon_seed_attempt(repo_root / _TESTMON_SEED_ATTEMPT)
+    ):
+        return None, None
     if origin is None:
         detail = f"{state_path} has no verifiable checkout-root marker"
     else:
