@@ -22,7 +22,6 @@ from polylogue.storage.fts.sql import (
     FTS_REBUILD_SQL,
     FTS_TRIGGER_DDL,
     SESSION_WORK_EVENT_FTS_TRIGGER_DDL,
-    THREAD_FTS_TRIGGER_DDL,
     TRIGRAM_REBUILD_DELETE_ALL_SQL,
     IndexedMessage,
     chunked,
@@ -101,19 +100,13 @@ _SESSION_WORK_EVENT_FTS_TRIGGER_NAMES = (
     "session_work_events_fts_au",
 )
 
-_THREAD_FTS_TRIGGER_NAMES = (
-    "threads_fts_ai",
-    "threads_fts_ad",
-    "threads_fts_au",
-)
-
 _BLOCKS_FTS_TRIGGER_NAMES = (
     "messages_fts_ai",
     "messages_fts_ad",
     "messages_fts_au",
 )
 
-_FTS_TRIGGER_NAMES = _BLOCKS_FTS_TRIGGER_NAMES + _SESSION_WORK_EVENT_FTS_TRIGGER_NAMES + _THREAD_FTS_TRIGGER_NAMES
+_FTS_TRIGGER_NAMES = _BLOCKS_FTS_TRIGGER_NAMES + _SESSION_WORK_EVENT_FTS_TRIGGER_NAMES
 
 FTS_TRIGGER_NAMES = _FTS_TRIGGER_NAMES
 """Canonical FTS trigger set for all archive and insight search surfaces."""
@@ -166,7 +159,6 @@ class FtsInvariantSnapshot:
     messages: FtsSurfaceInvariant
     retired_action_surface: FtsSurfaceInvariant
     session_work_events: FtsSurfaceInvariant
-    threads: FtsSurfaceInvariant
 
     @property
     def ready(self) -> bool:
@@ -174,7 +166,7 @@ class FtsInvariantSnapshot:
 
     @property
     def surfaces(self) -> tuple[FtsSurfaceInvariant, ...]:
-        return (self.messages, self.retired_action_surface, self.session_work_events, self.threads)
+        return (self.messages, self.retired_action_surface, self.session_work_events)
 
 
 def _triggers_present_sync(conn: sqlite3.Connection, names: tuple[str, ...]) -> bool:
@@ -203,7 +195,6 @@ async def _triggers_present_async(conn: aiosqlite.Connection, names: tuple[str, 
 # references the private _*_TRIGGER_DDL names.
 _BLOCKS_FTS_TRIGGER_DDL = BLOCKS_FTS_TRIGGER_DDL
 _SESSION_WORK_EVENT_FTS_TRIGGER_DDL = SESSION_WORK_EVENT_FTS_TRIGGER_DDL
-_THREAD_FTS_TRIGGER_DDL = THREAD_FTS_TRIGGER_DDL
 _FTS_TRIGGER_DDL = FTS_TRIGGER_DDL
 
 
@@ -287,8 +278,6 @@ def _fts_trigger_ddl_for_existing_surfaces_sync(conn: sqlite3.Connection) -> tup
         ddl.extend(_BLOCKS_FTS_TRIGGER_DDL)
     if _table_exists_sync(conn, "session_work_events") and _table_exists_sync(conn, "session_work_events_fts"):
         ddl.extend(_SESSION_WORK_EVENT_FTS_TRIGGER_DDL)
-    if _table_exists_sync(conn, "threads") and _table_exists_sync(conn, "threads_fts"):
-        ddl.extend(_THREAD_FTS_TRIGGER_DDL)
     return tuple(ddl)
 
 
@@ -300,8 +289,6 @@ async def _fts_trigger_ddl_for_existing_surfaces_async(conn: aiosqlite.Connectio
         conn, "session_work_events_fts"
     ):
         ddl.extend(_SESSION_WORK_EVENT_FTS_TRIGGER_DDL)
-    if await _table_exists_async(conn, "threads") and await _table_exists_async(conn, "threads_fts"):
-        ddl.extend(_THREAD_FTS_TRIGGER_DDL)
     return tuple(ddl)
 
 
@@ -348,7 +335,6 @@ def rebuild_fts_index_sync(
         rebuild_messages_fts_content_sync(conn)
         rebuild_messages_fts_identity_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
-    _rebuild_threads_fts_sync(conn)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
@@ -421,7 +407,7 @@ def _blocks_content_hash_available_sync(conn: sqlite3.Connection) -> bool:
     ``content_hash``) rather than the full archive schema -- the identity
     ledger is additive there: skip populating it rather than erroring, the
     same accommodation already made for other optional derived surfaces
-    (``session_work_events_fts``/``threads_fts`` existence checks above).
+    (``session_work_events_fts`` existence checks above).
     """
     return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)").fetchall())
 
@@ -534,7 +520,6 @@ def rebuild_session_insight_fts_sync(conn: sqlite3.Connection) -> None:
     """Rebuild only the durable session-insight FTS projections."""
     restore_fts_triggers_sync(conn)
     _rebuild_session_work_events_fts_sync(conn)
-    _rebuild_threads_fts_sync(conn)
     from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
 
     record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
@@ -553,19 +538,6 @@ def _rebuild_session_work_events_fts_sync(conn: sqlite3.Connection) -> None:
         INSERT INTO session_work_events_fts (event_id, session_id, work_event_type, text)
         SELECT event_id, session_id, work_event_type, {pl_fold_sql_expr("search_text")}
         FROM session_work_events
-        """
-    )
-
-
-def _rebuild_threads_fts_sync(conn: sqlite3.Connection) -> None:
-    if not (_table_exists_sync(conn, "threads") and _table_exists_sync(conn, "threads_fts")):
-        return
-    conn.execute("DELETE FROM threads_fts")
-    conn.execute(
-        f"""
-        INSERT INTO threads_fts (thread_id, root_id, text)
-        SELECT thread_id, thread_id AS root_id, {pl_fold_sql_expr("search_text")}
-        FROM threads
         """
     )
 
@@ -1047,7 +1019,6 @@ def _fts_invariant_snapshot_sync(conn: sqlite3.Connection) -> FtsInvariantSnapsh
         messages=message_surface,
         retired_action_surface=_absent_optional_surface("retired_action_surface"),
         session_work_events=_optional_session_work_events_fts_invariant_sync(conn),
-        threads=_optional_threads_fts_invariant_sync(conn),
     )
 
 
@@ -1086,33 +1057,6 @@ def _optional_session_work_events_fts_invariant_sync(conn: sqlite3.Connection) -
             WHERE swe.event_id IS NULL
         """,
         duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts",
-    )
-
-
-def _optional_threads_fts_invariant_sync(conn: sqlite3.Connection) -> FtsSurfaceInvariant:
-    if not _table_exists_sync(conn, "threads_fts"):
-        return _absent_optional_surface("threads_fts")
-    return _trigger_invariant_sync(
-        conn,
-        name="threads_fts",
-        source_table_name="threads",
-        table_name="threads_fts",
-        source_sql="SELECT COUNT(*) FROM threads",
-        indexed_sql="SELECT COUNT(DISTINCT thread_id) FROM threads_fts",
-        trigger_names=_THREAD_FTS_TRIGGER_NAMES,
-        missing_sql="""
-            SELECT COUNT(*)
-            FROM threads AS wt
-            LEFT JOIN threads_fts AS f ON f.thread_id = wt.thread_id
-            WHERE f.thread_id IS NULL
-        """,
-        excess_sql="""
-            SELECT COUNT(DISTINCT f.thread_id)
-            FROM threads_fts AS f
-            LEFT JOIN threads AS wt ON wt.thread_id = f.thread_id
-            WHERE wt.thread_id IS NULL
-        """,
-        duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM threads_fts",
     )
 
 

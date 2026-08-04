@@ -515,7 +515,7 @@ def test_archive_fts_optional_surface_repair_uses_stale_surface_repair(
         fake_repair_stale_fts_rows,
     )
 
-    assert stages.repair_fts_surface(archive_db, "threads_fts") is True
+    assert stages.repair_fts_surface(archive_db, "session_work_events_fts") is True
     assert configured == [conn]
     assert repairs == [conn]
     assert conn.committed is True

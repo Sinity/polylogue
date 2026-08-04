@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 
 # FTS5 surfaces managed by this module.  Must be kept in sync with the
 # trigger names in fts_lifecycle.py.
-_FTS_SURFACES = ("messages_fts", "session_work_events_fts", "threads_fts")
+_FTS_SURFACES = ("messages_fts", "session_work_events_fts")
 
 # Work-unit budget per periodic merge call.  500 units bounds each call
 # to roughly 2–4 MiB of WAL writes so the periodic merge never becomes an

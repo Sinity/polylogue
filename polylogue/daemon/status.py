@@ -2567,7 +2567,6 @@ def build_daemon_status(
         indexed_surface=str(fts.get("indexed_surface", "messages_fts")),
         messages_ready=bool(fts.get("messages_ready", False)),
         session_work_events_ready=bool(fts.get("session_work_events_ready", False)),
-        threads_ready=bool(fts.get("threads_ready", False)),
         invariant_ready=bool(fts.get("invariant_ready", False)),
         message_indexed_count=None
         if fts.get("message_indexed_count") is None

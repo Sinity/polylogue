@@ -415,15 +415,16 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   version bump accompanying `beads-issue` origin ingestion support
   (polylogue-2800) landing alongside other index-tier work in the same
   release window.
-- Index schema version 35 adds Polish lexical search-recall folding
-  (polylogue-9jsi). The `messages_fts`, `threads_fts`, and
-  `session_work_events_fts` tokenizers move from `unicode61` to
+- Index schema version 35 added Polish lexical search-recall folding
+  (polylogue-9jsi). The then-present `messages_fts`, `threads_fts`, and
+  `session_work_events_fts` tokenizers moved from `unicode61` to
   `unicode61 remove_diacritics 2`, which folds ordinary combining-mark
   diacritics (`ó`->`o`, `ż`->`z`, `ą`->`a`, ...) symmetrically for indexed
   and `MATCH` query text. Separately, `ł`/`Ł` (Latin L with stroke) has no
   Unicode decomposition, so neither NFD normalization nor
   `remove_diacritics` can fold it; every write path for the three FTS
-  surfaces—fresh-write triggers, full rebuilds, missing-row repair, and
+  surfaces, including the later-removed `threads_fts`, used the fold across
+  fresh-write triggers, full rebuilds, missing-row repair, and
   dangling derived-surface repair—applies an inline `REPLACE`-chain fold
   (`polylogue/storage/fts/pl_fold.py:pl_fold_sql_expr`) to the indexed
   `text` column, and `escape_fts5_query` applies the byte-identical Python

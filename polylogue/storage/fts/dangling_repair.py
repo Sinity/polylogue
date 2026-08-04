@@ -117,22 +117,6 @@ def _repair_session_work_events_fts_rows_sync(conn: sqlite3.Connection) -> tuple
     )
 
 
-def _repair_threads_fts_rows_sync(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
-    return _repair_keyed_content_fts_sync(
-        conn,
-        source_table="threads",
-        fts_table="threads_fts",
-        key_column="thread_id",
-        insert_sql=f"""
-            INSERT INTO threads_fts (thread_id, root_id, text)
-            SELECT wt.thread_id, wt.thread_id AS root_id, {pl_fold_sql_expr("wt.search_text")}
-            FROM threads AS wt
-            LEFT JOIN threads_fts AS fts ON fts.thread_id = wt.thread_id
-            WHERE fts.thread_id IS NULL
-        """,
-    )
-
-
 def _record_optional_derived_surface(
     conn: sqlite3.Connection,
     *,
@@ -159,7 +143,6 @@ def _source_table_for_surface(surface: str) -> str | None:
     return {
         "messages_fts": "messages",
         "session_work_events_fts": "session_work_events",
-        "threads_fts": "threads",
     }.get(surface)
 
 
@@ -238,7 +221,6 @@ def repair_stale_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
     inserted_work_events, source_work_events, after_work_events, _excess_work_events = (
         _repair_session_work_events_fts_rows_sync(conn)
     )
-    inserted_threads, source_threads, after_threads, _excess_threads = _repair_threads_fts_rows_sync(conn)
     work_event_ready = _record_optional_derived_surface(
         conn,
         surface="session_work_events_fts",
@@ -246,19 +228,11 @@ def repair_stale_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcome:
         indexed_rows=after_work_events,
         triggers=("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
     )
-    thread_ready = _record_optional_derived_surface(
-        conn,
-        surface="threads_fts",
-        source_rows=source_threads,
-        indexed_rows=after_threads,
-        triggers=("threads_fts_ai", "threads_fts_ad", "threads_fts_au"),
-    )
     return DanglingFtsRepairOutcome(
-        repaired_count=inserted_work_events + inserted_threads,
-        success=work_event_ready and thread_ready,
+        repaired_count=inserted_work_events,
+        success=work_event_ready,
         detail=(
-            "FTS sync: repaired stale derived surfaces "
-            f"({after_work_events:,}/{source_work_events:,} work events, {after_threads:,}/{source_threads:,} threads)"
+            f"FTS sync: repaired stale derived surfaces ({after_work_events:,}/{source_work_events:,} work events)"
         ),
     )
 
@@ -288,7 +262,6 @@ def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcom
     inserted_work_events, source_work_events, after_work_events, _excess_work_events = (
         _repair_session_work_events_fts_rows_sync(conn)
     )
-    inserted_threads, source_threads, after_threads, _excess_threads = _repair_threads_fts_rows_sync(conn)
     after_messages = int(conn.execute(FTS_INDEX_DOC_COUNT_SQL).fetchone()[0] or 0)
     message_ready = after_messages == source_messages and _triggers_present_sync(
         conn,
@@ -310,21 +283,14 @@ def repair_missing_fts_rows(conn: sqlite3.Connection) -> DanglingFtsRepairOutcom
         indexed_rows=after_work_events,
         triggers=("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
     )
-    thread_ready = _record_optional_derived_surface(
-        conn,
-        surface="threads_fts",
-        source_rows=source_threads,
-        indexed_rows=after_threads,
-        triggers=("threads_fts_ai", "threads_fts_ad", "threads_fts_au"),
-    )
 
     return DanglingFtsRepairOutcome(
-        repaired_count=inserted_messages + inserted_work_events + inserted_threads,
-        success=message_ready and work_event_ready and thread_ready,
+        repaired_count=inserted_messages + inserted_work_events,
+        success=message_ready and work_event_ready,
         detail=(
             "FTS sync: repaired index "
             f"({after_messages:,}/{source_messages:,} messages, "
-            f"{after_work_events:,}/{source_work_events:,} work events, {after_threads:,}/{source_threads:,} threads)"
+            f"{after_work_events:,}/{source_work_events:,} work events)"
         ),
     )
 

@@ -59,7 +59,6 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
         work_event_inference_fts_ready=True,
         phase_inference_rows_ready=False,
         threads_ready=True,
-        threads_fts_ready=True,
         tag_rollups_ready=True,
     )
     monkeypatch.setattr(
@@ -109,9 +108,6 @@ def test_build_timeline_statuses_names_timeline_rows_by_table() -> None:
             "total_thread_roots": 1,
             "stale_thread_rows": 0,
             "orphan_thread_rows": 0,
-            "thread_fts_ready": True,
-            "thread_fts_rows": 1,
-            "thread_fts_duplicates": 0,
         }
     )
 

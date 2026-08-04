@@ -22,7 +22,6 @@ _SESSION_WORK_EVENT_FTS_TRIGGERS = (
     "session_work_events_fts_ad",
     "session_work_events_fts_au",
 )
-_THREAD_FTS_TRIGGERS = ("threads_fts_ai", "threads_fts_ad", "threads_fts_au")
 _FTS_STARTUP_BUSY_TIMEOUT_MS = 120_000
 _ARCHIVE_MESSAGES_FTS_STARTUP_REBUILD_MAX_DRIFT_ROWS = 10_000
 
@@ -83,7 +82,6 @@ def active_fts_triggers_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
         expected.extend(_ARCHIVE_MESSAGE_FTS_TRIGGERS)
     for table_names, trigger_names in (
         (("session_work_events", "session_work_events_fts"), _SESSION_WORK_EVENT_FTS_TRIGGERS),
-        (("threads", "threads_fts"), _THREAD_FTS_TRIGGERS),
     ):
         if all(table_exists_sync(conn, table_name) for table_name in table_names):
             expected.extend(trigger_names)
@@ -123,7 +121,7 @@ def _active_fts_startup_db_path() -> Path:
 _MESSAGE_FTS_STARTUP_DEBT_DETAIL = (
     "archive message FTS drift exceeds bounded startup reconciliation; scheduled global FTS freshness debt"
 )
-_OPTIONAL_FTS_SURFACES = ("session_work_events_fts", "threads_fts")
+_OPTIONAL_FTS_SURFACES = ("session_work_events_fts",)
 
 
 def _ensure_archive_messages_fts_startup_readiness_sync(
