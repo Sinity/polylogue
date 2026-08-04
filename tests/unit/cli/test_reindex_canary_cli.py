@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
@@ -63,7 +64,7 @@ def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
 
 def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplication(
     tmp_path: Path,
-    monkeypatch,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     index_path = tmp_path / "index.db"
     index_path.touch()
@@ -129,7 +130,9 @@ def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplicat
     assert json.loads(result.stdout)["selection"]["selected_raw_ids"] == ["raw-sample"]
 
 
-def test_reindex_canary_cli_refuses_to_write_unclassified_report(tmp_path: Path, monkeypatch) -> None:
+def test_reindex_canary_cli_refuses_to_write_unclassified_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     index_path = tmp_path / "index.db"
     index_path.touch()
     run_result = _run_result(index_path, differences=(object(),))
@@ -159,7 +162,9 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(tmp_path: Path,
     assert "classification is incomplete" in result.output
 
 
-def test_shared_canary_runner_uses_existing_inactive_rebuild_route(tmp_path: Path, monkeypatch) -> None:
+def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     current_index = tmp_path / "current.db"
     candidate_index = tmp_path / ".index-generations" / "gen-test" / "index.db"
     current_index.touch()
