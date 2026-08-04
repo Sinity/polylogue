@@ -217,6 +217,9 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
     # required the classifier cannot be claimed when the classifier failed.
     if readiness.get("debt_classifier_error"):
         return False
+    parser_census = readiness.get("raw_authority_parser_census")
+    if isinstance(parser_census, Mapping) and not bool(parser_census.get("available", False)):
+        return False
     frontier = readiness.get("raw_authority_frontier")
     if not isinstance(frontier, Mapping) or frontier.get("lifecycle_status") != "completed":
         return False
@@ -234,6 +237,7 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
         "raw_authority_frontier_blocking_count",
         "raw_authority_blocker_count",
         "raw_authority_pending_census_count",
+        "raw_authority_parser_census_incomplete_count",
     )
     return all(_read_int(readiness, key) == 0 for key in blocking_keys)
 
@@ -376,6 +380,58 @@ def raw_materialization_readiness_snapshot(
             authority_frontier_blocking_count = 0
             authority_frontier_remediation_refs: list[dict[str, object]] = []
             authority_pending_census_count = 0
+            parser_census_available = False
+            parser_census_complete_count = 0
+            parser_census_incomplete_count = 0
+            parser_census_incomplete_blob_bytes = 0
+            parser_census_missing_receipt_count = 0
+            parser_census_non_complete_receipt_count = 0
+            parser_census_origin_summary: list[dict[str, object]] = []
+            if _table_columns(conn, "source", "raw_authority_parser_census"):
+                from polylogue.storage.raw_authority import (
+                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
+                )
+
+                parser_census_available = True
+                known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
+                fingerprint_placeholders = ",".join("?" for _ in known_fingerprints)
+                blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
+                census_rows = conn.execute(
+                    f"""
+                    WITH parser_census AS (
+                        SELECT r.raw_id, r.origin, {blob_size_expression} AS blob_size,
+                            CASE WHEN c.status = 'complete' AND c.parser_fingerprint IN ({fingerprint_placeholders}) THEN 1 ELSE 0 END AS is_complete,
+                            CASE WHEN c.raw_id IS NULL THEN 1 ELSE 0 END AS is_missing_receipt
+                        FROM source.raw_sessions AS r
+                        LEFT JOIN source.raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                        WHERE COALESCE(r.validation_status, '') != 'skipped'
+                    )
+                    SELECT COALESCE(SUM(is_complete), 0), COALESCE(SUM(CASE WHEN is_complete = 0 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN is_complete = 0 THEN blob_size ELSE 0 END), 0), COALESCE(SUM(is_missing_receipt), 0),
+                        COALESCE(SUM(CASE WHEN is_complete = 0 AND is_missing_receipt = 0 THEN 1 ELSE 0 END), 0)
+                    FROM parser_census
+                    """,
+                    known_fingerprints,
+                ).fetchone()
+                parser_census_complete_count = int(census_rows[0] or 0)
+                parser_census_incomplete_count = int(census_rows[1] or 0)
+                parser_census_incomplete_blob_bytes = int(census_rows[2] or 0)
+                parser_census_missing_receipt_count = int(census_rows[3] or 0)
+                parser_census_non_complete_receipt_count = int(census_rows[4] or 0)
+                parser_census_origin_summary = [
+                    {"origin": str(origin), "count": int(count or 0), "blob_bytes": int(blob_bytes or 0)}
+                    for origin, count, blob_bytes in conn.execute(
+                        f"""
+                    SELECT r.origin, COUNT(*), COALESCE(SUM({blob_size_expression}), 0)
+                    FROM source.raw_sessions AS r LEFT JOIN source.raw_authority_parser_census AS c ON c.raw_id = r.raw_id
+                    WHERE COALESCE(r.validation_status, '') != 'skipped'
+                      AND NOT COALESCE(c.status = 'complete' AND c.parser_fingerprint IN ({fingerprint_placeholders}), 0)
+                    GROUP BY r.origin ORDER BY 3 DESC, 2 DESC, r.origin LIMIT 16
+                    """,
+                        known_fingerprints,
+                    )
+                ]
             if _table_columns(conn, "source", "raw_authority_censuses"):
                 authority_pending_census_count = int(
                     conn.execute(
@@ -567,9 +623,21 @@ def raw_materialization_readiness_snapshot(
         "raw_authority_frontier_remediation_refs": authority_frontier_remediation_refs,
         "raw_authority_blocker_count": authority_blocker_count,
         "raw_authority_pending_census_count": authority_pending_census_count,
+        "raw_authority_parser_census": {
+            "available": parser_census_available,
+            "complete_count": parser_census_complete_count,
+            "incomplete_count": parser_census_incomplete_count,
+            "incomplete_blob_bytes": parser_census_incomplete_blob_bytes,
+            "missing_receipt_count": parser_census_missing_receipt_count,
+            "non_complete_receipt_count": parser_census_non_complete_receipt_count,
+            "incomplete_origin_summary": parser_census_origin_summary,
+        },
+        "raw_authority_parser_census_incomplete_count": parser_census_incomplete_count,
+        "raw_authority_parser_census_incomplete_blob_bytes": parser_census_incomplete_blob_bytes,
         "raw_authority_ledger_counts": {
             "unresolved_blockers": authority_blocker_count,
             "pending_censuses": authority_pending_census_count,
+            "parser_census_incomplete": parser_census_incomplete_count,
         },
     }
 

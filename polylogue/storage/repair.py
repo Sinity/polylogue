@@ -74,6 +74,7 @@ from polylogue.storage.raw_authority import (
     raw_replay_plan_deferred_for_envelope,
     raw_replay_plan_last_attempts,
     raw_replay_plan_no_progress_plan_ids,
+    raw_replay_resource_envelope_reason,
     record_raw_authority_census,
     record_raw_replay_outcome,
     recover_interrupted_raw_authority_censuses,
@@ -4217,6 +4218,21 @@ def _raw_materialization_component_stream_safe(
     return all(_raw_materialization_stream_safe(candidates, raw_id) for raw_id in component)
 
 
+def _raw_materialization_resource_blocked_plan_outcome(
+    *, plan: RawReplayPlan, component: tuple[str, ...], candidates: RawMaterializationCandidates, max_payload_bytes: int
+) -> RawReplayPlanOutcome:
+    stream_safe = _raw_materialization_component_stream_safe(candidates, component)
+    return RawReplayPlanOutcome(
+        plan.plan_id,
+        component,
+        RawReplayPlanStatus.DEFERRED if stream_safe else RawReplayPlanStatus.TERMINAL,
+        raw_replay_resource_envelope_reason(max_payload_bytes),
+        "retry through bounded stream-safe whale pass"
+        if stream_safe
+        else "terminal: non-stream-safe component requires offline/manual convergence",
+    )
+
+
 def _raw_materialization_retryable_missing_blob_error(parse_error: object, durable_retryable: bool = False) -> bool:
     if durable_retryable:
         return True
@@ -6236,7 +6252,6 @@ def repair_raw_materialization(
                     tuple(sorted(uncensused_raw_ids.intersection(component))),
                     max_payload_bytes=max_payload_bytes,
                     total_payload_bytes=exc.total_bytes,
-                    stream_safe=_raw_materialization_component_stream_safe(candidates, component),
                 )
             except Exception:
                 logger.exception("raw authority census failed for component containing %s", seed)
@@ -6364,12 +6379,11 @@ def repair_raw_materialization(
     ]
     blocked_component_raw_ids = {raw_id for component in blocked_components for raw_id in component}
     blocked_plan_outcomes = tuple(
-        RawReplayPlanOutcome(
-            plan_by_component[component].plan_id,
-            component,
-            RawReplayPlanStatus.DEFERRED,
-            f"resource-envelope:{max_payload_bytes}",
-            "retry only after a larger resource envelope or changed source/index preconditions",
+        _raw_materialization_resource_blocked_plan_outcome(
+            plan=plan_by_component[component],
+            component=component,
+            candidates=candidates,
+            max_payload_bytes=max_payload_bytes,
         )
         for component in blocked_components
     )
@@ -6766,12 +6780,8 @@ def repair_raw_materialization(
             metrics["raw_materialization_resource_blocked_count"] = max(
                 metrics.get("raw_materialization_resource_blocked_count", 0.0), float(len(exc.raw_ids))
             )
-            outcome = RawReplayPlanOutcome(
-                plan.plan_id,
-                component,
-                RawReplayPlanStatus.DEFERRED,
-                f"resource-envelope:{max_payload_bytes}",
-                "retry only after a larger resource envelope or changed source/index preconditions",
+            outcome = _raw_materialization_resource_blocked_plan_outcome(
+                plan=plan, component=component, candidates=candidates, max_payload_bytes=max_payload_bytes
             )
             record_raw_replay_outcome(archive_root, census_receipt.census_id, outcome)
             execution_outcomes.append(outcome)

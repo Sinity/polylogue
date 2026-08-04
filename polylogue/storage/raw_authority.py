@@ -753,6 +753,14 @@ def raw_replay_plan_last_attempts(archive_root: Path) -> dict[str, int]:
         }
 
 
+RAW_REPLAY_RESOURCE_ENVELOPE_REASON_PREFIX = "resource-envelope:"
+
+
+def raw_replay_resource_envelope_reason(max_payload_bytes: int) -> str:
+    """Return the canonical reason for a plan blocked by one exact envelope."""
+    return f"{RAW_REPLAY_RESOURCE_ENVELOPE_REASON_PREFIX}{max_payload_bytes}"
+
+
 def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_bytes: int) -> set[str]:
     """Return unchanged plans already deferred for this exact resource envelope.
 
@@ -763,7 +771,7 @@ def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_byt
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return set()
-    reason = f"resource-envelope:{max_payload_bytes}"
+    reason = raw_replay_resource_envelope_reason(max_payload_bytes)
     with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_authority_census_plans'"
@@ -778,7 +786,7 @@ def raw_replay_plan_deferred_for_envelope(archive_root: Path, *, max_payload_byt
                 FROM raw_authority_census_plans AS cp
                 JOIN raw_authority_censuses AS c ON c.census_id = cp.census_id
                 WHERE cp.selected = 1
-                  AND cp.outcome_status = 'deferred'
+                  AND cp.outcome_status IN ('deferred', 'terminal')
                   AND cp.reason = ?
                   AND c.lifecycle_status IN ('completed', 'interrupted')
                 """,

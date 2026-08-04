@@ -174,6 +174,7 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     unchecked = int(payload.get("unchecked") or 0)
     affected_unchecked = int(payload.get("affected_unchecked") or 0)
     lost_source_evidence_count = int(payload.get("lost_source_evidence_count") or 0)
+    parser_census_incomplete_count = int(payload.get("raw_authority_parser_census_incomplete_count") or 0)
     raw_artifact_count = int(payload.get("raw_artifact_count") or 0)
     materialized_raw_artifact_count = int(payload.get("materialized_raw_artifact_count") or 0)
     archive_session_count = int(payload.get("archive_session_count") or 0)
@@ -181,6 +182,9 @@ def component_from_raw_materialization_readiness(readiness: Mapping[str, Any] | 
     if not available:
         state = CapabilityReadinessState.UNKNOWN
         summary = "unknown"
+    elif parser_census_incomplete_count > 0:
+        state = CapabilityReadinessState.BLOCKED
+        summary = "source parser census incomplete"
     elif lost_source_evidence_count > 0:
         state = CapabilityReadinessState.BLOCKED
         summary = "source evidence missing"
