@@ -16,6 +16,7 @@ required-gate budget as every sibling command).
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import json
 import os
 import sqlite3
@@ -46,6 +47,24 @@ def _require_stopped_daemon(root: Path) -> str:
     return "proof:daemon-stopped"
 
 
+def _acquire_offline_writer_authority(root: Path) -> tuple[int, str]:
+    """Hold the daemon startup exclusion for the complete offline operation."""
+    pidfile = root / "daemon.pid"
+    descriptor = os.open(pidfile, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        os.close(descriptor)
+        raise MigrationError(f"durable migration requires exclusive daemon startup authority: {pidfile}") from exc
+    try:
+        _require_stopped_daemon(root)
+    except Exception:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+        raise
+    return descriptor, "proof:daemon-stopped-and-startup-excluded"
+
+
 @click.command("migrate-tier")
 @click.argument("tier", type=click.Choice(tuple(sorted(tier.value for tier in DURABLE_MIGRATION_TIERS))))
 @click.option(
@@ -62,15 +81,19 @@ def migrate_tier_command(tier: str, backup_manifest: Path | None, output_format:
     blue-green replace those from source evidence instead.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
-    from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+    from polylogue.storage.sqlite.migration_runner import hold_durable_migration_writer, migrate_archive_tier
 
     archive_tier = ArchiveTier(tier)
     spec = ARCHIVE_TIER_SPECS[archive_tier]
     path = archive_root() / spec.filename
     stopped_daemon_evidence_ref: str | None = None
+    daemon_authority_fd: int | None = None
     try:
-        stopped_daemon_evidence_ref = _require_stopped_daemon(path.parent)
-        with contextlib.closing(sqlite3.connect(path)) as conn:
+        daemon_authority_fd, stopped_daemon_evidence_ref = _acquire_offline_writer_authority(path.parent)
+        with (
+            hold_durable_migration_writer(path.parent, owner_id=f"migrate-tier:{os.getpid()}"),
+            contextlib.closing(sqlite3.connect(path)) as conn,
+        ):
             result = migrate_archive_tier(conn, archive_tier, backup_manifest=backup_manifest)
     except (sqlite3.Error, MigrationError) as exc:
         if output_format == "json":
@@ -91,6 +114,10 @@ def migrate_tier_command(tier: str, backup_manifest: Path | None, output_format:
         else:
             click.echo(f"Migration blocked for {tier}: {exc}", err=True)
         raise SystemExit(1) from exc
+    finally:
+        if daemon_authority_fd is not None:
+            fcntl.flock(daemon_authority_fd, fcntl.LOCK_UN)
+            os.close(daemon_authority_fd)
 
     payload = {
         "ok": True,

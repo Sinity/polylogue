@@ -13,14 +13,15 @@ import stat
 import time
 import types
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
-from contextlib import closing
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
 from importlib import resources
 from pathlib import Path
 from typing import Final, cast, get_args, get_origin, get_type_hints
 
+from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
     BackupAttestationError,
@@ -36,6 +37,7 @@ _MIGRATION_NAME_RE = re.compile(r"^(?P<version>\d{3,})_[a-z0-9_]+\.sql$")
 _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
+_SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b", re.IGNORECASE)
 DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v1"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -43,6 +45,15 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 class MigrationError(RuntimeError):
     """Raised when a durable tier cannot be migrated safely."""
+
+
+@contextmanager
+def hold_durable_migration_writer(archive_root: Path, *, owner_id: str) -> Iterator[None]:
+    """Hold the established archive ownership lease around offline migration."""
+    location = ArchiveLocation.resolve(archive_root)
+    with OwnedArchiveLocation.acquire(location, owner_id=owner_id) as owned:
+        assert_owns_archive_location(owned, location)
+        yield
 
 
 @dataclass(frozen=True, slots=True)
@@ -758,7 +769,19 @@ def _execute_migration_sql(conn: sqlite3.Connection, sql: str) -> None:
         statement += line
         if sqlite3.complete_statement(statement):
             if statement.strip():
+                leading_sql = re.sub(
+                    r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*",
+                    "",
+                    statement,
+                )
+                if _SQL_TRANSACTION_CONTROL_RE.match(leading_sql) is not None:
+                    raise MigrationError(
+                        "durable migration SQL must not control the existing transaction: "
+                        f"{leading_sql.split(None, 1)[0].upper()}"
+                    )
                 conn.execute(statement)
+                if not conn.in_transaction:
+                    raise MigrationError("durable migration SQL escaped the existing transaction")
             statement = ""
     if statement.strip():
         raise MigrationError("migration SQL ended with an incomplete statement")
@@ -894,12 +917,16 @@ def migrate_archive_tier(
 
                 migrate_saved_query_assertions(conn)
             conn.execute(f"PRAGMA user_version = {step.version}")
+            if not conn.in_transaction:
+                raise MigrationError("durable migration SQL escaped the existing transaction")
             applied.append(step.version)
         quick_check = conn.execute("PRAGMA quick_check").fetchone()
         if quick_check is None or str(quick_check[0]).lower() != "ok":
             raise MigrationError(f"{tier.value} migration quick_check failed: {quick_check!r}")
         if sidecars:
             assert pre_transaction_evidence is not None
+            if not conn.in_transaction:
+                raise MigrationError("durable migration validation lost the existing transaction")
             post_transaction_evidence = capture_durable_database_evidence(conn, tier)
             foreign_key_errors = tuple(conn.execute("PRAGMA foreign_key_check").fetchall())
             if foreign_key_errors:

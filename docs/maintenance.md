@@ -24,16 +24,19 @@ polylogue ops maintenance migrate-tier source \
   --output-format json
 ```
 
-The command refuses before opening SQLite when a live daemon pidfile is found.
-The migration runner then validates the package sidecar, revalidates the
-backup against the current database, and performs the numbered SQL step in
-the existing transaction. It verifies row and schema parity, SQLite
-integrity, foreign keys, and canonical DDL parity before commit. A failed
-transaction is rolled back and may be retried after the cause is repaired.
+The command acquires the daemon startup exclusion and archive ownership before
+opening SQLite. It refuses when a live daemon or another archive writer holds
+either authority. The migration runner then validates the package sidecar,
+revalidates the backup against the current database, and performs the numbered
+SQL step in the existing transaction. It verifies row and schema parity,
+SQLite integrity, foreign keys, and canonical DDL parity before commit. A
+failed transaction is rolled back and may be retried after the cause is
+repaired.
 
-After restart, inspect daemon health and the train proof in the JSON output.
-The train is not complete until the daemon has reopened the migrated tier and
-the recorded runtime consumers converge successfully.
+The JSON output reports the migration receipt and stopped-daemon authority.
+Restart health and runtime-consumer convergence are the final lifecycle proof
+and are recorded by the durable train lifecycle API, not inferred from this
+command's migration result alone.
 
 For the conceptual model behind derived insights and the FTS / blob
 substrate, see [architecture.md](architecture.md) and

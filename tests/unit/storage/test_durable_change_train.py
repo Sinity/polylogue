@@ -14,7 +14,7 @@ from typing import cast
 import pytest
 
 from polylogue.storage.sqlite import migration_runner
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
@@ -32,7 +32,7 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableMigrationClaim,
     DurableRuntimeConsumer,
     DurableRuntimeConsumerResult,
-    MigrationStep,
+    MigrationError,
     add_durable_change_train_rider,
     admit_durable_change_train,
     apply_durable_change_train,
@@ -177,25 +177,25 @@ def _admitted(
 
 
 def _install_synthetic_migration(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tier: ArchiveTier,
     *,
     sql: str = _ADDITIVE_SQL,
 ) -> None:
+    package_name = f"fixture_migrations_{tier.value}_{tmp_path.name.replace('-', '_')}"
+    package_root = tmp_path / package_name
+    tier_package = package_root / tier.value
+    tier_package.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (tier_package / "__init__.py").write_text("", encoding="utf-8")
+    (tier_package / "002_durable_items.sql").write_text(sql, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
     versions = dict(ARCHIVE_VERSION_BY_TIER)
     versions[tier] = _TARGET_VERSION
     monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
-    step = MigrationStep(
-        tier=tier,
-        version=_TARGET_VERSION,
-        name="002_durable_items.sql",
-        sql=sql,
-        requires_backup=not sql.startswith("-- migration-safety: additive-no-backup"),
-    )
     monkeypatch.setattr(
-        migration_runner,
-        "_load_migrations",
-        lambda observed_tier: (step,) if observed_tier is tier else (),
+        migration_runner, "_migration_package", lambda observed_tier: f"{package_name}.{observed_tier.value}"
     )
 
 
@@ -241,18 +241,7 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
     db_path = tmp_path / f"{tier.value}.db"
     manifest = tmp_path / f"{tier.value}-train.json"
     _create_current_database(db_path)
-    _install_synthetic_migration(monkeypatch, tier)
-    original_runner = migration_runner.migrate_archive_tier
-    calls: list[ArchiveTier] = []
-
-    def observed_runner(
-        conn: sqlite3.Connection,
-        observed_tier: ArchiveTier,
-        *,
-        backup_manifest: Path | None,
-    ) -> migration_runner.MigrationResult:
-        calls.append(observed_tier)
-        return original_runner(conn, observed_tier, backup_manifest=backup_manifest)
+    _install_synthetic_migration(tmp_path, monkeypatch, tier)
 
     def persist_and_reload(next_train: DurableChangeTrain, expected_revision: int) -> DurableChangeTrain:
         write_durable_change_train_manifest(
@@ -262,7 +251,6 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
         )
         return load_durable_change_train_manifest(manifest)
 
-    monkeypatch.setattr(migration_runner, "migrate_archive_tier", observed_runner)
     claim = _claim(tier)
     train = _declared(tier, claim=claim)
     train = persist_and_reload(train, -1)
@@ -304,8 +292,6 @@ def test_synthetic_source_and_user_trains_complete_the_full_lifecycle(
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='durable_items'").fetchone() == (
             "durable_items",
         )
-    assert calls == [tier]
-
     assert train.apply_evidence is not None
     assert train.apply_evidence.migration_result.applied_versions == (_TARGET_VERSION,)
     assert train.apply_evidence.row_parity.ok is True
@@ -382,12 +368,38 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda _tier: "fixture_migrations.source",
     )
+    monkeypatch.setattr(
+        migration_runner,
+        "_migration_package",
+        lambda _tier: "fixture_migrations.source",
+    )
 
     observed = validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
+    loaded = migration_runner._load_migrations(ArchiveTier.SOURCE)
 
     assert [item.resource_name for item in observed] == ["027.train.json"]
     assert observed[0].train.migration.sql_sha256 == claim.sql_sha256
+    assert loaded[0].version == 27
     assert "fixture_migrations.source" in sys.modules
+
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = 27
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = """
+    CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
+    CREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;
+    """
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+    db_path = tmp_path / "real-route-source.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
+        conn.execute("PRAGMA user_version = 26")
+        conn.commit()
+        result = migration_runner.migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        assert result.applied_versions == (27,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (27,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='future_items'").fetchone() == ("future_items",)
 
 
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
@@ -415,6 +427,8 @@ def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     )
     payload = migration_runner.durable_change_train_to_payload(train)
     cast(dict[str, object], payload["migration"])["sql_sha256"] = "0" * 64
+    payload.pop("manifest_sha256", None)
+    payload["manifest_sha256"] = migration_runner._canonical_json_sha256(payload)
     (source_package / "027.train.json").write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(
@@ -422,8 +436,70 @@ def test_future_train_sidecar_hash_and_slot_are_admission_bound(
         lambda _tier: "fixture_migrations_hash.source",
     )
 
-    with pytest.raises(DurableChangeTrainError, match="checksum mismatch"):
+    with pytest.raises(DurableChangeTrainError, match="SQL SHA-256 mismatch"):
         validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
+
+    cast(dict[str, object], payload["migration"])["sql_sha256"] = claim.sql_sha256
+    payload["slot"] = 28
+    payload.pop("manifest_sha256", None)
+    payload["manifest_sha256"] = migration_runner._canonical_json_sha256(payload)
+    (source_package / "027.train.json").write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(DurableChangeTrainError, match="slot"):
+        validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
+
+
+def test_missing_future_sidecar_is_rejected_at_the_migration_runner_choke_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_root = tmp_path / "fixture_migrations_missing"
+    source_package = package_root / "source"
+    source_package.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_package / "__init__.py").write_text("", encoding="utf-8")
+    sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
+    sql_path = source_package / "027_future_items.sql"
+    sql_path.write_text(sql, encoding="utf-8")
+    claim = durable_migration_claim_for_sql(ArchiveTier.SOURCE, sql_path.name, sql, owner_ref="owner:future-source")
+    train = declare_durable_change_train(
+        train_id="train:source:v27",
+        tier=ArchiveTier.SOURCE,
+        current_version=26,
+        target_version=27,
+        slot=27,
+        owner_ref="owner:future-source",
+        migration=claim,
+        riders=(_rider(),),
+        declared_at_ms=1,
+    )
+    sidecar = source_package / "027.train.json"
+    sidecar.write_text(json.dumps(migration_runner.durable_change_train_to_payload(train)), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: "fixture_migrations_missing.source")
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda _tier: "fixture_migrations_missing.source",
+    )
+    assert migration_runner._load_migrations(ArchiveTier.SOURCE)[0].version == 27
+    sidecar.unlink()
+    with pytest.raises(MigrationError, match="missing durable migration train sidecar"):
+        migration_runner._load_migrations(ArchiveTier.SOURCE)
+
+
+def test_migration_transaction_control_cannot_escape_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(
+        tmp_path,
+        monkeypatch,
+        ArchiveTier.SOURCE,
+        sql="-- migration-safety: additive-no-backup\nCREATE TABLE transaction_escape (id INTEGER PRIMARY KEY);\nCOMMIT;\n",
+    )
+
+    with sqlite3.connect(db_path) as conn:
+        with pytest.raises(MigrationError, match="must not control the existing transaction"):
+            migration_runner.migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        assert conn.execute("PRAGMA user_version").fetchone() == (_CURRENT_VERSION,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='transaction_escape'").fetchone() is None
 
 
 def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
@@ -711,7 +787,7 @@ INSERT INTO table_that_does_not_exist VALUES (1);
     _create_current_database(db_path)
     claim = _claim(ArchiveTier.SOURCE, failing_sql)
     train = _admitted(ArchiveTier.SOURCE, claim=claim)
-    _install_synthetic_migration(monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
         with pytest.raises(DurableChangeTrainApplyError) as exc_info:
@@ -807,7 +883,7 @@ def test_restart_and_every_runtime_consumer_are_required_before_release(
 ) -> None:
     db_path = tmp_path / "user.db"
     _create_current_database(db_path)
-    _install_synthetic_migration(monkeypatch, ArchiveTier.USER)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.USER)
     train = _admitted(ArchiveTier.USER)
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
@@ -847,7 +923,7 @@ def test_manifest_semantics_reject_out_of_order_lifecycle_evidence(
 ) -> None:
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
-    _install_synthetic_migration(monkeypatch, ArchiveTier.SOURCE)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE)
     train = _admitted(ArchiveTier.SOURCE)
     with sqlite3.connect(db_path) as conn:
         train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
