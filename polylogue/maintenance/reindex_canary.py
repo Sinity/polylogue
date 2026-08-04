@@ -70,7 +70,9 @@ class ExpectedDifference:
             return False
         if self.operations and operation not in self.operations:
             return False
-        return not self.columns or bool(set(self.columns).intersection(changed_columns))
+        if not self.columns:
+            return True
+        return bool(changed_columns) and set(changed_columns).issubset(self.columns)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +110,7 @@ class CanaryDiffReport:
     session_ids: tuple[str, ...]
     compared_tables: tuple[str, ...]
     missing_tables: tuple[str, ...]
+    missing_columns: tuple[tuple[str, tuple[str, ...]], ...]
     differences: tuple[RowDifference, ...]
 
     @property
@@ -135,6 +138,7 @@ class CanaryDiffReport:
             "session_ids": list(self.session_ids),
             "compared_tables": list(self.compared_tables),
             "missing_tables": list(self.missing_tables),
+            "missing_columns": [{"table": table, "columns": list(columns)} for table, columns in self.missing_columns],
             "summary": {
                 "difference_count": len(self.differences),
                 "expected_count": self.expected_count,
@@ -520,8 +524,60 @@ def compare_reindex_generations(
         candidate_tables = _read_model_tables(candidate)
         compared_tables = tuple(sorted(current_tables.intersection(candidate_tables)))
         missing_tables = tuple(sorted(current_tables.symmetric_difference(candidate_tables)))
+        schema_differences: list[RowDifference] = []
+        missing_columns: list[tuple[str, tuple[str, ...]]] = []
+        for table in missing_tables:
+            current_present = table in current_tables
+            current_columns = _table_columns(current, table) if current_present else ()
+            candidate_columns = _table_columns(candidate, table) if table in candidate_tables else ()
+            operation = DifferenceOperation.REMOVED if current_present else DifferenceOperation.ADDED
+            changed_columns = tuple(sorted(set(current_columns).union(candidate_columns)))
+            before = {"table": table, "columns": list(current_columns)} if current_present else None
+            after = {"table": table, "columns": list(candidate_columns)} if table in candidate_tables else None
+            schema_differences.append(
+                _build_difference(
+                    table=table,
+                    operation=operation,
+                    identity=(("__schema__", "table"),),
+                    before=before,
+                    after=after,
+                    changed_columns=changed_columns,
+                    expected=reviewed,
+                )
+            )
+        for table in compared_tables:
+            current_column_set = set(_table_columns(current, table))
+            candidate_column_set = set(_table_columns(candidate, table))
+            only_current = current_column_set - candidate_column_set
+            only_candidate = candidate_column_set - current_column_set
+            if only_current or only_candidate:
+                missing_columns.append((table, tuple(sorted(only_current.union(only_candidate)))))
+            for column in sorted(only_current):
+                schema_differences.append(
+                    _build_difference(
+                        table=table,
+                        operation=DifferenceOperation.REMOVED,
+                        identity=(("__schema__", "column"), ("name", column)),
+                        before={"table": table, "column": column},
+                        after=None,
+                        changed_columns=(column,),
+                        expected=reviewed,
+                    )
+                )
+            for column in sorted(only_candidate):
+                schema_differences.append(
+                    _build_difference(
+                        table=table,
+                        operation=DifferenceOperation.ADDED,
+                        identity=(("__schema__", "column"), ("name", column)),
+                        before=None,
+                        after={"table": table, "column": column},
+                        changed_columns=(column,),
+                        expected=reviewed,
+                    )
+                )
         selected_sessions = _selected_session_ids(current, candidate, session_ids)
-        differences: list[RowDifference] = []
+        differences = schema_differences
         for table in compared_tables:
             differences.extend(
                 _compare_table(
@@ -539,6 +595,7 @@ def compare_reindex_generations(
         session_ids=selected_sessions,
         compared_tables=compared_tables,
         missing_tables=missing_tables,
+        missing_columns=tuple(missing_columns),
         differences=tuple(differences),
     )
 
@@ -637,33 +694,50 @@ def _compare_table(
         else:
             operation = DifferenceOperation.CHANGED
             changed_columns = tuple(column for column in columns if before.get(column) != after.get(column))
-        matching = next(
-            (
-                item
-                for item in expected
-                if item.matches(table=table, operation=operation, changed_columns=changed_columns)
-            ),
-            None,
-        )
         differences.append(
-            RowDifference(
+            _build_difference(
                 table=table,
                 operation=operation,
                 identity=tuple((column, key[index]) for index, column in enumerate(primary_key)),
                 before=before,
                 after=after,
                 changed_columns=changed_columns,
-                classification=(
-                    DifferenceClassification.EXPECTED if matching is not None else DifferenceClassification.UNEXPECTED
-                ),
-                rationale=(
-                    f"{matching.bead_ref}: {matching.rationale}"
-                    if matching is not None
-                    else "no reviewed bead or delta declaration matched this difference"
-                ),
+                expected=expected,
             )
         )
     return differences
+
+
+def _build_difference(
+    *,
+    table: str,
+    operation: DifferenceOperation,
+    identity: tuple[tuple[str, object], ...],
+    before: dict[str, object] | None,
+    after: dict[str, object] | None,
+    changed_columns: tuple[str, ...],
+    expected: tuple[ExpectedDifference, ...],
+) -> RowDifference:
+    matching = next(
+        (item for item in expected if item.matches(table=table, operation=operation, changed_columns=changed_columns)),
+        None,
+    )
+    return RowDifference(
+        table=table,
+        operation=operation,
+        identity=identity,
+        before=before,
+        after=after,
+        changed_columns=changed_columns,
+        classification=DifferenceClassification.EXPECTED
+        if matching is not None
+        else DifferenceClassification.UNEXPECTED,
+        rationale=(
+            f"{matching.bead_ref}: {matching.rationale}"
+            if matching is not None
+            else "no reviewed bead or delta declaration matched this difference"
+        ),
+    )
 
 
 def _table_rows(
