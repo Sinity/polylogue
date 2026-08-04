@@ -1321,7 +1321,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "polylogue-s8s54: act only on rows whose complete browser-capture envelope proves "
             "session.provider='chatgpt'. Default is dry-run; --apply requires a verified source-tier "
-            "backup manifest. The source-tier origin/capture_mode update is receipt-backed, while the "
+            "backup manifest and remains locked to the measured ChatGPT spool. The source-tier origin/capture_mode update is receipt-backed, while the "
             "generated index session identity remains untouched for the normal reparse route."
         ),
         examples=(

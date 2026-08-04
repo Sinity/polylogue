@@ -52,3 +52,20 @@ def test_unknown_export_apply_json_contract(
     assert payload["index_reparse_required"] is True
     assert payload["index_rows_touched"] == 0
     assert payload["receipt_table"] == "raw_unknown_export_reclassification_receipts"
+
+
+@pytest.mark.parametrize("source_path_like", ["", "%browser-capture%"])
+def test_unknown_export_apply_refuses_to_widen_the_measured_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    source_path_like: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _unexpected_apply(*args: object, **kwargs: object) -> None:
+        raise AssertionError("the durable apply path must not run outside the measured spool")
+
+    monkeypatch.setattr(
+        "devtools.unknown_export_reclassification_apply.apply_unknown_export_reclassification", _unexpected_apply
+    )
+
+    assert main(["--apply", "--source-path-like", source_path_like]) == 1
+    assert "refused: --apply is limited to the measured ChatGPT browser-capture spool" in capsys.readouterr().out

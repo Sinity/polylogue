@@ -28,7 +28,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         default=CHATGPT_BROWSER_CAPTURE_SOURCE_PATH_LIKE,
         help=(
             "SQL LIKE pattern restricting the durable repair to source_path "
-            "(default: the browser-capture/chatgpt spool). Pass an empty string to scan all sources."
+            "(default: the browser-capture/chatgpt spool). Broader patterns are dry-run only."
         ),
     )
     parser.add_argument("--limit", type=int, default=None, help="Cap the number of unknown-export rows scanned.")
@@ -48,6 +48,13 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
 
     root = args.archive_root if args.archive_root is not None else default_archive_root()
     source_path_like = args.source_path_like if args.source_path_like else None
+    if args.apply and source_path_like != CHATGPT_BROWSER_CAPTURE_SOURCE_PATH_LIKE:
+        print(
+            "refused: --apply is limited to the measured ChatGPT browser-capture spool; "
+            "use a dry run to inspect any broader scope",
+            file=stdout,
+        )
+        return 1
     try:
         report = apply_unknown_export_reclassification(
             root,
