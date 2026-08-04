@@ -63,7 +63,12 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch)
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/coordinator/.venv")
     captured: dict[str, object] = {}
 
-    def fake_run(cmd, *, cwd=None, env=None):
+    def fake_run(
+        cmd: object,
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
         captured.update(cmd=cmd, cwd=cwd, env=env)
         return CompletedProcess(cmd, 0, "", "")
 
