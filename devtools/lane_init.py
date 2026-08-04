@@ -156,7 +156,10 @@ def _guard_check(worktree: Path) -> str | None:
     python = worktree / ".venv" / "bin" / "python"
     if not python.exists():
         return f"no venv python at {python}"
-    result = _run([str(python), "-c", "import polylogue, sys; print(polylogue.__file__)"])
+    result = _run(
+        [str(python), "-c", "import polylogue, sys; print(polylogue.__file__)"],
+        cwd=worktree,
+    )
     if result.returncode != 0:
         return f"lane venv cannot import polylogue: {result.stderr.strip()[-400:]}"
     resolved = result.stdout.strip()

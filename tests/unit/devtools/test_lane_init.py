@@ -42,3 +42,13 @@ def test_guard_check_flags_escaped_resolution(tmp_path: Path) -> None:
     python.chmod(0o755)
     error = lane_init._guard_check(lane)
     assert error is not None and "guard violation" in error
+
+
+def test_guard_check_runs_lane_interpreter_from_lane_root(tmp_path: Path) -> None:
+    lane = tmp_path / "lane"
+    python = lane / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\nprintf '%s/polylogue/__init__.py\\n' \"$PWD\"\n")
+    python.chmod(0o755)
+
+    assert lane_init._guard_check(lane) is None
