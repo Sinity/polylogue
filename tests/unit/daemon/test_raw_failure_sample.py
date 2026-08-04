@@ -240,7 +240,10 @@ class TestRawFailureInfoProducesTypedSamples:
             )
             conn.commit()
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         assert info["parse_failures"] == 1
@@ -264,7 +267,10 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=1024,
         )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = info["samples"]
@@ -289,7 +295,10 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=512,
         )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -310,7 +319,10 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=256,
         )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -378,7 +390,10 @@ class TestRawFailureInfoProducesTypedSamples:
                 ),
             )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         assert info["deferred_failures"] == 1
@@ -386,6 +401,41 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["unexplained_failures"] == 1
         samples = cast(list[RawFailureSample], info["samples"])
         assert {sample.lifecycle for sample in samples} == {"deferred", "terminal", "unexplained"}
+
+    def test_raw_failure_info_uses_root_source_tier_for_pointer_index(self, tmp_path: Path) -> None:
+        generation = tmp_path / "generation"
+        generation.mkdir()
+        active_index = generation / "index.db"
+        sqlite3.connect(active_index).close()
+        (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-terminal",
+            origin="codex-session",
+            native_id="terminal",
+            source_path="/data/terminal.jsonl",
+            parse_error="captured JSONL payload ends before a complete record boundary",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-terminal",
+                ArchiveSourceArtifact(
+                    artifact_id="terminal-evidence",
+                    origin="codex-session",
+                    source_path="/data/terminal.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+
+        with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
+            info = _raw_failure_info()
+
+        assert info["parse_failures"] == 1
+        assert info["terminal_rejections"] == 1
 
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
         db = tmp_path / "index.db"
