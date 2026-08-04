@@ -331,6 +331,7 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
 
     def fake_rebuild(request: object) -> Receipt:
         captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
+        captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
         return Receipt()
 
     def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
@@ -348,6 +349,53 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     assert result.selection.pathology_session_ids == pathology_session_ids
     assert set(pathology_session_ids) <= set(captured["session_ids"])
     assert len(captured["raw_ids"]) == len(pathology_session_ids)
+    assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
+
+
+def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = tmp_path / "current.db"
+    _seed_index(current)
+    selection = CanarySelection(
+        index_path=current,
+        sessions_per_origin=1,
+        selected_session_ids=("codex-session:alpha",),
+        selected_raw_ids=("raw-alpha",),
+        sampled_session_ids=("codex-session:alpha",),
+        pathology_session_ids=(),
+        sample_session_ids=(),
+        origin_counts=(("codex-session", 1),),
+    )
+    captured: dict[str, tuple[str, ...]] = {}
+
+    class Receipt:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "replayed"}
+
+    def fake_rebuild(request: object) -> Receipt:
+        captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
+        captured["acceptance_checks"] = tuple(request.candidate_acceptance_checks)  # type: ignore[attr-defined]
+        return Receipt()
+
+    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+        captured["session_ids"] = session_ids
+        return _empty_comparison(current_index, candidate_index, session_ids)
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
+    )
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
+    )
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
+
+    result = run_reindex_canary(tmp_path, input_index=current, no_promote=True)
+
+    assert result.selection.pathology_session_ids == ()
+    assert captured["raw_ids"] == ("raw-alpha",)
+    assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
 
 
 def test_run_reindex_canary_compares_its_own_inactive_generation(

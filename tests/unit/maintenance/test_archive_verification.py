@@ -6,6 +6,7 @@ incoherence it claims to detect -- not merely that *some* check fails.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 from shutil import copytree
@@ -19,6 +20,7 @@ from polylogue.maintenance.archive_verification import (
     ARCHIVE_VERIFICATION_CHECKS,
     ARCHIVE_VERIFICATION_WAIVERS,
     REINDEX_ACCEPTANCE_CHECKS,
+    REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
     ArchiveVerificationCheck,
     ArchiveVerificationCheckClass,
     ArchiveVerificationReport,
@@ -1384,6 +1386,31 @@ def test_pathology_zoo_invariants_red_twin(tmp_path: Path) -> None:
         check = _check(red, "pathology-zoo-invariants")
         assert check.status is OutcomeStatus.ERROR, member.invariant.condition
         assert member.member_id in check.evidence["failed_member_ids"]
+
+
+def test_pathology_zoo_candidate_check_uses_candidate_index_and_durable_source(tmp_path: Path) -> None:
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(zoo.archive_root / "index.db", candidate)
+
+    green = verify_archive(
+        zoo.archive_root,
+        checks=("pathology-zoo-invariants",),
+        index_path_override=candidate,
+    )
+    assert _check(green, "pathology-zoo-invariants").status is OutcomeStatus.OK
+
+    with _connect(candidate) as conn:
+        conn.execute("UPDATE sessions SET message_count = 47 WHERE session_id = ?", ("codex-session:zoo-whale",))
+
+    red = verify_archive(
+        zoo.archive_root,
+        checks=REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
+        index_path_override=candidate,
+    )
+    check = _check(red, "pathology-zoo-invariants")
+    assert check.status is OutcomeStatus.ERROR
+    assert "whale-component" in check.evidence["failed_member_ids"]
 
 
 def test_every_non_complexity_check_has_a_red_twin_test() -> None:

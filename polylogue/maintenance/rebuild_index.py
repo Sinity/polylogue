@@ -243,6 +243,7 @@ class RebuildIndexRequest:
     raw_ids: tuple[str, ...] = ()
     max_blob_mb: float | None = None
     promote: bool = True
+    candidate_acceptance_checks: tuple[str, ...] | None = None
     operation_id: str | None = None
     raw_batch_size: int = 500
     pass_byte_budget_mb: float | None = None
@@ -652,8 +653,8 @@ async def _rebuild_index_from_source_owned(
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
     from polylogue.maintenance.archive_verification import (
-        CORPUS_FIDELITY_CHECKS,
         REINDEX_ACCEPTANCE_CHECKS,
+        REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS,
         verify_archive,
     )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
@@ -1092,7 +1093,11 @@ async def _rebuild_index_from_source_owned(
                 # source tier at the archive root before promotion.
                 verify_archive(
                     root,
-                    checks=CORPUS_FIDELITY_CHECKS,
+                    checks=(
+                        request.candidate_acceptance_checks
+                        if request.candidate_acceptance_checks is not None
+                        else REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS
+                    ),
                     index_path_override=Path(generation.index_path),
                 ),
             )

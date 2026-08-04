@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-import json
+import stat
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.cli.commands.maintenance import _reindex_canary as command_module
 from polylogue.maintenance.reindex_canary import (
     CanaryDiffReport,
     CanaryRunResult,
     CanarySelection,
-    DurableCanaryReport,
     UnclassifiedCanaryDiffError,
     run_reindex_canary,
 )
+from tests.infra.workload_artifacts import build_seeded_archive
 
 
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
@@ -51,6 +50,8 @@ def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
             "ops",
             "maintenance",
             "reindex-canary",
+            "--archive-root",
+            str(tmp_path),
             "--input",
             str(index_path),
             "--report",
@@ -62,33 +63,16 @@ def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
     assert "requires --no-promote" in result.output
 
 
-def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplication(
+def test_reindex_canary_cli_runs_real_no_promote_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    index_path = tmp_path / "index.db"
-    index_path.touch()
+    archive_root = build_seeded_archive(cache_root=tmp_path / "cache").root
+    for path in (archive_root, *archive_root.rglob("*")):
+        path.chmod(path.stat().st_mode | stat.S_IWUSR)
+    index_path = archive_root / "index.db"
     report_path = tmp_path / "reports" / "canary.json"
-    run_result = _run_result(index_path)
-    captured: dict[str, object] = {}
-
-    def fake_run(*args: object, **kwargs: object) -> CanaryRunResult:
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return run_result
-
-    def fake_write(path: Path, **kwargs: object) -> DurableCanaryReport:
-        captured["report_path"] = path
-        captured["report_kwargs"] = kwargs
-        return DurableCanaryReport(
-            selection=run_result.selection,
-            comparison=run_result.comparison,
-            reviews=(),
-        )
-
-    monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", fake_run)
-    monkeypatch.setattr("polylogue.maintenance.reindex_canary.write_canary_report", fake_write)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live-root"))
 
     result = CliRunner().invoke(
         cli,
@@ -97,14 +81,12 @@ def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplicat
             "ops",
             "maintenance",
             "reindex-canary",
+            "--archive-root",
+            str(archive_root),
             "--input",
             str(index_path),
             "--sample",
-            "2",
-            "--pathology-session-id",
-            "codex-session:pathology",
-            "--sample-session-id",
-            "codex-session:sample",
+            "1000",
             "--report",
             str(report_path),
             "--no-promote",
@@ -114,20 +96,10 @@ def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplicat
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
-    assert captured["args"] == (tmp_path,)
-    assert captured["kwargs"] == {
-        "input_index": index_path,
-        "sessions_per_origin": 2,
-        "pathology_session_ids": ("codex-session:pathology",),
-        "sample_session_ids": ("codex-session:sample",),
-        "no_promote": True,
-    }
-    assert captured["report_path"] == report_path
-    report_kwargs = captured["report_kwargs"]
-    assert isinstance(report_kwargs, dict)
-    assert report_kwargs["reviews"] == ()
-    assert json.loads(result.stdout)["selection"]["selected_raw_ids"] == ["raw-sample"]
+    assert result.exit_code == 1, result.output
+    assert "canary report classification is incomplete" in result.output
+    assert "refuses the configured live archive root" not in result.output
+    assert not report_path.exists()
 
 
 def test_reindex_canary_cli_refuses_to_write_unclassified_report(
@@ -136,7 +108,6 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
     index_path = tmp_path / "index.db"
     index_path.touch()
     run_result = _run_result(index_path, differences=(object(),))
-    monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.write_canary_report",
@@ -150,6 +121,8 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
             "ops",
             "maintenance",
             "reindex-canary",
+            "--archive-root",
+            str(tmp_path),
             "--input",
             str(index_path),
             "--report",

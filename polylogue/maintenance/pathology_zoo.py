@@ -38,8 +38,12 @@ class PathologyZooInvariant:
     parameters: tuple[object, ...]
     expected: tuple[object, ...] | None
 
-    def is_satisfied(self, archive_root: Path) -> bool:
-        path = _tier_path(archive_root, self.tier)
+    def is_satisfied(self, archive_root: Path, *, index_path_override: Path | None = None) -> bool:
+        path = (
+            index_path_override
+            if self.tier == "index" and index_path_override is not None
+            else _tier_path(archive_root, self.tier)
+        )
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
             return bool(connection.execute(self.query, self.parameters).fetchone() == self.expected)
 
@@ -356,10 +360,10 @@ def pathology_zoo_session_ids() -> tuple[str, ...]:
     )
 
 
-def pathology_zoo_is_present(archive_root: Path) -> bool:
+def pathology_zoo_is_present(archive_root: Path, *, index_path_override: Path | None = None) -> bool:
     """Return whether an archive contains any durable pathology-zoo evidence."""
     session_ids = pathology_zoo_session_ids()
-    index_path = _tier_path(archive_root, "index")
+    index_path = index_path_override if index_path_override is not None else _tier_path(archive_root, "index")
     if index_path.exists():
         placeholders = ", ".join("?" for _ in session_ids)
         try:

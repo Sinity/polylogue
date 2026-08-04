@@ -295,9 +295,12 @@ def run_reindex_canary(
             "run it against an explicitly provisioned isolated canary archive"
         )
     current_index = Path(input_index) if input_index is not None else ArchiveLocation.resolve(root).active_index_path
-    from polylogue.maintenance.pathology_zoo import pathology_zoo_session_ids
+    from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
+    from polylogue.maintenance.pathology_zoo import pathology_zoo_is_present, pathology_zoo_session_ids
 
-    automatic_pathology_ids = pathology_zoo_session_ids()
+    automatic_pathology_ids = (
+        pathology_zoo_session_ids() if pathology_zoo_is_present(root, index_path_override=current_index) else ()
+    )
     requested_pathology_ids = tuple(dict.fromkeys((*automatic_pathology_ids, *pathology_session_ids)))
     selection = select_canary_sessions(
         current_index,
@@ -310,6 +313,7 @@ def run_reindex_canary(
             archive_root=root,
             raw_ids=selection.selected_raw_ids,
             promote=False,
+            candidate_acceptance_checks=REINDEX_CANARY_ACCEPTANCE_CHECKS,
         )
     )
     candidate_path = _validate_canary_candidate(

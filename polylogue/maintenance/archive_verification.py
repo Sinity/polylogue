@@ -1031,6 +1031,52 @@ def _check_pathology_zoo_invariants(archive_root: Path, _sample_limit: int) -> A
     )
 
 
+def _check_pathology_zoo_invariants_at_index_path(
+    archive_root: Path, index_path: Path, _sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Run pathology-zoo invariants against an inactive index and live durable tiers."""
+    from polylogue.maintenance.pathology_zoo import (
+        PATHOLOGY_ZOO_MANIFEST,
+        PathologyZooMember,
+        pathology_zoo_is_present,
+    )
+
+    if not pathology_zoo_is_present(archive_root, index_path_override=index_path):
+        return ArchiveVerificationCheck(
+            name="pathology-zoo-invariants",
+            status=OutcomeStatus.OK,
+            summary="no pathology-zoo corpus detected; zoo-specific invariants are not applicable",
+            evidence={"active": False, "checked_member_ids": [], "failed_member_ids": []},
+        )
+
+    failed: list[PathologyZooMember] = []
+    for member in PATHOLOGY_ZOO_MANIFEST:
+        try:
+            satisfied = member.invariant.is_satisfied(archive_root, index_path_override=index_path)
+        except sqlite3.Error:
+            satisfied = False
+        if not satisfied:
+            failed.append(member)
+    return ArchiveVerificationCheck(
+        name="pathology-zoo-invariants",
+        status=OutcomeStatus.ERROR if failed else OutcomeStatus.OK,
+        summary=(
+            f"{len(failed)} pathology-zoo invariant(s) failed"
+            if failed
+            else f"all {len(PATHOLOGY_ZOO_MANIFEST)} pathology-zoo invariants hold"
+        ),
+        count=len(failed),
+        details=[f"{member.member_id}: {member.invariant.condition}" for member in failed],
+        evidence={
+            "active": True,
+            "checked_member_ids": [member.member_id for member in PATHOLOGY_ZOO_MANIFEST],
+            "failed_member_ids": [member.member_id for member in failed],
+            "index_path": str(index_path),
+            "durable_archive_root": str(archive_root),
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Check: embeddings refs resolve in the index tier (I4, polylogue-t0m73)
 # ---------------------------------------------------------------------------
@@ -2047,6 +2093,7 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "Every present pathology-zoo member satisfies its production-owned invariant.",
         _check_pathology_zoo_invariants,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+        _check_pathology_zoo_invariants_at_index_path,
     ),
     ArchiveVerificationCheckSpec(
         "embeddings-refs-liveness",
@@ -2169,6 +2216,22 @@ REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
     "planner-stats",
 )
 
+#: Candidate checks that need the durable archive tiers as well as the
+#: inactive generation's index. These are run with ``index_path_override`` so
+#: they cannot silently fall back to the active/default index.
+REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "corpus-absences",
+    "corpus-attachment-fidelity",
+    "corpus-revision-fidelity",
+    "pathology-zoo-invariants",
+)
+
+#: A partial reindex-canary candidate is intentionally not a complete source
+#: replay, so full corpus-fidelity checks would reject every useful canary.
+#: Its candidate-specific gate still runs the pathology-zoo contract against
+#: the candidate index and the durable source tiers.
+REINDEX_CANARY_ACCEPTANCE_CHECKS: tuple[str, ...] = ("pathology-zoo-invariants",)
+
 
 def _select_check_specs(checks: Sequence[str] | None) -> tuple[ArchiveVerificationCheckSpec, ...]:
     if checks is None:
@@ -2247,6 +2310,8 @@ __all__ = [
     "ARCHIVE_VERIFICATION_CHECK_NAMES",
     "ARCHIVE_VERIFICATION_WAIVERS",
     "CORPUS_FIDELITY_CHECKS",
+    "REINDEX_CANARY_ACCEPTANCE_CHECKS",
+    "REINDEX_CROSS_TIER_ACCEPTANCE_CHECKS",
     "REINDEX_ACCEPTANCE_CHECKS",
     "ArchiveVerificationCheck",
     "ArchiveVerificationCheckClass",

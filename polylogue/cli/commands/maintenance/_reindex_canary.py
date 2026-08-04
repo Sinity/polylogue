@@ -7,10 +7,14 @@ from pathlib import Path
 
 import click
 
-from polylogue.paths import archive_root
-
 
 @click.command("reindex-canary")
+@click.option(
+    "--archive-root",
+    type=click.Path(path_type=Path, exists=True, file_okay=False, readable=True),
+    required=True,
+    help="Explicit isolated archive containing durable source.db and the active index candidate.",
+)
 @click.option(
     "--input-index",
     "--input",
@@ -52,6 +56,7 @@ from polylogue.paths import archive_root
     help="Required safety gate: leave the rebuilt candidate inactive for comparison.",
 )
 def reindex_canary_command(
+    archive_root: Path,
     input_index: Path | None,
     sessions_per_origin: int,
     pathology_session_id: tuple[str, ...],
@@ -77,7 +82,7 @@ def reindex_canary_command(
     result: CanaryRunResult | None = None
     try:
         result = run_reindex_canary(
-            archive_root(),
+            archive_root,
             input_index=input_index,
             sessions_per_origin=sessions_per_origin,
             pathology_session_ids=pathology_session_id,

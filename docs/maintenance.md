@@ -294,7 +294,8 @@ Read-only with respect to the active index. Before a full reindex, this command 
 
 ```bash
 polylogue ops maintenance reindex-canary \
-  --input /realm/db/polylogue/index.db \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --input /realm/tmp/polylogue-canary-archive/index.db \
   --sample 100 \
   --report /realm/tmp/polylogue-reindex-canary.json \
   --no-promote \

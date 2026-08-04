@@ -399,8 +399,8 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.reindex_canary",
         use_when="Exercise the bounded semantic reindex canary before paying for a full rebuild.",
         examples=(
-            "devtools reindex-canary --input /path/to/index.db --sample 100 --report /path/to/canary.json --no-promote",
-            "devtools reindex-canary --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --archive-root /path/to/isolated-archive --input /path/to/index.db --sample 100 --report /path/to/canary.json --no-promote",
+            "devtools reindex-canary --archive-root /path/to/isolated-archive --pathology-session-id codex-session:whale --report /path/to/canary.json --no-promote",
         ),
     ),
     CommandSpec(
