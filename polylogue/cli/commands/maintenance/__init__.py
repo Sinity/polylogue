@@ -110,6 +110,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Classify missing referenced blobs without mutating the archive.",
     ),
     (
+        "blob-reference-liveness",
+        "_blob_integrity",
+        "blob_reference_liveness_command",
+        "Classify source-tier orphan refs; apply only with backup and receipt.",
+    ),
+    (
         "attachment-acquisition-debt",
         "_blob_integrity",
         "attachment_acquisition_debt_command",

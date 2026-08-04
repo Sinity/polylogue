@@ -177,12 +177,15 @@ def _blob_hash_bytes(blob_hash: str) -> bytes | None:
 # row, so it joins the same table as 'raw_payload'. 'sidecar' has no
 # production writer today; it is included for completeness/forward-safety
 # against history_sidecars.sidecar_id, its only plausible referent.
-_BLOB_REF_LIVENESS_JOIN: tuple[tuple[str, str, str], ...] = (
+BLOB_REF_LIVENESS_JOIN: tuple[tuple[str, str, str], ...] = (
     ("raw_payload", "raw_sessions", "raw_id"),
     ("attachment", "raw_sessions", "raw_id"),
     ("hook_payload", "raw_hook_events", "hook_event_id"),
     ("sidecar", "history_sidecars", "sidecar_id"),
 )
+
+# Private alias retained for the GC implementation's existing local naming.
+_BLOB_REF_LIVENESS_JOIN = BLOB_REF_LIVENESS_JOIN
 
 
 def _blob_refs_has_ref_type_column(conn: sqlite3.Connection) -> bool:
@@ -689,6 +692,7 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
 
 __all__ = [
     "BlobGCResult",
+    "BLOB_REF_LIVENESS_JOIN",
     "MIN_AGE_S",
     "GCHistoryRow",
     "GCRunEvidence",
