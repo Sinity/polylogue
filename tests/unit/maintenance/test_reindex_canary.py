@@ -390,6 +390,24 @@ def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, m
         run_reindex_canary(tmp_path, input_index=current, no_promote=True)
 
 
+def test_run_reindex_canary_refuses_the_configured_live_archive_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rebuild_called = False
+
+    def _unexpected_rebuild(*args: object, **kwargs: object) -> None:
+        nonlocal rebuild_called
+        rebuild_called = True
+        raise AssertionError("live archive canary must refuse before rebuild")
+
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", _unexpected_rebuild)
+
+    with pytest.raises(CanarySelectionError, match="refuses the configured live archive root"):
+        run_reindex_canary(tmp_path, no_promote=True)
+    assert not rebuild_called
+
+
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
