@@ -2095,6 +2095,7 @@ class ArchiveStore:
         native_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        post_parse: bool = False,
     ) -> str:
         return write_raw_payload(
             self,
@@ -2108,6 +2109,7 @@ class ArchiveStore:
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            post_parse=post_parse,
         )
 
     def raw_native_id(self, raw_id: str) -> str | None:
@@ -2172,6 +2174,7 @@ class ArchiveStore:
         raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        post_parse: bool = False,
     ) -> str:
         return write_raw_blob_ref(
             self,
@@ -2185,6 +2188,7 @@ class ArchiveStore:
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            post_parse=post_parse,
         )
 
     def admit_raw_artifact_payload(
@@ -2631,6 +2635,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         logical_source_key: str,
         source_index: int = 0,
+        raw_id: str | None = None,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
@@ -2652,6 +2657,7 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             logical_source_key=logical_source_key,
             source_index=source_index,
+            raw_id=raw_id,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,

@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, ArtifactKind
-from polylogue.archive.revision_authority import RawRevisionAuthority
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Origin, Provider
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -16,6 +16,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionArm,
     admit_raw_observation,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -58,6 +59,49 @@ def test_admit_raw_observation_baseline_when_no_prior_head(tmp_path: Path) -> No
     assert row["revision_kind"] == "full"
     assert row["revision_authority"] == RawRevisionAuthority.ASSERTED.value
     assert row["logical_source_key"] == "codex:/tmp/rollout.jsonl"
+
+
+def test_admit_raw_observation_post_parse_arm_binds_typed_revision(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"type":"user","sessionId":"s1"}\n'
+
+    result = admit_raw_observation(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        source_path="/tmp/live.jsonl",
+        payload=payload,
+        acquired_at_ms=1_767_000_000_000,
+        logical_source_key=None,
+        post_parse=True,
+    )
+
+    assert result.arm is RawAdmissionArm.POST_PARSE_PENDING
+    pending = _row(conn, result.raw_id)
+    assert pending["revision_kind"] == RawRevisionKind.FULL.value
+    assert pending["revision_authority"] == RawRevisionAuthority.QUARANTINED.value
+    assert str(pending["logical_source_key"]).startswith("pending-raw:")
+
+    bind_source_raw_revision(
+        conn,
+        result.raw_id,
+        RawRevisionEnvelope(
+            logical_source_key="codex-session:s1",
+            kind=RawRevisionKind.APPEND,
+            source_revision="append-rev",
+            predecessor_source_revision="prior-rev",
+            predecessor_raw_id="prior-raw",
+            baseline_raw_id="prior-raw",
+            append_start_offset=1,
+            append_end_offset=2,
+            acquisition_generation=1,
+            authority=RawRevisionAuthority.BYTE_PROVEN,
+        ),
+    )
+
+    bound = _row(conn, result.raw_id)
+    assert bound["logical_source_key"] == "codex-session:s1"
+    assert bound["revision_kind"] == RawRevisionKind.APPEND.value
+    assert bound["predecessor_raw_id"] == "prior-raw"
 
 
 def test_admit_raw_observation_arm1_skip_duplicate(tmp_path: Path) -> None:

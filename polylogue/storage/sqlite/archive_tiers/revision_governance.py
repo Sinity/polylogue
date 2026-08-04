@@ -150,6 +150,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionArm,
     RawAdmissionResult,
+    admit_raw_blob_observation,
     admit_raw_observation,
 )
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
@@ -496,6 +497,7 @@ def write_raw_payload(
     native_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     revision: RawRevisionEnvelope | None = None,
+    post_parse: bool = False,
 ) -> str:
     """Commit raw bytes before attempting to parse or index them.
 
@@ -514,6 +516,26 @@ def write_raw_payload(
         raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
+    if post_parse:
+        if revision is not None:
+            raise ValueError("post-parse raw admission cannot receive a revision envelope")
+        admission = admit_raw_observation(
+            store._ensure_source_conn(),
+            origin=origin_from_provider(provider),
+            capture_mode=capture_mode or provider,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=native_id,
+            raw_id=raw_id,
+            post_parse=True,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            manage_transaction=True,
+        )
+        if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
+            raise RuntimeError(f"unexpected post-parse raw admission arm: {admission.arm!r}")
+        return admission.raw_id
     return write_source_raw_session(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
@@ -543,10 +565,29 @@ def write_raw_blob_ref(
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     revision: RawRevisionEnvelope | None = None,
+    post_parse: bool = False,
 ) -> str:
     """Commit a prepublished raw blob reference before parsing it."""
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
+    if post_parse:
+        if revision is not None:
+            raise ValueError("post-parse raw admission cannot receive a revision envelope")
+        admission = admit_raw_blob_observation(
+            store._ensure_source_conn(),
+            origin=origin_from_provider(provider),
+            capture_mode=capture_mode or provider,
+            source_path=source_path,
+            source_index=source_index,
+            blob_hash=bytes.fromhex(blob_hash_hex),
+            blob_size=blob_size,
+            acquired_at_ms=acquired_at_ms,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
+        if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
+            raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
+        return admission.raw_id
     return write_source_raw_session_blob_ref(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
@@ -2993,20 +3034,25 @@ def write_raw_and_parsed_result(
     source_conn = store._ensure_source_conn()
     add_timing("source_connect", t0)
     t0 = time.perf_counter()
-    raw_id = write_source_raw_session(
+    admission = admit_raw_observation(
         source_conn,
         origin=origin_from_provider(session.source_name),
         capture_mode=session.source_name,
         source_path=source_path,
         source_index=source_index,
-        native_id=session.provider_session_id,
-        raw_id=raw_id,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
+        native_id=session.provider_session_id,
+        raw_id=raw_id,
+        logical_source_key=f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
+        prior_head=None,
         blob_publication_receipt_id=blob_publication_receipt_id,
         additional_blob_refs=attachment_blob_refs,
         manage_transaction=True,
     )
+    if admission.arm is not RawAdmissionArm.BASELINE:
+        raise RuntimeError(f"unexpected baseline raw admission arm: {admission.arm!r}")
+    raw_id = admission.raw_id
     add_timing("source_raw_write", t0)
     t0 = time.perf_counter()
     result = _index_parsed_for_retained_raw(
@@ -3033,6 +3079,7 @@ def admit_raw_and_parsed_result(
     acquired_at_ms: int,
     logical_source_key: str,
     source_index: int = 0,
+    raw_id: str | None = None,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     manage_transaction: bool = True,
@@ -3089,6 +3136,7 @@ def admit_raw_and_parsed_result(
         payload=payload,
         acquired_at_ms=acquired_at_ms,
         native_id=session.provider_session_id,
+        raw_id=raw_id,
         logical_source_key=logical_source_key,
         prior_head=None,
         blob_publication_receipt_id=blob_publication_receipt_id,

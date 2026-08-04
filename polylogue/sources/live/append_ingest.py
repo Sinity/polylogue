@@ -115,6 +115,7 @@ def _ingest_append_plans_archive(
                         # _append_payload_for_provider), so the stored blob
                         # stays a literal slice of the live file.
                         native_id=plan.native_id_hint,
+                        post_parse=True,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
                     degraded = degraded_reason()

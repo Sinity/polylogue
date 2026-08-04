@@ -2162,6 +2162,7 @@ class LiveBatchProcessor:
                             raw_id=(record.raw_id if record.blob_hash is not None else None),
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            post_parse=True,
                         )
                         source_write_name = "full.source_raw_blob_ref_write"
                     else:
@@ -2173,6 +2174,7 @@ class LiveBatchProcessor:
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            post_parse=True,
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started

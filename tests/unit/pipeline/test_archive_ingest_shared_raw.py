@@ -8,7 +8,7 @@ a file into two `ParsedSession`s that share the identical captured raw bytes.
 
 Before this fix, `pipeline/services/archive_ingest.py`'s one-shot importer
 (`parse_sources_archive` / `write_pair`) wrote a SEPARATE `raw_sessions` row
-per split session via `write_raw_and_parsed_result`, whose raw_id is derived
+per split session via `admit_raw_and_parsed_result`, whose raw_id is derived
 from `deterministic_raw_session_id(..., native_id=session.provider_session_id)`
 (see `write_source_raw_session`). Two sessions parsed from the SAME bytes
 therefore produced TWO DIFFERENT raw_id rows differentiated only by
@@ -131,7 +131,7 @@ async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, work
     rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
     # Anti-vacuity: this is the production dependency under test --
     # write_pair's shared-raw cache (pipeline/services/archive_ingest.py).
-    # Deleting that cache (reverting to one write_raw_and_parsed_result call
+    # Deleting that cache (reverting to one admit_raw_and_parsed_result call
     # per split session, each deriving its own native_id-based raw_id) makes
     # this assertion fail with TWO rows instead of one.
     assert len(rows) == 1, f"expected exactly one raw row for child-session.jsonl's bytes, got {rows}"

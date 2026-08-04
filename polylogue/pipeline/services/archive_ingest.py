@@ -191,13 +191,16 @@ async def parse_sources_archive(
                             bytes.fromhex(blob_hash_str),
                             None,
                         )
-                    write_result = archive.write_raw_and_parsed_result(
+                    write_result = archive.admit_raw_and_parsed_result(
                         session,
                         payload=payload,
                         source_path=source_path,
                         acquired_at_ms=acquired_at_ms,
                         source_index=source_index,
                         raw_id=raw_id,
+                        logical_source_key=(
+                            f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+                        ),
                         stage_timings_s=result.stage_timings_s,
                         manage_transaction=not batched,
                         blob_publication_receipt_id=(
