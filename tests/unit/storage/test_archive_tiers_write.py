@@ -1184,7 +1184,6 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
                         "reasoning_output_tokens": 40,
                         "total_tokens": 190,
                     },
-                    "model_context_window": 200000,
                 },
             )
         ],
@@ -1198,7 +1197,7 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
                last_input_tokens, last_output_tokens, last_cached_input_tokens,
                last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
                total_input_tokens, total_output_tokens, total_cached_input_tokens,
-               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
+               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
                occurred_at_ms
         FROM session_provider_usage_events
         WHERE session_id = ?
@@ -1222,7 +1221,6 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
         "total_cache_write_tokens": 10,
         "total_reasoning_output_tokens": 40,
         "total_tokens": 190,
-        "model_context_window": 200000,
         "occurred_at_ms": 1_767_225_603_000,
     }
 
@@ -2550,7 +2548,7 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
     row = conn.execute(
         """
         SELECT model_name, input_tokens, output_tokens, cost_provenance,
-               cost_usd, priced_with, priced_at_ms
+               cost_usd
         FROM session_model_usage
         WHERE session_id = ?
         """,
@@ -2567,8 +2565,6 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
     assert row_dict["output_tokens"] == 500
     assert row_dict["cost_provenance"] == "priced"
     assert row_dict["cost_usd"] == estimate_cost(1_000, 500, "gpt-4o")
-    assert row_dict["priced_with"] is not None
-    assert row_dict["priced_at_ms"] is not None
 
 
 def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: Path) -> None:

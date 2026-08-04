@@ -33,7 +33,7 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.revision_replay import RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
-from polylogue.core.degraded import is_degraded
+from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
 from polylogue.core.memory import release_process_memory
@@ -65,6 +65,7 @@ from polylogue.sources.dispatch import (
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import ingest_append_plans, reset_transient_raw_parse_state
+from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch_observability import (
     record_attempt_progress,
 )
@@ -450,7 +451,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
-        if is_degraded():
+        if is_fully_degraded():
             # The daemon has been marked structurally unable to ingest (e.g.
             # schema mismatch detected at preflight or on the first batch).
             # Do not enter the full-parse path — that is what produced the
@@ -552,7 +553,7 @@ class LiveBatchProcessor:
                 # same paths into ``failed_paths`` and does NOT call
                 # ``_record_failed_cursor`` against the DB we already know is
                 # structurally unusable. The by_source loop further down also
-                # checks ``is_degraded()`` and skips the full-parse phase.
+                # checks ``is_fully_degraded()`` and skips the full-parse phase.
                 append_result = _AppendResult(succeeded=[], failed=[], worker_count=0)
             ingest_worker_count_max = max(ingest_worker_count_max, append_result.worker_count)
             parse_time_s += time.perf_counter() - t0
@@ -617,7 +618,7 @@ class LiveBatchProcessor:
                 deferred_paths.append(plan.path)
 
         for path in paths:
-            if is_degraded():
+            if is_fully_degraded():
                 full_paths.append(path)
                 continue
             cursor = cursor_records.get(path)
@@ -663,7 +664,7 @@ class LiveBatchProcessor:
         full_ingest_time_budget_exceeded = False
         processed_any_full_group = False
         for source_name, grouped_paths in by_source.items():
-            if is_degraded():
+            if is_fully_degraded():
                 # A prior source group hit a structural error this batch.
                 # Don't burn IOPS on remaining groups.
                 for path in grouped_paths:
@@ -676,7 +677,7 @@ class LiveBatchProcessor:
             for source_paths in _full_parse_progress_groups(grouped_paths):
                 if self._stop_requested():
                     break
-                if is_degraded():
+                if is_fully_degraded():
                     break
                 if (
                     processed_any_full_group
@@ -1034,6 +1035,26 @@ class LiveBatchProcessor:
         return _throttled_phase_heartbeat(emit)
 
     def _record_failed_cursor(self, path: Path) -> int:
+        # polylogue-awy5: an already-excluded cursor is a poison pill the
+        # daemon has already given up on (5-failure cap,
+        # ``_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE``). Re-running the same
+        # crash-looping batch against it and calling ``mark_failed`` again
+        # every pass has no effect on the cursor's *state* (the lifecycle
+        # table only permits EXCLUDED -> EXCLUDED here) but keeps
+        # incrementing ``failure_count`` forever with no upper bound --
+        # measured live at 689/864/975/1001/2018 on the five ZIPs that hit
+        # this path, i.e. thousands of full acquire+parse+crash cycles
+        # burned re-discovering a fact the cursor already recorded. Consult
+        # ``excluded`` before touching the cursor at all so a poisoned
+        # source stops being re-queued into wasted work.
+        try:
+            preexisting = self._cursor.get_record(path)
+        except sqlite3.OperationalError as exc:
+            if not is_transient_sqlite_lock(exc):
+                raise
+            preexisting = None
+        if preexisting is not None and preexisting.excluded:
+            return 0
         try:
             stat = path.stat()
         except FileNotFoundError:
@@ -2046,12 +2067,11 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _ArchiveFullWriteResult:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         result = _ArchiveFullWriteResult()
         pass_clock_started = pass_started if pass_started is not None else time.monotonic()
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        with _open_archive_for_live_write(archive_root) as archive:
             for record_index, record in enumerate(records):
                 # polylogue-11cg9: a single logical session write cannot be
                 # split mid-transaction (it must remain atomic), so the
@@ -2114,6 +2134,18 @@ class LiveBatchProcessor:
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        # polylogue-gbs02: the derived tier (index.db/
+                        # embeddings.db) is behind the running code, but
+                        # source.db just got this record durably -- stop
+                        # here, before any parse/materialize/index work
+                        # touches the stale derived tier. Same admit-and-skip
+                        # shape as the OriginSpec fact-artifact branch below,
+                        # just a different reason for stopping short of parse.
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     artifact_rule = artifact_rule_for_path(provider, record.source_path)
                     if artifact_rule is not None and artifact_rule.parse_policy != "session":
                         # OriginSpec fact artifacts are valid raw authority even
@@ -2291,7 +2323,7 @@ class LiveBatchProcessor:
                                     authority=RawRevisionAuthority.QUARANTINED,
                                 ),
                             )
-                            plan = archive.classify_raw_revision_cohort(logical_source_key)
+                            plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
                                 parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
                                 session_id, applied_raw_ids = archive.apply_raw_revision_replay(

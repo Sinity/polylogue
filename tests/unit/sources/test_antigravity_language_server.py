@@ -332,6 +332,55 @@ def test_iter_language_server_exports_yields_parsed_sessions(
     assert fake.closed is False
 
 
+def test_iter_language_server_exports_only_cascade_ids_filters_corpus(
+    tmp_path: Path,
+) -> None:
+    """polylogue-3m3de: the daemon's periodic reconciler restricts export to
+    not-yet-acquired cascades so it never re-converts the whole corpus."""
+    _touch_conversation_pb(tmp_path, "cascade-1", "cascade-2", "cascade-3")
+    summaries = [
+        AntigravitySessionSummary(cascade_id="cascade-1", title="One"),
+        AntigravitySessionSummary(cascade_id="cascade-2", title="Two"),
+        AntigravitySessionSummary(cascade_id="cascade-3", title="Three"),
+    ]
+    markdown = {
+        "cascade-1": "### User Input\n\na\n",
+        "cascade-2": "### User Input\n\nb\n",
+        "cascade-3": "### User Input\n\nc\n",
+    }
+    fake = _FakeClientForExports(summaries, markdown)
+
+    sessions = list(
+        iter_language_server_exports(
+            tmp_path,
+            client=fake,  # type: ignore[arg-type]
+            only_cascade_ids=frozenset({"cascade-2"}),
+        )
+    )
+
+    assert [c.provider_session_id for c in sessions] == ["cascade-2"]
+
+
+def test_iter_language_server_exports_only_cascade_ids_empty_set_is_noop(
+    tmp_path: Path,
+) -> None:
+    _touch_conversation_pb(tmp_path, "cascade-1")
+    fake = _FakeClientForExports(
+        [AntigravitySessionSummary(cascade_id="cascade-1")],
+        {"cascade-1": "### User Input\n\na\n"},
+    )
+
+    sessions = list(
+        iter_language_server_exports(
+            tmp_path,
+            client=fake,  # type: ignore[arg-type]
+            only_cascade_ids=frozenset(),
+        )
+    )
+
+    assert sessions == []
+
+
 def test_iter_language_server_exports_manages_owned_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _touch_conversation_pb(tmp_path, "cascade-1")
     summaries = [

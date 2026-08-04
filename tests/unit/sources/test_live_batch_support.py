@@ -208,6 +208,125 @@ def test_live_full_replay_streams_retained_jsonl_raw(
     assert result.failed == []
 
 
+def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
+    tmp_path: Path,
+) -> None:
+    """polylogue-gbs02: a derived-only degraded reason must still acquire raw content.
+
+    Raw acquisition only ever writes source.db; when the daemon is degraded
+    ONLY because index.db/embeddings.db are behind the running code
+    (``DegradedReason.derived_only=True``), acquisition must proceed --
+    otherwise the daemon loses live capture data for the entire duration of
+    a schema-migration/reindex window. Materialization (parse) must still be
+    skipped: the raw row lands with ``parsed_at_ms IS NULL``, exactly the
+    same "not yet materialized" state ordinary convergence already knows
+    how to pick up once the derived tier catches up.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "degraded-full.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"degraded-full"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="index.db:46!=57",
+            derived_only=True,
+        )
+    )
+    try:
+        result = processor._ingest_full_paths_sync([path], source_name="codex")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parsed_at_ms is None
+    assert parse_error is None
+
+
+def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
+    tmp_path: Path,
+) -> None:
+    """polylogue-gbs02: acquire-only mode must survive a REAL stale index tier.
+
+    The sibling test above proves the skip logic but leaves index.db at the
+    current version, so it never exercises the open: the ordinary
+    ``ArchiveStore.open_existing(read_only=False)`` writer hard-refuses an
+    index tier at a semantic-reparse distance (the live archive's actual
+    pre-rebuild state, index.db 46 vs current code). This test ages the
+    index to that distance first — with the source-tier-only open routed via
+    ``_open_archive_for_live_write`` the acquire succeeds and the stale
+    index file stays byte-identical; without it, the open raises before any
+    raw write and this test fails.
+    """
+    import hashlib
+    import sqlite3 as _sqlite3
+
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "degraded-stale-index.jsonl"
+    path.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"degraded-stale-index"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    # Bootstrap a real archive file set, then age the index tier to the
+    # semantic-reparse distance (46 is the live pre-818fy generation).
+    with ArchiveStore.open_existing(tmp_path, read_only=False):
+        pass
+    index_db = tmp_path / "index.db"
+    conn = _sqlite3.connect(index_db)
+    try:
+        conn.execute("PRAGMA user_version = 46")
+        conn.commit()
+    finally:
+        conn.close()
+    index_digest_before = hashlib.sha256(index_db.read_bytes()).hexdigest()
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(tmp_path / "cursors.db", ops_db_path=tmp_path / "ops.db"),
+        parser_fingerprint="test-parser",
+    )
+    set_degraded(
+        DegradedReason(
+            code="schema_version_mismatch",
+            message="index.db:46!=current",
+            derived_only=True,
+        )
+    )
+    try:
+        result = processor._ingest_full_paths_sync([path], source_name="codex")
+    finally:
+        clear_degraded()
+
+    assert result.succeeded == [path], f"failed={result.failed}"
+    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert parsed_at_ms is None
+    assert parse_error is None
+    assert hashlib.sha256(index_db.read_bytes()).hexdigest() == index_digest_before, (
+        "the stale index tier must never be opened for write during acquire-only ingest"
+    )
+
+
 def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -468,7 +587,7 @@ def test_full_ingest_writes_archive_with_route_observability(
         "full.index_parsed_write",
         "full.index.session_upsert",
         "full.index.full_replace",
-        "full.index.full_replace.clear_projection_rows",
+        "full.index.full_replace.fts_guard_clear",
         "full.index.full_replace.messages",
         "full.index.full_replace.blocks",
     }.issubset(result.stage_timings_s)
@@ -3416,7 +3535,10 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "append-multi.jsonl"
-    payload = b"{}\n"
+    # Real, parseable content -- not a bare `{}` -- because polylogue-xwkh's
+    # declared-non-session-artifact gate now refuses that shape before this
+    # test's mocked parse_payload (returning two sessions) is ever reached.
+    payload = b'{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}\n'
     path.write_bytes(payload)
     plan = _append_plan(path, payload, payload_hash="multi")
     owner = _append_owner(tmp_path)
@@ -3570,7 +3692,13 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
     excised_source = root / "excised.jsonl"
     excised_source.write_bytes(excised_payload)
     normal_source = root / "normal.jsonl"
-    normal_source.write_bytes(b"{}\n")
+    # Real, parseable content -- not a bare `{}` -- because polylogue-lb39z's
+    # guarded presence-guarantee fallback (#3630) can drive this fixture's
+    # raw revision through a real re-parse (_parse_raw_revision_chain) that
+    # the parse_stream_payload monkeypatch below does not intercept, and a
+    # genuinely empty/malformed record now correctly fails to replay to any
+    # session rather than being silently accepted.
+    normal_source.write_bytes(b'{"type":"event_msg","payload":{"type":"user_message","message":"hello"}}\n')
 
     # Pre-mark the excised file's exact content hash as durably excised,
     # mirroring a prior real `polylogue ops excise` apply.
@@ -3889,7 +4017,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
 
         # Exactly the polylogue-52l2 guard-tripping sequence: no unique
         # byte-prefix chain across a and b.
-        plan = store.classify_raw_revision_cohort("chatgpt:shared")
+        plan = store.classify_raw_revision_cohort_for_live_watch("chatgpt:shared")
         assert plan.accepted_raw_ids == ()
 
         # Mirror backfill_historical_revision_evidence's own retirement step
@@ -4041,7 +4169,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
                 "codex:shared", RawRevisionKind.FULL, "rev-b", 0, authority=RawRevisionAuthority.QUARANTINED
             ),
         )
-        archive.classify_raw_revision_cohort("codex:shared")
+        archive.classify_raw_revision_cohort_for_live_watch("codex:shared")
         archive.commit()
         raw_c = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -4570,6 +4698,15 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         assert parse_error is None
     else:
         assert parse_error is not None
+        # polylogue-5iz4: this guard's refusal is transient/retry-eligible by
+        # construction (a later pass over the same durable bytes can succeed
+        # once sibling evidence resolves), but a plain RuntimeError leaves the
+        # retry-candidate query (storage/repair.py) nothing stable to match
+        # once the message text drifts -- exactly what happened to a real
+        # production session that hit this guard under #2718's original
+        # wording and was never retried again. MembershipReplayConflictError
+        # gives that query a message-text-independent marker to key on.
+        assert parse_error.startswith("MembershipReplayConflictError:")
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT message_count FROM sessions WHERE native_id = 'shared'").fetchone() == (2,)
         head_after = conn.execute(
@@ -4588,6 +4725,253 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         ).fetchall()
         if succeeds:
             assert decisions == [("superseded_prefix",)]
+
+
+def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-5iz4: reproduce the real production shape at growth-chain scale.
+
+    A real Codex session (native_id ``019f49d8-...``) accumulated 804
+    ``raw_sessions`` rows because a live watcher periodically captured
+    FULL snapshots of one continuously-growing ``rollout.jsonl`` (not
+    append deltas) -- ~800 generations of the SAME file, strictly growing
+    byte-for-byte (confirmed read-only against the live archive: every
+    smaller full-revision blob is an exact byte prefix of every larger
+    one, a single clean linear chain with zero forks). Two extra
+    identical-content full snapshots landed at a SECOND, "incident
+    recovery" source path sharing the same native_id -- an out-of-band
+    backup/restore copy taken during a live incident. One of the 804 rows
+    carries ``parse_error='RuntimeError: membership replay cannot replace
+    an unconvertible byte head'`` (PR #2718's now-superseded wording);
+    the session never reached ``index.db``.
+
+    This test reproduces the mechanism at REALISTIC scale (many real
+    incremental full-snapshot captures of one growing Codex JSONL file,
+    not a single static snapshot) plus a colliding same-identity duplicate
+    from a second path, and then demonstrates the actual recovery path:
+    ``apply_raw_membership_classification``'s guard is a **fail-closed,
+    correct** refusal (an unrelated/dangling-evidence head must never be
+    silently replaced) -- not a permanent dead end. Once
+    ``MembershipReplayConflictError`` is recorded with a stable,
+    retry-eligible ``parse_error`` marker (polylogue-5iz4 / #3646) AND the
+    accepted head naturally advances past the interfering evidence
+    (exactly what a live-watched growing file does on its own, and what
+    the live archive's current empty ``raw_revision_heads``/``sessions``
+    rows for this identity show already happened), a later pass over the
+    SAME duplicate raw succeeds and reaches the index with a plausible
+    message_count.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    current = root / "rollout-growing.jsonl"
+    incident_recovery = root.parent / "inbox" / "incident-recovery-rollout-growing.jsonl"
+    incident_recovery.parent.mkdir(parents=True, exist_ok=True)
+    current.write_bytes(b'{"current":true}\n')
+    incident_recovery.write_bytes(b'{"bundle":true}\n')
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    def session(native_id_: str, *texts: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=native_id_,
+            messages=[
+                ParsedMessage(provider_message_id=f"{native_id_}-{index}", role=Role.USER, text=text)
+                for index, text in enumerate(texts)
+            ],
+        )
+
+    # A growth chain sized like the real production shape (804
+    # incremental full-snapshot captures of one growing Codex rollout
+    # file, reduced here for test speed -- the mechanism does not depend
+    # on the absolute count, only on the accepted head carrying MANY
+    # messages, not a token 2-3 like the small #2718 pin).
+    native_id = "019f49d8-shape-fixture"
+    growth_generations = 25
+    base_texts = tuple(f"growth-generation-{index:04d}" for index in range(growth_generations))
+    current_session = session(native_id, *base_texts)
+    # The "incident recovery" duplicate: content-prefix growth alone is
+    # not proof of provenance (revision_governance.py's own polylogue-miwv
+    # note), so a same-identity bundle that strictly extends the accepted
+    # head's content must still be evaluated through membership
+    # governance, not silently accepted. Bundled alongside an unrelated
+    # second session in one file -- the real incident-recovery backup
+    # grabbed multiple sessions in one sweep, and a multi-session raw
+    # unconditionally routes through membership governance
+    # (``LiveBatchProcessor._ingest_full_paths_sync``'s ``len(sessions) !=
+    # 1`` branch), which is what makes ``raw_revision_head_raw_id``'s
+    # unconditional cohort injection reachable for a single-session-per-
+    # file Codex identity like this one -- exactly how the real 804-row
+    # session hit it despite Codex normally writing one session per file.
+    recovered_extension = session(native_id, *base_texts, "growth-generation-0025", "growth-generation-0026")
+    recovered_unrelated = session("019f49d8-unrelated-safe-session", "one")
+
+    def _parse_stream_payload_stub(
+        _provider: Any, _records: Any, _fallback_id: Any, *, source_path: str
+    ) -> list[ParsedSession]:
+        if Path(source_path) == incident_recovery:
+            return [recovered_extension, recovered_unrelated]
+        return [current_session]
+
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.parse_stream_payload",
+        _parse_stream_payload_stub,
+    )
+    monkeypatch.setattr(
+        processor,
+        "_parse_retained_raw_sessions",
+        lambda archive, raw_id: (
+            [current_session]
+            if Path(archive.raw_revision_material(raw_id)[2]) == current
+            else [recovered_extension, recovered_unrelated]
+        ),
+    )
+
+    assert processor._ingest_full_paths_sync([current], source_name="codex").failed == []
+    with sqlite3.connect(index_db) as conn:
+        head_row = conn.execute(
+            "SELECT accepted_raw_id, session_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            (f"codex:{native_id}",),
+        ).fetchone()
+        assert head_row is not None
+        accepted_raw_id, session_id = head_row
+        message_count_before = conn.execute(
+            "SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()[0]
+    assert message_count_before == growth_generations
+
+    # A dangling, unresolved QUARANTINED append fragment hanging off the
+    # CURRENT accepted head's own source_revision -- the live-append-
+    # cursor evidence the guard exists to protect (mirrors
+    # test_bundle_replay_respects_unconvertible_single_session_head's
+    # ``append_raw_id`` setup) -- plus an explicit prior census of the
+    # accepted head (``census_head``), matching that test's reliably
+    # guard-triggering combination.
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        head_source_revision = (
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT source_revision FROM raw_sessions WHERE raw_id = ?",
+                (accepted_raw_id,),
+            )
+            .fetchone()[0]
+        )
+        dangling_append_raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"type":"response_item","payload":{"type":"message","id":"dangling"}}\n',
+            source_path=str(current),
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            dangling_append_raw_id,
+            RawRevisionEnvelope(
+                f"codex:{native_id}",
+                RawRevisionKind.APPEND,
+                "dangling-append-blocker",
+                0,
+                predecessor_source_revision=str(head_source_revision),
+                append_start_offset=1,
+                append_end_offset=2,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        # Deliberately no prior ``replace_raw_membership_census`` call here
+        # (unlike ``test_bundle_replay_...``'s ``census_head=True`` case):
+        # the real production identity was governed purely through typed
+        # byte-revision authority (``bind_raw_revision``/live-watch
+        # classification), never through an explicit membership census of
+        # its own accepted head. Adding one here would permanently divert
+        # every later reprocessing of ``current`` through membership
+        # governance instead of the plain byte-chain replay path, which
+        # does not match the real shape and would make the eventual
+        # recovery below impossible to reproduce faithfully.
+
+    conflict_result = processor._ingest_full_paths_sync([incident_recovery], source_name="codex")
+
+    # Fail-closed is correct here: the guard must refuse to silently
+    # replace a head with unresolved byte-append evidence hanging off it.
+    assert conflict_result.failed == [incident_recovery]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        (parse_error,) = conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE source_path = ?",
+            (str(incident_recovery),),
+        ).fetchone()
+    assert parse_error is not None
+    # polylogue-5iz4 / #3646: the retry-eligible marker, not a bare
+    # RuntimeError -- this is what lets a later pass ever try again.
+    assert parse_error.startswith("MembershipReplayConflictError:")
+    from polylogue.storage.repair import _raw_materialization_retryable_missing_blob_error
+
+    assert _raw_materialization_retryable_missing_blob_error(parse_error) is True
+
+    with sqlite3.connect(index_db) as conn:
+        assert (
+            conn.execute("SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
+            == message_count_before
+        )
+
+    # The interfering condition is transient by construction, not
+    # permanent, per ``MembershipReplayConflictError``'s own docstring: "a
+    # later pass over the same durable bytes can succeed once sibling
+    # evidence resolves or the accepted head itself changes". This is
+    # exactly what the live archive's own EMPTY raw_revision_heads row for
+    # this identity shows already happened (confirmed read-only,
+    # 2026-08-03): whatever accepted-head state interfered with the
+    # original 2026-07-10 attempt is gone today, so a fresh classification
+    # pass hits the guard's ``existing_head is not None`` precondition
+    # never at all and proceeds straight to indexing. Simulate that same
+    # cleared state directly (the dangling append fragment bound above is
+    # permanently unresolvable -- its byte offsets never correspond to any
+    # real content, so no further real ingest can ever promote it; the
+    # accepted head itself must be retired, matching
+    # ``release_provisional_full_revisions``'s existing "provisional
+    # evidence rejected" shape for full revisions).
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
+            (f"codex:{native_id}",),
+        )
+        conn.commit()
+
+    # This is the AC#2 assertion: once the accepted head no longer
+    # interferes, a retry over the SAME durable incident-recovery raw
+    # succeeds and reaches the index with a plausible message_count --
+    # note this exercises the live-watcher's own retry path
+    # (``_ingest_full_paths_sync`` again), not
+    # ``storage/repair.py``'s offline ``repair_raw_materialization``:
+    # that offline path reprocesses every retained typed-'full' raw for
+    # this logical_source_key on every pass (including ``current``'s own
+    # cohort), which re-establishes an accepted head before ever reaching
+    # ``incident_recovery`` in the same pass and so cannot demonstrate
+    # this recovery in isolation here -- a real gap worth a follow-up
+    # bead, not one this test's fixture can respect the scope of.
+    retry_result = processor._ingest_full_paths_sync([incident_recovery], source_name="codex")
+    assert retry_result.failed == []
+    assert retry_result.succeeded == [incident_recovery]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        (retried_parse_error,) = conn.execute(
+            "SELECT parse_error FROM raw_sessions WHERE source_path = ? ORDER BY acquired_at_ms DESC LIMIT 1",
+            (str(incident_recovery),),
+        ).fetchone()
+    assert retried_parse_error is None
+
+    with sqlite3.connect(index_db) as conn:
+        final_count = conn.execute("SELECT message_count FROM sessions WHERE native_id = ?", (native_id,)).fetchone()[0]
+    # Plausible: the incident-recovery bundle's own extension, 2
+    # generations past the pre-conflict head.
+    assert final_count == growth_generations + 2
 
 
 def test_single_session_full_cannot_overwrite_divergent_membership_head(

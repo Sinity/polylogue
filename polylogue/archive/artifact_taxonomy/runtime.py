@@ -10,6 +10,7 @@ from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, A
 from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
     looks_like_beads_interaction,
+    looks_like_file_history_snapshot_only_stream,
     looks_like_hook_event,
     looks_like_hook_event_stream,
     looks_like_record_entry,
@@ -132,6 +133,33 @@ def _classify_artifact_path_strong(
             default_priority=120 if rule.parse_policy == "session" else 80,
             reason=f"OriginSpec Claude artifact rule: {rule.coverage_role}",
         )
+    # polylogue-omsw: generic/ad-hoc acquisition routes (the daemon's shared
+    # "inbox" import source backing `polylogue import <path>`, and this
+    # taxonomy's own `classify_artifact_path` pre-decode callers) resolve a
+    # provider hint of "unknown" or a shape-detected non-Claude-Code provider
+    # for these paths -- they never learn the file actually sits under a
+    # watched Claude Code project tree. `tool-results/<name>.json` is a
+    # directory-name pattern specific enough to Claude Code's own artifact
+    # family that it is safe to check regardless of the caller-supplied
+    # provider hint (a tool call's OWN output can coincidentally look like a
+    # session document from a different provider -- see the
+    # ``TOOL_RESULT_SIDECAR`` ``ArtifactKind`` docstring -- which is exactly
+    # the scenario this closes). Scoped narrowly to the ``tool_result_sidecar``
+    # rule only: other Claude Code path rules (``coordinator_session_stream``
+    # in particular) match directory shapes too generic to safely check
+    # provider-agnostically.
+    if provider_token is not Provider.CLAUDE_CODE:
+        tool_result_rule = artifact_rule_for_path(Provider.CLAUDE_CODE, normalized)
+        if tool_result_rule is not None and tool_result_rule.kind == "tool_result_sidecar":
+            return ArtifactClassification(
+                provider=provider_token,
+                kind=ArtifactKind(tool_result_rule.kind),
+                parse_as_session=False,
+                schema_eligible=False,
+                default_priority=80,
+                reason=f"OriginSpec Claude artifact rule (provider-agnostic path match): "
+                f"{tool_result_rule.coverage_role}",
+            )
     if provider_token is Provider.HERMES and inner_name in {
         "verification_evidence.db",
         "verification_evidence.sqlite",
@@ -251,10 +279,12 @@ def classify_artifact(
 
     # ``_classify_artifact_path_strong`` covers the definitive, content-blind
     # path rules (OriginSpec artifact rules, known sidecar filenames, Hermes/
-    # Antigravity path markers) -- these always win regardless of content.
+    # Antigravity path markers) -- these always win regardless of content,
+    # with one deliberate exception checked immediately below.
     explicit = _classify_artifact_path_strong(source_path, provider=provider_token)
     if explicit is not None:
-        return explicit
+        override = _file_history_snapshot_override(explicit, payload, provider=provider_token)
+        return override if override is not None else explicit
 
     if isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
         content_classification = _classify_list(payload, provider=provider_token, source_path=source_path)
@@ -284,6 +314,43 @@ def classify_artifact(
     if weak is not None:
         return weak
     return content_classification
+
+
+def _file_history_snapshot_override(
+    explicit: ArtifactClassification,
+    payload: JSONValue,
+    *,
+    provider: Provider,
+) -> ArtifactClassification | None:
+    """Override a path-rule session verdict for a pure file-history stream.
+
+    polylogue-omsw: ``coordinator_session_stream`` (``projects/<proj>/
+    <uuid>.jsonl``) is a path-only rule that cannot distinguish a genuine
+    Claude Code session from a session-uuid-named file whose only records
+    are file-history checkpoints -- Claude Code writes both shapes under the
+    identical path pattern. Positive content evidence (every record's
+    ``type`` is a known non-conversational envelope kind) must win over that
+    path-only positive verdict, the same direction ``classify_artifact``'s
+    ``analysis/`` weak-heuristic override already takes, just the opposite
+    polarity: there, weak path evidence loses to positive content; here,
+    positive path evidence loses to negative (refusing) content evidence.
+    """
+    if provider is not Provider.CLAUDE_CODE or not explicit.parse_as_session:
+        return None
+    if not isinstance(payload, Sequence) or isinstance(payload, str | bytes | bytearray):
+        return None
+    dict_items = [json_document(item) for item in islice(payload, 32)]
+    dict_items = [item for item in dict_items if item]
+    if not looks_like_file_history_snapshot_only_stream(dict_items):
+        return None
+    return ArtifactClassification(
+        provider=provider,
+        kind=ArtifactKind.FILE_HISTORY_SNAPSHOT,
+        parse_as_session=False,
+        schema_eligible=False,
+        default_priority=0,
+        reason="Claude Code file-history-snapshot-only stream (no conversational records)",
+    )
 
 
 def _classify_list(

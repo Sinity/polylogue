@@ -5,17 +5,12 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
-from polylogue.archive.message.roles import Role
-from polylogue.archive.message.types import MessageType
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import (
     ArtifactSupportStatus,
-    BlockType,
-    MaterialOrigin,
     Origin,
     Provider,
-    SemanticBlockType,
     SessionKind,
     ValidationMode,
     ValidationStatus,
@@ -33,6 +28,7 @@ from polylogue.storage.runtime import (
     SessionRefRecord,
     WebContentConstructRecord,
 )
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
     _json_object_list,
@@ -79,61 +75,21 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
 
 
 def _row_to_message(row: sqlite3.Row) -> MessageRecord:
-    role = _row_text(row, "role")
-    normalized_role = Role.normalize(role) if role is not None and role.strip() else None
-    parent_message_id = _row_text(row, "parent_message_id")
-    return MessageRecord(
-        message_id=row["message_id"],
-        session_id=row["session_id"],
-        provider_message_id=_row_text(row, "provider_message_id"),
-        role=normalized_role,
-        text=_row_text(row, "text"),
-        sort_key=_row_float(row, "sort_key"),
-        content_hash=row["content_hash"],
-        version=row["version"],
-        parent_message_id=MessageId(parent_message_id) if parent_message_id is not None else None,
-        branch_index=_row_int(row, "branch_index", 0) or 0,
-        # None (column not selected by this query) means unknown, not "not
-        # active" -- see MessageRecord.is_active_path.
-        is_active_path=_row_optional_bool(row, "is_active_path"),
-        position=_row_int(row, "position", 0) or 0,
-        is_active_leaf=bool(_row_int(row, "is_active_leaf", 0)),
-        source_name=_row_text(row, "source_name") or "",
-        word_count=_row_int(row, "word_count", 0) or 0,
-        has_tool_use=_row_int(row, "has_tool_use", 0) or 0,
-        has_thinking=_row_int(row, "has_thinking", 0) or 0,
-        has_paste=_row_int(row, "has_paste", 0) or 0,
-        paste_boundary_state=_row_text(row, "paste_boundary_state"),
-        input_tokens=_row_int(row, "input_tokens", 0) or 0,
-        output_tokens=_row_int(row, "output_tokens", 0) or 0,
-        cache_read_tokens=_row_int(row, "cache_read_tokens", 0) or 0,
-        cache_write_tokens=_row_int(row, "cache_write_tokens", 0) or 0,
-        model_name=_row_text(row, "model_name"),
-        message_type=MessageType.normalize(_row_text(row, "message_type") or "message"),
-        material_origin=MaterialOrigin.normalize(_row_text(row, "material_origin")),
-        stop_reason=_row_text(row, "stop_reason"),
-    )
+    values = MESSAGES_SPEC.row_to_record_kwargs(row)
+    if "parent_message_id" in values and values["parent_message_id"] is not None:
+        values["parent_message_id"] = MessageId(str(values["parent_message_id"]))
+    values.setdefault("message_id", row["message_id"])
+    values.setdefault("session_id", row["session_id"])
+    values.setdefault("content_hash", row["content_hash"])
+    return MessageRecord(**values)
 
 
 def _row_to_content_block(row: sqlite3.Row) -> BlockRecord:
-    semantic_type = _row_text(row, "semantic_type")
-    return BlockRecord(
-        block_id=row["block_id"],
-        message_id=MessageId(row["message_id"]),
-        session_id=SessionId(row["session_id"]),
-        block_index=row["block_index"],
-        type=BlockType.from_string(row["type"]),
-        text=_row_text(row, "text"),
-        tool_name=_row_text(row, "tool_name"),
-        tool_id=_row_text(row, "tool_id"),
-        tool_input=_row_text(row, "tool_input"),
-        metadata=_row_text(row, "metadata"),
-        semantic_type=SemanticBlockType.from_string(semantic_type) if semantic_type is not None else None,
-        tool_result_is_error=_row_int(row, "tool_result_is_error"),
-        tool_result_exit_code=_row_int(row, "tool_result_exit_code"),
-        tool_result_outcome_unknown_reason=_row_text(row, "tool_result_outcome_unknown_reason"),
-        signature=_row_text(row, "signature"),
-    )
+    values = BLOCKS_SPEC.row_to_record_kwargs(row)
+    values.setdefault("block_id", row["block_id"])
+    values["message_id"] = MessageId(str(values["message_id"]))
+    values["session_id"] = SessionId(str(values["session_id"]))
+    return BlockRecord(**values)
 
 
 def _row_to_file_edit(row: sqlite3.Row) -> FileEditRecord:

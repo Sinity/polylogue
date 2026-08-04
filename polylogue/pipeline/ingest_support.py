@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.config import Config, Source
+from polylogue.core.async_bridge import run_coroutine_sync
 
 INGEST_STAGE_SEQUENCES: dict[str, tuple[str, ...]] = {
     "acquire": ("acquire",),

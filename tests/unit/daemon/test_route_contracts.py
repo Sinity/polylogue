@@ -133,7 +133,6 @@ def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:
             "bearer_if_configured_and_same_origin",
             "first_party_same_origin",
             "unauthenticated_loopback",
-            "observability_flag_then_loopback_or_bearer",
         }
         assert route.response_contract
 

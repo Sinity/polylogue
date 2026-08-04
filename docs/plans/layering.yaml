@@ -36,7 +36,8 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [apply_raw_membership_classification, apply_raw_revision_replay, classify_raw_revision_cohort,
+        [admit_raw_and_parsed_result, apply_raw_membership_classification, apply_raw_revision_replay,
+        classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_rebuild_repair,
         release_provisional_full_revisions, replace_raw_membership_census,
         write_parsed_for_retained_raw, write_parsed_for_retained_raw_result, write_raw_and_parsed,
         write_raw_and_parsed_result, write_raw_blob_and_parsed, write_raw_blob_and_parsed_result]
@@ -108,6 +109,12 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints: [write_context_delivery]
+    - path: polylogue/storage/sqlite/archive_tiers/user_settings_write.py
+      surfaces:
+        - tier: user
+          durability: durable
+          interruption: atomic
+      entrypoints: [set_user_setting]
     - path: polylogue/storage/sqlite/archive_tiers/ops_write.py
       surfaces:
         - tier: ops
@@ -115,22 +122,16 @@ writer_modules:
           interruption: restartable
       entrypoints:
         [add_convergence_debt, record_cursor_lag_sample, record_daemon_stage_event, record_fts_drift_sample,
-        record_ingest_attempt, record_query_run, record_schema_drift_sample,
+        record_ingest_attempt, record_schema_drift_sample,
         record_daemon_lifecycle_heartbeat, record_daemon_lifecycle_signal, record_daemon_lifecycle_start,
         record_daemon_lifecycle_stop, record_mcp_call, record_route_observation, upsert_embedding_catchup_run,
-        upsert_ingest_cursor, upsert_otlp_span]
+        upsert_ingest_cursor]
     - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
       surfaces:
         - tier: index
           durability: rebuildable
           interruption: replayable
       entrypoints: [record_capture_gap_event, record_source_outage_events]
-    - path: polylogue/storage/sqlite/archive_tiers/pricing_seed.py
-      surfaces:
-        - tier: index
-          durability: rebuildable
-          interruption: replayable
-      entrypoints: [seed_price_catalog]
     - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
       surfaces:
         - tier: index

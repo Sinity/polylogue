@@ -127,6 +127,52 @@ def test_message_id_change_changes_session_hash() -> None:
     assert session_content_hash(a) != session_content_hash(b)
 
 
+def test_redundant_text_only_block_does_not_change_message_hash_payload() -> None:
+    """polylogue-0qfy: a vintage-artifact redundant text block must hash identically to no blocks.
+
+    Some claude-ai-export vintages parse an otherwise-identical message with
+    an empty ``blocks`` list; others attach exactly one
+    ``[{"type":"text","text": message.text}]`` block duplicating the same
+    text. This is a parser-shape artifact across export vintages, not a
+    real second content axis -- both vintages carry the same conversation
+    content, so the two must compare equal (this is what the raw-authority
+    membership comparison layer reuses, per session_revision_projection).
+    """
+    no_blocks = _parsed_message("m1", "user", "hello", "2024-01-01")
+    redundant_block = ParsedMessage(
+        provider_message_id="m1",
+        role=Role.normalize("user"),
+        text="hello",
+        timestamp="2024-01-01",
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
+    )
+    assert _message_hash_payload(no_blocks, "m1") == _message_hash_payload(redundant_block, "m1")
+
+    # A genuinely different block (extra field, different type, or more than
+    # one block) must still be a real difference -- the fix must not blanket
+    # -ignore content_blocks, only the specific redundant single-text-block shape.
+    tool_block = ParsedMessage(
+        provider_message_id="m1",
+        role=Role.normalize("user"),
+        text="hello",
+        timestamp="2024-01-01",
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello", tool_name="not-actually-redundant")],
+    )
+    assert _message_hash_payload(no_blocks, "m1") != _message_hash_payload(tool_block, "m1")
+
+    two_blocks = ParsedMessage(
+        provider_message_id="m1",
+        role=Role.normalize("user"),
+        text="hello",
+        timestamp="2024-01-01",
+        blocks=[
+            ParsedContentBlock(type=BlockType.TEXT, text="hello"),
+            ParsedContentBlock(type=BlockType.TEXT, text="hello"),
+        ],
+    )
+    assert _message_hash_payload(no_blocks, "m1") != _message_hash_payload(two_blocks, "m1")
+
+
 def test_session_hash_empty_messages_is_valid() -> None:
     session = _parsed_session(
         "conv-1",

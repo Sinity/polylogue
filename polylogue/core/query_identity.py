@@ -11,7 +11,8 @@ normalizes every string to NFC and sorts only children of commutative AND/OR
 nodes.  All other sequence order (including pipelines, ``except``, sort, and
 limit) remains semantic and therefore participates in the digest unchanged.
 Relative-time bounds belong to an execution record, not this plan: callers
-hash the dynamic AST and record its resolved bounds on ``query_runs``.
+hash the dynamic AST and record its resolved bounds on the execution record
+itself (e.g. a promoted ``retained_query_runs`` row).
 """
 
 from __future__ import annotations

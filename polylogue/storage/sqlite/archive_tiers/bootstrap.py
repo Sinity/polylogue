@@ -65,6 +65,12 @@ ARCHIVE_TIER_SPECS: dict[ArchiveTier, ArchiveTierSpec] = {
         durability="disposable",
         backup_required=False,
     ),
+    ArchiveTier.AUDIT: ArchiveTierSpec(
+        ArchiveTier.AUDIT,
+        filename="audit.db",
+        durability="irreplaceable",
+        backup_required=True,
+    ),
 }
 
 
@@ -85,17 +91,16 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
     if tier is ArchiveTier.OPS:
         from polylogue.storage.sqlite.archive_tiers.ops_write import (
             ensure_embedding_catchup_run_outcome_columns,
+            ensure_ops_status_checks,
         )
 
         _ensure_ops_runtime_columns(conn)
         _ensure_ops_cursor_lag_sample_columns(conn)
         _ensure_ops_ingest_attempt_outcome_columns(conn)
         ensure_embedding_catchup_run_outcome_columns(conn)
+        ensure_ops_status_checks(conn)
         _ensure_schema_drift_samples_check(conn)
     if tier is ArchiveTier.INDEX:
-        from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
-
-        seed_price_catalog(conn)
         # Fresh init never had a registered drop's target table, and any
         # additive registry entry lands identically to canonical DDL -- this
         # is a no-op today, kept for fresh-init/converged-live parity (see

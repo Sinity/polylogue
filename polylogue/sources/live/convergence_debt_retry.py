@@ -6,7 +6,7 @@ import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 _HOT_INSIGHT_DEFERRED = "insights deferred until source quiet"
 

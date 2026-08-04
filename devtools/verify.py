@@ -1760,11 +1760,6 @@ def build_verify_steps(
     if not commit:
         steps.extend(
             [
-                # "render all" now folds in the topology-projection check
-                # (devtools/generated_surfaces.py's "topology-projection"
-                # surface delegates --check to verify_topology.main) -- a
-                # standalone "verify topology" step here would just re-run
-                # the identical check a second time.
                 ("render all", _devtools_cmd("render all", "--check")),
                 ("verify layering", _devtools_cmd("verify layering")),
                 ("verify closure-matrix", _devtools_cmd("verify closure-matrix")),
@@ -1776,7 +1771,6 @@ def build_verify_steps(
                 ("verify test-infra-currency", _devtools_cmd("verify test-infra-currency")),
                 ("verify pytest-timeout-overrides", _devtools_cmd("verify pytest-timeout-overrides")),
                 ("verify degrade-loudly", _devtools_cmd("verify degrade-loudly")),
-                ("verify hash-boundary-census", _devtools_cmd("verify hash-boundary-census")),
                 # Static, archive-independent, sub-second: an index bump that
                 # lands without its lifecycle.py delta declaration silently
                 # downgrades every existing generation to a full raw replay
@@ -1828,6 +1822,15 @@ def build_verify_steps(
                 (
                     "lab policy raw-authority-frontier-executability",
                     _devtools_cmd("lab policy raw-authority-frontier-executability"),
+                ),
+                # Static, archive-independent, sub-second: forbids a NEW
+                # top-level def named table_exists/column_exists/index_exists
+                # (or a _-prefixed/_sync/_async variant) outside
+                # polylogue/storage/introspection.py -- the ~25-copy
+                # duplication polylogue-48h consolidated into that module.
+                (
+                    "lab policy table-exists-duplication",
+                    _devtools_cmd("lab policy table-exists-duplication"),
                 ),
                 # Publication gate. Committed provider schema packages are
                 # public artifacts; this blocks local provenance

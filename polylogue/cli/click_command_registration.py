@@ -115,6 +115,7 @@ _SHORT_HELP: dict[str, str] = {
     "reconcile_work_effects": "Reconcile a work-evidence graph against observed git/Beads effects.",
     "reset": "Reset local archive state.",
     "scan_secrets": "Scan a session for credential-shaped content (polylogue-27m).",
+    "setting": "Get, set, and list durable user settings.",
     "status": "Show daemon and archive status.",
     "tutorial": "Inspect first-run setup state.",
 }
@@ -137,6 +138,7 @@ _GROUP_ATTRS: dict[str, str] = {
     "insights": "ops_insights_command",
     "maintenance": "maintenance_group",
     "ops": "ops_command",
+    "setting": "setting_command",
 }
 
 _COMMAND_ATTRS: dict[str, str] = {
@@ -178,6 +180,7 @@ ROOT_COMMANDS: tuple[click.Command, ...] = (
     _L("manual"),
     _L("note"),
     _L("ops"),
+    _L("setting"),
     _L("status"),
     _L("tutorial"),
 )

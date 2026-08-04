@@ -437,6 +437,19 @@ to run it by hand when the trickle conveyor's backlog is bulk-scale, and the
 only viable path once the daemon's own conveyor made a live backlog
 net-negative.
 
+**Companion status surface (polylogue-b5l.1):**
+`polylogue ops maintenance rebuild-index-status`
+(`polylogue/cli/commands/maintenance/_rebuild_index_status.py`,
+handler `rebuild_index_status_command`) reports the consolidated,
+read-only view an operator needs while `rebuild-index` (or the daemon's own
+bulk-rebuild loop) is running or paused: archive-root lease ownership
+(held/holder pid/host/liveness/staleness), the active generation, the active
+index's schema version, and the resumable transaction's cursor
+(`processed_raw_count`/`last_raw_id`/`updated_at_ms`) alongside a
+source-snapshot delta and explicit stale-lock/failed-transaction recovery
+guidance (`polylogue.maintenance.rebuild_index.rebuild_status`). It never
+acquires the rebuild lease itself.
+
 **Why it exists today:** it is the one code path that already does the
 right thing for a bulk backlog — one resumable transaction, blue-green
 generation, full parse envelope, one census+replay sweep — because it does

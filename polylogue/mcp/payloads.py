@@ -23,6 +23,7 @@ from polylogue.surfaces.payloads import (
     build_search_envelope,
     model_json_document,
     role_label,
+    session_summary_envelope_from_domain,
 )
 from polylogue.surfaces.payloads import (
     ReaderActionAvailabilityPayload as MCPReaderActionAvailabilityPayload,
@@ -519,7 +520,7 @@ class MCPArchiveSessionPayload(SurfacePayloadModel):
 def session_summary_list_payload(
     sessions: Sequence[Session],
 ) -> MCPSessionSummaryListPayload:
-    return MCPSessionSummaryListPayload(root=[MCPSessionSummaryPayload.from_session(conv) for conv in sessions])
+    return MCPSessionSummaryListPayload(root=[session_summary_envelope_from_domain(conv) for conv in sessions])
 
 
 def session_query_result_payload(
@@ -534,7 +535,7 @@ def session_query_result_payload(
     return MCPPaginatedQueryResultPayload(
         items=tuple(
             MCPMatchedSessionSummaryPayload(
-                **MCPSessionSummaryPayload.from_session(conv).model_dump(mode="python"),
+                **session_summary_envelope_from_domain(conv).model_dump(mode="python"),
             )
             for conv in sessions
         ),
@@ -571,7 +572,7 @@ def session_neighbor_candidate_list_payload(
 def session_tree_payload(
     sessions: Sequence[Session],
 ) -> MCPSessionTreePayload:
-    items = tuple(MCPSessionSummaryPayload.from_session(conv) for conv in sessions)
+    items = tuple(session_summary_envelope_from_domain(conv) for conv in sessions)
     return MCPSessionTreePayload(items=items, total=len(items))
 
 

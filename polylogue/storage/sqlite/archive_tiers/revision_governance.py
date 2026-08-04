@@ -71,18 +71,27 @@ into internals" this module is supposed to make impossible to do by
 accident. The Protocol makes the dependency surface an explicit, readable
 contract instead of "whatever `self` happens to have".
 
-``ArchiveStore`` keeps one-line delegating methods
-(``def classify_raw_revision_cohort(self, ...): return
-classify_raw_revision_cohort(self, ...)``) so every existing external caller
+``ArchiveStore`` keeps one-line delegating methods for the two named
+classification entry points (``def
+classify_raw_revision_cohort_for_rebuild_repair(self, ...): return
+classify_raw_revision_cohort_for_rebuild_repair(self, ...)``, and the
+``_for_live_watch`` twin) so every existing external caller
 (``polylogue/sources/live/batch.py``, ``polylogue/sources/live/append_ingest.py``,
-``polylogue/sources/revision_backfill.py``, ``polylogue/storage/repair.py``,
-``polylogue/pipeline/services/archive_ingest.py``, ``polylogue/api/archive.py``,
-and every test that holds an ``ArchiveStore``/``archive`` instance) keeps
-calling ``archive.classify_raw_revision_cohort(...)`` unchanged. That is not
-a compatibility shim: there is exactly one implementation, it lives here, and
-``ArchiveStore``'s method bodies are the call site — the same shape as any
-other function-then-delegate extraction, not a parallel/duplicated
-implementation kept alive for a deprecated audience.
+``polylogue/sources/revision_backfill.py``, and every test that holds an
+``ArchiveStore``/``archive`` instance) keeps calling
+``archive.classify_raw_revision_cohort_for_*(...)`` unchanged. That is not a
+compatibility shim: there is exactly one shared implementation
+(``_classify_raw_revision_cohort``), it lives here, and ``ArchiveStore``'s
+method bodies are the call site — the same shape as any other
+function-then-delegate extraction, not a parallel/duplicated implementation
+kept alive for a deprecated audience. (polylogue-vp2ky retired the single
+``classify_raw_revision_cohort(..., check_source_path_identity_split: bool)``
+entry point in favor of these two names: the boolean answered two distinct
+questions -- "is this the rebuild/backfill repair path, where a stale-parser
+identity split must be caught" vs. "is this the live-watch path, where an
+atomic same-path content replacement must NOT be mistaken for a split" -- and
+every caller had to independently get the right literal right. Naming the
+question makes it impossible to pass the wrong answer.)
 """
 
 from __future__ import annotations
@@ -101,6 +110,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession
 
+from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
     RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
@@ -136,6 +146,11 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     should_skip_stale_replace,
     stored_message_count,
 )
+from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+    RawAdmissionArm,
+    RawAdmissionResult,
+    admit_raw_observation,
+)
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
@@ -161,6 +176,31 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 
 class ActiveByteRevisionChainError(RuntimeError):
     """A byte-identical revision chain cannot admit a conflicting sibling."""
+
+
+class MembershipReplayConflictError(RuntimeError):
+    """Membership replay refused to move an accepted head this pass.
+
+    Raised by ``apply_raw_membership_classification`` when it cannot safely
+    retire or replace the currently accepted ``raw_revision_heads`` row for a
+    logical identity (an unrelated accepted head, or a head with unresolved
+    byte-append evidence still hanging off it). This is a **transient,
+    retry-eligible** refusal, not proof the raw is unparseable: a later pass
+    over the same durable raw bytes can succeed once sibling evidence
+    resolves or the accepted head itself changes (polylogue-5iz4).
+
+    A dedicated subclass exists so ``mark_raw_parse_failed``'s ``parse_error``
+    text (``f"{type(exc).__name__}: {exc}"``) carries a stable, matchable
+    marker for retry-eligibility checks (``storage/repair.py``'s raw
+    materialization candidate query) independent of this class's own
+    human-readable message wording, which has already drifted twice (#2718's
+    original "unconvertible byte head" phrasing no longer appears anywhere in
+    this module) and will keep drifting as the guard is refined. A plain
+    ``RuntimeError`` gives the retry-candidate query nothing durable to match
+    on beyond the exact message text, which is how a raw that hit this guard
+    under old wording got silently excluded from every future rebuild even
+    after the guard's conditions no longer applied to it.
+    """
 
 
 class RawRevisionGovernanceHost(Protocol):
@@ -522,6 +562,52 @@ def write_raw_blob_ref(
     )
 
 
+def admit_raw_artifact_payload(
+    store: RawRevisionGovernanceHost,
+    *,
+    provider: Provider,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+    classification: ArtifactClassification,
+    source_index: int = 0,
+    blob_publication_receipt_id: str | None = None,
+) -> RawAdmissionResult:
+    """Commit a non-conversational artifact payload through the raw-admission chokepoint.
+
+    polylogue-1fijp arm 4: routes a payload already classified as
+    ``not classification.parse_as_session`` (the omsw artifact taxonomy --
+    tool-results/*.json, subagents/workflows/*/journal.jsonl,
+    file-history-snapshot, etc) through :func:`admit_raw_observation` so its
+    ``raw_artifacts`` classification is attached at admission time rather
+    than deferred to the next offline ``materialize_artifact_observations``
+    sweep. A ``raw_sessions`` row is still written (the acquisition-evidence
+    ledger; ``raw_artifacts.raw_id`` has a NOT NULL FK to it), but this arm
+    guarantees the payload never reaches any index-tier writer.
+    """
+    if store._blob_publisher is None:
+        raise RuntimeError("raw archive writes require a writable archive publisher")
+    if blob_publication_receipt_id is None:
+        raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
+        blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
+    store._blob_publisher.flush()
+    origin = origin_from_provider(provider)
+    return admit_raw_observation(
+        store._ensure_source_conn(),
+        origin=origin,
+        capture_mode=provider,
+        source_path=source_path,
+        source_index=source_index,
+        payload=payload,
+        acquired_at_ms=acquired_at_ms,
+        logical_source_key=f"{origin.value}:{source_path}",
+        prior_head=None,
+        artifact=classification,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        manage_transaction=True,
+    )
+
+
 def write_parsed_for_retained_raw(
     store: RawRevisionGovernanceHost,
     session: ParsedSession,
@@ -785,30 +871,25 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
     return row is not None
 
 
-def classify_raw_revision_cohort(
+def classify_raw_revision_cohort_for_rebuild_repair(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
     *,
-    check_source_path_identity_split: bool = False,
     manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
-    """Promote only a unique byte-prefix full chain and contiguous appends.
+    """Classify a cohort for the offline rebuild/backfill repair path.
 
-    ``check_source_path_identity_split`` (polylogue-eqnv, default
-    ``False`` -- opt in explicitly, see
-    ``_raw_revision_source_path_has_divergent_evidence``) additionally
-    refuses a singleton accept when another 'full' raw shares this raw's
-    ``source_path`` under a DIFFERENT key. That heuristic is sound for a
-    genuine re-acquisition of the same physical document (the offline
-    backfill/rebuild path's use case, where a stale pre-fix parser
-    identity can split one document across two keys) but is NOT sound in
-    general: a watched source path can legitimately be atomically
-    replaced with an entirely different session's content (same path,
-    genuinely different identity, exercised by
-    ``test_full_ingest_does_not_advance_cursor_across_same_size_replacement``
-    et al.) -- the live incremental watcher (``sources/live/batch.py``)
-    must not quarantine that as "divergent evidence", so it leaves this
-    off.
+    This is the caller that must catch a stale-parser identity split
+    (polylogue-eqnv): a re-acquisition of the same physical document can end
+    up under two different ``logical_source_key`` values when an older,
+    now-superseded parser assigned identity inconsistently across passes.
+    Always applies the ``source_path`` cross-key divergent-evidence guard
+    (see ``_raw_revision_source_path_has_divergent_evidence``) so such a
+    split is refused a naive singleton byte-chain accept and instead folds
+    into membership governance, where the real content-based classifier
+    weighs every known sibling together. Never call this from the live
+    watcher -- see ``classify_raw_revision_cohort_for_live_watch`` for why
+    the same guard is unsound there.
 
     ``manage_transaction=False`` (polylogue batched-rebuild path) leaves the
     classification's ``raw_sessions`` authority updates uncommitted in the
@@ -819,6 +900,64 @@ def classify_raw_revision_cohort(
     authority evidence -- the resume re-classifies the same cohorts from
     scratch. The follow-up ``raw_revision_replay_plan`` read runs on the
     SAME source connection and sees the uncommitted updates.
+    """
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=True,
+        manage_transaction=manage_transaction,
+    )
+
+
+def classify_raw_revision_cohort_for_live_watch(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+    *,
+    manage_transaction: bool = True,
+) -> RevisionReplayPlan:
+    """Classify a cohort for the live incremental-watch path.
+
+    This is the caller that must NOT apply the source-path cross-key
+    divergent-evidence guard used by
+    ``classify_raw_revision_cohort_for_rebuild_repair``: a watched source
+    path can legitimately be atomically replaced with an entirely different
+    session's content (same path, genuinely different identity, exercised
+    by
+    ``test_full_ingest_does_not_advance_cursor_across_same_size_replacement``
+    et al.). Applying the rebuild-repair guard here would wrongly quarantine
+    that legitimate replacement as "divergent evidence".
+
+    See ``classify_raw_revision_cohort_for_rebuild_repair`` for the
+    ``manage_transaction`` contract.
+    """
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=False,
+        manage_transaction=manage_transaction,
+    )
+
+
+def _classify_raw_revision_cohort(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+    *,
+    check_source_path_identity_split: bool,
+    manage_transaction: bool = True,
+) -> RevisionReplayPlan:
+    """Promote only a unique byte-prefix full chain and contiguous appends.
+
+    Shared implementation behind ``classify_raw_revision_cohort_for_rebuild_repair``
+    and ``classify_raw_revision_cohort_for_live_watch`` -- callers should use
+    one of those two named entry points, never this function directly, so
+    that ``check_source_path_identity_split`` is always set correctly for
+    the calling context by construction rather than by the caller getting a
+    bare boolean right.
+
+    When ``check_source_path_identity_split`` is set, additionally refuses a
+    singleton accept when another 'full' raw shares this raw's
+    ``source_path`` under a DIFFERENT key (see
+    ``_raw_revision_source_path_has_divergent_evidence``).
     """
     if store._blob_publisher is None:
         raise RuntimeError("raw revision classification requires a writable blob publisher")
@@ -2444,7 +2583,7 @@ def apply_raw_membership_classification(
                         or persisted_session is None
                         or (persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids)
                     ):
-                        raise RuntimeError(
+                        raise MembershipReplayConflictError(
                             "membership replay cannot retire an unrelated accepted head: "
                             f"logical_source_key={logical_source_key!r} "
                             f"existing_head(raw_id={existing_raw_id!r}, session_id={str(existing_head[3])!r}, "
@@ -2504,7 +2643,7 @@ def apply_raw_membership_classification(
                             (logical_source_key, existing_raw_id, *classified_raw_ids, existing_raw_id),
                         ).fetchone()
                         if dangling_append is not None:
-                            raise RuntimeError(
+                            raise MembershipReplayConflictError(
                                 "membership replay cannot replace a head with unresolved byte-append "
                                 f"evidence: logical_source_key={logical_source_key!r} "
                                 f"existing_head(raw_id={existing_raw_id!r})"
@@ -2837,6 +2976,101 @@ def write_raw_and_parsed_result(
         store,
         session,
         raw_id=raw_id,
+        source_index=source_index,
+        stage_timings_s=stage_timings_s,
+        stage_timing_prefix=stage_timing_prefix,
+        manage_transaction=manage_transaction,
+        preacquired_attachment_blobs=preacquired_attachments,
+        finalize_raw_parse=finalize_raw_parse,
+    )
+    add_timing("index_parsed_write", t0)
+    return result
+
+
+def admit_raw_and_parsed_result(
+    store: RawRevisionGovernanceHost,
+    session: ParsedSession,
+    *,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+    logical_source_key: str,
+    source_index: int = 0,
+    stage_timings_s: dict[str, float] | None = None,
+    stage_timing_prefix: str = "append",
+    manage_transaction: bool = True,
+    blob_publication_receipt_id: str | None = None,
+    finalize_raw_parse: bool = True,
+) -> ArchiveRawParsedWriteResult:
+    """Write raw acquisition bytes through the raw-admission chokepoint, then index.
+
+    polylogue-1fijp: :func:`write_raw_and_parsed_result` always writes a bare
+    ``FULL``/``revision=None`` raw row -- the exact nullable "figure it out
+    later" limbo :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`
+    exists to eliminate. This entrypoint instead resolves
+    ``admit_raw_observation``'s typed arms against ``prior_head=None``, so it
+    is restricted to callers that, by construction, only ever observe a
+    ``logical_source_key`` for the first time -- the caller has already
+    filtered to not-yet-acquired source paths/native ids, so no prior head
+    exists to compare against and the APPEND/SUPERSEDE/duplicate/ambiguous
+    arms are structurally unreachable here (enforced below: any non-BASELINE
+    outcome is a caller contract violation, not a silently accepted result).
+
+    Callers that need revision-chain comparison against a real prior head
+    (the live-watcher's append tracking in ``sources/live/``, Drive lineage
+    binding) have their own governed paths and are explicitly out of scope
+    for this entrypoint -- see the module docstring of ``raw_admission.py``
+    and polylogue-1fijp's call-site survey notes.
+    """
+
+    def add_timing(name: str, started_at: float) -> None:
+        if stage_timings_s is not None:
+            key = f"{stage_timing_prefix}.{name}"
+            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+
+    if store._blob_publisher is None:
+        raise RuntimeError("raw archive writes require a writable archive publisher")
+    if blob_publication_receipt_id is None:
+        raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
+        blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
+    preacquired_attachments, attachment_blob_refs = store._preacquire_attachment_blobs(
+        session,
+        source_path=source_path,
+        acquired_at_ms=acquired_at_ms,
+    )
+    store._blob_publisher.flush()
+    t0 = time.perf_counter()
+    source_conn = store._ensure_source_conn()
+    add_timing("source_connect", t0)
+    t0 = time.perf_counter()
+    admission = admit_raw_observation(
+        source_conn,
+        origin=origin_from_provider(session.source_name),
+        capture_mode=session.source_name,
+        source_path=source_path,
+        source_index=source_index,
+        payload=payload,
+        acquired_at_ms=acquired_at_ms,
+        native_id=session.provider_session_id,
+        logical_source_key=logical_source_key,
+        prior_head=None,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        additional_blob_refs=attachment_blob_refs,
+        manage_transaction=True,
+    )
+    add_timing("source_raw_write", t0)
+    if admission.arm is not RawAdmissionArm.BASELINE:
+        raise RuntimeError(
+            f"admit_raw_and_parsed_result: expected a BASELINE admission for "
+            f"logical_source_key={logical_source_key!r} (prior_head=None), got "
+            f"{admission.arm!r} instead -- the caller must guarantee no prior raw "
+            "observation exists for this key before calling this entrypoint"
+        )
+    t0 = time.perf_counter()
+    result = _index_parsed_for_retained_raw(
+        store,
+        session,
+        raw_id=admission.raw_id,
         source_index=source_index,
         stage_timings_s=stage_timings_s,
         stage_timing_prefix=stage_timing_prefix,

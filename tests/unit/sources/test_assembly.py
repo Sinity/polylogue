@@ -13,6 +13,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.assembly import SidecarData, get_assembly_spec
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
+from polylogue.sources.assembly_claude_ai import ClaudeAIAssemblySpec
 from polylogue.sources.assembly_claude_code import ClaudeCodeAssemblySpec
 from polylogue.sources.assembly_codex import (
     CodexAssemblySpec,
@@ -86,11 +87,13 @@ def _thread_sidecars(
     thread_names: dict[str, str] | None = None,
     history_titles: dict[str, str] | None = None,
     state_titles: dict[str, str] | None = None,
+    hook_event_titles: dict[str, str] | None = None,
 ) -> SidecarData:
     return {
         "thread_names": {} if thread_names is None else thread_names,
         "history_titles": {} if history_titles is None else history_titles,
         "state_titles": {} if state_titles is None else state_titles,
+        "hook_event_titles": {} if hook_event_titles is None else hook_event_titles,
     }
 
 
@@ -122,7 +125,12 @@ class TestGetAssemblySpec:
         spec = get_assembly_spec(Provider.CHATGPT)
         assert isinstance(spec, ChatGPTAssemblySpec)
 
-    @pytest.mark.parametrize("provider", [Provider.CLAUDE_AI, Provider.UNKNOWN])
+    def test_claude_ai_returns_spec(self) -> None:
+        # bd polylogue-4zqh3: sole-copy attachment recovery sidecar.
+        spec = get_assembly_spec(Provider.CLAUDE_AI)
+        assert isinstance(spec, ClaudeAIAssemblySpec)
+
+    @pytest.mark.parametrize("provider", [Provider.UNKNOWN])
     def test_no_spec_for_other_providers(self, provider: Provider) -> None:
         assert get_assembly_spec(provider) is None
 
@@ -1109,6 +1117,77 @@ class TestCodexStateTitles:
         sessions_root = tmp_path / ".codex" / "sessions"
         sessions_root.mkdir(parents=True)
         assert _parse_codex_state_titles(sessions_root) == {}
+
+    # -----------------------------------------------------------------
+    # bd polylogue-foee: acquired codex_thread_title hook events (step 3b)
+    # -----------------------------------------------------------------
+
+    def test_hook_event_title_fills_gap_when_nothing_else_resolves(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        sidecar_data = _thread_sidecars(hook_event_titles={"thread-1": "Durable acquired title"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Durable acquired title"
+        assert enriched.title_source == TitleSource.ORIGIN
+        assert enriched.title_ref == "codex-thread-title-hook-event:thread-1"
+        assert enriched.title_confidence == 0.7
+
+    def test_state_title_beats_hook_event_title(self) -> None:
+        """A live state_5.sqlite read (step 3) is fresher than the durable
+        hook-event snapshot (step 3b) -- it wins when both resolve."""
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
+        sidecar_data = _thread_sidecars(
+            state_titles={"thread-1": "Live-read title"},
+            hook_event_titles={"thread-1": "Stale acquired title"},
+        )
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Live-read title"
+
+    def test_hook_event_title_beats_first_message_fallback(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "message body that would otherwise win")],
+        )
+        sidecar_data = _thread_sidecars(hook_event_titles={"thread-1": "Durable acquired title"})
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title == "Durable acquired title"
+        assert enriched.title_source == TitleSource.ORIGIN
+
+    def test_hook_event_title_downgrades_when_it_echoes_the_first_prompt(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(
+            Provider.CODEX,
+            "thread-1",
+            "thread-1",
+            [_authored_message("m1", "find, using whatever means, either directly ~/.codex or polylogue")],
+        )
+        sidecar_data = _thread_sidecars(
+            hook_event_titles={"thread-1": "find, using whatever means, either directly ~/.codex or polylogue"}
+        )
+
+        enriched = spec.enrich_session(conv, sidecar_data)
+
+        assert enriched.title_source == TitleSource.HEURISTIC
+        assert enriched.title_confidence == 0.5
+
+    def test_hook_event_title_never_replaces_real_title(self) -> None:
+        spec = CodexAssemblySpec()
+        conv = _parsed_session(Provider.CODEX, "thread-1", "A real existing title", [])
+        sidecar_data = _thread_sidecars(hook_event_titles={"thread-1": "Durable acquired title"})
+
+        result = spec.enrich_session(conv, sidecar_data)
+
+        assert result is conv
 
     def test_state_titles_cache_invalidates_on_file_change(self, tmp_path: Path) -> None:
         import os

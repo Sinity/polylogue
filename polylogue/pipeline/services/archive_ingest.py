@@ -259,8 +259,20 @@ async def parse_sources_archive(
         else:
             # Antigravity language-server export stays sequential (it drives a
             # local loopback subprocess); only the file-walk parallelizes.
+            # `capture_raw=True` is required here (polylogue-3m3de): without
+            # it every exported session's `raw_data` is `None`, so
+            # `_archive_raw_payload`/`_archive_raw_source_path` fall back to
+            # a JSON dump of the parsed session and the shared source root
+            # path -- collapsing every conversation's raw provenance onto one
+            # non-unique source_path instead of its actual `.pb` file and
+            # real bytes.
             for source in sources:
-                for raw_data, session in iter_antigravity_language_server_sessions(source):
+                for raw_data, session in iter_antigravity_language_server_sessions(
+                    source,
+                    capture_raw=True,
+                    blob_root=blob_root,
+                    blob_store=parse_blob_publisher,
+                ):
                     await write_pair(source, raw_data, session)
 
             failed = 0
@@ -386,12 +398,18 @@ def _admit_non_session_origin_artifacts(
             if classification is None or classification.parse_as_session:
                 continue
             try:
-                archive.write_raw_payload(
+                # polylogue-1fijp arm 4: route through the raw-admission
+                # chokepoint so this configured fact artifact gets its
+                # raw_artifacts classification row immediately, instead of
+                # only a bare raw_sessions row waiting on the next offline
+                # materialize_artifact_observations sweep.
+                archive.admit_raw_artifact_payload(
                     provider=Provider.CLAUDE_CODE,
                     payload=Path(candidate).read_bytes(),
                     source_path=str(candidate),
                     source_index=0,
                     acquired_at_ms=acquired_at_ms,
+                    classification=classification,
                 )
                 admitted += 1
             except Exception:

@@ -10,7 +10,11 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import resolve_provider_config
-from polylogue.schemas.observation_models import ObservationTerminalRecorder, SchemaUnit
+from polylogue.schemas.observation_models import (
+    ObservationTerminalRecorder,
+    ObservationTerminalStatus,
+    SchemaUnit,
+)
 from polylogue.schemas.sampling_db import (
     _iter_samples_from_db,
     _iter_schema_units_from_db,
@@ -30,14 +34,45 @@ def iter_schema_units(
     max_samples: int | None = None,
     full_corpus: bool = False,
     terminal_recorder: ObservationTerminalRecorder | None = None,
+    allow_session_dir_fallback: bool = False,
 ) -> Iterator[SchemaUnit]:
-    """Yield schema units for a provider from DB, with session fallback."""
+    """Yield schema units for a provider from DB, with optional session fallback.
+
+    ``allow_session_dir_fallback`` is opt-in and defaults to ``False``: an
+    explicitly-passed ``db_path`` means DB-authoritative, so a zero-unit DB
+    result never silently substitutes a scan of the real
+    ``config.session_dir`` (e.g. the operator's live ``~/.codex/sessions``).
+    Callers that genuinely want the legacy "empty archive, scan the real
+    session directory" CLI behavior (only sensible when the caller never
+    supplied a ``db_path`` of its own -- i.e. the default archive path is in
+    play) must set this explicitly (polylogue-kmqwm).
+    """
     source_name = Provider.from_string(source_name)
     if db_path is None:
         db_path = index_db_path()
 
     config = resolve_provider_config(source_name)
     yielded_any = False
+    row_seen = False
+
+    def _observing_terminal_recorder(
+        *,
+        raw_id: str,
+        status: ObservationTerminalStatus,
+        artifact_kind: str | None,
+        source_path: str | None,
+        reason: str | None,
+    ) -> None:
+        nonlocal row_seen
+        row_seen = True
+        if terminal_recorder is not None:
+            terminal_recorder(
+                raw_id=raw_id,
+                status=status,
+                artifact_kind=artifact_kind,
+                source_path=source_path,
+                reason=reason,
+            )
 
     if config.db_source_name and db_path.exists():
         for unit in _iter_schema_units_from_db(
@@ -46,12 +81,26 @@ def iter_schema_units(
             config=config,
             max_samples=max_samples,
             full_corpus=full_corpus,
-            terminal_recorder=terminal_recorder,
+            terminal_recorder=_observing_terminal_recorder,
         ):
             yielded_any = True
             yield unit
 
-    if yielded_any or config.session_dir is None:
+    # polylogue-o8c3m: the session-directory fallback exists for the
+    # genuinely-empty-archive CLI case (no index.db rows for this provider
+    # yet). It must NOT trigger merely because every observed row failed to
+    # decode/classify -- that silently substitutes an unrelated live
+    # filesystem scan (e.g. the operator's real ~/.codex/sessions) for what
+    # should surface as a decode-failure result, and does so even from
+    # contexts (tests, cloud sandboxes) that never intended to touch local
+    # session directories at all. `row_seen` distinguishes "the DB had zero
+    # matching rows" from "the DB had rows but none produced a unit".
+    #
+    # polylogue-kmqwm: on top of that, the fallback is opt-in
+    # (`allow_session_dir_fallback`). A zero-unit DB result must never
+    # silently widen into a real filesystem scan unless the caller
+    # explicitly asked for that legacy behavior.
+    if yielded_any or row_seen or config.session_dir is None or not allow_session_dir_fallback:
         return
 
     yield from _iter_schema_units_from_sessions(

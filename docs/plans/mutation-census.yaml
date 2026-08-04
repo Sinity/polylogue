@@ -272,6 +272,38 @@ rows:
       - polylogue.api.archive.PolylogueArchiveMixin.post_blackboard_note
       - polylogue.mcp.server_cutover._dispatch_write (operation=blackboard_post, via post_blackboard_note)
 
+  # --- Phase 7: executor-routed (derived maintenance rebuilds) ---------------
+  # These facade methods are the shared gateway for the MCP maintenance
+  # operations. The existing MCP confirmation gates remain in place; the
+  # executor now owns target planning, capability binding, and receipts for
+  # the underlying derived-tier effects.
+  - operation: rebuild_index
+    spec_name: mutate-rebuild-index
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.IndexRebuildActuator
+    surfaces: [facade, mcp]
+    adapters:
+      - polylogue.api.ingest.PolylogueIngestMixin.rebuild_index
+      - polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_index, via facade)
+
+  - operation: update_index
+    spec_name: mutate-update-index
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.IndexRebuildActuator
+    surfaces: [facade, mcp]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.update_index
+      - polylogue.mcp.server_cutover._dispatch_maintenance (operation=update_index, via facade)
+
+  - operation: rebuild_insights
+    spec_name: mutate-rebuild-insights
+    status: executor-routed
+    actuator: polylogue.operations.mutation_actuators.InsightsRebuildActuator
+    surfaces: [facade, mcp]
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.rebuild_insights
+      - polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_insights, via facade)
+
   # --- Phase 3+ debt: declared-not-routed -------------------------------------
   # MCP-only mutation family with no OperationSpec entry yet (pre-existing
   # gap, not introduced by this PR). jn40's confirm-boolean sweep was the
@@ -279,29 +311,39 @@ rows:
   # remove_mark (phase 2), save_annotation/delete_annotation (phase 3), the
   # saved-view/recall-pack/workspace family (phase 4), record_correction/
   # delete_correction/clear_corrections (phase 5), and blackboard_post
-  # (phase 6, above) are all executor-routed now; the rest of this family
+  # (phase 6, above) and the derived maintenance trio (phase 7, above) are
+  # all executor-routed now; the rest of this family
   # remains debt for a later phase.
 
   - operation: capture_assertion_candidate
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: Additive candidate capture, not destructive; tracked for completeness.
+    spec_name: mutate-capture-assertion-candidate
+    status: executor-routed
+    surfaces: [facade, cli, mcp]
+    actuator: polylogue.operations.mutation_actuators.CaptureAssertionCandidateActuator
+    adapters:
+      - polylogue.api.archive.PolylogueArchiveMixin.capture_assertion_candidate
+      - polylogue.cli.commands.note.capture_note_command
+      - polylogue.mcp.server_cutover._dispatch_write (operation=capture_assertion_candidate)
 
   - operation: import_annotation_batch
-    status: declared-not-routed
-    surfaces: [mcp]
-    reason: Additive batch import with its own provenance/versioning contract.
+    spec_name: mutate-import-annotation-batch
+    status: executor-routed
+    surfaces: [facade, cli, mcp]
+    actuator: polylogue.annotations.importer.AnnotationBatchImportActuator
+    adapters:
+      - polylogue.annotations.importer.import_annotation_batch
+      - polylogue.api.archive.PolylogueArchiveMixin.import_annotation_batch
+      - polylogue.cli.commands.annotations.import_annotations_command
+      - polylogue.mcp.server_cutover._dispatch_write (operation=import_annotation_batch)
 
-  - operation: rebuild_index / update_index / rebuild_insights (maintenance_execute family)
+  - operation: maintenance_execute (resumable maintenance run)
     status: declared-not-routed
     surfaces: [mcp, daemon]
     reason: >
-      jn40 confirm-gated (maintenance_execute/rebuild_index/
-      rebuild_session_insights in the named-ten list); internal
-      idempotent-rebuild maintenance, not a data-loss operation in the same
-      sense as delete/excise/reset. OperationSpec entries
-      index-message-fts/materialize-session-insights already declare
-      declared-not-routed.
+      The resumable target-catalog replay has a separate operation-id,
+      cursor, failure-isolation, and partial-resume contract. This slice
+      routes the facade/MCP rebuild_index, update_index, and rebuild_insights
+      methods only; the maintenance run family remains deferred.
 
   - operation: ops reset --database/--index/--blob/--assets/--cache/--auth
     status: declared-not-routed

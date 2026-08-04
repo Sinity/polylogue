@@ -22,6 +22,7 @@ from .base import (
     ParsedSession,
     ParsedSessionEvent,
     ParsedWebConstruct,
+    human_authored_override,
 )
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
@@ -102,12 +103,27 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
     is preferred over those partial copies; otherwise the best complete node
     on the same assistant branch owns the timing. Provider-finished duration
     is authoritative, with a valid start/end delta as the derived fallback.
+
+    The final tiebreak among nodes that agree on every other criterion is
+    the candidate message id itself, never raw ``mapping`` iteration order
+    (bd polylogue-uqwd). Two nodes on one branch can fully tie on source
+    rank, reasoning-recap flag, start/end presence, and ``end_turn`` --
+    ChatGPT re-exports of the SAME conversation are not guaranteed to
+    serialize ``mapping`` keys in the same order every time, so an
+    order-derived tiebreak silently anchored the resulting
+    ``generation_lifecycle`` event to a different message id per export,
+    even though every node's own content was byte-identical. That anchor
+    drift then made ``event_base_identity_hash``
+    (``pipeline/ids.py``) read the same event as two disjoint identities
+    across revisions -- the same "array position is not identity" hazard
+    ``session_revision_projection`` already guards against for messages,
+    attachments, and events.
     """
 
-    candidates: dict[str, list[tuple[tuple[int, int, int, int, int], _GenerationTiming]]] = {}
+    candidates: dict[str, list[tuple[tuple[int, int, int, int, str], _GenerationTiming]]] = {}
     related_message_ids: dict[str, set[str]] = {}
     legacy_duration_by_message_id: dict[str, dict[str, int]] = {}
-    for position, (node_id, raw_node) in enumerate(mapping.items()):
+    for node_id, raw_node in mapping.items():
         if not isinstance(raw_node, Mapping):
             continue
         raw_message = raw_node.get("message")
@@ -184,7 +200,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             int(content_type == "reasoning_recap"),
             int(start_sec is not None and end_sec is not None),
             int(raw_message.get("end_turn") is True),
-            position,
+            message_id,
         )
         candidates.setdefault(branch_key, []).append((score, timing))
 
@@ -1020,11 +1036,15 @@ def extract_messages_from_mapping(
             timestamp=str(timestamp) if timestamp is not None else None,
             blocks=content_blocks,
             message_type=message_type,
-            material_origin=classify_material_origin(
-                role=role,
-                message_type=message_type,
-                text=text,
-                block_types=tuple(block.type for block in content_blocks),
+            material_origin=human_authored_override(
+                role,
+                message_type,
+                classify_material_origin(
+                    role=role,
+                    message_type=message_type,
+                    text=text,
+                    block_types=tuple(block.type for block in content_blocks),
+                ),
             ),
             parent_message_provider_id=parent_message_provider_id,
             position=idx - 1,
@@ -1190,6 +1210,90 @@ def looks_like(payload: object) -> bool:
     return _mapping_nodes_are_valid(mapping)
 
 
+def looks_like_shared_decode(payload: object) -> bool:
+    """Detect a ChatGPT shared-page (``chatgpt.com/share/<id>``) stream decode.
+
+    A shared conversation page serves its content through a client React
+    Router data stream, not the authenticated export/API ``mapping`` tree
+    ``looks_like``/``looks_like_fragment`` require. A local decode of that
+    stream (polylogue-4zqh3: the recovery-packet decode of conversation
+    ``6a4ac87b-...``, produced by a router-stream parse rather than a DOM
+    scrape) flattens the conversation tree into a top-level ``messages``
+    list of ``{node_id, parent, children, role, text, ...}`` records with no
+    ``mapping`` key anywhere in the document. Before this detector existed,
+    such a document matched no provider detector at all: dispatch's generic
+    "has a messages list" fallback (``_record_messages``) *would* match it,
+    but that fallback also requires a payload-asserted ``id`` field (there
+    is none here -- only ``conversation_id``/``shared_conversation_id``), so
+    it silently produced zero sessions and the decode never reached the
+    archive.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if "mapping" in payload:
+        return False
+    if not isinstance(payload.get("shared_conversation_id"), str) or not payload["shared_conversation_id"]:
+        return False
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return False
+    first = messages[0]
+    if not isinstance(first, dict):
+        return False
+    return isinstance(first.get("node_id"), str) and isinstance(first.get("role"), str)
+
+
+def _shared_decode_mapping(payload: Mapping[str, object]) -> tuple[dict[str, object], str | None]:
+    """Build a ``mapping``-tree-shaped dict from a shared-decode ``messages`` list.
+
+    Reuses ``extract_messages_from_mapping`` (the same node/message-tree
+    walk every other ChatGPT shape goes through) instead of duplicating its
+    branch-index/attachment/content-type logic for this flattened shape:
+    each flat record becomes a native-shaped ``{id, parent, children,
+    message: {id, author, create_time, content, metadata, status}}`` node.
+    Returns the synthesized mapping plus the leaf node id (the one node
+    with no children) to stand in for the native export's ``current_node``,
+    since the decode carries no explicit current-node marker.
+    """
+    messages = payload.get("messages")
+    mapping: dict[str, object] = {}
+    leaf_node_id: str | None = None
+    if not isinstance(messages, list):
+        return mapping, leaf_node_id
+    for raw in messages:
+        if not isinstance(raw, dict):
+            continue
+        node_id = raw.get("node_id")
+        if not isinstance(node_id, str) or not node_id:
+            continue
+        message_id_raw = raw.get("message_id")
+        message_id = message_id_raw if isinstance(message_id_raw, str) and message_id_raw else node_id
+        role = raw.get("role")
+        text = raw.get("text")
+        text = text if isinstance(text, str) else ""
+        metadata = raw.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        children_raw = raw.get("children")
+        children = [child for child in children_raw if isinstance(child, str)] if isinstance(children_raw, list) else []
+        parent = raw.get("parent")
+        parent = parent if isinstance(parent, str) else None
+        message: dict[str, object] | None = None
+        if isinstance(role, str) and role:
+            message = {
+                "id": message_id,
+                "author": {"role": role},
+                "create_time": raw.get("create_time"),
+                "update_time": raw.get("update_time"),
+                "content": {"content_type": "text", "parts": [text] if text else []},
+                "metadata": metadata,
+                "status": raw.get("status"),
+            }
+        mapping[node_id] = {"id": node_id, "parent": parent, "children": children, "message": message}
+        if not children:
+            leaf_node_id = node_id
+    return mapping, leaf_node_id
+
+
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
 # ``blocks`` table has no metadata column and the write path only reads a
 # ``language`` key back out of it (``storage/sqlite/archive_tiers/write.py:
@@ -1225,8 +1329,16 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
         mapping = {}
+    derived_current_node: str | None = None
+    if not mapping and looks_like_shared_decode(payload):
+        # polylogue-4zqh3: a shared-page stream decode has no ``mapping``
+        # key at all -- synthesize one from its flat ``messages`` list so
+        # the rest of this function (title/timestamps/ingest_flags below)
+        # and ``extract_messages_from_mapping`` handle it identically to a
+        # native export.
+        mapping, derived_current_node = _shared_decode_mapping(payload)
     current_node = payload.get("current_node")
-    current_node = current_node if isinstance(current_node, str) else None
+    current_node = current_node if isinstance(current_node, str) else derived_current_node
     messages, attachments = extract_messages_from_mapping(mapping, current_node)
     generation_timings = _extract_generation_timings(mapping)
     emitted_message_ids = {message.provider_message_id for message in messages}

@@ -27,13 +27,14 @@ from polylogue.archive.query.transaction import archive_read_context, run_archiv
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, TitleSource
 from polylogue.core.errors import PolylogueError
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
     ObjectRef,
@@ -53,7 +54,6 @@ from polylogue.insights.archive import (
 from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
 from polylogue.paths import archive_file_set_index_available_for_paths
-from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.insights.session.records import SessionProfileRecord
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
@@ -101,6 +101,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
+    from polylogue.context.codex_spawn_edge_correlation import CodexSpawnEdgeReconciliation
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.core.protocols import ProgressCallback
@@ -126,6 +127,7 @@ if TYPE_CHECKING:
         ArchiveSessionSummary,
         ArchiveStore,
     )
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import ArchiveUserSettingEnvelope
     from polylogue.storage.sqlite.archive_tiers.user_write import (
         ArchiveAssertionBulkJudgmentEnvelope,
         ArchiveAssertionCandidateReviewEnvelope,
@@ -181,6 +183,7 @@ _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
     "claim": AssertionKind.DECISION,
     "correction": AssertionKind.CORRECTION,
     "lesson": AssertionKind.LESSON,
+    "caveat": AssertionKind.CAVEAT,
     "highlight": AssertionKind.HIGHLIGHT,
     "prompt_eval": AssertionKind.PROMPT_EVAL,
 }
@@ -408,20 +411,6 @@ def _archive_action_sequence(values: Sequence[str]) -> tuple[str, ...]:
 
 def _archive_index_available(config: Config) -> bool:
     return archive_file_set_index_available_for_paths(archive_root_path=config.archive_root, db_anchor=config.db_path)
-
-
-def _active_archive_root(config: Config) -> Path:
-    """Return the archive file-set root housing the currently active database.
-
-    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
-    matching the ``polylogue-yla8.1`` split-root contract used by
-    :func:`polylogue.storage.repair._raw_materialization_archive_root` and
-    :func:`polylogue.storage.raw_reconciler._archive_root`: an explicit
-    ``Config(db_path=...)`` override must be honored, and the ordinary case
-    already resolves ``config.db_path`` correctly (``.index-active-pointer``
-    -aware) inside ``Config.__init__``.
-    """
-    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def _archive_context_message_window(
@@ -1263,6 +1252,75 @@ def _archive_correlate_hermes_context_deliveries(
         return ()
 
 
+def _archive_get_setting(config: Config, setting_key: str) -> ArchiveUserSettingEnvelope | None:
+    """Read one durable ``user_settings`` row, or ``None`` when unset (polylogue-at44)."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import get_user_setting
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return None
+    try:
+        conn = open_readonly_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return get_user_setting(conn, setting_key)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return None
+
+
+def _archive_list_settings(config: Config) -> list[ArchiveUserSettingEnvelope]:
+    """List every stored ``user_settings`` row, ordered by key."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import list_user_settings
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            return list_user_settings(conn)
+        finally:
+            conn.close()
+    except (sqlite3.Error, ValueError):
+        return []
+
+
+def _archive_set_setting(
+    config: Config,
+    setting_key: str,
+    value: object,
+    *,
+    author_ref: str = "user:local",
+) -> ArchiveUserSettingEnvelope:
+    """Insert-or-update one typed ``user_settings`` row.
+
+    ``user.db`` must already be initialized (an archive that has never
+    ingested anything has no durable tier to write into yet).
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
+
+    user_db = _active_archive_root(config) / "user.db"
+    if not user_db.exists():
+        raise ValueError("user settings tier is not initialized")
+    try:
+        conn = open_connection(user_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            envelope = set_user_setting(conn, setting_key, cast(JSONValue, value), author_ref=author_ref)
+            conn.commit()
+            return envelope
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"failed to set user setting {setting_key!r}: {exc}") from exc
+
+
 def _archive_reconcile_hermes_session_lifecycle(
     config: Config,
     *,
@@ -1312,6 +1370,49 @@ def _archive_reconcile_hermes_session_lifecycle(
             "hermes_session_lifecycle reconciliation read failed (archive present but unreadable): "
             "hermes_session_native_id=%s source_db=%s index_db=%s",
             hermes_session_native_id,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
+
+
+def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconciliation | None:
+    """Reconcile acquired Codex ``thread_spawn_edge`` evidence against
+    transcript-inferred topology (bd polylogue-foee AC#2).
+
+    Read-only audit seam over ``source.db``'s hook-event spool and
+    ``index.db``'s ``session_links``; see
+    ``context.codex_spawn_edge_correlation`` for the join semantics.
+    Returns ``None``, never raises, when either tier is unavailable --
+    "archive not yet initialized" and "archive present but the read failed"
+    both return ``None`` here, matching
+    ``_archive_reconcile_hermes_session_lifecycle``'s contract, but only the
+    second case logs a warning.
+    """
+
+    from polylogue.context.codex_spawn_edge_correlation import reconcile_codex_spawn_edges
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return None
+    try:
+        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn.row_factory = sqlite3.Row
+        try:
+            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn.row_factory = sqlite3.Row
+            try:
+                return reconcile_codex_spawn_edges(source_conn, index_conn)
+            finally:
+                index_conn.close()
+        finally:
+            source_conn.close()
+    except sqlite3.Error:
+        logger.warning(
+            "codex_spawn_edge reconciliation read failed (archive present but unreadable): source_db=%s index_db=%s",
             source_db,
             index_db,
             exc_info=True,
@@ -2042,14 +2143,14 @@ def _archive_search_hit_to_payload(
     from polylogue.surfaces.payloads import (
         SessionSearchHitPayload,
         SessionSearchMatchPayload,
-        SessionSummaryPayload,
         TargetRefPayload,
         reader_anchor,
         reader_message_actions,
+        session_summary_envelope_from_summary,
     )
 
     return SessionSearchHitPayload(
-        session=SessionSummaryPayload.from_summary(
+        session=session_summary_envelope_from_summary(
             _archive_summary_to_domain(summary),
             message_count=summary.message_count,
         ),
@@ -2273,45 +2374,6 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
         )
         events.extend(build_actions(message, calls))
     return tuple(events)
-
-
-def _rebuild_archive_session_insights(
-    archive: Any,
-    *,
-    session_ids: Sequence[str] | None = None,
-    progress_callback: ProgressCallback | None = None,
-) -> SessionInsightCounts:
-    """Rebuild durable session insights via the canonical materializer.
-
-    This is a thin adapter over
-    ``polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync``
-    — the single rebuild stack shared with daemon convergence (#1743 P13). It
-    resolves any session-id aliases against the archive, then delegates the
-    whole rebuild (profiles, latency, work events, phases, threads +
-    thread_sessions + 'thread' markers, tag rollups, provider-day aggregates)
-    to the canonical path, which commits internally.
-    """
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
-    from polylogue.storage.insights.session.runtime import SessionInsightCounts
-
-    resolved_ids = _archive_rebuild_session_ids(archive, session_ids) if session_ids is not None else None
-    if session_ids is not None and not resolved_ids:
-        return SessionInsightCounts()
-    return rebuild_session_insights_sync(
-        archive._conn,
-        session_ids=resolved_ids,
-        progress_callback=progress_callback,
-    )
-
-
-def _archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str] | None) -> tuple[str, ...]:
-    if session_ids is None:
-        return tuple(summary.session_id for summary in archive.list_summaries(limit=1_000_000))
-    resolved: list[str] = []
-    for session_id in session_ids:
-        with suppress(KeyError):
-            resolved.append(archive.resolve_session_id(str(session_id)))
-    return tuple(dict.fromkeys(resolved))
 
 
 def _archive_message_matches(
@@ -2879,6 +2941,24 @@ class PolylogueArchiveMixin:
             hermes_session_native_id=hermes_session_native_id,
         )
 
+    async def reconcile_codex_spawn_edges(self) -> CodexSpawnEdgeReconciliation | None:
+        """Reconcile acquired Codex spawn-edge evidence against inferred topology (bd polylogue-foee AC#2).
+
+        Read-only audit seam over the durable spool (source.db
+        ``raw_hook_events``, ``codex_thread_spawn_edge`` events acquired by
+        polylogue-0jf4) and the ingested topology (index.db
+        ``session_links``, ``BranchType.SUBAGENT`` edges
+        ``sources/parsers/codex.py`` infers structurally from each child
+        session's own transcript). Reports how many transcript-inferred
+        edges are backed by Codex's own orchestration-level record, and how
+        many edges exist in each source but not the other (Codex's own
+        record can carry edges from a crashed or still-running child the
+        transcript never proves). Returns ``None`` only when the archive
+        itself is not yet initialized.
+        """
+
+        return _archive_reconcile_codex_spawn_edges(self.config)
+
     async def hermes_integration_health(self) -> HermesIntegrationHealth:
         """Return the bounded Hermes-to-Polylogue integration health rollup (fs1.15).
 
@@ -3074,23 +3154,43 @@ class PolylogueArchiveMixin:
         """Capture a terminal assertion as a non-injected candidate for review.
 
         ``ttl_seconds`` stamps an expiry on the written row (polylogue-37t.1);
-        see :func:`_archive_capture_assertion_candidate`.
+        the executor actuator preserves the existing user-tier admission and
+        idempotency semantics.
         """
 
+        from polylogue.operations.mutation_actuators import (
+            CaptureAssertionCandidateActuator,
+            CaptureAssertionCandidateArgs,
+        )
         from polylogue.surfaces.payloads import AssertionClaimPayload
 
-        envelope = _archive_capture_assertion_candidate(
-            self.config,
-            body_text=body_text,
-            kind=kind,
-            refs=refs,
-            scope_refs=scope_refs,
-            cwd=cwd,
-            author_ref=author_ref,
-            author_kind=author_kind,
-            idempotency_key=idempotency_key,
-            ttl_seconds=ttl_seconds,
+        if idempotency_key is None:
+            assertion_id = f"assertion-terminal-note:{uuid.uuid4()}"
+        else:
+            identity = hashlib.sha256(
+                f"{normalize_object_ref_text(author_ref)}\0{idempotency_key.strip()}".encode(
+                    "utf-8", errors="surrogatepass"
+                )
+            ).hexdigest()
+            assertion_id = f"assertion-terminal-note:{identity}"
+        receipt, _plan = self._execute_facade_mutation(
+            CaptureAssertionCandidateActuator(),
+            lambda archive: CaptureAssertionCandidateArgs(
+                archive=archive,
+                body_text=body_text,
+                kind=kind,
+                refs=tuple(refs),
+                scope_refs=tuple(scope_refs),
+                cwd=cwd,
+                author_ref=author_ref,
+                author_kind=author_kind,
+                idempotency_key=idempotency_key,
+                assertion_id=assertion_id,
+                ttl_seconds=ttl_seconds,
+            ),
+            capability="archive.capture_assertion_candidate",
         )
+        envelope = cast("ArchiveAssertionEnvelope", receipt.domain_receipt["envelope"])
         return AssertionClaimPayload.from_envelope(envelope)
 
     async def judge_assertion_candidates(
@@ -3831,7 +3931,11 @@ class PolylogueArchiveMixin:
         object_ref: ObjectRef,
         evidence_ref: EvidenceRef | None,
     ) -> PublicRefResolutionPayload:
-        from polylogue.surfaces.payloads import PublicRefResolutionPayload, SessionSummaryPayload, model_json_document
+        from polylogue.surfaces.payloads import (
+            PublicRefResolutionPayload,
+            model_json_document,
+            session_summary_envelope_from_summary,
+        )
 
         try:
             session_id = archive.resolve_session_id(object_ref.object_id)
@@ -3846,7 +3950,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "session not found", normalized_ref=normalized_ref, kind="session"),
             )
-        summary_payload = SessionSummaryPayload.from_summary(_archive_summary_to_domain(summaries[0]))
+        summary_payload = session_summary_envelope_from_summary(_archive_summary_to_domain(summaries[0]))
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,
@@ -3869,7 +3973,11 @@ class PolylogueArchiveMixin:
         object_ref: ObjectRef,
         evidence_ref: EvidenceRef | None,
     ) -> PublicRefResolutionPayload:
-        from polylogue.surfaces.payloads import PublicRefResolutionPayload, SessionMessagePayload, model_json_document
+        from polylogue.surfaces.payloads import (
+            PublicRefResolutionPayload,
+            message_render_envelope_from_domain,
+            model_json_document,
+        )
 
         row = archive._conn.execute(
             """
@@ -3895,7 +4003,7 @@ class PolylogueArchiveMixin:
                 PublicRefResolutionPayload,
                 _unresolved_ref_payload(ref, "message not found", normalized_ref=normalized_ref, kind="message"),
             )
-        payload = SessionMessagePayload.from_message(message, session_id=session_id)
+        payload = message_render_envelope_from_domain(message, session_id=session_id)
         return PublicRefResolutionPayload(
             ref=ref,
             normalized_ref=normalized_ref,
@@ -5064,7 +5172,7 @@ class PolylogueArchiveMixin:
             vector_provider=vector_provider,
         )
 
-    async def provider_usage_report(
+    async def origin_usage_report(
         self,
         *,
         origin: str | None = None,
@@ -5072,7 +5180,7 @@ class PolylogueArchiveMixin:
         detail: str = "full",
     ) -> ProviderUsageReport:
         """Return provider usage accounting diagnostics for the active archive."""
-        from polylogue.storage.usage import provider_usage_report_from_connection
+        from polylogue.storage.usage import origin_usage_report_from_connection
 
         if detail not in {"headline", "full"}:
             raise ValueError("detail must be 'headline' or 'full'")
@@ -5081,7 +5189,7 @@ class PolylogueArchiveMixin:
             _active_archive_root(self.config),
             operation="archive.provider_usage",
             arguments={"origin": origin, "limit": limit, "detail": detail},
-            work=lambda archive: provider_usage_report_from_connection(
+            work=lambda archive: origin_usage_report_from_connection(
                 archive._conn,
                 archive_root=_active_archive_root(self.config),
                 origin=origin,
@@ -5098,7 +5206,7 @@ class PolylogueArchiveMixin:
 
         Reads only ``session_id``-indexed rows (``session_model_usage``,
         ``session_profiles`` PK lookup) instead of the archive-wide
-        ``provider_usage_report`` audit, so it stays cheap regardless of
+        ``origin_usage_report`` audit, so it stays cheap regardless of
         archive size (polylogue-zumd).
         """
         from polylogue.storage.usage import session_usage_reconciliation_for_connection
@@ -5270,14 +5378,26 @@ class PolylogueArchiveMixin:
         emits a per-table heartbeat (#1607 parity) so a long rebuild shows
         forward motion instead of hanging silently.
         """
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.operations.mutation_actuators import InsightsRebuildActuator, InsightsRebuildArgs
+        from polylogue.storage.insights.session.runtime import SessionInsightCounts
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            return _rebuild_archive_session_insights(
-                archive,
-                session_ids=session_ids,
+        receipt, _plan = self._execute_facade_mutation(
+            InsightsRebuildActuator(),
+            lambda archive: InsightsRebuildArgs(
+                archive=archive,
+                session_ids=None if session_ids is None else tuple(session_ids),
                 progress_callback=progress_callback,
-            )
+            ),
+            capability="archive.rebuild_insights",
+        )
+        domain_receipt = receipt.domain_receipt
+        return SessionInsightCounts(
+            profiles=int(cast("int", domain_receipt.get("profiles", 0))),
+            work_events=int(cast("int", domain_receipt.get("work_events", 0))),
+            phases=int(cast("int", domain_receipt.get("phases", 0))),
+            threads=int(cast("int", domain_receipt.get("threads", 0))),
+            tag_rollups=int(cast("int", domain_receipt.get("tag_rollups", 0))),
+        )
 
     async def resume_brief(
         self,
@@ -5883,12 +6003,14 @@ class PolylogueArchiveMixin:
         with ``index.db`` blocks. ``session_ids`` is accepted for surface
         symmetry but the archive rebuild always reconciles the whole index.
         """
-        del session_ids
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.operations.mutation_actuators import IndexRebuildActuator, IndexRebuildArgs
 
-        with ArchiveStore.open_existing(_active_archive_root(self.config), read_only=False) as archive:
-            archive.rebuild_index()
-        return True
+        receipt, _plan = self._execute_facade_mutation(
+            IndexRebuildActuator(operation="mutate-update-index"),
+            lambda archive: IndexRebuildArgs(archive=archive, session_ids=tuple(session_ids)),
+            capability="archive.update_index",
+        )
+        return receipt.status in {"applied", "already_satisfied"}
 
     async def neighbor_candidates(
         self,
@@ -7404,3 +7526,34 @@ class PolylogueArchiveMixin:
             if limit > 0 and len(notes) >= limit:
                 break
         return notes
+
+    async def get_setting(self, setting_key: str) -> ArchiveUserSettingEnvelope | None:
+        """Read one durable ``user_settings`` row, or ``None`` when unset (polylogue-at44).
+
+        This is the liveness slice: a closed, typed registry of setting
+        keys (``subscription_tier`` today), not a free-form key-value store.
+        The full scope x actor x override resolver belongs to the w8db epic.
+        """
+
+        return _archive_get_setting(self.config, setting_key)
+
+    async def list_settings(self) -> list[ArchiveUserSettingEnvelope]:
+        """List every stored ``user_settings`` row, ordered by key."""
+
+        return _archive_list_settings(self.config)
+
+    async def set_setting(
+        self,
+        setting_key: str,
+        value: object,
+        *,
+        author_ref: str = "user:local",
+    ) -> ArchiveUserSettingEnvelope:
+        """Insert-or-update one typed ``user_settings`` row.
+
+        Raises :class:`ValueError` for an unknown ``setting_key`` or a
+        value the key's validator rejects (see
+        :mod:`polylogue.storage.sqlite.archive_tiers.user_settings_write`).
+        """
+
+        return _archive_set_setting(self.config, setting_key, value, author_ref=author_ref)

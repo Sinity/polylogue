@@ -243,13 +243,35 @@ class RawAuthorityScaleScenario:
         )
 
 
+def _payload_header(native_id: str, revision: int, *, first: bool) -> bytes:
+    """Build the leading JSONL record(s) for one raw payload write.
+
+    polylogue-h7y0j: the first write for a logical source (``first=True``,
+    i.e. ``previous is None``) used to emit only a ``session_meta`` record
+    with no message at all, so ``require_positive_conversational_evidence``
+    (``sources/dispatch.py``) refused every such session outright once PR
+    #3497 started requiring at least one message with real authored text.
+    Every generated raw payload -- first write or chained revision -- must
+    carry a message with non-empty text, mirroring the real Codex JSONL
+    shape. This is the single place that constructs the header so
+    ``_row_sizes``' minimum-row-bytes accounting cannot drift out of sync
+    with what actually gets written.
+    """
+    message_line = (
+        f'{{"type":"response_item","payload":{{"type":"message","id":"{native_id}-{revision}","role":"user",'
+        f'"content":[{{"type":"input_text","text":"revision-{revision}"}}]}}}}\n'
+    )
+    if first:
+        return (
+            f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'
+            + message_line
+        ).encode()
+    return message_line.encode()
+
+
 def _write_payload(path: Path, *, native_id: str, revision: int, target_size: int, previous: Path | None) -> int:
     """Stream a valid JSONL raw and return its truthful serialized byte size."""
-    header = (
-        f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-07-15T00:00:00Z"}}}}\n'
-        if previous is None
-        else f'{{"type":"response_item","payload":{{"type":"message","id":"{native_id}-{revision}","role":"user","content":[{{"type":"input_text","text":"revision-{revision}"}}]}}}}\n'
-    ).encode()
+    header = _payload_header(native_id, revision, first=previous is None)
     previous_size = previous.stat().st_size if previous is not None else 0
     serialized_size = max(target_size, previous_size + len(header))
     with path.open("wb") as destination:
@@ -333,16 +355,32 @@ def _row_sizes(
 
     Captured byte buckets are observations, and valid tiny blobs can be below
     one JSONL record.  The synthetic corpus records those buckets verbatim but
-    expands its on-disk rows to the smallest valid evidence document.  It must
-    never pretend that a 64-byte captured bucket was replayed as a 64-byte
-    JSONL blob.
+    expands its on-disk rows to the smallest valid evidence document -- the
+    real ``_payload_header`` bytes for that row's native id/revision (not a
+    guessed constant), so this floor can never undershoot what
+    ``_write_payload`` actually has to write (polylogue-h7y0j: an undershoot
+    here silently inflated the generated corpus past the requested
+    ``total_payload_bytes``).
+
+    Non-independent (chained) rows physically copy the previous row's whole
+    blob before appending their own new header (``_write_payload``'s
+    ``previous`` chaining), so row R's floor must be at least the previous
+    row's floor plus its own new header bytes -- a running cumulative sum,
+    not each row's header length in isolation.
     """
-    minimum_rows = [
-        [256 * (revision + 1) for revision in range(count)]
-        if not _uses_independent_component_members(scenario)
-        else [1] * count
-        for count in component_counts
-    ]
+    independent_members = _uses_independent_component_members(scenario)
+    minimum_rows: list[list[int]] = []
+    for component, count in enumerate(component_counts):
+        session_native_id = f"scale-authority-component-{component:05d}"
+        rows: list[int] = []
+        cumulative = 0
+        for revision in range(count):
+            if independent_members:
+                cumulative = len(_payload_header(f"{session_native_id}-member-{revision:05d}", revision, first=True))
+            else:
+                cumulative += len(_payload_header(session_native_id, revision, first=revision == 0))
+            rows.append(cumulative)
+        minimum_rows.append(rows)
     minimum_component_bytes = [sum(rows) for rows in minimum_rows]
     if component_byte_upper_bounds is None:
         target_component_bytes = list(minimum_component_bytes)

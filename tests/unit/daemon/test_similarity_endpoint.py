@@ -12,12 +12,14 @@ Tests use the in-process handler pattern from
 socket listener, just the route dispatch against a freshly seeded
 SQLite archive. ``sqlite-vec``'s ``MATCH`` engine is not exercised in
 unit tests (the extension may not be available in the verify
-environment); the contract tests instead pin the route, the absent
-states, and the helper-level scoring/aggregation logic.
+environment); the ready-state parity test uses the real provider when
+sqlite-vec is available, while the other tests pin the route and absent
+states.
 """
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -30,18 +32,22 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.core.enums import Origin
 from polylogue.daemon.similarity import (
     SIMILAR_RESULTS_DEFAULT,
     SIMILAR_RESULTS_MAX,
-    _aggregate_hits,
     _clamp_limit,
     _confidence_for_score,
     _disabled_reason,
-    _l2_to_cosine_similarity,
     build_similar_payload,
 )
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
+from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -125,6 +131,61 @@ def _seed_archive_session(
     return archive_session_id
 
 
+def _unit_vector(*, axis0: float, axis1: float) -> list[float]:
+    vector = [0.0] * EMBEDDING_DIMENSION
+    vector[0] = axis0
+    vector[1] = axis1
+    return vector
+
+
+def _seed_ready_similarity_archive() -> tuple[str, Path]:
+    """Seed canonical index and embedding tiers for the route parity test."""
+    root = archive_root()
+    index_db = root / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        for native_id, title in (("seed", "Seed"), ("near", "Near"), ("far", "Far")):
+            conn.execute(
+                "INSERT OR REPLACE INTO sessions (native_id, origin, title, content_hash) VALUES (?, ?, ?, ?)",
+                (native_id, "codex-session", title, b"x" * 32),
+            )
+        for native_id in ("seed", "near", "far"):
+            session_id = f"codex-session:{native_id}"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO messages (
+                    session_id, native_id, position, role, content_hash
+                ) VALUES (?, ?, 0, 'user', ?)
+                """,
+                (session_id, "m1", b"x" * 32),
+            )
+
+    embeddings_db = root / "embeddings.db"
+    try:
+        with sqlite3.connect(embeddings_db) as conn:
+            initialize_archive_tier(conn, ArchiveTier.EMBEDDINGS)
+            for session_id, message_id, vector in (
+                ("codex-session:seed", "codex-session:seed:m1", _unit_vector(axis0=1.0, axis1=0.0)),
+                ("codex-session:near", "codex-session:near:m1", _unit_vector(axis0=0.99, axis1=0.141)),
+                ("codex-session:far", "codex-session:far:m1", _unit_vector(axis0=0.0, axis1=1.0)),
+            ):
+                upsert_message_embedding(
+                    conn,
+                    message_id=message_id,
+                    session_id=session_id,
+                    origin=Origin.CODEX_SESSION,
+                    embedding=vector,
+                    model="voyage-4",
+                    embedded_at_ms=1_767_225_700_000,
+                    embedding_input_hash=hashlib.sha256(message_id.encode()).digest(),
+                )
+    except RuntimeError as exc:
+        if "sqlite-vec" in str(exc) or "vec0" in str(exc):
+            pytest.skip("sqlite-vec extension is unavailable")
+        raise
+    return "codex-session:seed", embeddings_db
+
+
 def _init_archive() -> None:
     """Create an empty index.db with the ``sessions`` table only.
 
@@ -198,39 +259,6 @@ def test_clamp_limit_bounds_and_defaults() -> None:
     assert _clamp_limit(-5) == SIMILAR_RESULTS_DEFAULT
     assert _clamp_limit(5) == 5
     assert _clamp_limit(10**6) == SIMILAR_RESULTS_MAX
-
-
-def test_l2_to_cosine_similarity_clamps_to_unit_interval() -> None:
-    # Identical unit vectors → distance 0 → cosine 1.
-    assert _l2_to_cosine_similarity(0.0) == 1.0
-    # Orthogonal unit vectors → distance sqrt(2) → cosine 0.
-    assert abs(_l2_to_cosine_similarity(2.0**0.5) - 0.0) < 1e-9
-    # Antipodal unit vectors → distance 2 → cosine -1, clamped to 0.
-    assert _l2_to_cosine_similarity(2.0) == 0.0
-    # Pathological large distances clamp to 0 — never produce a
-    # negative cosine that would slip past the heuristic chip band.
-    assert _l2_to_cosine_similarity(100.0) == 0.0
-    assert _l2_to_cosine_similarity(1000.0) == 0.0
-
-
-def test_aggregate_hits_skips_self_and_takes_best_distance() -> None:
-    per_message = [
-        [("m1", "self", 0.0), ("m2", "other-a", 0.5), ("m3", "other-b", 1.2)],
-        [("m4", "self", 0.1), ("m5", "other-a", 0.3), ("m6", "other-b", 1.0)],
-    ]
-    agg = _aggregate_hits(per_message, self_session_id="self")
-    assert set(agg.keys()) == {"other-a", "other-b"}
-    # other-a was matched by two source messages, best distance 0.3.
-    assert agg["other-a"]["best_distance"] == pytest.approx(0.3)
-    assert agg["other-a"]["matched_messages"] == 2
-    # other-b matched once per source, best distance 1.0.
-    assert agg["other-b"]["best_distance"] == pytest.approx(1.0)
-    assert agg["other-b"]["matched_messages"] == 2
-
-
-def test_aggregate_hits_handles_empty_input() -> None:
-    assert _aggregate_hits([], self_session_id="self") == {}
-    assert _aggregate_hits([[]], self_session_id="self") == {}
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +443,24 @@ class TestSimilarEndpoint:
         _, payload = send_json.call_args.args
         assert payload["status"] == "not_embedded"
         assert payload["reason"] is None
+
+    def test_ready_route_preserves_provider_query_by_session_order(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The live route projects the provider's session-seeded KNN order."""
+        _enable_embeddings(monkeypatch)
+        seed_session_id, embeddings_db = _seed_ready_similarity_archive()
+        provider = SqliteVecProvider(voyage_key="test-key", db_path=embeddings_db, model="voyage-4")
+        expected_message_hits = provider.query_by_session(seed_session_id, limit=3)
+        expected_session_order = list(
+            dict.fromkeys(message_id.rsplit(":", 1)[0] for message_id, _distance in expected_message_hits)
+        )
+
+        handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
+        _, send_json = _capture_responses(handler)
+        handler.do_GET()
+
+        _, payload = send_json.call_args.args
+        assert payload["status"] == "ready"
+        actual_session_order = [row["session_id"] for row in payload["results"]]
+        assert actual_session_order == expected_session_order

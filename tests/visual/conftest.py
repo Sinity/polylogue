@@ -526,11 +526,11 @@ def seed_reader_archive(
 def _rebuild_reader_insights(workspace: ReaderWorkspace) -> None:
     """Materialize archive session insights so cost/insights reader panels read
     a populated profile/timeline/phases/threads set."""
-    from polylogue.api.archive import _rebuild_archive_session_insights
+    from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore.open_existing(workspace.archive_root, read_only=False) as archive:
-        _rebuild_archive_session_insights(archive)
+        rebuild_archive_session_insights(archive)
 
 
 @contextmanager

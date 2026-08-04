@@ -7,6 +7,7 @@ and load_samples_from_sessions with JSON/JSONL fixtures.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -198,6 +199,31 @@ class TestLoadSamplesFromDb:
         result = load_samples_from_db("chatgpt", db_path=db)
         assert result == []
 
+    def test_missing_source_db_tier_logs_warning_distinct_from_zero_rows(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """polylogue-es7b: a missing sibling ``source.db`` tier file previously
+        yielded the exact same empty result as a genuine zero-row scan,
+        silently. ``index.db`` exists here (unlike ``test_nonexistent_db_returns_empty``,
+        whose outer ``db_path.exists()`` check in ``load_samples_from_db``
+        short-circuits before ever reaching ``_iter_schema_units_from_db``),
+        so this reaches the tier-file check inside
+        ``polylogue.schemas.sampling_db._iter_schema_units_from_db`` and must
+        warn instead of returning silently.
+        """
+        db = _archive_index_db(tmp_path)
+        (db.parent / "source.db").unlink()
+        assert db.exists()
+        assert not (db.parent / "source.db").exists()
+
+        with caplog.at_level(logging.WARNING, logger="polylogue.schemas.sampling_db"):
+            result = load_samples_from_db("chatgpt", db_path=db)
+
+        assert result == []
+        assert any("source.db" in record.message and record.levelno == logging.WARNING for record in caplog.records), [
+            record.message for record in caplog.records
+        ]
+
     def test_nonexistent_db_with_default_path(self) -> None:
         # When db_path=None and default doesn't exist, should return []
         from unittest.mock import patch
@@ -372,7 +398,7 @@ class TestLoadSamplesFromDb:
             db_path=db,
             origin="codex-session",
             source_path="/tmp/good.jsonl",
-            raw_content=b'{"type":"session_meta","id":"sess-1"}\n',
+            raw_content=b'{"type":"session_meta","payload":{"id":"sess-1"}}\n',
         )
         bad_raw_id = _insert_raw_session(
             db_path=db,
@@ -512,6 +538,53 @@ class TestLoadSamplesFromDb:
                 "reason": "artifact_taxonomy:Hermes SQLite evidence sidecar",
             }
         ]
+
+    def test_explicit_db_path_zero_units_does_not_scan_session_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """polylogue-kmqwm: an explicitly-passed ``db_path`` is DB-authoritative.
+
+        Before the fix, a zero-unit result from an explicit ``db_path`` (no
+        matching ``raw_sessions`` rows at all) unconditionally fell through
+        to scanning the provider's real ``config.session_dir`` -- e.g. the
+        operator's actual ``~/.codex/sessions`` -- silently substituting
+        real, unrelated filesystem data for what should be an empty,
+        DB-scoped result. This proves the filesystem fallback is never
+        reached implicitly: only an explicit
+        ``allow_session_dir_fallback=True`` opt-in may trigger it.
+        """
+        from collections.abc import Iterator as _Iterator
+
+        from polylogue.schemas.observation_models import SchemaUnit as _SchemaUnit
+
+        db = _archive_index_db(tmp_path)  # genuinely empty: no raw_sessions rows inserted
+
+        scan_calls: list[object] = []
+
+        def _fake_session_scan(*args: object, **kwargs: object) -> _Iterator[_SchemaUnit]:
+            scan_calls.append(kwargs.get("session_dir", args[1] if len(args) > 1 else None))
+            yield from ()
+
+        monkeypatch.setattr(
+            "polylogue.schemas.sampling._iter_schema_units_from_sessions",
+            _fake_session_scan,
+        )
+
+        # Default: no opt-in -> must stay empty and must never scan.
+        result = list(iter_schema_units("codex", db_path=db))
+        assert result == []
+        assert scan_calls == [], (
+            "iter_schema_units scanned the session_dir despite an explicit db_path "
+            "and no allow_session_dir_fallback opt-in"
+        )
+
+        # Explicit opt-in still reaches the (mocked) fallback -- proves the
+        # capability is preserved, just no longer automatic.
+        result_with_fallback = list(iter_schema_units("codex", db_path=db, allow_session_dir_fallback=True))
+        assert result_with_fallback == []
+        assert len(scan_calls) == 1
 
 
 class TestLoadSamplesFromSessions:

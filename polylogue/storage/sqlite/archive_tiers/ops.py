@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import get_args
 
-from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
 
 OPS_SCHEMA_VERSION = 1
+_OPS_RUN_STATUS_CHECK = literal_check("status", *(status.value for status in OPERATION_LIFECYCLE_STATUSES))
 
 # Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
 # that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
@@ -32,6 +33,51 @@ ON schema_drift_samples(origin, observed_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS idx_schema_drift_samples_time
 ON schema_drift_samples(observed_at_ms DESC);
+"""
+
+_OPS_INGEST_ATTEMPTS_DDL = f"""
+CREATE TABLE IF NOT EXISTS ingest_attempts (
+    attempt_id             TEXT PRIMARY KEY,
+    source_path            TEXT,
+    origin                 TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
+    status                 TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
+    phase                  TEXT,
+    storage_route          TEXT,
+    started_at_ms          INTEGER NOT NULL,
+    heartbeat_at_ms        INTEGER,
+    finished_at_ms         INTEGER,
+    parsed_raw_count       INTEGER NOT NULL DEFAULT 0 CHECK(parsed_raw_count >= 0),
+    materialized_count     INTEGER NOT NULL DEFAULT 0 CHECK(materialized_count >= 0),
+    error_message          TEXT,
+    source_paths_json      TEXT NOT NULL DEFAULT '[]',
+    -- polylogue-cnu3: typed, structurally-classified disposition -- never
+    -- guessed from ``error_message`` text. ``outcome_code`` defaults to
+    -- ``legacy_unknown`` so every pre-existing row (written before this
+    -- vocabulary existed) stays honestly queryable as unclassified rather
+    -- than silently guessed into a real class (AC4).
+    outcome_code           TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check("outcome_code", IngestOutcome)}),
+    retryable              INTEGER CHECK(retryable IN (0, 1)),
+    evidence_ref           TEXT,
+    diagnostic             TEXT,
+    remediation            TEXT
+) STRICT;
+"""
+
+_OPS_EMBEDDING_CATCHUP_RUNS_DDL = f"""
+CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
+    run_id              TEXT PRIMARY KEY,
+    started_at_ms       INTEGER NOT NULL,
+    finished_at_ms      INTEGER,
+    status              TEXT NOT NULL CHECK({_OPS_RUN_STATUS_CHECK}),
+    origin              TEXT CHECK ({nullable_check("origin", Origin)}),
+    scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
+    embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),
+    skipped_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0),
+    error_count         INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
+    embedded_messages   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_messages >= 0),
+    estimated_cost_usd  REAL,
+    error_message       TEXT
+) STRICT;
 """
 
 OPS_DDL = f"""
@@ -68,31 +114,7 @@ CREATE TABLE IF NOT EXISTS ingest_cursor (
 CREATE INDEX IF NOT EXISTS idx_ingest_cursor_attention
 ON ingest_cursor(failure_count, excluded, source_path);
 
-CREATE TABLE IF NOT EXISTS ingest_attempts (
-    attempt_id             TEXT PRIMARY KEY,
-    source_path            TEXT,
-    origin                 TEXT CHECK ({check("origin", Origin)} OR origin IS NULL),
-    status                 TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'interrupted')),
-    phase                  TEXT,
-    storage_route          TEXT,
-    started_at_ms          INTEGER NOT NULL,
-    heartbeat_at_ms        INTEGER,
-    finished_at_ms         INTEGER,
-    parsed_raw_count       INTEGER NOT NULL DEFAULT 0 CHECK(parsed_raw_count >= 0),
-    materialized_count     INTEGER NOT NULL DEFAULT 0 CHECK(materialized_count >= 0),
-    error_message          TEXT,
-    source_paths_json      TEXT NOT NULL DEFAULT '[]',
-    -- polylogue-cnu3: typed, structurally-classified disposition -- never
-    -- guessed from ``error_message`` text. ``outcome_code`` defaults to
-    -- ``legacy_unknown`` so every pre-existing row (written before this
-    -- vocabulary existed) stays honestly queryable as unclassified rather
-    -- than silently guessed into a real class (AC4).
-    outcome_code           TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check("outcome_code", IngestOutcome)}),
-    retryable              INTEGER CHECK(retryable IN (0, 1)),
-    evidence_ref           TEXT,
-    diagnostic             TEXT,
-    remediation            TEXT
-) STRICT;
+{_OPS_INGEST_ATTEMPTS_DDL}
 
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_status
 ON ingest_attempts(status, heartbeat_at_ms);
@@ -182,25 +204,13 @@ CREATE INDEX IF NOT EXISTS idx_daemon_lifecycle_latest
 ON daemon_lifecycle(started_at_ms DESC);
 
 -- Sole live embedding_catchup_runs table (writer: ops_write.upsert_embedding_catchup_run).
--- Status vocabulary: the CLI backfill payload says 'stopped'/'complete';
--- cli/commands/embed.py:_record_archive_backfill_run translates those to
--- 'cancelled'/'completed' at this write boundary. A pre-split monolith table
--- of the same name (different shape, statuses incl. 'stopped'/'interrupted')
--- survives read-only via storage/embeddings/progress.py.
-CREATE TABLE IF NOT EXISTS embedding_catchup_runs (
-    run_id              TEXT PRIMARY KEY,
-    started_at_ms       INTEGER NOT NULL,
-    finished_at_ms      INTEGER,
-    status              TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
-    origin              TEXT CHECK ({nullable_check("origin", Origin)}),
-    scanned_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(scanned_sessions >= 0),
-    embedded_sessions   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0),
-    skipped_sessions    INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0),
-    error_count         INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0),
-    embedded_messages   INTEGER NOT NULL DEFAULT 0 CHECK(embedded_messages >= 0),
-    estimated_cost_usd  REAL,
-    error_message       TEXT
-) STRICT;
+-- Status vocabulary is generated from the canonical operation lifecycle enum.
+-- The public CLI payload retains its 'stopped'/'complete' display vocabulary;
+-- cli/commands/embed.py maps those values to typed operation statuses at this
+-- write boundary. A pre-split monolith table of the same name (different
+-- shape, statuses incl. 'stopped'/'interrupted') survives read-only via
+-- storage/embeddings/progress.py.
+{_OPS_EMBEDDING_CATCHUP_RUNS_DDL}
 
 -- Bulk/archive-wide secret-candidate scan coverage (polylogue-layg.1).
 -- Sole live table for the bounded, resumable ``scan_archive_for_secret_candidates``
@@ -223,38 +233,6 @@ CREATE TABLE IF NOT EXISTS secret_scan_status (
 CREATE INDEX IF NOT EXISTS idx_secret_scan_status_version
 ON secret_scan_status(scanner_version);
 
-CREATE TABLE IF NOT EXISTS otlp_spans (
-    trace_id          TEXT NOT NULL,
-    span_id           TEXT NOT NULL,
-    parent_span_id    TEXT,
-    origin            TEXT CHECK ({nullable_check("origin", Origin)}),
-    name              TEXT NOT NULL,
-    kind              TEXT,
-    started_at_ms     INTEGER,
-    ended_at_ms       INTEGER,
-    attributes_json   TEXT NOT NULL DEFAULT '{{}}',
-    events_json       TEXT NOT NULL DEFAULT '[]',
-    PRIMARY KEY (trace_id, span_id)
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_ops_otlp_spans_trace
-ON otlp_spans(trace_id, started_at_ms DESC);
-
-CREATE TABLE IF NOT EXISTS otlp_telemetry (
-    telemetry_id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    received_at_ms    INTEGER NOT NULL,
-    signal_type       TEXT NOT NULL,
-    content_type      TEXT NOT NULL,
-    payload           BLOB,
-    resource_count    INTEGER NOT NULL DEFAULT 0 CHECK(resource_count >= 0),
-    span_count        INTEGER,
-    metric_count      INTEGER,
-    log_record_count  INTEGER
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_ops_otlp_telemetry_received
-ON otlp_telemetry(received_at_ms DESC);
-
 CREATE TABLE IF NOT EXISTS mcp_call_log (
     call_id         TEXT PRIMARY KEY,
     tool_name       TEXT NOT NULL,
@@ -275,30 +253,6 @@ ON mcp_call_log(tool_name, started_at_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_log_started
 ON mcp_call_log(started_at_ms);
 
--- High-volume operational query telemetry. Result membership stays virtual:
--- a row stores only an ordered fingerprint and bounded public-ref sample.
-CREATE TABLE IF NOT EXISTS query_runs (
-    run_id              TEXT PRIMARY KEY NOT NULL CHECK(run_id GLOB 'qr_*' AND length(run_id) > 3),
-    query_hash          TEXT NOT NULL CHECK(length(query_hash) = 64 AND query_hash NOT GLOB '*[^0-9a-f]*'),
-    actor               TEXT,
-    surface             TEXT CHECK(surface IN ('cli', 'mcp', 'daemon-web', 'api', 'daemon-internal')),
-    verb                TEXT,
-    request_json        TEXT CHECK(request_json IS NULL OR json_valid(request_json)),
-    lowered_spec_json   TEXT CHECK(lowered_spec_json IS NULL OR json_valid(lowered_spec_json)),
-    archive_epoch       TEXT,
-    started_at_ms       INTEGER,
-    duration_ms         INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
-    status              TEXT CHECK(status IN ('ok', 'error', 'degraded', 'truncated')),
-    degraded_json       TEXT CHECK(degraded_json IS NULL OR json_valid(degraded_json)),
-    unit                TEXT,
-    member_count        INTEGER CHECK(member_count IS NULL OR member_count >= 0),
-    exactness           TEXT CHECK(exactness IN ('exact', 'capped', 'sampled', 'estimate')),
-    result_fingerprint  TEXT CHECK(result_fingerprint IS NULL OR (length(result_fingerprint) = 64 AND result_fingerprint NOT GLOB '*[^0-9a-f]*')),
-    sample_refs_json    TEXT CHECK(sample_refs_json IS NULL OR (json_valid(sample_refs_json) AND json_type(sample_refs_json) = 'array' AND json_array_length(sample_refs_json) <= 20))
-) STRICT;
-CREATE INDEX IF NOT EXISTS idx_query_runs_query_started ON query_runs(query_hash, started_at_ms DESC);
-CREATE INDEX IF NOT EXISTS idx_query_runs_started ON query_runs(started_at_ms);
-
 CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
     call_id       TEXT NOT NULL REFERENCES mcp_call_log(call_id) ON DELETE CASCADE,
     session_id    TEXT NOT NULL,
@@ -311,13 +265,12 @@ ON mcp_call_session_refs(session_id, call_id);
 
 -- Bounded operational latency evidence (polylogue-jtwu / polylogue-20d.17
 -- AC #4): one row per observed route invocation, independent of
--- query_runs (query-DSL executions specifically) and mcp_call_log (whole
--- MCP tool calls specifically) -- this table covers the routes those two
--- do not: CLI command invocations and MCP sub-route detail (e.g. per-
--- status-scope timing) that a caller wants to record without going
--- through the query engine or the durable MCP call-log outbox. A route
--- can carry more than one observation per invocation via `phase`
--- (e.g. 'total' plus a named sub-stage), correlated by trace_id.
+-- mcp_call_log (whole MCP tool calls specifically) -- this table covers
+-- routes that table does not: CLI command invocations and MCP sub-route
+-- detail (e.g. per-status-scope timing) that a caller wants to record
+-- without going through the durable MCP call-log outbox. A route can
+-- carry more than one observation per invocation via `phase` (e.g.
+-- 'total' plus a named sub-stage), correlated by trace_id.
 CREATE TABLE IF NOT EXISTS route_observations (
     observation_id   TEXT PRIMARY KEY,
     trace_id         TEXT NOT NULL,

@@ -227,15 +227,6 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         doctor_repair_operation="backfill-message-type",
     ),
     MaintenanceTargetSpec(
-        name="orphaned_messages",
-        mode=MaintenanceTargetMode.CLEANUP,
-        category=MaintenanceCategory.ARCHIVE_CLEANUP,
-        destructive=True,
-        description="Delete message rows that reference missing sessions.",
-        include_in_archive_readiness=True,
-        archive_readiness_unready_status=OutcomeStatus.ERROR,
-    ),
-    MaintenanceTargetSpec(
         name="empty_sessions",
         mode=MaintenanceTargetMode.CLEANUP,
         category=MaintenanceCategory.ARCHIVE_CLEANUP,
@@ -243,15 +234,6 @@ MAINTENANCE_TARGET_SPECS: tuple[MaintenanceTargetSpec, ...] = (
         description="Delete sessions with no real content (zero messages, or every message carries zero words).",
         include_in_archive_readiness=True,
         archive_readiness_unready_status=OutcomeStatus.WARNING,
-    ),
-    MaintenanceTargetSpec(
-        name="orphaned_attachments",
-        mode=MaintenanceTargetMode.CLEANUP,
-        category=MaintenanceCategory.ARCHIVE_CLEANUP,
-        destructive=True,
-        description="Delete orphaned attachment references and unreferenced attachment rows.",
-        include_in_archive_readiness=True,
-        archive_readiness_unready_status=OutcomeStatus.ERROR,
     ),
     MaintenanceTargetSpec(
         name="orphaned_blobs",

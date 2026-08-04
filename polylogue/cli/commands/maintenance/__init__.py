@@ -60,6 +60,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Inspect or execute an authority-safe source-to-index rebuild.",
     ),
     (
+        "rebuild-index-status",
+        "_rebuild_index_status",
+        "rebuild_index_status_command",
+        "Report consolidated raw-replay rebuild status (lease/generation/cursor/delta/recovery). Read-only.",
+    ),
+    (
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",

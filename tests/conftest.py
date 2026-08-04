@@ -372,7 +372,7 @@ def _close_test_opened_sqlite_connections(
     deliberately NOT tracked. If production leaks a connection the warning still
     fires, so this fixture cannot silently mask a real production leak — the
     kind this change just fixed in the live cursor store, the cursor-lag
-    baseline, the embedding progress ledger, and the OTLP correlation reader.
+    baseline, and the embedding progress ledger.
 
     The async (``aiosqlite``) leg is symmetric in spirit but simpler: every
     production async path opens its connection with ``async with
@@ -517,6 +517,27 @@ def _clear_polylogue_env(
 
     SchemaValidator._cache.clear()
     reset_registry_cache()
+
+    # polylogue-kmqwm: PROVIDERS' ``session_dir`` entries are computed once at
+    # import time from ``Path.home()`` (e.g. ``~/.codex/sessions``,
+    # ``~/.gemini/tmp``) -- long before any per-test XDG/env patching above
+    # takes effect. Point every provider's session_dir at an inert per-test
+    # tmp path so any residual schema-inference session-directory fallback
+    # (opt-in via ``allow_session_dir_fallback``, see
+    # ``polylogue/schemas/sampling.py``) can never read this operator's real
+    # local session directories from inside the test suite, even from a test
+    # that deliberately exercises the fallback path.
+    from polylogue.schemas.observation_models import PROVIDERS
+
+    harness_session_dir_root = tmp_path / "harness-session-dir-guard"
+    for provider_config in PROVIDERS.values():
+        if provider_config.session_dir is not None:
+            monkeypatch.setattr(
+                provider_config,
+                "session_dir",
+                harness_session_dir_root / provider_config.name.value,
+                raising=False,
+            )
 
     # Reset blob store singleton to prevent cross-test pollution when
     # tests write blobs to the temp XDG_DATA_HOME. Only reset if we're
@@ -1130,6 +1151,15 @@ def synthetic_source(tmp_path: Path) -> Callable[[str, int, range, int], Source]
         )
         provider_dir = tmp_path / "synthetic" / provider
         written = SyntheticCorpus.write_spec_artifacts(spec, provider_dir, prefix="synth")
+
+        if provider == "antigravity":
+            # The real acquisition path roots itself at a directory holding
+            # brain/ (and conversations/), not a single file -- see
+            # SyntheticCorpus.write_spec_artifacts's antigravity branch. It
+            # also resolves source.name via Provider.from_string, so the name
+            # must be exactly "antigravity", not "antigravity-test" like
+            # every other provider's synthetic source name.
+            return Source(name=provider, path=provider_dir)
 
         if count == 1:
             return Source(name=f"{provider}-test", path=written.files[0])

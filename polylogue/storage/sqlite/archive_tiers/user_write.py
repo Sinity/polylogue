@@ -28,8 +28,8 @@ from polylogue.core.assertions import (
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONValue
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 if TYPE_CHECKING:
     from polylogue.insights.judgment.types import ComparativeJudgment

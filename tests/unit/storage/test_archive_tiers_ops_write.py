@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Origin
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ROUTE_OBSERVATION_ROW_CAP,
     ArchiveCursorLagSample,
@@ -14,7 +14,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ArchiveDaemonStageEvent,
     ArchiveEmbeddingCatchupRun,
     ArchiveMcpCallLogEntry,
-    ArchiveOtlpSpan,
     ArchiveRouteObservation,
     OpsCompactState,
     add_convergence_debt,
@@ -23,14 +22,12 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     list_daemon_stage_events,
     list_embedding_catchup_runs,
     list_mcp_calls,
-    list_otlp_spans,
     list_route_observations,
     read_compact_state,
     read_cursor_lag_sample,
     read_daemon_stage_event,
     read_embedding_catchup_run,
     read_mcp_call,
-    read_otlp_span,
     record_cursor_lag_sample,
     record_daemon_lifecycle_heartbeat,
     record_daemon_lifecycle_signal,
@@ -42,7 +39,6 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     record_route_observation,
     upsert_embedding_catchup_run,
     upsert_ingest_cursor,
-    upsert_otlp_span,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -51,6 +47,94 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     initialize_archive_tier(conn, ArchiveTier.OPS)
     return conn
+
+
+def test_existing_ops_db_converges_old_status_checks_and_preserves_rows(tmp_path: Path) -> None:
+    """Same-version OPS bootstrap repairs old checks before interrupted writes."""
+    ops_db = tmp_path / "ops.db"
+    conn = sqlite3.connect(ops_db)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE ingest_attempts (
+                attempt_id TEXT PRIMARY KEY,
+                source_path TEXT,
+                origin TEXT,
+                status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed')),
+                phase TEXT,
+                storage_route TEXT,
+                started_at_ms INTEGER NOT NULL,
+                heartbeat_at_ms INTEGER,
+                finished_at_ms INTEGER,
+                parsed_raw_count INTEGER NOT NULL DEFAULT 0,
+                materialized_count INTEGER NOT NULL DEFAULT 0,
+                error_message TEXT,
+                source_paths_json TEXT NOT NULL DEFAULT '[]',
+                outcome_code TEXT NOT NULL DEFAULT 'legacy_unknown',
+                retryable INTEGER,
+                evidence_ref TEXT,
+                diagnostic TEXT,
+                remediation TEXT
+            ) STRICT;
+            CREATE TABLE embedding_catchup_runs (
+                run_id TEXT PRIMARY KEY,
+                started_at_ms INTEGER NOT NULL,
+                finished_at_ms INTEGER,
+                status TEXT NOT NULL CHECK(status IN ('running', 'completed', 'failed', 'cancelled')),
+                origin TEXT,
+                scanned_sessions INTEGER NOT NULL DEFAULT 0,
+                embedded_sessions INTEGER NOT NULL DEFAULT 0,
+                skipped_sessions INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                embedded_messages INTEGER NOT NULL DEFAULT 0,
+                estimated_cost_usd REAL,
+                error_message TEXT
+            ) STRICT;
+            PRAGMA user_version = 1;
+            """
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO embedding_catchup_runs (run_id, started_at_ms, status) "
+                "VALUES ('rejected', 1, 'interrupted')"
+            )
+        conn.execute(
+            "INSERT INTO ingest_attempts (attempt_id, status, started_at_ms) VALUES ('legacy-attempt', 'completed', 1)"
+        )
+        conn.execute(
+            "INSERT INTO embedding_catchup_runs "
+            "(run_id, started_at_ms, status, embedded_messages) VALUES ('legacy-run', 2, 'cancelled', 4)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+    with sqlite3.connect(ops_db) as conn:
+        embedding_sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'embedding_catchup_runs'"
+        ).fetchone()[0]
+        assert "status IN ('running', 'completed', 'failed', 'interrupted')" in embedding_sql
+        assert "cancelled" not in embedding_sql
+        assert conn.execute("SELECT status, embedded_messages FROM embedding_catchup_runs").fetchone() == (
+            "interrupted",
+            4,
+        )
+        assert conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id = 'legacy-attempt'").fetchone() == (
+            "completed",
+        )
+
+        record_ingest_attempt(conn, attempt_id="new-attempt", status="interrupted", started_at_ms=3)
+        upsert_embedding_catchup_run(conn, run_id="new-run", status="interrupted", started_at_ms=4)
+
+        assert conn.execute("SELECT status FROM ingest_attempts WHERE attempt_id = 'new-attempt'").fetchone() == (
+            "interrupted",
+        )
+        assert conn.execute("SELECT status FROM embedding_catchup_runs WHERE run_id = 'new-run'").fetchone() == (
+            "interrupted",
+        )
 
 
 def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:
@@ -423,80 +507,6 @@ def test_upsert_embedding_catchup_run_refreshes_status_and_list_filters(tmp_path
         estimated_cost_usd=None,
         error_message=None,
     )
-
-
-def test_upsert_otlp_span_writes_and_reads_row(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "ops.db")
-
-    upsert_otlp_span(
-        conn,
-        trace_id="trace-1",
-        span_id="span-1",
-        name="root",
-        parent_span_id=None,
-        origin=Origin.GEMINI_CLI_SESSION,
-        kind="internal",
-        started_at_ms=1_700_001_000,
-        ended_at_ms=1_700_001_200,
-        attributes_json='{"model":"mini"}',
-        events_json='[{"name":"started"}]',
-    )
-    span = read_otlp_span(conn, "trace-1", "span-1")
-    assert span == ArchiveOtlpSpan(
-        trace_id="trace-1",
-        span_id="span-1",
-        parent_span_id=None,
-        origin=Origin.GEMINI_CLI_SESSION.value,
-        name="root",
-        kind="internal",
-        started_at_ms=1_700_001_000,
-        ended_at_ms=1_700_001_200,
-        attributes_json='{"model":"mini"}',
-        events_json='[{"name":"started"}]',
-    )
-
-
-def test_upsert_otlp_span_refreshes_and_lists_by_trace(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "ops.db")
-
-    upsert_otlp_span(
-        conn,
-        trace_id="trace-2",
-        span_id="span-a",
-        name="first",
-        started_at_ms=1_700_001_100,
-    )
-    upsert_otlp_span(
-        conn,
-        trace_id="trace-2",
-        span_id="span-b",
-        name="second",
-        started_at_ms=1_700_001_050,
-    )
-    upsert_otlp_span(
-        conn,
-        trace_id="trace-3",
-        span_id="span-c",
-        name="other",
-        started_at_ms=1_700_001_200,
-    )
-    upsert_otlp_span(
-        conn,
-        trace_id="trace-2",
-        span_id="span-a",
-        name="first-refreshed",
-        started_at_ms=1_700_001_150,
-        ended_at_ms=1_700_001_400,
-        attributes_json='{"updated":true}',
-    )
-
-    spans = list_otlp_spans(conn, trace_id="trace-2")
-    assert len(spans) == 2
-    assert spans[0].name == "first-refreshed"
-    assert spans[0].span_id == "span-a"
-    assert spans[0].started_at_ms == 1_700_001_150
-    assert spans[1].span_id == "span-b"
-    assert spans[1].started_at_ms == 1_700_001_050
 
 
 def test_record_mcp_call_writes_reads_and_filters_by_session(tmp_path: Path) -> None:

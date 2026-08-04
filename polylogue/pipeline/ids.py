@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
@@ -192,6 +192,31 @@ def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     return payload
 
 
+def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
+    """True when ``message.blocks`` is a single TEXT block that just repeats ``message.text``.
+
+    polylogue-0qfy: some claude-ai-export vintages parse an otherwise
+    identical message with an empty ``blocks`` list, others with exactly one
+    ``[{"type":"text","text": message.text}]`` block carrying no other
+    field (tool_name/tool_id/tool_input/media_type all unset). This is a
+    parser-shape artifact, not a second content axis -- both vintages carry
+    the same real content -- so it must not make the hash-stable payload
+    (and therefore the raw-authority membership comparison, which reuses
+    this same payload) see the two vintages as a genuine conflict.
+    """
+    if len(message.blocks) != 1:
+        return False
+    block = message.blocks[0]
+    return (
+        block.type is BlockType.TEXT
+        and block.text == message.text
+        and not block.tool_name
+        and not block.tool_id
+        and block.tool_input is None
+        and not block.media_type
+    )
+
+
 def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, JSONValue]:
     """Build the hash-stable payload for a single message."""
     payload: dict[str, JSONValue] = {
@@ -200,7 +225,7 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
     }
-    if message.blocks:
+    if message.blocks and not _is_redundant_text_only_block(message):
         payload["content_blocks"] = [_content_block_payload(b) for b in message.blocks]
     return payload
 

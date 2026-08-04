@@ -48,6 +48,11 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-save-annotation",
         "mutate-delete-annotation",
         "mutate-blackboard-post",
+        "mutate-capture-assertion-candidate",
+        "mutate-import-annotation-batch",
+        "mutate-rebuild-index",
+        "mutate-update-index",
+        "mutate-rebuild-insights",
         "mutate-resolve-raw-authority-blocker",
         "mutate-save-saved-view",
         "mutate-delete-saved-view",
@@ -109,6 +114,17 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "message-fts-readiness-loop",
         "retrieval-band-readiness-loop",
     )
+    for operation in ("mutate-rebuild-index", "mutate-update-index", "mutate-rebuild-insights"):
+        assert specs[operation].mutates_state is True
+        assert specs[operation].previewable is True
+        assert specs[operation].idempotent is True
+        assert specs[operation].effects == ("DbRead", "DbWrite")
+        assert specs[operation].executor_status == "executor-routed"
+    assert specs["mutate-import-annotation-batch"].kind is OperationKind.IMPORT
+    assert specs["mutate-import-annotation-batch"].mutates_state is True
+    assert specs["mutate-import-annotation-batch"].idempotent is True
+    assert specs["mutate-import-annotation-batch"].effects == ("DbWrite",)
+    assert specs["mutate-import-annotation-batch"].executor_status == "executor-routed"
 
 
 def test_runtime_operation_catalog_has_declared_surfaces_and_code_refs() -> None:

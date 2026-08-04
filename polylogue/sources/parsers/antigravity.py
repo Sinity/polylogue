@@ -16,11 +16,19 @@ from types import TracebackType
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession
+from .base import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    human_authored_override,
+    mark_last_occurrence_as_active_leaf,
+)
 
 _METADATA_SUFFIX = ".metadata.json"
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
@@ -310,8 +318,9 @@ def iter_language_server_exports(
     root: Path,
     *,
     client: AntigravityLanguageServerClient | None = None,
+    only_cascade_ids: frozenset[str] | None = None,
 ) -> Iterable[ParsedSession]:
-    """Export every real conversation trajectory under ``conversations/``.
+    """Export real conversation trajectories under ``conversations/``.
 
     Ground truth for *which* cascades exist is the ``conversations/*.pb``
     file listing, not ``SearchConversations`` -- the search/list RPCs only
@@ -322,6 +331,14 @@ def iter_language_server_exports(
     whether the language server's live index currently tracks it
     (polylogue-eo81). Search results are still consulted to enrich title /
     workspace / snippet metadata for the cascades that *are* indexed.
+
+    ``only_cascade_ids``, when given, restricts export to that subset of
+    cascade ids (matched against each ``.pb`` file's stem). Used by the
+    daemon's periodic reconciliation loop (``polylogue-3m3de``) to convert
+    only cascades not yet acquired into ``raw_sessions``, instead of paying
+    the language-server subprocess + markdown-conversion cost for the whole
+    corpus on every tick. ``None`` (the default) exports every cascade,
+    preserving the original behavior for the one-shot batch importer.
     """
     owned_client = client is None
     runtime_client = client or AntigravityLanguageServerClient(root)
@@ -329,6 +346,8 @@ def iter_language_server_exports(
         runtime_client.start()
     try:
         pb_paths = _conversation_pb_paths(root)
+        if only_cascade_ids is not None:
+            pb_paths = [pb_path for pb_path in pb_paths if pb_path.stem in only_cascade_ids]
         if not pb_paths:
             return
         try:
@@ -421,6 +440,15 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
                 position=len(messages),
                 variant_index=0,
                 is_active_path=True,
+                # polylogue-gzgyl: an antigravity "User Input" section is
+                # unambiguously a real human turn -- positive-evidence
+                # override for the shared classify_material_origin
+                # no-fallthrough (#2502).
+                material_origin=human_authored_override(
+                    role,
+                    MessageType.MESSAGE,
+                    classify_material_origin(role=role, message_type=MessageType.MESSAGE, text=text),
+                ),
             )
         )
 
@@ -444,13 +472,11 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
 
 
 def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
-    if not messages:
-        return messages
-    active_leaf_message_provider_id = messages[-1].provider_message_id
-    return [
-        message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id})
-        for message in messages
-    ]
+    # bd polylogue-2hwl: delegate to the shared position-based helper --
+    # flagging by provider_message_id equality (the previous approach here)
+    # flags every message sharing the final message's id, not just the true
+    # leaf, whenever a retried/regenerated section reuses that id.
+    return mark_last_occurrence_as_active_leaf(messages)
 
 
 def _strip_markdown_preamble(markdown: str) -> str:

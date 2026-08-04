@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from polylogue.config import load_polylogue_config
 from polylogue.logging import get_logger
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
@@ -390,14 +391,6 @@ def embedding_catchup_estimated_cost_this_month(conn: sqlite3.Connection) -> flo
         """
     ).fetchone()
     return float(row[0] or 0.0) if row is not None else 0.0
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'virtual table') AND name = ? LIMIT 1",
-        (table,),
-    ).fetchone()
-    return row is not None
 
 
 __all__ = [

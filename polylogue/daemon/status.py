@@ -1061,21 +1061,13 @@ def _typed_failure_samples(value: object) -> list[RawFailureSample]:
 
 
 def _safe_int(value: object) -> int:
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return int(value)
-    return 0
+    return _row_int(value)
 
 
 def _safe_float(value: object, *, default: float = 0.0) -> float:
     """Coerce value to float, returning default on failure."""
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return default
-    return default
+    coerced = _row_float(value)
+    return default if coerced is None else coerced
 
 
 def _gil_enabled() -> bool:
@@ -2982,8 +2974,37 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             lines.append(f"Failing files: {len(failing_files)} shown, {omitted} omitted")
         else:
             lines.append(f"Failing files: {len(failing_files)}")
-        for path in failing_files:
-            lines.append(f"  {path}")
+        # polylogue-ix5r: the per-file listing used to print bare paths with
+        # no age, so an operator scanning "50 shown, 1397 omitted" had no way
+        # to tell a file excluded seconds ago from one excluded weeks ago, or
+        # to see at a glance which rows are permanently parked (excluded)
+        # versus merely retrying. ``live_cursor["failing_files"]`` (the
+        # richer nested ``LiveCursorSummary.failing_files``, distinct from
+        # the flattened path-only ``payload["failing_files"]`` used above
+        # only for the count) carries per-row ``excluded``/``excluded_age_s``
+        # -- use it here so each line is honestly labeled.
+        rich_failing_files = live_cursor.get("failing_files") if isinstance(live_cursor, dict) else None
+        rich_by_path: dict[str, dict[str, Any]] = {}
+        if isinstance(rich_failing_files, list):
+            for item in rich_failing_files:
+                if isinstance(item, dict):
+                    source_path = item.get("source_path")
+                    if isinstance(source_path, str):
+                        rich_by_path[source_path] = cast(dict[str, Any], item)
+        for path_value in failing_files:
+            path = str(path_value)
+            file_detail = rich_by_path.get(path)
+            if file_detail is None:
+                lines.append(f"  {path}")
+                continue
+            if file_detail.get("excluded"):
+                age = file_detail.get("excluded_age_s")
+                age_text = f", excluded {_fmt_age_s(float(age))} ago" if isinstance(age, int | float) else ", excluded"
+                lines.append(f"  {path} (permanent until file replaced{age_text})")
+            elif file_detail.get("retry_due"):
+                lines.append(f"  {path} (retry due)")
+            else:
+                lines.append(f"  {path} (in backoff)")
     attempts = payload.get("live_ingest_attempts")
     if isinstance(attempts, dict):
         recent = attempts.get("recent", [])

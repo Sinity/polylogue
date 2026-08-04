@@ -737,7 +737,7 @@ def fetch_insights(
 ) -> list[ArchiveInsightModel]:
     """Fetch insight items using the registry dispatch metadata."""
 
-    from polylogue.api.sync.bridge import run_coroutine_sync
+    from polylogue.core.async_bridge import run_coroutine_sync
 
     query = _build_query(insight_type, **kwargs)
     method = getattr(operations, insight_type.operations_method_name)

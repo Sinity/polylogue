@@ -165,10 +165,9 @@ class TestExplicitSupersededRawSnapshotsRoute:
                 "--plain",
                 "ops",
                 "maintenance",
-                "run",
+                "run-preview",
                 "--target",
                 "superseded_raw_snapshots",
-                "--dry-run",
                 "--output-format",
                 "json",
             ],
@@ -204,7 +203,7 @@ class TestRealAdapterTargetlessRunAll:
     ) -> None:
         result = cli_runner.invoke(
             cli,
-            ["--plain", "ops", "maintenance", "run", "--dry-run", "--output-format", "json"],
+            ["--plain", "ops", "maintenance", "run-preview", "--output-format", "json"],
             catch_exceptions=False,
         )
         assert result.exit_code == 0, result.output
@@ -250,7 +249,7 @@ class TestRealAdapterTargetlessRunAll:
         """
         cli_result = cli_runner.invoke(
             cli,
-            ["--plain", "ops", "maintenance", "run", "--dry-run", "--output-format", "json"],
+            ["--plain", "ops", "maintenance", "run-preview", "--output-format", "json"],
             catch_exceptions=False,
         )
         cli_targets = _targets(_extract_json_envelope(cli_result.output))

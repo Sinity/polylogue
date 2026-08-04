@@ -37,21 +37,106 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.logging import get_logger
+from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.table_existence import table_exists
 
 logger = get_logger(__name__)
 
 #: Default cap on per-check sample evidence (worst sessions, offending ids, ...).
 DEFAULT_SAMPLE_LIMIT = 10
+
+
+class ArchiveVerificationCheckClass(str, Enum):
+    """Bug-class taxonomy each registry check is tagged with (polylogue-t0m73).
+
+    Orthogonal to :class:`~polylogue.core.outcomes.OutcomeStatus` (pass/warn/
+    fail/skip is the *outcome*; this is the *kind of invariant* being
+    checked), the tag drives which of the two verification planes
+    (polylogue-60gzo) a check is expected to run under on a schedule:
+    ``liveness``/``freshness`` classes are the daemon health-tier home
+    (Plane 2, production monitoring -- something must have happened
+    recently); the rest are point-in-time coherence checks that make sense
+    on any snapshot including a reindex candidate generation (both planes).
+    """
+
+    STATE_INVARIANT = "state-invariant"
+    """A structural fact that must always hold on any coherent snapshot
+    (pointer targets resolve, no cycles, no orphaned rows)."""
+
+    LIVENESS = "liveness"
+    """A reference/relationship that must remain live -- staleness here means
+    something died without cleaning up after itself (GC bookkeeping,
+    embedding refs outliving their source rows)."""
+
+    FRESHNESS = "freshness"
+    """Not a correctness fact but a recency fact: has required maintenance
+    (ANALYZE, convergence passes) run recently enough to trust the archive's
+    current operating characteristics."""
+
+    COMPLEXITY = "complexity"
+    """Archive-wide shape/size reporting -- not itself a pass/fail invariant,
+    but the numbers an operator needs to judge whether other checks' drift is
+    proportionally significant."""
+
+    FIDELITY = "fidelity"
+    """A derived/shadow representation must exactly mirror its source of
+    truth (FTS index vs the blocks it indexes)."""
+
+    CONSERVATION = "conservation"
+    """A quantity computed two different ways must agree (a write-time
+    projection vs a live COUNT over the rows it summarizes)."""
+
+    CONFIG = "config"
+    """The archive's on-disk schema/vocabulary configuration must be a
+    superset of what current code can write (CHECK constraints vs the
+    Python enum that generated them, tier schema versions vs the canonical
+    spec)."""
+
+
+@dataclass(frozen=True)
+class ArchiveVerificationWaiver:
+    """A known-red-on-live acknowledgement for one registry check.
+
+    Per polylogue-t0m73's design: a waiver exists only to keep the
+    *aggregate* gate (:attr:`ArchiveVerificationReport.blocking`) from
+    tripping on a bug that is already tracked and being worked, not to hide
+    the finding -- the underlying check still reports its true ``error``
+    status and evidence; only the gate's blocking computation treats it as
+    non-blocking. A waiver is a manual, reviewed acknowledgement, not an
+    automatic bd query (this module never calls ``bd``): remove the entry in
+    the same change that closes the bead, and if the check still reports
+    red afterward, the removal makes the gate red again on the next run,
+    which is the intended non-silent failure mode of an unwaived close.
+    """
+
+    bead_id: str
+    reason: str
+
+
+#: Checks with a currently-open, already-tracked live finding: the check
+#: keeps reporting its true ``error`` status (evidence is never suppressed),
+#: but :attr:`ArchiveVerificationReport.blocking` excludes it so an unrelated
+#: gate (e.g. the reindex acceptance run) doesn't trip on a distinct,
+#: separately-owned bug. Remove an entry only alongside closing its bead.
+ARCHIVE_VERIFICATION_WAIVERS: dict[str, ArchiveVerificationWaiver] = {
+    "embeddings-refs-liveness": ArchiveVerificationWaiver(
+        bead_id="polylogue-feu0",
+        reason=(
+            "4,186 message_embedding_refs point at messages no longer in index.db "
+            "(known, undrained catch-up debt as of 2026-08-03; embeddings convergence "
+            "is a separate async lane from index materialization)"
+        ),
+    ),
+}
 
 #: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for
 #: (polylogue-l3tk: fresh generations without stats pick pathological plans).
@@ -69,6 +154,15 @@ class ArchiveVerificationCheck(OutcomeCheck):
     """
 
     evidence: dict[str, Any] = field(default_factory=dict)
+    #: Bug-class tag copied from the owning :class:`ArchiveVerificationCheckSpec`
+    #: by :func:`verify_archive` (the spec is the source of truth; this is a
+    #: read-through convenience for JSON consumers that only see the check).
+    check_class: str = ""
+    #: Set by :func:`verify_archive` when this check's name has an entry in
+    #: :data:`ARCHIVE_VERIFICATION_WAIVERS`. ``status`` is never altered by a
+    #: waiver -- a waived check that is genuinely red still reports ``error``;
+    #: only :attr:`ArchiveVerificationReport.blocking` treats it as non-blocking.
+    waived_bead_id: str | None = None
 
     def to_json(self) -> JSONDocument:
         return archive_verification_check_json(self)
@@ -79,13 +173,16 @@ def archive_verification_check_json(check: OutcomeCheck) -> JSONDocument:
 
     Mirrors :func:`polylogue.schemas.audit.models.audit_check_json`: reads
     the shared :class:`OutcomeCheck` attrs directly and reaches for the
-    subclass-only ``evidence`` field via ``getattr`` so callers holding a
-    plain ``OutcomeCheck``-typed reference (e.g. ``ArchiveVerificationReport
-    .checks``, typed at its base-class element type) can still serialize a
-    concrete :class:`ArchiveVerificationCheck` without a narrowing cast.
+    subclass-only ``evidence``/``check_class``/``waived_bead_id`` fields via
+    ``getattr`` so callers holding a plain ``OutcomeCheck``-typed reference
+    (e.g. ``ArchiveVerificationReport.checks``, typed at its base-class
+    element type) can still serialize a concrete :class:`ArchiveVerificationCheck`
+    without a narrowing cast.
     """
     payload = dict(check.to_dict())
     payload["evidence"] = json_document(getattr(check, "evidence", {}))
+    payload["check_class"] = getattr(check, "check_class", "")
+    payload["waived_bead_id"] = getattr(check, "waived_bead_id", None)
     return payload
 
 
@@ -107,8 +204,18 @@ class ArchiveVerificationReport(OutcomeReport):
 
     @property
     def blocking(self) -> bool:
-        """True when at least one check reports ``error`` -- the gate condition."""
-        return self.error_count > 0
+        """True when at least one *unwaived* check reports ``error``.
+
+        A waived check (see :data:`ARCHIVE_VERIFICATION_WAIVERS`) still
+        contributes to :attr:`error_count` -- the underlying finding is never
+        hidden -- but is excluded from the gate condition itself, so an
+        already-tracked, separately-owned bug doesn't block an unrelated
+        acceptance run (e.g. a reindex candidate promotion).
+        """
+        return any(
+            check.status is OutcomeStatus.ERROR and getattr(check, "waived_bead_id", None) is None
+            for check in self.checks
+        )
 
     def to_json(self) -> JSONDocument:
         return json_document(
@@ -132,6 +239,11 @@ class ArchiveVerificationCheckSpec:
     name: str
     description: str
     run: ArchiveVerificationCheckFn
+    #: One of :class:`ArchiveVerificationCheckClass`'s values -- every spec in
+    #: :data:`ARCHIVE_VERIFICATION_CHECKS` must set this (no default, so a new
+    #: check added without a class tag is a construction-time TypeError, not a
+    #: silent "" that would slip past classification).
+    check_class: ArchiveVerificationCheckClass
 
 
 def _tier_path(archive_root: Path, tier: ArchiveTier) -> Path:
@@ -308,6 +420,7 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
                 WITH heads AS (
                     SELECT
                         r.raw_id,
+                        r.blob_hash,
                         r.parse_error,
                         r.revision_authority,
                         {census_expr} AS census_status,
@@ -367,6 +480,37 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
                 )
             ]
 
+            # polylogue-t0m73 (2026-08-03 correction to I1's framing): an
+            # unindexed head whose bytes are byte-identical to an already-
+            # indexed raw (same blob_hash, different raw_id -- e.g. a second
+            # acquisition of content already captured) is not novel missing
+            # content. The operator's live-run challenge measured 4,305 of
+            # 7,200 unindexed heads (77%) in this bucket -- without it, the
+            # check's own evidence overstates the gap as if every unindexed
+            # head were a distinct materialization failure. This never
+            # changes ``blocking`` (an untyped/orphan head is still an error
+            # regardless of whether its bytes happen to be duplicated
+            # elsewhere); it only prevents the report from repeating the
+            # overstatement.
+            byte_dup_of_indexed_n = int(
+                conn.execute(
+                    f"""
+                    {heads_cte}
+                    SELECT SUM(CASE WHEN {quarantined_predicate.replace("rn = 1 AND ", "")}
+                                       OR {untyped_predicate.replace("rn = 1 AND ", "")}
+                                  THEN (
+                                    EXISTS(
+                                        SELECT 1 FROM raw_sessions dup
+                                        JOIN idx_tier.sessions ds ON ds.raw_id = dup.raw_id
+                                        WHERE dup.blob_hash = heads.blob_hash
+                                    )
+                                  ) ELSE 0 END)
+                    FROM heads WHERE rn = 1
+                    """
+                ).fetchone()[0]
+                or 0
+            )
+
             orphan_count = conn.execute(
                 """
                 SELECT COUNT(*) FROM idx_tier.sessions s
@@ -401,6 +545,8 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
     else:
         status = OutcomeStatus.OK
 
+    novel_unindexed_n = max(unindexed_head_count - byte_dup_of_indexed_n, 0)
+
     parts = [f"{total_heads:,} logical source head(s), {unindexed_head_count:,} unindexed"]
     if untyped_n:
         parts.append(f"untyped={untyped_n:,}")
@@ -410,6 +556,10 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
         parts.append(f"parse_error={parse_error_n:,}")
     if non_session_n or census_failed_n:
         parts.append(f"declared-non-session={non_session_n + census_failed_n:,}")
+    if byte_dup_of_indexed_n:
+        parts.append(
+            f"byte-dup-of-indexed={byte_dup_of_indexed_n:,} (novel={novel_unindexed_n:,} of {unindexed_head_count:,})"
+        )
     if orphan_count:
         parts.append(f"orphans={int(orphan_count):,}")
     summary = "; ".join(parts)
@@ -433,6 +583,8 @@ def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> Archi
             "census_failed_count": census_failed_n,
             "quarantined_count": quarantined_n,
             "quarantined_sample": quarantined_sample,
+            "byte_dup_of_indexed_count": byte_dup_of_indexed_n,
+            "novel_unindexed_count": novel_unindexed_n,
             "orphan_count": int(orphan_count or 0),
             "orphan_sample": orphan_sample,
         },
@@ -1107,6 +1259,282 @@ def _check_planner_stats(archive_root: Path, _sample_limit: int) -> ArchiveVerif
 
 
 # ---------------------------------------------------------------------------
+# Check: excluded-cursor vocabulary honesty (polylogue-ix5r)
+# ---------------------------------------------------------------------------
+
+
+def _check_excluded_cursor_vocabulary_honesty(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """An excluded (quarantined) cursor row must never carry a live ``next_retry_at``.
+
+    Exclusion is permanent-until-file-replaced (or, since polylogue-ix5r, until
+    the responsible parser's fingerprint changes) -- it never retries on a
+    schedule. A row that is both ``excluded=1`` and carries a non-NULL
+    ``next_retry_at`` is exactly the mislabeling shape the 2026-07-31 audit
+    found in ``polylogued status`` output (excluded rows folded into a
+    "retry due" count that would never actually come due for them): any
+    consumer that queries "failing rows with a due retry timer" without
+    remembering to filter ``excluded = 0`` would misreport this row as
+    retryable. The production actuators (``mark_failed``'s exclusion branch)
+    already null ``next_retry_at`` when they set ``excluded=1``; this check
+    is the standing regression guard that invariant holds archive-wide, plus
+    it surfaces the excluded population's size and oldest age so an operator
+    can see at a glance how large and how stale the permanently-parked set
+    is (previously only visible via ``polylogue ops status`` truncated to a
+    50-row sample).
+    """
+    ops_path = _tier_path(archive_root, ArchiveTier.OPS)
+    if not ops_path.exists():
+        return _skip_check("excluded-cursor-vocabulary-honesty", "ops.db not present")
+
+    try:
+        conn = _open_ro(ops_path)
+    except sqlite3.Error as exc:
+        return _error_check("excluded-cursor-vocabulary-honesty", f"could not open ops.db: {exc}", exc=exc)
+
+    try:
+        if not table_exists(conn, "ingest_cursor"):
+            return _skip_check("excluded-cursor-vocabulary-honesty", "ingest_cursor table not present")
+        excluded_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1").fetchone()[0])
+        oldest_row = conn.execute("SELECT MIN(updated_at_ms) FROM ingest_cursor WHERE excluded = 1").fetchone()
+        mislabeled_rows = conn.execute(
+            """
+            SELECT source_path FROM ingest_cursor
+            WHERE excluded = 1 AND next_retry_at IS NOT NULL
+            ORDER BY source_path
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+        mislabeled_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1 AND next_retry_at IS NOT NULL"
+            ).fetchone()[0]
+        )
+    except sqlite3.Error as exc:
+        return _error_check("excluded-cursor-vocabulary-honesty", f"could not read ops.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    oldest_age_s = None
+    if oldest_row is not None and oldest_row[0] is not None:
+        oldest_age_s = max(0.0, datetime.now(UTC).timestamp() - int(oldest_row[0]) / 1000.0)
+
+    evidence: dict[str, Any] = {
+        "excluded_count": excluded_count,
+        "excluded_oldest_age_s": oldest_age_s,
+        "mislabeled_count": mislabeled_count,
+    }
+    if mislabeled_count:
+        return ArchiveVerificationCheck(
+            name="excluded-cursor-vocabulary-honesty",
+            status=OutcomeStatus.ERROR,
+            summary=(
+                f"{mislabeled_count:,} excluded cursor row(s) still carry a next_retry_at "
+                "(would misreport as retry-due)"
+            ),
+            count=mislabeled_count,
+            details=[str(row[0]) for row in mislabeled_rows],
+            evidence=evidence,
+        )
+    return ArchiveVerificationCheck(
+        name="excluded-cursor-vocabulary-honesty",
+        status=OutcomeStatus.OK,
+        summary=(
+            f"{excluded_count:,} excluded cursor(s), none mislabeled as retry-due"
+            + (f", oldest excluded {oldest_age_s / 3600.0:.1f}h ago" if oldest_age_s is not None else "")
+        ),
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: raw quarantine group dedup (polylogue-zm4w8)
+# ---------------------------------------------------------------------------
+
+
+def _check_raw_quarantine_group_dedup(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """No raw_sessions row is an unindexed byte-identical duplicate of another sharing its source_path.
+
+    polylogue-zm4w8: a raw_sessions row is flagged when it belongs to a
+    ``(source_path, blob_hash)`` group of more than one quarantined row AND
+    no member of that group (nor any other raw sharing that blob_hash
+    anywhere) already has a materialized ``index.db`` session or a
+    non-quarantined ``revision_authority``. This is the residual,
+    genuinely-unresolved population: content acquired more than once that
+    was never chosen as its group's representative and materialized --
+    distinct from ``source-index-coverage``'s ``byte_dup_of_indexed_count``
+    (which requires an *already-indexed* twin) and from what
+    ``raw-byte-duplicate-supersession-apply`` (the actuator for that
+    already-indexed case) can catch by construction. The one-shot
+    ``raw-quarantine-group-dedup-apply`` actuator resolves a flagged group by
+    materializing exactly one representative raw and marking the rest
+    ``byte_proven`` -- once run, this check should report clean, and stays
+    part of the registry as the standing regression guard against the
+    pattern recurring.
+    """
+    from polylogue.storage.raw_quarantine_group_dedup import plan_raw_quarantine_group_dedup
+
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    index_path = _resolve_index_path(archive_root)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("raw-quarantine-group-dedup", "source.db or index.db not present")
+
+    try:
+        source_conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("raw-quarantine-group-dedup", f"could not open source.db: {exc}", exc=exc)
+
+    try:
+        index_conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        source_conn.close()
+        return _error_check("raw-quarantine-group-dedup", f"could not open index.db: {exc}", exc=exc)
+
+    try:
+        plan = plan_raw_quarantine_group_dedup(source_conn, index_conn)
+    except sqlite3.Error as exc:
+        return _error_check("raw-quarantine-group-dedup", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index_conn.close()
+        source_conn.close()
+
+    group_count = len(plan.groups)
+    duplicate_count = plan.duplicate_count
+    sample = [
+        {
+            "source_path": group.source_path,
+            "representative_raw_id": group.representative_raw_id,
+            "duplicate_raw_ids": list(group.duplicate_raw_ids),
+        }
+        for group in plan.groups[:sample_limit]
+    ]
+
+    status = OutcomeStatus.ERROR if group_count else OutcomeStatus.OK
+    summary = (
+        f"{group_count:,} fully-quarantined duplicate group(s), {duplicate_count:,} unindexed duplicate row(s) "
+        f"({_gib_str(plan.duplicate_bytes)}); run raw-quarantine-group-dedup-apply"
+        if group_count
+        else f"no fully-quarantined byte-identical duplicate groups ({plan.scanned_count:,} quarantined row(s) scanned)"
+    )
+    return ArchiveVerificationCheck(
+        name="raw-quarantine-group-dedup",
+        status=status,
+        summary=summary,
+        count=duplicate_count,
+        details=[f"group:{group.source_path}" for group in plan.groups[:sample_limit]],
+        evidence={
+            "scanned_count": plan.scanned_count,
+            "group_count": group_count,
+            "duplicate_count": duplicate_count,
+            "duplicate_bytes": plan.duplicate_bytes,
+            "already_resolved_group_count": plan.already_resolved_group_count,
+            "group_sample": sample,
+        },
+    )
+
+
+def _gib_str(byte_count: int) -> str:
+    return f"{byte_count / (1024**3):.2f} GiB"
+
+
+# ---------------------------------------------------------------------------
+# Check: stalled append-cursor freshness (polylogue-2qrx)
+# ---------------------------------------------------------------------------
+
+#: How long a non-excluded cursor may sit with ``byte_offset < stat_size``
+#: (content on disk, fully acquirable, but not yet caught up) before it is
+#: flagged stale rather than merely "still catching up". Mirrors the
+#: escalation age ``sources/live/watcher.py``'s
+#: ``_STUCK_DEFERRED_APPEND_AGE_S`` already uses for the deferred-tail
+#: sub-case of this same shape (polylogue-2qrx's root-caused stall
+#: mechanism, PR #3650) -- reusing the same value here rather than picking a
+#: second, undocumented threshold.
+_STALLED_APPEND_CURSOR_STALE_AGE_S = 60.0 * 60.0
+
+
+def _check_stalled_append_cursor_freshness(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Flag non-excluded cursors stuck behind their file's current size.
+
+    A cursor with ``byte_offset < stat_size`` has content sitting on disk
+    that is fully recoverable -- but only via ordinary acquisition catch-up;
+    an index rebuild replays ``source.db`` and recovers none of it, since it
+    was never acquired in the first place (polylogue-2qrx). A cursor briefly
+    behind its file's size is normal (a writer mid-append); one behind for
+    longer than :data:`_STALLED_APPEND_CURSOR_STALE_AGE_S` with the file
+    otherwise cold is exactly the "329h stale, 94.8MB behind" shape the
+    2026-07-31 audit found with zero durable signal -- this check is that
+    signal.
+    """
+    ops_path = _tier_path(archive_root, ArchiveTier.OPS)
+    if not ops_path.exists():
+        return _skip_check("stalled-append-cursor-freshness", "ops.db not present")
+
+    try:
+        conn = _open_ro(ops_path)
+    except sqlite3.Error as exc:
+        return _error_check("stalled-append-cursor-freshness", f"could not open ops.db: {exc}", exc=exc)
+
+    try:
+        if not table_exists(conn, "ingest_cursor"):
+            return _skip_check("stalled-append-cursor-freshness", "ingest_cursor table not present")
+        now_ms = int(datetime.now(UTC).timestamp() * 1000)
+        stale_before_ms = now_ms - int(_STALLED_APPEND_CURSOR_STALE_AGE_S * 1000)
+        rows = conn.execute(
+            """
+            SELECT source_path, stat_size, byte_offset, updated_at_ms
+            FROM ingest_cursor
+            WHERE excluded = 0
+              AND byte_offset IS NOT NULL AND stat_size IS NOT NULL
+              AND byte_offset < stat_size
+              AND updated_at_ms <= ?
+            ORDER BY (stat_size - byte_offset) DESC
+            """,
+            (stale_before_ms,),
+        ).fetchall()
+    except sqlite3.Error as exc:
+        return _error_check("stalled-append-cursor-freshness", f"could not read ops.db: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    stalled_count = len(rows)
+    total_lag_bytes = sum(int(row[1]) - int(row[2]) for row in rows)
+    oldest_age_s = max((now_ms - int(row[3]) for row in rows), default=0) / 1000.0
+    samples = [
+        {
+            "source_path": str(row[0]),
+            "lag_bytes": int(row[1]) - int(row[2]),
+            "stale_age_s": (now_ms - int(row[3])) / 1000.0,
+        }
+        for row in rows[:sample_limit]
+    ]
+    evidence: dict[str, Any] = {
+        "stalled_count": stalled_count,
+        "total_lag_bytes": total_lag_bytes,
+        "oldest_stale_age_s": oldest_age_s if stalled_count else None,
+        "stale_age_threshold_s": _STALLED_APPEND_CURSOR_STALE_AGE_S,
+        "samples": samples,
+    }
+    if stalled_count:
+        return ArchiveVerificationCheck(
+            name="stalled-append-cursor-freshness",
+            status=OutcomeStatus.WARNING,
+            summary=(
+                f"{stalled_count:,} cursor(s) stalled behind their file's current size "
+                f"({total_lag_bytes:,} bytes lag, oldest {oldest_age_s / 3600.0:.1f}h)"
+            ),
+            count=stalled_count,
+            details=[str(sample["source_path"]) for sample in samples],
+            evidence=evidence,
+        )
+    return ArchiveVerificationCheck(
+        name="stalled-append-cursor-freshness",
+        status=OutcomeStatus.OK,
+        summary="no non-excluded cursor is stalled behind its file's current size",
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Check 7: counts summary
 # ---------------------------------------------------------------------------
 
@@ -1151,6 +1579,250 @@ def _check_counts_summary(archive_root: Path, _sample_limit: int) -> ArchiveVeri
 
 
 # ---------------------------------------------------------------------------
+# Check 8: convergence freshness (I6, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+#: Window within which *some* daemon/convergence activity must have been
+#: observed for an open unindexed backlog to read as "being worked" rather
+#: than stalled. 24h matches the daemon's own quiet-window/catch-up cadence
+#: (see ``daemon/convergence_stages.py``) -- shorter than that flags normal
+#: async lag as false-positive stalls; much longer hides a genuinely dead
+#: converger for days.
+CONVERGENCE_FRESHNESS_WINDOW_MS = 24 * 3600 * 1000
+
+
+def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
+    """Count of ``raw_sessions`` logical heads with no indexed materialization
+    and no terminal typed refusal (parse_error / declared non-session) --
+    the same universe :func:`_check_source_index_coverage` (I1) tallies as
+    ``untyped_count + quarantined_count``, recomputed here so I6 doesn't
+    need I1's full breakdown/sample evidence, only the scalar gap.
+    """
+    has_census = table_exists(conn, "raw_membership_census")
+    census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
+    row = conn.execute(
+        f"""
+        WITH heads AS (
+            SELECT
+                r.raw_id,
+                r.parse_error,
+                {census_expr} AS census_status,
+                MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
+                    OVER (PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)) AS any_indexed,
+                ROW_NUMBER() OVER (
+                    PARTITION BY r.origin, COALESCE(r.native_id, r.source_path)
+                    ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                ) AS rn
+            FROM raw_sessions r
+        )
+        SELECT SUM(
+            CASE WHEN rn = 1 AND any_indexed = 0 AND parse_error IS NULL
+                      AND COALESCE(census_status, '') NOT IN ('non_session', 'failed')
+                 THEN 1 ELSE 0 END
+        )
+        FROM heads WHERE rn = 1
+        """
+    ).fetchone()
+    return int(row[0] or 0)
+
+
+def _check_convergence_freshness(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    """An open unindexed backlog is only benign async lag if convergence is
+    actively working it (I6, polylogue-t0m73).
+
+    The prototype's original I6 criterion ("some daemon activity happened
+    ever") was too weak: it passed on an archive with a 7,200-source gap
+    and zero daemon stage events in the preceding 24h, because activity from
+    weeks earlier still counted. The corrected criterion requires BOTH a
+    non-zero gap (reusing I1's universe via :func:`_unindexed_backlog_gap`)
+    AND *no* convergence activity inside :data:`CONVERGENCE_FRESHNESS_WINDOW_MS`
+    across ``daemon_events``, ``daemon_stage_events``, and ``convergence_debt``
+    (the last of these was itself missed by the original predicate --
+    a debt row's own ``updated_at_ms`` is evidence of retry activity even
+    when no daemon_events/stage_events row was emitted in the same window).
+    A gap with recent activity is WARNING (backlog exists, still converging);
+    a gap with no recent activity anywhere is ERROR (stalled, not lag).
+    """
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    index_path = _resolve_index_path(archive_root)
+    ops_path = _tier_path(archive_root, ArchiveTier.OPS)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("convergence-freshness", "source.db or index.db not present")
+    if not ops_path.exists():
+        return _skip_check("convergence-freshness", "ops.db not present")
+
+    try:
+        conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("convergence-freshness", f"could not open source.db: {exc}", exc=exc)
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("convergence-freshness", f"could not attach index.db: {exc}", exc=exc)
+        try:
+            gap = _unindexed_backlog_gap(conn)
+        except sqlite3.Error as exc:
+            return _error_check("convergence-freshness", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    if gap == 0:
+        return ArchiveVerificationCheck(
+            name="convergence-freshness",
+            status=OutcomeStatus.OK,
+            summary="no unindexed backlog to converge",
+            evidence={"unindexed_backlog_gap": 0},
+        )
+
+    try:
+        ops_conn = _open_ro(ops_path)
+    except sqlite3.Error as exc:
+        return _error_check("convergence-freshness", f"could not open ops.db: {exc}", exc=exc)
+
+    now_ms = int(datetime.now(UTC).timestamp() * 1000)
+    activity: dict[str, Any] = {}
+    most_recent_ms: int | None = None
+    try:
+        if table_exists(ops_conn, "daemon_events"):
+            row = ops_conn.execute("SELECT MAX(ts_ms) FROM daemon_events").fetchone()
+            if row and row[0] is not None:
+                activity["daemon_events_latest_ms"] = int(row[0])
+                most_recent_ms = max(most_recent_ms or int(row[0]), int(row[0]))
+        if table_exists(ops_conn, "daemon_stage_events"):
+            row = ops_conn.execute("SELECT MAX(observed_at_ms) FROM daemon_stage_events").fetchone()
+            if row and row[0] is not None:
+                activity["daemon_stage_events_latest_ms"] = int(row[0])
+                most_recent_ms = max(most_recent_ms or int(row[0]), int(row[0]))
+        if table_exists(ops_conn, "convergence_debt"):
+            row = ops_conn.execute("SELECT MAX(updated_at_ms), COUNT(*) FROM convergence_debt").fetchone()
+            activity["convergence_debt_count"] = int(row[1] or 0) if row else 0
+            if row and row[0] is not None:
+                activity["convergence_debt_latest_ms"] = int(row[0])
+                most_recent_ms = max(most_recent_ms or int(row[0]), int(row[0]))
+    except sqlite3.Error as exc:
+        return _error_check("convergence-freshness", f"could not read ops.db: {exc}", exc=exc)
+    finally:
+        ops_conn.close()
+
+    age_ms = None if most_recent_ms is None else now_ms - most_recent_ms
+    recent = age_ms is not None and age_ms <= CONVERGENCE_FRESHNESS_WINDOW_MS
+    evidence = {"unindexed_backlog_gap": gap, "window_ms": CONVERGENCE_FRESHNESS_WINDOW_MS, **activity}
+    if age_ms is not None:
+        evidence["most_recent_activity_age_ms"] = age_ms
+
+    if recent:
+        return ArchiveVerificationCheck(
+            name="convergence-freshness",
+            status=OutcomeStatus.WARNING,
+            summary=f"{gap:,} unindexed head(s) with convergence activity in the last "
+            f"{CONVERGENCE_FRESHNESS_WINDOW_MS // 3_600_000}h -- still converging, not stalled",
+            count=gap,
+            evidence=evidence,
+        )
+    return ArchiveVerificationCheck(
+        name="convergence-freshness",
+        status=OutcomeStatus.ERROR,
+        summary=f"{gap:,} unindexed head(s), no daemon/convergence activity in the last "
+        f"{CONVERGENCE_FRESHNESS_WINDOW_MS // 3_600_000}h -- stalled, not just async lag",
+        count=gap,
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check 9: user-tier reference liveness (I10, polylogue-t0m73)
+# ---------------------------------------------------------------------------
+
+
+def _check_user_tier_refs(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """``assertions.target_ref`` of kind ``session``/``message`` must resolve
+    to a live row in ``index.db`` (I10, polylogue-t0m73).
+
+    Universe is ``assertions`` itself -- the durable, irreplaceable user-tier
+    ground truth (a mark/annotation/correction a human or agent made) -- not
+    ``index.db``'s own bookkeeping of what it currently holds. An assertion
+    whose target no longer resolves (the session/message it was about was
+    deleted or never survived a rebuild) is a dangling reference: not fatal
+    to read, but the annotation becomes silently unreachable from any
+    normal target-scoped query.
+    """
+    user_path = _tier_path(archive_root, ArchiveTier.USER)
+    index_path = _resolve_index_path(archive_root)
+    if not user_path.exists() or not index_path.exists():
+        return _skip_check("user-tier-refs", "user.db or index.db not present")
+
+    try:
+        conn = _open_ro(user_path)
+    except sqlite3.Error as exc:
+        return _error_check("user-tier-refs", f"could not open user.db: {exc}", exc=exc)
+
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check("user-tier-refs", f"could not attach index.db: {exc}", exc=exc)
+        try:
+            if not table_exists(conn, "assertions"):
+                return _skip_check("user-tier-refs", "assertions table not present")
+
+            dangling_predicate = """
+                (a.target_ref LIKE 'session:%' AND NOT EXISTS (
+                    SELECT 1 FROM idx_tier.sessions s WHERE s.session_id = substr(a.target_ref, 9)
+                ))
+                OR (a.target_ref LIKE 'message:%' AND NOT EXISTS (
+                    SELECT 1 FROM idx_tier.messages m WHERE m.message_id = substr(a.target_ref, 9)
+                ))
+            """
+            total, dangling_sessions, dangling_messages = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN a.target_ref LIKE 'session:%' OR a.target_ref LIKE 'message:%' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN a.target_ref LIKE 'session:%' AND NOT EXISTS (
+                        SELECT 1 FROM idx_tier.sessions s WHERE s.session_id = substr(a.target_ref, 9)
+                    ) THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN a.target_ref LIKE 'message:%' AND NOT EXISTS (
+                        SELECT 1 FROM idx_tier.messages m WHERE m.message_id = substr(a.target_ref, 9)
+                    ) THEN 1 ELSE 0 END)
+                FROM assertions a
+                """
+            ).fetchone()
+            sample = [
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT assertion_id FROM assertions a WHERE {dangling_predicate} LIMIT ?",
+                    (sample_limit,),
+                )
+            ]
+        except sqlite3.Error as exc:
+            return _error_check("user-tier-refs", f"could not read user/index tiers: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    total_n = int(total or 0)
+    dangling_n = int(dangling_sessions or 0) + int(dangling_messages or 0)
+    status = OutcomeStatus.ERROR if dangling_n else OutcomeStatus.OK
+    summary = (
+        f"{total_n:,} session/message-scoped assertion(s), {dangling_n:,} dangling"
+        if dangling_n
+        else f"{total_n:,} session/message-scoped assertion(s), all resolve"
+    )
+    return ArchiveVerificationCheck(
+        name="user-tier-refs",
+        status=status,
+        summary=summary,
+        count=dangling_n,
+        details=[f"dangling:{assertion_id}" for assertion_id in sample],
+        evidence={
+            "total_scoped_assertion_count": total_n,
+            "dangling_session_ref_count": int(dangling_sessions or 0),
+            "dangling_message_ref_count": int(dangling_messages or 0),
+            "dangling_sample": sample,
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry + entrypoint
 # ---------------------------------------------------------------------------
 
@@ -1159,68 +1831,136 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "tier-schema",
         "Tier presence and PRAGMA user_version vs the canonical ARCHIVE_TIER_SPECS.",
         _check_tier_schema,
+        ArchiveVerificationCheckClass.CONFIG,
     ),
     ArchiveVerificationCheckSpec(
         "pointer-coherence",
         "Conventional index.db path vs the active .index-active-pointer generation (polylogue-k8kj class).",
         _check_pointer_coherence,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "source-index-coverage",
         "Every raw_sessions logical head is indexed or typed (parse_error/non_session/quarantined); "
         "untyped gaps and index-orphans (raw_id ground truth, not the census ledger, polylogue-in24n) block.",
         _check_source_index_coverage,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "fts-parity",
         "messages_fts and blocks_command_trigram exactly cover their source rows, archive-wide.",
         _check_fts_parity,
+        ArchiveVerificationCheckClass.FIDELITY,
     ),
     ArchiveVerificationCheckSpec(
         "lineage-sanity",
         "session_links.resolved_dst_session_id / branch_point_message_id resolve to real sessions/messages.",
         _check_lineage_sanity,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "enum-superset-check",
         "Live origin/dst_origin CHECK lists on disk are a superset of the current Origin enum (polylogue-t0m73 I2).",
         _check_enum_superset,
+        ArchiveVerificationCheckClass.CONFIG,
     ),
     ArchiveVerificationCheckSpec(
         "blob-refs-liveness",
         "Every blob_refs row resolves in its ref_type's referent table -- the GC liveness oracle is a join, "
         "not membership in blob_refs itself (polylogue-t0m73 I3).",
         _check_blob_refs_liveness,
+        ArchiveVerificationCheckClass.LIVENESS,
     ),
     ArchiveVerificationCheckSpec(
         "embeddings-refs-liveness",
         "message_embedding_refs resolve to live index.db messages (feu0-class dead-vector detection, "
         "polylogue-t0m73 I4).",
         _check_embeddings_refs_liveness,
+        ArchiveVerificationCheckClass.LIVENESS,
     ),
     ArchiveVerificationCheckSpec(
         "session-lineage-acyclic",
         "sessions.parent_session_id chains never close a cycle (polylogue-t0m73 I5).",
         _check_session_lineage_acyclic,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "message-count-projection",
         "sessions.message_count matches COUNT(messages) per session (polylogue-t0m73 I8).",
         _check_message_count_projection,
+        ArchiveVerificationCheckClass.CONSERVATION,
     ),
     ArchiveVerificationCheckSpec(
         "planner-stats",
         "sqlite_stat1 covers blocks/messages/action_pairs (polylogue-l3tk class, warn-level).",
         _check_planner_stats,
+        ArchiveVerificationCheckClass.FRESHNESS,
     ),
     ArchiveVerificationCheckSpec(
         "counts-summary",
         "Archive-wide session/message/block counts and origin breakdown (numbers-freeze starter).",
         _check_counts_summary,
+        ArchiveVerificationCheckClass.COMPLEXITY,
+    ),
+    ArchiveVerificationCheckSpec(
+        "convergence-freshness",
+        "An open unindexed backlog (I1's universe) with no daemon/convergence activity in the last 24h is "
+        "stalled, not async lag (polylogue-t0m73 I6).",
+        _check_convergence_freshness,
+        ArchiveVerificationCheckClass.FRESHNESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "user-tier-refs",
+        "assertions.target_ref of kind session/message resolves to a live index.db row (polylogue-t0m73 I10).",
+        _check_user_tier_refs,
+        ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "excluded-cursor-vocabulary-honesty",
+        "No excluded ingest_cursor row carries a live next_retry_at (would misreport as retry-due, polylogue-ix5r).",
+        _check_excluded_cursor_vocabulary_honesty,
+        ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "stalled-append-cursor-freshness",
+        "No non-excluded ingest_cursor row sits behind its file's current size for longer than "
+        "the stall-escalation threshold (polylogue-2qrx).",
+        _check_stalled_append_cursor_freshness,
+        ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "raw-quarantine-group-dedup",
+        "No raw_sessions row is an unindexed byte-identical duplicate of another sharing its "
+        "source_path within a fully-quarantined group (polylogue-zm4w8).",
+        _check_raw_quarantine_group_dedup,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
 )
 
 ARCHIVE_VERIFICATION_CHECK_NAMES: tuple[str, ...] = tuple(spec.name for spec in ARCHIVE_VERIFICATION_CHECKS)
+
+#: The subset of ground-truth checks a blue-green reindex candidate generation
+#: is expected to satisfy before promotion (polylogue-t0m73's "reindex
+#: acceptance gate"). Restricted to checks whose universe is satisfiable from
+#: ``index.db`` alone -- a candidate generation directory holds only the new
+#: ``index.db``, not the durable ``source.db``/``user.db``/``embeddings.db``
+#: tiers (those live once at the archive root, not per-generation), so
+#: cross-tier checks (``source-index-coverage``, ``blob-refs-liveness``,
+#: ``embeddings-refs-liveness``, ``tier-schema``) would either report a false
+#: ERROR (missing tiers they're not skip-tolerant of, e.g. tier-schema) or
+#: only ever SKIP (uninformative). Intended use: ``verify_archive(generation_
+#: root, checks=REINDEX_ACCEPTANCE_CHECKS)`` right before promotion, exactly
+#: how :mod:`polylogue.maintenance.rebuild_index` already ran the ``fts-
+#: parity`` singleton -- this constant widens that gate to the rest of the
+#: ground-truth-eligible registry.
+REINDEX_ACCEPTANCE_CHECKS: tuple[str, ...] = (
+    "fts-parity",
+    "lineage-sanity",
+    "enum-superset-check",
+    "session-lineage-acyclic",
+    "message-count-projection",
+    "planner-stats",
+)
 
 
 def _select_check_specs(checks: Sequence[str] | None) -> tuple[ArchiveVerificationCheckSpec, ...]:
@@ -1259,10 +1999,22 @@ def verify_archive(
     results: list[OutcomeCheck] = []
     for spec in specs:
         try:
-            results.append(spec.run(archive_root, sample_limit))
+            result = spec.run(archive_root, sample_limit)
         except Exception as exc:  # defense-in-depth: see module/function docstring
             logger.exception("archive verification check %s raised", spec.name)
-            results.append(_error_check(spec.name, f"check raised {type(exc).__name__}: {exc}"))
+            result = _error_check(spec.name, f"check raised {type(exc).__name__}: {exc}")
+        # Stamp class + waiver metadata centrally so every check function
+        # (and every _error_check/_skip_check escape hatch) picks it up
+        # uniformly, rather than every one of the ~12 check bodies having to
+        # remember to thread it through by hand.
+        if isinstance(result, ArchiveVerificationCheck):
+            result.check_class = spec.check_class.value
+            if result.status is OutcomeStatus.ERROR:
+                waiver = ARCHIVE_VERIFICATION_WAIVERS.get(spec.name)
+                if waiver is not None:
+                    result.waived_bead_id = waiver.bead_id
+                    result.evidence.setdefault("waiver", {"bead_id": waiver.bead_id, "reason": waiver.reason})
+        results.append(result)
 
     return ArchiveVerificationReport(
         checks=results,
@@ -1274,9 +2026,13 @@ def verify_archive(
 __all__ = [
     "ARCHIVE_VERIFICATION_CHECKS",
     "ARCHIVE_VERIFICATION_CHECK_NAMES",
+    "ARCHIVE_VERIFICATION_WAIVERS",
+    "REINDEX_ACCEPTANCE_CHECKS",
     "ArchiveVerificationCheck",
+    "ArchiveVerificationCheckClass",
     "ArchiveVerificationCheckSpec",
     "ArchiveVerificationReport",
+    "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
     "verify_archive",
 ]

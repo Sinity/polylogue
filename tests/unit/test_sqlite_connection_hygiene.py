@@ -2,7 +2,7 @@
 
 ``with sqlite3.connect(path) as conn: ...`` is a well-known Python trap: the
 context manager commits/rolls back the *transaction* on ``__exit__`` but never
-closes the underlying connection (see ``polylogue/insights/otlp_correlation.py``
+closes the underlying connection
 for the canonical documented fix). Left bare, the connection object is only
 closed later by CPython's refcounting/GC — which is unreliable under held
 references, reference cycles, or long-lived daemon loops — leaking file

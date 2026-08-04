@@ -21,7 +21,7 @@ from pathlib import Path
 from polylogue.archive.message.paste_detection import has_paste_indicator
 from polylogue.core.enums import PasteBoundary
 from polylogue.logging import get_logger
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 logger = get_logger(__name__)
 

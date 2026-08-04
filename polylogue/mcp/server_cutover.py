@@ -111,7 +111,7 @@ async def _resolve_reference_query_pipeline(
     if not user_db.exists() or not index_db.exists():
         return hooks.error_json("archive is not initialized", code="not_found", tool="query")
 
-    evaluator = ArchiveCanonicalPlanEvaluator(index_db, surface="mcp")
+    evaluator = ArchiveCanonicalPlanEvaluator(index_db)
     try:
         with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
             from polylogue.archive.query.evaluator import DurableRefResolver
@@ -1167,7 +1167,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     stats, include_embedded=False, include_db_size=False
                 ).model_dump(mode="json")
             if "provider_usage" in include:
-                report_usage = await hooks.get_polylogue().provider_usage_report(
+                report_usage = await hooks.get_polylogue().origin_usage_report(
                     origin=ref,
                     limit=10,
                     detail="headline",

@@ -120,7 +120,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools render public-claims` | Render README, launch, findings-page, and verified-export claim views from FINDING assertions. |
 | `devtools render quality-reference` | Render docs/test-quality-workflows.md from executable lane, mutation, and benchmark registries. |
 | `devtools render query-discovery` | Render parser-gated query discovery examples and result semantics into docs/search.md. |
-| `devtools render topology-projection` | Generate docs/plans/topology-target.yaml from the current tree using placement rules. |
 | `devtools render visual-tapes` | Write VHS tape files and optionally capture GIFs for the default visual evidence specs. |
 | `devtools render webui-client` | Render the committed WebUI TypeScript client from docs/openapi/search.yaml. |
 | `devtools render webui-design-system` | Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence. |
@@ -151,6 +150,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools lab policy raw-authority-frontier-executability` | Verify every raw-authority frontier state has a reachable actuator. |
 | `devtools lab policy raw-payload-hash-purity` | Verify no raw-capture write path splices a synthesized literal onto captured bytes before hashing. |
 | `devtools lab policy schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
+| `devtools lab policy table-exists-duplication` | Verify no module outside storage/introspection.py redefines table_exists/column_exists/index_exists. |
 | `devtools lab policy timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools lab probe bead-pr-reconciliation` | Surface beads whose referenced PR merged but the bead is still open. |
 | `devtools lab probe capture-regression` | Capture pipeline-probe summaries as durable local regression cases. |
@@ -188,14 +188,12 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify degrade-loudly` | Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure. |
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
 | `devtools verify docs-coverage` | Verify every public CLI command, MCP tool, config key, and stable daemon route is named in the docs tree. |
-| `devtools verify evidence` | Render the pytest-first evidence dashboard or a changed-path trace. |
-| `devtools verify hash-boundary-census` | Verify every hashlib/core.hashing call site in polylogue/ is registered in the hash-boundary registry. |
+| `devtools verify evidence` | Render the pytest-first evidence dashboard. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
 | `devtools verify manifests` | Verify internal consistency across all docs/plans/*.yaml manifest files. |
 | `devtools verify public-claims` | Verify generated public-claim views, preset parity, sanitized refs, coverage markers, and retired copy. |
 | `devtools verify pytest-timeout-overrides` | Verify explicit pytest timeout overrides are positive, bounded, and justified. |
 | `devtools verify test-infra-currency` | Verify tests/infra/ helpers reference only tables that exist in the current SCHEMA_VERSION. |
-| `devtools verify topology` | Verify the realized polylogue tree against the topology projection. |
 
 ### Benchmarking
 
@@ -221,11 +219,9 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace agent-meta-sidecar-sweep` | Find agent-*.meta.json subagent-sidecar phantom sessions (message_count=0). |
 | `devtools workspace antigravity-phantom-purge-apply` | Delete antigravity brain-metadata phantom sessions and reclassify their raw rows. |
 | `devtools workspace antigravity-phantom-sweep` | List antigravity-session rows that are brain-metadata phantom fragments. |
-| `devtools workspace archive-schema-fast-forward` | Clone-forward the v35 archive tiers without raw replay. |
 | `devtools workspace attachment-reacquisition` | Classify historically-unfetched attachments for a source-backed backfill. |
 | `devtools workspace attachment-reacquisition-apply` | Backfill acquisition for historically-unfetched attachments. |
 | `devtools workspace backlog-calibration` | Measured lead-time/discovery/staleness distributions over the bead corpus. |
-| `devtools workspace basic-usage-demo-check` | Re-run the basic-usage demo suite's commands and assert output shape. |
 | `devtools workspace bead-batch-show` | Batch-show beads: id, status, prio, title, desc head, deps, notes tail. |
 | `devtools workspace bead-cluster` | Footprint/overlap/contention clustering of ready Beads (execution frontier). |
 | `devtools workspace bead-reimport-guard` | Monotonic, receipted guard/reconcile/export for bd's JSONL synchronization. |
@@ -241,7 +237,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace dev-loop` | Preflight branch-local daemon, web-shell, and browser-capture development loops. |
 | `devtools workspace failure-context` | Join testmon, git history, and fixtures for a pytest failure ID into a JSON envelope. |
 | `devtools workspace frontier` | Classify ready and in-progress Beads into devloop batches. |
-| `devtools workspace index-fast-forward` | Apply a declared clone-first index.db fast-forward with receipts and rollback. |
 | `devtools workspace index-v37-fast-forward` | Clone-forward index v36 to v37 by retiring derived caches without raw replay. |
 | `devtools workspace lane-brief` | Generate a dispatch brief for a bead lane with live footprint/prior-art evidence. |
 | `devtools workspace lane-init` | Provision a fanout lane worktree: branch, isolated venv, guard check, ledger record. |
@@ -250,6 +245,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace merge` | Merge boundary wrapper: refuses `gh pr merge` without a fresh merge-gate receipt. |
 | `devtools workspace merge-conductor` | Mechanical-conflict triage for the PR merge train (dry-run by default). |
 | `devtools workspace merge-gate` | Structural pre-merge safety check: fresh local-verification receipt + no late review comments. |
+| `devtools workspace raw-append-chain-backfill-apply` | Promote membershipless append raws proven correct by live-source verification. |
 | `devtools workspace raw-authority-daemon-health-proof` | Prove daemon status/health HTTP responsiveness during a real raw-authority drain. |
 | `devtools workspace raw-authority-restart-proof` | Prove raw-authority crash recovery and conserved fixed-point convergence. |
 | `devtools workspace raw-authority-scale-proof` | Run bounded raw-authority replay to a two-census fixed point. |
@@ -257,13 +253,15 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace raw-live-source-reconciliation` | Classify quarantined raw evidence against its live source file's current bytes. |
 | `devtools workspace raw-live-source-reconciliation-apply` | Promote quarantined raw evidence proven correct by live-source verification. |
 | `devtools workspace raw-membership-writeback-apply` | Propagate already-decided membership verdicts onto raw_sessions.revision_authority. |
+| `devtools workspace raw-quarantine-group-dedup-apply` | Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group. |
 | `devtools workspace read-package` | Render a declarative package of Polylogue read artifacts. |
 | `devtools workspace scale-regression` | Run the seeded large-archive scale-regression probe. |
 | `devtools workspace tasks` | Record and query local agent task execution history. |
 | `devtools workspace temporal-archive-aggregates` | Build run-projection aggregate artifacts from the active archive. |
 | `devtools workspace temporal-devloop` | Compose git and operating-log events into a temporal evidence window. |
 | `devtools workspace temporal-read-profile` | Measure read --view temporal phase timings on the active archive. |
-| `devtools workspace trajectory-report` | Self-contained HTML velocity/trajectory report over git + PR + bead history. |
+| `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
+| `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |
 | `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
 | `devtools workspace verify-worktree` | Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |

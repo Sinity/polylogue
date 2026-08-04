@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, ToolResultUnknownReason, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, ToolResultUnknownReason, WebConstructType
 from polylogue.core.hashing import hash_text
 
 from .base_models import (
@@ -14,6 +14,30 @@ from .base_models import (
     ParsedMessage,
     ParsedWebConstruct,
 )
+
+
+def human_authored_override(
+    role: Role,
+    message_type: MessageType,
+    material_origin: MaterialOrigin,
+) -> MaterialOrigin:
+    """Positive-evidence override for a plain user turn (polylogue-gzgyl).
+
+    ``classify_material_origin`` (``archive/message/artifacts.py``) stopped
+    falling through role=user/MESSAGE rows to ``HUMAN_AUTHORED`` (PR #2502,
+    correct for agent runtimes where a user-shaped row can be
+    generated/relayed context, not a real human turn). Consumer chat-export
+    origins have no such ambiguity: a plain user message IS positive human
+    evidence there, so this mirrors the compensating override Codex
+    (``_codex_material_origin``) and Claude Code
+    (``_claude_code_user_turn_origin``) already carry, for parsers whose
+    genuine user-turn shape has no agent/subagent complexity to exclude.
+    Callers pass the *already-classified* origin so this stays a pure
+    positive-evidence bump, never a replacement for ``classify_material_origin``.
+    """
+    if material_origin is MaterialOrigin.UNKNOWN and role is Role.USER and message_type is MessageType.MESSAGE:
+        return MaterialOrigin.HUMAN_AUTHORED
+    return material_origin
 
 
 def text_blocks_prose(blocks: Sequence[ParsedContentBlock]) -> str | None:
@@ -39,6 +63,40 @@ def text_blocks_prose(blocks: Sequence[ParsedContentBlock]) -> str | None:
     """
     parts = [block.text for block in blocks if block.type is BlockType.TEXT and block.text]
     return "\n".join(parts) if parts else None
+
+
+def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
+    """Backfill ``parent_message_provider_id`` for a strictly linear message list.
+
+    bd polylogue-ksgg: five of nine archive origins (Codex, Hermes, Gemini
+    CLI, Grok, and AI Studio Drive's non-branch path) never assert an
+    explicit reply-to edge, because their session shape is a plain ordered
+    turn sequence with no fork/retry concept at the message level -- there is
+    no ``variant_index>0`` row in any of them today (ksgg finding B). Leaving
+    ``parent_message_provider_id`` at ``None`` for every message makes
+    position-order the ONLY way to reconstruct the conversation shape for
+    these origins, unlike Claude Code / ChatGPT where a real parent chain is
+    carried end to end.
+
+    This fills the trivial, unambiguous case -- chaining each message to the
+    previous message on the same active path -- without fabricating branch
+    structure: a message that already carries real parent evidence (e.g.
+    ``parsers/drive.py``'s explicit Gemini branch chunks) is left untouched,
+    and only a message with ``parent_message_provider_id is None`` is
+    chained to the nearest preceding *active-path* message. A session's
+    first message (and any message with no preceding active-path message)
+    keeps ``parent_message_provider_id=None`` -- there is nothing to chain
+    it to.
+    """
+    filled: list[ParsedMessage] = []
+    previous_active_id: str | None = None
+    for message in messages:
+        if message.parent_message_provider_id is None and previous_active_id is not None:
+            message = message.model_copy(update={"parent_message_provider_id": previous_active_id})
+        filled.append(message)
+        if message.is_active_path is not False:
+            previous_active_id = message.provider_message_id
+    return filled
 
 
 def content_blocks_from_segments(content: object) -> list[ParsedContentBlock]:
@@ -291,7 +349,7 @@ def attachment_from_meta(meta: object, message_id: str | None) -> ParsedAttachme
 
 def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
     messages: list[ParsedMessage] = []
-    for idx, item in enumerate(items, start=1):
+    for _idx, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
 
@@ -357,7 +415,11 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
                 text = "\n".join(block.text for block in content_blocks if block.text) or None
 
         if text:
-            msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or f"msg-{idx}")
+            # polylogue-slshy: no positional fallback -- empty id lets
+            # _message_comparison_id's content-anchor (role + timestamp)
+            # fallback run instead of a position-derived string that would
+            # change identity when array order shifts across re-acquisitions.
+            msg_id = str(payload.get("id") or payload.get("uuid") or item.get("uuid") or item.get("id") or "")
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,
@@ -368,3 +430,26 @@ def extract_messages_from_list(items: Sequence[object]) -> list[ParsedMessage]:
                 )
             )
     return messages
+
+
+def mark_last_occurrence_as_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
+    """Flag exactly one message as ``is_active_leaf``: the LAST message in
+    the list, by position -- never by comparing ``provider_message_id``.
+
+    ``provider_message_id`` is not guaranteed unique across a flat message
+    list assembled by concatenating streaming chunks or markdown sections --
+    retries/variants/regenerations can legitimately reuse the same native id
+    at more than one position (bd polylogue-2hwl). Comparing every message's
+    id against ``messages[-1].provider_message_id`` (the naive approach)
+    flags EVERY matching position, not just the true leaf, which then lets
+    more than one ``is_active_leaf=True`` message reach MCP payloads and
+    archive_query message output -- an invariant violation (at most one
+    active leaf per session). Matching by exact list position instead of by
+    id equality alone keeps the flag unique regardless of duplicate ids.
+    """
+    if not messages:
+        return messages
+    leaf_index = len(messages) - 1
+    return [
+        message.model_copy(update={"is_active_leaf": index == leaf_index}) for index, message in enumerate(messages)
+    ]

@@ -414,7 +414,6 @@ def _read_view_option_values(
     since_hours: int,
     confidence_threshold: float,
     github_api: bool,
-    otlp: bool,
 ) -> dict[str, object]:
     """Collect raw Click option values for read-view handler builders."""
 
@@ -436,7 +435,6 @@ def _read_view_option_values(
         "since_hours": since_hours,
         "confidence_threshold": confidence_threshold,
         "github_api": github_api,
-        "otlp": otlp,
     }
 
 
@@ -726,7 +724,7 @@ _READ_HELP_OPTION_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
         ),
     ),
     ("Context and neighbor views", frozenset({"related_limit", "window_hours"})),
-    ("Correlation view", frozenset({"repo_path", "since_hours", "confidence_threshold", "github_api", "otlp"})),
+    ("Correlation view", frozenset({"repo_path", "since_hours", "confidence_threshold", "github_api"})),
 )
 
 
@@ -907,12 +905,6 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
     help="Cross-reference issue/PR refs with the GitHub API via gh CLI (--view correlation).",
 )
 @click.option(
-    "--otlp",
-    is_flag=True,
-    default=False,
-    help="Add OTLP span evidence to correlation output (--view correlation).",
-)
-@click.option(
     "--related-limit",
     type=int,
     default=5,
@@ -966,7 +958,6 @@ def read_verb(
     since_hours: int,
     confidence_threshold: float,
     github_api: bool,
-    otlp: bool,
     related_limit: int,
     project_path: str | None,
     project_repo: str | None,
@@ -1007,7 +998,6 @@ def read_verb(
         polylogue find id:abc then read --view neighbors --window-hours 48
         polylogue --latest read --view neighbors --format json
         polylogue find id:abc then read --view correlation --since-hours 4
-        polylogue --latest read --view correlation --otlp --format json
         polylogue read session:abc123 --format json
     """
     env: AppEnv = ctx.obj
@@ -1324,7 +1314,6 @@ def read_verb(
                     since_hours=since_hours,
                     confidence_threshold=confidence_threshold,
                     github_api=github_api,
-                    otlp=otlp,
                 ),
             ),
             explicit_options=explicit_options,

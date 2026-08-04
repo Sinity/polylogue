@@ -13,10 +13,6 @@ PRs #1083/#1086/#1087/#1088:
 - witness lifecycle counts;
 - mutation/benchmark campaign freshness.
 
-The ``trace`` subcommand walks changed paths through the same artifact sources
-to produce a change -> claim -> evidence -> gate -> merge view suitable for
-PR comments and agent consumption.
-
 All sections are backed by real artifacts. Sections with no underlying file
 are reported as ``"available": false`` with the reason — no aspirational rows.
 """
@@ -27,7 +23,6 @@ import argparse
 import json
 import sys
 import xml.etree.ElementTree as ET
-from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -393,32 +388,6 @@ def build_dashboard(root: Path, *, now: datetime | None = None) -> dict[str, Any
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Change traceability
-# ──────────────────────────────────────────────────────────────────────
-
-
-def build_trace(
-    root: Path,
-    *,
-    base_ref: str = "origin/master",
-    head_ref: str = "HEAD",
-    changed_paths: Sequence[str] | None = None,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    """Build a change → claim → evidence → gate trace (verification_impact removed)."""
-    when = now or datetime.now(timezone.utc)
-    # verification_impact module was deleted as part of #1737.
-    # Return an empty trace envelope with a deprecation note.
-    return {
-        "trace": {
-            "available": False,
-            "reason": "verification_impact module removed (#1737)",
-            "generated_at": when.isoformat(),
-        }
-    }
-
-
-# ──────────────────────────────────────────────────────────────────────
 # Markdown rendering
 # ──────────────────────────────────────────────────────────────────────
 
@@ -512,36 +481,6 @@ def render_markdown(dashboard: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def render_trace_markdown(trace: dict[str, Any]) -> str:
-    lines: list[str] = []
-    lines.append(f"# Change Trace {trace['base_ref']}..{trace['head_ref']}")
-    lines.append("")
-    lines.append(f"- changed paths: {trace['changed_path_count']}")
-    lines.append(f"- required PR gates: {len(trace.get('required_gates', []))}")
-    lines.append("")
-    if not trace["changes"]:
-        lines.append("(no recognised change subjects)")
-        return "\n".join(lines)
-    lines.append("## Changes")
-    for row in trace["changes"]:
-        lines.append(f"### {row['path']}")
-        lines.append(f"- kind: {row['kind']}")
-        if row["reason"]:
-            lines.append(f"- reason: {row['reason']}")
-        if row["subject_ids"]:
-            lines.append(f"- subjects: {', '.join(row['subject_ids'])}")
-        if row["surface_names"]:
-            lines.append(f"- surfaces: {', '.join(row['surface_names'])}")
-        if row["checks"]:
-            lines.append("- recommended checks:")
-            for check in row["checks"][:5]:
-                cmd = check.get("command")
-                if isinstance(cmd, list):
-                    lines.append(f"  - `{' '.join(str(c) for c in cmd)}` — {check.get('reason', '')}")
-        lines.append("")
-    return "\n".join(lines)
-
-
 # ──────────────────────────────────────────────────────────────────────
 # CLI
 # ──────────────────────────────────────────────────────────────────────
@@ -558,39 +497,12 @@ def _emit_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
-def _emit_trace(args: argparse.Namespace) -> int:
-    paths: list[str] | None = list(args.path) if args.path else None
-    trace = build_trace(ROOT, base_ref=args.base, head_ref=args.head, changed_paths=paths)
-    if args.json or not args.markdown:
-        json.dump(trace, sys.stdout, indent=2, sort_keys=True)
-        sys.stdout.write("\n")
-    if args.markdown:
-        sys.stdout.write(render_trace_markdown(trace))
-        sys.stdout.write("\n")
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Emit JSON output (default).")
     parser.add_argument("--markdown", action="store_true", help="Emit Markdown output (combinable with --json).")
-    sub = parser.add_subparsers(dest="cmd")
-
-    trace = sub.add_parser("trace", help="Change → claim → evidence → gate trace for the changed paths.")
-    trace.add_argument("--base", default="origin/master", help="Base git ref (default: origin/master).")
-    trace.add_argument("--head", default="HEAD", help="Head git ref (default: HEAD).")
-    trace.add_argument(
-        "--path",
-        action="append",
-        default=[],
-        help="Explicit changed path. Repeat to bypass git diff discovery.",
-    )
-    trace.add_argument("--json", action="store_true", help="Emit JSON output (default).")
-    trace.add_argument("--markdown", action="store_true", help="Emit Markdown output (combinable with --json).")
 
     args = parser.parse_args(argv)
-    if args.cmd == "trace":
-        return _emit_trace(args)
     return _emit_dashboard(args)
 
 

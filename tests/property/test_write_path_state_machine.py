@@ -8,13 +8,13 @@ not duplicate prefix extraction, FTS maintenance, or session-link resolution.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import aiosqlite
 from hypothesis import HealthCheck, settings
 from hypothesis.stateful import RuleBasedStateMachine, initialize, rule
 
@@ -30,8 +30,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_archive_session_envelope,
     write_parsed_session_to_archive,
 )
-from polylogue.storage.sqlite.async_sqlite import configure_connection
-from polylogue.storage.sqlite.queries.session_links import resolve_unresolved_links_for_child
 from polylogue.storage.sqlite.schema import _ensure_schema
 
 
@@ -616,14 +614,21 @@ def test_grandchild_transcript_recomposes_after_intermediate_ancestor_message_de
 
 
 def test_session_link_resolver_quarantines_cycle() -> None:
-    """The async resolver quarantines a late link that would close a cycle."""
+    """The live write path (``write_parsed_session_to_archive`` ->
+    ``_resolve_outbound_session_links``) quarantines a late link that would
+    close a cycle, instead of the dead async engine at
+    ``storage/sqlite/queries/session_links.py`` (zero production callers,
+    deleted for polylogue-4ts.10; see
+    ``tests/unit/storage/test_topology_cycle_quarantine_live.py`` for the
+    fuller cross-ingest/self-loop/diamond-DAG coverage of this same live
+    path)."""
     with tempfile.TemporaryDirectory(prefix="polylogue-write-model-", dir="/realm/tmp") as root_text:
         archive_root = Path(root_text)
         initialize_active_archive_root(archive_root)
         db_path = archive_root / "index.db"
         conn = sqlite3.connect(str(db_path))
         try:
-            parent = ParsedSession(
+            parent_v1 = ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="cycle-parent",
                 messages=[ParsedMessage(provider_message_id="parent-0", role=Role.USER, text="parent", position=0)],
@@ -635,33 +640,28 @@ def test_session_link_resolver_quarantines_cycle() -> None:
                 branch_type=BranchType.FORK,
                 messages=[ParsedMessage(provider_message_id="child-0", role=Role.USER, text="child", position=0)],
             )
-            parent_id = write_parsed_session_to_archive(conn, parent, content_hash=session_content_hash(parent))
+            parent_id = write_parsed_session_to_archive(conn, parent_v1, content_hash=session_content_hash(parent_v1))
             write_parsed_session_to_archive(conn, child, content_hash=session_content_hash(child))
-            conn.execute(
-                """
-                INSERT INTO session_links (
-                    src_session_id, dst_origin, dst_native_id, link_type,
-                    status, method, confidence, evidence_json, observed_at_ms
-                ) VALUES (?, 'claude-code-session', 'cycle-child', 'fork', NULL, 'test', 1.0, '[]', 0)
-                """,
-                (parent_id,),
+
+            # Re-ingest the parent now claiming the child as ITS parent --
+            # closing a two-node cycle parent -> child -> parent. This must
+            # be rejected (quarantined), not silently resolved.
+            parent_v2 = ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="cycle-parent",
+                parent_session_provider_id="cycle-child",
+                messages=[
+                    ParsedMessage(provider_message_id="parent-0", role=Role.USER, text="parent", position=0),
+                    ParsedMessage(provider_message_id="parent-1", role=Role.ASSISTANT, text="revised", position=1),
+                ],
+            )
+            write_parsed_session_to_archive(
+                conn, parent_v2, content_hash=session_content_hash(parent_v2), force_replace=True
             )
             conn.commit()
         finally:
             conn.close()
 
-        async def resolve_cycle() -> int:
-            async with aiosqlite.connect(db_path) as async_conn:
-                await configure_connection(async_conn)
-                resolved = await resolve_unresolved_links_for_child(
-                    async_conn,
-                    src_session_id=parent_id,
-                    resolved_at="2026-01-01T00:00:00Z",
-                )
-                await async_conn.commit()
-            return resolved
-
-        assert asyncio.run(resolve_cycle()) == 0
         with sqlite3.connect(str(db_path)) as verify_conn:
             row = verify_conn.execute(
                 "SELECT resolved_dst_session_id, status, evidence_json FROM session_links WHERE src_session_id = ?",
@@ -670,7 +670,7 @@ def test_session_link_resolver_quarantines_cycle() -> None:
         assert row is not None
         assert row[0] is None
         assert row[1] == TopologyEdgeStatus.QUARANTINED.value
-        assert '"reason": "cycle_rejected"' in row[2]
+        assert json.loads(row[2])["reason"] == "cycle_rejected"
 
 
 TestWritePathStateMachine = WritePathStateMachine.TestCase

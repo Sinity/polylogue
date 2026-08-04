@@ -11,12 +11,12 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.api.archive import _rebuild_archive_session_insights
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
 from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from polylogue.insights.registry import get_insight_type, insight_items_payload
+from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
@@ -54,7 +54,7 @@ def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
     ``session_work_events``, ``session_phases``, and ``threads``.
     """
     with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
-        return _rebuild_archive_session_insights(archive, **kwargs)
+        return rebuild_archive_session_insights(archive, **kwargs)
 
 
 def _insight_status(db_path: Path) -> SessionInsightStatusSnapshot:
@@ -215,16 +215,10 @@ def _seed_cost_products(cli_workspace: CliWorkspace) -> None:
         # figure, not merely provider-reported tokens.
         conn.execute(
             """
-            INSERT OR IGNORE INTO price_catalogs (catalog_id, catalog_hash, source_name, loaded_at_ms)
-            VALUES ('test-catalog', 'test-hash', 'test', 0)
-            """
-        )
-        conn.execute(
-            """
             INSERT OR REPLACE INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                cost_credits, cost_provenance, cost_usd, priced_with
-            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported', 0.0075, 'test-catalog')
+                cost_credits, cost_provenance, cost_usd
+            ) VALUES (?, 'openai/gpt-4o-2024-08-06', 1000, 500, 0, 0, 0, 'origin_reported', 0.0075)
             """,
             (NID_PRICED_COST,),
         )

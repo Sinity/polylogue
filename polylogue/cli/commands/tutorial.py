@@ -20,7 +20,7 @@ from typing import Any
 import click
 
 from polylogue.cli.shared.types import AppEnv
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 
 
 @dataclass(frozen=True, slots=True)

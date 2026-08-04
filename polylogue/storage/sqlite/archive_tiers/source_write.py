@@ -15,9 +15,9 @@ from typing import Literal
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 class ContentExcisedError(RuntimeError):

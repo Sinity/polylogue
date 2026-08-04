@@ -14,6 +14,8 @@ from polylogue.archive.session.documents import (
     SessionProfileDocument,
 )
 from polylogue.archive.session.extraction import WorkEvent
+from polylogue.archive.session.provenance import date_provenance as _date_provenance
+from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
 from polylogue.archive.session.repo_identity import normalize_repo_names, normalize_repo_paths
 from polylogue.core.payload_coercion import (
     coerce_float,
@@ -74,24 +76,6 @@ def _phase_from_mapping(payload: SessionPhasePayload | Mapping[str, object]) -> 
         confidence=coerce_float(payload.get("confidence"), 0.0),
         evidence=string_sequence(payload.get("evidence")),
     )
-
-
-def _range_timing_provenance(start_time: str | None, end_time: str | None) -> str:
-    if start_time is not None and end_time is not None:
-        return "timestamped_range"
-    if start_time is not None:
-        return "start_timestamp_only"
-    if end_time is not None:
-        return "end_timestamp_only"
-    return "untimestamped"
-
-
-def _date_provenance(canonical_session_date: str | None, start_time: str | None, end_time: str | None) -> str:
-    if canonical_session_date is None:
-        return "none"
-    if start_time is not None or end_time is not None:
-        return "event_timestamp"
-    return "date_only"
 
 
 @dataclass(frozen=True)

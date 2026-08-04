@@ -7,8 +7,9 @@ from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, WebConstructType
+from polylogue.core.enums import BlockType, MessageType, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 
 from ..base import (
@@ -19,6 +20,7 @@ from ..base import (
     ParsedWebConstruct,
     attachment_from_meta,
     content_blocks_from_segments,
+    human_authored_override,
 )
 
 CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG = "degraded:claude-missing-message-id"
@@ -917,9 +919,18 @@ def normalize_chat_messages(
         role = Role.normalize(str(raw_role)) if isinstance(raw_role, str) and raw_role else Role.UNKNOWN
         text = _extract_message_text(item)
         raw_content = item.get("content")
+        # polylogue-0qfy: do NOT synthesize a content_blocks entry that just
+        # duplicates `text` when `content` itself produced no blocks -- that
+        # made `message.blocks` presence (and therefore the message's
+        # identity hash, `pipeline/ids.py:_message_hash_payload`) depend on
+        # whether a given export vintage's raw record happened to carry a
+        # structured `content` field or only a top-level `text` field, for
+        # the exact same conversation content. The write path
+        # (`storage/sqlite/archive_tiers/write.py:_message_blocks`) already
+        # falls back to a text block for storage whenever `message.blocks`
+        # is empty, so this synthesis was pure redundancy with no storage
+        # benefit and a real comparison-stability cost.
         content_blocks = _claude_content_blocks(raw_content)
-        if not content_blocks and text:
-            content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
         role = reclassify_tool_result_envelope(role, content_blocks)
 
         raw_created_at = item.get("created_at") or item.get("create_time") or item.get("timestamp")
@@ -1053,6 +1064,10 @@ def normalize_chat_messages(
         order_key_by_id=order_key_by_id,
     )
 
+    def _evidence_message_type(evidence: _ClaudeMessageEvidence) -> MessageType:
+        block_message_type = classify_block_message_type(tuple(block.type for block in evidence.blocks))
+        return block_message_type if block_message_type is not None else MessageType.MESSAGE
+
     messages = [
         ParsedMessage(
             provider_message_id=evidence.provider_message_id,
@@ -1071,6 +1086,21 @@ def normalize_chat_messages(
             duration_ms=evidence.duration_ms,
             delivery_status=evidence.delivery_status,
             end_turn=evidence.end_turn,
+            message_type=(message_type := _evidence_message_type(evidence)),
+            # polylogue-gzgyl: ordinary claude.ai chat_messages carries no
+            # agent/subagent ambiguity -- a plain role=user message here IS
+            # positive human evidence, mirroring the Codex/ChatGPT override
+            # for the shared classify_material_origin no-fallthrough (#2502).
+            material_origin=human_authored_override(
+                evidence.role,
+                message_type,
+                classify_material_origin(
+                    role=evidence.role,
+                    message_type=message_type,
+                    text=evidence.text,
+                    block_types=tuple(block.type for block in evidence.blocks),
+                ),
+            ),
         )
         for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.provider_message_id])
     ]

@@ -37,6 +37,21 @@ class _CodexSidecarData(TypedDict, total=False):
     thread_names: CodexThreadNames
     history_titles: CodexHistoryTitles
     state_titles: CodexHistoryTitles
+    # bd polylogue-foee: thread_id -> title read from acquired
+    # codex_thread_title raw_hook_events (polylogue-0jf4's durable,
+    # snapshot-safe capture of state_5.sqlite's threads.title). Populated by
+    # pipeline/services/ingest_batch/_core.py::_resolve_codex_sidecar_snapshots
+    # (which has the source.db connection this needs), never by
+    # CodexAssemblySpec.discover_sidecars itself (file-system only, no DB
+    # access) -- see assembly_codex.py's ladder step 3b.
+    hook_event_titles: CodexHistoryTitles
+
+
+class _ClaudeAISidecarData(TypedDict, total=False):
+    # bd polylogue-4zqh3: attachment native id -> (blob_hash_hex, size_bytes)
+    # for sole-copy attachment bytes recovered out of band and streamed into
+    # the blob store during sidecar discovery. See assembly_claude_ai.py.
+    claude_ai_recovered_blobs: dict[str, tuple[str, int]]
 
 
 class _ChatGPTSidecarData(TypedDict, total=False):
@@ -52,7 +67,7 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     chatgpt_dat_blobs: dict[str, tuple[str, int]]
 
 
-class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, total=False):
+class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, _ClaudeAISidecarData, total=False):
     pass
 
 
@@ -112,6 +127,10 @@ def get_assembly_spec(provider: Provider) -> ProviderAssemblySpec | None:
         from .assembly_chatgpt import ChatGPTAssemblySpec
 
         return ChatGPTAssemblySpec()
+    if provider is Provider.CLAUDE_AI:
+        from .assembly_claude_ai import ClaudeAIAssemblySpec
+
+        return ClaudeAIAssemblySpec()
     return None
 
 
@@ -123,6 +142,7 @@ __all__ = [
     "ProviderAssemblySpec",
     "SidecarData",
     "_ChatGPTSidecarData",
+    "_ClaudeAISidecarData",
     "_CodexSidecarData",
     "_ClaudeCodeSidecarData",
     "TitleResolution",

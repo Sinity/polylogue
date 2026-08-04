@@ -41,11 +41,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.timestamps import canonical_timestamp_text
 
-from .base import ParsedContentBlock, ParsedMessage, ParsedSession
+from .base import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    fill_linear_parent_chain,
+    human_authored_override,
+)
 
 _SENDER_ROLE: dict[str, Role] = {
     "human": Role.USER,
@@ -137,16 +145,26 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
         if not text:
             continue
         provider_message_id = f"{fallback_id}:{index}"
+        grok_role = _role_for_sender(fields.get("sender"))
         messages.append(
             ParsedMessage(
                 provider_message_id=provider_message_id,
-                role=_role_for_sender(fields.get("sender")),
+                role=grok_role,
                 text=text,
                 timestamp=_timestamp_text(fields.get("create_time")),
                 blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 position=len(messages),
                 variant_index=0,
                 is_active_path=True,
+                # polylogue-gzgyl: a Grok export response entry has no
+                # agent/subagent artifact ambiguity for a plain user turn --
+                # positive-evidence override for the shared
+                # classify_material_origin no-fallthrough (#2502).
+                material_origin=human_authored_override(
+                    grok_role,
+                    MessageType.MESSAGE,
+                    classify_material_origin(role=grok_role, message_type=MessageType.MESSAGE, text=text),
+                ),
             )
         )
 
@@ -158,6 +176,11 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
             )
             for message in messages
         ]
+    # bd polylogue-ksgg: Grok exports carry no native conversation/message id
+    # or parent evidence at all (see module docstring) -- a plain ordered
+    # response list. Chain each message to the previous one so this origin
+    # doesn't need a bespoke position-order fallback either.
+    messages = fill_linear_parent_chain(messages)
     updated_at = messages[-1].timestamp if messages and messages[-1].timestamp else created_at
 
     return ParsedSession(

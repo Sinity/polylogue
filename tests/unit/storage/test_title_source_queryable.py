@@ -205,7 +205,7 @@ def test_session_list_row_payload_carries_title_source() -> None:
     from polylogue.archive.session.domain_models import Session
     from polylogue.core.enums import Origin
     from polylogue.core.types import SessionId
-    from polylogue.surfaces.payloads import SessionListRowPayload, SessionSummaryPayload
+    from polylogue.surfaces.payloads import session_list_envelope_from_domain, session_summary_envelope_from_domain
 
     session = Session(
         id=SessionId("codex-session:codex-ts-4"),
@@ -214,7 +214,7 @@ def test_session_list_row_payload_carries_title_source() -> None:
         title_source=TitleSource.HEURISTIC,
         messages=MessageCollection(messages=[]),
     )
-    row = SessionListRowPayload.from_session(session)
+    row = session_list_envelope_from_domain(session)
     assert row.title_source == "heuristic"
-    summary_payload = SessionSummaryPayload.from_session(session)
+    summary_payload = session_summary_envelope_from_domain(session)
     assert summary_payload.title_source == "heuristic"

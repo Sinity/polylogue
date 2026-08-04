@@ -21,6 +21,7 @@ above require ``confirm_flag`` and refuse ``role_only``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -28,7 +29,7 @@ from typing import cast
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import AssertionKind, Provider
 from polylogue.insights.feedback import LearningCorrection
 from polylogue.operations.mutation_actuators import (
     AnnotationDeleteActuator,
@@ -41,6 +42,8 @@ from polylogue.operations.mutation_actuators import (
     BlockerResolveArgs,
     BulkTagActuator,
     BulkTagArgs,
+    CaptureAssertionCandidateActuator,
+    CaptureAssertionCandidateArgs,
     CorrectionDeleteActuator,
     CorrectionDeleteArgs,
     CorrectionRecordActuator,
@@ -49,6 +52,10 @@ from polylogue.operations.mutation_actuators import (
     CorrectionsClearArgs,
     IdentityResetActuator,
     IdentityResetArgs,
+    IndexRebuildActuator,
+    IndexRebuildArgs,
+    InsightsRebuildActuator,
+    InsightsRebuildArgs,
     MarkAddActuator,
     MarkArgs,
     MarkRemoveActuator,
@@ -756,6 +763,81 @@ class TestAnnotationActuators:
             plan = executor.prepare(actuator, args)
             # Does not raise ConfirmationRequiredError.
             executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+
+
+class TestCaptureAssertionCandidateActuator:
+    """Real user-tier proof for the terminal candidate capture route."""
+
+    def test_executor_lifecycle_writes_and_replays_idempotently(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="candidate-capture")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            executor = OperationExecutor()
+            actuator = CaptureAssertionCandidateActuator()
+            args = CaptureAssertionCandidateArgs(
+                archive=archive,
+                body_text="candidate body",
+                kind=AssertionKind.LESSON,
+                refs=(),
+                scope_refs=("repo:polylogue",),
+                cwd=None,
+                author_ref="agent:test",
+                author_kind="agent",
+                idempotency_key="candidate-key",
+                assertion_id="assertion-terminal-note:" + hashlib.sha256(b"agent:test\0candidate-key").hexdigest(),
+                ttl_seconds=60,
+            )
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+            )
+            first = executor.execute(actuator, plan, authorization, args)
+            replay_plan = executor.prepare(actuator, args)
+            replay_authorization = executor.authorize(
+                actuator,
+                replay_plan,
+                actor="test",
+                role="write",
+                capability="test",
+                confirmation_strength="role_only",
+            )
+            replay = executor.execute(actuator, replay_plan, replay_authorization, args)
+
+        assert first.status == "applied"
+        assert replay.status == "already_satisfied"
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            row = conn.execute(
+                "SELECT kind, status, body_text, author_ref, scope_ref FROM assertions WHERE key = 'terminal-note'"
+            ).fetchone()
+        assert row == ("lesson", "candidate", "candidate body", "agent:test", "repo:polylogue")
+
+    def test_role_only_authorize_succeeds(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="candidate-ac4")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = CaptureAssertionCandidateActuator()
+            args = CaptureAssertionCandidateArgs(
+                archive=archive,
+                body_text="candidate body",
+                kind=AssertionKind.NOTE,
+                refs=(),
+                scope_refs=(),
+                cwd=None,
+                author_ref="agent:test",
+                author_kind="agent",
+                idempotency_key=None,
+                assertion_id="assertion-terminal-note:one-shot",
+                ttl_seconds=None,
+            )
+            plan = OperationExecutor().prepare(actuator, args)
+            # Reversible candidate capture does not require an interactive token.
+            OperationExecutor().authorize(
                 actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
             )
 
@@ -1688,3 +1770,82 @@ class TestCorrectionActuators:
             # Refused before mutation: both corrections are still present.
             remaining = archive.list_corrections(session_id=session_id)
             assert {correction.kind.value for correction in remaining} == {"tag_reject", "tag_accept"}
+
+
+class TestDerivedMaintenanceActuators:
+    """Real derived-tier effects remain behind the shared executor."""
+
+    def test_index_rebuild_actuator_rebuilds_real_fts_and_returns_receipt(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="maintenance-index")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = IndexRebuildActuator()
+            args = IndexRebuildArgs(archive=archive, session_ids=("maintenance-index",))
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="test",
+                role="write",
+                capability="archive.rebuild_index",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+            indexed = archive.index_status()
+
+        assert receipt.operation == "mutate-rebuild-index"
+        assert receipt.status == "applied"
+        assert receipt.domain_receipt["indexed_rows"] == 0
+        assert indexed["exists"] is True
+
+    def test_index_rebuild_binds_requested_scope_before_execution(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        _seed_archive_session(archive_root, native_id="maintenance-scope")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = IndexRebuildActuator(operation="mutate-update-index")
+            prepared_args = IndexRebuildArgs(archive=archive, session_ids=("first",))
+            execute_args = IndexRebuildArgs(archive=archive, session_ids=("second",))
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, prepared_args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="test",
+                role="write",
+                capability="archive.update_index",
+                confirmation_strength="role_only",
+            )
+
+            with pytest.raises(PlanStaleError):
+                executor.execute(actuator, plan, authorization, execute_args)
+
+    def test_insights_rebuild_actuator_uses_real_materializer(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        session_id = _seed_archive_session(archive_root, native_id="maintenance-insights")
+
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            actuator = InsightsRebuildActuator()
+            args = InsightsRebuildArgs(archive=archive, session_ids=(session_id,))
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator,
+                plan,
+                actor="test",
+                role="write",
+                capability="archive.rebuild_insights",
+                confirmation_strength="role_only",
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+            profile_count = archive._conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0]
+
+        assert receipt.operation == "mutate-rebuild-insights"
+        assert receipt.status in {"applied", "already_satisfied"}
+        assert receipt.affected_count == sum(int(cast("int", value)) for value in receipt.domain_receipt.values())
+        assert profile_count >= 0

@@ -438,12 +438,16 @@ def test_stuck_sync_writer_cannot_pin_process_exit() -> None:
         """
     )
 
+    # polylogue-es7b: bumped from 5.0s -- this module's cold-import cost alone
+    # can run several seconds under concurrent xdist workers (each spawning
+    # its own subprocess simultaneously), which made this timeout marginal
+    # once a third subprocess-spawning test landed in this file.
     completed = subprocess.run(
         [sys.executable, "-c", script],
         cwd=Path(__file__).parents[3],
         capture_output=True,
         text=True,
-        timeout=5.0,
+        timeout=20.0,
         check=False,
     )
 
@@ -489,12 +493,16 @@ def test_real_startup_writer_routes_cannot_pin_process_exit(helper_name: str, wr
         """
     )
 
+    # polylogue-es7b: bumped from 5.0s -- this module's cold-import cost alone
+    # can run several seconds under concurrent xdist workers (each spawning
+    # its own subprocess simultaneously), which made this timeout marginal
+    # once a third subprocess-spawning test landed in this file.
     completed = subprocess.run(
         [sys.executable, "-c", script],
         cwd=Path(__file__).parents[3],
         capture_output=True,
         text=True,
-        timeout=5.0,
+        timeout=20.0,
         check=False,
     )
 
@@ -530,6 +538,114 @@ async def test_operational_telemetry_reports_actor_queue_wait_and_hold() -> None
     assert event["actor"] == "watcher"
     assert isinstance(event["wait_seconds"], float)
     assert isinstance(event["hold_seconds"], float)
+
+
+@pytest.mark.asyncio
+async def test_detached_writer_failure_increments_lifetime_counter() -> None:
+    """polylogue-es7b: a failed writer task's exception previously surfaced only via a log line.
+
+    ``completed()`` (the task's done-callback) must also increment a durable
+    daemon-lifetime counter so the failure is observable through the
+    coordinator's telemetry snapshot/payload, not only in logs.
+    """
+    coordinator = DaemonWriteCoordinator()
+    assert coordinator.snapshot().detached_writer_failures == 0
+
+    async def boom() -> None:
+        raise RuntimeError("writer blew up")
+
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("actor", boom)
+
+    # The done-callback that increments the counter is scheduled via
+    # call_soon alongside the outer await's own resumption; give the loop one
+    # more tick so ordering between the two doesn't make this test flaky.
+    for _ in range(10):
+        if coordinator.snapshot().detached_writer_failures:
+            break
+        await asyncio.sleep(0)
+
+    assert coordinator.snapshot().detached_writer_failures == 1
+    payload = daemon_write_telemetry_payload()
+    assert payload["detached_writer_failures"] == 1
+
+    # A second failure keeps accumulating -- this is a lifetime counter, not
+    # a one-shot flag.
+    with pytest.raises(RuntimeError, match="writer blew up"):
+        await coordinator.run("actor", boom)
+    for _ in range(10):
+        if coordinator.snapshot().detached_writer_failures == 2:
+            break
+        await asyncio.sleep(0)
+    assert coordinator.snapshot().detached_writer_failures == 2
+
+
+def test_run_in_daemon_thread_logs_instead_of_hanging_when_loop_already_closed() -> None:
+    """polylogue-es7b: a worker thread finishing after its loop closed must not hang silently.
+
+    ``_run_in_daemon_thread`` spawns a plain (uncancellable) ``threading.Thread``.
+    If the coordinator's event loop closes before that thread finishes --
+    the real shape of the hazard is a stuck sync writer that outlives a
+    process shutdown that gave up waiting on it (see
+    ``test_stuck_sync_writer_cannot_pin_process_exit`` above) -- the worker's
+    final ``loop.call_soon_threadsafe`` raises ``RuntimeError`` because the
+    loop is closed. Previously this was silently swallowed, leaving the
+    original awaiting future unresolved with zero forensic trace. The fix
+    logs a warning instead of swallowing it silently; run in a subprocess
+    because it requires actually closing a real event loop out from under a
+    still-running background thread.
+    """
+    script = textwrap.dedent(
+        """
+        import asyncio
+        import logging
+        import sys
+        import threading
+
+        from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+        finish = threading.Event()
+
+        async def main() -> None:
+            coordinator = DaemonWriteCoordinator()
+            started = threading.Event()
+
+            def writer() -> None:
+                started.set()
+                finish.wait()
+                raise RuntimeError("late failure after loop closed")
+
+            asyncio.create_task(coordinator.run_sync("late", writer))
+            while not started.is_set():
+                await asyncio.sleep(0.001)
+            # Return now: asyncio.run() cancels outstanding tasks and closes
+            # the loop while ``writer`` is still blocked in its background
+            # thread -- the real-world shape of the hazard.
+
+        asyncio.run(main())
+        # The loop asyncio.run() owned is now closed. Release the writer
+        # thread so it raises and tries to publish onto the closed loop.
+        finish.set()
+        threading.Event().wait(0.5)
+        """
+    )
+
+    # A generous timeout: importing ``polylogue.daemon.write_coordinator`` in
+    # a cold subprocess dominates this test's wall time far more than the
+    # writer/loop-close dance itself does.
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=Path(__file__).parents[3],
+        capture_output=True,
+        text=True,
+        timeout=20.0,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "event loop already closed" in completed.stderr, completed.stderr
 
 
 def test_thread_bridge_serializes_sync_request_bodies_without_overlap() -> None:

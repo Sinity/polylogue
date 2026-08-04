@@ -169,3 +169,41 @@ def test_compute_session_cost_downgrades_to_partial_when_one_model_unknown_along
     confidences = {b.confidence for b in summary.per_model}
     assert "reported" in confidences
     assert "unknown" in confidences
+
+
+def test_compute_session_cost_defaults_to_pro_tier_subscription_equivalent() -> None:
+    """No explicit ``subscription_tier`` keeps the conservative ``pro`` default
+    (polylogue-at44 AC: "cost compute reads it with a sane default")."""
+
+    model_usage = [ModelUsageTotals(model_name="claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=0)]
+    session = make_conv(id="sub-tier-default-session", provider="claude-code", messages=[])
+
+    default_summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
+    pro_summary = compute_session_cost(
+        session, estimate_if_missing=False, model_usage=model_usage, subscription_tier="pro"
+    )
+
+    assert default_summary.total_subscription_equivalent_usd > 0
+    assert default_summary.total_subscription_equivalent_usd == pro_summary.total_subscription_equivalent_usd
+
+
+def test_compute_session_cost_honors_explicit_subscription_tier() -> None:
+    """A caller that knows the archive owner's real plan (e.g. read from the
+    ``subscription_tier`` user setting) gets that plan's cheaper per-credit
+    rate reflected in the subscription-equivalent figure, not the hardcoded
+    ``pro`` ratio (polylogue-at44)."""
+
+    model_usage = [ModelUsageTotals(model_name="claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=0)]
+    session = make_conv(id="sub-tier-explicit-session", provider="claude-code", messages=[])
+
+    pro_summary = compute_session_cost(
+        session, estimate_if_missing=False, model_usage=model_usage, subscription_tier="pro"
+    )
+    max20_summary = compute_session_cost(
+        session, estimate_if_missing=False, model_usage=model_usage, subscription_tier="max_20x"
+    )
+
+    # Same credit cost either way; only the USD conversion ratio differs.
+    assert pro_summary.total_credit_cost == max20_summary.total_credit_cost
+    assert max20_summary.total_subscription_equivalent_usd < pro_summary.total_subscription_equivalent_usd
+    assert max20_summary.total_subscription_equivalent_usd > 0

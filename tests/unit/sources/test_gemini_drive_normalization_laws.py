@@ -428,7 +428,10 @@ def test_native_turn_facts_survive_reordering_while_missing_ids_use_source_posit
         "turn-error-native": (
             Role.ASSISTANT,
             "2026-06-01T10:00:05Z",
-            None,
+            # bd polylogue-ksgg: no real branch evidence for this message, so
+            # fill_linear_parent_chain now correctly chains it to the previous
+            # active-path message instead of leaving it unparented.
+            "turn-failed-result-native",
             0,
             1,
             (BlockType.DOCUMENT, BlockType.DOCUMENT, BlockType.DOCUMENT, BlockType.TEXT),
@@ -518,8 +521,15 @@ def test_nested_drive_like_wrappers_lower_through_the_production_dispatch_route(
     ]
 
 
-def test_gemini_cli_schema_fields_survive_dispatch_without_export_authorship_upgrade() -> None:
-    """Authoredness and thought/tool outcome mutations must fail on runtime data."""
+def test_gemini_cli_schema_fields_survive_dispatch_with_human_authored_override() -> None:
+    """Authoredness and thought/tool outcome mutations must fail on runtime data.
+
+    polylogue-gzgyl: Gemini CLI previously left a plain user turn UNKNOWN
+    after PR #2502 removed the shared Role.USER+MESSAGE fallback (correct for
+    agent runtimes, but Gemini CLI has no agent/subagent ambiguity for its
+    own genuine user-turn shape). The positive-evidence override in
+    local_agent.py's _parse_gemini_message now classifies it HUMAN_AUTHORED.
+    """
     payload = _gemini_cli_payload()
     assert detect_provider(payload) is Provider.GEMINI_CLI
     assert detect_provider([payload]) is Provider.GEMINI_CLI
@@ -536,7 +546,7 @@ def test_gemini_cli_schema_fields_survive_dispatch_without_export_authorship_upg
 
     user, assistant = session.messages
     assert user.provider_message_id == "cli-user-native"
-    assert user.material_origin is MaterialOrigin.UNKNOWN
+    assert user.material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert user.input_tokens == 8
     assert user.cache_read_tokens == 4
     assert user.output_tokens == 0

@@ -8,6 +8,7 @@ rollups.  It is an audit surface, not a billing estimator.
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
@@ -44,7 +45,9 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
-from polylogue.storage.table_existence import table_exists as _table_exists
+from polylogue.storage.introspection import table_exists as _table_exists
+
+logger = logging.getLogger(__name__)
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -249,7 +252,6 @@ _PROVIDER_USAGE_COVERAGE: tuple[ProviderUsageCoverage, ...] = (
         request_semantics="Codex last_token_usage is request/current-window telemetry and can be summed by request when present.",
         cumulative_semantics="Codex total_token_usage is cumulative and session-global; rollups take the latest total per session to avoid double-counting.",
         cache_semantics="cached_input_tokens and cache write/cache creation aliases are preserved as separate lanes and are not folded into generic input/output.",
-        notes=("model_context_window is carried on token_count events when the provider supplies it.",),
     ),
     ProviderUsageCoverage(
         origin=Origin.CHATGPT_EXPORT.value,
@@ -803,14 +805,55 @@ def _round_optional(value: float | None) -> float | None:
     return None if value is None else round(value, 6)
 
 
-def provider_usage_report_for_archive_root(
+def _resolve_subscription_tier_setting(archive_root: Path) -> str | None:
+    """Best-effort read of the ``subscription_tier`` user setting.
+
+    Returns ``None`` (letting downstream pricing fall back to the
+    conservative ``pro`` default) whenever ``user.db`` is missing, the table
+    isn't there yet, or the row is unset -- this is a read-only audit report,
+    never a place to raise on a durable-tier hiccup.
+    """
+
+    user_db = Path(archive_root) / "user.db"
+    if not user_db.exists():
+        return None
+    try:
+        from polylogue.storage.sqlite.archive_tiers.user_settings_write import (
+            SETTING_KEY_SUBSCRIPTION_TIER,
+            get_user_setting,
+        )
+
+        uri = user_db.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            envelope = get_user_setting(conn, SETTING_KEY_SUBSCRIPTION_TIER)
+        finally:
+            conn.close()
+        if envelope is None or not isinstance(envelope.value, str):
+            return None
+        return envelope.value
+    except sqlite3.Error:
+        logger.warning(
+            "subscription_tier user setting read failed (falling back to the pro default): user_db=%s",
+            user_db,
+            exc_info=True,
+        )
+        return None
+
+
+def origin_usage_report_for_archive_root(
     archive_root: Path,
     *,
     origin: str | None = None,
     limit: int | None = 25,
     detail: UsageReportDetail = "full",
 ) -> ProviderUsageReport:
-    """Read ``archive_root/index.db`` and return a provider usage audit report."""
+    """Read ``archive_root/index.db`` and return a provider usage audit report.
+
+    Prices subscription-equivalent lanes against the archive owner's stored
+    ``subscription_tier`` setting when one is recorded (polylogue-at44),
+    falling back to the conservative ``pro`` default otherwise.
+    """
 
     index_db = Path(archive_root) / "index.db"
     if not index_db.exists():
@@ -819,18 +862,24 @@ def provider_usage_report_for_archive_root(
             origins=(),
             caveats=(f"index.db not found at {index_db}",),
         )
+    subscription_tier = _resolve_subscription_tier_setting(Path(archive_root))
     uri = index_db.resolve().as_uri() + "?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        return provider_usage_report_from_connection(
-            conn, archive_root=archive_root, origin=origin, limit=limit, detail=detail
+        return origin_usage_report_from_connection(
+            conn,
+            archive_root=archive_root,
+            origin=origin,
+            limit=limit,
+            detail=detail,
+            subscription_tier=subscription_tier,
         )
     finally:
         conn.close()
 
 
-def provider_usage_report_from_connection(
+def origin_usage_report_from_connection(
     conn: sqlite3.Connection,
     *,
     archive_root: Path | str = "",
@@ -838,8 +887,17 @@ def provider_usage_report_from_connection(
     limit: int | None = 25,
     detail: UsageReportDetail = "full",
     observed_at: str | None = None,
+    subscription_tier: str | None = None,
 ) -> ProviderUsageReport:
-    """Return a provider usage report for an already-open index connection."""
+    """Return a provider usage report for an already-open index connection.
+
+    ``subscription_tier`` selects the plan priced into the subscription-
+    equivalent lanes below (polylogue-at44); ``None`` keeps the conservative
+    ``pro`` default. Callers holding the archive's ``user_settings`` value
+    (see :mod:`polylogue.storage.sqlite.archive_tiers.user_settings_write`)
+    should resolve and pass it -- this function itself only reads ``conn``
+    (the ``index.db`` connection) and does not cross tiers to look it up.
+    """
 
     conn.row_factory = sqlite3.Row
     report_observed_at = observed_at or datetime.now(UTC).isoformat()
@@ -867,9 +925,17 @@ def provider_usage_report_from_connection(
     logical_model_by_origin = _logical_model_rollup_stats(conn, origin) if model_table_present else {}
     model_counts_by_origin = _model_row_counts(conn, origin) if model_table_present else {}
     multi_model_by_origin = _multi_model_session_counts(conn, origin) if model_table_present else {}
-    pricing_lanes = _pricing_lane_reports(conn, origin, observed_at=report_observed_at) if model_table_present else ()
+    pricing_lanes = (
+        _pricing_lane_reports(conn, origin, observed_at=report_observed_at, subscription_tier=subscription_tier)
+        if model_table_present
+        else ()
+    )
     logical_pricing_lanes = (
-        _pricing_lane_reports(conn, origin, logical=True, observed_at=report_observed_at) if model_table_present else ()
+        _pricing_lane_reports(
+            conn, origin, logical=True, observed_at=report_observed_at, subscription_tier=subscription_tier
+        )
+        if model_table_present
+        else ()
     )
     raw_by_origin, raw_samples, raw_caveat = _source_raw_stats(
         conn, archive_root=Path(archive_root), origin=origin, limit=limit
@@ -1450,14 +1516,13 @@ def _quote_identifier(name: str) -> str:
 
 
 def _table_exists_in_schema(conn: sqlite3.Connection, schema: str, name: str) -> bool:
+    # Thin wrapper (not a duplicate): callers probe candidate schema aliases
+    # that may not be ATTACHed yet, so unlike `introspection.table_exists`
+    # this swallows sqlite3.Error (e.g. "no such database: <alias>") as False.
     try:
-        row = conn.execute(
-            f"SELECT 1 FROM {_quote_identifier(schema)}.sqlite_master WHERE type = 'table' AND name = ?",
-            (name,),
-        ).fetchone()
+        return _table_exists(conn, name, schema=_quote_identifier(schema))
     except sqlite3.Error:
         return False
-    return row is not None
 
 
 def _base_session_stats(conn: sqlite3.Connection, origin: str | None) -> dict[str, dict[str, int]]:
@@ -1619,6 +1684,7 @@ def _pricing_lane_reports(
     *,
     logical: bool = False,
     observed_at: str,
+    subscription_tier: str | None = None,
 ) -> tuple[PricingLaneReport, ...]:
     if logical:
         session_count_rows = conn.execute(
@@ -1769,7 +1835,7 @@ def _pricing_lane_reports(
                 usage.cache_write_tokens,
             )
             if credit_cost > 0:
-                bucket.subscription_credit_usd += credits_to_usd(credit_cost)
+                bucket.subscription_credit_usd += credits_to_usd(credit_cost, tier=subscription_tier or "pro")
 
     result: list[PricingLaneReport] = []
     for provenance, bucket in sorted(
@@ -2539,7 +2605,7 @@ def session_usage_reconciliation_for_connection(
 ) -> SessionUsageReconciliation:
     """Reconcile one session's usage/cost from indexed, session-scoped reads.
 
-    Unlike ``provider_usage_report_from_connection`` (an archive-wide audit
+    Unlike ``origin_usage_report_from_connection`` (an archive-wide audit
     that groups every session by origin), this reads exactly the rows for
     ``session_id``: ``session_model_usage`` via an indexed ``session_id IN
     (...)`` lookup and the ``session_profiles`` row by primary key. It is the
@@ -2602,7 +2668,7 @@ __all__ = [
     "UsageCounters",
     "build_session_usage_reconciliation",
     "provider_usage_coverage_matrix",
-    "provider_usage_report_for_archive_root",
-    "provider_usage_report_from_connection",
+    "origin_usage_report_for_archive_root",
+    "origin_usage_report_from_connection",
     "session_usage_reconciliation_for_connection",
 ]

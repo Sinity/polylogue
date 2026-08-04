@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
-from polylogue.archive.topology.edge import TopologyEdgeType, branch_type_to_edge_type
+from polylogue.archive.topology.edge import TopologyEdgeStatus, TopologyEdgeType, branch_type_to_edge_type
 from polylogue.archive.viewport.viewports import ToolCategory, classify_tool
 from polylogue.core.enums import BlockType, PasteBoundary, Provider, SessionKind
 from polylogue.core.identity_law import message_id as archive_message_id
@@ -1781,42 +1781,40 @@ def _build_message_rows(
     for fallback_position, message in enumerate(messages):
         position = position_offset + (message.position if message.position is not None else fallback_position)
         variant_index = message.variant_index if message.variant_index is not None else 0
-        # Build tuple in the order defined by spec.writable_columns, skipping
-        # columns with non-standard placeholders (like parent_message_id=NULL)
-        rows.append(
-            (
-                session_id,
-                _stored_message_native_id(message, duplicate_native_ids),
-                # parent_message_id: skipped (always NULL in VALUES)
-                position,
-                _enum_value(message.role),
-                _enum_value(message.message_type),
-                _enum_value(message.material_origin),
-                _sqlite_text(message.model_name),
-                _sqlite_text(message.model_effort),
-                _sqlite_text(message.sender_name),
-                _sqlite_text(message.recipient),
-                _sqlite_text(message.delivery_status),
-                None if message.end_turn is None else int(message.end_turn),
-                _sqlite_text(message.user_context_text),
-                _has_block(message, BlockType.TOOL_USE),
-                _has_block(message, BlockType.THINKING),
-                _has_paste(message),
-                _paste_boundary(message),
-                variant_index,
-                1 if message.is_active_path is not False else 0,
-                1 if message.is_active_leaf else 0,
-                _word_count(message.text),
-                message.input_tokens,
-                message.output_tokens,
-                message.cache_read_tokens,
-                message.cache_write_tokens,
-                message.duration_ms,
-                _message_content_hash(session_id, message, position=position, variant_index=variant_index),
-                message.occurred_at_ms if message.occurred_at_ms is not None else _timestamp_ms(message.timestamp),
-                _enum_value(message.stop_reason),
-            )
-        )
+        values: dict[str, object] = {
+            "session_id": session_id,
+            "native_id": _stored_message_native_id(message, duplicate_native_ids),
+            "position": position,
+            "role": _enum_value(message.role),
+            "message_type": _enum_value(message.message_type),
+            "material_origin": _enum_value(message.material_origin),
+            "model_name": _sqlite_text(message.model_name),
+            "model_effort": _sqlite_text(message.model_effort),
+            "sender_name": _sqlite_text(message.sender_name),
+            "recipient": _sqlite_text(message.recipient),
+            "delivery_status": _sqlite_text(message.delivery_status),
+            "end_turn": None if message.end_turn is None else int(message.end_turn),
+            "user_context_text": _sqlite_text(message.user_context_text),
+            "has_tool_use": _has_block(message, BlockType.TOOL_USE),
+            "has_thinking": _has_block(message, BlockType.THINKING),
+            "has_paste": _has_paste(message),
+            "paste_boundary": _paste_boundary(message),
+            "variant_index": variant_index,
+            "is_active_path": 1 if message.is_active_path is not False else 0,
+            "is_active_leaf": 1 if message.is_active_leaf else 0,
+            "word_count": _word_count(message.text),
+            "input_tokens": message.input_tokens,
+            "output_tokens": message.output_tokens,
+            "cache_read_tokens": message.cache_read_tokens,
+            "cache_write_tokens": message.cache_write_tokens,
+            "duration_ms": message.duration_ms,
+            "content_hash": _message_content_hash(session_id, message, position=position, variant_index=variant_index),
+            "occurred_at_ms": message.occurred_at_ms
+            if message.occurred_at_ms is not None
+            else _timestamp_ms(message.timestamp),
+            "stop_reason": _enum_value(message.stop_reason),
+        }
+        rows.append(archive_tiers_specs.MESSAGES_SPEC.extract_tuple(values))
     return rows
 
 
@@ -1986,38 +1984,36 @@ def _build_block_rows(
             exit_code = getattr(block, "exit_code", None)
             outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
             signature = getattr(block, "signature", None)
-            # Tuple built in order defined by spec.writable_columns
-            rows.append(
-                (
-                    message_id,
-                    session_id,
-                    position,
-                    block_type.value,
-                    _sqlite_text(block.text),
-                    _sqlite_text(block.tool_name),
-                    _sqlite_text(block.tool_id),
-                    tool_input_json,
-                    _sqlite_text(semantic_type),
-                    _sqlite_text(block.media_type),
-                    _sqlite_text(language),
-                    _sqlite_bool(is_error),
-                    exit_code,
-                    outcome_unknown_reason,
-                    _sqlite_text(signature),
-                    _block_content_hash(
-                        block_type=block_type.value,
-                        text=block.text,
-                        tool_name=block.tool_name,
-                        tool_input_json=tool_input_json,
-                        semantic_type=semantic_type,
-                        media_type=block.media_type,
-                        language=language,
-                        is_error=is_error,
-                        exit_code=exit_code,
-                        outcome_unknown_reason=outcome_unknown_reason,
-                    ),
-                )
-            )
+            values: dict[str, object] = {
+                "message_id": message_id,
+                "session_id": session_id,
+                "position": position,
+                "block_type": block_type.value,
+                "text": _sqlite_text(block.text),
+                "tool_name": _sqlite_text(block.tool_name),
+                "tool_id": _sqlite_text(block.tool_id),
+                "tool_input": tool_input_json,
+                "semantic_type": _sqlite_text(semantic_type),
+                "media_type": _sqlite_text(block.media_type),
+                "language": _sqlite_text(language),
+                "tool_result_is_error": _sqlite_bool(is_error),
+                "tool_result_exit_code": exit_code,
+                "tool_result_outcome_unknown_reason": outcome_unknown_reason,
+                "signature": _sqlite_text(signature),
+                "content_hash": _block_content_hash(
+                    block_type=block_type.value,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_input_json=tool_input_json,
+                    semantic_type=semantic_type,
+                    media_type=block.media_type,
+                    language=language,
+                    is_error=is_error,
+                    exit_code=exit_code,
+                    outcome_unknown_reason=outcome_unknown_reason,
+                ),
+            }
+            rows.append(archive_tiers_specs.BLOCKS_SPEC.extract_tuple(values))
     return rows
 
 
@@ -3608,6 +3604,97 @@ def _branch_type_from_link_type(link_type: object) -> str | None:
         return None
 
 
+# polylogue-4ts.10: cycle detection + quarantine, ported from the dead
+# async engine at storage/sqlite/queries/session_links.py (zero production
+# callers -- test-only) into the sole live writer of session_links rows.
+# Before this, both live resolution entry points (_resolve_outbound_session_links
+# below, and the inbound-parent loop in _resolve_session_graph) resolved
+# every matching edge unconditionally; a real cycle in the parent chain was
+# only ever caught by _refresh_session_projection's seen-set short-circuit
+# and _composed_db_signatures' visited-set truncation, which silently pick
+# an arbitrary root/branch point rather than persisting evidence of the
+# rejected edge -- session_links.status stayed NULL/empty on every row.
+_CYCLE_WALK_BUDGET = 1024
+
+
+def _would_create_cycle(
+    conn: sqlite3.Connection,
+    *,
+    child_id: str,
+    proposed_parent_id: str,
+) -> list[str] | None:
+    """Return the cycle path if resolving child->proposed_parent would close a loop.
+
+    Walks ``sessions.parent_session_id`` upward from ``proposed_parent_id``.
+    Returns ``None`` for a legitimate (acyclic, or not-yet-resolvable) shape.
+    """
+    if proposed_parent_id == child_id:
+        return [child_id, child_id]
+    path: list[str] = [child_id, proposed_parent_id]
+    current = proposed_parent_id
+    steps = 0
+    while True:
+        if steps >= _CYCLE_WALK_BUDGET:
+            path.append("...budget-exceeded")
+            return path
+        row = conn.execute(
+            "SELECT parent_session_id FROM sessions WHERE session_id = ?",
+            (current,),
+        ).fetchone()
+        if row is None:
+            return None
+        next_parent = row[0]
+        if next_parent is None:
+            return None
+        if next_parent == child_id:
+            path.append(child_id)
+            return path
+        path.append(next_parent)
+        current = next_parent
+        steps += 1
+
+
+def _quarantine_session_link(
+    conn: sqlite3.Connection,
+    *,
+    src_session_id: str,
+    dst_origin: str,
+    dst_native_id: str,
+    link_type: str,
+    cycle_path: list[str],
+    observed_at_ms: int,
+) -> None:
+    """Mark one edge quarantined instead of resolving it, with evidence."""
+    evidence = _json_dumps(
+        {
+            "reason": "cycle_rejected",
+            "cycle_path": cycle_path,
+            "detected_at_ms": observed_at_ms,
+        }
+    )
+    conn.execute(
+        """
+        UPDATE session_links
+           SET status = ?,
+               evidence_json = ?,
+               resolved_at_ms = ?
+         WHERE src_session_id = ?
+           AND dst_origin = ?
+           AND dst_native_id = ?
+           AND link_type = ?
+        """,
+        (
+            TopologyEdgeStatus.QUARANTINED.value,
+            evidence,
+            observed_at_ms,
+            src_session_id,
+            dst_origin,
+            dst_native_id,
+            link_type,
+        ),
+    )
+
+
 def _resolve_session_graph(
     conn: sqlite3.Connection,
     session_id: str,
@@ -3643,10 +3730,11 @@ def _resolve_session_graph(
     )
     inbound_rows = conn.execute(
         """
-        SELECT links.src_session_id
+        SELECT links.src_session_id, links.link_type
         FROM session_links links
         WHERE links.dst_native_id = ?
           AND links.resolved_dst_session_id IS NULL
+          AND links.status IS NULL
           AND links.dst_origin = ?
         """,
         (native_id, origin),
@@ -3659,7 +3747,24 @@ def _resolve_session_graph(
     record_substage("root_current_check", t0)
     composed_cache: dict[str, list[tuple[str, str]]] = {}
     t0 = time.perf_counter()
+    resolved_child_ids: list[str] = []
     for row in inbound_rows:
+        child_id, link_type = str(row[0]), str(row[1])
+        # polylogue-4ts.10: session_id is about to become child_id's parent --
+        # refuse (quarantine, with evidence) rather than silently resolve if
+        # that would close a cycle in sessions.parent_session_id.
+        cycle_path = _would_create_cycle(conn, child_id=child_id, proposed_parent_id=session_id)
+        if cycle_path is not None:
+            _quarantine_session_link(
+                conn,
+                src_session_id=child_id,
+                dst_origin=origin,
+                dst_native_id=native_id,
+                link_type=link_type,
+                cycle_path=cycle_path,
+                observed_at_ms=int(time.time() * 1000),
+            )
+            continue
         conn.execute(
             """
             UPDATE session_links
@@ -3667,17 +3772,20 @@ def _resolve_session_graph(
                 resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
             WHERE src_session_id = ?
               AND dst_native_id = ?
+              AND link_type = ?
               AND resolved_dst_session_id IS NULL
+              AND status IS NULL
             """,
-            (session_id, row[0], native_id),
+            (session_id, child_id, native_id, link_type),
         )
+        resolved_child_ids.append(child_id)
         # Deferred tail extraction (#2467): a child ingested before its parent was
         # stored whole (the inherited prefix could not be aligned yet). Now that
         # the parent exists, normalize the child the same way the parent-known
         # write path does — drop the inherited prefix rows and record the edge.
         _reextract_prefix_tail_db(
             conn,
-            str(row[0]),
+            child_id,
             session_id,
             cache=cache,
             composed_cache=composed_cache,
@@ -3687,7 +3795,7 @@ def _resolve_session_graph(
         )
     record_substage("reextract_prefix_tails", t0)
 
-    impacted_session_ids = {session_id, *(str(row[0]) for row in inbound_rows)}
+    impacted_session_ids = {session_id, *resolved_child_ids}
     t0 = time.perf_counter()
     _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
     record_substage("repair_stale_branch_points", t0)
@@ -3743,28 +3851,53 @@ def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
 
 
 def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, origin: str) -> None:
-    conn.execute(
+    """Resolve ``session_id``'s own unresolved outbound edges (it is the child).
+
+    polylogue-4ts.10: candidates are evaluated one at a time (rather than a
+    single blanket UPDATE) so each can be cycle-checked against
+    ``sessions.parent_session_id`` before being resolved -- a candidate whose
+    resolution would close a loop is quarantined instead, never resolved.
+    """
+    candidates = conn.execute(
         """
-        UPDATE session_links
-        SET resolved_dst_session_id = (
-                SELECT dst.session_id
-                FROM sessions dst
-                WHERE dst.native_id = session_links.dst_native_id
-                  AND dst.origin = session_links.dst_origin
-                LIMIT 1
-            ),
-            resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
-        WHERE src_session_id = ?
-          AND resolved_dst_session_id IS NULL
-          AND EXISTS (
-                SELECT 1
-                FROM sessions dst
-                WHERE dst.native_id = session_links.dst_native_id
-                  AND dst.origin = session_links.dst_origin
-          )
+        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type, dst.session_id
+        FROM session_links
+        JOIN sessions dst
+          ON dst.native_id = session_links.dst_native_id
+         AND dst.origin = session_links.dst_origin
+        WHERE session_links.src_session_id = ?
+          AND session_links.resolved_dst_session_id IS NULL
+          AND session_links.status IS NULL
         """,
         (session_id,),
-    )
+    ).fetchall()
+    for dst_origin, dst_native_id, link_type, proposed_parent_id in candidates:
+        cycle_path = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
+        if cycle_path is not None:
+            _quarantine_session_link(
+                conn,
+                src_session_id=session_id,
+                dst_origin=dst_origin,
+                dst_native_id=dst_native_id,
+                link_type=link_type,
+                cycle_path=cycle_path,
+                observed_at_ms=int(time.time() * 1000),
+            )
+            continue
+        conn.execute(
+            """
+            UPDATE session_links
+               SET resolved_dst_session_id = ?,
+                   resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
+             WHERE src_session_id = ?
+               AND dst_origin = ?
+               AND dst_native_id = ?
+               AND link_type = ?
+               AND resolved_dst_session_id IS NULL
+               AND status IS NULL
+            """,
+            (proposed_parent_id, session_id, dst_origin, dst_native_id, link_type),
+        )
 
 
 def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
@@ -4149,7 +4282,7 @@ def _write_session_events(
                 event,
                 provider_usage_baseline=provider_usage_baseline,
             )
-            if _provider_usage_event_row_has_evidence(row, event):
+            if _provider_usage_event_row_has_evidence(row):
                 provider_usage_rows.append(row)
                 wrote_provider_usage_events = True
         position += 1
@@ -4187,10 +4320,9 @@ _PROVIDER_USAGE_EVENT_INSERT_SQL = """
         last_input_tokens, last_output_tokens, last_cached_input_tokens,
         last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
         total_input_tokens, total_output_tokens, total_cached_input_tokens,
-        total_cache_write_tokens, total_reasoning_output_tokens, total_tokens, model_context_window,
-        estimated_cost_usd, actual_cost_usd, cost_status, cost_source, pricing_version,
-        billing_provider, billing_base_url, billing_mode, occurred_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        total_cache_write_tokens, total_reasoning_output_tokens, total_tokens,
+        occurred_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 """
 
 
@@ -4235,38 +4367,12 @@ def _provider_usage_event_row(
         total_cache_write,
         total_reasoning,
         total_tokens,
-        _payload_optional_int(event.payload, "model_context_window"),
-        _payload_optional_float(event.payload, "estimated_cost_usd"),
-        _payload_optional_float(event.payload, "actual_cost_usd"),
-        _sqlite_text(_payload_string(event.payload, "cost_status")),
-        _sqlite_text(_payload_string(event.payload, "cost_source")),
-        _sqlite_text(_payload_string(event.payload, "pricing_version")),
-        _sqlite_text(_payload_string(event.payload, "billing_provider")),
-        _sqlite_text(_payload_string(event.payload, "billing_base_url")),
-        _sqlite_text(_payload_string(event.payload, "billing_mode")),
         _timestamp_ms(event.timestamp),
     )
 
 
-_PROVIDER_USAGE_PROVENANCE_KEYS = (
-    "estimated_cost_usd",
-    "actual_cost_usd",
-    "cost_status",
-    "cost_source",
-    "pricing_version",
-    "billing_provider",
-    "billing_base_url",
-    "billing_mode",
-)
-
-
-def _provider_usage_event_row_has_evidence(
-    row: tuple[object, ...],
-    event: ParsedSessionEvent,
-) -> bool:
-    if any(isinstance(value, int) and value for value in row[5:17]):
-        return True
-    return any(event.payload.get(key) is not None for key in _PROVIDER_USAGE_PROVENANCE_KEYS)
+def _provider_usage_event_row_has_evidence(row: tuple[object, ...]) -> bool:
+    return any(isinstance(value, int) and value for value in row[5:17])
 
 
 def _provider_usage_cumulative_baseline(
@@ -4688,8 +4794,6 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
             cache_read_tokens = 0,
             cache_write_tokens = 0,
             cost_usd = NULL,
-            priced_with = NULL,
-            priced_at_ms = NULL,
             cost_provenance = NULL
         WHERE session_id = ?
           AND model_name != ?
@@ -4717,14 +4821,14 @@ def _price_provider_usage_tokens(
     output_tokens: int,
     cache_read_tokens: int,
     cache_write_tokens: int,
-) -> tuple[str | None, float | None, str | None, int | None]:
+) -> tuple[str | None, float | None]:
     """Catalog-price disjoint-lane token totals for a provider-usage rollup row.
 
-    Returns ``(cost_provenance, cost_usd, priced_with, priced_at_ms)``. Mirrors
+    Returns ``(cost_provenance, cost_usd)``. Mirrors
     ``_aggregate_message_tokens_into_model_usage``'s pricing (same catalog,
     same "no fabrication" contract): a catalog hit with billable tokens > 0
-    yields ``'priced'`` plus a real ``cost_usd``/``priced_with``; anything
-    else -- unknown model, no catalog entry, zero billable tokens -- yields
+    yields ``'priced'`` plus a real ``cost_usd``; anything else -- unknown
+    model, no catalog entry, zero billable tokens -- yields
     ``cost_provenance = None`` (no claim), never a 'priced'/'origin_reported'
     label with a NULL cost (polylogue-shnc: 5,016 rows previously asserted
     ``cost_provenance = 'priced'`` with NULL cost and NULL catalog).
@@ -4738,18 +4842,14 @@ def _price_provider_usage_tokens(
     had reported that dollar figure (``archive.py``'s
     ``provider_reported_usd=... if provenance in {"exact","origin_reported"}``).
     """
-    import time
-
     from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
-    from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
 
     normalized = _normalize_model(model_name)
     billable = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
     if normalized not in PRICING or billable <= 0:
-        return None, None, None, None
-    active_catalog_id = seed_price_catalog(conn)
+        return None, None
     cost_usd = estimate_cost(input_tokens, output_tokens, model_name, cache_read_tokens, cache_write_tokens)
-    return "priced", cost_usd, active_catalog_id, int(time.time() * 1000)
+    return "priced", cost_usd
 
 
 def _upsert_provider_usage_model_rollup(
@@ -4766,7 +4866,7 @@ def _upsert_provider_usage_model_rollup(
     output_tokens = max(int(output_tokens), 0)
     cache_read_tokens = max(int(cache_read_tokens), 0)
     cache_write_tokens = max(int(cache_write_tokens), 0)
-    cost_provenance, cost_usd, priced_with, priced_at_ms = _price_provider_usage_tokens(
+    cost_provenance, cost_usd = _price_provider_usage_tokens(
         conn,
         model_name,
         input_tokens=input_tokens,
@@ -4779,17 +4879,15 @@ def _upsert_provider_usage_model_rollup(
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_provenance, cost_usd, priced_with, priced_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cost_provenance, cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens       = excluded.input_tokens,
             output_tokens      = excluded.output_tokens,
             cache_read_tokens  = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
             cost_provenance    = excluded.cost_provenance,
-            cost_usd           = excluded.cost_usd,
-            priced_with        = excluded.priced_with,
-            priced_at_ms       = excluded.priced_at_ms
+            cost_usd           = excluded.cost_usd
         """,
         (
             session_id,
@@ -4800,8 +4898,6 @@ def _upsert_provider_usage_model_rollup(
             cache_write_tokens,
             cost_provenance,
             cost_usd,
-            priced_with,
-            priced_at_ms,
         ),
     )
 
@@ -4832,7 +4928,7 @@ def _increment_provider_usage_model_rollup(
     total_output = int((existing[1] if existing else 0) or 0) + output_tokens
     total_cache_read = int((existing[2] if existing else 0) or 0) + cache_read_tokens
     total_cache_write = int((existing[3] if existing else 0) or 0) + cache_write_tokens
-    cost_provenance, cost_usd, priced_with, priced_at_ms = _price_provider_usage_tokens(
+    cost_provenance, cost_usd = _price_provider_usage_tokens(
         conn,
         model_name,
         input_tokens=total_input,
@@ -4845,17 +4941,15 @@ def _increment_provider_usage_model_rollup(
         INSERT INTO session_model_usage (
             session_id, model_name,
             input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            cost_provenance, cost_usd, priced_with, priced_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            cost_provenance, cost_usd
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
             input_tokens       = excluded.input_tokens,
             output_tokens      = excluded.output_tokens,
             cache_read_tokens  = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
             cost_provenance    = excluded.cost_provenance,
-            cost_usd           = excluded.cost_usd,
-            priced_with        = excluded.priced_with,
-            priced_at_ms       = excluded.priced_at_ms
+            cost_usd           = excluded.cost_usd
         """,
         (
             session_id,
@@ -4866,8 +4960,6 @@ def _increment_provider_usage_model_rollup(
             total_cache_write,
             cost_provenance,
             cost_usd,
-            priced_with,
-            priced_at_ms,
         ),
     )
 
@@ -4943,9 +5035,9 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
     Models with no messages carrying token data keep DEFAULT 0 token counts.
     Models with no catalog price entry, or zero billable tokens, get
-    cost_provenance = NULL / cost_usd = NULL / priced_with = NULL together --
-    never 'priced' with a NULL cost (polylogue-shnc: that self-contradiction
-    was live on 5,016 rows).
+    cost_provenance = NULL / cost_usd = NULL together -- never 'priced' with
+    a NULL cost (polylogue-shnc: that self-contradiction was live on 5,016
+    rows).
 
     Empty or NULL model_name values in the messages table are excluded from
     aggregation (the model is unknown so pricing is impossible).
@@ -4961,8 +5053,6 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     rollups started sharing the 'priced' label with real message-derived
     pricing (see ``_price_provider_usage_tokens``).
     """
-    import time
-
     from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
 
     # Aggregate token counts from the messages table for all known models.
@@ -4986,13 +5076,6 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
     if not token_rows:
         return
 
-    # Seed or reuse the revision matching the current content hash before
-    # pricing, so an existing archive receives catalog corrections too.
-    from polylogue.storage.sqlite.archive_tiers.pricing_seed import seed_price_catalog
-
-    active_catalog_id = seed_price_catalog(conn)
-    priced_at_ms = int(time.time() * 1000)
-
     for row in token_rows:
         model_name: str = str(row[0])
         sum_input: int = int(row[1] or 0)
@@ -5002,26 +5085,21 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         msg_count: int = int(row[5] or 0)
 
         # Compute cost_usd from the curated catalog when a price entry exists.
-        # estimate_cost() reads the in-memory PRICING dict directly (there is
-        # no DB-backed rate mirror to keep in sync -- polylogue-v2mg dropped
-        # model_prices as a zero-consumer table); active_catalog_id above only
-        # identifies *which* catalog version priced this row.
+        # estimate_cost() reads the in-memory PRICING dict directly -- there
+        # is no DB-backed rate mirror to keep in sync (polylogue-v2mg dropped
+        # model_prices, and polylogue-resk dropped the price_catalogs
+        # catalog-identity table, as zero-consumer).
         normalized = _normalize_model(model_name)
         billable = sum_input + sum_output + sum_cache_read + sum_cache_write
         if normalized in PRICING and billable > 0:
             cost_usd: float | None = estimate_cost(sum_input, sum_output, model_name, sum_cache_read, sum_cache_write)
-            priced_with: str | None = active_catalog_id
-            row_priced_at: int | None = priced_at_ms
             row_provenance: str | None = "priced"
         else:
             # polylogue-shnc: no catalog price (or no billable tokens) means no
-            # claim at all -- NOT 'priced' with a NULL cost_usd/priced_with,
-            # which is the exact self-contradiction the forensic audit found on
-            # 5,016 live rows (cost_provenance='priced' with no cost and no
-            # catalog).
+            # claim at all -- NOT 'priced' with a NULL cost_usd, which is the
+            # exact self-contradiction the forensic audit found on 5,016 live
+            # rows.
             cost_usd = None
-            priced_with = None
-            row_priced_at = None
             row_provenance = None
 
         # UPSERT: the skeleton row was created by _seed_session_model_usage_rows above.
@@ -5035,17 +5113,15 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 session_id, model_name,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
                 message_count,
-                priced_with, priced_at_ms, cost_usd,
+                cost_usd,
                 cost_provenance
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, model_name) DO UPDATE SET
                 input_tokens       = excluded.input_tokens,
                 output_tokens      = excluded.output_tokens,
                 cache_read_tokens  = excluded.cache_read_tokens,
                 cache_write_tokens = excluded.cache_write_tokens,
                 message_count      = excluded.message_count,
-                priced_with        = excluded.priced_with,
-                priced_at_ms       = excluded.priced_at_ms,
                 cost_usd           = excluded.cost_usd,
                 cost_provenance    = excluded.cost_provenance
             WHERE (
@@ -5063,8 +5139,6 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
                 sum_cache_read,
                 sum_cache_write,
                 msg_count,
-                priced_with,
-                row_priced_at,
                 cost_usd,
                 row_provenance,
             ),
@@ -6161,14 +6235,6 @@ def _reextract_provider_usage_tail_db(
           AND total_cache_write_tokens = 0
           AND total_reasoning_output_tokens = 0
           AND total_tokens = 0
-          AND estimated_cost_usd IS NULL
-          AND actual_cost_usd IS NULL
-          AND cost_status IS NULL
-          AND cost_source IS NULL
-          AND pricing_version IS NULL
-          AND billing_provider IS NULL
-          AND billing_base_url IS NULL
-          AND billing_mode IS NULL
         """,
         (child_session_id,),
     )

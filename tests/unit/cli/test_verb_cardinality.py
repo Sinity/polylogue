@@ -130,7 +130,6 @@ class TestReadVerbCardinality:
             since_hours=2,
             confidence_threshold=0.3,
             github_api=False,
-            otlp=False,
             related_limit=5,
             project_path=None,
             project_repo=None,

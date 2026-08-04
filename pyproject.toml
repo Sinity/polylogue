@@ -45,9 +45,8 @@ dependencies = [
   "typing-extensions>=4.16.0",  # TypedDict that pydantic accepts on Py<3.12
   "watchfiles>=1.2.0",  # Rust-backed filesystem watcher for live ingestion
   "nh3>=0.3.6",  # Rust-backed HTML sanitizer (ammonia bindings) for defense-in-depth
-  "opentelemetry-proto>=1.44.0",  # OTLP protobuf stubs for /v1/traces|metrics|logs receiver (#1321)
   # Transitive constraints to avoid known CVEs surfaced by pip-audit:
-  "cryptography>=48.0.1",  # GHSA-537c-gmf6-5ccf / CVE-2026-39892 (transitive via google-auth)
+  "cryptography>=50.0.0",  # GHSA-537c-gmf6-5ccf / CVE-2026-39892 (transitive via google-auth)
   "python-multipart>=0.0.32",  # CVE-2026-40347 (transitive via mcp)
 ]
 
@@ -75,18 +74,18 @@ dev-common = [
   "pytest-json-report>=1.5.0",  # Structured JSON report for verify pipeline + dashboard (#1026, #998)
   "pytest-benchmark>=5.0",  # Microbenchmark suite (run with --benchmark-enable -p no:xdist)
   "coverage[toml]>=7.15.2",
-  "hypothesis>=6.161.7",
+  "hypothesis>=6.164.0",
   "hypothesis-jsonschema>=0.23.0",  # Generate test data from JSON schemas
   "genson>=1.4.0",  # Infer JSON schemas from samples
   "jsonschema>=4.0.0",  # Validate JSON against schemas
   "syrupy>=5.5.3",  # Snapshot testing — pytest plugin, .ambr files
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
   "pytest-timeout>=2.4.0",  # Per-test hang guard; fail fast with a stack instead of burning the CI job ceiling
-  "mutmut>=3.6.0",  # Mutation testing for coverage verification
+  "mutmut>=3.7.0",  # Mutation testing for coverage verification
   "mypy>=2.3.0,<2.4",
   "types-dateparser>=1.4.1.20260617",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
-  "ruff>=0.16.0",
+  "ruff>=0.16.1",
   "pre-commit>=4.6.1",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
@@ -95,7 +94,7 @@ dev = [
 ]
 fuzz = [
   "atheris>=3.1.0",  # Google's Python fuzzer
-  "mutmut>=3.6.0",  # Mutation testing
+  "mutmut>=3.7.0",  # Mutation testing
 ]
 sqlite-compat = [
   # Self-contained modern SQLite (FTS5 contentless_delete needs 3.43+) for

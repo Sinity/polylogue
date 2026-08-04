@@ -8,6 +8,11 @@ from functools import lru_cache
 from typing import Literal
 
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
+from polylogue.operations.mutation_transaction import (
+    IdempotencyPolicy,
+    Surface,
+    TargetAuthorityPolicy,
+)
 
 Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
 """Declared runtime effect of an operation.
@@ -70,6 +75,15 @@ class OperationSpec:
     safety_guards: tuple[SafetyGuard, ...] = ()
     executor_status: ExecutorStatus | None = None
     """t46.9 AC1: required (non-``None``) whenever ``mutates_state`` is ``True``."""
+    operation_version: int = 1
+    capability_family: Literal["write", "judge", "maintenance"] = "write"
+    allowed_surfaces: tuple[Surface, ...] = ()
+    target_authority: tuple[TargetAuthorityPolicy, ...] = ()
+    affected_tiers: tuple[str, ...] = ()
+    idempotency: IdempotencyPolicy = "none"
+    resumable: bool = False
+    receipt_schema: str = "polylogue.mutation-receipt/v1"
+    reconstructible: bool = False
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -88,6 +102,26 @@ class OperationSpec:
                 "effects": list(self.effects),
                 "safety_guards": list(self.safety_guards),
                 "executor_status": self.executor_status,
+                "operation_version": self.operation_version,
+                "capability_family": self.capability_family,
+                "allowed_surfaces": list(self.allowed_surfaces),
+                "target_authority": [
+                    {
+                        "key": policy.key,
+                        "target_kinds": list(policy.target_kinds),
+                        "required_capabilities": list(policy.required_capabilities),
+                        "destructive_class": policy.destructive_class,
+                        "required_confirmation": policy.required_confirmation,
+                        "allowed_durabilities": list(policy.allowed_durabilities),
+                        "allowed_recovery": list(policy.allowed_recovery),
+                    }
+                    for policy in self.target_authority
+                ],
+                "affected_tiers": list(self.affected_tiers),
+                "idempotency": self.idempotency,
+                "resumable": self.resumable,
+                "receipt_schema": self.receipt_schema,
+                "reconstructible": self.reconstructible,
             }
         )
 
@@ -767,6 +801,121 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         mutates_state=True,
         idempotent=False,
         effects=("DbWrite",),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-capture-assertion-candidate",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Capture one terminal assertion as a private, non-injected candidate. Resolution, idempotency, "
+            "TTL, and the user-tier write are executed through OperationExecutor/"
+            "CaptureAssertionCandidateActuator with role_only confirmation."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("assertion-candidate-capture-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.capture_assertion_candidate",
+            "polylogue.cli.commands.note.capture_note_command",
+            "polylogue.mcp.server_cutover._dispatch_write (operation=capture_assertion_candidate)",
+            "polylogue.operations.mutation_actuators.CaptureAssertionCandidateActuator",
+        ),
+        surfaces=("facade", "cli", "mcp"),
+        mutates_state=True,
+        idempotent=False,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-import-annotation-batch",
+        kind=OperationKind.IMPORT,
+        description=(
+            "Import a bounded JSONL annotation batch with durable schema, provenance, validation outcomes, and "
+            "candidate assertions. Live reference validation stays in the import operation; its atomic user-tier "
+            "write is routed through OperationExecutor/AnnotationBatchImportActuator with role_only confirmation."
+        ),
+        consumes=("sessions", "assertions"),
+        produces=("assertions",),
+        path_targets=("annotation-mutation-loop",),
+        code_refs=(
+            "polylogue.annotations.importer.import_annotation_batch",
+            "polylogue.annotations.importer.AnnotationBatchImportActuator",
+        ),
+        surfaces=("facade", "cli", "mcp"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbWrite",),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-rebuild-index",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Rebuild the derived block-FTS index from persisted blocks. The operation is idempotent and "
+            "routes its real ArchiveStore primitive through OperationExecutor/IndexRebuildActuator."
+        ),
+        consumes=("message_source_rows",),
+        produces=("message_fts",),
+        path_targets=("message-fts-readiness-loop",),
+        code_refs=(
+            "polylogue.api.ingest.PolylogueIngestMixin.rebuild_index",
+            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_index)",
+            "polylogue.operations.mutation_actuators.IndexRebuildActuator",
+        ),
+        surfaces=("facade", "mcp"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-update-index",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Reconcile the derived block-FTS index for the facade update route. The current storage "
+            "primitive rebuilds the complete index, and OperationExecutor binds the caller scope before it runs."
+        ),
+        consumes=("message_source_rows",),
+        produces=("message_fts",),
+        path_targets=("message-fts-readiness-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.update_index",
+            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=update_index)",
+            "polylogue.operations.mutation_actuators.IndexRebuildActuator",
+        ),
+        surfaces=("facade", "mcp"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-rebuild-insights",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Rebuild durable session-insight read models for the requested session set. The canonical "
+            "materializer runs through OperationExecutor/InsightsRebuildActuator with a typed receipt."
+        ),
+        consumes=("session_insight_source_sessions",),
+        produces=("session_insight_rows", "session_insight_fts"),
+        path_targets=("session-insight-repair-loop",),
+        code_refs=(
+            "polylogue.api.archive.PolylogueArchiveMixin.rebuild_insights",
+            "polylogue.mcp.server_cutover._dispatch_maintenance (operation=rebuild_insights)",
+            "polylogue.operations.mutation_actuators.InsightsRebuildActuator",
+        ),
+        surfaces=("facade", "mcp"),
+        mutates_state=True,
+        previewable=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
     ),

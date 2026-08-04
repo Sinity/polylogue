@@ -27,6 +27,8 @@ from polylogue.readiness.claim_guard import derive_claim_guard
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.archive_readiness import archive_readiness_status as _archive_readiness_status
 from polylogue.storage.archive_readiness import raw_materialization_ready as _raw_materialization_ready_bool
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 logger = get_logger(__name__)
@@ -202,10 +204,6 @@ def _schema_object_exists(conn: Any, name: str, *, types: Sequence[str]) -> bool
     return row is not None
 
 
-def _table_exists(conn: Any, table_name: str) -> bool:
-    return _schema_object_exists(conn, table_name, types=("table",))
-
-
 def _view_exists(conn: Any, view_name: str) -> bool:
     return _schema_object_exists(conn, view_name, types=("view",))
 
@@ -293,8 +291,6 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "daemon_stage_events",
         "daemon_events",
         "embedding_catchup_runs",
-        "otlp_spans",
-        "otlp_telemetry",
     ),
 }
 
@@ -420,7 +416,7 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
     "postmortem_bundle": ("archive_routed", "index", "compiles postmortem bundles from archive-routed session reads"),
     "pathology_report": ("archive_routed", "index", "compiles pathology reports from archive-routed projections"),
     "portfolio_bundle": ("archive_routed", "index", "builds portfolio bundles from archive-routed session reads"),
-    "provider_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
+    "origin_usage_report": ("archive_routed", "index", "delegates to the provider usage report archive helper"),
     "parse_sources": ("archive_routed", "source", "writes source.db and index.db directly"),
     "query_units": ("archive_routed", "index", "queries terminal archive units from index.db"),
     "query_completions": ("archive_routed", "index", "returns query DSL completions from index.db metadata"),
@@ -532,6 +528,11 @@ _ARCHIVE_FACADE_ROUTES: dict[str, tuple[str, str, str]] = {
         "archive_routed",
         "source",
         "reconciles Hermes lifecycle events against the durable source.db spool",
+    ),
+    "reconcile_codex_spawn_edges": (
+        "archive_routed",
+        "index",
+        "reconciles acquired codex_thread_spawn_edge hook events against session_links SUBAGENT rows",
     ),
 }
 
@@ -889,10 +890,6 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
             source_conn.close()
     except sqlite3.Error:
         return 0
-
-
-def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
-    return any(str(row[1]) == column_name for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall())
 
 
 # Live ingest workload is read directly from ops.db so it is visible even when

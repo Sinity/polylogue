@@ -22,7 +22,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import cast
 
-from devtools.archive_schema_fast_forward import reflink_clone
+from devtools.clone_support import reflink_clone
 from polylogue.config import Config
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot

@@ -15,8 +15,10 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
     append_source_revision,
 )
+from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
+from polylogue.sources.live.archive_open import _open_archive_for_live_write
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -81,7 +83,6 @@ def _ingest_append_plans_archive(
         _is_declared_non_session_artifact,
         parse_retained_raw_sessions,
     )
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     _add_timing(timings, "append.imports", t0)
 
@@ -93,7 +94,7 @@ def _ingest_append_plans_archive(
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     try:
         t0 = time.perf_counter()
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        with _open_archive_for_live_write(archive_root) as archive:
             _add_timing(timings, "append.archive_open", t0)
             for plan in plans:
                 provider: Provider | None = None
@@ -116,6 +117,22 @@ def _ingest_append_plans_archive(
                         native_id=plan.native_id_hint,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
+                    degraded = degraded_reason()
+                    if degraded is not None and degraded.derived_only:
+                        # polylogue-gbs02: the derived tier (index.db/
+                        # embeddings.db) is behind the running code, but
+                        # source.db just durably got this append range --
+                        # stop here, before parsing or touching the stale
+                        # derived tier. Treat as succeeded (not deferred):
+                        # the acquire itself genuinely completed, so the
+                        # cursor should advance normally rather than
+                        # re-reading the same bytes on every tick. The raw
+                        # row sits with parsed_at_ms=NULL exactly like any
+                        # other not-yet-materialized raw, and ordinary
+                        # convergence picks it up once the derived tier is
+                        # current again -- no special resolution needed.
+                        succeeded.append(plan)
+                        continue
                     t0 = time.perf_counter()
                     payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
                     _add_timing(timings, "append.json_stream", t0)
@@ -233,7 +250,7 @@ def _ingest_append_plans_archive(
                     # whose accepted metadata has not yet been established.
                     replay_plan = archive.raw_revision_replay_plan(logical_source_key)
                     if raw_id not in replay_plan.accepted_raw_ids:
-                        replay_plan = archive.classify_raw_revision_cohort(logical_source_key)
+                        replay_plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                     if raw_id not in replay_plan.accepted_raw_ids:
                         # A non-empty plan can still represent an older
                         # accepted chain while a newly observed full snapshot

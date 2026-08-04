@@ -35,7 +35,6 @@ Every `docs/plans/*.yaml` manifest is enforced by a lint in `devtools verify`.
 | Manifest | Lint | What it prevents |
 |----------|------|-----------------|
 | `layering.yaml` | `verify layering` | Surface-to-substrate coupling |
-| `topology-target.yaml` | `verify topology` | Orphaned/unclassified modules |
 | `campaign-coverage.yaml` | `verify manifests` | Missing campaign declarations |
 | `coverage-manifest.yaml` | `verify manifests` | Stale gap/coverage declarations |
 

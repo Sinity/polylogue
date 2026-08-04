@@ -27,6 +27,7 @@ from typing import Any, BinaryIO, Literal, TypedDict, cast
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
+from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
 from polylogue.archive.query.predicate import (
@@ -144,6 +145,7 @@ from polylogue.storage.insights.session.runtime import (
     SessionInsightStatusSnapshot,
 )
 from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
@@ -153,12 +155,14 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionResult
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     FullSnapshotFoldAuthorization,
 )
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     ActiveByteRevisionChainError,
     ArchiveRawParsedWriteResult,
+    MembershipReplayConflictError,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
     _index_parsed_for_retained_raw,
@@ -171,11 +175,14 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _raw_revision_payload_digest_and_size,
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
+    admit_raw_and_parsed_result,
+    admit_raw_artifact_payload,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
     bind_raw_revision,
     blob_path_for_hash,
-    classify_raw_revision_cohort,
+    classify_raw_revision_cohort_for_live_watch,
+    classify_raw_revision_cohort_for_rebuild_repair,
     classify_untyped_full_revision_groups,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
@@ -310,7 +317,6 @@ from polylogue.storage.sqlite.run_projection_relations import (
     run_relation_sql,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-from polylogue.storage.table_existence import table_exists as _table_exists
 
 
 @dataclass(slots=True)
@@ -1598,6 +1604,27 @@ def _session_filter_is_active(session_filters: Mapping[str, object] | None) -> b
     return False
 
 
+class _SourceTierOnlyIndexConnection:
+    """Loud placeholder for the index connection in source-tier acquisition mode.
+
+    Acquire-only ingestion (polylogue-gbs02) deliberately never opens
+    ``index.db`` — a derived tier awaiting rebuild may be at an older schema
+    version, and the safest way to guarantee no index write can occur is to
+    hold no index handle at all. Any code path that reaches for the index
+    connection in this mode is a bug; it must fail immediately and loudly
+    instead of writing through a stale-schema handle.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        if name == "close":
+            return lambda: None
+        raise RuntimeError(
+            "index tier is unavailable in source-tier acquisition mode "
+            f"(attempted connection attribute {name!r}); only raw source-tier "
+            "admission is permitted while derived tiers await rebuild"
+        )
+
+
 class ArchiveStore:
     """Minimal archive-root façade for archive source/index/user tiers."""
 
@@ -1609,7 +1636,11 @@ class ArchiveStore:
         read_only: bool = False,
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
+        source_tier_acquisition: bool = False,
     ) -> None:
+        if source_tier_acquisition and read_only:
+            raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
+        self._source_tier_acquisition = source_tier_acquisition
         self._active_writer_lease = None
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
@@ -1644,7 +1675,7 @@ class ArchiveStore:
         try:
             self._initialize_store(
                 archive_root,
-                initialize=initialize,
+                initialize=initialize and not source_tier_acquisition,
                 read_only=read_only,
                 read_timeout=read_timeout,
                 # polylogue-623q: only ever True for a write connection against
@@ -1680,6 +1711,38 @@ class ArchiveStore:
         self.user_db_path = archive_root / "user.db"
         self.ops_db_path = archive_root / "ops.db"
         self._read_only = read_only
+        # Attribute type declarations shared by every open mode (the
+        # source-tier acquisition branch below returns early, so inference
+        # from a single assignment site would otherwise mistype these).
+        self._source_conn: sqlite3.Connection | None = None
+        self._blob_publisher: ArchiveBlobPublisher | None = None
+        self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
+        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
+        if getattr(self, "_source_tier_acquisition", False):
+            # polylogue-gbs02: acquire-only mode validates the DURABLE tiers it
+            # will write and never touches derived tiers. A stale or missing
+            # durable tier is a hard refusal (writing through it would corrupt
+            # irreplaceable evidence); a stale index/embeddings tier is exactly
+            # the situation this mode exists for and is not checked here.
+            for tier in (ArchiveTier.SOURCE, ArchiveTier.USER):
+                spec = archive_tier_spec(tier)
+                path = archive_root / spec.filename
+                if not path.exists():
+                    raise RuntimeError(f"source-tier acquisition refused: durable tier {spec.filename} is missing")
+                with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=read_timeout)) as vconn:
+                    current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
+                if current != spec.version:
+                    raise RuntimeError(
+                        f"source-tier acquisition refused: durable tier {spec.filename} "
+                        f"user_version {current} != expected {spec.version}"
+                    )
+            from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+            self._conn = cast(sqlite3.Connection, _SourceTierOnlyIndexConnection())
+            self._user_tier_attached = False
+            self._tags_relation = "session_tags"
+            self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
+            return
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
@@ -1712,14 +1775,10 @@ class ArchiveStore:
             ensure_runtime_indexes_sync(self._conn)
         self._user_tier_attached = False
         self._tags_relation = "session_tags"
-        self._source_conn: sqlite3.Connection | None = None
-        self._blob_publisher = None
         if not read_only:
             from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
             self._blob_publisher = ArchiveBlobPublisher(self.source_db_path, self.archive_root / "blob")
-        self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
-        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
         self._attach_user_tier_if_present()
 
     @classmethod
@@ -1732,6 +1791,19 @@ class ArchiveStore:
         """
         initialize = not read_only
         return cls(archive_root, initialize=initialize, read_only=read_only, read_timeout=read_timeout)
+
+    @classmethod
+    def open_source_tier_acquisition(cls, archive_root: Path) -> ArchiveStore:
+        """Open a writer restricted to raw source-tier admission (polylogue-gbs02).
+
+        Used by acquire-only degraded mode: durable tiers (source/user) must be
+        current; derived tiers (index/embeddings) are never opened, so their
+        schema state is irrelevant and cannot be corrupted. Only raw admission
+        surfaces (``write_raw_payload``/``write_raw_blob_ref``/
+        ``write_hook_event``) are usable; anything touching the index
+        connection raises immediately.
+        """
+        return cls(archive_root, initialize=False, read_only=False, source_tier_acquisition=True)
 
     @classmethod
     def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
@@ -2108,6 +2180,32 @@ class ArchiveStore:
             revision=revision,
         )
 
+    def admit_raw_artifact_payload(
+        self,
+        *,
+        provider: Provider,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        classification: ArtifactClassification,
+        source_index: int = 0,
+        blob_publication_receipt_id: str | None = None,
+    ) -> RawAdmissionResult:
+        """Route a non-conversational artifact payload through the raw-admission chokepoint.
+
+        See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_artifact_payload`.
+        """
+        return admit_raw_artifact_payload(
+            self,
+            provider=provider,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            classification=classification,
+            source_index=source_index,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
+
     def write_parsed_for_retained_raw(
         self,
         session: ParsedSession,
@@ -2187,17 +2285,27 @@ class ArchiveStore:
     def _raw_revision_source_path_has_divergent_evidence(self, logical_source_key: str) -> bool:
         return _raw_revision_source_path_has_divergent_evidence(self, logical_source_key)
 
-    def classify_raw_revision_cohort(
+    def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
         *,
-        check_source_path_identity_split: bool = False,
         manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
-        return classify_raw_revision_cohort(
+        return classify_raw_revision_cohort_for_rebuild_repair(
             self,
             logical_source_key,
-            check_source_path_identity_split=check_source_path_identity_split,
+            manage_transaction=manage_transaction,
+        )
+
+    def classify_raw_revision_cohort_for_live_watch(
+        self,
+        logical_source_key: str,
+        *,
+        manage_transaction: bool = True,
+    ) -> RevisionReplayPlan:
+        return classify_raw_revision_cohort_for_live_watch(
+            self,
+            logical_source_key,
             manage_transaction=manage_transaction,
         )
 
@@ -2480,6 +2588,43 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             source_index=source_index,
             raw_id=raw_id,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=manage_transaction,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            finalize_raw_parse=finalize_raw_parse,
+        )
+
+    def admit_raw_and_parsed_result(
+        self,
+        session: ParsedSession,
+        *,
+        payload: bytes,
+        source_path: str,
+        acquired_at_ms: int,
+        logical_source_key: str,
+        source_index: int = 0,
+        stage_timings_s: dict[str, float] | None = None,
+        stage_timing_prefix: str = "append",
+        manage_transaction: bool = True,
+        blob_publication_receipt_id: str | None = None,
+        finalize_raw_parse: bool = True,
+    ) -> ArchiveRawParsedWriteResult:
+        """Write raw bytes through the raw-admission chokepoint, then index.
+
+        See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_and_parsed_result`.
+        Restricted to first-observation callers (no prior head exists for
+        ``logical_source_key``); use :meth:`write_raw_and_parsed_result` for
+        callers with revision-chain/dedup semantics of their own.
+        """
+        return admit_raw_and_parsed_result(
+            self,
+            session,
+            payload=payload,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            logical_source_key=logical_source_key,
+            source_index=source_index,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,
@@ -11590,4 +11735,5 @@ __all__ = [
     "ArchiveStore",
     "ArchiveSessionSearchHit",
     "ArchiveSessionSummary",
+    "MembershipReplayConflictError",
 ]

@@ -289,14 +289,6 @@ entries:
   occurrence: 0
   reason: Captures refresh_error = str(exc) and passes it into _minimal_status_payload(refresh_error=...)
     -- a typed signal.
-- path: polylogue/daemon/write_coordinator.py
-  function: <module>._run_in_daemon_thread.worker
-  exceptions:
-  - BaseException
-  occurrence: 0
-  reason: Propagates the exception itself via loop.call_soon_threadsafe(publish, None, exc) to the awaiting
-    asyncio Future, which re-raises it to the caller -- the exception is not discarded, just marshalled
-    across the thread boundary.
 - path: polylogue/insights/audit.py
   function: <module>.build_insight_rigor_audit_report
   exceptions:
@@ -304,14 +296,6 @@ entries:
   occurrence: 0
   reason: 'Captures error = f"{type(exc).__name__}: {exc}" and merges it into the returned entry via model_copy(update={"error":
     error}) -- a typed signal.'
-- path: polylogue/insights/correlation_view.py
-  function: <module>._print_otlp_evidence
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: Prints a visible CLI message to the operator (console.print("No OTLP data available")) rather
-    than silently returning -- not a silent failure, though the wording could better distinguish absence
-    from failure (tracked as a wording follow-up, not a silent-failure instance).
 - path: polylogue/storage/archive_readiness.py
   function: <module>.missing_source_raw_session_evidence
   exceptions:
@@ -468,18 +452,6 @@ entries:
     "retain", the same fail-safe direction as every other predicate in this function. The
     caller (repair_empty_sessions) already surfaces any real repair-level failure through its
     own typed _repair_result.'
-- path: polylogue/storage/repair.py
-  function: <module>.repair_orphaned_attachments
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
-- path: polylogue/storage/repair.py
-  function: <module>.repair_orphaned_messages
-  exceptions:
-  - Exception
-  occurrence: 0
-  reason: 'See repair_empty_sessions: same _repair_result(success=False, detail=f"...: {exc}") pattern.'
 - path: polylogue/storage/repair.py
   function: <module>.repair_session_insights
   exceptions:

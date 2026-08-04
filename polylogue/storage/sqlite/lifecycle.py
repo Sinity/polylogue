@@ -725,6 +725,115 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=58,
+        # polylogue-omsw: `archive.artifact_taxonomy.classify_artifact`/
+        # `classify_artifact_path` changed classification decisions for
+        # identical input bytes -- see INDEX_SCHEMA_VERSION's v58 comment
+        # (archive_tiers/index.py) for the full writeup and measured
+        # live-impact counts. Same v42/v44/v45/v46/v48 "SEMANTIC_REPARSE,
+        # no clone-safe SQL delta" shape: no DDL change on any table, so
+        # there is nothing here for a fast-forward to do. Resolving already-
+        # materialized wrong-classification rows requires `polylogue ops
+        # reset --index && polylogued run` -- deliberately NOT executed by
+        # this declaration.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=59,
+        # polylogue-4987i: Claude Code session_events ordering is now
+        # deterministic and chunk-count-invariant -- see INDEX_SCHEMA_VERSION's
+        # v59 comment (archive_tiers/index.py) for the full writeup, root
+        # cause, and live spot-check evidence. No DDL change on any table
+        # (content_hash values shift for a subset of already-materialized
+        # rows, not the schema), so there is nothing here for a fast-forward
+        # to do. Resolving already-materialized sessions with the old order
+        # requires `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=60,
+        # polylogue-taj0o Stage 2: Claude Code eager and streaming parsing
+        # are unified into one incremental multi-way merge -- see
+        # INDEX_SCHEMA_VERSION's v60 comment (archive_tiers/index.py) for
+        # the full writeup, root cause (the eager/streaming primary-group
+        # definition conflict), and scope. No DDL change on any table, so
+        # there is nothing here for a fast-forward to do. Resolving
+        # already-materialized sessions affected by the identity-definition
+        # change requires `polylogue ops reset --index && polylogued run`.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=61,
+        # polylogue-resk: session_model_usage.priced_with/priced_at_ms are
+        # dropped (write-only outside tests -- see INDEX_SCHEMA_VERSION's v61
+        # comment, archive_tiers/index.py, for the measured evidence) and the
+        # CHECK that referenced priced_with is narrowed to just cost_usd. A
+        # dead-column removal like v33/v36/v38/v41/v44: existing rows
+        # copy-forward on every surviving column via the fast-forward
+        # executor's REPLACE_TABLE path, no raw reparse. price_catalogs
+        # (the FK target) is dropped separately via the index-tier
+        # same-version benign-DDL registry (index_convergence.py) since a
+        # whole-table drop is already idempotent without a version bump.
+        classes=(DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            FastForwardOperation(
+                name="v61-drop-session-model-usage-pricing-columns",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "session_model_usage"),),
+            ),
+        ),
+    ),
+    IndexDeltaDeclaration(
+        version=62,
+        # polylogue-664l: batches two column-level dead-weight removals from
+        # the 2026-07-31 producer/consumer audit -- see INDEX_SCHEMA_VERSION's
+        # v62 comment (archive_tiers/index.py) for the full writeup and
+        # re-audit evidence for all four originally-named findings.
+        #  - session_provider_usage_events drops 9 write-only columns
+        #    (model_context_window + 8 Hermes billing-provenance columns).
+        #    No reader ever selected them; the remaining columns (the
+        #    last_*/total_* token counters every production reader actually
+        #    uses) are unaffected -- CACHE_REMOVAL, the v41 `action_pairs`
+        #    text-copy-removal precedent.
+        #  - attachment_native_ids.id_kind's CHECK drops the 'source' member,
+        #    which has zero producers anywhere in the repo, so zero live rows
+        #    can exist with that value on any real archive -- CONSTRAINT_ONLY,
+        #    the v33/v36/v51/v52 "tightening over unchanged values" precedent.
+        # Both REPLACE_TABLE operations below use the generic shared-column
+        # copy-forward (`_apply_replace_table`): it naturally drops columns
+        # the canonical DDL no longer declares while preserving every
+        # remaining column's values byte-for-byte, so this whole version is
+        # eligible for fast-forward with no reprocess debt.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL, DerivedDeltaClass.CONSTRAINT_ONLY),
+        operations=(
+            FastForwardOperation(
+                name="v62-provider-usage-events-billing-columns",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "session_provider_usage_events"),),
+            ),
+            # _apply_replace_table's DROP TABLE step also drops every index
+            # defined on the table; re-declare them explicitly instead of
+            # relying on runtime_indexes.py's narrower ensure-on-connect list
+            # (which only covers the source_message/time_model pair, not the
+            # base session_id/position index).
+            FastForwardOperation(
+                name="v62-provider-usage-events-billing-columns",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_session_provider_usage_events_session"),),
+            ),
+            FastForwardOperation(
+                name="v62-attachment-native-ids-source-kind",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "attachment_native_ids"),),
+            ),
+            FastForwardOperation(
+                name="v62-attachment-native-ids-source-kind",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_attachment_native_ids_native"),),
+            ),
+        ),
+    ),
 )
 
 
@@ -732,12 +841,11 @@ def resolve_canonical_index_objects(objects: tuple[tuple[str, str], ...]) -> dic
     """Resolve the exact canonical ``CREATE`` statement for each declared object.
 
     Built from a scratch in-memory connection executing the current
-    ``INDEX_DDL`` so the resolved text is always the live canonical shape --
-    the same source of truth ``devtools/index_fast_forward.py``'s offline
-    clone actuator uses (``_canonical_schema``). Lives here (not in the
-    executor module under ``storage/sqlite/archive_tiers/``) so it stays a
-    read-only declaration-resolution helper, never itself an index-tier
-    mutation the writer-module inventory has to account for.
+    ``INDEX_DDL`` so the resolved text is always the live canonical shape.
+    Lives here (not in the executor module under
+    ``storage/sqlite/archive_tiers/``) so it stays a read-only
+    declaration-resolution helper, never itself an index-tier mutation the
+    writer-module inventory has to account for.
     """
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

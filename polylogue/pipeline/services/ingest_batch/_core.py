@@ -25,6 +25,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.memory import release_process_memory
@@ -51,6 +53,7 @@ from polylogue.sinex.models import PublicationMode, PublicationPayload
 from polylogue.sinex.obligations import AsyncSqlConnection, stage_payload_async
 from polylogue.sinex.service import PublicationService
 from polylogue.sinex.transport import resolve_configured_transport
+from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -65,6 +68,12 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     should_skip_stale_replace,
     stored_message_count,
 )
+from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+    bind_raw_revision,
+    classify_raw_revision_cohort_for_live_watch,
+    raw_membership_raw_ids,
+)
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
     _timestamp_ms,
     replace_parser_ingest_flag_tags,
@@ -513,6 +522,258 @@ def _preacquire_sidecar_blobs(
     return session_to_write.model_copy(update={"session_events": updated_events}), counts
 
 
+class _DriveRevisionGovernanceAdapter:
+    """Minimal ``RawRevisionGovernanceHost`` for Drive lineage bookkeeping.
+
+    ``bind_raw_revision``/``classify_raw_revision_cohort`` and their
+    transitive call graph (``raw_membership_raw_ids``,
+    ``_raw_revision_candidates``, ``_promote_contiguous_append_evidence``,
+    ``raw_membership_retired_full_revision_siblings``,
+    ``_raw_revision_source_path_has_divergent_evidence``) touch only
+    ``store._ensure_source_conn()`` and, inside
+    ``classify_raw_revision_cohort`` itself, ``store._blob_publisher``
+    (verified by reading every line of that call graph, polylogue-sp72).
+    Nothing in it touches ``_conn`` (index.db), ``_pending_raw_parse_states``,
+    ``_preacquire_attachment_blobs``, ``_write_counts``, or
+    ``_skipped_counts`` -- those Protocol members exist only because
+    ``ArchiveStore`` (the Protocol's only other implementer) happens to
+    carry them. This adapter implements them as typed stubs that raise if
+    ever actually invoked, rather than reaching into ``ArchiveStore``'s
+    ~9,000-line read surface just to satisfy an unused Protocol member.
+    ``_conn`` is declared a plain settable attribute (not a read-only
+    property) because the Protocol types it that way -- it is set to the
+    same ``source_conn`` handle as a harmless placeholder that is never
+    actually read by anything this adapter is used for.
+    """
+
+    def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher | None) -> None:
+        self._source_conn = source_conn
+        self._blob_publisher = blob_publisher
+        # Never read by bind_raw_revision/classify_raw_revision_cohort; see
+        # class docstring for why this is a harmless placeholder value.
+        self._conn = source_conn
+        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
+
+    def _ensure_source_conn(self) -> sqlite3.Connection:
+        return self._source_conn
+
+    def commit(self) -> None:
+        raise NotImplementedError("ingest_batch owns the index.db commit; this adapter never manages it")
+
+    def _preacquire_attachment_blobs(
+        self,
+        session: ParsedSession,
+        *,
+        source_path: str,
+        acquired_at_ms: int,
+    ) -> tuple[dict[int, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
+        raise NotImplementedError(
+            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
+            "classify_raw_revision_cohort, which never call this"
+        )
+
+    @staticmethod
+    def _write_counts(session: ParsedSession) -> dict[str, int]:
+        raise NotImplementedError(
+            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
+            "classify_raw_revision_cohort, which never call this"
+        )
+
+    @staticmethod
+    def _skipped_counts(session: ParsedSession, *, session_events: int = 0) -> dict[str, int]:
+        raise NotImplementedError(
+            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
+            "classify_raw_revision_cohort, which never call this"
+        )
+
+
+def _drive_structural_growth_predecessor(
+    source_conn: sqlite3.Connection,
+    blob_publisher: ArchiveBlobPublisher,
+    *,
+    raw_id: str,
+    logical_source_key: str,
+) -> tuple[str, int, str] | None:
+    """Find a unique JSON-structural predecessor for ``raw_id``, if any.
+
+    polylogue-1fijp AC (b): ``_bind_drive_revision_lineage``'s legacy path
+    (below) only ever proves lineage via
+    ``classify_raw_revision_cohort_for_live_watch``'s byte-prefix classifier
+    (``archive/revision_authority.py``), which -- per PR #3656's finding --
+    can never recognize the realistic ``_inject_live_drive_attachment_bytes``
+    growth shape (a whole-document JSON re-serialization, not a byte-append).
+    This looks for exactly one existing ``revision_kind='full'`` sibling for
+    ``logical_source_key`` whose bytes are a JSON-structural predecessor of
+    ``raw_id``'s own bytes (see ``sources.drive.structural_diff``) and, if
+    found, returns ``(predecessor_raw_id, predecessor_generation,
+    baseline_raw_id)`` for the caller to bind directly.
+
+    Returns ``None`` on zero or more-than-one structural match (never guess
+    between competing candidates), or when ``raw_id``'s own row cannot be
+    found -- the caller falls through to the existing byte-prefix
+    quarantine-then-classify path unchanged in every such case, so this is a
+    strictly additive typed-lineage improvement, never a narrowing of what
+    the legacy path already proves.
+    """
+    new_row = source_conn.execute(
+        "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if new_row is None or new_row[0] is None:
+        return None
+    sibling_rows = source_conn.execute(
+        """
+        SELECT raw_id, lower(hex(blob_hash)), acquisition_generation, baseline_raw_id
+        FROM raw_sessions
+        WHERE logical_source_key = ? AND revision_kind = 'full' AND raw_id != ?
+        """,
+        (logical_source_key, raw_id),
+    ).fetchall()
+    if not sibling_rows:
+        return None
+    new_bytes = blob_publisher.read_all(str(new_row[0]))
+    matches: list[tuple[str, int, str]] = []
+    for row in sibling_rows:
+        sibling_blob_hash = row[1]
+        if sibling_blob_hash is None:
+            continue
+        sibling_raw_id = str(row[0])
+        sibling_bytes = blob_publisher.read_all(str(sibling_blob_hash))
+        relation = classify_drive_structural_relation(sibling_bytes, new_bytes)
+        if relation is DriveStructuralRelation.STRUCTURAL_GROWTH:
+            generation = int(row[2]) if row[2] is not None else 0
+            baseline_raw_id = str(row[3]) if row[3] else sibling_raw_id
+            matches.append((sibling_raw_id, generation, baseline_raw_id))
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _bind_drive_revision_lineage(
+    session_to_write: ParsedSession,
+    *,
+    raw_id: str | None,
+    source_conn: sqlite3.Connection | None,
+    blob_publisher: ArchiveBlobPublisher | None,
+) -> RevisionReplayPlan | None:
+    """Best-effort revision-lineage bookkeeping for Drive re-acquisitions.
+
+    polylogue-sp72: ``iter_drive_raw_data`` backfills live-fetched
+    attachment bytes into cached Drive JSON on every ingest pass, minting a
+    brand-new ``raw_id`` for the SAME logical session whenever the bytes
+    change. This module's generic write path (``_write_session``, used by
+    every non-tailed-watcher provider) only ever compares content-hash and
+    freshness timestamps -- it never computes ``logical_source_key`` or
+    calls the revision-governance cohort classifier the way the governed
+    "live" batch path does for tailed origins (``sources/live/batch.py``,
+    ``sources/live/append_ingest.py``). Confirmed live: every one of 157
+    duplicate ``aistudio-drive`` raw pairs carries ``revision_kind='unknown'``,
+    ``logical_source_key=NULL``, ``revision_authority='quarantined'`` -- no
+    predecessor/baseline linkage at all.
+
+    This mirrors ``live/batch.py``'s post-parse ``logical_source_key``
+    computation and its ``bind_raw_revision``/``classify_raw_revision_cohort``
+    call for a single-session raw with no pre-existing membership census,
+    including its guard against double-governing an identity already owned
+    by membership-census governance (``raw_membership_raw_ids``). Unlike
+    ``live/batch.py``, this call is called unconditionally for every Drive
+    raw that reaches ``_write_session`` -- including ones ``_write_session``
+    ultimately skips as stale/duplicate -- so lineage metadata (and any
+    future arbitration/rebuild consumer reading it, e.g. polylogue-x1gd) is
+    recorded for every acquisition, not only the one that happened to win
+    ``_write_session``'s own freshness/content-hash comparison. This
+    function is non-fatal best-effort bookkeeping -- any failure (including
+    ``classify_raw_revision_cohort`` requiring a writable blob publisher) is
+    logged and swallowed (returning ``None``), never allowed to break the
+    session write itself.
+
+    Returns the classifier's :class:`RevisionReplayPlan` on success (``None``
+    on any early-return or swallowed failure) so the caller can tell whether
+    ``raw_id`` is a governance-*proven* member of the accepted chain --
+    see ``_write_session``'s use of this to bypass the #3453
+    freshness-tie-break safety net once real lineage evidence has already
+    settled the question that heuristic exists to guess at.
+
+    Every real config and test fixture configures Drive acquisition as
+    ``Source(name="gemini", folder=...)``, and ``iter_drive_raw_data`` sets
+    ``provider_hint = Provider.from_string(source.name)`` -- so a parsed
+    Drive session's ``source_name`` is ``Provider.GEMINI``, not
+    ``Provider.DRIVE`` (both map to the same ``Origin.AISTUDIO_DRIVE``, see
+    ``core/sources.py``). Gate on the value actually observed on the wire.
+
+    polylogue-1fijp AC (b): before falling back to the legacy byte-prefix
+    quarantine-then-classify dance, this first tries
+    ``_drive_structural_growth_predecessor`` -- a JSON-structural-diff-aware
+    check for the exact realistic re-acquisition shape (whole-document
+    re-serialization, not a byte-append) that the byte-prefix classifier can
+    never prove. A unique structural match is bound directly as a
+    ``FULL``/``ASSERTED`` revision with a real ``predecessor_raw_id`` --
+    ``ASSERTED``, not ``BYTE_PROVEN``, because the proof is JSON-structural,
+    not byte-level (the existing byte-relation vocabulary in
+    ``archive/revision_authority.py``/``storage/sqlite/archive_tiers/
+    raw_admission.py`` deliberately reserves ``BYTE_PROVEN`` for the
+    ``bytes.startswith()`` relation). When no unique structural match exists,
+    behavior is byte-for-byte identical to before this change.
+    """
+    if source_conn is None or blob_publisher is None:
+        return None
+    if not raw_id:
+        return None
+    if session_to_write.source_name is not Provider.GEMINI:
+        return None
+    logical_source_key = f"{session_to_write.source_name.value}:{session_to_write.provider_session_id}"
+    adapter = _DriveRevisionGovernanceAdapter(source_conn, blob_publisher)
+    try:
+        if raw_membership_raw_ids(adapter, logical_source_key):
+            return None
+        structural_match = _drive_structural_growth_predecessor(
+            source_conn,
+            blob_publisher,
+            raw_id=raw_id,
+            logical_source_key=logical_source_key,
+        )
+        if structural_match is not None:
+            predecessor_raw_id, predecessor_generation, baseline_raw_id = structural_match
+            bind_raw_revision(
+                adapter,
+                raw_id,
+                RawRevisionEnvelope(
+                    logical_source_key=logical_source_key,
+                    kind=RawRevisionKind.FULL,
+                    source_revision=raw_id,
+                    predecessor_raw_id=predecessor_raw_id,
+                    baseline_raw_id=baseline_raw_id,
+                    acquisition_generation=predecessor_generation + 1,
+                    authority=RawRevisionAuthority.ASSERTED,
+                ),
+            )
+            return RevisionReplayPlan(
+                logical_source_key=logical_source_key,
+                applications=(),
+                accepted_chain=(raw_id,),
+            )
+        bind_raw_revision(
+            adapter,
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key=logical_source_key,
+                kind=RawRevisionKind.FULL,
+                source_revision=raw_id,
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+        )
+        return classify_raw_revision_cohort_for_live_watch(adapter, logical_source_key)
+    except Exception:
+        logger.warning(
+            "drive_revision_lineage_bind_failed",
+            raw_id=raw_id,
+            logical_source_key=logical_source_key,
+            exc_info=True,
+        )
+        return None
+
+
 def _write_session(
     conn: sqlite3.Connection,
     payload: SessionWritePayload,
@@ -554,6 +815,24 @@ def _write_session(
     session_to_write = payload.parsed_session
     merge_append = False
     browser_precedence: BrowserCapturePrecedence = "default"
+
+    drive_revision_plan = _bind_drive_revision_lineage(
+        session_to_write,
+        raw_id=payload.raw_id,
+        source_conn=source_conn,
+        blob_publisher=blob_publisher,
+    )
+    # polylogue-sp72 AC2: once real byte-prefix lineage evidence has proven
+    # this raw is the classifier's accepted chain head for its logical
+    # source key, the #3453 freshness-tie heuristic below no longer needs to
+    # guess at a question governance has already answered -- it stays purely
+    # a safety net for the ungoverned case (no source_conn/blob_publisher,
+    # non-Gemini Drive identity, or a classification failure).
+    drive_revision_proven_winner = (
+        drive_revision_plan is not None
+        and payload.raw_id is not None
+        and payload.raw_id in drive_revision_plan.accepted_chain
+    )
 
     if revision_authority_refuses_write(
         conn,
@@ -647,6 +926,7 @@ def _write_session(
             and existing_raw_id
             and payload.raw_id
             and existing_raw_id != payload.raw_id
+            and not drive_revision_proven_winner
             and _incoming_write_regresses_attachment_coverage(conn, payload, session_to_write)
         ):
             counts["skipped_sessions"] = 1
@@ -1428,7 +1708,7 @@ def _resolve_codex_sidecar_snapshots(
         return
 
     from polylogue.core.sources import origin_from_provider
-    from polylogue.sources.assembly_codex import CodexAssemblySpec
+    from polylogue.sources.assembly_codex import CodexAssemblySpec, read_codex_thread_title_hook_events
     from polylogue.storage.sqlite.archive_tiers.source_write import (
         read_earliest_history_sidecar_for_path,
         write_history_sidecar,
@@ -1439,6 +1719,13 @@ def _resolve_codex_sidecar_snapshots(
     resolved: dict[str, dict[str, dict[str, str]]] = {}
     source_db_path = archive_root / "source.db"
     with closing(sqlite3.connect(str(source_db_path), timeout=DB_TIMEOUT)) as conn:
+        # bd polylogue-foee: read acquired codex_thread_title hook events
+        # fresh on every batch (never frozen into the persisted sidecar
+        # snapshot below -- the hook events themselves come from a separate,
+        # later-running acquisition path, polylogue-0jf4, so freezing them
+        # into the once-and-done snapshot could permanently exclude titles
+        # acquired after the first parse of a given source_path).
+        hook_event_titles = read_codex_thread_title_hook_events(conn)
         for record in codex_records:
             source_path = record.source_path
             if source_path in resolved:
@@ -1475,7 +1762,11 @@ def _resolve_codex_sidecar_snapshots(
             except Exception:
                 logger.exception("failed to persist codex sidecar snapshot for %s", source_path)
     for record in codex_records:
-        record.sidecar_snapshot = resolved.get(record.source_path)
+        snapshot = resolved.get(record.source_path)
+        if hook_event_titles:
+            snapshot = dict(snapshot) if snapshot else {}
+            snapshot["hook_event_titles"] = hook_event_titles
+        record.sidecar_snapshot = snapshot
 
 
 def _process_ingest_batch_sync(

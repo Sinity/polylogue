@@ -52,6 +52,7 @@ from polylogue.daemon.health import (
     HealthTier,
     _check_schema_version_fast,
     check_health,
+    durable_tier_schema_mismatch,
     format_health_lines,
     resolve_health_tiers,
 )
@@ -2130,23 +2131,54 @@ async def run_daemon_services(
 
     logger.info("daemon started")
 
+    # polylogue-e98k: log the computed SQLite mmap/cache budget against this
+    # process' cgroup memory limits before anything else runs. This is the
+    # observability half of the 2026-07-31 memory-throttling incident (see
+    # connection_profile.py's module comment) -- a mismatch used to be
+    # discoverable only by symptom (slow_write, throttling, a stalled ingest)
+    # hours later; now it is a one-line grep of the startup log.
+    from polylogue.storage.sqlite.connection_profile import (
+        check_mapped_bytes_budget_against_cgroup_limit,
+        log_mapped_bytes_budget_check,
+    )
+
+    log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
+
     # Schema preflight runs FIRST, before any DB-touching startup task. A
     # mismatched runtime/db combination must not even open the DB for FTS or
     # heartbeat queries — that is the IO cost #1003 is meant to avoid.
     schema_alert = _check_schema_version_fast()
+    # polylogue-gbs02: "watcher_blocked" here means "the derived tier (or
+    # worse) is stale, so materialize/index-writing maintenance loops must
+    # stay parked" -- unchanged from before, still gates the loops/converger/
+    # FTS-readiness block below. A NARROWER, separate check
+    # (``durable_mismatch``) decides whether the live watcher itself (raw
+    # acquisition) may still start: acquisition only ever writes source.db,
+    # so a derived-only mismatch (index.db/embeddings.db) must not stop it.
     watcher_blocked = enable_watch and schema_alert.severity == HealthSeverity.CRITICAL
+    durable_mismatch = enable_watch and durable_tier_schema_mismatch()
+    watcher_creation_blocked = durable_mismatch
     lifecycle_events_enabled = not watcher_blocked
     if watcher_blocked:
-        logger.error(
-            "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
-            "HTTP/health surfaces remain available so this state is observable.",
-            schema_alert.message,
-        )
+        if durable_mismatch:
+            logger.error(
+                "daemon: schema preflight CRITICAL — %s. Refusing to start the live watcher; "
+                "HTTP/health surfaces remain available so this state is observable.",
+                schema_alert.message,
+            )
+        else:
+            logger.error(
+                "daemon: schema preflight CRITICAL (derived tier only) — %s. Live watcher "
+                "starts in acquire-only mode: raw acquisition proceeds, materialize/index "
+                "loops stay parked pending schema recovery.",
+                schema_alert.message,
+            )
         set_degraded(
             DegradedReason(
                 code="schema_version_mismatch",
                 message=schema_alert.message,
                 detail={"check_name": schema_alert.check_name},
+                derived_only=not durable_mismatch,
             )
         )
         parked_loop_names = _SCHEMA_BLOCKED_MAINTENANCE_LOOP_NAMES
@@ -2167,6 +2199,7 @@ async def run_daemon_services(
                     "loop_count": len(parked_loop_names),
                     "loop_names": list(parked_loop_names),
                     "schema_alert_message": schema_alert.message,
+                    "derived_only": not durable_mismatch,
                 },
             )
         except Exception:
@@ -2346,6 +2379,9 @@ async def run_daemon_services(
         # both write-heavy; running them concurrently makes SQLite maintenance
         # time out behind the daemon's own writer.
         if not watcher_blocked:
+            from polylogue.daemon.antigravity_conversation_acquisition import (
+                periodic_antigravity_conversation_acquisition_check,
+            )
             from polylogue.daemon.blob_gc_periodic import periodic_blob_gc_check
             from polylogue.daemon.convergence import DaemonConverger
             from polylogue.daemon.convergence_stages import make_default_convergence_stages
@@ -2396,6 +2432,7 @@ async def run_daemon_services(
                 periodic_fts_orphan_audit(catch_up_complete=catch_up_complete_gate),
                 periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
                 periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
+                periodic_antigravity_conversation_acquisition_check(catch_up_complete=catch_up_complete_gate),
             ]
             if enable_source_catchup:
                 periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))
@@ -2420,9 +2457,15 @@ async def run_daemon_services(
                 )
 
         # Preflight already ran at the top of run_daemon_services (see
-        # ``watcher_blocked`` above); reuse that result.
+        # ``watcher_creation_blocked``/``watcher_blocked`` above); reuse that
+        # result. The watcher itself gates only on ``watcher_creation_blocked``
+        # (durable-tier mismatch) -- a derived-only mismatch leaves
+        # ``converger``/``catch_up_complete_gate`` at their None defaults
+        # (the ``if not watcher_blocked:`` block above was skipped), so the
+        # watcher runs acquire-only: raw acquisition proceeds, no
+        # convergence coupling (polylogue-gbs02).
         try:
-            if enable_watch and not watcher_blocked:
+            if enable_watch and not watcher_creation_blocked:
                 async with Polylogue() as polylogue:
                     watcher = LiveWatcher(
                         polylogue,
@@ -2462,7 +2505,7 @@ async def run_daemon_services(
                         archive_root_path=archive_root_path,
                         component="watcher",
                         payload={
-                            "reason": "schema_blocked" if watcher_blocked else "disabled",
+                            "reason": "schema_blocked" if watcher_creation_blocked else "disabled",
                             "watch_enabled": enable_watch,
                         },
                     )
@@ -2475,7 +2518,7 @@ async def run_daemon_services(
                         archive_root_path=archive_root_path,
                         component="watcher",
                         payload={
-                            "reason": "schema_blocked" if watcher_blocked else "disabled",
+                            "reason": "schema_blocked" if watcher_creation_blocked else "disabled",
                             "watch_enabled": enable_watch,
                         },
                     )

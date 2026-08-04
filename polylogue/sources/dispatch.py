@@ -32,12 +32,18 @@ from .parsers import (
     hermes_verification,
     local_agent,
 )
-from .parsers.base import ParsedMessage, ParsedSession, extract_messages_from_list
+from .parsers.base import (
+    ParsedMessage,
+    ParsedSession,
+    extract_messages_from_list,
+    mark_last_occurrence_as_active_leaf,
+)
+from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 
 if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
-    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult, ToolResultIndexAccumulator
 
 logger = get_logger(__name__)
 
@@ -65,7 +71,6 @@ RECORD_DETECTOR_PROVIDER_ORDER = (
     Provider.GEMINI,
 )
 _MAX_PARSE_DEPTH = 10
-_NO_LOOKAHEAD = object()
 
 PayloadRecord: TypeAlias = JSONDocument
 PayloadSequence: TypeAlias = list[JSONValue]
@@ -74,6 +79,7 @@ LoweredPayloadMode: TypeAlias = Literal[
     "browser_capture",
     "chatgpt_codex_task",
     "chunked_prompt",
+    "claude_code_multiway",
     "generic_messages",
     "grouped_records",
     "local_artifact_document",
@@ -89,11 +95,16 @@ class LoweredPayloadSpec:
     mode: LoweredPayloadMode
     payload: PayloadRecord | PayloadSequence
     source_path: str | None = None
-    # bd polylogue-jc4q: set by ``_claude_code_grouped_record_specs`` when
-    # ``fallback_id`` is a composite it has already anchored to a resume/
-    # fork/usage-limit boundary carryover fragment's own identity -- see
-    # ``code_parser.py``'s ``trust_fallback_id`` for why this must be an
-    # explicit signal rather than an inferred one.
+    # bd polylogue-jc4q: true when ``fallback_id`` is a composite already
+    # anchored to a resume/fork/usage-limit boundary carryover fragment's
+    # own identity -- see ``code_parser.py``'s ``trust_fallback_id`` for why
+    # this must be an explicit signal rather than an inferred one. Claude
+    # Code's multi-session-per-file case (``mode="claude_code_multiway"``)
+    # resolves this per group internally in
+    # ``_claude_code_multiway_parse``/``_claude_code_new_group_identity``
+    # instead of through this field, which stays relevant only for the
+    # always-single-group ``mode="grouped_records"`` fallback (a dict-shaped
+    # Claude Code payload, or any other grouped provider).
     trust_fallback_id: bool = False
 
 
@@ -229,6 +240,13 @@ def _detect_provider_from_record_evidence(record: PayloadRecord) -> tuple[Provid
     # ``chatgpt.looks_like``'s document-identity requirements (polylogue-t0ta).
     if chatgpt.looks_like_fragment(record):
         return Provider.CHATGPT, "chatgpt.looks_like_fragment (mapping node shape)"
+    # A ChatGPT shared-page (chatgpt.com/share/<id>) stream decode has no
+    # "mapping" key at all -- a flattened top-level "messages" list instead
+    # (polylogue-4zqh3). Checked here, ahead of the generic "has a messages
+    # list" fallback used elsewhere in dispatch, which would otherwise
+    # silently accept-then-drop it (no payload-asserted "id" field).
+    if chatgpt.looks_like_shared_decode(record):
+        return Provider.CHATGPT, "chatgpt.looks_like_shared_decode (shared-page stream decode)"
     # Claude Design (bd polylogue-tbun) checked before the general claude.ai
     # detector: its shape (messages + project, no chat_messages, camelCase
     # contentBlocks) is a distinct, tighter product signature -- not a
@@ -578,122 +596,6 @@ def _join_claude_code_sidecars(payloads: PayloadSequence, source_path: str | Non
     return join_tool_result_sidecars_session_scoped(payloads, tool_results_dir, source_path)
 
 
-def _claude_code_grouped_record_specs(
-    payloads: PayloadSequence,
-    fallback_id: str,
-    *,
-    source_path: str | None = None,
-) -> list[LoweredPayloadSpec]:
-    """Split concatenated Claude Code JSONL aggregates into session streams.
-
-    Records are grouped by their own ``sessionId``. The largest group by
-    record count is this file's real content ("primary"); every other group
-    keeps its bare content id UNLESS it looks like a resume/fork/usage-limit
-    boundary carryover from an ANCESTOR session rather than a second,
-    independent session (bd polylogue-jc4q) -- either because it occurs
-    BEFORE the primary group's own first record (the common shape: Claude
-    Code opens a resumed/forked file by replaying one boundary record still
-    tagged with the parent's sessionId, referencing a parent uuid this file
-    never itself produced), or because its own root record's ``parentUuid``
-    resolves to a uuid the primary group DID produce (the shape found
-    mid-file: a `/exit` sent right after a "usage limit reached" notice gets
-    re-stamped with the ancestor's id even though it is chained straight off
-    this file's own preceding record). Composing such a run's identity from
-    its bare content id collided every one of these carryover fragments --
-    from every fork/resume/quirk descendant of one ancestor -- onto that
-    ancestor's own `logical_source_key`, which is what made
-    claude-code-session revision membership see them as one irreconcilable
-    cohort instead of the unrelated fragments they are. Qualifying the
-    carryover run's id with this file's own ``fallback_id`` keeps it
-    distinct; the ancestor id becomes the ``parent_session_id`` lineage hint
-    (code_parser.py) instead.
-
-    A genuinely independent interleaved session -- no positional or
-    parentUuid evidence connecting it to the primary group at all -- keeps
-    its own bare content id exactly as before.
-    """
-    current_session_id: str | None = None
-    groups: dict[str, PayloadSequence] = {}
-    pending_prefix: PayloadSequence = []
-
-    for payload in payloads:
-        record = _payload_record(payload)
-        session_id = optional_string(record.get("sessionId")) if record is not None else None
-        if session_id is None:
-            if current_session_id is None:
-                pending_prefix.append(payload)
-            else:
-                groups.setdefault(current_session_id, []).append(payload)
-            continue
-
-        if current_session_id is None:
-            groups.setdefault(session_id, []).extend(pending_prefix)
-            pending_prefix = []
-
-        current_session_id = session_id
-        groups.setdefault(session_id, []).append(payload)
-
-    if len(groups) <= 1:
-        return [_grouped_records_spec(Provider.CLAUDE_CODE, payloads, fallback_id, source_path=source_path)]
-
-    if fallback_id.startswith("agent-"):
-        # Subagent/self-compaction files have their OWN identity scheme
-        # (``code_parser.py``'s ``is_agent`` branch composes
-        # ``f"{session_id}:{fallback_id}"`` unconditionally) that this
-        # bead does not touch -- ``fallback_id`` here is never itself a
-        # bare session id to anchor a "primary" against, so the carryover
-        # detection below does not apply. Preserve the long-standing rule:
-        # the first-encountered group carries the caller's fallback_id,
-        # every other group keeps its own bare content id.
-        return [
-            _grouped_records_spec(
-                Provider.CLAUDE_CODE,
-                group_payloads,
-                fallback_id if index == 0 else group_id,
-                source_path=source_path,
-            )
-            for index, (group_id, group_payloads) in enumerate(groups.items())
-        ]
-
-    group_order = list(groups.keys())
-    primary_group_id = max(groups, key=lambda group_id: len(groups[group_id]))
-    primary_index = group_order.index(primary_group_id)
-    primary_uuids = {
-        uuid
-        for group_payload in groups[primary_group_id]
-        if (record := _payload_record(group_payload)) is not None
-        and (uuid := optional_string(record.get("uuid"))) is not None
-    }
-
-    def _group_identity(group_id: str, group_payloads: PayloadSequence) -> tuple[str, bool]:
-        if group_id == primary_group_id:
-            return fallback_id, False
-        if group_order.index(group_id) < primary_index:
-            # This group's records occurred before the primary group ever
-            # started -- a boundary carryover opening the file, referencing
-            # a parent uuid this file never itself produced.
-            return f"{group_id}:{fallback_id}", True
-        root_record = _payload_record(group_payloads[0]) if group_payloads else None
-        root_parent_uuid = optional_string(root_record.get("parentUuid")) if root_record is not None else None
-        if root_parent_uuid is not None and root_parent_uuid in primary_uuids:
-            return f"{group_id}:{fallback_id}", True
-        return group_id, False
-
-    specs = []
-    for group_id, group_payloads in groups.items():
-        group_fallback_id, trust = _group_identity(group_id, group_payloads)
-        specs.append(
-            _grouped_records_spec(
-                Provider.CLAUDE_CODE,
-                group_payloads,
-                group_fallback_id,
-                source_path=source_path,
-                trust_fallback_id=trust,
-            )
-        )
-    return specs
-
-
 #  bd polylogue-t5lg: rank a chunk's own resolved title the same way
 # ``_parse_code_records`` ranks candidates within a single pass (custom-title
 # > ai-title > agent-name > first-human-message heuristic > raw id), so that
@@ -744,16 +646,13 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
 
         messages = [*existing.messages, *session.messages]
         active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-        if active_leaf_message_provider_id is not None:
-            messages = [
-                message.model_copy(
-                    update={
-                        "position": position,
-                        "is_active_leaf": message.provider_message_id == active_leaf_message_provider_id,
-                    }
-                )
-                for position, message in enumerate(messages)
-            ]
+        messages = [message.model_copy(update={"position": position}) for position, message in enumerate(messages)]
+        # bd polylogue-2hwl: flag the active leaf by POSITION (the true last
+        # message), never by comparing provider_message_id -- retries and
+        # regenerated variants can legitimately reuse the same native id at
+        # more than one position across merged chunks, and an id-equality
+        # comparison flags every one of them, not just the real leaf.
+        messages = mark_last_occurrence_as_active_leaf(messages)
 
         reported_cost_usd: float | None
         if existing.reported_cost_usd is None and session.reported_cost_usd is None:
@@ -805,55 +704,140 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "ingest_flags": sorted({*existing.ingest_flags, *session.ingest_flags}),
             }
         )
-    sessions = list(merged.values())
-    return [
-        claude.reconcile_code_session_chunks(session) if session.source_name is Provider.CLAUDE_CODE else session
-        for session in sessions
-    ]
+    # bd polylogue-taj0o Stage 2: Claude Code streaming used to be chunked
+    # into contiguous-run parses and glued back together here, needing a
+    # trailing `claude.reconcile_code_session_chunks` pass to re-fold the
+    # summary session_events (background completions, delegation progress,
+    # parse coverage, session_kind) each chunk had recomputed locally.
+    # `_claude_code_multiway_parse` now keys one ``_SessionAccumulator`` per
+    # session id across the whole record stream directly, so a Claude Code
+    # session is finalized exactly once and never reaches this function at
+    # all -- the generic merge above (title-evidence ranking, active-leaf
+    # recomputation, etc.) stays for any other provider that still needs to
+    # fold two same-identity ``ParsedSession``s together.
+    return list(merged.values())
 
 
-def _claude_code_stream_sessions(
+def _claude_code_new_group_identity(
+    group_id: str,
+    record: PayloadRecord | None,
+    *,
+    fallback_id: str,
+    is_agent_fallback: bool,
+    is_first_group: bool,
+    primary_started: bool,
+    primary_uuids: set[str],
+) -> tuple[str, bool, bool]:
+    """Resolve a newly-encountered Claude Code group's identity.
+
+    Returns ``(group_fallback_id, trust_fallback_id, provisional)``.
+    ``provisional`` is true only when the decision genuinely cannot be made
+    yet (this group's own sessionId differs from ``fallback_id`` and the
+    primary group hasn't started -- it might be a boundary carryover opening
+    the file, or ``fallback_id`` might never appear in the file at all, in
+    which case every such group is independent). The caller must defer
+    finalizing ``fallback_id``/``trust_fallback_id`` on those accumulators
+    until the whole stream has been walked -- see
+    ``_claude_code_multiway_parse``.
+
+    Mirrors the identity rules the former ``_claude_code_grouped_record_specs``
+    (eager) and ``_claude_code_stream_sessions`` (streaming) each implemented
+    separately (bd polylogue-jc4q), collapsed onto ONE canonical primary
+    definition: the group whose own ``sessionId`` equals ``fallback_id`` --
+    streaming's former rule, not eager's former max-by-record-count rule.
+    Eager's rule could pick the wrong group as primary for a small main
+    session sharing a file with a huge subagent transcript (the "three-way
+    duplication" finding, bd polylogue-taj0o notes); fallback_id-match is
+    also the only one of the two that a genuine single forward pass can
+    decide without full materialization, since it depends only on the
+    caller's own already-known identity for this file, not on record counts
+    that aren't known until the file ends.
+    """
+    if is_agent_fallback:
+        # Subagent/self-compaction files have their own identity scheme
+        # (code_parser.py's is_agent branch) that carryover detection below
+        # does not apply to: the first-encountered group carries the
+        # caller's fallback_id, every other group keeps its own bare
+        # content id.
+        if is_first_group:
+            return fallback_id, False, False
+        return group_id, False, False
+
+    if group_id == fallback_id:
+        return fallback_id, False, False
+
+    if not primary_started:
+        # Ambiguous until the whole stream is known: either a boundary
+        # carryover opening the file (if the primary group shows up later)
+        # or a genuinely independent session (if it never does).
+        return group_id, False, True
+
+    # Primary content has already streamed -- decide by the
+    # parentUuid-chains-into-primary signal (the mid-file shape: a `/exit`
+    # sent right after a "usage limit reached" notice gets re-stamped with
+    # the ancestor's id even though it is chained straight off this file's
+    # own preceding record).
+    root_parent_uuid = optional_string(record.get("parentUuid")) if record is not None else None
+    if root_parent_uuid is not None and root_parent_uuid in primary_uuids:
+        return f"{group_id}:{fallback_id}", True, False
+    return group_id, False, False
+
+
+def _claude_code_multiway_parse(
     payloads: Iterable[object],
     fallback_id: str,
     *,
     source_path: str | None = None,
 ) -> Iterator[ParsedSession]:
-    """Parse Claude Code JSONL records without materializing the full stream.
+    """Walk a Claude Code record stream exactly once, routing every record to
+    a per-session ``_SessionAccumulator`` keyed by its own ``sessionId``, and
+    finalize each accumulator only once the stream is exhausted
+    (bd polylogue-taj0o Stage 2).
 
-    The eager ``parse_payload`` path preserves the strongest non-contiguous
-    grouping semantics for already-materialized payloads. Raw JSONL ingest and
-    repair, however, can be multi-GiB; for that path we split only on contiguous
-    ``sessionId`` changes and feed each group to the provider parser as an
-    iterator. Per-session record-index and UUID continuation state retains no
-    raw payload bytes; its size is proportional to unique record identifiers and
-    makes an interleaved stream semantically identical to eager grouping.
+    Replaces two former shortcuts that each re-implemented a slice of this:
+    eager grouping (``_claude_code_grouped_record_specs``, which
+    materialized a ``dict[str, list]`` of every record up front, then parsed
+    each group's full list independently) and streaming's contiguous-run
+    chunker (``_claude_code_stream_sessions``, which fed each contiguous run
+    of one sessionId to its own ``_parse_code_records`` call and glued the
+    per-chunk results back together after the fact via
+    ``merge_parsed_session_chunks``/``reconcile_code_session_chunks``, since
+    each chunk's summary session_events -- background completions,
+    delegation-progress ticks, parse coverage, session_kind -- were computed
+    per chunk instead of per whole session). Keying one persistent
+    ``_SessionAccumulator`` per session id instead means ``_fold_code_record``
+    folds every record for that session into the SAME accumulator no matter
+    how many times its sessionId reappears in the file, so
+    ``_finalize_code_session`` runs its post-loop summary logic exactly once,
+    seeing the whole session -- there is nothing left to reconcile. This
+    also means genuinely interleaved records (not just contiguous runs) are
+    now handled correctly by construction, not merely approximated.
 
-    Sidecar join (polylogue-wjgf): the raw payload is never materialized here,
-    so ``join_tool_result_sidecars`` (which needs the full ``tool_use_id``
-    index) can't run against it directly. Instead each group's records are
-    teed through a ``ToolResultIndexAccumulator`` as they stream past
-    (``observe_tool_result_stream``), and the join runs against the resulting
-    index only after the group's iterator is fully consumed -- no raw record
-    retention, same memory bound as the rest of this path.
+    ``payloads`` may be a materialized list (the eager path) or a true
+    one-pass iterator (the streaming path, multi-GiB raw JSONL); ``for item
+    in payloads`` calls ``next()`` exactly once per record either way, so
+    this single function serves both callers -- mirroring
+    ``polylogue/sources/parsers/codex.py``'s ``parse``/``parse_stream``
+    pattern of one shared walk-and-fold implementation.
 
-    Identity (bd polylogue-jc4q): mirrors ``_claude_code_grouped_record_specs``
-    without its full-file lookahead -- a contiguous run tagged with the SAME
-    ``sessionId`` as ``fallback_id`` is this file's own real content
-    ("primary"); every other run keeps its bare content id UNLESS it is a
-    resume/fork/quirk boundary carryover from an ancestor. Once primary
-    content has streamed, that is detected by the run's root record's
-    ``parentUuid`` resolving to a uuid the primary has already produced (the
-    mid-file shape). Before any primary content has streamed, a differing
-    run is materialized (bounded -- these leading runs are always a handful
-    of records) and the run immediately after it is peeked at: if THAT run
-    is the primary, this leading run is a carryover opening the file (the
-    common shape); if the stream never produces a run matching
-    ``fallback_id`` at all, there is no primary to anchor against and the
-    run is a genuinely independent, bare-id session. Composing a carryover
-    run's identity from its bare content id would collide it onto that
-    ancestor's own `logical_source_key`.
+    Identity/carryover (bd polylogue-jc4q): see
+    ``_claude_code_new_group_identity`` for the per-group decision rule.
+    Records with no ``sessionId`` at all queue in a prefix buffer and are
+    folded into whichever group is encountered first, exactly like both
+    former implementations.
+
+    Sidecar join (polylogue-wjgf): built per accumulator (one
+    ``ToolResultIndexAccumulator`` per session id, observing every record
+    folded into that session as it streams past) rather than per chunk --
+    the former streaming chunker built and joined a fresh index per
+    contiguous run, which under-joined a session split across more than one
+    run. Session-scoped (``join_session_scoped``): a subagent transcript
+    only matches sidecars it owns; the root/parent transcript builds a
+    session-wide union index from sibling files on disk.
     """
-    tool_results_dir = None
+    is_agent_fallback = fallback_id.startswith("agent-")
+
+    tool_results_dir: Path | None = None
     if source_path is not None:
         from polylogue.sources.live.tool_result_sidecars import resolve_tool_results_dir
 
@@ -861,185 +845,120 @@ def _claude_code_stream_sessions(
         if tool_results_dir is not None and not tool_results_dir.is_dir():
             tool_results_dir = None
 
-    iterator = iter(payloads)
-    lookahead: object = _NO_LOOKAHEAD
+    def new_sidecar_accumulator() -> ToolResultIndexAccumulator:
+        from polylogue.sources.live.tool_result_sidecars import ToolResultIndexAccumulator
+
+        return ToolResultIndexAccumulator()
+
+    sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if tool_results_dir is not None else None
+
+    accumulators: dict[str, claude_code_parser._SessionAccumulator] = {}
+    group_order: list[str] = []
+    provisional_groups: set[str] = set()
     pending_prefix: list[object] = []
-    record_counts_by_session: dict[str, int] = {}
-    seen_record_uuids_by_session: dict[str, set[str]] = {}
-    # Subagent/self-compaction files have their own identity scheme
-    # (code_parser.py's is_agent branch) that carryover detection below
-    # does not apply to -- see the matching guard in
-    # _claude_code_grouped_record_specs for the full rationale.
-    is_agent_fallback = fallback_id.startswith("agent-")
-    first_group = True
-    # uuids produced so far by runs whose own sessionId equals fallback_id.
+    current_group_id: str | None = None
+    primary_started = False
     primary_uuids: set[str] = set()
 
-    def track_primary_uuid(item: object) -> None:
+    def new_accumulator(group_fallback_id: str, trust: bool) -> claude_code_parser._SessionAccumulator:
+        return claude_code_parser._SessionAccumulator(
+            fallback_id=group_fallback_id,
+            trust_fallback_id=trust,
+            is_agent=group_fallback_id.startswith("agent-"),
+            is_acompact=group_fallback_id.startswith("agent-acompact-"),
+        )
+
+    def fold_into(group_id: str, index: int, item: object) -> None:
+        if sidecar_accumulators is not None:
+            sidecar_accumulators[group_id].observe(item)
         record = _payload_record(item)
-        if record is None:
-            return
-        uuid = optional_string(record.get("uuid"))
-        if uuid is not None:
-            primary_uuids.add(uuid)
+        if record is not None and not is_agent_fallback and group_id == fallback_id:
+            uuid = optional_string(record.get("uuid"))
+            if uuid is not None:
+                primary_uuids.add(uuid)
+        if isinstance(item, dict):
+            claude_code_parser._fold_code_record(accumulators[group_id], index, item)
 
-    def next_item() -> object:
-        nonlocal lookahead
-        if lookahead is not _NO_LOOKAHEAD:
-            item = lookahead
-            lookahead = _NO_LOOKAHEAD
-            return item
-        return next(iterator)
+    record_index = 0
+    for item in payloads:
+        record_index += 1
+        record = _payload_record(item)
+        session_id = optional_string(record.get("sessionId")) if record is not None else None
 
-    def parse_group(
-        records: Iterator[object],
-        group_fallback_id: str,
-        *,
-        record_index_start: int = 0,
-        seen_record_uuids: set[str] | None = None,
-        trust_fallback_id: bool = False,
-    ) -> ParsedSession:
-        if tool_results_dir is None:
-            return claude.parse_code_stream(
-                records,
-                group_fallback_id,
-                record_index_start=record_index_start,
-                seen_record_uuids=seen_record_uuids,
-                trust_fallback_id=trust_fallback_id,
-            )
-        from polylogue.sources.live.tool_result_sidecars import (
-            ToolResultIndexAccumulator,
-            observe_tool_result_stream,
-        )
-
-        accumulator = ToolResultIndexAccumulator()
-        session = claude.parse_code_stream(
-            observe_tool_result_stream(records, accumulator),
-            group_fallback_id,
-            record_index_start=record_index_start,
-            seen_record_uuids=seen_record_uuids,
-            trust_fallback_id=trust_fallback_id,
-        )
-        assert source_path is not None  # tool_results_dir is only set when source_path is
-        return apply_tool_result_sidecars(session, accumulator.join_session_scoped(tool_results_dir, source_path))
-
-    while True:
-        try:
-            first = next_item()
-        except StopIteration:
-            if pending_prefix:
-                yield parse_group(iter(pending_prefix), fallback_id)
-            return
-
-        first_record = _payload_record(first)
-        first_session_id = optional_string(first_record.get("sessionId")) if first_record is not None else None
-        if first_session_id is None:
-            pending_prefix.append(first)
+        if session_id is None:
+            if current_group_id is None:
+                pending_prefix.append(item)
+                continue
+            fold_into(current_group_id, record_index, item)
             continue
 
-        group_session_id = first_session_id
-        is_primary_group = group_session_id == fallback_id
-        trust_group_fallback_id = False
-        prefix = pending_prefix
-        pending_prefix = []
-        materialized_group: list[object] | None = None
+        if session_id not in accumulators:
+            group_fallback_id, trust, provisional = _claude_code_new_group_identity(
+                session_id,
+                record,
+                fallback_id=fallback_id,
+                is_agent_fallback=is_agent_fallback,
+                is_first_group=not accumulators,
+                primary_started=primary_started,
+                primary_uuids=primary_uuids,
+            )
+            accumulators[session_id] = new_accumulator(group_fallback_id, trust)
+            group_order.append(session_id)
+            if sidecar_accumulators is not None:
+                sidecar_accumulators[session_id] = new_sidecar_accumulator()
+            if provisional:
+                provisional_groups.add(session_id)
+            if not is_agent_fallback and session_id == fallback_id:
+                primary_started = True
+            prefix_index = record_index - len(pending_prefix)
+            for prefix_item in pending_prefix:
+                prefix_index += 1
+                fold_into(session_id, prefix_index, prefix_item)
+            pending_prefix = []
 
-        if is_agent_fallback:
-            # Preserve the long-standing rule for subagent/self-compaction
-            # files: the first-encountered group carries the caller's
-            # fallback_id, every other group keeps its own bare content id.
-            group_fallback_id = fallback_id if first_group else group_session_id
-            first_group = False
-        elif is_primary_group:
-            group_fallback_id = fallback_id
-        elif primary_uuids:
-            # Primary content has already streamed -- decide by the
-            # parentUuid-chains-into-primary signal (the mid-file shape: a
-            # `/exit` sent right after a "usage limit reached" notice gets
-            # re-stamped with the ancestor's id even though it is chained
-            # straight off this file's own preceding record).
-            root_parent_uuid = optional_string(first_record.get("parentUuid")) if first_record is not None else None
-            if root_parent_uuid is not None and root_parent_uuid in primary_uuids:
-                group_fallback_id = f"{group_session_id}:{fallback_id}"
-                trust_group_fallback_id = True
-            else:
-                group_fallback_id = group_session_id
+        current_group_id = session_id
+        fold_into(session_id, record_index, item)
+
+    if not accumulators:
+        # No sessionId ever appeared -- either a genuinely empty stream or
+        # one that only ever produced prefix records (e.g. a lone
+        # ``summary`` row). Both former implementations still emit exactly
+        # one (possibly zero-message) session for this fallback_id.
+        accumulators[fallback_id] = new_accumulator(fallback_id, False)
+        group_order.append(fallback_id)
+        if sidecar_accumulators is not None:
+            sidecar_accumulators[fallback_id] = new_sidecar_accumulator()
+        for index, prefix_item in enumerate(pending_prefix, start=1):
+            fold_into(fallback_id, index, prefix_item)
+
+    # Provisional groups (non-agent, own sessionId != fallback_id, first
+    # encountered before the primary group had started) can only be
+    # resolved now that the whole stream is known: a carryover fragment of
+    # the primary if the primary showed up anywhere in the file, otherwise
+    # a genuinely independent session with no primary to anchor against.
+    # Folding never reads ``fallback_id``/``trust_fallback_id`` off the
+    # accumulator (only ``is_agent``/``is_acompact``, already correctly
+    # False for every provisional group -- neither a bare sessionId nor
+    # ``f"{group_id}:{fallback_id}"`` can start with "agent-" when
+    # ``fallback_id`` itself doesn't), so mutating them here is safe.
+    for group_id in provisional_groups:
+        acc = accumulators[group_id]
+        if primary_started:
+            acc.fallback_id = f"{group_id}:{fallback_id}"
+            acc.trust_fallback_id = True
         else:
-            # No primary content has streamed yet, so there is nothing to
-            # chain a parentUuid into. Materialize this one run -- Claude
-            # Code boundary-carryover runs opening a file are always small,
-            # a handful of records -- and peek at whether the run right
-            # after it is this file's own primary content (the common
-            # shape: a resume/fork file opens with one boundary record
-            # still tagged with the parent's sessionId, then switches to
-            # its own for the rest of the file). If the stream never
-            # produces a run matching ``fallback_id`` at all, there is no
-            # primary to anchor against and this is a genuinely independent,
-            # bare-id session (e.g. two unrelated sessions concatenated
-            # under a caller-supplied bundle label).
-            materialized_group = [*prefix, first]
-            prefix = []
-            for item in iterator:
-                record = _payload_record(item)
-                session_id = optional_string(record.get("sessionId")) if record is not None else None
-                if session_id is not None and session_id != group_session_id:
-                    lookahead = item
-                    break
-                materialized_group.append(item)
-            next_session_id: str | None = None
-            if lookahead is not _NO_LOOKAHEAD:
-                peek_record = _payload_record(lookahead)
-                next_session_id = optional_string(peek_record.get("sessionId")) if peek_record is not None else None
-            if next_session_id == fallback_id:
-                group_fallback_id = f"{group_session_id}:{fallback_id}"
-                trust_group_fallback_id = True
-            else:
-                group_fallback_id = group_session_id
+            acc.fallback_id = group_id
+            acc.trust_fallback_id = False
 
-        group_record_count = 0
-
-        def group_records(
-            prefix: list[object] = prefix,
-            first: object = first,
-            group_session_id: str = group_session_id,
-            is_primary_group: bool = is_primary_group,
-            materialized_group: list[object] | None = materialized_group,
-        ) -> Iterator[object]:
-            nonlocal group_record_count, lookahead
-            if materialized_group is not None:
-                group_record_count += len(materialized_group)
-                yield from materialized_group
-                return
-            for prefix_item in prefix:
-                group_record_count += 1
-                if is_primary_group:
-                    track_primary_uuid(prefix_item)
-                yield prefix_item
-            group_record_count += 1
-            if is_primary_group:
-                track_primary_uuid(first)
-            yield first
-            for item in iterator:
-                record = _payload_record(item)
-                session_id = optional_string(record.get("sessionId")) if record is not None else None
-                if session_id is not None and session_id != group_session_id:
-                    lookahead = item
-                    return
-                group_record_count += 1
-                if is_primary_group:
-                    track_primary_uuid(item)
-                yield item
-
-        record_index_start = record_counts_by_session.get(group_session_id, 0)
-        seen_record_uuids = seen_record_uuids_by_session.setdefault(group_session_id, set())
-        session = parse_group(
-            group_records(),
-            group_fallback_id,
-            record_index_start=record_index_start,
-            seen_record_uuids=seen_record_uuids,
-            trust_fallback_id=trust_group_fallback_id,
-        )
-        record_counts_by_session[group_session_id] = record_index_start + group_record_count
+    for group_id in group_order:
+        session = claude_code_parser._finalize_code_session(accumulators[group_id])
+        if sidecar_accumulators is not None:
+            # sidecar_accumulators is only set when tool_results_dir resolved, which itself
+            # only happens when source_path is not None.
+            assert tool_results_dir is not None
+            assert source_path is not None
+            join_result = sidecar_accumulators[group_id].join_session_scoped(tool_results_dir, source_path)
+            session = apply_tool_result_sidecars(session, join_result)
         yield session
 
 
@@ -1205,7 +1124,15 @@ def _lower_grouped_payload(
     payloads = _payload_sequence(shaped_payload)
     if payloads is not None:
         if provider is Provider.CLAUDE_CODE:
-            return _claude_code_grouped_record_specs(payloads, fallback_id, source_path=source_path)
+            return [
+                LoweredPayloadSpec(
+                    provider=Provider.CLAUDE_CODE,
+                    fallback_id=fallback_id,
+                    mode="claude_code_multiway",
+                    payload=payloads,
+                    source_path=source_path,
+                )
+            ]
         return [_grouped_records_spec(provider, payloads, fallback_id, source_path=source_path)]
 
     record = _payload_record(shaped_payload)
@@ -1536,6 +1463,12 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         record = _payload_record(spec.payload)
         return [chatgpt_codex_sidecar.parse_codex_task(record, spec.fallback_id)] if record is not None else []
 
+    if spec.mode == "claude_code_multiway":
+        payloads = _payload_sequence(spec.payload)
+        if payloads is None:
+            return []
+        return list(_claude_code_multiway_parse(payloads, spec.fallback_id, source_path=spec.source_path))
+
     if spec.provider is Provider.CHATGPT:
         record = _payload_record(spec.payload)
         return [chatgpt.parse(record, spec.fallback_id)] if record is not None else []
@@ -1760,7 +1693,7 @@ def parse_stream_payload(
     """
     runtime_provider = Provider.from_string(provider)
     if runtime_provider is Provider.CLAUDE_CODE:
-        return merge_parsed_session_chunks(_claude_code_stream_sessions(payloads, fallback_id, source_path=source_path))
+        return list(_claude_code_multiway_parse(payloads, fallback_id, source_path=source_path))
     if runtime_provider is Provider.CODEX:
         return [codex.parse_stream(payloads, fallback_id)]
     if runtime_provider is Provider.BEADS:

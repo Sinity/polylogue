@@ -662,10 +662,12 @@ def test_insight_entry_operation_and_catchup_adapters() -> None:
         )
     )
     operation = component_from_operation_status(OperationStatus.RUNNING, component="demo_import")
+    interrupted_operation = component_from_operation_status(OperationStatus.INTERRUPTED, component="demo_import")
     catchup = component_from_catchup_status(SimpleNamespace(mode="idle", failed_file_count=0, succeeded_file_count=7))
 
     assert insight.state is CapabilityReadinessState.POISONED
     assert insight.evidence_refs == ("session_insight_status",)
     assert operation.state is CapabilityReadinessState.REBUILDING
+    assert interrupted_operation.state is CapabilityReadinessState.BLOCKED
     assert catchup.state is CapabilityReadinessState.READY
     assert catchup.counts["succeeded_file_count"] == 7

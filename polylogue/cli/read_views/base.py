@@ -68,7 +68,6 @@ class ReadViewCorrelationOptions:
     since_hours: int = 2
     confidence_threshold: float = 0.3
     github_api: bool = True
-    otlp: bool = False
 
 
 @dataclass(frozen=True, slots=True)

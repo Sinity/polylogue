@@ -113,7 +113,6 @@ classified with explicit auth and response posture.
 | User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
 | Browser-accessible user-state mutations | bearer or scoped web credential plus exact-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id` |
 | Archive control mutations | machine bearer when configured plus exact-origin browser request | `POST /api/reset`, `POST /api/ingest`, `POST /api/maintenance/run` |
-| Observability ingest | explicit config flag plus loopback-or-bearer policy | `POST /v1/traces`, `POST /v1/metrics`, `POST /v1/logs` |
 | WebUI observability reads | bearer or scoped web credential when configured | `GET /api/webui/observability`, `GET /api/webui/insights/:name`, `GET /api/webui/freshness?source=...` |
 
 User overlay mutation routes return the shared mutation result envelope

@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from polylogue.core.enums import OperationStatus as CoreOperationStatus
 from polylogue.operations import (
     ImportAck,
     ImportRequest,
@@ -245,6 +246,7 @@ class TestOperationStatusEnum:
     """OperationStatus is a closed enum — adding values is an explicit change."""
 
     def test_known_values(self) -> None:
+        assert OperationStatus is CoreOperationStatus
         assert {s.value for s in OperationStatus} == {
             "accepted",
             "rejected",
@@ -252,4 +254,5 @@ class TestOperationStatusEnum:
             "running",
             "completed",
             "failed",
+            "interrupted",
         }

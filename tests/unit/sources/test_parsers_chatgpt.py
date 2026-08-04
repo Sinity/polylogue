@@ -209,6 +209,101 @@ def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     assert SHARED_CONVERSATION_INDEX_INGEST_FLAG in session.ingest_flags
 
 
+def _shared_decode_payload() -> dict[str, object]:
+    """A minimal shared-page (chatgpt.com/share/<id>) stream-decode document.
+
+    Mirrors the real recovery-packet decode shape (polylogue-4zqh3): a
+    top-level ``messages`` list of flat ``{node_id, parent, children, role,
+    text, ...}`` records, no ``mapping`` key anywhere, and no payload-
+    asserted ``id`` (only ``conversation_id``/``shared_conversation_id``).
+    """
+    return {
+        "source_url": "https://chatgpt.com/share/shared-conv-id",
+        "shared_conversation_id": "shared-conv-id",
+        "conversation_id": "shared-conv-id",
+        "title": "Shared Decode Title",
+        "default_model_slug": "gpt-5-5-pro",
+        "create_time": 1700000000.0,
+        "update_time": 1700000100.0,
+        "mapping_node_count": 3,
+        "message_count": 2,
+        "messages": [
+            {
+                "node_id": "root-node",
+                "message_id": "root-node",
+                "parent": "client-created-root",
+                "children": ["user-node"],
+                "role": "system",
+                "create_time": None,
+                "update_time": None,
+                "status": "finished_successfully",
+                "metadata": {"is_visually_hidden_from_conversation": True},
+                "text": "",
+            },
+            {
+                "node_id": "user-node",
+                "message_id": "user-node",
+                "parent": "root-node",
+                "children": ["assistant-node"],
+                "role": "user",
+                "create_time": 1700000000.0,
+                "update_time": None,
+                "status": "finished_successfully",
+                "metadata": {},
+                "text": "Hello from the shared page decode",
+            },
+            {
+                "node_id": "assistant-node",
+                "message_id": "assistant-node",
+                "parent": "user-node",
+                "children": [],
+                "role": "assistant",
+                "create_time": 1700000050.0,
+                "update_time": None,
+                "status": "finished_successfully",
+                "metadata": {},
+                "text": "Reply from the shared page decode",
+            },
+        ],
+    }
+
+
+def test_chatgpt_looks_like_shared_decode_detects_flat_messages_shape() -> None:
+    from polylogue.sources.parsers.chatgpt import looks_like_fragment, looks_like_shared_decode
+
+    payload = _shared_decode_payload()
+    assert looks_like_shared_decode(payload)
+    # The neighboring mapping-tree detectors must NOT also claim this shape --
+    # it genuinely has no "mapping" key, so both would silently reject it
+    # anyway, but this pins the non-overlap explicitly.
+    assert not chatgpt_looks_like(payload)
+    assert not looks_like_fragment(payload)
+
+
+def test_chatgpt_looks_like_shared_decode_rejects_native_mapping_export() -> None:
+    from polylogue.sources.parsers.chatgpt import looks_like_shared_decode
+
+    assert not looks_like_shared_decode({"mapping": {}, "messages": [{"node_id": "x", "role": "user"}]})
+    assert not looks_like_shared_decode({"shared_conversation_id": "x", "messages": []})
+    assert not looks_like_shared_decode({"shared_conversation_id": "x"})
+    assert not looks_like_shared_decode("not-a-dict")
+
+
+def test_chatgpt_parse_shared_decode_produces_real_messages() -> None:
+    session = chatgpt_parse(_shared_decode_payload(), "fallback")
+
+    assert session.provider_session_id == "shared-conv-id"
+    assert session.title == "Shared Decode Title"
+    assert SHARED_CONVERSATION_INDEX_INGEST_FLAG not in session.ingest_flags
+    # The hidden empty system root is skipped by extract_messages_from_mapping's
+    # usual empty-text filtering; the two real turns come through.
+    roles_and_text = [(m.role, m.blocks[0].text if m.blocks else "") for m in session.messages]
+    assert ("user", "Hello from the shared page decode") in roles_and_text
+    assert ("assistant", "Reply from the shared page decode") in roles_and_text
+    # The leaf node (no children) is derived as the active path tail.
+    assert session.active_leaf_message_provider_id == "assistant-node"
+
+
 def test_chatgpt_temporary_payload_sets_session_kind() -> None:
     session = chatgpt_parse(
         {
@@ -1339,6 +1434,49 @@ def test_chatgpt_generation_timing_fallback_rejects_malformed_values(
     assert session.reported_duration_ms == expected_duration_ms
     lifecycle_events = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
     assert len(lifecycle_events) == (1 if expected_duration_ms is not None else 0)
+
+
+def test_chatgpt_generation_timing_anchor_is_stable_across_mapping_order() -> None:
+    """generation_lifecycle anchors to the same message id regardless of raw
+    mapping key order (bd polylogue-uqwd).
+
+    Two candidate nodes on the same generation branch that fully tie on every
+    real scoring signal (source rank, reasoning-recap flag, start/end
+    presence, end_turn) previously fell through to ``position`` -- the raw
+    ``mapping`` dict's iteration order -- as the deciding tiebreak. ChatGPT
+    re-exports of the SAME conversation are not guaranteed to serialize
+    ``mapping`` keys in the same order every time, so which of the two tied
+    nodes won (and therefore which message id the lifecycle event anchored
+    to) silently flipped between export vintages even though every message's
+    content, including both candidates' own metadata, was byte-identical.
+    That anchor drift is exactly what makes ``event_base_identity_hash``
+    (``pipeline/ids.py``) treat the SAME generation event as two disjoint
+    identities across revisions, producing a spurious revision conflict.
+
+    Both mapping orders below carry the identical node set; only the dict
+    insertion order differs, standing in for two export requests of the same
+    conversation. The winning anchor must be identical in both cases.
+    """
+    user = _branch_node("u1", "user", "do the work", parent=None, children=["node_a"])
+    node_a = _branch_node("node_a", "assistant", "first draft", parent="u1", children=["node_b"])
+    node_b = _branch_node("node_b", "assistant", "final draft", parent="node_a", children=[])
+    for node in (node_a, node_b):
+        node["message"]["metadata"] = {"finished_duration_sec": 5}
+
+    def _anchor(order: list[dict[str, Any]]) -> str | None:
+        payload = {
+            "id": "tie-break-order",
+            "mapping": {n["id"]: n for n in order},
+            "current_node": "node_b",
+        }
+        session = chatgpt_parse(payload, "fallback-id")
+        lifecycle = [event for event in session.session_events if event.event_type == "generation_lifecycle"]
+        assert len(lifecycle) == 1
+        return lifecycle[0].source_message_provider_id
+
+    anchor_forward = _anchor([user, node_a, node_b])
+    anchor_reversed = _anchor([user, node_b, node_a])
+    assert anchor_forward == anchor_reversed
 
 
 # ---------------------------------------------------------------------------

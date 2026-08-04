@@ -142,7 +142,16 @@ def build_acquisition_raw_bytes(spec: AcquisitionInputSpec) -> bytes:
 def build_validation_payload(case: ValidationCase) -> tuple[bytes, str, str]:
     """Return raw bytes, provider name, and source path for a validation case."""
     if case.payload_kind == "record":
-        lines: list[bytes] = [b'{"type":"session_meta"}', b'{"type":"response_item"}']
+        # Real Codex JSONL records always carry a "payload" envelope key
+        # (tests/data/codex_event_stream/*.jsonl) -- that's what makes them
+        # classify as a session record stream (looks_like_record_entry
+        # requires an envelope marker alongside a bare "type", polylogue-9ykn).
+        # A bare {"type": "..."} with no envelope key is not a realistic
+        # production record shape and would (correctly) classify as unknown.
+        lines: list[bytes] = [
+            b'{"type":"session_meta","payload":{"id":"s1"}}',
+            b'{"type":"response_item","payload":{"type":"message"}}',
+        ]
         lines.extend(b"not json" for _ in range(case.malformed_jsonl_lines))
         return b"\n".join(lines), "codex", "/tmp/session.jsonl"
     return b'{"id":"doc-1","mapping":{}}', "chatgpt", "/tmp/sessions.json"

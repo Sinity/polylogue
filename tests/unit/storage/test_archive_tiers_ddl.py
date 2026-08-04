@@ -623,15 +623,16 @@ def test_archive_tiers_cost_price_basis_has_typed_tables(tmp_path: Path) -> None
     }
 
     assert {
-        "price_catalogs",
         "session_model_usage",
         "session_provider_usage_events",
     } <= tables
     # polylogue-v2mg: model_prices / session_reported_costs are zero-consumer
     # tables dropped from canonical DDL and converged away by the index-tier
-    # benign-DDL registry -- a fresh archive never has them.
+    # benign-DDL registry -- a fresh archive never has them. polylogue-resk
+    # drops price_catalogs the same way.
     assert "model_prices" not in tables
     assert "session_reported_costs" not in tables
+    assert "price_catalogs" not in tables
 
 
 def test_archive_tiers_messages_have_role_leading_facet_index(tmp_path: Path) -> None:

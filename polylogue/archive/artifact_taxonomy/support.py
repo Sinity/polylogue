@@ -51,6 +51,12 @@ _RELATIONSHIP_INDEX_KEYS = frozenset({"session", "parent", "child", "type", "tim
 _RELATIONSHIP_INDEX_KEYS_CONVERSATION = frozenset({"conversation", "parent", "child", "type", "timestamp"})
 _HOOK_EVENT_KEYS = frozenset({"event_type", "session_id", "timestamp", "provider"})
 _BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "extra"})
+#: A Claude Code ``projects/<proj>/<session-uuid>.jsonl`` file whose only
+#: records carry these ``type`` values is a pure file-history checkpoint
+#: stream, never a conversation (polylogue-omsw). Mirrors the type set
+#: ``archive/raw_materialization.py``'s ``parsed_non_session_artifact_reason``
+#: already checks post-parse ("Claude Code file-history snapshot").
+_FILE_HISTORY_SNAPSHOT_ONLY_TYPES = frozenset({"file-history-snapshot", "progress"})
 
 
 def path_only_sidecar_reason(name: str) -> str | None:
@@ -139,6 +145,19 @@ def looks_like_beads_interaction(payload: object) -> bool:
         and isinstance(payload.get("issue_id"), str)
         and isinstance(payload.get("extra"), dict)
     )
+
+
+def looks_like_file_history_snapshot_only_stream(dict_items: list[JSONDocument]) -> bool:
+    """True when every decoded record's ``type`` is a file-history checkpoint.
+
+    ``dict_items`` should be the decoded records of a Claude Code
+    ``projects/<proj>/<uuid>.jsonl`` stream (or a bounded prefix of one).
+    Empty input is not positive evidence either way.
+    """
+    if not dict_items:
+        return False
+    types = {item.get("type") for item in dict_items if isinstance(item.get("type"), str)}
+    return bool(types) and types <= _FILE_HISTORY_SNAPSHOT_ONLY_TYPES
 
 
 def looks_like_message_entry(payload: object) -> bool:

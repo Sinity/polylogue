@@ -87,7 +87,7 @@ def find_orphaned_fts_sessions_sync(
     ready yet.
     """
     from polylogue.storage.archive_identity import ArchiveLocation
-    from polylogue.storage.table_existence import table_exists
+    from polylogue.storage.introspection import table_exists
 
     resolved = ArchiveLocation.resolve(db_path.parent).active_index_path
     target = resolved if resolved.exists() else (db_path if db_path.exists() else None)

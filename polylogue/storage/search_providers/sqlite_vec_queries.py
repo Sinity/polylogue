@@ -13,8 +13,7 @@ from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
 
 # Per-seed-message neighbor fanout used to grow the candidate pool before
 # deduplicating to messages. Bounds the number of MATCH queries issued for a
-# large seed session to a fixed, representative sample (mirrors
-# ``polylogue.daemon.similarity._PER_MESSAGE_K``).
+# large seed session to a fixed, representative sample.
 _SESSION_SEED_FANOUT = 20
 
 
@@ -223,6 +222,26 @@ class SqliteVecQueryMixin:
 
             ranked = sorted(best_distance.items(), key=lambda item: (item[1], item[0]))
             return ranked[:limit]
+        finally:
+            conn.close()
+
+    def count_session_embeddings(self, session_id: str) -> int:
+        """Return the number of distinct stored vectors for ``session_id``."""
+        self._ensure_vec_available()
+        conn = self._get_connection()
+        try:
+            try:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT embedding_input_hash) AS count
+                    FROM message_embedding_refs
+                    WHERE session_id = ?
+                    """,
+                    (session_id,),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
+            return int(row["count"]) if row is not None else 0
         finally:
             conn.close()
 

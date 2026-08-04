@@ -13,7 +13,7 @@ from polylogue.archive.query.spec import parse_query_date
 from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.table_existence import table_exists_async as _table_exists
+from polylogue.storage.introspection import table_exists_async as _table_exists
 
 InsightReadinessVerdict = Literal[
     "ready", "partial", "empty", "missing", "stale", "incompatible", "degraded", "unknown"

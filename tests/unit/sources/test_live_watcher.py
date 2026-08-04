@@ -666,7 +666,7 @@ def test_cursor_does_not_import_legacy_live_cursor_rows(tmp_path: Path) -> None:
 
 
 def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 16)
     monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
     records = [
         RawSessionRecord(
@@ -691,7 +691,7 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
 
 
 def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.ingest_batch._core.os.cpu_count", lambda: 16)
+    monkeypatch.setattr("polylogue.pipeline.services.process_pool.os.cpu_count", lambda: 16)
     monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
     records = [
         RawSessionRecord(
@@ -1027,6 +1027,57 @@ def test_replaced_excluded_file_is_revived_without_retrying_unchanged_poison(tmp
     assert revived.next_retry_at is None
 
 
+def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-ix5r: a parser fix must revive an excluded cursor even when
+    the poisoned file's own bytes never change. Exclusion revival was
+    previously bound only to file identity (size/dev/inode/mtime), so a file
+    that fails to parse stays permanently dark even after the parser bug that
+    poisoned it is fixed -- the file on disk never changes, only the code
+    that reads it. A ``_PARSER_FINGERPRINT`` bump (this module's existing,
+    deliberately-versioned marker for a parser-semantics change, the same
+    pattern ``RAW_AUTHORITY_PARSER_FINGERPRINT`` uses) must be enough to
+    trigger a fresh attempt through the real ``LiveWatcher._needs_work`` path,
+    not merely through ``CursorStore.revive_replaced_exclusion`` directly.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "capture.json"
+    path.write_text('{"broken":true}', encoding="utf-8")
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    watcher._cursor.set(
+        path,
+        stat.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="broken",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=5,
+        excluded=True,
+    )
+
+    # Identity-only revival check: unchanged bytes, unchanged parser -> stays
+    # excluded and dark.
+    assert watcher._needs_work(path) is False
+    still_excluded = watcher._cursor.get_record(path)
+    assert still_excluded is not None
+    assert still_excluded.excluded is True
+
+    # Simulate a parser fix shipping (the responsible parser's fingerprint
+    # changes) with the file itself completely untouched.
+    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-batched-v3-test")
+
+    assert watcher._needs_work(path) is True
+    revived = watcher._cursor.get_record(path)
+    assert revived is not None
+    assert revived.excluded is False
+    assert revived.failure_count == 0
+    assert revived.next_retry_at is None
+
+
 def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1191,6 +1242,160 @@ def test_large_incomplete_jsonl_append_defers_until_the_file_changes(tmp_path: P
     assert record.byte_size == f.stat().st_size
     assert record.byte_offset == len(original)
     assert watcher._needs_work(f) is False
+
+
+def _backdate_cursor(tmp_path: Path, path: Path, *, now: datetime, seconds_ago: float) -> None:
+    """Directly rewrite ``ingest_cursor.updated_at_ms`` into the past.
+
+    Simulates a deferred append cursor that has sat at the same observed
+    stat for a long time, without sleeping real wall-clock seconds in the
+    test. ``now`` must come from ``frozen_clock.now()`` (or an equivalent
+    already-guarded source), never a direct host-clock read.
+    """
+    past_ms = int((now.timestamp() - seconds_ago) * 1000)
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute("UPDATE ingest_cursor SET updated_at_ms = ? WHERE source_path = ?", (past_ms, str(path)))
+        conn.commit()
+
+
+def test_incomplete_probe_does_not_escalate_for_a_recent_in_progress_writer(tmp_path: Path) -> None:
+    """An ordinary in-progress writer routinely leaves a genuinely incomplete
+    trailing record between two polls milliseconds apart. That must NOT be
+    treated as "the writer is done" just because the stat happened to match
+    on an immediate second check -- only genuine staleness (see the age-gated
+    escalation test below) justifies the more aggressive full-tail probe."""
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    f.write_bytes(original)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    tail = (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)) + b'{"b":2}\n'
+    f.write_bytes(original + tail)
+
+    assert watcher._needs_work(f) is False
+    # Second scan, immediately after -- no time has passed, so this must
+    # still be treated as "maybe still writing", not escalated.
+    assert watcher._needs_work(f) is False
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 0
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
+def test_incomplete_probe_escalates_to_full_scan_once_stat_stops_changing(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """polylogue-2qrx: the bounded 64MB no-newline probe can miss a genuine
+    complete trailing record sitting just past its window. Once the writer
+    stops (stat never changes again) for long enough to rule out "still
+    writing", the OLD behavior parked the cursor forever with zero durable
+    signal -- measured live as 211 files / 414MB of stalled append backlog,
+    up to 329h stale on one 94.8MB lag. The escalated full-tail probe on a
+    stale stat-unchanged observation must find that record and unblock
+    catch-up instead."""
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    f.write_bytes(original)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    # A trailing tail whose first PROBE_BYTES contain no newline, but a
+    # complete record follows just past the bounded probe window.
+    tail = (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)) + b'{"b":2}\n'
+    f.write_bytes(original + tail)
+
+    # First scan: the bounded probe finds no \n in its window and defers.
+    assert watcher._needs_work(f) is False
+    _backdate_cursor(tmp_path, f, now=frozen_clock.now(), seconds_ago=live_watcher._STUCK_DEFERRED_APPEND_AGE_S + 1)
+
+    # Second scan against the SAME unchanged stat, now stale enough that the
+    # writer is implausibly still active: the escalated full-tail probe must
+    # find the trailing record and report work is needed, instead of
+    # trusting the stat-match fast path to skip it forever.
+    assert watcher._needs_work(f) is True
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 0
+
+
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher", "polylogue.sources.live.cursor")
+def test_incomplete_probe_marks_failed_when_no_newline_exists_anywhere(
+    tmp_path: Path, frozen_clock: FrozenClock
+) -> None:
+    """polylogue-2qrx: when even the escalated full-tail probe finds no
+    complete trailing record (a genuinely truncated/unterminated tail that
+    will never resolve on its own), the cursor must get a durable failure
+    record instead of parking silently forever."""
+    root = tmp_path / "src"
+    root.mkdir()
+    f = root / "session.jsonl"
+    original = b'{"a":1}\n'
+    f.write_bytes(original)
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    stat = f.stat()
+    watcher._cursor.set(
+        f,
+        len(original),
+        byte_offset=len(original),
+        last_complete_newline=len(original),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="base",
+        tail_hash=encode_cursor_hash_authority(
+            sha256(original).hexdigest(),
+            sha256(original).hexdigest(),
+            ctime_ns=stat.st_ctime_ns,
+        ),
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    f.write_bytes(original + (b"x" * (live_watcher._INCOMPLETE_APPEND_PROBE_BYTES + 1)))
+
+    assert watcher._needs_work(f) is False
+    _backdate_cursor(tmp_path, f, now=frozen_clock.now(), seconds_ago=live_watcher._STUCK_DEFERRED_APPEND_AGE_S + 1)
+    # Second scan, same unchanged stat but now stale: the escalated
+    # full-tail probe also finds nothing (there really is no trailing
+    # newline anywhere) -- this must become a durable, visible failure, not
+    # another silent defer.
+    assert watcher._needs_work(f) is False
+    record = watcher._cursor.get_record(f)
+    assert record is not None
+    assert record.failure_count == 1
 
 
 def test_last_complete_newline_from_tail_reads_only_final_chunk(tmp_path: Path) -> None:

@@ -1,11 +1,12 @@
 {
   "functions": {
     "polylogue/archive/artifact_taxonomy/runtime.py:classify_artifact": {
-      "fingerprint": "e2c3110262b968d54943e91403e7c2fde02d9f893e6738f3900ebcee77f625c1",
+      "fingerprint": "549ac414a67a49c7a083004caf7666f0a79dc8ef447473b15b609454edc6e350",
       "covered_by": {
-        "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "kind": "semantic_reparse_version",
+        "reason": "provider-agnostic tool-results path override + file-history-snapshot content override",
+        "ref": "polylogue-omsw",
+        "version": 58
       }
     },
     "polylogue/archive/artifact_taxonomy/runtime.py:classify_artifact_path": {
@@ -22,6 +23,14 @@
         "kind": "acknowledged_safe",
         "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
         "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/archive/artifact_taxonomy/support.py:looks_like_file_history_snapshot_only_stream": {
+      "fingerprint": "a807f08bb16ac02caeb353e3e66603e32aee656ebca49bd9802cf19d0bf84335",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "new content-shape helper backing classify_artifact's file-history-snapshot override",
+        "ref": "polylogue-omsw"
       }
     },
     "polylogue/archive/artifact_taxonomy/support.py:looks_like_hook_event": {
@@ -182,6 +191,14 @@
         "kind": "acknowledged_safe",
         "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
         "ref": "polylogue-gucv"
+      }
+    },
+    "polylogue/sources/parsers/chatgpt.py:looks_like_shared_decode": {
+      "fingerprint": "37a68475cdef7916bf2c2552676bb7267f7aa429fc0be78c02690fbfb7ea161e",
+      "covered_by": {
+        "kind": "acknowledged_safe",
+        "reason": "New provider-shape detector for the ChatGPT shared-page stream-decode format (polylogue-4zqh3): flat messages list, no mapping key.",
+        "ref": "polylogue-4zqh3"
       }
     },
     "polylogue/sources/parsers/chatgpt_codex_sidecar.py:looks_like": {

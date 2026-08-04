@@ -21,7 +21,7 @@ import tomllib
 from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .paths import GEMINI_DRIVE_FOLDER
-from .storage.archive_identity import resolve_active_index_path
+from .storage.archive_identity import archive_file_set_root, resolve_active_index_path
 
 
 class ConfigError(PolylogueError):
@@ -151,6 +151,24 @@ class Config:
             drive_config=self.drive_config,
             index_config=self.index_config,
         )
+
+
+def active_archive_root(config: Config) -> Path:
+    """Return the archive file-set root housing the currently active database.
+
+    Deliberately follows ``config.db_path`` (not ``config.archive_root``),
+    matching the ``polylogue-yla8.1`` split-root contract used by
+    :func:`polylogue.storage.repair._raw_materialization_archive_root` and
+    :func:`polylogue.storage.raw_reconciler._archive_root`: an explicit
+    ``Config(db_path=...)`` override must be honored, and the ordinary case
+    already resolves ``config.db_path`` correctly (``.index-active-pointer``
+    -aware) inside ``Config.__init__``.
+
+    Runtime-root resolution, not facade-specific -- lives in ``config`` (the
+    core of the config ring) rather than ``polylogue.api`` so substrate rings
+    that need it are not forced to import the API facade (polylogue-exb).
+    """
+    return archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
 
 
 def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
@@ -308,28 +326,6 @@ class PolylogueConfig:
     @property
     def embedding_enabled(self) -> bool:
         return bool(self._data.get("embedding_enabled"))
-
-    @property
-    def observability_enabled(self) -> bool:
-        """Return whether the OTLP HTTP receiver routes are accepted.
-
-        The receiver is OFF by default (closes #1604 — the routes were
-        previously unconditionally enabled in front of the auth gate
-        despite a code comment claiming otherwise). Operators opt in
-        via TOML ``[observability] enabled = true`` or the env var
-        ``POLYLOGUE_OBSERVABILITY_ENABLED=1``.
-        """
-        return bool(self._data.get("observability_enabled"))
-
-    @property
-    def otlp_max_body_bytes(self) -> int:
-        """Maximum accepted Content-Length for OTLP POST bodies.
-
-        Default 8 MiB matches typical OTLP exporter batch sizes; clients
-        sending more receive 413. Configurable via TOML
-        ``[observability] otlp_max_body_bytes = ...`` or env ``POLYLOGUE_OTLP_MAX_BODY_BYTES``.
-        """
-        return int(str(self._data.get("otlp_max_body_bytes", 8 * 1024 * 1024)))
 
     @property
     def embedding_model(self) -> str:
@@ -1113,22 +1109,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         ),
     ),
     ConfigInventoryEntry(
-        "observability_enabled",
-        toml_path="observability.enabled",
-        env_var="POLYLOGUE_OBSERVABILITY_ENABLED",
-        owner_class="network-security",
-        reload_behavior="request-time",
-        description="Enable OTLP/observability HTTP ingestion routes.",
-    ),
-    ConfigInventoryEntry(
-        "otlp_max_body_bytes",
-        toml_path="observability.otlp_max_body_bytes",
-        env_var="POLYLOGUE_OTLP_MAX_BODY_BYTES",
-        owner_class="resource-policy",
-        reload_behavior="request-time",
-        description="Maximum accepted OTLP request body size.",
-    ),
-    ConfigInventoryEntry(
         "force_plain",
         toml_path="logging.force_plain",
         env_var="POLYLOGUE_FORCE_PLAIN",
@@ -1607,7 +1587,6 @@ _INT_CONFIG_KEYS = frozenset(
         "health_blob_integrity_sample_size",
         "notification_email_port",
         "notification_email_max_per_hour",
-        "otlp_max_body_bytes",
         "ingest_commit_batch_messages",
         "live_full_ingest_workers",
         "judgment_automation_interval_s",
@@ -1641,7 +1620,6 @@ _BOOL_CONFIG_KEYS = frozenset(
         "debug_timing",
         "notification_email_use_tls",
         "notification_email_use_starttls",
-        "observability_enabled",
         "mcp_write_enabled",
         "mcp_judge_enabled",
         "mcp_maintenance_enabled",
@@ -1786,8 +1764,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_port": 8765,
         "browser_capture_allowed_origins": "chrome-extension://*",
         "embedding_enabled": False,
-        "observability_enabled": False,
-        "otlp_max_body_bytes": 8 * 1024 * 1024,
         "embedding_model": "voyage-4",
         "embedding_dimension": 1024,
         "embedding_max_cost_usd": 5.0,
@@ -2020,12 +1996,6 @@ def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
             continue
         cfg[entry.key] = tuple(value) if isinstance(value, list) else value
 
-    # Back-compat for early observability TOML examples that used top-level
-    # scalar keys before the inventory made the section explicit.
-    for legacy_key in ("observability_enabled", "otlp_max_body_bytes"):
-        if legacy_key in toml_data:
-            cfg[legacy_key] = toml_data[legacy_key]
-
 
 def _coerce_env_value(cfg_key: str, env_var: str, value: str) -> object:
     """Coerce environment values according to the config inventory key type.
@@ -2098,10 +2068,6 @@ class ResolvedArchivePaths:
     browser_capture_receiver_token_path: Path
     hook_sidecar_root: Path
     drive_cache_root: Path
-
-    @property
-    def active_index_db(self) -> Path:
-        return self.index_db
 
 
 @dataclass(frozen=True, slots=True)

@@ -191,6 +191,51 @@ def test_soundness_sweep_exclude_then_revive_with_proved_identity_change(tmp_pat
     assert classify_cursor_lifecycle_state(after) is _S.ACTIVE
 
 
+def test_soundness_sweep_exclude_then_revive_with_parser_fingerprint_change(tmp_path: Path) -> None:
+    """polylogue-ix5r: a parser fingerprint change revives an excluded cursor
+    even when the file's bytes never changed -- the previous identity-only
+    revival left a cursor permanently dark once its bytes stopped changing,
+    even after the parser bug that poisoned it was fixed."""
+    store = CursorStore(tmp_path / "live.sqlite")
+    path = tmp_path / "session.jsonl"
+    path.write_text("{}\n")
+    store.set(path, path.stat().st_size, st_dev=1, st_ino=1, mtime_ns=1, parser_fingerprint="parser-v1")
+
+    store.mark_excluded(path)
+    excluded = store.get_record(path)
+    assert excluded is not None
+    assert excluded.excluded
+
+    # Same identity, same parser fingerprint: still a documented no-op.
+    before = excluded
+    store.revive_replaced_exclusion(
+        path,
+        byte_size=before.byte_size,
+        st_dev=1,
+        st_ino=1,
+        mtime_ns=1,
+        current_parser_fingerprint="parser-v1",
+    )
+    after = store.get_record(path)
+    _assert_declared(before, "revive_replaced_exclusion", after)
+    assert classify_cursor_lifecycle_state(after) is _S.EXCLUDED
+
+    # Same identity, DIFFERENT parser fingerprint: revives.
+    assert after is not None
+    before = after
+    store.revive_replaced_exclusion(
+        path,
+        byte_size=before.byte_size,
+        st_dev=1,
+        st_ino=1,
+        mtime_ns=1,
+        current_parser_fingerprint="parser-v2",
+    )
+    after = store.get_record(path)
+    _assert_declared(before, "revive_replaced_exclusion", after)
+    assert classify_cursor_lifecycle_state(after) is _S.ACTIVE
+
+
 # ---------------------------------------------------------------------------
 # 3. Real production guard against the discovered hazard: defer must never
 #    observe/emit EXCLUDED.

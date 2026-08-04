@@ -6,19 +6,13 @@ from typing import get_args
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.core.enums import (
-    BlockType,
     BranchType,
     LinkType,
-    MaterialOrigin,
-    MessageType,
     Origin,
     PasteBoundary,
-    Role,
     SessionKind,
     SessionRefKind,
-    StopReason,
     TitleSource,
-    ToolResultUnknownReason,
     TopologyEdgeStatus,
     WebConstructType,
 )
@@ -28,6 +22,7 @@ from polylogue.storage.fts.sql import (
     FTS_TRIGGER_DDL,
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
     check,
@@ -223,7 +218,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # raw evidence recovers the corrected identity split. `polylogue ops reset
 # --index && polylogued run` is required; deliberately NOT executed by this
 # declaration.
-INDEX_SCHEMA_VERSION = 55
 
 # PR #3537: tightened `claude.looks_like_ai` (polylogue/sources/parsers/
 # claude/ai_parser.py) to require at least one `chat_messages` entry
@@ -308,7 +302,131 @@ INDEX_SCHEMA_VERSION = 55
 # correctly-ingested subagent transcript). Brand-new table, no existing
 # archive has any rows to migrate -- CONSTRAINT_ONLY/REPLACE_TABLE fast-
 # forwards to a plain create, same shape as v33's `insight_materialization`.
-INDEX_SCHEMA_VERSION = 57
+# polylogue-omsw: v58 declares the classification change made to
+# `archive.artifact_taxonomy.classify_artifact`/`classify_artifact_path`:
+# (1) a `tool-results/<name>.json` sidecar now refuses session
+# classification even when the caller-supplied provider hint is not
+# Claude Code (a generic/ad-hoc acquisition route resolving "unknown"), and
+# (2) a `projects/<proj>/<uuid>.jsonl` file whose every record is a
+# `file-history-snapshot`/`progress` checkpoint now refuses session
+# classification via positive content evidence overriding the path-only
+# `coordinator_session_stream` rule. Both are pure classification-decision
+# changes over identical input bytes -- the same v42/v44/v45/v46/v48
+# "SEMANTIC_REPARSE, no clone-safe SQL delta" shape: only re-parsing
+# recovers the correct classification for already-acquired raw evidence.
+# Read-only live census at declaration time (source.db, 2026-08-03): 3
+# tool-results rows (toolu_013w7YLBZHwsaNtDn9RVdHKG et al., matching the
+# operator's own prior investigation) found via
+# `devtools workspace tool-result-history-sweep`; 0 file-history-snapshot-
+# only raw rows found in the same scan (that estimate's ~214 count applied
+# to index.db zero-message sessions, not raw_sessions rows -- some or all
+# may already have been swept by an intervening full reindex). `polylogue
+# ops reset --index && polylogued run` is required to apply this;
+# deliberately NOT executed by this declaration.
+# polylogue-4987i: v59 makes Claude Code session_events ordering deterministic
+# and chunk-count-invariant (order_session_events/reconcile_code_session_chunks,
+# code_parser.py). Previously, eager parsing (full-corpus reindex) and
+# streaming/chunked parsing (live incremental ingest of a session interleaved
+# with another session's records in the same JSONL -- a common shape for
+# subagent/resume sessions) could produce the SAME session_events content in a
+# DIFFERENT order for byte-identical raw input, because each streaming chunk
+# independently appended its own end-of-chunk summary events (coverage,
+# background-completion, delegation-progress) instead of a session-wide
+# accumulation. content_hash embeds each event's list position
+# (`event_index`, pipeline/ids.py:_session_hash_components), so this was a
+# genuine content-hash instability: reindexing a session that was originally
+# ingested incrementally could compute a different hash purely from which
+# code path produced it, triggering spurious "content changed" reprocessing.
+# Fix: both paths now sort session_events by (timestamp, event-type tier,
+# encounter index) and streaming's chunk-merge fully accumulates coverage/
+# delegation-progress across chunks (not just background-completion) before
+# that sort, so the order depends only on parsed content, never on chunk
+# count. Read-only live spot-check (source.db, 2026-08-03, 25 smallest
+# claude-code-session rows sampled): eager-parsed content_hash is BYTE-
+# IDENTICAL before/after this change for every non-interleaved (single-
+# chunk) sample -- the fix is a no-op for the common case. Hash drift is
+# expected and acknowledged ONLY for sessions whose raw source file
+# genuinely interleaves two sessions' records (forcing multi-chunk
+# streaming) and that were originally ingested via the streaming path with
+# the old buggy order -- same v42/v44/v45/v46/v48/v58 "SEMANTIC_REPARSE, no
+# clone-safe SQL delta" shape.
+# polylogue-taj0o Stage 2: unifies Claude Code eager and streaming parsing
+# into ONE incremental multi-way merge (dispatch.py's
+# `_claude_code_multiway_parse`, replacing the former
+# `_claude_code_grouped_record_specs` eager grouping and
+# `_claude_code_stream_sessions` streaming chunker, plus
+# `merge_parsed_session_chunks`'s Claude-Code branch and
+# `reconcile_code_session_chunks`, both deleted). Folds every record for one
+# session id into the SAME `_SessionAccumulator` across the whole record
+# stream, finalizing once at true end of input -- eliminates the
+# eager-vs-streaming duplication v59 already fixed the *ordering* symptom
+# of. Also resolves the "three-way duplication" identity-conflict finding
+# (bd polylogue-taj0o notes): the canonical "primary" group for a file
+# containing more than one interleaved Claude Code session is now ALWAYS
+# the group whose own sessionId equals the caller's fallback_id (streaming's
+# former rule), never eager's former max-by-record-count rule, which could
+# pick the wrong group as primary for a small main session sharing a file
+# with a much larger subagent transcript. `provider_session_id`/
+# `parent_session_id`/`branch_type` can change for any already-materialized
+# claude-code-session whose raw file both interleaves more than one session
+# AND has a non-fallback_id-matching group with the largest record count --
+# SEMANTIC_REPARSE, not a free fast-forward: no DDL change, only re-parsing
+# already-acquired raw evidence recovers the corrected identity split.
+# `polylogue ops reset --index && polylogued run` is required; deliberately
+# NOT executed by this declaration.
+# v61 (polylogue-resk): drops session_model_usage.priced_with/priced_at_ms
+# and narrows the CHECK that referenced priced_with -- both were write-only
+# outside tests (zero production SELECTs), and the FK target price_catalogs
+# is dropped in the same change via the index-tier benign-DDL registry (see
+# index_convergence.py). CONSTRAINT_ONLY/dead-column-removal, same shape as
+# v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
+# copy-forward on every other column via the fast-forward executor's
+# REPLACE_TABLE path. Does NOT touch session_profiles.priced_with/
+# priced_at_ms, a different pair of columns with a real production reader
+# (daemon/http.py's session-insights panel) -- see the price_catalogs
+# removal comment above session_model_usage's DDL for the full distinction.
+# polylogue-664l: v62 batches two column-level dead-weight removals found by
+# the 2026-07-31 producer/consumer audit, both clone-safe (no re-parse of raw
+# evidence needed -- remaining/unchanged columns carry byte-identical values):
+#  - session_provider_usage_events drops 9 write-only columns:
+#    model_context_window plus the 8 Hermes billing-provenance columns
+#    (estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+#    pricing_version, billing_provider, billing_base_url, billing_mode).
+#    Every write site (`_provider_usage_event_row` in write.py) populates
+#    them from `ParsedSessionEvent.payload`, but no reader anywhere in the
+#    repo ever selects them -- confirmed by re-auditing `storage/usage.py`
+#    (the only production reader of this table), which reads only the
+#    `last_*`/`total_*` token counters. Same "cache/copy with zero readers"
+#    shape as v41's `action_pairs` text-copy removal.
+#  - attachment_native_ids.id_kind's CHECK narrows from 5 members to 4,
+#    dropping 'source'. Re-auditing confirmed 'url' IS read (the generic
+#    `search_attachment_identity_evidence_hits` identity-search query in
+#    `storage/sqlite/queries/attachment_records.py` joins ALL id_kind rows,
+#    not just attachment/file/drive, contrary to the audit's original
+#    "readers pull attachment/file/drive only" claim for 'url') -- so 'url'
+#    is kept. 'source' has zero producers anywhere in the repo
+#    (`_write_attachment_native_ids` in write.py only ever writes
+#    attachment/file/drive/url) and zero live rows can exist by
+#    construction, so narrowing the CHECK rejects nothing on any real
+#    archive -- CONSTRAINT_ONLY, the same v33/v36/v51/v52 "tightening over
+#    unchanged values" precedent.
+#  - The other two column-level findings from the same audit (bead
+#    polylogue-664l) were re-verified and found stale on current source, so
+#    no DDL change accompanies them here: `insight_materialization`'s CHECK
+#    vocabulary (9 values) is fully live (every value has a real writer in
+#    `rebuild.py`/`write.py`); the registry entries with no per-session
+#    ledger row are either `readiness_exempt=True` (query-time aggregates
+#    with no separate materialized state to go stale: archive_coverage,
+#    tool_usage, session_costs, cost_rollups, usage_timeline, archive_debt)
+#    or `session_tag_rollups`, which has its own dedicated non-session-scoped
+#    staleness query (`STALE_SESSION_TAG_ROLLUP_COUNT_SQL` in
+#    `storage/insights/session/status.py`) because it isn't keyed by
+#    session_id at all. `input_high_water_mark_source` is read broadly
+#    across public surfaces (`insights/archive.py`'s `time_confidence_for_
+#    source`, `daemon/http.py` status payloads), not confined to
+#    repair/status internals. price_catalogs metadata is out of scope here
+#    (table-level finding, tracked separately by polylogue-resk).
+INDEX_SCHEMA_VERSION = 62
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -513,45 +631,7 @@ ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS messages (
-    message_id          TEXT GENERATED ALWAYS AS (
-                            session_id || ':' || COALESCE(native_id, position || '.' || variant_index)
-                        ) STORED UNIQUE,
-    session_id          TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    native_id           TEXT,
-    parent_message_id   TEXT REFERENCES messages(message_id) ON DELETE SET NULL,
-    position            INTEGER NOT NULL CHECK(position >= 0),
-    role                TEXT NOT NULL CHECK ({check("role", Role)}),
-    message_type        TEXT NOT NULL DEFAULT 'message' CHECK ({check("message_type", MessageType)}),
-    material_origin     TEXT NOT NULL DEFAULT 'unknown' CHECK ({check("material_origin", MaterialOrigin)}),
-    model_name          TEXT,
-    model_effort        TEXT,
-    sender_name         TEXT,
-    recipient           TEXT,
-    delivery_status     TEXT,
-    end_turn            INTEGER CHECK(end_turn IN (0, 1) OR end_turn IS NULL),
-    user_context_text   TEXT,
-    has_tool_use        INTEGER NOT NULL DEFAULT 0 CHECK(has_tool_use IN (0, 1)),
-    has_thinking        INTEGER NOT NULL DEFAULT 0 CHECK(has_thinking IN (0, 1)),
-    has_paste           INTEGER NOT NULL DEFAULT 0 CHECK(has_paste IN (0, 1)),
-    paste_boundary      TEXT CHECK ({nullable_check("paste_boundary", PasteBoundary)}),
-    variant_index       INTEGER NOT NULL DEFAULT 0 CHECK(variant_index >= 0),
-    is_active_path      INTEGER NOT NULL DEFAULT 1 CHECK(is_active_path IN (0, 1)),
-    is_active_leaf      INTEGER NOT NULL DEFAULT 0 CHECK(is_active_leaf IN (0, 1)),
-    word_count          INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0),
-    input_tokens        INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
-    output_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
-    cache_read_tokens   INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
-    cache_write_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
-    duration_ms         INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0),
-    content_hash        BLOB NOT NULL {CONTENT_HASH_CHECK},
-    occurred_at_ms      INTEGER,
-    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): the provider's own terminal-
-    -- state signal for this assistant turn (608,608 occurrences on the
-    -- Claude wire). Feeds terminal_state/result_status readers directly
-    -- instead of the 85-99%-unknown derived guesses those columns hold
-    -- today. NULL means the provider did not report one (or this is not an
-    -- assistant turn), never a guess.
-    stop_reason         TEXT CHECK ({nullable_check("stop_reason", StopReason)}),
+    {MESSAGES_SPEC.ddl_column_definitions},
     PRIMARY KEY(session_id, position, variant_index)
 ) STRICT;
 
@@ -610,69 +690,7 @@ ON messages(session_id, is_active_leaf)
 WHERE is_active_leaf = 1;
 
 CREATE TABLE IF NOT EXISTS blocks (
-    block_id        TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE,
-    message_id      TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE,
-    session_id      TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    position        INTEGER NOT NULL CHECK(position >= 0),
-    block_type      TEXT NOT NULL CHECK ({check("block_type", BlockType)}),
-    text            TEXT,
-    tool_name       TEXT,
-    tool_id         TEXT,
-    tool_input      TEXT CHECK ({json_object_check("tool_input", nullable=True)}),
-    semantic_type   TEXT,
-    media_type      TEXT,
-    language        TEXT,
-    tool_result_is_error  INTEGER CHECK (tool_result_is_error IN (0, 1)),
-    tool_result_exit_code INTEGER,
-    -- polylogue-2qx.4 / polylogue-cuxz.8 (v46): why tool_result_is_error is
-    -- NULL for this block, when it is a tool_result. Collapsing "provider
-    -- emitted nothing", "parser deliberately distrusts the reported value",
-    -- and "this origin's parser does not read the field" into one flat NULL
-    -- was the defect (72% of blocks.tool_result_is_error is NULL
-    -- archive-wide) -- all three are knowable at parse time. NULL here means
-    -- the outcome IS known (tool_result_is_error is set), never "unknown of
-    -- an unknown reason".
-    tool_result_outcome_unknown_reason TEXT
-        CHECK ({nullable_check("tool_result_outcome_unknown_reason", ToolResultUnknownReason)}),
-    -- polylogue-vf9x (v49): provider-issued cryptographic attestation for a
-    -- THINKING block (Claude's extended-thinking `signature`; Gemini's
-    -- `thoughtSignatures` are the same construct). Populated whenever the
-    -- wire carries one -- notably including the empty-body thinking blocks
-    -- Claude Code has shipped since ~2026-06, where this is the only
-    -- surviving evidence besides the block's existence. Deliberately
-    -- excluded from content_hash below and from the lineage prefix
-    -- signature (write.py): providers re-sign on every replay, so including
-    -- it would break fork-prefix/citation-anchor matching for otherwise-
-    -- identical replayed content.
-    signature       TEXT,
-    -- svfj: the citation anchor atom. Hashes canonical block EVIDENCE only
-    -- (type, text, tool_name, canonical tool_input, semantic/media/language,
-    -- is_error, exit_code) -- deliberately EXCLUDING session_id/message_id/
-    -- position/tool_id so the hash survives fork-position shift, re-ingest,
-    -- and provider tool-id regeneration. Nullable (not every low-level test
-    -- fixture / raw SQL writer populates it) -- the real write path always
-    -- sets it; the resolver treats a NULL row as its own state, never a crash.
-    content_hash    BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32),
-    tool_command    TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL,
-    tool_path       TEXT GENERATED ALWAYS AS (
-                        COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))
-                    ) VIRTUAL,
-    search_text     TEXT GENERATED ALWAYS AS (
-                        trim(COALESCE(text, '') || ' ' ||
-                             COALESCE(tool_name, '') || ' ' ||
-                             COALESCE(json_extract(tool_input, '$.command'), '') || ' ' ||
-                             COALESCE(json_extract(tool_input, '$.file_path'), '') || ' ' ||
-                             COALESCE(json_extract(tool_input, '$.path'), ''))
-                    ) VIRTUAL,
-    -- ohbx: lowercased command+path text for substring lookups (e.g. "did
-    -- this bash/exec_command block invoke `polylogue`?") that need LIKE
-    -- '%x%' semantics, not FTS token matching. Backs blocks_command_trigram
-    -- below -- a plain LIKE scan here recomputes tool_command/tool_path's
-    -- json_extract for every generic-tool row in the archive (measured
-    -- ~70s over 915K rows on a 26GB archive).
-    tool_detail_text TEXT GENERATED ALWAYS AS (
-                        lower(COALESCE(tool_command, '') || ' ' || COALESCE(tool_path, ''))
-                    ) VIRTUAL,
+    {BLOCKS_SPEC.ddl_column_definitions},
     PRIMARY KEY(message_id, position)
 ) STRICT;
 
@@ -1262,7 +1280,7 @@ CREATE TABLE IF NOT EXISTS attachment_refs (
 
 CREATE TABLE IF NOT EXISTS attachment_native_ids (
     ref_id     TEXT NOT NULL REFERENCES attachment_refs(ref_id) ON DELETE CASCADE,
-    id_kind    TEXT NOT NULL CHECK(id_kind IN ('attachment', 'file', 'drive', 'source', 'url')),
+    id_kind    TEXT NOT NULL CHECK(id_kind IN ('attachment', 'file', 'drive', 'url')),
     native_id  TEXT NOT NULL,
     PRIMARY KEY(ref_id, id_kind, native_id)
 ) STRICT;
@@ -1305,20 +1323,22 @@ CREATE TABLE IF NOT EXISTS paste_spans (
 CREATE INDEX IF NOT EXISTS idx_paste_spans_session
 ON paste_spans(session_id);
 
-CREATE TABLE IF NOT EXISTS price_catalogs (
-    catalog_id       TEXT PRIMARY KEY,
-    catalog_hash     TEXT NOT NULL,
-    source_name      TEXT NOT NULL,
-    effective_at_ms  INTEGER,
-    loaded_at_ms     INTEGER NOT NULL
-) STRICT;
-
 -- model_prices and session_reported_costs were dropped (polylogue-v2mg):
 -- zero-consumer tables converged away by the index-tier same-version
 -- benign-DDL registry (archive_tiers/index_convergence.py) rather than kept
--- in canonical DDL. Cost computation resolves per-model rates from the
--- in-process pricing catalog; price_catalogs (below) remains the genuinely
--- read catalog-identity table.
+-- in canonical DDL. price_catalogs was dropped the same way (polylogue-resk,
+-- v61): v2mg's stated justification for keeping it ("session_model_usage.
+-- priced_with FK, active_price_catalog_id" are genuine reads) measured false
+-- in all three particulars -- priced_with/priced_at_ms had zero production
+-- SELECTs (write-only outside tests), and active_price_catalog_id's only
+-- caller was a test. Cost computation resolves per-model rates from the
+-- in-process pricing catalog (polylogue.archive.semantic.pricing.PRICING),
+-- never round-tripping through a DB-backed mirror or catalog-identity table.
+-- NOTE: session_profiles.priced_with/priced_at_ms are a DIFFERENT, unrelated
+-- pair of columns (no FK to price_catalogs, sourced from cost_compute.py's
+-- _PRICE_SNAPSHOT_VERSION) that genuinely are read back (daemon/http.py's
+-- _profile_panel_payload serves them in the session-insights reader panel)
+-- -- they are kept.
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
     session_id              TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -1328,17 +1348,15 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cache_read_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
     cache_write_tokens      INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
     message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
-    priced_with             TEXT REFERENCES price_catalogs(catalog_id) ON DELETE SET NULL,
-    priced_at_ms            INTEGER,
     cost_usd                REAL,
     cost_credits            REAL,
     cost_provenance         TEXT CHECK(cost_provenance IN ('origin_reported', 'priced', 'estimated') OR cost_provenance IS NULL),
     -- polylogue-shnc (v49): a provenance label that ASSERTS pricing evidence
     -- must actually carry that evidence -- the forensic audit found 5,016
-    -- live rows with cost_provenance='priced' and cost_usd/priced_with both
-    -- NULL (a self-contradiction worse than an honest NULL provenance) and
-    -- 3,417 'origin_reported' rows with cost_usd NULL despite the rollup
-    -- writer's own naming implying a reported dollar figure existed.
+    -- live rows with cost_provenance='priced' and cost_usd NULL (a
+    -- self-contradiction worse than an honest NULL provenance) and 3,417
+    -- 'origin_reported' rows with cost_usd NULL despite the rollup writer's
+    -- own naming implying a reported dollar figure existed.
     -- 'origin_reported' is reserved for a genuine provider-reported dollar
     -- total (sessions.reported_cost_usd, polylogue-gt1z) copied onto a
     -- session_model_usage row; provider-usage-event TOKEN rollups (Codex
@@ -1346,9 +1364,10 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     -- write.py's _price_provider_usage_tokens) -- conflating the two made a
     -- catalog estimate read as if the provider itself reported that dollar
     -- figure downstream (archive.py's list_cost_rollup_insights basis split).
-    CHECK (
-        cost_provenance != 'priced' OR (cost_usd IS NOT NULL AND priced_with IS NOT NULL)
-    ),
+    -- polylogue-resk (v61): the CHECK's ``priced_with IS NOT NULL`` half was
+    -- dropped along with the column itself; ``cost_usd IS NOT NULL`` alone
+    -- still makes the shnc self-contradiction unrepresentable.
+    CHECK (cost_provenance != 'priced' OR cost_usd IS NOT NULL),
     CHECK (cost_provenance != 'origin_reported' OR cost_usd IS NOT NULL),
     PRIMARY KEY(session_id, model_name)
 ) STRICT;
@@ -1372,15 +1391,6 @@ CREATE TABLE IF NOT EXISTS session_provider_usage_events (
     total_cache_write_tokens       INTEGER NOT NULL DEFAULT 0 CHECK(total_cache_write_tokens >= 0),
     total_reasoning_output_tokens  INTEGER NOT NULL DEFAULT 0 CHECK(total_reasoning_output_tokens >= 0),
     total_tokens                   INTEGER NOT NULL DEFAULT 0 CHECK(total_tokens >= 0),
-    model_context_window           INTEGER CHECK(model_context_window IS NULL OR model_context_window >= 0),
-    estimated_cost_usd              REAL,
-    actual_cost_usd                 REAL,
-    cost_status                     TEXT,
-    cost_source                     TEXT,
-    pricing_version                 TEXT,
-    billing_provider                TEXT,
-    billing_base_url                TEXT,
-    billing_mode                    TEXT,
     occurred_at_ms                 INTEGER,
     PRIMARY KEY(session_id, position)
 ) STRICT;

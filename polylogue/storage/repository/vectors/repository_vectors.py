@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.core.protocols import VectorProvider
 from polylogue.logging import get_logger
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
 
 def resolve_optional_vector_provider(
     vector_provider: VectorProvider | None,
+    *,
+    db_path: Path | None = None,
+    voyage_api_key: str | None = None,
 ) -> VectorProvider | None:
     """Resolve the explicitly supplied provider or create the default one."""
     if vector_provider is not None:
@@ -28,10 +32,14 @@ def resolve_optional_vector_provider(
 
     from polylogue.storage.search_providers import create_vector_provider
 
-    return create_vector_provider()
+    return create_vector_provider(voyage_api_key=voyage_api_key, db_path=db_path)
 
 
 logger = get_logger(__name__)
+
+
+class _SessionEmbeddingCounter(Protocol):
+    def count_session_embeddings(self, session_id: str) -> int: ...
 
 
 class RepositoryVectorMixin:
@@ -73,6 +81,79 @@ class RepositoryVectorMixin:
         )[:limit]
 
         return await self.get_many(ranked_ids)
+
+    async def search_similar_sessions(
+        self,
+        session_id: str,
+        limit: int = 10,
+        vector_provider: VectorProvider | None = None,
+        provider_db_path: Path | None = None,
+        voyage_api_key: str | None = None,
+    ) -> dict[str, object]:
+        """Rank sessions from ``query_by_session`` message hits.
+
+        The vector provider owns KNN ordering. This repository operation only
+        resolves each returned message to its session, keeps the closest hit
+        per session, and hydrates the metadata needed by read surfaces.
+        """
+        vector_provider = resolve_optional_vector_provider(
+            vector_provider,
+            db_path=provider_db_path,
+            voyage_api_key=voyage_api_key,
+        )
+        if vector_provider is None:
+            raise ValueError("No vector provider configured")
+
+        source_embedded_messages = await asyncio.to_thread(
+            cast(_SessionEmbeddingCounter, vector_provider).count_session_embeddings,
+            session_id,
+        )
+        results = await asyncio.to_thread(
+            vector_provider.query_by_session,
+            session_id,
+            limit=limit,
+        )
+        if not results:
+            return {
+                "source_embedded_messages": source_embedded_messages,
+                "results": [],
+            }
+
+        message_ids = [message_id for message_id, _ in results]
+        message_to_session = await self._get_message_session_mapping(message_ids)
+        aggregates: dict[str, tuple[float, set[str]]] = {}
+        for message_id, distance in results:
+            candidate_id = message_to_session.get(message_id)
+            if candidate_id is None or candidate_id == session_id:
+                continue
+            best_distance, matched_messages = aggregates.setdefault(candidate_id, (float("inf"), set()))
+            matched_messages.add(message_id)
+            aggregates[candidate_id] = (min(best_distance, distance), matched_messages)
+
+        ranked = sorted(aggregates.items(), key=lambda item: (item[1][0], item[0]))[:limit]
+        sessions = await self.get_many([candidate_id for candidate_id, _ in ranked])
+        sessions_by_id = {str(session.id): session for session in sessions}
+
+        hits: list[dict[str, object]] = []
+        for candidate_id, (distance, matched_messages) in ranked:
+            candidate = sessions_by_id.get(candidate_id)
+            if candidate is None:
+                continue
+            score = max(0.0, min(1.0, 1.0 - (distance * distance) / 2.0))
+            hits.append(
+                {
+                    "session_id": candidate_id,
+                    "score": score,
+                    "distance": distance,
+                    "matched_message_count": len(matched_messages),
+                    "title": candidate.title,
+                    "origin": str(candidate.origin),
+                }
+            )
+        return {
+            "source_embedded_messages": source_embedded_messages,
+            "results": hits,
+        }
 
     async def _get_message_session_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         if not message_ids:

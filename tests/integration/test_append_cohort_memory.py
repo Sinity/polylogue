@@ -212,7 +212,9 @@ def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path
     """Anti-vacuity: restoring unconditional classification breaks this route."""
     plan = _seed_cohort_and_append_plan(tmp_path)
 
-    with patch.object(ArchiveStore, "classify_raw_revision_cohort", side_effect=AssertionError("cohort route removed")):
+    with patch.object(
+        ArchiveStore, "classify_raw_revision_cohort_for_live_watch", side_effect=AssertionError("cohort route removed")
+    ):
         result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
 
     assert result.succeeded == [plan]

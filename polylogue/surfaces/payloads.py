@@ -11,9 +11,10 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, cast
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model, field_validator, model_validator
 from typing_extensions import Self, TypedDict
 
+from polylogue.archive.models import Message, Session, SessionSummary
 from polylogue.archive.query.search_hits import bound_display_title
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.core.assertions import AssertionContextTrustClass
@@ -76,7 +77,6 @@ if TYPE_CHECKING:
     from collections.abc import Container
 
     from polylogue.annotations.batch import AnnotationBatch
-    from polylogue.archive.models import Message, Session, SessionSummary
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import NeighborReason, SessionNeighborCandidate
     from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -651,308 +651,6 @@ def reader_message_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     }
 
 
-class SessionMessagePayload(SurfacePayloadModel):
-    """Machine-readable message payload shared across CLI and MCP surfaces.
-
-    #1487: this is the canonical ``MessageRenderEnvelope`` for every
-    reader entry. Both session-detail and paginated-message
-    endpoints emit this exact shape so the UI can render parent/branch
-    state, paste/attachment flags, raw/source refs, usage/cost
-    metadata, and disabled actions without per-endpoint special cases.
-
-    Every field beyond the original id/role/text/target_ref/anchor/
-    actions/timestamp/message_type/blocks/parent_id set is
-    additive with sensible default — so existing callers that only
-    set the original fields continue to work unchanged.
-    """
-
-    id: str
-    role: str
-    text: str
-    target_ref: TargetRefPayload | None = None
-    anchor: str | None = None
-    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_message_actions)
-    timestamp: datetime | None = None
-    message_type: str = "message"
-    material_origin: str = "unknown"
-    content_blocks: list[dict[str, object]] = Field(default_factory=list)
-    parent_id: str | None = None
-    # #1487 envelope: branch/lineage state.
-    branch_index: int = 0
-    # polylogue-ksgg: ordinal position within the session (storage:
-    # messages.position), independent of branch_index (sibling creation
-    # order). Needed to reconstruct display order without direct SQL.
-    position: int = 0
-    # polylogue-ksgg: provider-reported "this sibling is on the live path"
-    # signal (storage: messages.is_active_path). ``None`` means unknown --
-    # the read path did not select the column or the provider has no branch
-    # concept -- never collapse unknown to "not active".
-    is_active_path: bool | None = None
-    # polylogue-ksgg: whether this message is the tip of the currently-active
-    # branch (storage: messages.is_active_leaf) -- the message a reader would
-    # resume from, distinct from interior is_active_path membership.
-    is_active_leaf: bool = False
-    # #1487 envelope: per-message content flags. Surface what the storage
-    # layer already projects (#1201/#1583) so the reader does not have
-    # to re-derive them from the rendered text.
-    has_paste_evidence: bool = False
-    has_tool_use: bool = False
-    has_thinking: bool = False
-    # #1487 envelope: usage/cost metadata. Carries through from parsers
-    # that populated token counts (claude-code session JSONL records
-    # usage; codex sometimes does). All four default to zero so
-    # rendering paths can compute cost without dispatching on presence.
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    model_name: str | None = None
-    # #1487 envelope: provider attachment identifiers for the message.
-    # Tuple (immutable + ordered) so the reader can render them in
-    # parser order and the test contract pins exact equality.
-    attachment_refs: tuple[str, ...] = ()
-    # #1487 envelope: raw/source refs so the inspector can deep-link
-    # to provenance without re-querying. ``raw_id`` is the
-    # content-addressed blob id from ``raw_sessions``;
-    # ``source_path`` is the on-disk path the session was
-    # acquired from. Both default to None for messages whose
-    # session has no recorded raw artifact.
-    raw_id: str | None = None
-    source_path: str | None = None
-    # #1655: paste boundary state — exact, projected, whole_message_fallback,
-    # hash_only, or None when the message has no paste evidence. Projected
-    # from the stored ``messages.paste_boundary`` column.
-    paste_boundary_state: str | None = None
-
-    @classmethod
-    def from_message(
-        cls,
-        message: Message,
-        *,
-        session_id: object | None = None,
-        raw_id: str | None = None,
-        source_path: str | None = None,
-    ) -> SessionMessagePayload:
-        raw_message_type = getattr(message, "message_type", None)
-        if raw_message_type is None:
-            message_type = "message"
-        elif hasattr(raw_message_type, "value"):
-            message_type = str(raw_message_type.value)
-        else:
-            message_type = str(raw_message_type)
-        raw_material_origin = getattr(message, "material_origin", None)
-        if raw_material_origin is None:
-            material_origin = "unknown"
-        elif hasattr(raw_material_origin, "value"):
-            material_origin = str(raw_material_origin.value)
-        else:
-            material_origin = str(raw_material_origin)
-        target_ref = (
-            TargetRefPayload.message(session_id=session_id, message_id=message.id) if session_id is not None else None
-        )
-        attachment_refs = tuple(
-            str(getattr(attachment, "id", ""))
-            for attachment in getattr(message, "attachments", ())
-            if getattr(attachment, "id", None)
-        )
-        return cls(
-            id=str(message.id),
-            role=role_label(message.role),
-            text=message.text or "",
-            target_ref=target_ref,
-            anchor=reader_anchor("message", message.id),
-            timestamp=message.timestamp,
-            message_type=message_type,
-            material_origin=material_origin,
-            content_blocks=message.blocks,
-            parent_id=message.parent_id,
-            branch_index=int(getattr(message, "branch_index", 0) or 0),
-            position=int(getattr(message, "position", 0) or 0),
-            is_active_path=getattr(message, "is_active_path", None),
-            is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
-            has_paste_evidence=bool(getattr(message, "has_paste", False)),
-            paste_boundary_state=getattr(message, "paste_boundary_state", None),
-            has_tool_use=bool(getattr(message, "has_tool_use", False)),
-            has_thinking=bool(getattr(message, "has_thinking", False)),
-            input_tokens=int(getattr(message, "input_tokens", 0) or 0),
-            output_tokens=int(getattr(message, "output_tokens", 0) or 0),
-            cache_read_tokens=int(getattr(message, "cache_read_tokens", 0) or 0),
-            cache_write_tokens=int(getattr(message, "cache_write_tokens", 0) or 0),
-            model_name=getattr(message, "model_name", None),
-            attachment_refs=attachment_refs,
-            raw_id=raw_id,
-            source_path=source_path,
-        )
-
-    @classmethod
-    def from_archive_row(cls, message: Any, *, session_id: object) -> SessionMessagePayload:
-        """Project an ``ArchiveMessageRow`` into the canonical reader payload.
-
-        Archive-backed MCP/resource paths read split-tier row DTOs directly
-        instead of hydrating domain ``Message`` objects. Keep their message
-        envelope identical by mapping those row fields here, not in each
-        surface adapter.
-        """
-
-        message_id = str(message.message_id)
-        blocks = tuple(getattr(message, "blocks", ()))
-        text = "\n\n".join(str(block.text) for block in blocks if block.text)
-        if not text:
-            text = str(getattr(message, "text", "") or "")
-        content_blocks: list[dict[str, object]] = []
-        for block in blocks:
-            row: dict[str, object] = {
-                "type": str(getattr(block, "block_type", "")),
-                "text": str(getattr(block, "text", "") or ""),
-                "block_id": str(getattr(block, "block_id", "") or ""),
-            }
-            for source_name, target_name in (
-                ("tool_name", "tool_name"),
-                ("tool_id", "tool_id"),
-                ("semantic_type", "semantic_type"),
-            ):
-                value = getattr(block, source_name, None)
-                if value:
-                    row[target_name] = str(value)
-            content_blocks.append(row)
-        attachment_refs = tuple(
-            str(getattr(attachment, "attachment_id", ""))
-            for attachment in getattr(message, "attachments", ())
-            if getattr(attachment, "attachment_id", None)
-        )
-        return cls(
-            id=message_id,
-            role=role_label(getattr(message, "role", "")),
-            text=text,
-            target_ref=TargetRefPayload.message(session_id=session_id, message_id=message_id),
-            anchor=reader_anchor("message", message_id),
-            timestamp=(
-                _parse_optional_datetime(getattr(message, "occurred_at", None))
-                or (
-                    datetime.fromtimestamp(float(message.occurred_at_ms) / 1000.0, UTC)
-                    if getattr(message, "occurred_at_ms", None) is not None
-                    else None
-                )
-            ),
-            message_type=str(getattr(message, "message_type", "message") or "message"),
-            material_origin=str(getattr(message, "material_origin", "unknown") or "unknown"),
-            content_blocks=content_blocks,
-            parent_id=getattr(message, "parent_message_id", None),
-            branch_index=int(getattr(message, "variant_index", 0) or 0),
-            position=int(getattr(message, "position", 0) or 0),
-            is_active_path=getattr(message, "is_active_path", None),
-            is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
-            has_paste_evidence=bool(getattr(message, "has_paste", False)),
-            paste_boundary_state=getattr(message, "paste_boundary_state", None),
-            has_tool_use=bool(getattr(message, "has_tool_use", False)),
-            has_thinking=bool(getattr(message, "has_thinking", False)),
-            attachment_refs=attachment_refs,
-        )
-
-
-class SessionMessageRowPayload(SessionMessagePayload):
-    """One `read --view messages` machine-output row."""
-
-    session_id: str
-
-    @classmethod
-    def from_message(
-        cls,
-        message: Message,
-        *,
-        session_id: object | None = None,
-        raw_id: str | None = None,
-        source_path: str | None = None,
-    ) -> SessionMessageRowPayload:
-        if session_id is None:
-            msg_id = getattr(message, "id", "<unknown>")
-            raise ValueError(f"SessionMessageRowPayload requires session_id for message {msg_id}")
-        base = SessionMessagePayload.from_message(
-            message,
-            session_id=session_id,
-            raw_id=raw_id,
-            source_path=source_path,
-        )
-        return cls(session_id=str(session_id), **base.model_dump())
-
-
-class SessionSummaryPayload(SurfacePayloadModel):
-    """Compact session summary payload used by MCP/search surfaces."""
-
-    id: str
-    origin: str
-    title: str
-    title_source: str | None = None
-    title_ref: str | None = None
-    title_confidence: float | None = None
-    message_count: int
-    target_ref: TargetRefPayload | None = None
-    anchor: str | None = None
-    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
-
-    @classmethod
-    def from_session(cls, session: Session) -> SessionSummaryPayload:
-        session_id = str(session.id)
-        return cls(
-            id=session_id,
-            origin=session.origin,
-            title=session.display_title,
-            title_source=session.title_source.value if session.title_source else None,
-            title_ref=session.title_ref,
-            title_confidence=session.title_confidence,
-            message_count=len(session.messages),
-            target_ref=TargetRefPayload.session(session_id),
-            anchor=reader_anchor("session", session_id),
-            created_at=session.created_at,
-            updated_at=session.updated_at,
-        )
-
-    @classmethod
-    def from_summary(
-        cls,
-        summary: SessionSummary,
-        *,
-        message_count: int | None = None,
-    ) -> SessionSummaryPayload:
-        session_id = str(summary.id)
-        return cls(
-            id=session_id,
-            origin=summary.origin,
-            title=bound_display_title(summary.display_title, session_id),
-            title_source=summary.title_source.value if summary.title_source else None,
-            title_ref=summary.title_ref,
-            title_confidence=summary.title_confidence,
-            message_count=summary.message_count or 0 if message_count is None else message_count,
-            target_ref=TargetRefPayload.session(session_id),
-            anchor=reader_anchor("session", session_id),
-            created_at=summary.created_at,
-            updated_at=summary.updated_at,
-        )
-
-
-class SessionDetailPayload(SessionSummaryPayload):
-    """Full session detail payload with serialized messages."""
-
-    messages: tuple[SessionMessagePayload, ...]
-
-    @classmethod
-    def from_session(
-        cls,
-        session: Session,
-        *,
-        content_projection: ContentProjectionSpec | None = None,
-    ) -> SessionDetailPayload:
-        if content_projection is not None and content_projection.filters_content():
-            session = session.with_content_projection(content_projection)
-        summary = SessionSummaryPayload.from_session(session)
-        return cls(
-            **summary.model_dump(),
-            messages=tuple(SessionMessagePayload.from_message(msg, session_id=session.id) for msg in session.messages),
-        )
-
-
 class SessionFlagsPayload(SurfacePayloadModel):
     """Boolean flags summarizing session content characteristics."""
 
@@ -961,120 +659,617 @@ class SessionFlagsPayload(SurfacePayloadModel):
     has_paste_evidence: bool = False
 
 
-class SessionListRowPayload(SurfacePayloadModel):
-    """Session row payload used by CLI list, JSON, and YAML surfaces.
+_MESSAGE_MASK: tuple[tuple[str, str], ...] = (
+    ("id", "id"),
+    ("role", "role"),
+    ("text", "text"),
+    ("timestamp", "timestamp"),
+    ("blocks", "content_blocks"),
+    ("message_type", "message_type"),
+    ("material_origin", "material_origin"),
+    ("parent_id", "parent_id"),
+    ("branch_index", "branch_index"),
+    ("position", "position"),
+    ("is_active_path", "is_active_path"),
+    ("is_active_leaf", "is_active_leaf"),
+    ("has_tool_use", "has_tool_use"),
+    ("has_thinking", "has_thinking"),
+    ("has_paste", "has_paste_evidence"),
+    ("paste_boundary_state", "paste_boundary_state"),
+    ("input_tokens", "input_tokens"),
+    ("output_tokens", "output_tokens"),
+    ("cache_read_tokens", "cache_read_tokens"),
+    ("cache_write_tokens", "cache_write_tokens"),
+    ("duration_ms", "duration_ms"),
+    ("model_name", "model_name"),
+    ("stop_reason", "stop_reason"),
+)
 
-    Carries the canonical row shape for the web reader contract (#848).
-    """
+_SESSION_SUMMARY_MASK: tuple[tuple[str, str], ...] = (
+    ("id", "id"),
+    ("origin", "origin"),
+    ("title", "title"),
+    ("title_source", "title_source"),
+    ("title_ref", "title_ref"),
+    ("title_confidence", "title_confidence"),
+    ("message_count", "message_count"),
+    ("created_at", "created_at"),
+    ("updated_at", "updated_at"),
+)
 
-    id: str
-    origin: str
-    title: str
-    title_source: str | None = None
-    title_ref: str | None = None
-    title_confidence: float | None = None
-    target_ref: TargetRefPayload | None = None
-    anchor: str | None = None
-    actions: dict[str, ReaderActionAvailabilityPayload] = Field(default_factory=reader_session_actions)
-    created_at: str | None = None
-    updated_at: str | None = None
-    message_count: int = 0
-    tags: tuple[str, ...] = ()
-    summary: str | None = None
-    words: int | None = None
-    repo: str | None = None
-    cwd_display: str | None = None
-    flags: SessionFlagsPayload | None = None
-    # Recursive-graph projection (#z9gh.3): populated only for lineage-seeded
-    # (``lineage:id:<ref>``) list pages. ``parent_refs``/``child_refs`` are the
-    # session's direct one-hop lineage edges within the current page;
-    # ``continuation`` mirrors the page-level cursor (``None`` once the
-    # lineage family's last page has been served).
-    parent_refs: tuple[str, ...] | None = None
-    child_refs: tuple[str, ...] | None = None
-    continuation: str | None = None
+_SESSION_LIST_MASK: tuple[tuple[str, str], ...] = (
+    ("id", "id"),
+    ("origin", "origin"),
+    ("title", "title"),
+    ("title_source", "title_source"),
+    ("title_ref", "title_ref"),
+    ("title_confidence", "title_confidence"),
+    ("created_at", "created_at"),
+    ("updated_at", "updated_at"),
+)
 
-    @classmethod
-    def from_session(cls, session: Session, *, bound_title: bool = True) -> SessionListRowPayload:
-        """Build a row payload from a full ``Session``.
+_NO_DEFAULT = object()
 
-        ``bound_title`` defaults to ``True`` for genuine list contexts (the
-        common case). It must be passed ``False`` where this payload is
-        spliced into a *full single-session* JSON/YAML detail read
-        (``rendering/formatting.py::_conv_to_json``/``_conv_to_yaml``, via
-        ``_conv_to_dict``) -- that surface promises lossless output, and a
-        row-list title budget would silently truncate the title on every
-        ``find ... then read --format json`` call (polylogue-x7d PR #3420
-        follow-up: caught by review before merge, see PR discussion).
-        """
-        session_id = str(session.id)
-        created_at = session.created_at.isoformat() if session.created_at else None
-        updated_at = session.updated_at.isoformat() if session.updated_at else None
-        msg_count = len(session.messages)
-        title = (
-            bound_display_title(session.display_title, session_id)
-            if bound_title
-            else (session.display_title or session_id)
-        )
-        return cls(
-            id=session_id,
-            origin=session.origin,
-            title=title,
-            title_source=session.title_source.value if session.title_source else None,
-            title_ref=session.title_ref,
-            title_confidence=session.title_confidence,
-            target_ref=TargetRefPayload.session(session_id),
-            anchor=reader_anchor("session", session_id),
-            created_at=created_at,
-            updated_at=updated_at,
-            message_count=msg_count,
-            tags=tuple(session.tags),
-            summary=session.summary,
-            words=sum(message.word_count for message in session.messages),
-            repo=_session_repo(session),
-            cwd_display=_session_cwd(session),
-            flags=_build_flags_from_session(session),
-        )
 
-    @classmethod
-    def from_summary(
-        cls,
-        summary: SessionSummary,
-        *,
-        message_count: int,
-        word_count: int | None = None,
-        flags: SessionFlagsPayload | None = None,
-        repo: str | None = None,
-        cwd_display: str | None = None,
-    ) -> SessionListRowPayload:
-        session_id = str(summary.id)
-        created_at = summary.created_at.isoformat() if summary.created_at else None
-        updated_at = summary.updated_at.isoformat() if summary.updated_at else None
-        return cls(
-            id=session_id,
-            origin=summary.origin,
-            title=bound_display_title(summary.display_title, session_id),
-            title_source=summary.title_source.value if summary.title_source else None,
-            title_ref=summary.title_ref,
-            title_confidence=summary.title_confidence,
-            target_ref=TargetRefPayload.session(session_id),
-            anchor=reader_anchor("session", session_id),
-            created_at=created_at,
-            updated_at=updated_at,
-            message_count=message_count,
-            tags=tuple(summary.tags),
-            summary=summary.summary,
-            words=word_count,
-            repo=repo or _session_repo(summary),
-            cwd_display=cwd_display or _session_cwd(summary),
-            flags=flags,
-        )
+def _projection_field_definitions(
+    domain_model: type[BaseModel],
+    mask: tuple[tuple[str, str], ...],
+    *,
+    annotation_overrides: Mapping[str, object] = {},
+    default_overrides: Mapping[str, object] = {},
+) -> dict[str, tuple[object, object]]:
+    definitions: dict[str, tuple[object, object]] = {}
+    for domain_name, surface_name in mask:
+        field = domain_model.model_fields[domain_name]
+        annotation = annotation_overrides.get(surface_name, field.annotation)
+        default = default_overrides.get(surface_name, _NO_DEFAULT)
+        if default is _NO_DEFAULT:
+            if field.default_factory is not None:
+                field_default: object = Field(
+                    default_factory=field.default_factory,
+                    serialization_alias=surface_name,
+                )
+            elif field.is_required():
+                field_default = Field(..., serialization_alias=surface_name)
+            else:
+                field_default = Field(field.default, serialization_alias=surface_name)
+        else:
+            field_default = Field(default, serialization_alias=surface_name)
+        definitions[surface_name] = (annotation, field_default)
+    return definitions
+
+
+def _create_projection_model(
+    name: str,
+    domain_model: type[BaseModel],
+    mask: tuple[tuple[str, str], ...],
+    *,
+    extra_fields: Mapping[str, tuple[object, object]] = {},
+    annotation_overrides: Mapping[str, object] = {},
+    default_overrides: Mapping[str, object] = {},
+    field_order: Sequence[str] | None = None,
+) -> type[SurfacePayloadModel]:
+    fields: dict[str, tuple[Any, Any]] = _projection_field_definitions(
+        domain_model,
+        mask,
+        annotation_overrides=annotation_overrides,
+        default_overrides=default_overrides,
+    )
+    fields.update(extra_fields)
+    if field_order is not None:
+        fields = {field_name: fields[field_name] for field_name in field_order}
+    return cast(
+        type[SurfacePayloadModel],
+        create_model(name, __base__=SurfacePayloadModel, __module__=__name__, **fields),  # type: ignore[call-overload]
+    )
+
+
+_MESSAGE_EXTRA_FIELDS: dict[str, tuple[object, object]] = {
+    "target_ref": (TargetRefPayload | None, Field(default=None)),
+    "anchor": (str | None, Field(default=None)),
+    "actions": (
+        dict[str, ReaderActionAvailabilityPayload],
+        Field(default_factory=reader_message_actions),
+    ),
+    "attachment_refs": (tuple[str, ...], Field(default=())),
+    "raw_id": (str | None, Field(default=None)),
+    "source_path": (str | None, Field(default=None)),
+}
+
+_MESSAGE_ANNOTATION_OVERRIDES: dict[str, object] = {
+    "role": str,
+    "text": str,
+    "message_type": str,
+    "material_origin": str,
+}
+_MESSAGE_DEFAULT_OVERRIDES: dict[str, object] = {
+    "text": "",
+    "message_type": "message",
+    "material_origin": "unknown",
+}
+
+_MessageRenderEnvelopeBase = _create_projection_model(
+    "SessionMessagePayload",
+    Message,
+    _MESSAGE_MASK,
+    extra_fields=_MESSAGE_EXTRA_FIELDS,
+    annotation_overrides=_MESSAGE_ANNOTATION_OVERRIDES,
+    default_overrides=_MESSAGE_DEFAULT_OVERRIDES,
+    field_order=(
+        "id",
+        "role",
+        "text",
+        "target_ref",
+        "anchor",
+        "actions",
+        "timestamp",
+        "message_type",
+        "material_origin",
+        "content_blocks",
+        "parent_id",
+        "branch_index",
+        "position",
+        "is_active_path",
+        "is_active_leaf",
+        "has_paste_evidence",
+        "has_tool_use",
+        "has_thinking",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "model_name",
+        "attachment_refs",
+        "raw_id",
+        "source_path",
+        "paste_boundary_state",
+        "stop_reason",
+        "duration_ms",
+    ),
+)
+
+
+class MessageRenderEnvelope(_MessageRenderEnvelopeBase):  # type: ignore[valid-type,misc]
+    """Message reader envelope derived from the canonical ``Message`` model."""
+
+
+_MessageRowEnvelopeBase = _create_projection_model(
+    "MessageRowEnvelope",
+    Message,
+    _MESSAGE_MASK,
+    extra_fields={**_MESSAGE_EXTRA_FIELDS, "session_id": (str, Field(...))},
+    annotation_overrides=_MESSAGE_ANNOTATION_OVERRIDES,
+    default_overrides=_MESSAGE_DEFAULT_OVERRIDES,
+    field_order=(
+        "id",
+        "role",
+        "text",
+        "target_ref",
+        "anchor",
+        "actions",
+        "timestamp",
+        "message_type",
+        "material_origin",
+        "content_blocks",
+        "parent_id",
+        "branch_index",
+        "position",
+        "is_active_path",
+        "is_active_leaf",
+        "has_paste_evidence",
+        "has_tool_use",
+        "has_thinking",
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "model_name",
+        "attachment_refs",
+        "raw_id",
+        "source_path",
+        "paste_boundary_state",
+        "stop_reason",
+        "duration_ms",
+        "session_id",
+    ),
+)
+
+
+class MessageRowEnvelope(_MessageRowEnvelopeBase):  # type: ignore[valid-type,misc]
+    """Message envelope used by the paginated message-row surface."""
+
+
+_SessionSummaryEnvelopeBase = _create_projection_model(
+    "SessionSummaryPayload",
+    SessionSummary,
+    _SESSION_SUMMARY_MASK,
+    extra_fields={
+        "target_ref": (TargetRefPayload | None, Field(default=None)),
+        "anchor": (str | None, Field(default=None)),
+        "actions": (
+            dict[str, ReaderActionAvailabilityPayload],
+            Field(default_factory=reader_session_actions),
+        ),
+    },
+    annotation_overrides={
+        "origin": str,
+        "title": str,
+        "title_source": str | None,
+    },
+    field_order=(
+        "id",
+        "origin",
+        "title",
+        "title_source",
+        "title_ref",
+        "title_confidence",
+        "message_count",
+        "target_ref",
+        "anchor",
+        "actions",
+        "created_at",
+        "updated_at",
+    ),
+)
+
+
+class SessionSummaryEnvelope(_SessionSummaryEnvelopeBase):  # type: ignore[valid-type,misc]
+    """Compact session envelope derived from ``SessionSummary``."""
+
+
+_SessionDetailEnvelopeBase = _create_projection_model(
+    "SessionDetailPayload",
+    SessionSummary,
+    _SESSION_SUMMARY_MASK,
+    extra_fields={
+        "target_ref": (TargetRefPayload | None, Field(default=None)),
+        "anchor": (str | None, Field(default=None)),
+        "actions": (
+            dict[str, ReaderActionAvailabilityPayload],
+            Field(default_factory=reader_session_actions),
+        ),
+        "messages": (tuple[MessageRenderEnvelope, ...], Field(...)),
+    },
+    annotation_overrides={
+        "origin": str,
+        "title": str,
+        "title_source": str | None,
+    },
+    field_order=(
+        "id",
+        "origin",
+        "title",
+        "title_source",
+        "title_ref",
+        "title_confidence",
+        "message_count",
+        "target_ref",
+        "anchor",
+        "actions",
+        "created_at",
+        "updated_at",
+        "messages",
+    ),
+)
+
+
+class SessionDetailEnvelope(_SessionDetailEnvelopeBase):  # type: ignore[valid-type,misc]
+    """Full session envelope with derived message envelopes."""
+
+
+_SessionListEnvelopeBase = _create_projection_model(
+    "SessionListRowPayload",
+    Session,
+    _SESSION_LIST_MASK,
+    extra_fields={
+        "target_ref": (TargetRefPayload | None, Field(default=None)),
+        "anchor": (str | None, Field(default=None)),
+        "actions": (
+            dict[str, ReaderActionAvailabilityPayload],
+            Field(default_factory=reader_session_actions),
+        ),
+        "message_count": (int, Field(default=0)),
+        "tags": (tuple[str, ...], Field(default=())),
+        "summary": (str | None, Field(default=None)),
+        "words": (int | None, Field(default=None)),
+        "repo": (str | None, Field(default=None)),
+        "cwd_display": (str | None, Field(default=None)),
+        "flags": (SessionFlagsPayload | None, Field(default=None)),
+        "parent_refs": (tuple[str, ...] | None, Field(default=None)),
+        "child_refs": (tuple[str, ...] | None, Field(default=None)),
+        "continuation": (str | None, Field(default=None)),
+    },
+    annotation_overrides={
+        "origin": str,
+        "title": str,
+        "title_source": str | None,
+        "created_at": str | None,
+        "updated_at": str | None,
+    },
+    field_order=(
+        "id",
+        "origin",
+        "title",
+        "title_source",
+        "title_ref",
+        "title_confidence",
+        "target_ref",
+        "anchor",
+        "actions",
+        "created_at",
+        "updated_at",
+        "message_count",
+        "tags",
+        "summary",
+        "words",
+        "repo",
+        "cwd_display",
+        "flags",
+        "parent_refs",
+        "child_refs",
+        "continuation",
+    ),
+)
+
+
+class SessionListEnvelope(_SessionListEnvelopeBase):  # type: ignore[valid-type,misc]
+    """Session list-row envelope derived from ``Session``."""
 
     def selected(self, fields: Container[str] | None = None) -> JSONDocument:
         data = model_json_document(self, exclude_none=True)
         if fields is None:
             return data
         return {key: value for key, value in data.items() if key in fields}
+
+
+def _domain_values(
+    model: object,
+    mask: tuple[tuple[str, str], ...],
+) -> dict[str, object]:
+    model_dump = getattr(model, "model_dump", None)
+    if callable(model_dump):
+        dumped = model_dump(mode="python")
+        return {surface_name: dumped[domain_name] for domain_name, surface_name in mask}
+    return {surface_name: getattr(model, domain_name, None) for domain_name, surface_name in mask}
+
+
+def message_render_envelope_from_domain(
+    message: Message,
+    *,
+    session_id: object | None = None,
+    raw_id: str | None = None,
+    source_path: str | None = None,
+) -> MessageRenderEnvelope:
+    values = _domain_values(message, _MESSAGE_MASK)
+    values.update(
+        role=role_label(message.role),
+        text=message.text or "",
+        message_type=role_label(getattr(message, "message_type", "message") or "message"),
+        material_origin=role_label(getattr(message, "material_origin", "unknown") or "unknown"),
+        parent_id=getattr(message, "parent_id", None),
+        branch_index=int(getattr(message, "branch_index", 0) or 0),
+        position=int(getattr(message, "position", 0) or 0),
+        is_active_path=getattr(message, "is_active_path", None),
+        is_active_leaf=bool(getattr(message, "is_active_leaf", False)),
+        has_tool_use=bool(getattr(message, "has_tool_use", False)),
+        has_thinking=bool(getattr(message, "has_thinking", False)),
+        input_tokens=int(getattr(message, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(message, "output_tokens", 0) or 0),
+        cache_read_tokens=int(getattr(message, "cache_read_tokens", 0) or 0),
+        cache_write_tokens=int(getattr(message, "cache_write_tokens", 0) or 0),
+        duration_ms=int(getattr(message, "duration_ms", 0) or 0),
+        model_name=getattr(message, "model_name", None),
+        stop_reason=getattr(message, "stop_reason", None),
+        target_ref=(
+            TargetRefPayload.message(session_id=session_id, message_id=message.id) if session_id is not None else None
+        ),
+        anchor=reader_anchor("message", message.id),
+        actions=reader_message_actions(),
+        has_paste_evidence=bool(message.has_paste),
+        attachment_refs=tuple(str(attachment.id) for attachment in message.attachments if attachment.id),
+        raw_id=raw_id,
+        source_path=source_path,
+    )
+    return MessageRenderEnvelope(**values)
+
+
+def message_row_envelope_from_domain(
+    message: Message,
+    *,
+    session_id: object,
+    raw_id: str | None = None,
+    source_path: str | None = None,
+) -> MessageRowEnvelope:
+    values = message_render_envelope_from_domain(
+        message,
+        session_id=session_id,
+        raw_id=raw_id,
+        source_path=source_path,
+    ).model_dump()
+    values["session_id"] = str(session_id)
+    return MessageRowEnvelope(**values)
+
+
+def message_render_envelope_from_archive_row(message: Any, *, session_id: object) -> MessageRenderEnvelope:
+    """Project an archive row without making each surface own a mapper."""
+    message_id = str(message.message_id)
+    blocks = tuple(getattr(message, "blocks", ()))
+    text = "\n\n".join(str(block.text) for block in blocks if block.text)
+    if not text:
+        text = str(getattr(message, "text", "") or "")
+    content_blocks: list[dict[str, object]] = []
+    for block in blocks:
+        row: dict[str, object] = {
+            "type": str(getattr(block, "block_type", "")),
+            "text": str(getattr(block, "text", "") or ""),
+            "block_id": str(getattr(block, "block_id", "") or ""),
+        }
+        for source_name in ("tool_name", "tool_id", "semantic_type"):
+            value = getattr(block, source_name, None)
+            if value:
+                row[source_name] = str(value)
+        content_blocks.append(row)
+    values = {
+        "id": message_id,
+        "role": role_label(getattr(message, "role", "")),
+        "text": text,
+        "timestamp": (
+            _parse_optional_datetime(getattr(message, "occurred_at", None))
+            or (
+                datetime.fromtimestamp(float(message.occurred_at_ms) / 1000.0, UTC)
+                if getattr(message, "occurred_at_ms", None) is not None
+                else None
+            )
+        ),
+        "content_blocks": content_blocks,
+        "message_type": role_label(getattr(message, "message_type", "message") or "message"),
+        "material_origin": role_label(getattr(message, "material_origin", "unknown") or "unknown"),
+        "parent_id": getattr(message, "parent_message_id", None),
+        "branch_index": int(getattr(message, "variant_index", 0) or 0),
+        "position": int(getattr(message, "position", 0) or 0),
+        "is_active_path": getattr(message, "is_active_path", None),
+        "is_active_leaf": bool(getattr(message, "is_active_leaf", False)),
+        "has_tool_use": bool(getattr(message, "has_tool_use", False)),
+        "has_thinking": bool(getattr(message, "has_thinking", False)),
+        "has_paste_evidence": bool(getattr(message, "has_paste", False)),
+        "paste_boundary_state": getattr(message, "paste_boundary_state", None),
+        "input_tokens": int(getattr(message, "input_tokens", 0) or 0),
+        "output_tokens": int(getattr(message, "output_tokens", 0) or 0),
+        "cache_read_tokens": int(getattr(message, "cache_read_tokens", 0) or 0),
+        "cache_write_tokens": int(getattr(message, "cache_write_tokens", 0) or 0),
+        "duration_ms": int(getattr(message, "duration_ms", 0) or 0),
+        "model_name": getattr(message, "model_name", None),
+        "stop_reason": getattr(message, "stop_reason", None),
+        "target_ref": TargetRefPayload.message(session_id=session_id, message_id=message_id),
+        "anchor": reader_anchor("message", message_id),
+        "actions": reader_message_actions(),
+        "attachment_refs": tuple(
+            str(getattr(attachment, "attachment_id", ""))
+            for attachment in getattr(message, "attachments", ())
+            if getattr(attachment, "attachment_id", None)
+        ),
+    }
+    return MessageRenderEnvelope(**values)
+
+
+def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnvelope:
+    session_id = str(session.id)
+    values = _domain_values(session, _SESSION_LIST_MASK)
+    values.update(
+        title=session.display_title,
+        origin=role_label(session.origin),
+        title_source=session.title_source.value if session.title_source else None,
+        message_count=len(session.messages),
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        actions=reader_session_actions(),
+    )
+    return SessionSummaryEnvelope(**values)
+
+
+def session_summary_envelope_from_summary(
+    summary: SessionSummary,
+    *,
+    message_count: int | None = None,
+) -> SessionSummaryEnvelope:
+    values = _domain_values(summary, _SESSION_SUMMARY_MASK)
+    session_id = str(summary.id)
+    values.update(
+        title=bound_display_title(summary.display_title, session_id),
+        origin=role_label(summary.origin),
+        title_source=summary.title_source.value if summary.title_source else None,
+        message_count=summary.message_count or 0 if message_count is None else message_count,
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        actions=reader_session_actions(),
+    )
+    return SessionSummaryEnvelope(**values)
+
+
+def session_detail_envelope_from_domain(
+    session: Session,
+    *,
+    content_projection: ContentProjectionSpec | None = None,
+) -> SessionDetailEnvelope:
+    if content_projection is not None and content_projection.filters_content():
+        session = session.with_content_projection(content_projection)
+    summary = session_summary_envelope_from_domain(session)
+    return SessionDetailEnvelope(
+        **summary.model_dump(),
+        messages=tuple(message_render_envelope_from_domain(msg, session_id=session.id) for msg in session.messages),
+    )
+
+
+def session_list_envelope_from_domain(
+    session: Session,
+    *,
+    bound_title: bool = True,
+) -> SessionListEnvelope:
+    session_id = str(session.id)
+    values = _domain_values(session, _SESSION_LIST_MASK)
+    values.update(
+        title=(
+            bound_display_title(session.display_title, session_id)
+            if bound_title
+            else session.display_title or session_id
+        ),
+        origin=role_label(session.origin),
+        title_source=session.title_source.value if session.title_source else None,
+        created_at=session.created_at.isoformat() if session.created_at else None,
+        updated_at=session.updated_at.isoformat() if session.updated_at else None,
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        actions=reader_session_actions(),
+        message_count=len(session.messages),
+        tags=tuple(session.tags),
+        summary=session.summary,
+        words=sum(message.word_count for message in session.messages),
+        repo=_session_repo(session),
+        cwd_display=_session_cwd(session),
+        flags=_build_flags_from_session(session),
+    )
+    return SessionListEnvelope(**values)
+
+
+def session_list_envelope_from_summary(
+    summary: SessionSummary,
+    *,
+    message_count: int,
+    word_count: int | None = None,
+    flags: SessionFlagsPayload | None = None,
+    repo: str | None = None,
+    cwd_display: str | None = None,
+) -> SessionListEnvelope:
+    session_id = str(summary.id)
+    values = _domain_values(summary, _SESSION_LIST_MASK)
+    values.update(
+        title=bound_display_title(summary.display_title, session_id),
+        origin=role_label(summary.origin),
+        title_source=summary.title_source.value if summary.title_source else None,
+        created_at=summary.created_at.isoformat() if summary.created_at else None,
+        updated_at=summary.updated_at.isoformat() if summary.updated_at else None,
+        target_ref=TargetRefPayload.session(session_id),
+        anchor=reader_anchor("session", session_id),
+        actions=reader_session_actions(),
+        message_count=message_count,
+        tags=tuple(summary.tags),
+        summary=summary.summary,
+        words=word_count,
+        repo=repo or _session_repo(summary),
+        cwd_display=cwd_display or _session_cwd(summary),
+        flags=flags,
+    )
+    return SessionListEnvelope(**values)
+
+
+# Compatibility names retain the existing Python imports and generated wire
+# names while the implementations above are derived projections, not field
+# twins with hand-written constructors.
+SessionMessagePayload = MessageRenderEnvelope
+SessionMessageRowPayload = MessageRowEnvelope
+SessionSummaryPayload = SessionSummaryEnvelope
+SessionDetailPayload = SessionDetailEnvelope
+SessionListRowPayload = SessionListEnvelope
 
 
 class SessionSearchMatchPayload(SurfacePayloadModel):
@@ -1134,7 +1329,7 @@ class SessionSearchHitPayload(SurfacePayloadModel):
             anchor = reader_anchor("session", hit.session_id)
             actions = reader_session_actions()
         return cls(
-            session=SessionSummaryPayload.from_summary(
+            session=session_summary_envelope_from_summary(
                 hit.summary,
                 message_count=message_count if message_count is not None else hit.summary.message_count,
             ),
@@ -1192,7 +1387,7 @@ class SessionNeighborCandidatePayload(SurfacePayloadModel):
         candidate: SessionNeighborCandidate,
     ) -> SessionNeighborCandidatePayload:
         return cls(
-            session=SessionSummaryPayload.from_summary(
+            session=session_summary_envelope_from_summary(
                 candidate.summary,
                 message_count=candidate.summary.message_count,
             ),
@@ -3335,7 +3530,7 @@ def _cursor_strictly_before(cursor: SearchCursor, hit: SessionSearchHitPayload) 
     # Same score (or no score on one side) — use rank, then conv id.
     if hit.match.rank != cursor.r:
         return hit.match.rank > cursor.r
-    return hit.session.id > cursor.c
+    return bool(hit.session.id > cursor.c)
 
 
 def build_search_envelope(
@@ -3921,6 +4116,7 @@ __all__ = [
     "SessionMessageRowPayload",
     "SessionMessagesResponsePayload",
     "SessionMessagePayload",
+    "MessageRenderEnvelope",
     "ContextPreamble",
     "ContextPreambleBlackboardNote",
     "ContextPreambleIssue",
@@ -3935,6 +4131,15 @@ __all__ = [
     "SessionSearchMatchPayload",
     "SessionReadViewEnvelope",
     "SessionSummaryPayload",
+    "SessionSummaryEnvelope",
+    "message_render_envelope_from_archive_row",
+    "message_render_envelope_from_domain",
+    "message_row_envelope_from_domain",
+    "session_detail_envelope_from_domain",
+    "session_list_envelope_from_domain",
+    "session_list_envelope_from_summary",
+    "session_summary_envelope_from_domain",
+    "session_summary_envelope_from_summary",
     "FacetBucketsPayload",
     "FacetTimeRange",
     "FacetFamilyStatusPayload",

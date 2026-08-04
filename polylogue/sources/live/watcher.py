@@ -74,6 +74,18 @@ _CATCH_UP_HOT_FILE_AGE_S = 60.0 * 60.0
 # mid-transaction), never mid-record.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
+# polylogue-2qrx: minimum age a deferred incomplete-tail observation must
+# reach (``cursor.updated_at`` unchanged, i.e. the stat-match fast path kept
+# firing) before escalating to an unbounded full-tail probe. An ordinary
+# in-progress writer routinely leaves a genuinely-incomplete trailing record
+# (no closing newline yet) between two polls milliseconds apart -- that must
+# NOT be treated as "the writer is done" just because the stat happened to
+# match on a second, immediate check. Only a source that has been sitting at
+# the exact same byte state for a long time is plausibly finished rather than
+# merely paused; matches the periodic catch-up safety net's own duty cycle
+# (``_PERIODIC_CATCH_UP_MAX_INTERVAL_S``) so the escalation cannot fire
+# before that safety net would have re-observed the file anyway.
+_STUCK_DEFERRED_APPEND_AGE_S = 60.0 * 60.0
 # Filesystem notifications are the real-time delivery path.  This sweep is a
 # recovery mechanism for notifications missed while the daemon was unavailable
 # or a watch backend was briefly unhealthy.  Keeping it at the watch cadence
@@ -823,12 +835,21 @@ class LiveWatcher:
             cursor = self._cursor.get_record(path)
             return cursor is not None and size > cursor.byte_offset
         if cursor.excluded:
-            if (
+            identity_unchanged = (
                 cursor.byte_size,
                 cursor.st_dev,
                 cursor.st_ino,
                 cursor.mtime_ns,
-            ) == (size, stat.st_dev, stat.st_ino, stat.st_mtime_ns):
+            ) == (size, stat.st_dev, stat.st_ino, stat.st_mtime_ns)
+            # polylogue-ix5r: exclusion revival was previously bound only to
+            # file identity, so a parser fix could never revive a cursor
+            # excluded before that fix shipped -- the file itself never
+            # changes, so ``identity_unchanged`` stays True forever and the
+            # cursor stays dark until someone manually re-ingests it. A
+            # parser fingerprint change is exactly the other legitimate
+            # reason a previously-poisoned observation deserves a fresh
+            # attempt: the code that failed to parse it no longer exists.
+            if identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT:
                 return False
             self._cursor.revive_replaced_exclusion(
                 path,
@@ -836,6 +857,7 @@ class LiveWatcher:
                 st_dev=stat.st_dev,
                 st_ino=stat.st_ino,
                 mtime_ns=stat.st_mtime_ns,
+                current_parser_fingerprint=_PARSER_FINGERPRINT,
             )
             return True
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
@@ -866,6 +888,44 @@ class LiveWatcher:
             # not rewritten, so any changed observation with modern tail
             # authority must return to the full route.
             if _cursor_stat_matches(cursor, stat):
+                if cursor.byte_offset >= cursor.byte_size:
+                    return False
+                # polylogue-2qrx: ``byte_size`` matches the current file size
+                # but ``byte_offset`` lags behind it. This is exactly the
+                # state ``record_deferred_append_cursor`` leaves after a
+                # bounded incomplete-tail probe (``_defer_incomplete_jsonl_
+                # append``): it advances ``byte_size`` to the observed file
+                # size but deliberately leaves ``byte_offset`` where it was,
+                # pending a complete trailing record. Once the file then
+                # stops changing (the writer finished), the stat-match check
+                # above returned ``False`` unconditionally here forever --
+                # measured live as 211 files / 414MB of stalled append
+                # backlog, up to 329h stale on one 94.8MB lag, with zero
+                # durable signal.
+                #
+                # An ordinary in-progress writer also leaves this exact state
+                # between two close-together polls (a trailing record simply
+                # not terminated *yet*), so escalate only once the deferred
+                # observation is old enough to be implausible as "still
+                # being written" -- ``cursor.updated_at`` is the timestamp of
+                # that original bounded-probe deferral (nothing else touches
+                # this row while the stat keeps matching).
+                if not _cursor_age_exceeds(cursor, _STUCK_DEFERRED_APPEND_AGE_S):
+                    return False
+                # A real complete record past the original bounded window
+                # reopens the normal append path; if truly nothing is there,
+                # record a durable failure instead of parking silently again.
+                if not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor, probe_bytes=None):
+                    return True
+                logger.warning(
+                    "live.watcher: %s has no complete trailing record across its entire "
+                    "outstanding tail (%d bytes past offset %d) and stopped changing; "
+                    "marking failed for durable visibility instead of parking silently",
+                    path,
+                    cursor.byte_size - cursor.byte_offset,
+                    cursor.byte_offset,
+                )
+                self._cursor.mark_failed(path, failed_stat=stat)
                 return False
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
@@ -931,8 +991,26 @@ class LiveWatcher:
         *,
         stat: os.stat_result,
         cursor: CursorRecord,
+        probe_bytes: int | None = _INCOMPLETE_APPEND_PROBE_BYTES,
     ) -> bool:
-        """Record a grown-but-incomplete JSONL tail without scheduling ingest."""
+        """Record a grown-but-incomplete JSONL tail without scheduling ingest.
+
+        ``probe_bytes=None`` (polylogue-2qrx escalation) reads the *entire*
+        outstanding tail instead of the bounded default. The bounded probe
+        exists so a routine watch/periodic tick never rereads a large
+        unfinished record on every pass; but that same bound means a
+        complete trailing record sitting just past the probe window (e.g. a
+        multi-hundred-MB rollout whose byte range past ``cursor.byte_offset``
+        happens to open with one oversized blob) is never found, and once
+        the source file stops changing (the writing session ends), the
+        stat-matches fast path below skips this cursor forever with zero
+        durable signal -- see the 211-file, 414MB stalled-cursor backlog
+        this bead measured. ``probe_bytes=None`` is only used for that one
+        already-deferred-with-unchanged-stat case, so the full-tail read
+        happens at most once per genuine state (immediately superseded by
+        either a real append or a durable failure record, never repeated
+        against the same stat).
+        """
         if path.suffix.lower() not in {".jsonl", ".ndjson"}:
             return False
         if cursor.content_fingerprint is None:
@@ -945,7 +1023,7 @@ class LiveWatcher:
         if stat.st_size <= start_offset:
             return False
         remaining_bytes = stat.st_size - start_offset
-        bytes_to_probe = min(remaining_bytes, _INCOMPLETE_APPEND_PROBE_BYTES)
+        bytes_to_probe = remaining_bytes if probe_bytes is None else min(remaining_bytes, probe_bytes)
         try:
             with path.open("rb") as handle:
                 handle.seek(start_offset)
@@ -1495,6 +1573,22 @@ def _cursor_db_path(polylogue: Polylogue) -> Path:
 
 def _is_database_locked(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in str(exc).lower()
+
+
+def _cursor_age_exceeds(cursor: CursorRecord, min_age_s: float) -> bool:
+    """Return True when ``cursor.updated_at`` is older than ``min_age_s``.
+
+    A malformed/missing timestamp is treated as old (fail toward escalating
+    rather than toward parking silently forever, matching this check's own
+    purpose).
+    """
+    try:
+        updated_at = datetime.fromisoformat(cursor.updated_at)
+    except ValueError:
+        return True
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - updated_at).total_seconds() >= min_age_s
 
 
 def _retry_due(next_retry_at: str | None) -> bool:

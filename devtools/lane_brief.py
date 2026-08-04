@@ -76,8 +76,6 @@ _HAZARDS = (
     "ANY bd invocation or git-checkout hook inside it can reimport the stale file and revert "
     "live bead state (polylogue-2ara; 2026-08-01 incident reverted 5+ coordinator writes twice) "
     "-- prefer no bd writes from lane worktrees at all; report bead-state changes to the coordinator",
-    "adding any module under polylogue/ requires "
-    "`devtools render topology-projection && devtools render topology-status`",
     "no `git stash` (refs/stash is shared across worktrees)",
     "TMPDIR=/realm/tmp (system /tmp is a 6GiB tmpfs)",
     "run `python -m devtools ...` from the worktree root so the worktree's code wins over the shared-venv .pth",

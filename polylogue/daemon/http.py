@@ -361,14 +361,6 @@ def _normalize_session_route_id(identifier: str) -> str:
     return identifier.removeprefix("session:")
 
 
-def _observability_post_routes() -> tuple[_StaticPostRoute, ...]:
-    return (
-        _StaticPostRoute("/v1/traces", ("v1", "traces"), "_handle_otlp_post", passes_path=True),
-        _StaticPostRoute("/v1/metrics", ("v1", "metrics"), "_handle_otlp_post", passes_path=True),
-        _StaticPostRoute("/v1/logs", ("v1", "logs"), "_handle_otlp_post", passes_path=True),
-    )
-
-
 def _parse_optional_int_env(name: str) -> int | None:
     value = os.environ.get(name)
     if not value:
@@ -494,7 +486,6 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
-    routes.extend(("POST", route.pattern) for route in _observability_post_routes())
     routes.extend(("POST", route.pattern) for route in _authenticated_post_routes())
     routes.extend(("POST", route.pattern) for route in _cli_read_post_routes())
     routes.extend(user_state_http.user_state_route_patterns())
@@ -1411,8 +1402,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         See :func:`_check_host_admission_logic` for the rationale. Applied
         before EVERY GET dispatch branch (web shell bootstrap, paste/
         attachment pages, healthz/metrics probes, and the authenticated
-        API route tables) and to all POST/DELETE requests including the
-        OTLP special-case, which bypasses the normal auth/Origin checks.
+        API route tables) and to all POST/DELETE requests.
         The web shell's own bootstrap still works: its Host is loopback
         (or the configured ``api_host``), which this check admits — only
         a foreign Host (the DNS-rebinding signature) is refused. Health/
@@ -1918,32 +1908,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         if web_auth_request:
             self._handle_web_auth_bootstrap()
-            return
-
-        # OTLP receiver endpoints (#1321) gated on the explicit
-        # ``observability_enabled`` config flag (closes #1604). When
-        # the flag is off the routes return 404 so the receiver does
-        # not advertise itself to opportunistic scanners. When on AND
-        # the daemon is bound non-loopback we still require the
-        # configured auth token — OTLP exporters that DO carry
-        # credentials are the only safe non-loopback case.
-        observability_route = next(
-            (route for route in _observability_post_routes() if tuple(path) == route.segments), None
-        )
-        if observability_route is not None:
-            from polylogue.config import load_polylogue_config
-
-            if not load_polylogue_config().observability_enabled:
-                self._send_error(HTTPStatus.NOT_FOUND, "not_found")
-                return
-            if not is_loopback_host(self._api_host) and not self._check_auth(allow_web=False):
-                return
-            handler = cast(Callable[..., None], getattr(self, observability_route.handler_name))
-            with self._write_gate(f"http.otlp.{path[1]}"):
-                if observability_route.passes_path:
-                    handler(path)
-                else:
-                    handler()
             return
 
         authenticated_route = next(
@@ -4084,7 +4048,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         since #2469 but never implemented — any request raised an
         unhandled ``AttributeError`` (polylogue-g9j6). Mirrors the MCP
         ``provider_usage`` tool, which is a thin wrapper over the same
-        ``Polylogue.provider_usage_report`` API method.
+        ``Polylogue.origin_usage_report`` API method.
 
         Defaults to ``detail=headline``, NOT ``full`` (unlike the MCP
         tool): ``full`` walks ``session_provider_usage_events`` with a
@@ -4109,7 +4073,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         archive_root = configured_archive_root()
 
         async def _get(poly: Polylogue) -> object:
-            report = await poly.provider_usage_report(origin=origin, limit=limit, detail=detail)
+            report = await poly.origin_usage_report(origin=origin, limit=limit, detail=detail)
             return report.to_dict()
 
         try:
@@ -5136,41 +5100,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.CONFLICT, "call_id_conflict")
             return
         self._send_json(HTTPStatus.OK, {"ok": True, "call_id": call_id})
-
-    @daemon_safe_handler
-    def _handle_otlp_post(self, path: list[str]) -> None:
-        """Accept OTLP telemetry and respond with the matching protobuf/JSON envelope.
-
-        Routes to ``handle_traces``, ``handle_metrics``, or ``handle_logs``
-        in ``polylogue/daemon/otlp_receiver.py`` based on *path*.
-        """
-        from polylogue.config import load_polylogue_config
-        from polylogue.daemon.otlp_receiver import handle_logs, handle_metrics, handle_traces
-
-        signal = path[1]  # 'traces', 'metrics', or 'logs'
-        content_type = self.headers.get("Content-Type", "application/x-protobuf")
-        content_length = int(self.headers.get("Content-Length", 0))
-        max_body = load_polylogue_config().otlp_max_body_bytes
-        if content_length > max_body:
-            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "payload_too_large")
-            return
-        body = self.rfile.read(content_length) if content_length > 0 else b""
-        from polylogue.paths import archive_root
-
-        ops_db = archive_root() / "ops.db"
-
-        if signal == "traces":
-            result = handle_traces(body, content_type, db_path=str(ops_db))
-        elif signal == "metrics":
-            result = handle_metrics(body, content_type, db_path=str(ops_db))
-        else:
-            result = handle_logs(body, content_type, db_path=str(ops_db))
-
-        self.send_response(result.status)
-        self.send_header("Content-Type", result.content_type)
-        self.send_header("Content-Length", str(len(result.body)))
-        self.end_headers()
-        self.wfile.write(result.body)
 
     def _handle_ingest(self) -> None:
         content_length = int(self.headers.get("Content-Length", 0))

@@ -1,8 +1,6 @@
 # serializer version: 1
 # name: TestCommandOutputs.test_check_output_snapshot
   '''
-  [polylogue] format drift: origin aistudio-drive 100% of 302 records since 2026-0
-  7-01 carry unseen shapes -- devtools lab schema generate<PATH>
   Usage: polylogue ops doctor [OPTIONS]
     Health check with optional maintenance and cleanup previews.
   Options:

@@ -18,7 +18,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SessionKind, TitleSource
 from polylogue.logging import get_logger
 
@@ -29,6 +31,7 @@ from ..base import (
     ParsedSession,
     ParsedSessionEvent,
     attachment_from_meta,
+    human_authored_override,
 )
 from .common import (
     _first_identity_field,
@@ -336,14 +339,29 @@ def _design_assistant_messages(
             interjection_id = str(interjection_message.get("id") or f"{message_uuid}-interjection-{position}")
             interjection_text = interjection_message.get("content")
             interjection_timestamp = interjection_message.get("timestamp")
+            interjection_role = Role.normalize(str(interjection_message.get("role") or "user"))
             messages.append(
                 ParsedMessage(
                     provider_message_id=interjection_id,
-                    role=Role.normalize(str(interjection_message.get("role") or "user")),
+                    role=interjection_role,
                     text=str(interjection_text) if isinstance(interjection_text, str) and interjection_text else None,
                     timestamp=str(interjection_timestamp) if isinstance(interjection_timestamp, str) else None,
                     position=position,
                     is_active_path=True,
+                    # polylogue-gzgyl: a user_interjection is unambiguously a
+                    # real human interjection during an assistant turn -- not
+                    # a generated/agent artifact -- so the shared
+                    # classify_material_origin no-fallthrough (#2502) needs
+                    # the same positive-evidence override as Codex/ChatGPT.
+                    material_origin=human_authored_override(
+                        interjection_role,
+                        MessageType.MESSAGE,
+                        classify_material_origin(
+                            role=interjection_role,
+                            message_type=MessageType.MESSAGE,
+                            text=str(interjection_text) if isinstance(interjection_text, str) else None,
+                        ),
+                    ),
                 )
             )
             position += 1
@@ -395,14 +413,24 @@ def _design_user_message(
 
     sender_name = str(author_name) if isinstance(author_name, str) and author_name else None
     timestamp_str = str(timestamp) if isinstance(timestamp, str) and timestamp else None
+    design_message_text = str(text) if isinstance(text, str) and text else None
     message = ParsedMessage(
         provider_message_id=message_uuid,
         role=Role.USER,
-        text=str(text) if isinstance(text, str) and text else None,
+        text=design_message_text,
         timestamp=timestamp_str,
         sender_name=sender_name,
         position=position,
         is_active_path=True,
+        # polylogue-gzgyl: a top-level Claude Design user turn is
+        # unambiguously human-authored (no agent/subagent artifact shape to
+        # exclude here, unlike Claude Code) -- positive-evidence override for
+        # the shared classify_material_origin no-fallthrough (#2502).
+        material_origin=human_authored_override(
+            Role.USER,
+            MessageType.MESSAGE,
+            classify_material_origin(role=Role.USER, message_type=MessageType.MESSAGE, text=design_message_text),
+        ),
     )
 
     session_event: ParsedSessionEvent | None = None

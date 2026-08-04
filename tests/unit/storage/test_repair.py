@@ -89,6 +89,118 @@ def test_session_insight_repair_count_uses_public_phase_status_key() -> None:
     assert repair_mod.session_insight_repair_count(legacy_statuses) == 0
 
 
+def test_deleted_orphan_repairs_are_unreachable() -> None:
+    """The schema FK/CASCADE guarantee replaces these manual repair paths."""
+    from polylogue.maintenance.targets import build_maintenance_target_catalog
+
+    catalog = build_maintenance_target_catalog()
+    assert not hasattr(repair_mod, "repair_orphaned_messages")
+    assert not hasattr(repair_mod, "repair_orphaned_attachments")
+    assert not hasattr(repair_mod, "preview_orphaned_messages")
+    assert not hasattr(repair_mod, "preview_orphaned_attachments")
+    assert "orphaned_messages" not in repair_mod.REPAIR_HANDLERS
+    assert "orphaned_attachments" not in repair_mod.REPAIR_HANDLERS
+    assert "orphaned_messages" not in repair_mod.PREVIEW_HANDLERS
+    assert "orphaned_attachments" not in repair_mod.PREVIEW_HANDLERS
+    assert catalog.resolve_name("orphaned_messages") is None
+    assert catalog.resolve_name("orphaned_attachments") is None
+
+
+def test_session_insights_convergence_matches_repair_archive_route(tmp_path: Path) -> None:
+    """The daemon's real archive route repairs the same session rows as repair."""
+    from polylogue.core.enums import BlockType, Provider, Role
+    from polylogue.daemon.convergence_stages import make_insights_stage
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "codex-session.jsonl"
+    source_path.write_bytes(b"real archive source\n")
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="convergence-parity",
+        title="Convergence parity",
+        messages=[
+            ParsedMessage(
+                provider_message_id="message-1",
+                role=Role.USER,
+                text="Exercise the real archive route.",
+                position=0,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TEXT,
+                        text="Exercise the real archive route.",
+                    )
+                ],
+            )
+        ],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        _raw_id, session_id = archive.write_raw_and_parsed(
+            session,
+            payload=source_path.read_bytes(),
+            source_path=str(source_path),
+            acquired_at_ms=1,
+        )
+
+    def insight_facts() -> tuple[tuple[object, ...], ...]:
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            profile = conn.execute(
+                """
+                SELECT materializer_version, input_row_count, message_count, word_count
+                FROM session_profiles WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            materialization = conn.execute(
+                """
+                SELECT insight_type, materializer_version, input_row_count
+                FROM insight_materialization WHERE session_id = ? ORDER BY insight_type
+                """,
+                (session_id,),
+            ).fetchall()
+            work_events = conn.execute(
+                """
+                SELECT position, work_event_type, summary
+                FROM session_work_events WHERE session_id = ? ORDER BY position
+                """,
+                (session_id,),
+            ).fetchall()
+            phases = conn.execute(
+                """
+                SELECT position, start_index, end_index, word_count
+                FROM session_phases WHERE session_id = ? ORDER BY position
+                """,
+                (session_id,),
+            ).fetchall()
+        return (
+            tuple(profile) if profile is not None else (),
+            *map(tuple, materialization),
+            *map(tuple, work_events),
+            *map(tuple, phases),
+        )
+
+    manual_result = repair_mod.repair_session_insights(
+        _config(tmp_path),
+        archive_root_override=tmp_path,
+    )
+    assert manual_result.success is True
+    manual_facts = insight_facts()
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (session_id,))
+        conn.commit()
+
+    stage = make_insights_stage(tmp_path / "index.db")
+    assert stage.check(source_path) is True
+    stage_result = stage.execute(source_path)
+    assert getattr(stage_result, "success", stage_result) is True
+    assert stage.check(source_path) is False
+    assert insight_facts() == manual_facts
+
+
 def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only() -> None:
     statuses = {
         "session_insights": repair_mod.ArchiveDebtStatus(
@@ -98,14 +210,6 @@ def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only()
             issue_count=0,
             detail="ready",
             maintenance_target="session_insights",
-        ),
-        "orphaned_messages": repair_mod.ArchiveDebtStatus(
-            name="orphaned_messages",
-            category=repair_mod._maintenance_target_spec("orphaned_messages").category,
-            destructive=True,
-            issue_count=0,
-            detail="clean",
-            maintenance_target="orphaned_messages",
         ),
         "empty_sessions": repair_mod.ArchiveDebtStatus(
             name="empty_sessions",
@@ -132,21 +236,17 @@ def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.M
         "messages_fts": _status(),
     }
     monkeypatch.setattr(repair_mod, "_table_has_more_than", lambda *_args: True)
-    monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
     monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
     monkeypatch.setattr(
         repair_mod, "count_unclassified_message_type_sync", lambda _conn: (_ for _ in ()).throw(AssertionError)
     )
-    monkeypatch.setattr(repair_mod, "count_orphaned_attachments_sync", lambda _conn: 0)
 
     debt = repair_mod.collect_archive_debt_statuses_sync(
         cast(Any, Conn()), derived_statuses=statuses, include_expensive=False, probe_only=True
     )
 
-    assert debt["orphaned_messages"].skipped is True
     assert debt["empty_sessions"].skipped is True
     assert debt["message_type_backfill"].skipped is True
-    assert debt["orphaned_attachments"].skipped is False
 
 
 def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,9 +263,7 @@ def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyP
     def fail_unrelated(*_args: object, **_kwargs: object) -> int:
         raise AssertionError("target-scoped session_insights preview must not scan unrelated maintenance debt")
 
-    monkeypatch.setattr(repair_mod, "count_orphaned_messages_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", fail_unrelated)
-    monkeypatch.setattr(repair_mod, "count_orphaned_attachments_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_unclassified_message_type_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_orphaned_blobs_sync", fail_unrelated)
     monkeypatch.setattr(repair_mod, "count_superseded_raw_snapshots_sync", fail_unrelated)
@@ -414,6 +512,76 @@ def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path
             "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?",
             (raw_id,),
         ).fetchone() == (1, None)
+
+
+def test_raw_materialization_retries_membership_replay_conflict_failure(tmp_path: Path) -> None:
+    """polylogue-5iz4: a MembershipReplayConflictError parse_error is retryable.
+
+    ``apply_raw_membership_classification``'s two head-conflict guards
+    (storage/sqlite/archive_tiers/revision_governance.py) are explicitly
+    transient/retry-eligible refusals, not proof a raw is unparseable -- a
+    later pass over the same durable bytes can succeed once sibling evidence
+    resolves or the accepted head changes. But the raw materialization
+    candidate query only recognizes retry-eligible parse_error text through a
+    literal allowlist; a plain ``RuntimeError`` message (the type both guards
+    raised before this fix, and the type a real production Codex session's
+    parse_error was frozen as under PR #2718's now-superseded wording) is
+    indistinguishable from a genuinely terminal parse failure and is silently
+    excluded from every future rebuild attempt forever. Anti-vacuity: a
+    sibling row carrying the OLD plain-``RuntimeError`` text must remain
+    excluded -- this test would pass vacuously (0 candidates either way) if
+    the candidate query's parse_error filter were simply deleted instead of
+    extended.
+    """
+    config = _config(tmp_path)
+    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    blob_store = BlobStore(tmp_path / "blob")
+    retryable_raw_id, retryable_size = blob_store.write_from_bytes(b'{"mapping":{}}')
+    stale_raw_id, stale_size = blob_store.write_from_bytes(b'{"mapping":{"stale":{}}}')
+
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        source_conn.executemany(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, parsed_at_ms, parse_error
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    retryable_raw_id,
+                    "codex-session",
+                    "native-membership-conflict",
+                    "whale.jsonl",
+                    0,
+                    bytes.fromhex(retryable_raw_id),
+                    retryable_size,
+                    2,
+                    3,
+                    "MembershipReplayConflictError: membership replay cannot replace a head "
+                    "with unresolved byte-append evidence: logical_source_key='codex:whale'",
+                ),
+                (
+                    stale_raw_id,
+                    "codex-session",
+                    "native-stale-plain-runtime-error",
+                    "stale.jsonl",
+                    0,
+                    bytes.fromhex(stale_raw_id),
+                    stale_size,
+                    1,
+                    4,
+                    "RuntimeError: membership replay cannot replace an unconvertible byte head",
+                ),
+            ],
+        )
+        source_conn.commit()
+
+    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+
+    assert result.metrics["raw_materialization_candidate_count"] == 1.0
+    assert result.metrics["raw_materialization_total_blob_bytes"] == float(retryable_size)
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:
@@ -3026,7 +3194,7 @@ def test_repair_session_insights_clears_scoped_convergence_debt(
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         lambda _archive, **_kwargs: SessionInsightCounts(profiles=1),
     )
 
@@ -3158,7 +3326,7 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
 
@@ -3274,7 +3442,7 @@ def test_repair_session_insights_targets_stale_thread_materialization(
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
     result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
@@ -3347,7 +3515,7 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.api.archive._rebuild_archive_session_insights",
+        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
 

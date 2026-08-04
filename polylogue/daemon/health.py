@@ -338,6 +338,52 @@ def _check_source_availability_fast() -> HealthAlert:
         )
 
 
+#: Durability classes whose mismatch/missing state must block ALL ingestion
+#: (raw acquisition included) -- these are the tiers a stale runtime could
+#: read or write incorrectly on the very first raw-acquire statement.
+#: Rebuildable/expensive_rebuild tiers (index.db/embeddings.db) are derived:
+#: acquisition never touches them, only the parse/materialize/index path
+#: does, so their mismatch alone must not stop acquisition (polylogue-gbs02).
+_INGESTION_BLOCKING_DURABILITY_CLASSES = frozenset({"irreplaceable", "human"})
+
+
+def durable_tier_schema_mismatch() -> bool:
+    """True if a durable tier (source.db/user.db) is missing or version-mismatched.
+
+    Narrower than ``_check_schema_version_fast``'s aggregate severity, which
+    intentionally reports CRITICAL for ANY tier mismatch (including
+    derived-only ones) so operators keep seeing the full picture. This
+    function answers the one question that must gate raw acquisition itself:
+    is a tier acquisition actually WRITES TO in a bad state? Only source.db
+    (irreplaceable) and user.db (human) are ingestion-blocking; index.db and
+    embeddings.db (rebuildable/expensive_rebuild) are not -- see
+    ``_INGESTION_BLOCKING_DURABILITY_CLASSES``.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+
+    dbf = _active_health_db_path()
+    if not dbf.exists():
+        # No archive yet -- nothing to be stale against; the daemon's normal
+        # bootstrap-on-first-write path handles this, not a preflight refusal.
+        return False
+    archive_dir = dbf.parent
+    for spec in ARCHIVE_TIER_SPECS.values():
+        if spec.durability not in _INGESTION_BLOCKING_DURABILITY_CLASSES:
+            continue
+        path = archive_dir / spec.filename
+        if not path.exists():
+            return True
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2.0)
+        try:
+            row = conn.execute("PRAGMA user_version").fetchone()
+        finally:
+            conn.close()
+        current = int(row[0]) if row else 0
+        if current != spec.version:
+            return True
+    return False
+
+
 def _check_schema_version_fast() -> HealthAlert:
     """Check that the active archive root has the expected tier layout."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -1289,6 +1335,86 @@ def _check_cursor_lag_anomaly_layer(
         ]
 
 
+def _check_archive_verification_registry_medium() -> list[HealthAlert]:
+    """Schedule the archive-verification registry's LIVENESS/FRESHNESS checks
+    (polylogue-t0m73, binding (c)): those two classes are explicitly the
+    ones that need a recency signal ("something must have happened
+    recently" -- see :class:`~polylogue.maintenance.archive_verification
+    .ArchiveVerificationCheckClass`'s docstring), which is exactly what the
+    periodic daemon health loop provides and a one-shot operator CLI run
+    cannot. The other classes (state-invariant, fidelity, conservation,
+    config, complexity) are point-in-time coherence checks that make sense
+    on any snapshot and are already reachable via the operator CLI /
+    promotion-gate bindings -- this loop deliberately does not duplicate
+    them here.
+
+    A waived check (:data:`~polylogue.maintenance.archive_verification
+    .ARCHIVE_VERIFICATION_WAIVERS`) still surfaces as a health alert (the
+    daemon health loop has no concept of "non-blocking" the way the
+    reindex-acceptance gate does), but at WARNING rather than ERROR
+    severity so an already-tracked, separately-owned debt item doesn't
+    read as a fresh production incident on every health cycle.
+    """
+    now = datetime.now(UTC).isoformat()
+    try:
+        from polylogue.maintenance.archive_verification import (
+            ARCHIVE_VERIFICATION_CHECKS,
+            ArchiveVerificationCheckClass,
+            verify_archive,
+        )
+
+        scheduled_names = [
+            spec.name
+            for spec in ARCHIVE_VERIFICATION_CHECKS
+            if spec.check_class in (ArchiveVerificationCheckClass.LIVENESS, ArchiveVerificationCheckClass.FRESHNESS)
+        ]
+        if not scheduled_names:
+            return []
+        report = verify_archive(archive_root(), checks=scheduled_names)
+        alerts = []
+        any_unwaived_error = False
+        for check in report.checks:
+            if check.status.value == "ok":
+                severity = HealthSeverity.OK
+            elif check.status.value == "warning":
+                severity = HealthSeverity.WARNING
+            elif check.status.value == "skip":
+                severity = HealthSeverity.OK
+            else:
+                waived_bead_id = getattr(check, "waived_bead_id", None)
+                if waived_bead_id is not None:
+                    severity = HealthSeverity.WARNING
+                else:
+                    severity = HealthSeverity.ERROR
+                    any_unwaived_error = True
+            alerts.append(
+                HealthAlert(
+                    check_name=f"archive_verification_{check.name.replace('-', '_')}",
+                    tier=HealthTier.MEDIUM,
+                    severity=severity,
+                    message=check.summary,
+                    checked_at=now,
+                    consecutive_failures=_record_failure(
+                        f"archive_verification_{check.name.replace('-', '_')}", severity == HealthSeverity.OK
+                    ),
+                )
+            )
+        _record_failure("archive_verification_registry", not any_unwaived_error)
+        return alerts
+    except Exception:
+        logger.exception("archive_verification_registry health check raised")
+        return [
+            HealthAlert(
+                check_name="archive_verification_registry",
+                tier=HealthTier.MEDIUM,
+                severity=HealthSeverity.ERROR,
+                message="archive verification registry check failed (see logs)",
+                checked_at=now,
+                consecutive_failures=_record_failure("archive_verification_registry", False),
+            )
+        ]
+
+
 def _run_medium_checks() -> list[HealthAlert]:
     return [
         _check_fts_readiness_medium(),
@@ -1297,6 +1423,7 @@ def _run_medium_checks() -> list[HealthAlert]:
         _check_stale_ingest_attempts_medium(),
         _check_insight_freshness_medium(),
         _check_repeated_stage_failures_medium(),
+        *_check_archive_verification_registry_medium(),
         _check_schema_drift_medium(),
         *_check_convergence_debt_medium(),
         *_check_cursor_lag_medium(),

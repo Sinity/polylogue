@@ -520,38 +520,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace index-fast-forward",
-        "workspace",
-        "Apply a declared clone-first index.db fast-forward with receipts and rollback.",
-        "devtools.index_fast_forward",
-        use_when=(
-            "Upgrade a quiesced supported derived index without raw replay: reflink an inactive generation, "
-            "apply declared canonical schema/FTS deltas, validate structural equivalence on the clone, "
-            "then separately activate or roll back. Semantic-reparse deltas deliberately require rebuild/reprocess."
-        ),
-        examples=(
-            "devtools workspace index-fast-forward plan --source /path/to/index.db",
-            "devtools workspace index-fast-forward clone-upgrade --source /path/to/index.db --receipt /path/to/receipt.json",
-            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json --restart",
-            "devtools workspace index-fast-forward rollback --receipt /path/to/receipt.json --restart",
-        ),
-    ),
-    CommandSpec(
-        "workspace archive-schema-fast-forward",
-        "workspace",
-        "Clone-forward the v35 archive tiers without raw replay.",
-        "devtools.archive_schema_fast_forward",
-        use_when=(
-            "Advance a stopped, verified v35 archive through the declared source/user durable migrations "
-            "and derived v36/index plus v2/embeddings clones. The existing verified backup remains valid: "
-            "the durable runner verifies active path plus bytes/version rather than inode identity."
-        ),
-        examples=(
-            "devtools workspace archive-schema-fast-forward prepare --archive-root /realm/db/polylogue --staging-root /realm/staging/polylogue-schema-forward --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
-            "devtools workspace archive-schema-fast-forward activate --receipt /realm/staging/polylogue-schema-forward/receipt.json --backup-manifest /realm/staging/verified/manifest.json",
-        ),
-    ),
-    CommandSpec(
         "workspace index-v37-fast-forward",
         "workspace",
         "Clone-forward index v36 to v37 by retiring derived caches without raw replay.",
@@ -1072,6 +1040,30 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace raw-append-chain-backfill-apply",
+        "workspace",
+        "Promote membershipless append raws proven correct by live-source verification.",
+        "devtools.raw_append_chain_backfill_apply",
+        use_when=(
+            "polylogue-lb39z (Phase 1, item 3): 2,712 raw_sessions rows (measured 2026-08-02) are "
+            "revision_kind='append', revision_authority='quarantined', and have no "
+            "raw_session_memberships row at all -- a genuine fixed point, because the only mechanism "
+            "that ever promotes an append raw (_promote_contiguous_append_evidence) requires its "
+            "byte-contiguous predecessor to already be byte_proven. This proves each such row's own "
+            "claimed byte range directly against its live source file's current bytes, independent of "
+            "any ancestor's authority. Default is dry-run; --apply requires --backup-manifest pointing "
+            "at a verified source-tier backup (polylogue backup --output-dir <dir> --verify). Writes an "
+            "immutable per-row receipt (raw_append_chain_backfill_receipts); never runs blob GC or "
+            "VACUUM -- that is a separate, later step."
+        ),
+        examples=(
+            "devtools workspace raw-append-chain-backfill-apply",
+            "devtools workspace raw-append-chain-backfill-apply --json",
+            "devtools workspace raw-append-chain-backfill-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
         "workspace raw-byte-duplicate-supersession-apply",
         "workspace",
         "Promote quarantined, logical-key-less raws proven byte-identical to an already-indexed raw.",
@@ -1095,6 +1087,34 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace raw-byte-duplicate-supersession-apply",
             "devtools workspace raw-byte-duplicate-supersession-apply --json",
             "devtools workspace raw-byte-duplicate-supersession-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
+        ),
+    ),
+    CommandSpec(
+        "workspace raw-quarantine-group-dedup-apply",
+        "workspace",
+        "Promote one representative raw per fully-quarantined byte-identical (source_path, blob_hash) group.",
+        "devtools.raw_quarantine_group_dedup_apply",
+        use_when=(
+            "polylogue-zm4w8 (measured live 2026-08-03): 1,777 raw_sessions rows (22.2 GiB) among "
+            "the codex-session quarantine backlog are pure redundant duplicates -- same source_path "
+            "AND same blob_hash as another raw_sessions row -- where EVERY member of the group is "
+            "still quarantined (no indexed twin anywhere), invisible to "
+            "raw-byte-duplicate-supersession-apply (which only matches a quarantined raw against an "
+            "already-INDEXED twin). Default is dry-run; --apply requires --backup-manifest pointing "
+            "at a verified source-tier backup (polylogue backup --output-dir <dir> --verify). "
+            "Materializes exactly one representative raw per group through the real ingest pipeline "
+            "(ParsingService.parse_from_raw -> write_parsed_session_to_archive -> "
+            "refresh_session_insights_bulk) so it becomes a genuine indexed session, then marks the "
+            "rest revision_authority='byte_proven' with an immutable per-row receipt "
+            "(raw_quarantine_group_dedup_receipts) pointing at the promoted representative's raw_id "
+            "and new session_id. Never deletes blobs or runs GC/VACUUM -- those are separate, later "
+            "steps."
+        ),
+        examples=(
+            "devtools workspace raw-quarantine-group-dedup-apply",
+            "devtools workspace raw-quarantine-group-dedup-apply --json",
+            "devtools workspace raw-quarantine-group-dedup-apply --apply "
             "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
         ),
     ),
@@ -1134,6 +1154,47 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace binary-artifact-reclassify-apply",
             "devtools workspace binary-artifact-reclassify-apply --json",
             "devtools workspace binary-artifact-reclassify-apply --apply",
+        ),
+    ),
+    CommandSpec(
+        "workspace tool-result-history-sweep",
+        "workspace",
+        "Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars.",
+        "devtools.tool_result_history_sweep_report",
+        use_when=(
+            "polylogue-omsw: tool-results/<name> tool-call-overflow content and "
+            "file-history-snapshot-only projects/<proj>/<uuid>.jsonl streams were "
+            "historically admitted as independent claude-code-session raw_sessions rows "
+            "instead of sidecars. Both classification gaps are closed for fresh "
+            "acquisition (archive.artifact_taxonomy); this read-only report finds "
+            "already-ingested rows acquired before that fix landed. Never mutates "
+            "source.db."
+        ),
+        examples=(
+            "devtools workspace tool-result-history-sweep",
+            "devtools workspace tool-result-history-sweep --json",
+            "devtools workspace tool-result-history-sweep --limit 5000 --sample-limit 20",
+        ),
+    ),
+    CommandSpec(
+        "workspace tool-result-history-reclassify-apply",
+        "workspace",
+        "Persist raw_artifacts classification for tool-result/file-history-shaped raw rows.",
+        "devtools.tool_result_history_reclassify_apply",
+        use_when=(
+            "polylogue-omsw: act on the sweep's report by writing raw_artifacts rows "
+            "(materialize_artifact_observations) for the flagged tool-results/"
+            "file-history-snapshot content, so it carries an explicit non-session "
+            "classification instead of sitting misclassified as "
+            "coordinator_session_stream. Does not touch revision_authority, "
+            "index.db, or delete anything -- default is dry-run; --apply performs "
+            "the write. Per the 2026-07-22 hook-inflation precedent, contaminated "
+            "rows are reclassified, never deleted."
+        ),
+        examples=(
+            "devtools workspace tool-result-history-reclassify-apply",
+            "devtools workspace tool-result-history-reclassify-apply --json",
+            "devtools workspace tool-result-history-reclassify-apply --apply",
         ),
     ),
     CommandSpec(
@@ -1377,21 +1438,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace basic-usage-demo-check",
-        "workspace",
-        "Re-run the basic-usage demo suite's commands and assert output shape.",
-        "devtools.basic_usage_demo_check",
-        use_when=(
-            "Guard .agent/demos/basic-usage/ against silent regressions: re-executes each of the eight "
-            "documented walkthroughs (find, read, search, resume, cost, lineage, MCP, status/health) against "
-            "a freshly seeded demo archive and asserts non-empty/expected-shape output, not exact counts."
-        ),
-        examples=(
-            "polylogue demo seed --root /tmp/polylogue-basic-usage-demo --force --with-overlays",
-            "devtools workspace basic-usage-demo-check --archive-root /tmp/polylogue-basic-usage-demo",
-        ),
-    ),
-    CommandSpec(
         "workspace read-package",
         "workspace",
         "Render a declarative package of Polylogue read artifacts.",
@@ -1429,34 +1475,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify agent-integration --json",
             "devtools verify agent-integration --require-live",
         ),
-    ),
-    CommandSpec(
-        "verify topology",
-        "verification",
-        "Verify the realized polylogue tree against the topology projection.",
-        "devtools.verify_topology",
-        use_when=(
-            "Detect orphans, conflicts, kernel-rule violations, or stale TBD cells against "
-            "docs/plans/topology-target.yaml after moving files between packages."
-        ),
-        examples=(
-            "devtools verify topology",
-            "devtools verify topology --json",
-            "devtools verify topology --strict-tbd",
-        ),
-    ),
-    CommandSpec(
-        "render topology-projection",
-        "generated surfaces",
-        "Generate docs/plans/topology-target.yaml from the current tree using placement rules.",
-        "devtools.build_topology_projection",
-        use_when=(
-            "Refresh the topology projection after editing placement rules in this script "
-            "or after a topology refactor lands. Use `devtools verify topology` to check without "
-            "writing; `devtools render all --check` also gates this via the generated-surfaces "
-            "registry's topology-projection entry."
-        ),
-        examples=("devtools render topology-projection",),
     ),
     CommandSpec(
         "verify closure-matrix",
@@ -1611,6 +1629,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "in the raw-capture write-path modules (WRITE_PATH_MODULES)."
         ),
         examples=("devtools lab policy raw-payload-hash-purity", "devtools lab policy raw-payload-hash-purity --json"),
+    ),
+    CommandSpec(
+        "lab policy table-exists-duplication",
+        "verification lab",
+        "Verify no module outside storage/introspection.py redefines table_exists/column_exists/index_exists.",
+        "devtools.verify_table_exists_duplication",
+        use_when=(
+            "Keep polylogue-48h's consolidation from silently regrowing: ~25 independently maintained "
+            "_table_exists/_column_exists/_index_exists copies (each trivially small and subtly different) "
+            "were merged into polylogue.storage.introspection. A grep-based tripwire forbidding a new "
+            "top-level def with one of the retired names outside that module."
+        ),
+        examples=(
+            "devtools lab policy table-exists-duplication",
+            "devtools lab policy table-exists-duplication --json",
+        ),
     ),
     CommandSpec(
         "lab policy position-derived-identity",
@@ -1810,20 +1844,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "plus a rationale entry in docs/plans/degrade-loudly-allowlist.yaml."
         ),
         examples=("devtools verify degrade-loudly", "devtools verify degrade-loudly --json"),
-    ),
-    CommandSpec(
-        "verify hash-boundary-census",
-        "verification",
-        "Verify every hashlib/core.hashing call site in polylogue/ is registered in the hash-boundary registry.",
-        "devtools.verify_hash_boundary_census",
-        use_when=(
-            "Enforce the hash-boundary census follow-up (polylogue-okpn, docs/audits/"
-            "2026-07-09-hash-boundary-census.md): a new hashlib.sha256/sha1/md5/blake2*/sha3_* call "
-            "or a new hash_text/hash_text_short/hash_payload/hash_bytes/hash_file call site must be "
-            "registered (path/function/call/classification/note) in "
-            "docs/plans/hash-boundary-registry.yaml, or the lint fails."
-        ),
-        examples=("devtools verify hash-boundary-census", "devtools verify hash-boundary-census --json"),
     ),
     CommandSpec(
         "release verify-distribution",
@@ -2036,17 +2056,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "verify evidence",
         "verification",
-        "Render the pytest-first evidence dashboard or a changed-path trace.",
+        "Render the pytest-first evidence dashboard.",
         "devtools.evidence_dashboard",
         use_when=(
             "Inspect pytest health, contract-evidence inventory, coverage, SLO "
-            "catalog, static-gate status, and campaign freshness, or "
-            "trace which evidence artifacts cover the changed paths in a PR."
+            "catalog, static-gate status, and campaign freshness."
         ),
         examples=(
             "devtools verify evidence --json",
             "devtools verify evidence --markdown",
-            "devtools verify evidence trace --base origin/master --head HEAD --markdown",
         ),
     ),
     CommandSpec(
@@ -2165,30 +2183,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace beads-state-report --fresh",
             "devtools workspace beads-state-report --out /tmp/beads-state.html",
             "devtools workspace beads-state-report --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace trajectory-report",
-        "workspace",
-        "Self-contained HTML velocity/trajectory report over git + PR + bead history.",
-        "devtools.trajectory_report",
-        use_when=(
-            "Answer 'is this project accelerating or plateauing, and what does a "
-            "typical week/day look like?' as a real time-axis view: weekly volume "
-            "across commits, squash-merge PR events (recovered offline from (#N) "
-            "subjects on the first-parent line), and bead created/closed series; "
-            "rolling 7d/28d momentum with an explicit last-28d-vs-prior verdict; "
-            "hour-by-weekday rhythm; data-derived day-character classes (quiet/"
-            "organic/heavy/campaign) with burstiness (Gini, top-decile day share); "
-            "per-area weekly file-touch small multiples; and a PR-vs-bead-closure "
-            "coupling scatter. Complements, never duplicates, `workspace "
-            "backlog-calibration` (duration/discovery models) and `workspace "
-            "beads-state-report` (point-in-time population census)."
-        ),
-        examples=(
-            "devtools workspace trajectory-report",
-            "devtools workspace trajectory-report --out /tmp/trajectory.html",
-            "devtools workspace trajectory-report --fresh --json",
         ),
     ),
 )

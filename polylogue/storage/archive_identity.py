@@ -18,13 +18,14 @@ from polylogue.version import VERSION_INFO
 
 logger = logging.getLogger(__name__)
 
-ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops"]
+ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops", "audit"]
 TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
     ("source", "source.db"),
     ("index", "index.db"),
     ("embeddings", "embeddings.db"),
     ("user", "user.db"),
     ("ops", "ops.db"),
+    ("audit", "audit.db"),
 )
 
 
@@ -231,6 +232,21 @@ class ArchiveIdentity:
     @property
     def durable_id(self) -> str:
         return "|".join((self.tier("source").stable_id, self.tier("user").stable_id))
+
+    @property
+    def authority_identity_digest(self) -> str:
+        """Digest the live archive identity without recursively including audit.db."""
+
+        import hashlib
+        import json
+
+        payload = {
+            "configured_root": str(self.configured_root.absolute()),
+            "active_generation": self.active_generation,
+            "durable_id": self.durable_id,
+            "tiers": {tier.name: tier.stable_id for tier in self.tiers if tier.name != "audit"},
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def conflicts_with(self, other: ArchiveIdentity) -> bool:
         shared_durable = self.tier("source").same_file(other.tier("source")) or self.tier("user").same_file(

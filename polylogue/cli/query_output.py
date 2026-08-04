@@ -39,10 +39,10 @@ from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.payloads import (
     SearchCursor,
-    SessionListRowPayload,
     SessionSearchHitPayload,
     build_search_envelope,
     model_json_document,
+    session_list_envelope_from_summary,
 )
 
 logger = get_logger(__name__)
@@ -411,7 +411,7 @@ def open_result(
 
 
 def summary_to_dict(summary: SessionSummary, message_count: int) -> JSONDocument:
-    return SessionListRowPayload.from_summary(
+    return session_list_envelope_from_summary(
         summary,
         message_count=message_count,
     ).selected()
