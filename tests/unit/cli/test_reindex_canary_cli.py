@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import stat
 from pathlib import Path
 
@@ -8,6 +9,8 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
+from polylogue.core.enums import Provider
+from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
     CanaryDiffReport,
@@ -19,7 +22,47 @@ from polylogue.maintenance.reindex_canary import (
     UnclassifiedCanaryDiffError,
     run_reindex_canary,
 )
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.workload_artifacts import build_seeded_archive
+
+
+def _codex_session(native_id: str) -> bytes:
+    rows = (
+        {"type": "session_meta", "payload": {"id": native_id, "timestamp": "2026-08-04T10:00:00Z"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": f"{native_id}-user",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": f"{native_id}-assistant",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "world"}],
+            },
+        },
+    )
+    return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
+
+
+def _seed_isolated_canary(root: Path) -> None:
+    initialize_active_archive_root(root)
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=_codex_session("isolated-canary"),
+            source_path="isolated-canary.jsonl",
+            acquired_at_ms=1,
+        )
+    receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
+    assert receipt.status == "replayed"
 
 
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
@@ -63,6 +106,8 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
         rebuild_receipt={
             "archive_root": str(index_path.parent),
             "selected_raw_count": 1,
+            "selected_raw_ids": ["raw-sample"],
+            "selected_session_ids": ["codex-session:sample"],
             "status": "replayed",
             "materialized": True,
             "generation": {
@@ -209,7 +254,7 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
     )
 
     assert result.exit_code == 1
-    assert "require --review-manifest" in result.output
+    assert "classification is incomplete" in result.output
 
 
 def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
@@ -289,7 +334,51 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
     )
 
     assert result.exit_code == 1
-    assert "require --review-manifest" in result.output
+    assert "unreviewed canary report written" in result.output
+
+
+def test_reindex_canary_cli_persists_unreviewed_real_candidate_lifecycle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real inactive rebuild records its observed diff before CLI refusal."""
+
+    live_root = tmp_path / "configured-live"
+    canary_root = tmp_path / "isolated-canary"
+    report_path = tmp_path / "unreviewed.json"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(canary_root))
+    _seed_isolated_canary(canary_root)
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
+    with sqlite3.connect(canary_root / "index.db") as connection:
+        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(report_path),
+            "--sample",
+            "1",
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "unreviewed canary report written" in result.output
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert persisted["review_status"] == "unreviewed"
+    assert persisted["reviews"] == []
+    assert persisted["comparison"]["differences"]
+    assert persisted["comparison"]["candidate_index"] != persisted["comparison"]["current_index"]
+    assert persisted["rebuild_receipt"]["generation"]["state"] == "inactive"
 
 
 def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
@@ -353,4 +442,8 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
     assert request.raw_ids == selection.selected_raw_ids  # type: ignore[attr-defined]
     assert request.promote is False  # type: ignore[attr-defined]
     assert captured["compare"] == (current_index, candidate_index, selection.selected_session_ids)
-    assert result.rebuild_receipt == {"generation": Receipt.generation}
+    assert result.rebuild_receipt == {
+        "generation": Receipt.generation,
+        "selected_raw_ids": ["raw-sample"],
+        "selected_session_ids": ["codex-session:sample"],
+    }

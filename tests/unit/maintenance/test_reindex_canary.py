@@ -130,6 +130,8 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
     return {
         "archive_root": str(comparison.candidate_index.parent),
         "selected_raw_count": len(selection.selected_raw_ids),
+        "selected_raw_ids": list(selection.selected_raw_ids),
+        "selected_session_ids": list(selection.selected_session_ids),
         "status": "replayed",
         "materialized": True,
         "generation": {
@@ -218,6 +220,7 @@ def test_expected_difference_is_structurally_accounted_for(tmp_path: Path) -> No
         expected=(
             ExpectedDifference(
                 table="session_profiles",
+                identity=(("session_id", "codex-session:alpha"),),
                 operations=(DifferenceOperation.CHANGED,),
                 columns=("message_count",),
                 bead_ref="polylogue-example",
@@ -248,6 +251,7 @@ def test_expected_difference_cannot_hide_extra_changed_columns(tmp_path: Path) -
         expected=(
             ExpectedDifference(
                 table="session_profiles",
+                identity=(("session_id", "codex-session:alpha"),),
                 operations=(DifferenceOperation.CHANGED,),
                 columns=("message_count",),
                 bead_ref="polylogue-example",
@@ -262,12 +266,43 @@ def test_expected_difference_cannot_hide_extra_changed_columns(tmp_path: Path) -
     assert profile_changes[0].classification is DifferenceClassification.UNEXPECTED
 
 
+def test_expected_difference_for_alpha_does_not_waive_beta(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current, sessions=("alpha", "beta"))
+    _seed_index(candidate, sessions=("alpha", "beta"), profile_message_count=2)
+    report = compare_reindex_generations(
+        current,
+        candidate,
+        expected=(
+            ExpectedDifference(
+                table="session_profiles",
+                identity=(("session_id", "codex-session:alpha"),),
+                operations=(DifferenceOperation.CHANGED,),
+                columns=("message_count",),
+                bead_ref="ref",
+                rationale="alpha only",
+            ),
+        ),
+    )
+    classifications = {
+        dict(item.identity)["session_id"]: item.classification
+        for item in report.differences
+        if item.table == "session_profiles"
+    }
+    assert classifications == {
+        "codex-session:alpha": DifferenceClassification.EXPECTED,
+        "codex-session:beta": DifferenceClassification.UNEXPECTED,
+    }
+
+
 def test_expected_difference_requires_exact_operation_and_nonempty_signature() -> None:
     """A table-wide declaration cannot classify every future row difference."""
 
     with pytest.raises(ValueError, match="exactly one operation"):
         ExpectedDifference(
             table="session_profiles",
+            identity=(("session_id", "codex-session:alpha"),),
             bead_ref="polylogue-example",
             rationale="too broad",
         )
@@ -275,6 +310,7 @@ def test_expected_difference_requires_exact_operation_and_nonempty_signature() -
     with pytest.raises(ValueError, match="non-empty changed-column signature"):
         ExpectedDifference(
             table="session_profiles",
+            identity=(("session_id", "codex-session:alpha"),),
             operations=(DifferenceOperation.CHANGED,),
             bead_ref="polylogue-example",
             rationale="still too broad",
@@ -298,6 +334,7 @@ def test_expected_difference_requires_exact_schema_asymmetry_signature(tmp_path:
         expected=(
             ExpectedDifference(
                 table="session_profiles",
+                identity=(("__schema__", "column"), ("name", "tags_json")),
                 operations=(DifferenceOperation.REMOVED,),
                 columns=("message_count",),
                 bead_ref="polylogue-example",
@@ -860,6 +897,47 @@ def test_loading_canary_report_rejects_tampered_candidate_provenance(tmp_path: P
     report_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="does not identify the compared candidate"):
+        load_canary_report(report_path)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    (
+        ("index", "selection index"),
+        ("sessions", "selection sessions"),
+        ("raw-ids", "rebuild evidence"),
+    ),
+)
+def test_loading_canary_report_rejects_tampered_selection_binding(tmp_path: Path, tamper: str, message: str) -> None:
+    current, candidate, report_path = tmp_path / "current.db", tmp_path / "candidate.db", tmp_path / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed")
+    comparison, selection = (
+        compare_reindex_generations(current, candidate),
+        select_canary_sessions(current, sessions_per_origin=1),
+    )
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            item, classification=DifferenceClassification.UNEXPECTED, reference="ref", rationale="r"
+        )
+        for item in comparison.differences
+    )
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    if tamper == "index":
+        payload["selection"]["index_path"] = str(tmp_path / "foreign.db")
+    elif tamper == "sessions":
+        payload["selection"]["selected_session_ids"] = ["codex-session:foreign"]
+    else:
+        payload["rebuild_receipt"]["selected_raw_ids"] = ["raw-foreign"]
+    report_path.write_text(json.dumps(payload))
+    with pytest.raises(UnclassifiedCanaryDiffError, match=message):
         load_canary_report(report_path)
 
 
