@@ -10,3 +10,4 @@ and [Developer Tools](../devtools.md) references for present-tense behavior.
 - [Daemon loop lock-starvation map](2026-07-09-daemon-loop-lock-starvation-map.md)
 - [Hash boundary census](2026-07-09-hash-boundary-census.md)
 - [Race window audit](2026-07-09-race-window-audit.md)
+- [Blob-reference liveness closure audit](2026-08-04-blob-ref-liveness-closure.md)

@@ -187,8 +187,8 @@ def test_interrupted_hook_rekey_blocks_liveness_deletion_and_preserves_blob(
         lambda *args, **kwargs: args[0],
     )
     monkeypatch.setattr(
-        "polylogue.maintenance.blob_ref_liveness_reconciliation.offline_maintenance_block_reason",
-        lambda *args, **kwargs: None,
+        "polylogue.maintenance.blob_ref_liveness_reconciliation.running_daemon_pid",
+        lambda _config: None,
     )
     with pytest.raises(BlobRefLivenessReconciliationError, match="rekeyable_hook_payloads=1"):
         reconcile_blob_ref_liveness(

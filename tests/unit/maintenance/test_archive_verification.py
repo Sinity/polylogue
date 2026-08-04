@@ -595,7 +595,34 @@ def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
 
     check = _check(report, "blob-refs-liveness")
     assert check.status is OutcomeStatus.OK
-    assert check.evidence["orphans_by_ref_type"] == {"raw_payload": 0, "attachment": 0, "sidecar": 0}
+    assert check.evidence["orphans_by_ref_type"] == {
+        "attachment": 0,
+        "hook_payload": 0,
+        "raw_payload": 0,
+        "sidecar": 0,
+    }
+
+
+def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "source.db")
+    try:
+        conn.execute(
+            """
+            INSERT INTO blob_refs(blob_hash, ref_id, ref_type, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-1', 'attachment', 10, 100)
+            """,
+            (b"a" * 32,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-refs-liveness",))
+
+    check = _check(report, "blob-refs-liveness")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["orphans_by_ref_type"]["attachment"] == 0
 
 
 def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
-from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
+from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.paths import render_root
 from polylogue.storage.blob_ref_liveness import (
     BlobRefLivenessClassification,
@@ -52,6 +52,18 @@ class BlobRefLivenessReconciliationReport:
 
 def _offline_config(archive_root: Path) -> Config:
     return Config(archive_root=archive_root, render_root=render_root(), sources=[])
+
+
+def _offline_apply_block_reason(archive_root: Path) -> str | None:
+    """Refuse this offline-only repair whenever its archive daemon is live."""
+
+    daemon_pid = running_daemon_pid(_offline_config(archive_root))
+    if daemon_pid is None:
+        return None
+    return (
+        f"Refusing offline blob-ref liveness reconciliation while polylogued PID {daemon_pid} is running. "
+        "Stop polylogued before applying this repair."
+    )
 
 
 def _checkpoint_source_db(conn: sqlite3.Connection) -> None:
@@ -256,7 +268,7 @@ def reconcile_blob_ref_liveness(
         raise BlobRefLivenessReconciliationError(
             f"recovered existing prepared receipt as {outcome}: {receipt_path}; choose a fresh receipt path before retrying"
         )
-    if reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False):
+    if reason := _offline_apply_block_reason(archive_root):
         raise BlobRefLivenessReconciliationError(reason)
 
     conn = sqlite3.connect(source_db)
