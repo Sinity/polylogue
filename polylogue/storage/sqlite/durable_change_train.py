@@ -27,11 +27,13 @@ from polylogue.storage.sqlite.migration_runner import (
     DurableMigrationClaim,
     DurableRuntimeConsumerResult,
     MigrationResult,
+    _assert_durable_database_continuity,
     _validate_riders,
     add_durable_change_train_rider,
     admit_durable_change_train,
     apply_durable_change_train,
     authorize_durable_change_train_backup,
+    capture_durable_database_evidence,
     declare_durable_change_train,
     durable_change_train_from_payload,
     durable_change_train_to_payload,
@@ -342,7 +344,7 @@ def _runtime_consumer_results(
                 raise DurableChangeTrainError(f"runtime consumer {consumer.consumer_id} is not callable: {reference}")
             try:
                 if reference.endswith(":initialize_archive_database"):
-                    value(archive_root / f"{train.tier.value}.db", train.tier)
+                    value(archive_root / f"{train.tier.value}.db", train.tier, allow_create=False)
                 elif reference.endswith(":initialize_archive_tier"):
                     with sqlite3.connect(":memory:") as probe:
                         value(probe, train.tier)
@@ -373,6 +375,42 @@ def _runtime_consumer_results(
     return tuple(results)
 
 
+def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
+    """Open an existing durable tier without allowing SQLite to create it."""
+    try:
+        metadata = tier_path.lstat()
+    except FileNotFoundError as exc:
+        raise DurableChangeTrainError(
+            "durable tier is missing; refusing startup initialization/release until restored"
+        ) from exc
+    if tier_path.is_symlink() or not tier_path.is_file() or metadata.st_nlink != 1:
+        raise DurableChangeTrainError(
+            "durable tier was replaced by an unsafe file; refusing startup initialization/release"
+        )
+    try:
+        return sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+    except (OSError, sqlite3.Error) as exc:
+        raise DurableChangeTrainError("durable tier could not be opened without initialization") from exc
+
+
+def _verify_persisted_live_tier_continuity(conn: sqlite3.Connection, train: DurableChangeTrain) -> None:
+    """Prove the exact reopened connection still names the persisted durable tier."""
+    if train.apply_evidence is None:
+        raise DurableChangeTrainError(f"{train.state.value} train lacks post-apply continuity evidence")
+    actual = capture_durable_database_evidence(conn, train.tier)
+    expected = train.apply_evidence.post
+    if actual.user_version != train.target_version:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
+        )
+    try:
+        _assert_durable_database_continuity(actual, expected, label=train.tier.value)
+    except DurableChangeTrainError as exc:
+        raise DurableChangeTrainError(
+            f"{train.tier.value} durable tier continuity proof failed; refusing startup initialization/release"
+        ) from exc
+
+
 def _prove_and_release_persisted_train(
     archive_root: Path,
     manifest_path: Path,
@@ -383,45 +421,49 @@ def _prove_and_release_persisted_train(
     """Finish a persisted applied/proven train after an interrupted process."""
     tier_path = archive_root / f"{train.tier.value}.db"
     if train.state is DurableChangeTrainState.APPLIED:
-        if train.reservation is not None and train.reservation.active:
-            previous_revision = train.revision
-            train = record_durable_writer_release(
-                train,
-                evidence_ref=f"proof:startup-writer-release:{train.train_id}",
-            )
-            train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-
-        initialize_archive_database(tier_path, train.tier)
-        with sqlite3.connect(tier_path) as restarted:
-            actual_parity = _fresh_ddl_parity_for_train(train, migrated_connection=restarted)
+        live = _open_existing_tier(tier_path)
+        try:
+            _verify_persisted_live_tier_continuity(live, train)
+            if train.reservation is not None and train.reservation.active:
+                previous_revision = train.revision
+                train = record_durable_writer_release(
+                    train,
+                    evidence_ref=f"proof:startup-writer-release:{train.train_id}",
+                )
+                train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
+            actual_parity = _fresh_ddl_parity_for_train(train, migrated_connection=live)
             runtime_results = (
                 tuple(runtime_consumer_results)
                 if runtime_consumer_results is not None
                 else _runtime_consumer_results(train, archive_root)
             )
             restart = _migration_runner.capture_durable_restart_convergence(
-                restarted,
+                live,
                 train,
                 runtime_consumers=runtime_results,
                 evidence_ref=f"proof:startup-restart:{train.train_id}",
             )
-        previous_revision = train.revision
-        train = prove_durable_change_train(
-            train,
-            fresh_ddl_parity=actual_parity,
-            runtime_consumers=runtime_results,
-            restart_convergence=restart,
-            proof_refs=(f"proof:startup-recovery:{train.train_id}",),
-        )
-        train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
+            previous_revision = train.revision
+            train = prove_durable_change_train(
+                train,
+                fresh_ddl_parity=actual_parity,
+                runtime_consumers=runtime_results,
+                restart_convergence=restart,
+                proof_refs=(f"proof:startup-recovery:{train.train_id}",),
+            )
+            _verify_persisted_live_tier_continuity(live, train)
+            train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
+        finally:
+            live.close()
     if train.state is DurableChangeTrainState.PROVEN:
-        previous_revision = train.revision
-        train = release_durable_change_train(
-            train,
-            evidence_ref=f"proof:startup-train-release:{train.train_id}",
-        )
-        train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
+        with _open_existing_tier(tier_path) as live:
+            _verify_persisted_live_tier_continuity(live, train)
+            previous_revision = train.revision
+            train = release_durable_change_train(
+                train,
+                evidence_ref=f"proof:startup-train-release:{train.train_id}",
+            )
+            train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     return train
 
 
@@ -438,7 +480,7 @@ def execute_durable_change_train(
     """Execute the real maintenance route through every persisted train state."""
     reconcile_durable_change_train_startup(archive_root)
     tier_path = archive_root / f"{tier.value}.db"
-    with sqlite3.connect(tier_path) as probe:
+    with _open_existing_tier(tier_path) as probe:
         current_version = int(probe.execute("PRAGMA user_version").fetchone()[0] or 0)
     runtime_target_version = cast(dict[ArchiveTier, int], vars(_migration_runner)["ARCHIVE_VERSION_BY_TIER"])[tier]
     if current_version > runtime_target_version:
@@ -490,6 +532,14 @@ def execute_durable_change_train(
         train = _persist_train_transition(manifest_path, sidecar.train, expected_revision=-1)
 
     if train.state is DurableChangeTrainState.RELEASED:
+        with _open_existing_tier(tier_path) as live:
+            live_version = int(live.execute("PRAGMA user_version").fetchone()[0] or 0)
+            if live_version != runtime_target_version:
+                raise DurableChangeTrainError(
+                    f"released {tier.value} train {train.train_id} expects live v{runtime_target_version}, "
+                    f"found v{live_version}; authorize a new execution"
+                )
+            _verify_persisted_live_tier_continuity(live, train)
         return DurableChangeTrainExecution(train=train, manifest_path=manifest_path, migration_result=None)
 
     if train.state is DurableChangeTrainState.DECLARED:
@@ -587,10 +637,23 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
     reconciled: list[Path] = []
     for manifest_path in sorted(manifest_root.glob("*.json")):
         train = load_durable_change_train_manifest(manifest_path)
+        if train.state is DurableChangeTrainState.FAILED:
+            tier_path = archive_root / f"{train.tier.value}.db"
+            with _open_existing_tier(tier_path) as conn:
+                recovered = recover_durable_change_train(
+                    conn,
+                    train,
+                    recovery_evidence_ref=f"proof:startup-failed-recovery:{train.train_id}",
+                    writer_release_evidence_ref=f"proof:startup-writer-release:{train.train_id}",
+                )
+            train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
+            reconciled.append(manifest_path)
+            if train.state is DurableChangeTrainState.ADMITTED:
+                continue
         if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:
             tier_path = archive_root / f"{train.tier.value}.db"
             try:
-                with sqlite3.connect(tier_path) as conn:
+                with _open_existing_tier(tier_path) as conn:
                     recovered = reconcile_interrupted_durable_change_train(
                         conn,
                         train,
@@ -601,6 +664,11 @@ def _reconcile_durable_change_train_startup_locked(archive_root: Path) -> tuple[
                 _persist_train_transition(manifest_path, exc.failed_train, expected_revision=train.revision)
                 raise
             train = _persist_train_transition(manifest_path, recovered, expected_revision=train.revision)
+        if train.state is DurableChangeTrainState.RELEASED:
+            with _open_existing_tier(archive_root / f"{train.tier.value}.db") as live:
+                _verify_persisted_live_tier_continuity(live, train)
+            reconciled.append(manifest_path)
+            continue
         if train.state not in {
             DurableChangeTrainState.APPLIED,
             DurableChangeTrainState.PROVEN,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from collections.abc import Iterator
@@ -518,6 +519,34 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
     assert released == [True]
     manifest_path = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
     assert load_durable_change_train_manifest(manifest_path).state is DurableChangeTrainState.RELEASED
+
+    released_bytes = db_path.read_bytes()
+    db_path.unlink()
+    with pytest.raises(DurableChangeTrainError, match="durable tier is missing"):
+        execute_durable_change_train(
+            tmp_path,
+            ArchiveTier.SOURCE,
+            backup_manifest=None,
+            daemon_stopped_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+            release_archive_ownership=lambda: pytest.fail("missing released tier was released again"),
+        )
+    assert not db_path.exists()
+    db_path.write_bytes(released_bytes)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+    with pytest.raises(
+        DurableChangeTrainError, match="(?:released source train .* expects live v2|continuity proof failed)"
+    ):
+        execute_durable_change_train(
+            tmp_path,
+            ArchiveTier.SOURCE,
+            backup_manifest=None,
+            daemon_stopped_evidence_ref="proof:daemon-stopped",
+            single_writer_evidence_ref="proof:archive-ownership-lock",
+            release_archive_ownership=lambda: pytest.fail("stale released train was released again"),
+        )
 
 
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
@@ -1056,6 +1085,148 @@ def test_bootstrap_finishes_persisted_applied_train_without_reapplying(
     assert recovered.state is DurableChangeTrainState.RELEASED
     assert recovered.proof is not None
     assert recovered.apply_evidence is not None and recovered.apply_evidence.recovered_after_interrupt is True
+
+
+@pytest.mark.parametrize("tier", (ArchiveTier.SOURCE, ArchiveTier.USER))
+@pytest.mark.parametrize("replacement", ("missing", "content", "inode"))
+def test_startup_proves_durable_continuity_before_initialization_or_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tier: ArchiveTier,
+    replacement: str,
+) -> None:
+    """A lost or replaced durable file cannot be bootstrapped over an APPLIED train."""
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    db_path = tmp_path / f"{tier.value}.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, tier)
+    train = _admitted(tier, rider=_production_rider())
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        train = apply_durable_change_train(conn, train)
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / f"{tier.value}-002.json"
+    write_durable_change_train_manifest(manifest, train, expected_revision=-1)
+
+    if replacement == "missing":
+        db_path.unlink()
+    elif replacement == "content":
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE base_items SET payload = 'lost' WHERE item_id = 'base-1'")
+            conn.commit()
+    else:
+        replacement_path = tmp_path / "replacement.db"
+        replacement_path.write_bytes(db_path.read_bytes())
+        os.replace(replacement_path, db_path)
+
+    with pytest.raises(DurableChangeTrainError, match="refusing startup initialization/release"):
+        bootstrap.initialize_active_archive_root(tmp_path)
+
+    recovered = load_durable_change_train_manifest(manifest)
+    assert recovered.state is DurableChangeTrainState.APPLIED
+    assert recovered.reservation is not None and recovered.reservation.active is True
+    if replacement == "missing":
+        assert not db_path.exists()
+
+
+def test_startup_recovers_persisted_rollback_failure_to_admitted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_sql = """-- migration-safety: additive-no-backup
+CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
+INSERT INTO table_that_does_not_exist VALUES (1);
+"""
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
+    train = _admitted(ArchiveTier.SOURCE, claim=_claim(ArchiveTier.SOURCE, failing_sql))
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        with pytest.raises(DurableChangeTrainApplyError) as exc_info:
+            apply_durable_change_train(conn, train)
+        failed = exc_info.value.failed_train
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    write_durable_change_train_manifest(manifest, failed, expected_revision=-1)
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import reconcile_durable_change_trains_on_startup
+
+    assert reconcile_durable_change_trains_on_startup(tmp_path) == (manifest,)
+    recovered = load_durable_change_train_manifest(manifest)
+    assert recovered.state is DurableChangeTrainState.ADMITTED
+    assert recovered.reservation is None
+    assert recovered.failure is None
+
+
+@pytest.mark.parametrize("replacement", ("content", "inode"))
+def test_startup_blocks_persisted_rollback_failure_after_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    failing_sql = """-- migration-safety: additive-no-backup
+CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;
+INSERT INTO table_that_does_not_exist VALUES (1);
+"""
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    _install_synthetic_migration(tmp_path, monkeypatch, ArchiveTier.SOURCE, sql=failing_sql)
+    train = _admitted(ArchiveTier.SOURCE, claim=_claim(ArchiveTier.SOURCE, failing_sql))
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        with pytest.raises(DurableChangeTrainApplyError) as exc_info:
+            apply_durable_change_train(conn, train)
+        failed = exc_info.value.failed_train
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    write_durable_change_train_manifest(manifest, failed, expected_revision=-1)
+
+    if replacement == "content":
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE base_items SET payload = 'replaced' WHERE item_id = 'base-1'")
+            conn.commit()
+    else:
+        replacement_path = tmp_path / "replacement.db"
+        replacement_path.write_bytes(db_path.read_bytes())
+        os.replace(replacement_path, db_path)
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import reconcile_durable_change_trains_on_startup
+
+    with pytest.raises(DurableChangeTrainError, match="rolled-back recovery durable tier identity/content continuity"):
+        reconcile_durable_change_trains_on_startup(tmp_path)
+    blocked = load_durable_change_train_manifest(manifest)
+    assert blocked.state is DurableChangeTrainState.FAILED
+    assert blocked.reservation is not None and blocked.reservation.active is True
+
+
+def test_startup_keeps_persisted_indeterminate_failure_blocked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    train = _admitted(ArchiveTier.SOURCE)
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        conn.execute("PRAGMA user_version = 99")
+        conn.commit()
+        with pytest.raises(DurableChangeTrainRecoveryError) as exc_info:
+            reconcile_interrupted_durable_change_train(
+                conn,
+                train,
+                interruption_evidence_ref="proof:unknown-version",
+                writer_release_evidence_ref="proof:lease-expired",
+            )
+        failed = exc_info.value.failed_train
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    write_durable_change_train_manifest(manifest, failed, expected_revision=-1)
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import reconcile_durable_change_trains_on_startup
+
+    with pytest.raises(DurableChangeTrainRecoveryError, match="cannot recover automatically"):
+        reconcile_durable_change_trains_on_startup(tmp_path)
+    blocked = load_durable_change_train_manifest(manifest)
+    assert blocked.state is DurableChangeTrainState.FAILED
+    assert blocked.reservation is not None and blocked.reservation.active is True
 
 
 def test_interrupted_unknown_version_requires_authenticated_restore(tmp_path: Path) -> None:

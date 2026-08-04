@@ -1153,6 +1153,8 @@ class DurableDatabaseEvidence:
     quick_check: tuple[str, ...]
     schema_inventory_sha256: str
     row_counts: tuple[tuple[str, int], ...]
+    archive_identity_digest: str
+    content_sha256: str
     observed_at_ms: int
 
 
@@ -1466,14 +1468,41 @@ def capture_durable_database_evidence(
     """Capture the pre/post/restart evidence used by the train state machine."""
     quick_check = tuple(str(row[0]) for row in conn.execute("PRAGMA quick_check"))
     inventory = capture_durable_schema_inventory(conn)
+    live_path = _connection_main_path(conn)
+    from polylogue.storage.archive_identity import ArchiveIdentity
+
+    archive_identity_digest = ArchiveIdentity.resolve(live_path.parent).authority_identity_digest
+    content_hasher = hashlib.sha256()
+    for statement in conn.iterdump():
+        content_hasher.update(statement.encode("utf-8"))
+        content_hasher.update(b"\n")
     return DurableDatabaseEvidence(
         tier=tier,
         user_version=int(conn.execute("PRAGMA user_version").fetchone()[0] or 0),
         quick_check=quick_check,
         schema_inventory_sha256=inventory.sha256,
         row_counts=_durable_table_counts(conn),
+        archive_identity_digest=archive_identity_digest,
+        content_sha256=content_hasher.hexdigest(),
         observed_at_ms=_durable_now_ms(),
     )
+
+
+def _assert_durable_database_continuity(
+    actual: DurableDatabaseEvidence,
+    expected: DurableDatabaseEvidence,
+    *,
+    label: str,
+) -> None:
+    """Require the live durable file to retain its authenticated evidence."""
+    if (
+        actual.quick_check != expected.quick_check
+        or actual.quick_check != ("ok",)
+        or actual.user_version != expected.user_version
+        or actual.archive_identity_digest != expected.archive_identity_digest
+        or actual.content_sha256 != expected.content_sha256
+    ):
+        raise DurableChangeTrainError(f"{label} durable tier identity/content continuity proof failed")
 
 
 def _drop_table_names(constraints: Sequence[DurableDropConstraint]) -> set[str]:
@@ -2196,6 +2225,14 @@ def recover_durable_change_train(
     if train.failure.classification is DurableFailureClassification.ROLLED_BACK_TO_CURRENT:
         if observed != train.current_version:
             raise DurableChangeTrainError("rolled-back recovery requires the exact declared current version")
+        pre = train.failure.pre_apply_evidence
+        if pre is None:
+            raise DurableChangeTrainError("rolled-back recovery lacks pre-apply evidence for continuity")
+        _assert_durable_database_continuity(
+            capture_durable_database_evidence(conn, train.tier),
+            pre,
+            label="rolled-back recovery",
+        )
         updated = replace(
             train,
             state=DurableChangeTrainState.ADMITTED,
@@ -2521,6 +2558,8 @@ def _validate_database_evidence(
     if evidence.quick_check != ("ok",):
         raise DurableChangeTrainError(f"{label} does not contain a successful quick_check")
     _validate_sha256(evidence.schema_inventory_sha256, label=f"{label} schema inventory")
+    _validate_sha256(evidence.archive_identity_digest, label=f"{label} archive identity")
+    _validate_sha256(evidence.content_sha256, label=f"{label} content")
     if evidence.observed_at_ms < train.declared_at_ms:
         raise DurableChangeTrainError(f"{label} timestamp predates train declaration")
     tables = [table for table, _count in evidence.row_counts]

@@ -220,10 +220,19 @@ def _ensure_ops_cursor_lag_sample_columns(conn: sqlite3.Connection) -> None:
     )
 
 
-def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
+def initialize_archive_database(path: Path, tier: ArchiveTier, *, allow_create: bool = True) -> None:
     """Create or initialize one archive tier database file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    if allow_create:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+    else:
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"durable tier is missing; refusing runtime initialization: {path}") from exc
+        if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
+            raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
+        conn = sqlite3.connect(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         expected_version = archive_tier_spec(tier).version
