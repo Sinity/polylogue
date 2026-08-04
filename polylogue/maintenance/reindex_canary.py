@@ -58,6 +58,7 @@ class ExpectedDifference:
     table: str
     bead_ref: str
     rationale: str
+    identity: tuple[tuple[str, object], ...]
     operations: tuple[DifferenceOperation, ...] = ()
     columns: tuple[str, ...] = ()
 
@@ -66,17 +67,22 @@ class ExpectedDifference:
             raise ValueError("expected differences require exactly one operation")
         if not self.columns:
             raise ValueError("expected differences require a non-empty changed-column signature")
+        if not self.identity:
+            raise ValueError("expected differences require a bounded row identity")
 
     def matches(
         self,
         *,
         table: str,
         operation: DifferenceOperation,
+        identity: tuple[tuple[str, object], ...],
         changed_columns: tuple[str, ...],
     ) -> bool:
         if self.table != table:
             return False
         if operation is not self.operations[0]:
+            return False
+        if identity != self.identity:
             return False
         return tuple(changed_columns) == self.columns
 
@@ -328,10 +334,13 @@ def run_reindex_canary(
         candidate_path,
         session_ids=selection.selected_session_ids,
     )
+    receipt_payload = receipt.to_dict()
+    receipt_payload["selected_raw_ids"] = list(selection.selected_raw_ids)
+    receipt_payload["selected_session_ids"] = list(selection.selected_session_ids)
     return CanaryRunResult(
         selection=selection,
         comparison=comparison,
-        rebuild_receipt=receipt.to_dict(),
+        rebuild_receipt=receipt_payload,
     )
 
 
@@ -443,6 +452,7 @@ class DurableCanaryReport:
     comparison: CanaryDiffReport
     rebuild_receipt: dict[str, object]
     reviews: tuple[CanaryDifferenceReview, ...]
+    review_status: str
 
     @property
     def unclassified_count(self) -> int:
@@ -455,6 +465,7 @@ class DurableCanaryReport:
             "comparison": self.comparison.to_dict(),
             "rebuild_receipt": self.rebuild_receipt,
             "reviews": [review.to_dict() for review in self.reviews],
+            "review_status": self.review_status,
         }
 
 
@@ -465,8 +476,9 @@ def write_canary_report(
     comparison: CanaryDiffReport,
     rebuild_receipt: dict[str, object],
     reviews: Iterable[CanaryDifferenceReview],
+    allow_unreviewed: bool = False,
 ) -> DurableCanaryReport:
-    """Persist a reviewed report, refusing any incomplete classification.
+    """Persist a fully reviewed report or an explicit durable unreviewed diff.
 
     Reviews must cover exactly the comparator's row identities. This prevents
     a report from becoming a durable green-light artifact while a diff was
@@ -479,6 +491,7 @@ def write_canary_report(
         selected_raw_ids=selection.selected_raw_ids,
         candidate_index=comparison.candidate_index,
     )
+    _validate_selection_binding(selection, comparison, rebuild_receipt)
     review_list = tuple(reviews)
     review_by_key: dict[tuple[str, DifferenceOperation, tuple[tuple[str, object], ...]], CanaryDifferenceReview] = {}
     duplicate_keys: list[object] = []
@@ -498,24 +511,34 @@ def write_canary_report(
     }
     missing_keys = difference_keys.difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_keys)
-    if duplicate_keys or missing_keys or extra_keys:
+    if (missing_keys and allow_unreviewed and not review_list and not extra_keys) or not comparison.differences:
+        review_status = "unreviewed" if missing_keys else "reviewed"
+    elif duplicate_keys or missing_keys or extra_keys:
         detail = [
             f"duplicate={len(duplicate_keys)}",
             f"missing={len(missing_keys)}",
             f"extra={len(extra_keys)}",
         ]
         raise UnclassifiedCanaryDiffError("canary report classification is incomplete (" + ", ".join(detail) + ")")
+    else:
+        review_status = "reviewed"
 
-    reviewed_differences = tuple(
-        replace(
-            difference,
-            classification=review_by_key[(difference.table, difference.operation, difference.identity)].classification,
-            rationale=(
-                f"{review_by_key[(difference.table, difference.operation, difference.identity)].reference}: "
-                f"{review_by_key[(difference.table, difference.operation, difference.identity)].rationale}"
-            ),
+    reviewed_differences = (
+        comparison.differences
+        if review_status == "unreviewed"
+        else tuple(
+            replace(
+                difference,
+                classification=review_by_key[
+                    (difference.table, difference.operation, difference.identity)
+                ].classification,
+                rationale=(
+                    f"{review_by_key[(difference.table, difference.operation, difference.identity)].reference}: "
+                    f"{review_by_key[(difference.table, difference.operation, difference.identity)].rationale}"
+                ),
+            )
+            for difference in comparison.differences
         )
-        for difference in comparison.differences
     )
     reviewed_comparison = replace(comparison, differences=reviewed_differences)
     durable = DurableCanaryReport(
@@ -523,6 +546,7 @@ def write_canary_report(
         comparison=reviewed_comparison,
         rebuild_receipt=rebuild_receipt,
         reviews=review_list,
+        review_status=review_status,
     )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -551,6 +575,26 @@ def write_canary_report(
                 temporary.unlink()
         raise
     return durable
+
+
+def _validate_selection_binding(
+    selection: CanarySelection, comparison: CanaryDiffReport, receipt: dict[str, object]
+) -> None:
+    if selection.index_path.resolve() != comparison.current_index.resolve():
+        raise UnclassifiedCanaryDiffError("canary report selection index does not match the compared current index")
+    if selection.selected_session_ids != comparison.session_ids:
+        raise UnclassifiedCanaryDiffError("canary report selection sessions do not match the comparison")
+    raw_ids = receipt.get("selected_raw_ids")
+    session_ids = receipt.get("selected_session_ids")
+    if (
+        not isinstance(raw_ids, list)
+        or not all(isinstance(value, str) for value in raw_ids)
+        or not isinstance(session_ids, list)
+        or not all(isinstance(value, str) for value in session_ids)
+        or tuple(raw_ids) != selection.selected_raw_ids
+        or tuple(session_ids) != selection.selected_session_ids
+    ):
+        raise UnclassifiedCanaryDiffError("canary report rebuild evidence does not match the selected identities")
 
 
 def _validate_rebuild_receipt(
@@ -615,6 +659,9 @@ def load_canary_report(path: Path) -> dict[str, object]:
     if not isinstance(raw_reviews, list):
         raise UnclassifiedCanaryDiffError("canary report has no reviews list")
     reviews = tuple(_review_from_dict(item) for item in raw_reviews)
+    review_status = payload.get("review_status")
+    if review_status not in {"reviewed", "unreviewed"}:
+        raise UnclassifiedCanaryDiffError("canary report has invalid review status")
     selection = payload.get("selection")
     if not isinstance(selection, dict):
         raise UnclassifiedCanaryDiffError("canary report has no selection object")
@@ -629,6 +676,37 @@ def load_canary_report(path: Path) -> dict[str, object]:
         selected_raw_ids=cast(list[str], selected_raw_ids),
         candidate_index=candidate_index,
     )
+    selection_sessions = selection.get("selected_session_ids")
+    if not isinstance(selection_sessions, list) or not all(isinstance(value, str) for value in selection_sessions):
+        raise UnclassifiedCanaryDiffError("canary report has invalid selected session ids")
+    selection_index = selection.get("index_path")
+    sessions_per_origin = selection.get("sessions_per_origin")
+    if not isinstance(selection_index, str) or not isinstance(sessions_per_origin, int):
+        raise UnclassifiedCanaryDiffError("canary report has invalid selection binding")
+    persisted_selection = CanarySelection(
+        index_path=Path(selection_index),
+        sessions_per_origin=sessions_per_origin,
+        selected_session_ids=tuple(cast(list[str], selection_sessions)),
+        selected_raw_ids=tuple(cast(list[str], selected_raw_ids)),
+        sampled_session_ids=(),
+        pathology_session_ids=(),
+        sample_session_ids=(),
+        origin_counts=(),
+    )
+    current_index = comparison.get("current_index")
+    compared_sessions = comparison.get("session_ids")
+    if (
+        not isinstance(current_index, str)
+        or not isinstance(compared_sessions, list)
+        or not all(isinstance(value, str) for value in compared_sessions)
+    ):
+        raise UnclassifiedCanaryDiffError("canary report has invalid comparison selection")
+    persisted_comparison = CanaryDiffReport(
+        Path(current_index), Path(candidate_index), tuple(cast(list[str], compared_sessions)), (), (), (), differences
+    )
+    _validate_selection_binding(
+        persisted_selection, persisted_comparison, cast(dict[str, object], payload["rebuild_receipt"])
+    )
     difference_keys = tuple(_difference_key(difference) for difference in differences)
     review_keys = tuple(review.key for review in reviews)
     if len(set(difference_keys)) != len(difference_keys) or len(set(review_keys)) != len(review_keys):
@@ -637,14 +715,18 @@ def load_canary_report(path: Path) -> dict[str, object]:
     review_by_key = dict(zip(review_keys, reviews, strict=True))
     missing_keys = set(difference_by_key).difference(review_by_key)
     extra_keys = set(review_by_key).difference(difference_by_key)
-    if missing_keys or extra_keys:
+    if review_status == "unreviewed":
+        if reviews or not differences:
+            raise UnclassifiedCanaryDiffError("canary report unreviewed state is invalid")
+    elif missing_keys or extra_keys:
         raise UnclassifiedCanaryDiffError(
             f"canary report review coverage is incomplete (missing={len(missing_keys)}, extra={len(extra_keys)})"
         )
-    for key, difference in difference_by_key.items():
-        review = review_by_key[key]
-        if review.classification is not difference.classification:
-            raise UnclassifiedCanaryDiffError("canary report review classification disagrees with its difference")
+    if review_status == "reviewed":
+        for key, difference in difference_by_key.items():
+            review = review_by_key[key]
+            if review.classification is not difference.classification:
+                raise UnclassifiedCanaryDiffError("canary report review classification disagrees with its difference")
     comparison["summary"] = _summary_for_differences(differences)
     return cast(dict[str, object], payload)
 
@@ -1019,7 +1101,11 @@ def _build_difference(
     expected: tuple[ExpectedDifference, ...],
 ) -> RowDifference:
     matching = next(
-        (item for item in expected if item.matches(table=table, operation=operation, changed_columns=changed_columns)),
+        (
+            item
+            for item in expected
+            if item.matches(table=table, operation=operation, identity=identity, changed_columns=changed_columns)
+        ),
         None,
     )
     return RowDifference(
