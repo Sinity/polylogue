@@ -781,16 +781,17 @@ def _active_generation_metadata(root: Path, location: object) -> dict[str, objec
     matches: list[dict[str, object]] = []
     for metadata_path in _generation_root(location).glob("gen-*/generation.json"):
         try:
-            metadata = _generation_fields(json.loads(metadata_path.read_text(encoding="utf-8")))
-            generation_index = TierFileIdentity.resolve("index", Path(cast(str, metadata["index_path"])))
+            metadata = _read_generation_metadata(_generation_root(location), metadata_path.parent.name)
+            fields = _generation_fields(metadata)
+            generation_index = TierFileIdentity.resolve("index", Path(cast(str, fields["index_path"])))
         except (OSError, json.JSONDecodeError):
             continue
-        if metadata["state"] == "active" and active_identity.same_file(generation_index):
+        if fields["state"] == "active" and active_identity.same_file(generation_index):
             matches.append(metadata)
     if len(matches) != 1:
         raise UnclassifiedCanaryDiffError("archive-owned active generation metadata does not match the active pointer")
     active = matches[0]
-    if Path(cast(str, active["archive_root"])).resolve() != root.resolve():
+    if Path(cast(str, _generation_fields(active)["archive_root"])).resolve() != root.resolve():
         raise UnclassifiedCanaryDiffError("archive-owned active generation belongs to another archive")
     return active
 
@@ -815,9 +816,11 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
     current_identity = TierFileIdentity.resolve("index", comparison.current_index)
     if not location.active_index.same_file(current_identity):
         raise UnclassifiedCanaryDiffError("archive-owned active index does not match the canary comparison")
+    if not isinstance(generation, dict):
+        raise UnclassifiedCanaryDiffError("canary report has invalid candidate generation provenance")
     candidate = _generation_fields(generation)
     candidate_metadata = _read_generation_metadata(_generation_root(location), cast(str, candidate["generation_id"]))
-    if _generation_fields(candidate_metadata) != candidate:
+    if candidate_metadata != generation:
         raise UnclassifiedCanaryDiffError(
             "archive-owned candidate generation metadata does not match the rebuild receipt"
         )
@@ -834,7 +837,7 @@ def _capture_archive_provenance(comparison: CanaryDiffReport, receipt: dict[str,
         "active_pointer": str(location.active_pointer) if location.active_pointer is not None else None,
         "active_index": _index_evidence(location.active_index_path),
         "active_generation": _active_generation_metadata(root, location),
-        "candidate_generation": candidate,
+        "candidate_generation": candidate_metadata,
         "candidate_index": _index_evidence(candidate_path),
         "source_snapshot": source_snapshot,
     }
@@ -864,20 +867,22 @@ def _validate_archive_provenance(provenance: object, comparison: CanaryDiffRepor
     _same_index_evidence(provenance.get("active_index"), location.active_index_path, label="active")
     if provenance.get("active_generation") != _active_generation_metadata(root, location):
         raise UnclassifiedCanaryDiffError("archive-owned active generation metadata no longer matches the report")
-    receipt_generation = _generation_fields(receipt.get("generation"))
+    receipt_generation = receipt.get("generation")
+    if not isinstance(receipt_generation, dict):
+        raise UnclassifiedCanaryDiffError("canary report has invalid candidate generation provenance")
+    receipt_fields = _generation_fields(receipt_generation)
     if provenance.get("candidate_generation") != receipt_generation:
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation does not match the rebuild receipt")
-    live_candidate = _generation_fields(
-        _read_generation_metadata(_generation_root(location), cast(str, receipt_generation["generation_id"]))
-    )
-    if live_candidate != receipt_generation or live_candidate["state"] != "inactive":
+    live_candidate = _read_generation_metadata(_generation_root(location), cast(str, receipt_fields["generation_id"]))
+    live_fields = _generation_fields(live_candidate)
+    if live_candidate != receipt_generation or live_fields["state"] != "inactive":
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation metadata no longer matches the report")
-    candidate_path = Path(cast(str, live_candidate["index_path"]))
+    candidate_path = Path(cast(str, live_fields["index_path"]))
     if not candidate_path.samefile(comparison.candidate_index):
         raise UnclassifiedCanaryDiffError("archive-owned candidate generation no longer matches the report")
     _same_index_evidence(provenance.get("candidate_index"), candidate_path, label="candidate")
     source_snapshot = source_revision_snapshot(root)
-    if provenance.get("source_snapshot") != source_snapshot or live_candidate["source_snapshot"] != source_snapshot:
+    if provenance.get("source_snapshot") != source_snapshot or live_fields["source_snapshot"] != source_snapshot:
         raise UnclassifiedCanaryDiffError("archive-owned source snapshot no longer matches the inactive candidate")
 
 
