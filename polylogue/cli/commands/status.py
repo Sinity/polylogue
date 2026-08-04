@@ -926,89 +926,102 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
     try:
-        if not _table_exists(conn, "ingest_attempts"):
-            return {"available": False, "reason": "missing_ingest_attempts"}
-        if not _table_exists(conn, "convergence_debt"):
-            return {"available": False, "reason": "missing_convergence_debt"}
+        try:
+            if not _table_exists(conn, "ingest_attempts"):
+                return {"available": False, "reason": "missing_ingest_attempts"}
+        except Exception as exc:
+            return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
 
-        running_rows = conn.execute(
-            """
-            SELECT phase, origin, started_at_ms, heartbeat_at_ms,
-                   parsed_raw_count, materialized_count
-            FROM ingest_attempts
-            WHERE status = 'running'
-            ORDER BY started_at_ms DESC
-            """
-        ).fetchall()
-        running: list[dict[str, Any]] = []
-        actively_ingesting = False
-        for row in running_rows:
-            heartbeat = _safe_int(row[3], 0)
-            heartbeat_age_ms = now_ms - heartbeat if heartbeat else None
-            fresh = heartbeat_age_ms is not None and heartbeat_age_ms <= _WORKLOAD_HEARTBEAT_STALE_MS
-            actively_ingesting = actively_ingesting or fresh
-            running.append(
-                {
-                    "phase": row[0],
-                    "origin": row[1],
-                    "age_ms": now_ms - _safe_int(row[2], now_ms),
-                    "heartbeat_age_ms": heartbeat_age_ms,
-                    "heartbeat_fresh": fresh,
+        try:
+            if not _table_exists(conn, "convergence_debt"):
+                return {"available": False, "reason": "missing_convergence_debt"}
+        except Exception as exc:
+            return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
+
+        try:
+            running_rows = conn.execute(
+                """
+                SELECT phase, origin, started_at_ms, heartbeat_at_ms,
+                       parsed_raw_count, materialized_count
+                FROM ingest_attempts
+                WHERE status = 'running'
+                ORDER BY started_at_ms DESC
+                """
+            ).fetchall()
+            running: list[dict[str, Any]] = []
+            actively_ingesting = False
+            for row in running_rows:
+                heartbeat = _safe_int(row[3], 0)
+                heartbeat_age_ms = now_ms - heartbeat if heartbeat else None
+                fresh = heartbeat_age_ms is not None and heartbeat_age_ms <= _WORKLOAD_HEARTBEAT_STALE_MS
+                actively_ingesting = actively_ingesting or fresh
+                running.append(
+                    {
+                        "phase": row[0],
+                        "origin": row[1],
+                        "age_ms": now_ms - _safe_int(row[2], now_ms),
+                        "heartbeat_age_ms": heartbeat_age_ms,
+                        "heartbeat_fresh": fresh,
+                    }
+                )
+
+            window_start = now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS
+            tput = conn.execute(
+                """
+                SELECT COUNT(*),
+                       COALESCE(SUM(parsed_raw_count), 0),
+                       COALESCE(SUM(materialized_count), 0),
+                       COALESCE(SUM(finished_at_ms - started_at_ms), 0)
+                FROM ingest_attempts
+                WHERE status = 'completed' AND finished_at_ms >= ?
+                """,
+                (window_start,),
+            ).fetchone()
+            window_batches = _safe_int(tput[0], 0) if tput else 0
+            window_files = _safe_int(tput[1], 0) if tput else 0
+            window_materialized = _safe_int(tput[2], 0) if tput else 0
+            window_busy_ms = _safe_int(tput[3], 0) if tput else 0
+            files_per_s = (window_files / (window_busy_ms / 1000.0)) if window_busy_ms > 0 else 0.0
+
+            lifetime = {
+                status: _safe_int(count, 0)
+                for status, count in conn.execute(
+                    "SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status"
+                ).fetchall()
+            }
+
+            cursor: dict[str, int] = {}
+            if _table_exists(conn, "ingest_cursor"):
+                cursor = {
+                    "tracked": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor"),
+                    "excluded": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1"),
+                    "retry_pending": _fast_count(
+                        conn,
+                        "SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0",
+                    ),
                 }
+        except Exception as exc:
+            return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
+
+        try:
+            debt_rows = conn.execute("SELECT status, COUNT(*) FROM convergence_debt GROUP BY status").fetchall()
+            unknown_statuses = sorted(
+                {repr(status) for status, _count in debt_rows if status not in _CONVERGENCE_DEBT_STATUSES}
             )
-
-        window_start = now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS
-        tput = conn.execute(
-            """
-            SELECT COUNT(*),
-                   COALESCE(SUM(parsed_raw_count), 0),
-                   COALESCE(SUM(materialized_count), 0),
-                   COALESCE(SUM(finished_at_ms - started_at_ms), 0)
-            FROM ingest_attempts
-            WHERE status = 'completed' AND finished_at_ms >= ?
-            """,
-            (window_start,),
-        ).fetchone()
-        window_batches = _safe_int(tput[0], 0) if tput else 0
-        window_files = _safe_int(tput[1], 0) if tput else 0
-        window_materialized = _safe_int(tput[2], 0) if tput else 0
-        window_busy_ms = _safe_int(tput[3], 0) if tput else 0
-        files_per_s = (window_files / (window_busy_ms / 1000.0)) if window_busy_ms > 0 else 0.0
-
-        lifetime = {
-            status: _safe_int(count, 0)
-            for status, count in conn.execute("SELECT status, COUNT(*) FROM ingest_attempts GROUP BY status").fetchall()
-        }
-
-        cursor: dict[str, int] = {}
-        if _table_exists(conn, "ingest_cursor"):
-            cursor = {
-                "tracked": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor"),
-                "excluded": _fast_count(conn, "SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1"),
-                "retry_pending": _fast_count(
-                    conn,
-                    "SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 AND excluded = 0",
-                ),
-            }
-
-        debt_rows = conn.execute("SELECT status, COUNT(*) FROM convergence_debt GROUP BY status").fetchall()
-        unknown_statuses = sorted(
-            {repr(status) for status, _count in debt_rows if status not in _CONVERGENCE_DEBT_STATUSES}
-        )
-        if unknown_statuses:
-            return {
-                "available": False,
-                "reason": "convergence debt status unavailable: "
-                f"unknown status value(s): {', '.join(unknown_statuses)}",
-            }
-        debt = {status: _safe_int(count, 0) for status, count in debt_rows}
-        debt_total = sum(debt.values())
-    except Exception as exc:
-        # A present but malformed ledger is unknown, not an empty workload.
-        # Keep this explicit so both direct status renderers can preserve the
-        # ledger failure and block claims instead of falling into the generic
-        # archive-query fallback.
-        return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
+            if unknown_statuses:
+                return {
+                    "available": False,
+                    "reason": "convergence debt status unavailable: "
+                    f"unknown status value(s): {', '.join(unknown_statuses)}",
+                }
+            debt = {status: _safe_int(count, 0) for status, count in debt_rows}
+            debt_total = sum(debt.values())
+        except Exception as exc:
+            # A present but malformed ledger is unknown, not an empty workload.
+            # Keep this explicit so both direct status renderers can preserve
+            # the ledger failure and block claims instead of falling into the
+            # generic archive-query fallback.
+            return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
     finally:
         conn.close()
 

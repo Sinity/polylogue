@@ -1544,6 +1544,20 @@ class TestNoArchiveStatus:
 
         assert workload == {"available": False, "reason": "missing_convergence_debt"}
 
+    def test_ops_workload_status_keeps_non_ledger_failure_separate(self, tmp_path: Path) -> None:
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE ingest_attempts")
+            conn.execute("CREATE TABLE ingest_attempts (wrong_column TEXT)")
+            conn.commit()
+
+        workload = _ops_workload_status(tmp_path, now_ms=1_770_000_000_000)
+
+        assert workload == {
+            "available": False,
+            "reason": "ops workload status unavailable: no such column: phase",
+        }
+
     def test_direct_status_requires_raw_frontier_component_presence(self) -> None:
         assert _direct_status_ok({}) is False
         assert _direct_status_ok({"raw_frontier_integrity": {"state": "unknown"}}) is False
@@ -2302,6 +2316,22 @@ class TestStatusDiagnosticIntegration:
             conn.commit()
         return archive_root
 
+    def _malformed_ingest_attempts_archive(self, tmp_path: Path) -> Path:
+        archive_root = tmp_path / "polylogue"
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(archive_root / f"{tier.value}.db", tier)
+        with sqlite3.connect(archive_root / "ops.db") as conn:
+            conn.execute("DROP TABLE ingest_attempts")
+            conn.execute("CREATE TABLE ingest_attempts (wrong_column TEXT)")
+            conn.commit()
+        return archive_root
+
     def _malformed_archive_env(self, tmp_path: Path, archive_root: Path) -> dict[str, str]:
         env = self._xdg_env(tmp_path)
         env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
@@ -2341,6 +2371,47 @@ class TestStatusDiagnosticIntegration:
         assert result.exit_code == 0, result.output
         assert "convergence debt: unavailable" in output_lower
         assert "convergence debt status unavailable" in output_lower
+        assert "could not be queried" not in output_lower
+        assert "traceback" not in output_lower
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_ingest_attempts_json_keeps_convergence_healthy(self, tmp_path: Path) -> None:
+        """A malformed workload table must not mislabel the independent debt ledger."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_ingest_attempts_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status", "--json", "--full"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ingest_workload"] == {
+            "available": False,
+            "reason": "ops workload status unavailable: no such column: phase",
+        }
+        assert payload["convergence"]["available"] is True
+        assert payload["convergence"]["error"] is None
+        assert payload["claim_guard"]["converged"]["reason"] == "ready"
+        assert payload["claim_guard"]["perf_measurable"]["value"] is False
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_ingest_attempts_human_keeps_convergence_healthy(self, tmp_path: Path) -> None:
+        """Human status must keep the healthy ledger message for a workload-only failure."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_ingest_attempts_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        output_lower = result.output.lower()
+        assert result.exit_code == 0, result.output
+        assert "convergence debt: none (ledger healthy)" in output_lower
+        assert "convergence debt status unavailable" not in output_lower
+        assert "ops workload status unavailable" not in output_lower
         assert "could not be queried" not in output_lower
         assert "traceback" not in output_lower
 
