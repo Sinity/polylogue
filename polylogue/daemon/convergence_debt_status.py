@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -88,58 +87,62 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 return ConvergenceDebtSummary()
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except Exception as exc:
         # An unreadable authoritative debt ledger is unknown, not empty. The
         # claim guard must be able to distinguish this from a genuinely empty
         # convergence_debt table (polylogue-cpf.4).
         logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc, exc_info=True)
         return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
-    items = [
-        ConvergenceDebtItem(
-            stage=_required_str(row[0]),
-            subject_type=_required_str(row[1]),
-            subject_id=_required_str(row[2]),
-            status=_required_str(row[3]),
-            failure_count=_row_int(row[4]),
-            last_failed_at=_iso_from_epoch_ms(row[5]),
-            next_retry_at=_optional_str(row[7]),
-            retry_due=False,
-            last_error=_optional_str(row[6]),
-        )
-        for row in rows
-    ]
-    if not items:
-        return ConvergenceDebtSummary()
+    try:
+        items = [
+            ConvergenceDebtItem(
+                stage=_required_str(row[0]),
+                subject_type=_required_str(row[1]),
+                subject_id=_required_str(row[2]),
+                status=_required_str(row[3]),
+                failure_count=_row_int(row[4]),
+                last_failed_at=_iso_from_epoch_ms(row[5]),
+                next_retry_at=_optional_str(row[7]),
+                retry_due=False,
+                last_error=_optional_str(row[6]),
+            )
+            for row in rows
+        ]
+        if not items:
+            return ConvergenceDebtSummary()
 
-    now = datetime.now(UTC)
-    recent = [
-        item.model_copy(update={"retry_due": item.status == "failed" and _retry_due(item.next_retry_at, now=now)})
-        for item in items[:10]
-    ]
-    failed_by_stage: dict[str, int] = {}
-    deferred_by_stage: dict[str, int] = {}
-    retry_due_by_stage: dict[str, int] = {}
-    for item in items:
-        if item.status == "failed":
-            failed_by_stage[item.stage] = failed_by_stage.get(item.stage, 0) + 1
-            if _retry_due(item.next_retry_at, now=now):
-                retry_due_by_stage[item.stage] = retry_due_by_stage.get(item.stage, 0) + 1
-        elif item.status == "deferred":
-            deferred_by_stage[item.stage] = deferred_by_stage.get(item.stage, 0) + 1
-    stage_summaries = [
-        ConvergenceDebtStageSummary(
-            stage=stage,
-            failed_count=failed_by_stage.get(stage, 0),
-            deferred_count=deferred_by_stage.get(stage, 0),
-            retry_due_count=retry_due_by_stage.get(stage, 0),
-        )
-        for stage in sorted(
-            set(failed_by_stage) | set(deferred_by_stage),
-            key=lambda stage: (-(failed_by_stage.get(stage, 0) + deferred_by_stage.get(stage, 0)), stage),
-        )
-    ]
-    return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
+        now = datetime.now(UTC)
+        recent = [
+            item.model_copy(update={"retry_due": item.status == "failed" and _retry_due(item.next_retry_at, now=now)})
+            for item in items[:10]
+        ]
+        failed_by_stage: dict[str, int] = {}
+        deferred_by_stage: dict[str, int] = {}
+        retry_due_by_stage: dict[str, int] = {}
+        for item in items:
+            if item.status == "failed":
+                failed_by_stage[item.stage] = failed_by_stage.get(item.stage, 0) + 1
+                if _retry_due(item.next_retry_at, now=now):
+                    retry_due_by_stage[item.stage] = retry_due_by_stage.get(item.stage, 0) + 1
+            elif item.status == "deferred":
+                deferred_by_stage[item.stage] = deferred_by_stage.get(item.stage, 0) + 1
+        stage_summaries = [
+            ConvergenceDebtStageSummary(
+                stage=stage,
+                failed_count=failed_by_stage.get(stage, 0),
+                deferred_count=deferred_by_stage.get(stage, 0),
+                retry_due_count=retry_due_by_stage.get(stage, 0),
+            )
+            for stage in sorted(
+                set(failed_by_stage) | set(deferred_by_stage),
+                key=lambda stage: (-(failed_by_stage.get(stage, 0) + deferred_by_stage.get(stage, 0)), stage),
+            )
+        ]
+        return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
+    except Exception as exc:
+        logger.warning("convergence-debt summary projection failed for %s: %s", ops_db, exc, exc_info=True)
+        return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
 
 def _summary_from_parts(

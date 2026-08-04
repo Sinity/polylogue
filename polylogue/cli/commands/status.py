@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary, convergence_debt_summary_info
 from polylogue.insights.schema_drift import schema_drift_status
 from polylogue.logging import get_logger
 from polylogue.readiness.capability import (
@@ -1649,6 +1650,10 @@ def _show_direct_json(
     )
     archive_tiers = _archive_tier_status(active_root)
     ingest_workload = _ops_workload_status(active_root, now_ms=int(time.time() * 1000))
+    convergence = convergence_debt_summary_info(
+        active_root / "index.db",
+        ops_db=active_root / "ops.db",
+    )
     schema_drift = schema_drift_status(active_root, now_ms=int(time.time() * 1000))
     payload: dict[str, Any] = {
         "ok": _direct_status_ok(component_readiness),
@@ -1663,6 +1668,7 @@ def _show_direct_json(
         "archive_tiers": archive_tiers,
         "sqlite_maintenance": _sqlite_maintenance_status(active_root),
         "ingest_workload": ingest_workload,
+        "convergence": convergence.model_dump(mode="json"),
         "schema_drift": schema_drift,
         "raw_replay_backlog": _raw_replay_backlog_status(active_root),
         "archive_readiness": archive_readiness,
@@ -1678,6 +1684,7 @@ def _show_direct_json(
             raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload=ingest_workload,
+            convergence=convergence,
         ),
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
@@ -1830,6 +1837,7 @@ def _direct_claim_guard(
     raw_frontier_integrity: dict[str, Any],
     component_readiness: dict[str, Any],
     ingest_workload: dict[str, Any],
+    convergence: ConvergenceDebtSummary,
 ) -> dict[str, Any]:
     """Derive the claim-guard block for the no-daemon direct SQLite fallback."""
     missing_tiers = [tier for tier, info in archive_tiers.items() if not info.get("exists")]
@@ -1872,6 +1880,23 @@ def _direct_claim_guard(
         search_summary=search_summary,
         active_writer=active_writer,
         active_writer_summary=active_writer_summary,
+        convergence_debt_available=convergence.available,
+        convergence_debt_pending=convergence.failed_count > 0 or convergence.deferred_count > 0,
+        convergence_debt_summary=(
+            convergence.error
+            or (
+                "convergence debt pending: "
+                + ", ".join(
+                    part
+                    for part in (
+                        f"{convergence.failed_count} failed" if convergence.failed_count else "",
+                        f"{convergence.deferred_count} deferred" if convergence.deferred_count else "",
+                    )
+                    if part
+                )
+            )
+            or "no pending convergence debt"
+        ),
     ).to_dict()
 
 

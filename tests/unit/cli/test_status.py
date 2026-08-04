@@ -32,6 +32,7 @@ from polylogue.cli.commands.status import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
 from polylogue.maintenance.failure_routing import route_failure_sample
 from polylogue.maintenance.planner import FailureSample
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -1303,6 +1304,7 @@ class TestNoArchiveStatus:
 
         payload = json.loads(_combined_calls(env))
         claim_guard = payload["claim_guard"]
+        assert payload["convergence"]["available"] is True
         assert set(claim_guard) == {"openable", "converged", "search_ready", "perf_measurable"}
         assert claim_guard["openable"]["value"] is True
         assert claim_guard["converged"]["value"] is True
@@ -1512,6 +1514,7 @@ class TestNoArchiveStatus:
                 raw_frontier_integrity=raw_frontier_integrity,
                 component_readiness=component_readiness,
                 ingest_workload=unavailable_workload,
+                convergence=ConvergenceDebtSummary(),
             )
             assert guard["perf_measurable"]["value"] is False, unavailable_workload
             assert "unavailable" in guard["perf_measurable"]["reason"]
@@ -1526,6 +1529,7 @@ class TestNoArchiveStatus:
             raw_frontier_integrity=raw_frontier_integrity,
             component_readiness=component_readiness,
             ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
+            convergence=ConvergenceDebtSummary(),
         )
         assert idle_guard["perf_measurable"]["value"] is True
 
@@ -1533,6 +1537,63 @@ class TestNoArchiveStatus:
         assert _direct_status_ok({}) is False
         assert _direct_status_ok({"raw_frontier_integrity": {"state": "unknown"}}) is False
         assert _direct_status_ok({"raw_frontier_integrity": {"state": "ready"}}) is True
+
+    @pytest.mark.parametrize("ledger_state", ["missing_table", "collector_error", "empty"])
+    def test_direct_status_claim_guard_uses_convergence_debt_ledger(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        ledger_state: str,
+    ) -> None:
+        """The direct production status route must retain debt authority state."""
+        env = _make_app_env()
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if ledger_state == "missing_table":
+            with sqlite3.connect(tmp_path / "ops.db") as conn:
+                conn.execute("DROP TABLE convergence_debt")
+                conn.commit()
+        elif ledger_state == "collector_error":
+            monkeypatch.setattr(
+                "polylogue.daemon.convergence_debt_status.open_readonly_connection",
+                lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated collector failure")),
+            )
+
+        archive_readiness = {
+            "checked": True,
+            "counts": {"session_count": 0},
+            "surfaces": {"search": {"ready": True, "blockers": [], "evidence": {}}},
+        }
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch("polylogue.cli.commands.status._archive_readiness_status", return_value=archive_readiness),
+            patch(
+                "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
+                return_value=_completed_raw_materialization_readiness(),
+            ),
+            patch("polylogue.storage.embeddings.status_payload.embedding_status_payload", side_effect=RuntimeError),
+        ):
+            _show_direct_json(env, include_archive_readiness=True)
+
+        payload = json.loads(_combined_calls(env))
+        convergence = payload["convergence"]
+        claim_guard = payload["claim_guard"]
+        if ledger_state == "empty":
+            assert convergence["available"] is True
+            assert convergence["error"] is None
+            assert claim_guard["converged"]["value"] is True
+        else:
+            assert convergence["available"] is False
+            assert convergence["error"]
+            assert claim_guard["converged"]["value"] is False
+            assert "convergence debt" in claim_guard["converged"]["reason"]
 
     def test_direct_status_json_blocks_transforms_when_archive_readiness_fails(
         self,

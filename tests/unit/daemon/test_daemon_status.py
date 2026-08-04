@@ -1619,9 +1619,11 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
     assert claim_guard["perf_measurable"]["value"] is True
 
 
-@pytest.mark.parametrize("debt_setup", ["pending", "unreadable"])
+@pytest.mark.parametrize(
+    "debt_setup", ["pending", "unreadable", "missing_db", "missing_table", "collector_error", "empty"]
+)
 def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_debt(
-    tmp_path: Path, debt_setup: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, debt_setup: str
 ) -> None:
     """The production status route must never claim convergence without debt authority."""
     storage = status_module.ArchiveStorageStatus(
@@ -1654,8 +1656,21 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
                 created_at_ms=1_770_000_000_000,
                 updated_at_ms=1_770_000_000_000,
             )
-    else:
+    elif debt_setup == "unreadable":
         (tmp_path / "ops.db").write_bytes(b"not a sqlite database")
+    elif debt_setup == "missing_table":
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE convergence_debt")
+            conn.commit()
+    elif debt_setup == "collector_error":
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        monkeypatch.setattr(
+            "polylogue.daemon.convergence_debt_status.open_readonly_connection",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated collector failure")),
+        )
+    elif debt_setup == "empty":
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
@@ -1679,14 +1694,18 @@ def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_d
     ):
         status = build_daemon_status(sources=(), browser_capture_enabled=False)
 
-    assert status.convergence.available is (debt_setup == "pending")
+    assert status.convergence.available is (debt_setup in {"pending", "empty"})
     claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
-    assert claim_guard["converged"]["value"] is False
     reason = str(claim_guard["converged"]["reason"])
     if debt_setup == "pending":
+        assert claim_guard["converged"]["value"] is False
         assert reason == "convergence debt pending: 1 deferred"
+    elif debt_setup == "empty":
+        assert claim_guard["converged"]["value"] is True
+        assert reason == "ready"
     else:
-        assert "convergence debt status unavailable" in reason
+        assert claim_guard["converged"]["value"] is False
+        assert reason == status.convergence.error
         assert "unknown debt" in str(claim_guard["converged"]["signal"])
 
 
@@ -1954,6 +1973,7 @@ def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
             "search": {"state": "ready", "summary": "ready"},
         },
         ingest_workload={"available": True, "actively_ingesting": False, "running_count": 0},
+        convergence=status_module.ConvergenceDebtSummary(),
     )
 
     daemon_converged = cast(dict[str, object], daemon_guard["converged"])

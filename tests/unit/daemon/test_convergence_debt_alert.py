@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -275,6 +276,51 @@ def test_convergence_debt_summary_marks_unreadable_ops_as_unavailable(tmp_path: 
     assert summary.failed_count == 0
     assert summary.deferred_count == 0
     assert "unavailable" in (summary.error or "")
+
+
+@pytest.mark.parametrize("ledger_state", ["missing_db", "missing_table"])
+def test_convergence_debt_summary_preserves_missing_ledger_provenance(tmp_path: Path, ledger_state: str) -> None:
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
+    db_path.touch()
+    if ledger_state == "missing_table":
+        initialize_archive_database(ops_path, ArchiveTier.OPS)
+        with sqlite3.connect(ops_path) as conn:
+            conn.execute("DROP TABLE convergence_debt")
+            conn.commit()
+
+    summary = convergence_debt_summary_info(db_path, ops_db=ops_path)
+
+    assert summary.available is False
+    assert summary.error
+    assert summary.failed_count == 0
+    assert summary.deferred_count == 0
+
+
+def test_convergence_debt_summary_preserves_projection_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    ops_path = tmp_path / "ops.db"
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_debt_status.open_readonly_connection",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("simulated collector failure")),
+    )
+
+    summary = convergence_debt_summary_info(tmp_path / "archive.db", ops_db=ops_path)
+
+    assert summary.available is False
+    assert summary.error == "convergence debt status unavailable: simulated collector failure"
+
+
+def test_convergence_debt_summary_fresh_empty_ledger_is_healthy(tmp_path: Path) -> None:
+    ops_path = tmp_path / "ops.db"
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+
+    summary = convergence_debt_summary_info(tmp_path / "archive.db", ops_db=ops_path)
+
+    assert summary.available is True
+    assert summary.error is None
+    assert summary.failed_count == 0
+    assert summary.deferred_count == 0
 
 
 # ---------------------------------------------------------------------------
