@@ -11,6 +11,7 @@ import pytest
 from polylogue.maintenance.reindex_canary import CanarySelectionError, select_canary_sessions
 from tests.infra.pathology_zoo import (
     PathologyZoo,
+    PathologyZooCanaryEligibility,
     build_pathology_zoo,
 )
 
@@ -41,8 +42,7 @@ def test_pathology_zoo_manifest_covers_every_v0_dimension(pathology_zoo: Patholo
     }
     assert expected <= {member.pathology for member in pathology_zoo.manifest}
     assert all(
-        member.motivating_beads and member.raw_paths and member.durable_paths and member.archive_verification_checks
-        for member in pathology_zoo.manifest
+        member.motivating_beads and member.raw_paths and member.durable_paths for member in pathology_zoo.manifest
     )
 
 
@@ -67,127 +67,37 @@ def test_pathology_zoo_manifest_binds_every_wire_path_to_durable_evidence(pathol
                 ).fetchone() == (1,)
 
 
-def test_pathology_zoo_pathologies_have_production_structural_assertions(pathology_zoo: PathologyZoo) -> None:
-    """Every manifest member names a durable, queryable archive condition."""
-    with (
-        sqlite3.connect(pathology_zoo.archive_root / "source.db") as source,
-        sqlite3.connect(pathology_zoo.archive_root / "index.db") as index,
-    ):
-        assertions = {
-            "whale-component": lambda: (
-                index.execute(
-                    "SELECT message_count >= 48 FROM sessions WHERE session_id = ?", ("codex-session:zoo-whale",)
-                ).fetchone()
-                == (1,)
-            ),
-            "append-self-describing": lambda: (
-                source.execute(
-                    "SELECT COUNT(*) FROM raw_sessions WHERE source_path IN (?, ?)",
-                    pathology_zoo.members_for("append-revision-chain")[0].durable_paths,
-                ).fetchone()
-                == (2,)
-            ),
-            "append-opaque": lambda: (
-                source.execute(
-                    "SELECT COUNT(*) FROM raw_sessions WHERE source_path IN (?, ?)",
-                    pathology_zoo.members_for("append-revision-chain")[1].durable_paths,
-                ).fetchone()
-                == (2,)
-            ),
-            "fork-prefix-tail": lambda: (
-                index.execute(
-                    "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
-                    ("codex-session:zoo-lineage-child",),
-                ).fetchone()
-                == ("codex-session:zoo-lineage-parent",)
-            ),
-            "lineage-cycle": lambda: (
-                index.execute(
-                    "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
-                    ("codex-session:zoo-cycle-a",),
-                ).fetchone()
-                == ("quarantined", None)
-            ),
-            "grouped-jsonl": lambda: (
-                index.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE session_id IN (?, ?)",
-                    ("claude-code-session:zoo-group-a", "claude-code-session:zoo-group-b"),
-                ).fetchone()
-                == (2,)
-            ),
-            "quarantined-head": lambda: (
-                index.execute(
-                    "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
-                    ("codex-session:zoo-orphan-head",),
-                ).fetchone()
-                == (None, None)
-            ),
-            "empty-session": lambda: (
-                index.execute(
-                    "SELECT message_count FROM sessions WHERE session_id = ?", ("claude-code-session:zoo-empty",)
-                ).fetchone()
-                == (0,)
-            ),
-            "hook-event": lambda: (
-                source.execute(
-                    "SELECT session_native_id, event_type FROM raw_hook_events WHERE hook_event_id = 'hook:zoo-hook-event'"
-                ).fetchone()
-                == ("zoo-hook-parent", "PostToolUse")
-            ),
-            "claude-design": lambda: (
-                index.execute(
-                    "SELECT origin FROM sessions WHERE session_id = ?", ("claude-design-session:zoo-design-session",)
-                ).fetchone()
-                == ("claude-design-session",)
-            ),
-            "vintage-reorder": lambda: (
-                source.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_path LIKE '%vintage-%.json'").fetchone()
-                == (2,)
-            ),
-            "content-blocks-vintage": lambda: (
-                index.execute(
-                    "SELECT COUNT(*) FROM blocks WHERE session_id = ?", ("claude-ai-export:zoo-content-blocks-vintage",)
-                ).fetchone()
-                == (1,)
-            ),
-            "lifecycle-anchor-drift": lambda: (
-                index.execute(
-                    "SELECT source_message_provider_id FROM session_events WHERE session_id = ? AND event_type = 'generation_lifecycle'",
-                    ("chatgpt-export:zoo-lifecycle-anchor-drift",),
-                ).fetchone()
-                == ("lifecycle-b",)
-            ),
-            "non-stream-safe": lambda: (
-                index.execute(
-                    "SELECT COUNT(*) FROM sessions WHERE session_id = ?",
-                    ("antigravity-session:zoo-06-00:zoo-06-00.md",),
-                ).fetchone()
-                == (1,)
-            ),
-            "attachment-with-bytes": lambda: (
-                index.execute(
-                    "SELECT COUNT(*) > 0 FROM attachment_refs WHERE session_id = ?",
-                    ("aistudio-drive:zoo-attachment-bytes",),
-                ).fetchone()
-                == (1,)
-            ),
-            "attachment-without-bytes": lambda: (
-                index.execute(
-                    "SELECT COUNT(*) > 0 FROM attachment_refs WHERE session_id = ?",
-                    ("claude-ai-export:zoo-attachment-metadata",),
-                ).fetchone()
-                == (1,)
-            ),
-            "events-sidecars": lambda: (
-                index.execute(
-                    "SELECT COUNT(*) > 0 FROM session_events WHERE session_id = ?",
-                    ("chatgpt-export:zoo-lifecycle-anchor-drift",),
-                ).fetchone()
-                == (1,)
-            ),
-        }
-        assert {member.member_id for member in pathology_zoo.manifest} == set(assertions)
-        assert all(assertions[member.member_id]() for member in pathology_zoo.manifest)
+def test_pathology_zoo_contracts_are_green_then_red_on_their_own_mutation(
+    pathology_zoo: PathologyZoo, tmp_path: Path
+) -> None:
+    """Every declared pathology has a specific production-archive red twin."""
+    for member in pathology_zoo.manifest:
+        assert member.verification.is_satisfied(pathology_zoo.archive_root), member.verification.condition
+
+        mutated_root = tmp_path / member.member_id
+        copytree(pathology_zoo.archive_root, mutated_root)
+        member.verification.make_red(mutated_root)
+
+        assert not member.verification.is_satisfied(mutated_root), (
+            f"{member.member_id}: {member.verification.condition} stayed green after its red mutation"
+        )
+
+
+def test_pathology_zoo_canary_eligibility_is_explicit(pathology_zoo: PathologyZoo) -> None:
+    session_backed = [
+        member
+        for member in pathology_zoo.manifest
+        if member.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED
+    ]
+    non_session_only = [
+        member
+        for member in pathology_zoo.manifest
+        if member.canary_eligibility is PathologyZooCanaryEligibility.NON_SESSION_ONLY
+    ]
+
+    assert all(member.session_ids for member in session_backed)
+    assert non_session_only == [pathology_zoo.members_for("hook-event-raw")[0]]
+    assert all(not member.session_ids for member in non_session_only)
 
 
 def test_zoo_preserves_the_named_vintage_and_lifecycle_red_cases(pathology_zoo: PathologyZoo) -> None:

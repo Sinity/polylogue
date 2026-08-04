@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from pathlib import Path
 
 from polylogue.config import Source
@@ -18,6 +19,31 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
+
+ArchiveCondition = Callable[[Path], bool]
+ArchiveMutation = Callable[[Path], None]
+
+
+class PathologyZooCanaryEligibility(StrEnum):
+    """Whether a pathology has a session identity for replay canaries."""
+
+    SESSION_BACKED = "session_backed"
+    NON_SESSION_ONLY = "non_session_only"
+
+
+@dataclass(frozen=True, slots=True)
+class PathologyZooVerificationContract:
+    """An executable archive invariant and the mutation that must falsify it."""
+
+    condition: str
+    check: ArchiveCondition
+    mutate_red: ArchiveMutation
+
+    def is_satisfied(self, archive_root: Path) -> bool:
+        return self.check(archive_root)
+
+    def make_red(self, archive_root: Path) -> None:
+        self.mutate_red(archive_root)
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,8 +55,15 @@ class PathologyZooMember:
     motivating_beads: tuple[str, ...]
     session_ids: tuple[str, ...]
     raw_paths: tuple[str, ...]
-    archive_verification_checks: tuple[str, ...]
+    canary_eligibility: PathologyZooCanaryEligibility
+    verification: PathologyZooVerificationContract
     durable_paths: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED and not self.session_ids:
+            raise ValueError(f"session-backed pathology {self.member_id!r} must declare session_ids")
+        if self.canary_eligibility is PathologyZooCanaryEligibility.NON_SESSION_ONLY and self.session_ids:
+            raise ValueError(f"non-session pathology {self.member_id!r} must not declare session_ids")
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,12 +79,16 @@ class PathologyZoo:
     @property
     def canary_session_ids(self) -> tuple[str, ...]:
         """Every replayable zoo session supplied to the production canary selector."""
-        return tuple(sorted({session_id for member in self.manifest for session_id in member.session_ids}))
-
-    @property
-    def archive_verification_checks(self) -> tuple[str, ...]:
-        """Registry checks that consume the fixture's durable pathology evidence."""
-        return tuple(sorted({check for member in self.manifest for check in member.archive_verification_checks}))
+        return tuple(
+            sorted(
+                {
+                    session_id
+                    for member in self.manifest
+                    if member.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED
+                    for session_id in member.session_ids
+                }
+            )
+        )
 
 
 _CODEX = "codex-session"
@@ -60,6 +97,43 @@ _CLAUDE_CODE = "claude-code-session"
 _CHATGPT = "chatgpt-export"
 _DESIGN = "claude-design-session"
 _GEMINI = "aistudio-drive"
+
+
+def _archive_row_matches(
+    tier: str, query: str, parameters: tuple[object, ...], expected: tuple[object, ...] | None
+) -> ArchiveCondition:
+    def check(archive_root: Path) -> bool:
+        with sqlite3.connect(archive_root / f"{tier}.db") as conn:
+            return bool(conn.execute(query, parameters).fetchone() == expected)
+
+    return check
+
+
+def _mutate_archive(tier: str, statement: str, parameters: tuple[object, ...]) -> ArchiveMutation:
+    def mutate(archive_root: Path) -> None:
+        with sqlite3.connect(archive_root / f"{tier}.db") as conn:
+            conn.execute(statement, parameters)
+            conn.commit()
+
+    return mutate
+
+
+def _contract(
+    condition: str,
+    *,
+    check_tier: str,
+    query: str,
+    expected: tuple[object, ...] | None,
+    mutate_tier: str,
+    statement: str,
+    parameters: tuple[object, ...] = (),
+    mutation_parameters: tuple[object, ...] = (),
+) -> PathologyZooVerificationContract:
+    return PathologyZooVerificationContract(
+        condition,
+        _archive_row_matches(check_tier, query, parameters, expected),
+        _mutate_archive(mutate_tier, statement, mutation_parameters),
+    )
 
 
 def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
@@ -71,7 +145,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-whale",),
             ("generated/zoo-00-00.jsonl",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the whale retains at least 48 materialized messages",
+                check_tier="index",
+                query="SELECT message_count >= 48 FROM sessions WHERE session_id = ?",
+                parameters=(f"{_CODEX}:zoo-whale",),
+                expected=(1,),
+                mutate_tier="index",
+                statement="UPDATE sessions SET message_count = 47 WHERE session_id = ?",
+                mutation_parameters=(f"{_CODEX}:zoo-whale",),
+            ),
         ),
         PathologyZooMember(
             "append-self-describing",
@@ -79,7 +163,15 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-append-self",),
             ("generated/zoo-01-00.jsonl", "generated/zoo-02-00.jsonl"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the self-describing append retains both raw revisions",
+                check_tier="source",
+                query="SELECT COUNT(*) FROM raw_sessions WHERE native_id = 'zoo-append-self'",
+                expected=(2,),
+                mutate_tier="source",
+                statement="DELETE FROM raw_sessions WHERE source_path LIKE '%zoo-02-00.jsonl'",
+            ),
         ),
         PathologyZooMember(
             "append-opaque",
@@ -87,7 +179,15 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-append-opaque",),
             ("generated/zoo-03-00.jsonl", "generated/zoo-04-00.jsonl"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the opaque append retains both raw revisions",
+                check_tier="source",
+                query="SELECT COUNT(*) FROM raw_sessions WHERE native_id = 'zoo-append-opaque'",
+                expected=(2,),
+                mutate_tier="source",
+                statement="DELETE FROM raw_sessions WHERE source_path LIKE '%zoo-04-00.jsonl'",
+            ),
         ),
         PathologyZooMember(
             "fork-prefix-tail",
@@ -95,7 +195,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-lineage-parent", f"{_CODEX}:zoo-lineage-child"),
             ("manual/lineage-parent.jsonl", "manual/lineage-child.jsonl"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the fork child resolves to its prefix-sharing parent",
+                check_tier="index",
+                query="SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
+                parameters=(f"{_CODEX}:zoo-lineage-child",),
+                expected=(f"{_CODEX}:zoo-lineage-parent",),
+                mutate_tier="index",
+                statement="UPDATE session_links SET resolved_dst_session_id = NULL WHERE src_session_id = ?",
+                mutation_parameters=(f"{_CODEX}:zoo-lineage-child",),
+            ),
         ),
         PathologyZooMember(
             "lineage-cycle",
@@ -103,7 +213,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-cycle-a", f"{_CODEX}:zoo-cycle-b"),
             ("manual/lineage-cycle-a.jsonl", "manual/lineage-cycle-b.jsonl", "manual/lineage-cycle-z-a-update.jsonl"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the cyclic lineage candidate is quarantined",
+                check_tier="index",
+                query="SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
+                parameters=(f"{_CODEX}:zoo-cycle-a",),
+                expected=("quarantined", None),
+                mutate_tier="index",
+                statement="UPDATE session_links SET status = NULL WHERE src_session_id = ?",
+                mutation_parameters=(f"{_CODEX}:zoo-cycle-a",),
+            ),
         ),
         PathologyZooMember(
             "grouped-jsonl",
@@ -111,7 +231,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CLAUDE_CODE}:zoo-group-a", f"{_CLAUDE_CODE}:zoo-group-b"),
             ("manual/grouped.jsonl",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the grouped JSONL raw materializes both sessions",
+                check_tier="index",
+                query="SELECT COUNT(*) FROM sessions WHERE session_id IN (?, ?)",
+                parameters=(f"{_CLAUDE_CODE}:zoo-group-a", f"{_CLAUDE_CODE}:zoo-group-b"),
+                expected=(2,),
+                mutate_tier="index",
+                statement="DELETE FROM sessions WHERE session_id = ?",
+                mutation_parameters=(f"{_CLAUDE_CODE}:zoo-group-b",),
+            ),
         ),
         PathologyZooMember(
             "quarantined-head",
@@ -119,7 +249,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-orphan-head",),
             ("manual/lineage-orphan.jsonl",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the unresolved head remains an open blocker",
+                check_tier="index",
+                query="SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
+                parameters=(f"{_CODEX}:zoo-orphan-head",),
+                expected=(None, None),
+                mutate_tier="index",
+                statement="DELETE FROM session_links WHERE src_session_id = ?",
+                mutation_parameters=(f"{_CODEX}:zoo-orphan-head",),
+            ),
         ),
         PathologyZooMember(
             "empty-session",
@@ -127,7 +267,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CLAUDE_CODE}:zoo-empty",),
             ("manual/empty.jsonl",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the empty session has no materialized messages",
+                check_tier="index",
+                query="SELECT message_count FROM sessions WHERE session_id = ?",
+                parameters=(f"{_CLAUDE_CODE}:zoo-empty",),
+                expected=(0,),
+                mutate_tier="index",
+                statement="UPDATE sessions SET message_count = 1 WHERE session_id = ?",
+                mutation_parameters=(f"{_CLAUDE_CODE}:zoo-empty",),
+            ),
         ),
         PathologyZooMember(
             "hook-event",
@@ -135,7 +285,15 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (),
             ("hook-spool/zoo-hook-event.json",),
-            ("blob-refs-liveness",),
+            PathologyZooCanaryEligibility.NON_SESSION_ONLY,
+            _contract(
+                "the hook spool becomes a durable PostToolUse event",
+                check_tier="source",
+                query="SELECT session_native_id, event_type FROM raw_hook_events WHERE hook_event_id = 'hook:zoo-hook-event'",
+                expected=("zoo-hook-parent", "PostToolUse"),
+                mutate_tier="source",
+                statement="DELETE FROM raw_hook_events WHERE hook_event_id = 'hook:zoo-hook-event'",
+            ),
         ),
         PathologyZooMember(
             "claude-design",
@@ -143,7 +301,16 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_DESIGN}:zoo-design-session",),
             ("manual/design.json",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the design export materializes under its distinct origin",
+                check_tier="index",
+                query="SELECT origin FROM sessions WHERE session_id = ?",
+                parameters=(f"{_DESIGN}:zoo-design-session",),
+                expected=(_DESIGN,),
+                mutate_tier="index",
+                statement="UPDATE sessions SET origin = 'codex-session' WHERE native_id = 'zoo-design-session'",
+            ),
         ),
         PathologyZooMember(
             "vintage-reorder",
@@ -151,7 +318,15 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae", "polylogue-slshy"),
             (f"{_CHATGPT}:zoo-vintage-reorder",),
             ("manual/vintage-old.json", "manual/vintage-new.json"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the vintage reorder retains both raw revisions",
+                check_tier="source",
+                query="SELECT COUNT(*) FROM raw_sessions WHERE native_id = 'zoo-vintage-reorder'",
+                expected=(2,),
+                mutate_tier="source",
+                statement="DELETE FROM raw_sessions WHERE source_path LIKE '%vintage-new.json'",
+            ),
         ),
         PathologyZooMember(
             "content-blocks-vintage",
@@ -159,7 +334,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae", "polylogue-0qfy"),
             (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
             ("manual/content-blocks-old.json", "manual/content-blocks-new.json"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the content-block vintage keeps its parsed text block",
+                check_tier="index",
+                query="SELECT COUNT(*) FROM blocks WHERE session_id = ?",
+                parameters=(f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
+                expected=(1,),
+                mutate_tier="index",
+                statement="DELETE FROM blocks WHERE session_id = ?",
+                mutation_parameters=(f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
+            ),
         ),
         PathologyZooMember(
             "lifecycle-anchor-drift",
@@ -167,7 +352,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae", "polylogue-uqwd"),
             (f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
             ("manual/lifecycle-old.json", "manual/lifecycle-new.json"),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the lifecycle event keeps the revised provider-message anchor",
+                check_tier="index",
+                query="SELECT source_message_provider_id FROM session_events WHERE session_id = ? AND event_type = 'generation_lifecycle'",
+                parameters=(f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
+                expected=("lifecycle-b",),
+                mutate_tier="index",
+                statement="UPDATE session_events SET source_message_provider_id = 'lifecycle-a' WHERE session_id = ? AND event_type = 'generation_lifecycle'",
+                mutation_parameters=(f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
+            ),
         ),
         PathologyZooMember(
             "non-stream-safe",
@@ -175,7 +370,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             ("antigravity-session:zoo-06-00:zoo-06-00.md",),
             ("generated",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the non-stream-safe source is retained under the Antigravity origin",
+                check_tier="index",
+                query="SELECT origin FROM sessions WHERE session_id = ?",
+                parameters=("antigravity-session:zoo-06-00:zoo-06-00.md",),
+                expected=("antigravity-session",),
+                mutate_tier="index",
+                statement="DELETE FROM sessions WHERE session_id = ?",
+                mutation_parameters=("antigravity-session:zoo-06-00:zoo-06-00.md",),
+            ),
         ),
         PathologyZooMember(
             "attachment-with-bytes",
@@ -183,7 +388,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_GEMINI}:zoo-attachment-bytes",),
             ("generated/zoo-05-00.json",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the acquired attachment retains bytes and a blob hash",
+                check_tier="index",
+                query="SELECT a.byte_count > 0 AND a.blob_hash IS NOT NULL AND a.acquisition_status = 'acquired' FROM attachments a JOIN attachment_refs r ON r.attachment_id = a.attachment_id WHERE r.session_id = ?",
+                parameters=(f"{_GEMINI}:zoo-attachment-bytes",),
+                expected=(1,),
+                mutate_tier="index",
+                statement="UPDATE attachments SET blob_hash = NULL, acquisition_status = 'unfetched' WHERE attachment_id IN (SELECT attachment_id FROM attachment_refs WHERE session_id = ?)",
+                mutation_parameters=(f"{_GEMINI}:zoo-attachment-bytes",),
+            ),
         ),
         PathologyZooMember(
             "attachment-without-bytes",
@@ -191,7 +406,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CLAUDE_AI}:zoo-attachment-metadata",),
             ("manual/attachment-metadata.json",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the unavailable attachment remains structured metadata without acquired bytes",
+                check_tier="index",
+                query="SELECT a.byte_count = 0 AND a.blob_hash IS NULL AND a.acquisition_status = 'unfetched' FROM attachments a JOIN attachment_refs r ON r.attachment_id = a.attachment_id WHERE r.session_id = ?",
+                parameters=(f"{_CLAUDE_AI}:zoo-attachment-metadata",),
+                expected=(1,),
+                mutate_tier="index",
+                statement="UPDATE attachments SET acquisition_status = 'acquired' WHERE attachment_id IN (SELECT attachment_id FROM attachment_refs WHERE session_id = ?)",
+                mutation_parameters=(f"{_CLAUDE_AI}:zoo-attachment-metadata",),
+            ),
         ),
         PathologyZooMember(
             "events-sidecars",
@@ -199,7 +424,17 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
             ("manual/lifecycle-old.json",),
-            ("corpus-absences",),
+            PathologyZooCanaryEligibility.SESSION_BACKED,
+            _contract(
+                "the lifecycle session retains its parsed sidecar event",
+                check_tier="index",
+                query="SELECT COUNT(*) FROM session_events WHERE session_id = ?",
+                parameters=(f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
+                expected=(1,),
+                mutate_tier="index",
+                statement="DELETE FROM session_events WHERE session_id = ?",
+                mutation_parameters=(f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
+            ),
         ),
     )
 
