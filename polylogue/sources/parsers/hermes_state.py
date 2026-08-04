@@ -970,11 +970,14 @@ def _latest_message_timestamp(messages: list[ParsedMessage]) -> str | None:
 def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
     if not messages:
         return messages
-    leaf = next(
-        (message.provider_message_id for message in reversed(messages) if message.is_active_path),
+    leaf_position = next(
+        (position for position, message in reversed(list(enumerate(messages))) if message.is_active_path),
         None,
     )
-    return [message.model_copy(update={"is_active_leaf": message.provider_message_id == leaf}) for message in messages]
+    return [
+        message.model_copy(update={"is_active_leaf": position == leaf_position})
+        for position, message in enumerate(messages)
+    ]
 
 
 def _optional_text(value: object) -> str | None:

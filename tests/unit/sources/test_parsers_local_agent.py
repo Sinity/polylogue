@@ -537,6 +537,23 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
     assert child.branch_type.value == "subagent"
 
 
+def test_hermes_state_db_duplicate_platform_ids_keep_one_active_leaf(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET platform_message_id = ? WHERE id IN (?, ?)",
+            ("duplicate-platform-id", 1, 4),
+        )
+
+    [root, _child] = hermes_state.parse_state_db(db_path, fallback_id="fallback")
+
+    leaves = [message for message in root.messages if message.is_active_leaf]
+    assert [message.provider_message_id for message in leaves] == ["duplicate-platform-id"]
+    assert leaves == [root.messages[4]]
+    assert root.active_leaf_message_provider_id == "duplicate-platform-id"
+
+
 def test_hermes_state_db_retains_empty_rows_and_their_state(tmp_path: Path) -> None:
     from polylogue.pipeline.ids import session_content_hash
 
