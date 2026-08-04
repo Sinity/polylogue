@@ -499,11 +499,19 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
     by_position = {id(message): position for position, message in enumerate(messages)}
     temporally_sorted = sorted(messages, key=lambda message: (message.timestamp or "", by_position[id(message)]))
     filled_sorted = fill_linear_parent_chain(temporally_sorted)
-    parent_by_id = {message.provider_message_id: message.parent_message_provider_id for message in filled_sorted}
+    parent_by_position = {
+        message.position: (message.parent_message_provider_id, message.parent_message_position)
+        for message in filled_sorted
+    }
     messages = [
         message
         if message.provider_message_id in ambiguous_branch_child_ids
-        else message.model_copy(update={"parent_message_provider_id": parent_by_id.get(message.provider_message_id)})
+        else message.model_copy(
+            update={
+                "parent_message_provider_id": parent_by_position[message.position][0],
+                "parent_message_position": parent_by_position[message.position][1],
+            }
+        )
         for message in messages
     ]
     return ParsedSession(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
@@ -29,19 +30,20 @@ if TYPE_CHECKING:
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
 _EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
 HashScalar: TypeAlias = str | int | float | bool | None
+MessageContent: TypeAlias = tuple[bytes, bytes, int]
 
 
 @dataclass(frozen=True, slots=True)
 class SessionRevisionProjection:
     """Canonical content-only comparison value for a session revision.
 
-    One invariant governs every field below: *a conversation is a SET of
-    items keyed by content-derived identity, each carrying only
+    One invariant governs every field below: *a conversation is an unordered
+    collection of items keyed by content-derived identity, each carrying only
     content-bearing fields -- nothing else may enter the value used to
     compare two acquisitions of it* (polylogue-aggz). Concretely:
 
     - Identity is never array position. ``message_contents``,
-      ``attachment_contents``, and ``event_contents`` are ``frozenset``s, not
+      ``attachment_contents``, and ``event_contents`` are unordered, not
       ordered tuples -- a provider's export can replay an unchanged item set
       in a different array sequence across separate export requests (proven
       for Claude.ai messages and ChatGPT ``generation_lifecycle`` events:
@@ -92,7 +94,10 @@ class SessionRevisionProjection:
 
     session_hash: bytes
     message_hashes: tuple[bytes, ...]
-    message_contents: frozenset[tuple[bytes, bytes]]
+    # Each item carries its unordered multiplicity. Repeated timestamp-less
+    # id-less messages can have the same content-derived identity and content;
+    # collapsing them into a set would falsely make one and two turns equal.
+    message_contents: frozenset[MessageContent]
     attachment_identities: frozenset[bytes]
     attachment_contents: frozenset[tuple[bytes, bytes]]
     event_hashes: tuple[bytes, ...]
@@ -323,11 +328,18 @@ def attachment_identity_hash(*, message_id: JSONValue, name: JSONValue, mime_typ
     return bytes.fromhex(hash_payload({"message_id": message_id, "name": name, "mime_type": mime_type}))
 
 
-def _attachment_hash_payload(attachment: ParsedAttachment) -> dict[str, JSONValue]:
+def _attachment_hash_payload(
+    attachment: ParsedAttachment, *, message_owner_anchor: str | None = None
+) -> dict[str, JSONValue]:
     """Build attachment identity without perturbing legacy metadata-only hashes."""
+    owner_id = (
+        message_owner_anchor
+        if not attachment.message_provider_id and message_owner_anchor
+        else attachment.message_provider_id
+    )
     payload: dict[str, JSONValue] = {
         "id": _normalize_for_hash(attachment.provider_attachment_id),
-        "message_id": _normalize_for_hash(attachment.message_provider_id),
+        "message_id": _normalize_for_hash(owner_id),
         "name": _normalize_for_hash(attachment.name),
         "mime_type": _normalize_for_hash(attachment.mime_type),
         "size_bytes": _normalize_for_hash(attachment.size_bytes),
@@ -504,10 +516,27 @@ def _session_hash_components(
     caller re-deriving its own copy. Byte-identical to computing each
     payload independently -- pure sharing of an already-pure computation.
     """
+    message_comparison_ids = [_message_comparison_id(msg, idx) for idx, msg in enumerate(convo.messages, start=1)]
     messages_payload = [
-        _message_hash_payload(msg, _message_comparison_id(msg, idx)) for idx, msg in enumerate(convo.messages, start=1)
+        _message_hash_payload(message, comparison_id)
+        for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
     ]
-    attachments_payload = [_attachment_hash_payload(attachment) for attachment in convo.attachments]
+    owner_anchor_by_position = {
+        message.position: comparison_id
+        for message, comparison_id in zip(convo.messages, message_comparison_ids, strict=True)
+        if message.position is not None
+    }
+    attachments_payload = [
+        _attachment_hash_payload(
+            attachment,
+            message_owner_anchor=(
+                owner_anchor_by_position.get(attachment.message_position)
+                if attachment.message_position is not None
+                else None
+            ),
+        )
+        for attachment in convo.attachments
+    ]
     session_events_payload = [
         {
             "event_index": event_index,
@@ -591,14 +620,14 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         attachments_payload=attachments_payload,
         session_events_payload=session_events_payload,
     )
-    message_contents: set[tuple[bytes, bytes]] = set()
+    message_content_counts: Counter[tuple[bytes, bytes]] = Counter()
     message_hashes: list[bytes] = []
     for payload in messages_payload:
         message_native_id = payload["id"]
         assert isinstance(message_native_id, str)  # built as str above, never anything else
         identity = message_identity_hash(id=message_native_id)
         content = bytes.fromhex(hash_payload(payload))
-        message_contents.add((identity, content))
+        message_content_counts[(identity, content)] += 1
         message_hashes.append(content)
     attachment_identities: set[bytes] = set()
     attachment_contents: set[tuple[bytes, bytes]] = set()
@@ -647,7 +676,9 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     return SessionRevisionProjection(
         session_hash=bytes.fromhex(session_hash_hex),
         message_hashes=tuple(message_hashes),
-        message_contents=frozenset(message_contents),
+        message_contents=frozenset(
+            (identity, content, multiplicity) for (identity, content), multiplicity in message_content_counts.items()
+        ),
         attachment_identities=frozenset(attachment_identities),
         attachment_contents=frozenset(attachment_contents),
         event_hashes=tuple(event_hashes),

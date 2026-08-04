@@ -21,6 +21,7 @@ fallback ids matched.
 from __future__ import annotations
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
@@ -81,3 +82,19 @@ def test_id_less_and_timestamp_less_message_uses_content_anchor() -> None:
     reordered = session_revision_projection(_session([bare, keyed]))
 
     assert forward.message_contents == reordered.message_contents
+
+
+def test_timestamp_less_idless_duplicates_preserve_unordered_multiplicity() -> None:
+    repeated = _id_less("assistant", "repeat", None)
+    one = session_revision_projection(_session([repeated]))
+    two = session_revision_projection(_session([repeated, repeated]))
+
+    assert sum(count for _identity, _content, count in one.message_contents) == 1
+    assert sum(count for _identity, _content, count in two.message_contents) == 2
+
+    classification = classify_membership_revisions(
+        [MembershipRevision(raw_id="one", projection=one), MembershipRevision(raw_id="two", projection=two)]
+    )
+    assert classification.accepted_raw_ids == ("one", "two")
+    assert not classification.equivalent_raw_ids
+    assert not classification.ambiguous_raw_ids
