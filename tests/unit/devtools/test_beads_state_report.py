@@ -17,6 +17,7 @@ from devtools.beads_state_report import (
     compute_insights,
     json_payload,
     render,
+    tree_html,
 )
 
 NOW = dt.datetime(2026, 8, 1, 12, 0, tzinfo=dt.UTC)
@@ -212,6 +213,55 @@ class TestParallelFrontier:
 # render invariants
 # ---------------------------------------------------------------------------
 class TestRender:
+    def test_tree_renderer_preserves_normal_hierarchy(self) -> None:
+        facts = _facts(
+            [
+                _bead("root", itype="epic", deps=[]),
+                _bead("child", deps=[_dep("child", "root", "parent-child")]),
+                _bead("grandchild", deps=[_dep("grandchild", "child", "parent-child")]),
+            ]
+        )
+
+        output = tree_html(facts, "root")
+
+        assert output.index('class="bi">child</span>') < output.index('class="bi">grandchild</span>')
+        assert output.count('class="tree-diagnostic"') == 0
+
+    def test_tree_renderer_suppresses_parent_child_cycle(self) -> None:
+        facts = _facts(
+            [
+                _bead("parent", itype="epic", deps=[_dep("parent", "child", "parent-child")]),
+                _bead("child", deps=[_dep("child", "parent", "parent-child")]),
+            ]
+        )
+
+        output = tree_html(facts, "parent")
+
+        assert output.count('class="bi">child</span>') == 1
+        assert output.count('class="bi">parent</span>') == 0
+        assert "suppressed cyclic parent-child edge" in output
+        assert "child &rarr; parent" in output
+
+    def test_tree_renderer_bounds_duplicate_edge_output(self) -> None:
+        duplicate_count = 20_000
+        facts = _facts(
+            [
+                _bead(
+                    "parent",
+                    itype="epic",
+                    deps=[_dep("child", "parent", "parent-child")] * duplicate_count,
+                ),
+                _bead("child"),
+            ]
+        )
+
+        output = tree_html(facts, "parent")
+
+        assert len(output) < 100_000
+        assert output.count('class="bi">child</span>') == 1
+        assert f"suppressed {duplicate_count - 1:,} duplicate parent-child edge(s)" in output
+        assert "parent &rarr; child" in output
+
     def test_verification_verdicts_and_health_queues_survive(self, tmp_path: Any) -> None:
         beads = [
             _bead("verified", notes="VERIFICATION (sweep-3): STALE because superseded"),

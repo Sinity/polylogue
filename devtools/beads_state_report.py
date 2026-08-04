@@ -89,6 +89,7 @@ RECONCILIATION_WINDOW = 1200
 STALE_CLAIM_DAYS = 7  # in_progress untouched this long = zombie claim
 AGED_URGENT_DAYS = 14  # open P0/P1 older than this = urgency not being consumed
 VELOCITY_WINDOW_DAYS = 14  # trailing window vs the window before it
+TREE_MAX_DEPTH = 2  # structure view renders two parent-child levels
 
 SUBSYSTEMS: dict[str, tuple[str, ...]] = {
     # canonical subsystem -> area:* label suffixes folded into it
@@ -1290,17 +1291,63 @@ def cluster_svg(facts: Facts, nodes: Sequence[str]) -> str:
     return "".join(parts)
 
 
-def tree_html(facts: Facts, root: str, depth: int = 0) -> str:
-    kids = sorted(facts.children.get(root, []))
-    if not kids or depth > 1:
+def tree_html(
+    facts: Facts,
+    root: str,
+    depth: int = 0,
+    _path: frozenset[str] | None = None,
+    _seen_edges: set[tuple[str, str]] | None = None,
+) -> str:
+    """Render a bounded parent-child tree from an untrusted export.
+
+    The export can contain repeated edges or a cycle.  Keep the normal
+    two-level view, but make each render visit an edge at most once and never
+    recurse into an ancestor.  Suppressed malformed edges remain visible as a
+    compact diagnostic with both endpoint ids.
+    """
+    if depth >= TREE_MAX_DEPTH:
         return ""
+
+    path = frozenset() if _path is None else _path
+    if root in path:
+        return ""
+    path = path | {root}
+    seen_edges = set() if _seen_edges is None else _seen_edges
+    kids = sorted(facts.children.get(root, []))
+    if not kids:
+        return ""
+
     items = []
+    duplicate_counts: Counter[str] = Counter()
+    cyclic_children: set[str] = set()
     for kid in kids:
+        edge = (root, kid)
+        if edge in seen_edges:
+            duplicate_counts[kid] += 1
+            continue
+        seen_edges.add(edge)
         if kid not in facts.issues:
             continue
-        sub = tree_html(facts, kid, depth + 1)
+        if kid in path:
+            cyclic_children.add(kid)
+            continue
+        sub = tree_html(facts, kid, depth + 1, path, seen_edges)
         title = esc(str(facts.issues[kid]["title"])[:78])
         items.append(f'<li>{chip(facts, kid)} <span class="meta">{title}</span>{sub}</li>')
+
+    for kid, count in sorted(duplicate_counts.items()):
+        items.append(
+            f'<li class="tree-diagnostic"><span class="meta">'
+            f"suppressed {count:,} duplicate parent-child edge(s): "
+            f"<code>{esc(root)} &rarr; {esc(kid)}</code></span></li>"
+        )
+    for kid in sorted(cyclic_children):
+        items.append(
+            f'<li class="tree-diagnostic"><span class="meta">'
+            f"suppressed cyclic parent-child edge: "
+            f"<code>{esc(root)} &rarr; {esc(kid)}</code></span></li>"
+        )
+
     return f'<ul class="tree">{"".join(items)}</ul>'
 
 
