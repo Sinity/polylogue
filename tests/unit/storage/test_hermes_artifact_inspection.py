@@ -25,8 +25,10 @@ def blob_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Blob
     reset_blob_store()
 
 
-def _write_hermes_v16(path: Path) -> None:
+def _write_hermes_v16(path: Path, *, wal_mode: bool = False) -> None:
     with sqlite3.connect(path) as conn:
+        if wal_mode:
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(
             """
             CREATE TABLE schema_version (version INTEGER NOT NULL);
@@ -53,6 +55,8 @@ def _write_hermes_v16(path: Path) -> None:
             INSERT INTO messages VALUES (1, 'session-1', 'user', 'hello', 1.0, '[]', 0, 1, 0);
             """
         )
+        if wal_mode:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _write_generic_sqlite_lookalike(path: Path) -> None:
@@ -121,6 +125,27 @@ def test_retained_v16_snapshot_is_contract_backed_parseable(
     assert observation.resolved_package_version == "state-db-v16"
     assert observation.resolved_element_kind == "state_db"
     assert observation.decode_error is None
+
+
+def test_retained_wal_snapshot_marker_reopen_keeps_blob_namespace_pristine(
+    blob_store: BlobStore,
+    tmp_path: Path,
+) -> None:
+    """Inspection reopens the marker path for schema support, so both opens must be immutable."""
+    snapshot = tmp_path / "retained-wal.sqlite3"
+    _write_hermes_v16(snapshot, wal_mode=True)
+
+    observation = inspect_raw_artifact(
+        _record(
+            blob_store,
+            snapshot,
+            raw_id="hermes:profile-a:wal-revision",
+            source_path="/original/profile/state.db",
+        )
+    )
+
+    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
+    assert blob_store.verify_all().passed
 
 
 def test_retained_structurally_compatible_v17_snapshot_is_parseable(

@@ -2197,7 +2197,7 @@ class LiveBatchProcessor:
                             immutable=True,
                         )
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
-                        blob_store.blob_path(blob_hash)
+                        blob_store.blob_path(blob_hash), immutable=True
                     ):
                         # polylogue-0jf4: Codex state dbs never become
                         # sessions of their own -- thread_state's evidence
@@ -2209,9 +2209,9 @@ class LiveBatchProcessor:
                         # snapshot admitted above is already durable
                         # evidence; no derived parse is wired in this change.
                         state_path = blob_store.blob_path(blob_hash)
-                        state_kind = codex_state.classify_codex_sqlite_path(state_path)
+                        state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
                         if state_kind == "thread_state":
-                            state_snapshot = codex_state.parse_codex_state_db(state_path)
+                            state_snapshot = codex_state.parse_codex_state_db(state_path, immutable=True)
                             _write_codex_thread_state_evidence(
                                 archive,
                                 state_snapshot,

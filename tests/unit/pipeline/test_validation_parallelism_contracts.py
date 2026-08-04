@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ from polylogue.pipeline.services.validation_runtime import (
     _ValidationOutcome,
 )
 from polylogue.pipeline.stage_models import ValidateResult
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,23 @@ def _claude_payload(title: str = "hello") -> bytes:
         ],
     }
     return core_json.dumps_bytes(body)
+
+
+def _write_wal_hermes_state_db(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model_config TEXT, parent_session_id TEXT, started_at REAL);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT, timestamp REAL NOT NULL, observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, compacted INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO sessions(id, model_config, started_at) VALUES ('validation-wal', '{}', 1.0);
+            INSERT INTO messages(session_id, role, content, timestamp) VALUES ('validation-wal', 'user', 'hello', 1.0);
+            """
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _make_record(raw_id: str, *, payload: bytes) -> RawSessionRecord:
@@ -198,6 +217,34 @@ class TestValidateRecordSyncDeterminism:
         out_b = _validate_record_sync(rec_b, ValidationMode.ADVISORY, str(blob_root))
         out_a.counts_delta["validated"] = 999
         assert out_b.counts_delta.get("validated", 0) != 999
+
+    @pytest.mark.asyncio
+    async def test_evaluate_retained_wal_sqlite_keeps_blob_namespace_pristine(
+        self, blob_root: Path, tmp_path: Path
+    ) -> None:
+        """Drive validation_flow through its process worker against a real retained WAL SQLite blob."""
+        source = tmp_path / "state.db"
+        _write_wal_hermes_state_db(source)
+        store = BlobStore(blob_root)
+        blob_hash, blob_size = store.write_from_bytes(source.read_bytes())
+        record = RawSessionRecord(
+            raw_id=blob_hash,
+            blob_hash=blob_hash,
+            source_name=Provider.HERMES.value,
+            source_path=str(source),
+            payload_provider=Provider.HERMES,
+            source_index=None,
+            blob_size=blob_size,
+            acquired_at="2026-01-01T00:00:00Z",
+            file_mtime=None,
+        )
+
+        result = await evaluate_raw_artifacts(
+            repository=RecordingStore(), raw_artifacts=[record], mode=ValidationMode.ADVISORY
+        )
+
+        assert result.errors == 0
+        assert store.verify_all().passed
 
 
 # ---------------------------------------------------------------------------

@@ -318,7 +318,7 @@
       "fingerprint": "ca8622ef35e983ab1f7553dc2a081397c2c814b38dc1341203d5e2e29876f6cf",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Immutable blob reads preserve SQLite bytes and parsed rows while preventing sidecar creation.",
+        "reason": "Immutable blob reads retain the classifier's structural table probe while preventing sidecar creation; parser-output parity is not claimed here.",
         "ref": "polylogue-84ake"
       }
     },
@@ -334,7 +334,7 @@
       "fingerprint": "ca8622ef35e983ab1f7553dc2a081397c2c814b38dc1341203d5e2e29876f6cf",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Immutable blob reads preserve SQLite bytes and parsed rows while preventing sidecar creation.",
+        "reason": "Immutable blob reads retain the classifier's structural table probe while preventing sidecar creation; parser-output parity is not claimed here.",
         "ref": "polylogue-84ake"
       }
     },

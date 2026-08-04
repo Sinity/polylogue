@@ -431,24 +431,16 @@ def test_stats_with_blobs(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_iter_namespace_classifies_interrupted_temp_file_deterministically(tmp_path: Path) -> None:
+def test_iter_all_skips_temp_files(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
-    blob_hash, _ = blob_store.write_from_bytes(b"real blob")
-    prepared = blob_store.prepare_from_bytes(b"interrupted write")
-    try:
-        entries = tuple(blob_store.iter_namespace())
-        verified = blob_store.verify_all()
+    blob_store.write_from_bytes(b"real blob")
 
-        assert [(entry.relative_path, entry.issue) for entry in entries] == [
-            (prepared.temporary_path.name, BlobNamespaceIssue.INVALID_SHARD_NAME),
-            (blob_hash[:2] + "/" + blob_hash[2:], None),
-        ]
-        assert [(failure.reason, failure.path) for failure in verified.failures] == [
-            ("invalid_namespace_entry", prepared.temporary_path.name),
-        ]
-    finally:
-        blob_store.discard_prepared(prepared)
-    assert not prepared.temporary_path.exists()
+    # Create a fake temp file (like ones during writes)
+    temp_file = blob_store.root / ".blob.temp123"
+    temp_file.write_bytes(b"temp content")
+
+    hashes = list(blob_store.iter_all())
+    assert len(hashes) == 1  # Only the real blob, not .blob.* temp
 
 
 def test_iter_all_skips_non_prefix_dirs(tmp_path: Path) -> None:

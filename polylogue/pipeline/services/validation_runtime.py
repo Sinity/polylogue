@@ -50,6 +50,7 @@ def _build_validation_envelope(
         source_path=raw_record.source_path,
         fallback_provider=raw_record.source_name or "",
         payload_provider=payload_provider,
+        sqlite_immutable=True,
     )
 
 

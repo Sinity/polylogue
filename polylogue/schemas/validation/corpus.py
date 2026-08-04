@@ -278,6 +278,7 @@ def verify_raw_corpus(
                     fallback_provider=raw_provider,
                     payload_provider=stored_payload_provider,
                     jsonl_dict_only=True,
+                    sqlite_immutable=True,
                 )
                 payload = envelope.payload
                 malformed_lines = envelope.malformed_jsonl_lines

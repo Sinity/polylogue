@@ -49,6 +49,8 @@ def _link_group_key(source_path: str | None) -> str | None:
 def _build_payload_envelope(
     raw_content: Path | bytes,
     record: RawSessionRecord,
+    *,
+    sqlite_immutable: bool = False,
 ) -> RawPayloadEnvelope:
     return build_raw_payload_envelope(
         raw_content,
@@ -56,6 +58,7 @@ def _build_payload_envelope(
         fallback_provider=record.source_name or "",
         payload_provider=record.payload_provider,
         jsonl_dict_only=False,
+        sqlite_immutable=sqlite_immutable,
     )
 
 
@@ -93,9 +96,12 @@ def _resolve_payload_support(
     return resolution, True
 
 
-def _hermes_state_db_schema_version(path: Path) -> int | None:
+def _hermes_state_db_schema_version(path: Path, *, immutable: bool = False) -> int | None:
     try:
-        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        if immutable:
+            uri += "&immutable=1"
+        with closing(sqlite3.connect(uri, uri=True)) as conn:
             row = conn.execute("SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1").fetchone()
     except sqlite3.Error:
         return None
@@ -118,8 +124,9 @@ def _resolve_hermes_state_db_support(
     if not isinstance(path_value, str) or not path_value:
         return (None, False)
     path = Path(path_value)
-    schema_version = _hermes_state_db_schema_version(path)
-    if schema_version is None or not looks_like_state_db_path(path):
+    immutable = payload.get("sqlite_immutable") is True
+    schema_version = _hermes_state_db_schema_version(path, immutable=immutable)
+    if schema_version is None or not looks_like_state_db_path(path, immutable=immutable):
         return (None, False)
     resolution = SchemaResolution(
         provider=Provider.HERMES.value,
@@ -150,7 +157,7 @@ def _inspect_payload_envelope(record: RawSessionRecord) -> RawPayloadEnvelope:
     # rather than the mutable source path or an in-memory prefix, ensures the
     # durable observation describes the exact acquired bytes.
     if _is_hermes_state_db_candidate(record):
-        return _build_payload_envelope(blob_path, record)
+        return _build_payload_envelope(blob_path, record, sqlite_immutable=True)
     prefix = _inspection_prefix(record)
     try:
         envelope = _build_payload_envelope(prefix, record)
