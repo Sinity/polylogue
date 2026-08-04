@@ -4,8 +4,11 @@ delivered inside the ChatGPT export.
 
 from __future__ import annotations
 
+from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Provider, SessionRefKind
+from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import MaterialOrigin, Provider, SessionRefKind
+from polylogue.sources.parsers import chatgpt_codex_sidecar as sidecar_parser
 from polylogue.sources.parsers import codex as codex_parser
 from polylogue.sources.parsers.chatgpt import looks_like_fragment as chatgpt_looks_like_fragment
 from polylogue.sources.parsers.chatgpt_codex_sidecar import INGEST_FLAG, looks_like, parse_codex_task
@@ -100,6 +103,36 @@ class TestParseCodexTask:
         assert [m.role for m in session.messages] == [Role.USER, Role.ASSISTANT]
         assert session.messages[0].text == "Fix the bug."
         assert "Fixed it." in (session.messages[1].text or "")
+
+    def test_turn_builder_records_positive_user_authorship_before_session_upgrade(self) -> None:
+        """The sidecar's own builder must carry the evidence, not only its wrapper.
+
+        ``ParsedSession`` has a broader ChatGPT-export compatibility upgrade,
+        so asserting only on ``parse_codex_task`` would stay green if this
+        independent parser route regressed to the shared UNKNOWN default.
+        Calling the production turn builder directly makes the red twin target
+        the mutation this slice owns.
+        """
+        turns = _TASK["turns"]
+        assert isinstance(turns, list)
+        turn = turns[0]
+        assert isinstance(turn, dict)
+
+        message = sidecar_parser._turn_message(turn, position=0, parent_id=None)
+
+        assert message is not None
+        assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED
+        assert message.material_origin is not classify_material_origin(
+            role=Role.USER,
+            message_type=MessageType.MESSAGE,
+            text="Fix the bug.",
+        )
+
+    def test_full_route_preserves_assistant_authorship(self) -> None:
+        session = parse_codex_task(_TASK, "fallback-0")
+
+        assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+        assert session.messages[1].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
 
     def test_identity_and_tagging(self) -> None:
         session = parse_codex_task(_TASK, "fallback-0")
