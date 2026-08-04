@@ -85,14 +85,16 @@ def _render_inferred_corpus_table(entries: tuple[CorpusScenario, ...]) -> list[s
 
 def _render_scenario_projection_table(entries: tuple[ScenarioProjectionEntry, ...]) -> list[str]:
     lines = [
-        "| Source | Projection | Path Targets | Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Source | Projection | Runtime Path Targets | Runtime Artifact Targets | Conceptual Path Targets | Conceptual Artifact Targets | Operation Targets | Maintenance Targets | Tags | Description |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for entry in entries:
         lines.append(
             f"| `{entry.source_kind.value}` | `{entry.name}` | "
             f"{_format_code_list(entry.runtime_path_targets())} | "
             f"{_format_code_list(entry.artifact_targets)} | "
+            f"{_format_code_list(entry.conceptual_path_targets)} | "
+            f"{_format_code_list(entry.conceptual_artifact_targets)} | "
             f"{_format_code_list(entry.operation_targets)} | "
             f"{_format_code_list(entry.maintenance_targets)} | "
             f"{_format_code_list(entry.tags)} | {entry.description} |"

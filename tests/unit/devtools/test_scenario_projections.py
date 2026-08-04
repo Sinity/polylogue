@@ -23,6 +23,8 @@ class _PresentationScenario(ScenarioProjectionSource):
     origin = "test"
     path_targets = ()
     artifact_targets = ()
+    conceptual_path_targets = ("presentation-flow",)
+    conceptual_artifact_targets = ("presentation-asset",)
     operation_targets = ()
     maintenance_targets = ("orphaned_blobs",)
     tags = ()
@@ -118,5 +120,7 @@ def test_projection_entries_preserve_presentation_metadata() -> None:
     assert entry.to_payload()["docs_role"] == "tour"
     assert entry.to_payload()["caption"] == "Query recall demo"
     assert entry.to_payload()["demonstrates"] == ["recall", "json-output"]
+    assert entry.to_payload()["conceptual_path_targets"] == ["presentation-flow"]
+    assert entry.to_payload()["conceptual_artifact_targets"] == ["presentation-asset"]
     assert entry.to_payload()["maintenance_targets"] == ["orphaned_blobs"]
     assert entry.to_dict()["narrative_order"] == 1

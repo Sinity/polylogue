@@ -31,10 +31,11 @@ class RuntimePathCoverage:
     refs: tuple[ScenarioCoverageRef, ...]
     uncovered_artifacts: tuple[str, ...]
     uncovered_operations: tuple[str, ...]
+    missing_route_declaration: bool = False
 
     @property
     def complete(self) -> bool:
-        return not self.uncovered_artifacts and not self.uncovered_operations
+        return not self.uncovered_artifacts and not self.uncovered_operations and not self.missing_route_declaration
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -42,6 +43,7 @@ class RuntimePathCoverage:
                 "refs": [ref.to_dict() for ref in self.refs],
                 "uncovered_artifacts": list(self.uncovered_artifacts),
                 "uncovered_operations": list(self.uncovered_operations),
+                "missing_route_declaration": self.missing_route_declaration,
                 "complete": self.complete,
             }
         )
@@ -94,9 +96,12 @@ def build_runtime_scenario_coverage(
     declared_operation_refs: dict[str, list[ScenarioCoverageRef]] = {
         operation.name: [] for operation in declared_operation_catalog.specs
     }
+    path_refs: dict[str, list[ScenarioCoverageRef]] = {path.name: [] for path in graph.paths}
 
     for projection in scenario_projections:
         ref = ScenarioCoverageRef(source=projection.source_kind.value, name=projection.name, origin=projection.origin)
+        for path in projection.resolve_runtime_paths():
+            path_refs[path.name].append(ref)
         for artifact in projection.resolve_runtime_artifacts():
             artifact_refs[artifact.name].append(ref)
         for operation in projection.resolve_runtime_operations():
@@ -118,6 +123,7 @@ def build_runtime_scenario_coverage(
     for path in graph.paths:
         relevant_operations = tuple(operation.name for operation in graph.operations_for_path(path))
         refs = {
+            *path_refs[path.name],
             *(ref for node_name in path.nodes for ref in artifact_refs[node_name]),
             *(ref for operation_name in relevant_operations for ref in operation_refs[operation_name]),
         }
@@ -128,6 +134,7 @@ def build_runtime_scenario_coverage(
             uncovered_operations=tuple(
                 sorted(operation_name for operation_name in relevant_operations if not operation_refs[operation_name])
             ),
+            missing_route_declaration=bool(relevant_operations) and not path_refs[path.name],
         )
 
     return RuntimeScenarioCoverage(

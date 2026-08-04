@@ -84,6 +84,7 @@ def test_quick_verify_omits_pytest() -> None:
         "mypy",
         "render all",
         "verify layering",
+        "lab graph strict",
         "verify closure-matrix",
         "lab schema roundtrip",
         "verify manifests",
@@ -99,6 +100,7 @@ def test_quick_verify_omits_pytest() -> None:
         "lab policy raw-payload-hash-purity",
         "lab policy position-derived-identity",
         "lab policy raw-authority-frontier-executability",
+        "lab policy table-exists-duplication",
         "schema promotion audit",
     ]
 

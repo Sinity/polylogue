@@ -1,106 +1,68 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
+from devtools import artifact_graph
 from devtools.scenario_coverage import build_runtime_scenario_coverage
+from devtools.scenario_projection_catalog import build_scenario_projection_entries
 
 
-def test_build_runtime_scenario_coverage_tracks_the_current_authored_map() -> None:
+def test_runtime_scenario_coverage_is_closed_over_production_declarations() -> None:
     coverage = build_runtime_scenario_coverage()
 
-    assert set(coverage.paths) == {
-        "source-acquisition-loop",
-        "raw-reparse-loop",
-        "raw-archive-ingest-loop",
-        "message-fts-readiness-loop",
-        "embedding-materialization-loop",
-        "retrieval-band-readiness-loop",
-        "embedding-status-query-loop",
-        "session-query-loop",
-        "session-insight-repair-loop",
-        "raw-session-insight-repair-loop",
-        "session-digest-transform-loop",
-        "session-profile-query-loop",
-        "session-work-event-query-loop",
-        "session-phase-query-loop",
-        "thread-query-loop",
-        "session-tag-rollup-query-loop",
-        "archive-coverage-query-loop",
-        "tool-usage-query-loop",
-        "session-insight-status-query-loop",
-        "archive-debt-query-loop",
-        "inferred-corpus-compilation-loop",
-        "schema-list-query-loop",
-        "schema-explain-query-loop",
+    assert not coverage.uncovered_artifacts
+    assert not coverage.uncovered_operations
+    assert not coverage.uncovered_maintenance_targets
+    assert not coverage.uncovered_declared_operations
+    assert all(path.complete for path in coverage.paths.values())
+    assert {ref.name for ref in coverage.operations["mutate-add-tag"]} >= {"mutation-routes"}
+    assert {ref.name for ref in coverage.operations["query-threads"]} >= {"insight-query-routes"}
+    assert {ref.name for ref in coverage.operations["query-tool-usage"]} >= {"insight-query-routes"}
+    assert {ref.name for ref in coverage.maintenance_targets["empty_sessions"]} >= {"maintenance-target-routes"}
+    assert {ref.name for ref in coverage.maintenance_targets["message_type_backfill"]} >= {"maintenance-target-routes"}
+    assert {ref.name for ref in coverage.maintenance_targets["superseded_raw_snapshots"]} >= {
+        "maintenance-target-routes"
     }
-    incomplete_paths = {name: path for name, path in coverage.paths.items() if not path.complete}
-    assert set(incomplete_paths) == {"thread-query-loop", "tool-usage-query-loop"}
-    assert "raw_validation_state" in coverage.artifacts
-    assert "configured_sources" in coverage.artifacts
-    assert "source_payload_stream" in coverage.artifacts
-    assert "artifact_observation_rows" in coverage.artifacts
-    assert "archive_session_rows" in coverage.artifacts
-    assert "message_source_rows" in coverage.artifacts
-    assert "message_fts" in coverage.artifacts
-    assert "embedding_metadata_rows" in coverage.artifacts
-    assert "embedding_status_rows" in coverage.artifacts
-    assert "message_embedding_vectors" in coverage.artifacts
-    assert "retrieval_band_readiness" in coverage.artifacts
-    assert "embedding_status_results" in coverage.artifacts
-    assert "session_query_results" in coverage.artifacts
-    assert "archive_readiness" in coverage.artifacts
-    assert "session_insight_source_sessions" in coverage.artifacts
-    assert "inferred_corpus_specs" in coverage.artifacts
-    assert "inferred_corpus_scenarios" in coverage.artifacts
-    assert "schema_list_results" in coverage.artifacts
-    assert "schema_explanation_results" in coverage.artifacts
-    assert "acquire-raw-sessions" in coverage.operations
-    assert "plan-validation-backlog" in coverage.operations
-    assert "ingest-archive-runtime" in coverage.operations
-    assert "index-message-fts" in coverage.operations
-    assert "materialize-transcript-embeddings" in coverage.operations
-    assert "project-retrieval-band-readiness" in coverage.operations
-    assert "query-embedding-status" in coverage.operations
-    assert "query-sessions" in coverage.operations
-    assert "materialize-session-insights" in coverage.operations
-    assert "project-archive-readiness" in coverage.operations
-    assert "session_insights" in coverage.maintenance_targets
-    assert "compile-inferred-corpus-specs" in coverage.operations
-    assert "compile-inferred-corpus-scenarios" in coverage.operations
-    assert "query-schema-catalog" in coverage.operations
-    assert "query-schema-explanations" in coverage.operations
-    assert "cli.help" in coverage.declared_operations
-    assert "benchmark.query.search-filters" in coverage.declared_operations
-    assert coverage.uncovered_artifacts == ("thread_results", "tool_usage_results")
-    assert coverage.uncovered_operations == (
-        "mutate-add-mark",
-        "mutate-add-tag",
-        "mutate-blackboard-post",
-        "mutate-bulk-tag-sessions",
-        "mutate-clear-corrections",
-        "mutate-delete-annotation",
-        "mutate-delete-correction",
-        "mutate-delete-metadata",
-        "mutate-delete-recall-pack",
-        "mutate-delete-saved-view",
-        "mutate-delete-session",
-        "mutate-delete-workspace",
-        "mutate-identity-reset",
-        "mutate-import-annotation-batch",
-        "mutate-record-correction",
-        "mutate-remove-mark",
-        "mutate-remove-tag",
-        "mutate-resolve-raw-authority-blocker",
-        "mutate-save-annotation",
-        "mutate-save-recall-pack",
-        "mutate-save-saved-view",
-        "mutate-save-workspace",
-        "mutate-session-excision",
-        "mutate-set-metadata",
-        "query-threads",
-        "query-tool-usage",
+
+
+def test_strict_artifact_graph_is_a_closed_publish_contract() -> None:
+    assert artifact_graph.main(["--strict"]) == 0
+
+
+def test_runtime_coverage_opens_when_a_declared_route_scenario_is_removed() -> None:
+    projections = build_scenario_projection_entries()
+    coverage = build_runtime_scenario_coverage(
+        projections=tuple(projection for projection in projections if projection.name != "mutation-routes")
     )
-    assert coverage.uncovered_maintenance_targets == (
-        "empty_sessions",
-        "message_type_backfill",
-        "superseded_raw_snapshots",
+
+    assert "mutate-add-tag" in coverage.uncovered_operations
+    assert not coverage.paths["tag-mutation-loop"].complete
+
+
+def test_runtime_coverage_rejects_a_missing_declared_runtime_target() -> None:
+    projections = build_scenario_projection_entries()
+    mutation_routes = next(projection for projection in projections if projection.name == "mutation-routes")
+    broken_routes = replace(mutation_routes, path_targets=("missing-mutation-loop",))
+
+    with pytest.raises(KeyError, match="missing-mutation-loop"):
+        build_runtime_scenario_coverage(
+            projections=tuple(
+                broken_routes if projection.name == "mutation-routes" else projection for projection in projections
+            )
+        )
+
+
+def test_runtime_coverage_opens_when_a_declared_route_path_is_removed() -> None:
+    projections = build_scenario_projection_entries()
+    mutation_routes = next(projection for projection in projections if projection.name == "mutation-routes")
+    paths_removed = replace(mutation_routes, path_targets=())
+    coverage = build_runtime_scenario_coverage(
+        projections=tuple(
+            paths_removed if projection.name == "mutation-routes" else projection for projection in projections
+        )
     )
-    assert coverage.uncovered_declared_operations == coverage.uncovered_operations
+
+    assert coverage.paths["tag-mutation-loop"].missing_route_declaration
+    assert not coverage.paths["tag-mutation-loop"].complete

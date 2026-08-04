@@ -53,10 +53,25 @@ def _build_lane_entry(
             exec_meta.artifact_targets if exec_meta is not None else (),
             *(child.artifact_targets for child in child_entries),
         ),
+        conceptual_path_targets=_merge_unique(
+            lane.conceptual_path_targets,
+            exec_meta.conceptual_path_targets if exec_meta is not None else (),
+            *(child.conceptual_path_targets for child in child_entries),
+        ),
+        conceptual_artifact_targets=_merge_unique(
+            lane.conceptual_artifact_targets,
+            exec_meta.conceptual_artifact_targets if exec_meta is not None else (),
+            *(child.conceptual_artifact_targets for child in child_entries),
+        ),
         operation_targets=_merge_unique(
             lane.operation_targets,
             exec_meta.operation_targets if exec_meta is not None else (),
             *(child.operation_targets for child in child_entries),
+        ),
+        maintenance_targets=_merge_unique(
+            lane.maintenance_targets,
+            exec_meta.maintenance_targets if exec_meta is not None else (),
+            *(child.maintenance_targets for child in child_entries),
         ),
         tags=_merge_unique(lane.tags, *(child.tags for child in child_entries)),
     )

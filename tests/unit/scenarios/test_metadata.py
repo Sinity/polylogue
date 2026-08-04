@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from polylogue.scenarios import (
     ScenarioMetadata,
     declared_operation_target_names,
@@ -145,14 +147,18 @@ def test_scenario_metadata_resolves_only_runtime_declared_targets() -> None:
         origin="generated.contract",
         path_targets=("session-insight-repair-loop",),
         artifact_targets=("session_insight_rows", "message_fts"),
+        conceptual_path_targets=("verification-fixture-substrate",),
+        conceptual_artifact_targets=("archive_scenario_fixtures",),
         operation_targets=("project-session-insight-readiness", "benchmark.storage.crud"),
-        maintenance_targets=("session_insights", "missing.target"),
+        maintenance_targets=("session_insights",),
     )
 
     assert metadata.runtime_path_targets() == ("session-insight-repair-loop",)
     assert metadata.runtime_artifact_targets() == ("session_insight_rows", "message_fts")
     assert metadata.runtime_operation_targets() == ("project-session-insight-readiness",)
     assert metadata.runtime_maintenance_targets() == ("session_insights",)
+    assert metadata.conceptual_path_targets == ("verification-fixture-substrate",)
+    assert metadata.conceptual_artifact_targets == ("archive_scenario_fixtures",)
 
 
 def test_runtime_artifact_graph_exposes_resolved_specs() -> None:
@@ -183,10 +189,28 @@ def test_scenario_metadata_resolves_runtime_specs() -> None:
     assert tuple(target.name for target in metadata.resolve_runtime_maintenance_targets()) == ("session_insights",)
 
 
+def test_scenario_metadata_rejects_unknown_runtime_graph_targets() -> None:
+    metadata = ScenarioMetadata(
+        path_targets=("missing-path",),
+        artifact_targets=("missing-artifact",),
+        operation_targets=("missing-operation",),
+        maintenance_targets=("missing-maintenance",),
+    )
+
+    with pytest.raises(KeyError, match="missing-path"):
+        metadata.resolve_runtime_paths()
+    with pytest.raises(KeyError, match="missing-artifact"):
+        metadata.resolve_runtime_artifacts()
+    with pytest.raises(KeyError, match="missing-operation"):
+        metadata.resolve_runtime_operations()
+    with pytest.raises(KeyError, match="missing-maintenance"):
+        metadata.resolve_runtime_maintenance_targets()
+
+
 def test_scenario_metadata_resolves_declared_operation_targets() -> None:
     metadata = ScenarioMetadata(
         origin="generated.contract",
-        operation_targets=("project-session-insight-readiness", "benchmark.storage.crud", "missing.operation"),
+        operation_targets=("project-session-insight-readiness", "benchmark.storage.crud"),
     )
 
     assert metadata.declared_operation_targets() == (
@@ -197,3 +221,5 @@ def test_scenario_metadata_resolves_declared_operation_targets() -> None:
         "project-session-insight-readiness",
         "benchmark.storage.crud",
     )
+    with pytest.raises(KeyError, match="missing.operation"):
+        ScenarioMetadata(operation_targets=("missing.operation",)).resolve_declared_operations()

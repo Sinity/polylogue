@@ -47,6 +47,8 @@ class ScenarioProjectionSource:
             origin=metadata.origin,
             path_targets=metadata.path_targets,
             artifact_targets=metadata.artifact_targets,
+            conceptual_path_targets=metadata.conceptual_path_targets,
+            conceptual_artifact_targets=metadata.conceptual_artifact_targets,
             operation_targets=metadata.operation_targets,
             maintenance_targets=metadata.maintenance_targets,
             tags=metadata.tags,
