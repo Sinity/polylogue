@@ -107,6 +107,36 @@ class TestSessionStreamContract:
             == sessions
         )
 
+    def test_legacy_direct_stream_uses_fallback_identity_and_passes_contract(self) -> None:
+        from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
+
+        payload = [
+            {
+                "type": "message",
+                "id": "legacy-user",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+            {
+                "type": "message",
+                "id": "legacy-assistant",
+                "timestamp": "2024-01-01T00:00:01Z",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "world"}],
+            },
+        ]
+
+        assert is_supported_session_stream(payload)
+        sessions = parse_stream_payload("codex", iter(payload), "legacy-fallback", source_path="/tmp/legacy.jsonl")
+
+        assert [session.provider_session_id for session in sessions] == ["legacy-fallback"]
+        assert len(sessions[0].messages) == 2
+        assert (
+            require_positive_conversational_evidence(sessions, provider="codex", source_path="/tmp/legacy.jsonl")
+            == sessions
+        )
+
     def test_bare_session_headers_fail_parser_contract_and_materialization_gate(self) -> None:
         from polylogue.sources.dispatch import parse_stream_payload, require_positive_conversational_evidence
 

@@ -126,6 +126,22 @@ def test_build_raw_payload_envelope_admits_real_codex_session_stream() -> None:
     assert envelope.artifact.schema_eligible is True
 
 
+def test_build_raw_payload_envelope_admits_legacy_direct_codex_stream() -> None:
+    envelope = build_raw_payload_envelope(
+        b'{"type":"message","id":"legacy-user","timestamp":"2024-01-01T00:00:00Z",'
+        b'"role":"user","content":[{"type":"input_text","text":"hello"}]}\n'
+        b'{"type":"message","id":"legacy-assistant","timestamp":"2024-01-01T00:00:01Z",'
+        b'"role":"assistant","content":[{"type":"text","text":"world"}]}\n',
+        source_path="/tmp/legacy.jsonl",
+        fallback_provider="codex",
+        jsonl_dict_only=True,
+    )
+
+    assert envelope.artifact.kind is ArtifactKind.SESSION_RECORD_STREAM
+    assert envelope.artifact.parse_as_session is True
+    assert envelope.artifact.schema_eligible is True
+
+
 def test_jsonl_sampling_can_stop_after_bounded_prefix(tmp_path: Path) -> None:
     path = tmp_path / "bounded.jsonl"
     path.write_text('{"ok": 1}\n{"ok": 2}\n{"broken": \n', encoding="utf-8")
