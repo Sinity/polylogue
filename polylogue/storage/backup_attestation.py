@@ -37,6 +37,13 @@ def _canonical_bytes(payload: object) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
+def archive_tier_paths(root: Path) -> dict[str, Path]:
+    """Resolve the complete archive file set from the canonical tier specs."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+
+    return {spec.tier.value: root / spec.filename for spec in ARCHIVE_TIER_SPECS.values()}
+
+
 def tier_attestation_id(live_tier_path: Path) -> str:
     """Return the stable local identity for one resolved durable tier."""
     canonical = str(live_tier_path.expanduser().resolve(strict=False)).encode("utf-8")
@@ -172,6 +179,7 @@ __all__ = [
     "ATTESTATION_FORMAT",
     "BackupAttestationError",
     "VERIFICATION_RECEIPT_FORMAT",
+    "archive_tier_paths",
     "attestation_key_path",
     "load_attestation_key",
     "load_or_mint_attestation_key",

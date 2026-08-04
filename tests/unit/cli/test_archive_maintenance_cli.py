@@ -27,13 +27,13 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveTierInitResult,
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, ArchiveInitPlan
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 
-_ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
+_ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
 
 
 def test_raw_authority_census_cli_resolves_receipt_handle(
@@ -569,25 +569,11 @@ def test_archive_plan_cli_reports_tier_targets(cli_workspace: dict[str, Path], c
     payload = json.loads(result.stdout)
     assert payload["ready"] is True
     assert {tier["tier"]: tier["action"] for tier in payload["tiers"]} == {
-        "source": "create",
-        "index": "create",
-        "embeddings": "create",
-        "user": "create",
-        "ops": "create",
+        spec.tier.value: "create" for spec in ARCHIVE_TIER_SPECS.values()
     }
-    assert {Path(tier["path"]).name for tier in payload["tiers"]} == {
-        "source.db",
-        "index.db",
-        "embeddings.db",
-        "user.db",
-        "ops.db",
-    }
+    assert {Path(tier["path"]).name for tier in payload["tiers"]} == set(_ARCHIVE_TIERS)
     assert {tier["tier"]: tier["durability"] for tier in payload["tiers"]} == {
-        "source": "irreplaceable",
-        "index": "rebuildable",
-        "embeddings": "expensive_rebuild",
-        "user": "human",
-        "ops": "disposable",
+        spec.tier.value: spec.durability for spec in ARCHIVE_TIER_SPECS.values()
     }
     assert all(isinstance(tier["expected_user_version"], int) for tier in payload["tiers"])
 

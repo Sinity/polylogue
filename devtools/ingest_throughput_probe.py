@@ -384,7 +384,7 @@ def measure_ingest_throughput(
 
         reset_blob_store()
 
-        # Bootstrap the five-tier archive file set up front so per-batch timings
+        # Bootstrap the archive file set up front so per-batch timings
         # exclude the one-time schema-DDL cost.
         ArchiveStore.open_existing(archive_root, read_only=False).close()
 

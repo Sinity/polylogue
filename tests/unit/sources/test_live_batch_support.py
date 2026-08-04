@@ -47,12 +47,33 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import read_archive_raw_session_envelope
-from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+_ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
+
+
+def _archive_storage_probe_fields(
+    *,
+    present: set[ArchiveTier],
+    versions: dict[ArchiveTier, int | None],
+) -> dict[str, object]:
+    return {
+        "storage_tiers": _ARCHIVE_STORAGE_TIERS,
+        "archive_present_tiers": ",".join(
+            spec.tier.value for spec in ARCHIVE_TIER_SPECS.values() if spec.tier in present
+        ),
+        "archive_missing_tiers": ",".join(
+            spec.tier.value for spec in ARCHIVE_TIER_SPECS.values() if spec.tier not in present
+        ),
+        "archive_tier_user_versions_json": json.dumps(
+            {spec.tier.value: versions.get(spec.tier) for spec in ARCHIVE_TIER_SPECS.values()},
+            sort_keys=True,
+        ),
+    }
 
 
 def _write_archive_blob(archive_root: Path, blob_hash: bytes | str, payload: bytes) -> None:
@@ -605,27 +626,22 @@ def test_full_ingest_writes_archive_with_route_observability(
     probe_event = next(payload for phase, payload in stage_events if phase == "full_archive_storage_probe")
     assert probe_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
         "storage_write_tiers": "source,index",
         "archive_active": True,
         "archive_bootstrapped": False,
-        "archive_present_tiers": "source,index,ops",
-        "archive_missing_tiers": "embeddings,user",
-        "archive_tier_user_versions_json": json.dumps(
-            {
-                "embeddings": None,
-                "index": INDEX_SCHEMA_VERSION,
-                "ops": 1,
-                "source": SOURCE_SCHEMA_VERSION,
-                "user": None,
+        **_archive_storage_probe_fields(
+            present={ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS},
+            versions={
+                ArchiveTier.SOURCE: SOURCE_SCHEMA_VERSION,
+                ArchiveTier.INDEX: INDEX_SCHEMA_VERSION,
+                ArchiveTier.OPS: 1,
             },
-            sort_keys=True,
         ),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_tiers": _ARCHIVE_STORAGE_TIERS,
         "storage_write_tiers": "source,index",
         "input_file_count": 1,
         "payload_available_file_count": 1,
@@ -635,7 +651,7 @@ def test_full_ingest_writes_archive_with_route_observability(
     completed_event = next(payload for phase, payload in stage_events if phase == "full_archive_write_completed")
     assert completed_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_tiers": _ARCHIVE_STORAGE_TIERS,
         "storage_write_tiers": "source,index",
         "written_raw_count": 1,
         "ingested_session_count": 1,
@@ -703,27 +719,22 @@ def test_streaming_full_ingest_writes_archive_from_blob(
     probe_event = next(payload for phase, payload in stage_events if phase == "full_archive_storage_probe")
     assert probe_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
         "storage_write_tiers": "source,index",
         "archive_active": True,
         "archive_bootstrapped": False,
-        "archive_present_tiers": "source,index,ops",
-        "archive_missing_tiers": "embeddings,user",
-        "archive_tier_user_versions_json": json.dumps(
-            {
-                "embeddings": None,
-                "index": INDEX_SCHEMA_VERSION,
-                "ops": 1,
-                "source": SOURCE_SCHEMA_VERSION,
-                "user": None,
+        **_archive_storage_probe_fields(
+            present={ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS},
+            versions={
+                ArchiveTier.SOURCE: SOURCE_SCHEMA_VERSION,
+                ArchiveTier.INDEX: INDEX_SCHEMA_VERSION,
+                ArchiveTier.OPS: 1,
             },
-            sort_keys=True,
         ),
     }
     write_event = next(payload for phase, payload in stage_events if phase == "full_archive_write")
     assert write_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_tiers": _ARCHIVE_STORAGE_TIERS,
         "storage_write_tiers": "source,index",
         "input_file_count": 1,
         "payload_available_file_count": 0,
@@ -733,7 +744,7 @@ def test_streaming_full_ingest_writes_archive_from_blob(
     completed_event = next(payload for phase, payload in stage_events if phase == "full_archive_write_completed")
     assert completed_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
+        "storage_tiers": _ARCHIVE_STORAGE_TIERS,
         "storage_write_tiers": "source,index",
         "written_raw_count": 1,
         "ingested_session_count": 1,
@@ -1049,26 +1060,17 @@ def test_full_ingest_bootstraps_archive_root(
     result = processor._ingest_full_paths_sync([source], source_name="codex", heartbeat=heartbeat)
 
     assert result.succeeded == [source]
-    for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+    for filename in (spec.filename for spec in ARCHIVE_TIER_SPECS.values()):
         assert (tmp_path / filename).exists()
     probe_event = next(payload for phase, payload in stage_events if phase == "full_archive_storage_probe")
     assert probe_event == {
         "storage_route": "archive_full",
-        "storage_tiers": "source,index,embeddings,user,ops",
         "storage_write_tiers": "source,index",
         "archive_active": True,
         "archive_bootstrapped": True,
-        "archive_present_tiers": "source,index,embeddings,user,ops",
-        "archive_missing_tiers": "",
-        "archive_tier_user_versions_json": json.dumps(
-            {
-                "embeddings": EMBEDDINGS_SCHEMA_VERSION,
-                "index": INDEX_SCHEMA_VERSION,
-                "ops": 1,
-                "source": SOURCE_SCHEMA_VERSION,
-                "user": USER_SCHEMA_VERSION,
-            },
-            sort_keys=True,
+        **_archive_storage_probe_fields(
+            present=set(ARCHIVE_TIER_SPECS),
+            versions={tier: spec.version for tier, spec in ARCHIVE_TIER_SPECS.items()},
         ),
     }
 
@@ -5287,7 +5289,7 @@ def test_append_ingest_bootstraps_archive_root(
     assert result.succeeded == []
     assert result.deferred == [plan]
     assert result.failed == []
-    for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+    for filename in (spec.filename for spec in ARCHIVE_TIER_SPECS.values()):
         assert (tmp_path / filename).exists()
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0

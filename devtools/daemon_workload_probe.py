@@ -124,6 +124,15 @@ _ARCHIVE_OBSERVABILITY_TABLES: dict[ArchiveTier, tuple[str, ...]] = {
         "daemon_events",
         "embedding_catchup_runs",
     ),
+    ArchiveTier.AUDIT: (
+        "archive_authority",
+        "operation_previews",
+        "operation_authorizations",
+        "operation_runs",
+        "operation_targets",
+        "operation_attempts",
+        "operation_events",
+    ),
 }
 
 

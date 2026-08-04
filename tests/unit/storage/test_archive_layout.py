@@ -10,42 +10,43 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.storage import archive_layout
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 
 def test_tier_vocabulary_is_derived_from_specs() -> None:
-    assert archive_layout.ARCHIVE_TIER_ORDER == ("source", "index", "embeddings", "user", "ops")
-    assert archive_layout.BACKUP_REQUIRED_TIERS == ("source", "embeddings", "user")
-    assert archive_layout.ARCHIVE_ACTIVE_TIER_ROLES == (
-        "source",
-        "index",
-        "embeddings",
-        "user",
-        "ops",
-        "unknown",
+    assert tuple(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values()) == archive_layout.ARCHIVE_TIER_ORDER
+    assert (
+        tuple(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values() if spec.backup_required)
+        == archive_layout.BACKUP_REQUIRED_TIERS
     )
+    assert (
+        *(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values()),
+        "unknown",
+    ) == archive_layout.ARCHIVE_ACTIVE_TIER_ROLES
     assert archive_layout.ARCHIVE_STORAGE_LAYOUTS == (
         "archive_missing",
         "archive_partial",
         "archive_complete",
     )
-    assert archive_layout.ARCHIVE_LAYOUT_BLOCKER_LABELS == (
+    assert (
         "no_archive_tiers_present",
         "missing_archive_tiers",
-        "schema_mismatch:source",
-        "schema_mismatch:index",
-        "schema_mismatch:embeddings",
-        "schema_mismatch:user",
-        "schema_mismatch:ops",
-        "missing_backup_required_tier:source",
-        "missing_backup_required_tier:embeddings",
-        "missing_backup_required_tier:user",
-    )
+        *(f"schema_mismatch:{spec.tier.value}" for spec in ARCHIVE_TIER_SPECS.values()),
+        *(
+            f"missing_backup_required_tier:{spec.tier.value}"
+            for spec in ARCHIVE_TIER_SPECS.values()
+            if spec.backup_required
+        ),
+    ) == archive_layout.ARCHIVE_LAYOUT_BLOCKER_LABELS
 
 
 def test_classify_storage_layout() -> None:
     assert archive_layout.classify_storage_layout(present_count=0, final_shape_ready=False) == "archive_missing"
     assert archive_layout.classify_storage_layout(present_count=3, final_shape_ready=False) == "archive_partial"
-    assert archive_layout.classify_storage_layout(present_count=5, final_shape_ready=True) == "archive_complete"
+    assert (
+        archive_layout.classify_storage_layout(present_count=len(ARCHIVE_TIER_SPECS), final_shape_ready=True)
+        == "archive_complete"
+    )
 
 
 def test_blockers_for_empty_archive_match_cli_contract() -> None:
@@ -53,14 +54,12 @@ def test_blockers_for_empty_archive_match_cli_contract() -> None:
     blockers = archive_layout.archive_layout_blockers(
         present_count=0,
         final_shape_ready=False,
-        missing_backup_required=("source", "embeddings", "user"),
+        missing_backup_required=archive_layout.BACKUP_REQUIRED_TIERS,
     )
     assert blockers == [
         "no_archive_tiers_present",
         "missing_archive_tiers",
-        "missing_backup_required_tier:source",
-        "missing_backup_required_tier:embeddings",
-        "missing_backup_required_tier:user",
+        *(f"missing_backup_required_tier:{tier}" for tier in archive_layout.BACKUP_REQUIRED_TIERS),
     ]
 
 
@@ -81,7 +80,7 @@ def test_blockers_include_schema_mismatch_in_tier_order() -> None:
 
 
 def test_blockers_empty_for_complete_archive() -> None:
-    assert archive_layout.archive_layout_blockers(present_count=5, final_shape_ready=True) == []
+    assert archive_layout.archive_layout_blockers(present_count=len(ARCHIVE_TIER_SPECS), final_shape_ready=True) == []
 
 
 def test_active_tier_role_resolves_known_and_unknown(tmp_path: Path) -> None:

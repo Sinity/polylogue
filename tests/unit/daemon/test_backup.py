@@ -19,7 +19,17 @@ from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.storage_records import SessionBuilder, db_setup
+
+
+def _tier_files(*tiers: ArchiveTier) -> list[str]:
+    return [ARCHIVE_TIER_SPECS[tier].filename for tier in tiers]
+
+
+def _tier_integrity(*tiers: ArchiveTier) -> dict[str, bool]:
+    return {tier.value: True for tier in tiers}
 
 
 @pytest.mark.contract
@@ -39,14 +49,14 @@ def test_backup_archive_copy_can_be_opened_and_queried(
     result = backup_archive(output_dir=tmp_path / "backups")
 
     # The archive backup is an archive directory: it copies the precious
-    # tiers (source/user/embeddings) and omits the rebuildable index/ops
+    # tiers (source/user/embeddings/audit) and omits the rebuildable index/ops
     # tiers. Each copied tier must open cleanly and pass integrity_check.
     assert result.ok
     assert result.backup_mode == "archive_file_set"
     assert result.output_path is not None
     backup_path = Path(result.output_path)
     assert backup_path.is_dir()
-    for tier in ("source.db", "user.db", "embeddings.db"):
+    for tier in _tier_files(ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.AUDIT):
         tier_path = backup_path / tier
         assert tier_path.exists(), f"backup missing precious tier {tier}"
         with sqlite3.connect(f"file:{tier_path}?mode=ro", uri=True) as conn:
@@ -278,20 +288,19 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert result.backup_profile == "rebuildable_cache_exclude"
     assert result.verified is True
     assert result.verification["ok"] is True
-    assert result.verification["tier_integrity"] == {
-        "source": True,
-        "user": True,
-        "embeddings": True,
-    }
+    assert result.verification["tier_integrity"] == _tier_integrity(
+        ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.AUDIT
+    )
     assert result.verification["omitted_tiers_absent"] is True
     assert result.verification["restored_blob_count"] == 1
     assert result.output_path is not None
     backup_root = Path(result.output_path)
     assert backup_root.is_dir()
-    assert result.omitted_tiers == ["index.db", "ops.db"]
+    assert result.omitted_tiers == _tier_files(ArchiveTier.INDEX, ArchiveTier.OPS)
     assert (backup_root / "source.db").exists()
     assert (backup_root / "user.db").exists()
     assert (backup_root / "embeddings.db").exists()
+    assert (backup_root / "audit.db").exists()
     assert not (backup_root / "index.db").exists()
     assert not (backup_root / "ops.db").exists()
     assert (backup_root / "blob" / blob_hash[:2] / blob_hash[2:]).read_bytes() == payload
@@ -318,6 +327,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
         "blob-inventory.json",
         "embeddings.db",
+        "audit.db",
         "manifest.json",
         "source.db",
         "user.db",
@@ -328,6 +338,7 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         "source.db",
         "user.db",
         "embeddings.db",
+        "audit.db",
     }
     for artifact in receipt["tier_artifacts"]:
         fingerprint = artifact["source_fingerprint"]
@@ -355,8 +366,10 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["mode"] == "archive_file_set"
     assert manifest["profile"] == "rebuildable_cache_exclude"
-    assert manifest["included_tiers"] == ["source.db", "user.db", "embeddings.db"]
-    assert manifest["omitted_tiers"] == ["index.db", "ops.db"]
+    assert manifest["included_tiers"] == _tier_files(
+        ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.AUDIT
+    )
+    assert manifest["omitted_tiers"] == _tier_files(ArchiveTier.INDEX, ArchiveTier.OPS)
     assert manifest["blob_count"] == 1
 
 
@@ -377,25 +390,13 @@ def test_backup_archive_full_evidence_profile_includes_all_tiers(
     assert result.backup_profile == "full_evidence"
     assert result.omitted_tiers == []
     assert result.verified is True
-    assert result.verification["tier_integrity"] == {
-        "source": True,
-        "index": True,
-        "embeddings": True,
-        "user": True,
-        "ops": True,
-    }
+    assert result.verification["tier_integrity"] == _tier_integrity(*ARCHIVE_TIER_SPECS)
     assert result.output_path is not None
     backup_root = Path(result.output_path)
-    assert {path.name for path in backup_root.glob("*.db")} == {
-        "source.db",
-        "index.db",
-        "embeddings.db",
-        "user.db",
-        "ops.db",
-    }
+    assert {path.name for path in backup_root.glob("*.db")} == {spec.filename for spec in ARCHIVE_TIER_SPECS.values()}
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["profile"] == "full_evidence"
-    assert manifest["included_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db", "ops.db"]
+    assert manifest["included_tiers"] == _tier_files(*ARCHIVE_TIER_SPECS)
     assert manifest["omitted_tiers"] == []
 
 
@@ -455,17 +456,16 @@ def test_backup_archive_full_evidence_profile_treats_ops_as_optional(
     assert result.backup_profile == "full_evidence"
     assert result.omitted_tiers == ["ops.db"]
     assert result.verified is True
-    assert result.verification["tier_integrity"] == {
-        "source": True,
-        "index": True,
-        "embeddings": True,
-        "user": True,
-    }
+    assert result.verification["tier_integrity"] == _tier_integrity(
+        ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.USER, ArchiveTier.AUDIT
+    )
     assert result.output_path is not None
     backup_root = Path(result.output_path)
     assert not (backup_root / "ops.db").exists()
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["included_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
+    assert manifest["included_tiers"] == _tier_files(
+        ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.USER, ArchiveTier.AUDIT
+    )
     assert manifest["omitted_tiers"] == ["ops.db"]
 
 
@@ -479,7 +479,7 @@ def test_backup_archive_user_overlays_profile_copies_only_user_tier(
     assert result.ok
     assert result.backup_profile == "user_overlays"
     assert result.verified is True
-    assert result.verification["tier_integrity"] == {"user": True}
+    assert result.verification["tier_integrity"] == _tier_integrity(ArchiveTier.USER, ArchiveTier.AUDIT)
     assert result.output_path is not None
     backup_root = Path(result.output_path)
     assert (backup_root / "user.db").exists()
@@ -490,8 +490,10 @@ def test_backup_archive_user_overlays_profile_copies_only_user_tier(
     assert not (backup_root / "blob").exists()
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["profile"] == "user_overlays"
-    assert manifest["included_tiers"] == ["user.db"]
-    assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "ops.db"]
+    assert manifest["included_tiers"] == _tier_files(ArchiveTier.USER, ArchiveTier.AUDIT)
+    assert manifest["omitted_tiers"] == _tier_files(
+        ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS
+    )
 
 
 def test_backup_archive_verify_false_does_not_write_success_receipt(
@@ -530,7 +532,9 @@ def test_backup_archive_diagnostics_profile_copies_only_ops_tier(
     manifest = json.loads((backup_root / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["profile"] == "diagnostics_bundle"
     assert manifest["included_tiers"] == ["ops.db"]
-    assert manifest["omitted_tiers"] == ["source.db", "index.db", "embeddings.db", "user.db"]
+    assert manifest["omitted_tiers"] == _tier_files(
+        ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.USER, ArchiveTier.AUDIT
+    )
 
 
 def test_backup_verification_scratch_stays_near_backup_output(

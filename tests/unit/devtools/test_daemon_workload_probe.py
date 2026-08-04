@@ -20,7 +20,7 @@ from devtools.daemon_workload_probe import (
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_integrity import BlobReferenceDebtReport
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     add_convergence_debt,
     record_cursor_lag_sample,
@@ -113,6 +113,12 @@ def _minimal_compare_payload() -> dict[str, Any]:
         "archive_tiers": {},
         "source_path_churn": [],
     }
+
+
+def test_archive_observability_inventory_covers_canonical_tiers() -> None:
+    """The probe must inspect every production tier, including durable Audit."""
+    assert set(workload_probe._ARCHIVE_OBSERVABILITY_TABLES) == set(ARCHIVE_TIER_SPECS)
+    assert "operation_runs" in workload_probe._ARCHIVE_OBSERVABILITY_TABLES[ArchiveTier.AUDIT]
 
 
 def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -> None:
@@ -404,7 +410,9 @@ def test_daemon_workload_probe_reports_ops_tier_from_db_anchor(tmp_path: Path) -
     assert payload["archive_tiers"]["present"] is True
     assert payload["archive_tiers"]["tiers"]["ops"]["exists"] is True
     assert payload["archive_tiers"]["tiers"]["ops"]["table_counts"]["ingest_attempts"] == 1
-    assert payload["archive_tiers"]["missing_backup_required"] == ["source", "embeddings", "user"]
+    assert payload["archive_tiers"]["missing_backup_required"] == [
+        spec.tier.value for spec in ARCHIVE_TIER_SPECS.values() if spec.backup_required
+    ]
     layout = payload["archive_tiers"]["layout_readiness"]
     assert layout["archive_ready"] is False
     assert "missing_archive_tiers" in layout["blockers"]
@@ -521,7 +529,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert tiers["complete"] is False
     assert tiers["present_count"] == 4
     assert tiers["observed_tier"] == "index"
-    assert tiers["missing_backup_required"] == ["embeddings"]
+    assert tiers["missing_backup_required"] == ["embeddings", "audit"]
     layout = tiers["layout_readiness"]
     assert layout["state"] == "not_archive_ready"
     assert layout["archive_ready"] is False
@@ -630,7 +638,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert tiers["tiers"]["embeddings"]["exists"] is False
 
 
-def test_daemon_workload_probe_reports_layout_ready_for_clean_five_tier_archive(tmp_path: Path) -> None:
+def test_daemon_workload_probe_reports_layout_ready_for_complete_archive(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in ArchiveTier:
         initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
@@ -643,8 +651,8 @@ def test_daemon_workload_probe_reports_layout_ready_for_clean_five_tier_archive(
         "archive_ready": True,
         "blockers": [],
         "evidence": {
-            "present_count": 5,
-            "expected_count": 5,
+            "present_count": len(ARCHIVE_TIER_SPECS),
+            "expected_count": len(ARCHIVE_TIER_SPECS),
             "complete": True,
             "schema_mismatch_count": 0,
             "missing_backup_required_count": 0,
