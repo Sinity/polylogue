@@ -9,7 +9,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -1192,6 +1192,22 @@ def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSou
             malformed_jsonl_lines, decode_error, cohort_id, link_group_key, sidecar_agent_type,
             first_observed_at_ms, last_observed_at_ms
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(artifact_id) DO UPDATE SET
+            raw_id = excluded.raw_id,
+            origin = excluded.origin,
+            source_path = excluded.source_path,
+            source_index = excluded.source_index,
+            artifact_kind = excluded.artifact_kind,
+            support_status = excluded.support_status,
+            classification_reason = excluded.classification_reason,
+            parse_as_session = excluded.parse_as_session,
+            schema_eligible = excluded.schema_eligible,
+            malformed_jsonl_lines = excluded.malformed_jsonl_lines,
+            decode_error = excluded.decode_error,
+            cohort_id = excluded.cohort_id,
+            link_group_key = excluded.link_group_key,
+            sidecar_agent_type = excluded.sidecar_agent_type,
+            last_observed_at_ms = excluded.last_observed_at_ms
         """,
         (
             artifact.artifact_id,
@@ -1213,6 +1229,22 @@ def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSou
             artifact.last_observed_at_ms,
         ),
     )
+
+
+def upsert_raw_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSourceArtifact) -> None:
+    """Attach or refresh typed artifact evidence for an existing raw row."""
+    with conn:
+        existing = conn.execute(
+            """
+            SELECT artifact_id
+            FROM raw_artifacts
+            WHERE origin = ? AND source_path = ? AND source_index = ?
+            """,
+            (_enum_value(artifact.origin), artifact.source_path, artifact.source_index),
+        ).fetchone()
+        if existing is not None:
+            artifact = replace(artifact, artifact_id=str(existing[0]))
+        _insert_artifact(conn, raw_id, artifact)
 
 
 def _insert_hook_event(
@@ -1328,6 +1360,7 @@ __all__ = [
     "read_archive_raw_session_envelope",
     "record_capture_mode_observation",
     "record_excised_blob_hash",
+    "upsert_raw_artifact",
     "write_history_sidecar",
     "write_source_raw_session",
     "write_source_raw_session_blob_ref",

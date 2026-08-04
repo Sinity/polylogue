@@ -432,6 +432,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Race Window Audit", "audits/2026-07-09-race-window-audit.md", "Race-window investigation record.", "archive"
     ),
+    _entry(
+        "Raw-Failure Preflight",
+        "audits/2026-08-04-raw-failure-preflight.md",
+        "Read-only raw-failure census before lifecycle evidence deployment.",
+        "archive",
+    ),
     _entry("Audit Record Index", "audits/README.md", "Index of dated investigation records.", "archive"),
     _entry(
         "1498 Cascade Retrospective",
