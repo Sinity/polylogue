@@ -439,6 +439,68 @@ def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
     assert artifact == ("deferred_hot_jsonl_capture", "partial_decode", 1)
 
 
+def test_streamed_incomplete_jsonl_capture_defers_then_replays_completed_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A streamed hot capture proves its retained blob against the live prefix."""
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "streaming-active.jsonl"
+    captured = b'{"type":"session_meta","payload":{"id":"streaming-active"}'
+    completed = (
+        b'{"type":"session_meta","payload":{"id":"streaming-active"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"complete"}]}}\n'
+    )
+    path.write_bytes(captured)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", len(captured) - 1)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+    source_completed = False
+
+    def complete_source_after_capture(**kwargs: object) -> bool:
+        nonlocal source_completed
+        if not source_completed:
+            path.write_bytes(completed)
+            source_completed = True
+        return boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", complete_source_after_capture)
+
+    deferred = asyncio.run(processor.ingest_files([path]))
+
+    assert deferred.full_file_count == 1
+    assert deferred.succeeded_file_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind FROM raw_artifacts ORDER BY last_observed_at_ms DESC").fetchone()
+    assert artifact == ("deferred_hot_jsonl_capture",)
+
+    replayed = asyncio.run(processor.ingest_files([path]))
+
+    assert replayed.full_file_count == 1
+    assert replayed.append_file_count == 0
+    assert replayed.succeeded_file_count == 1
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.failure_count == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-0",)]
+
+
 def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -366,6 +366,48 @@ class TestNoArchiveStatus:
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
 
+    def test_direct_status_counts_maintenance_raw_failures(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        with sqlite3.connect(source_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO raw_sessions VALUES ('raw-1');
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._direct_raw_failure_status",
+                return_value={
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_quarantined": 0,
+                    "raw_maintenance_failures": 3,
+                    "raw_deferred_failures": 0,
+                    "raw_terminal_rejections": 0,
+                    "raw_unexplained_failures": 0,
+                    "raw_failure_samples": [],
+                },
+            ),
+            patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run"),
+        ):
+            _show_direct_status(env)
+
+        assert "Raw failures: 3 total" in _combined_calls(env)
+
     def test_direct_status_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"

@@ -165,14 +165,23 @@ def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
 
-def _hot_capture_prefix_is_proven(path: str, payload: bytes | None, *, blob_size: int) -> bool:
+def _hot_capture_prefix_is_proven(
+    path: str,
+    payload: bytes | None,
+    *,
+    blob_hash: str,
+    blob_size: int,
+) -> bool:
     """Prove a rejected JSONL capture is a live prefix, never merely assume it.
 
     A later source size alone is insufficient because a rewrite can have the
     same pathname.  The retained bytes must still be the exact current prefix
     and the source must have grown beyond them.
     """
-    if payload is None:
+    expected_fingerprint = sha256(payload).hexdigest() if payload is not None else blob_hash.lower()
+    if len(expected_fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_fingerprint
+    ):
         return False
     source = Path(path)
     try:
@@ -182,7 +191,7 @@ def _hot_capture_prefix_is_proven(path: str, payload: bytes | None, *, blob_size
         fingerprint, _bytes_read = sha256_range_from_path(source, start_offset=0, end_offset=blob_size)
     except (EOFError, OSError):
         return False
-    return fingerprint == sha256(payload).hexdigest()
+    return fingerprint == expected_fingerprint
 
 
 def _write_codex_thread_state_evidence(
@@ -2191,6 +2200,7 @@ class LiveBatchProcessor:
                         if _hot_capture_prefix_is_proven(
                             record.source_path,
                             payload,
+                            blob_hash=blob_hash,
                             blob_size=record.blob_size,
                         ):
                             archive.record_raw_failure_evidence(

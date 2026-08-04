@@ -437,6 +437,100 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["parse_failures"] == 1
         assert info["terminal_rejections"] == 1
 
+    def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
+        """Lifecycle counts cover every failed raw without bulk-fetching rows."""
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        rows = []
+        with sqlite3.connect(source_db) as conn:
+            for index in range(120):
+                raw_id = f"raw-{index}"
+                rows.append(
+                    (
+                        raw_id,
+                        "codex-session",
+                        raw_id,
+                        f"/data/{raw_id}.jsonl",
+                        index.to_bytes(32, "big"),
+                        128,
+                        1_770_000_000_000 + index,
+                        "captured JSONL payload ends before a complete record boundary",
+                        "[]",
+                    )
+                )
+            conn.executemany(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            for index, row in enumerate(rows):
+                deferred = index % 2 == 0
+                upsert_raw_artifact(
+                    conn,
+                    str(row[0]),
+                    ArchiveSourceArtifact(
+                        artifact_id=f"artifact-{index}",
+                        origin="codex-session",
+                        source_path=str(row[3]),
+                        source_index=0,
+                        artifact_kind="deferred_hot_jsonl_capture" if deferred else "terminal_corrupt_input",
+                        classification_reason="raw-failure",
+                        support_status=(
+                            ArtifactSupportStatus.PARTIAL_DECODE if deferred else ArtifactSupportStatus.DECODE_FAILED
+                        ),
+                    ),
+                )
+
+        class GuardedCursor:
+            def __init__(self, cursor: sqlite3.Cursor, sql: str) -> None:
+                self._cursor = cursor
+                self._sql = sql
+
+            def fetchone(self) -> object:
+                return self._cursor.fetchone()
+
+            def fetchall(self) -> list[object]:
+                normalized = " ".join(self._sql.split()).lower()
+                if "from raw_sessions as r" in normalized and "order by acquired_at_ms desc" in normalized:
+                    raise AssertionError("raw-failure lifecycle rows must stream instead of fetchall")
+                return self._cursor.fetchall()
+
+            def __iter__(self) -> object:
+                return iter(self._cursor)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._cursor, name)
+
+        class GuardedConnection:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self._connection = connection
+
+            def execute(self, sql: str) -> GuardedCursor:
+                return GuardedCursor(self._connection.execute(sql), sql)
+
+            def close(self) -> None:
+                self._connection.close()
+
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+            patch(
+                "polylogue.daemon.status.open_readonly_connection",
+                side_effect=lambda *_args, **_kwargs: GuardedConnection(sqlite3.connect(source_db)),
+            ),
+        ):
+            info = _raw_failure_info()
+
+        assert info["parse_failures"] == 120
+        assert info["deferred_failures"] == 60
+        assert info["terminal_rejections"] == 60
+        assert info["unexplained_failures"] == 0
+        assert len(cast(list[RawFailureSample], info["samples"])) == 50
+
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
         db = tmp_path / "index.db"
         with sqlite3.connect(db) as conn:

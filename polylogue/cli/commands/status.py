@@ -2271,7 +2271,11 @@ def _show_direct_status(
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
         raw_failure_status = _direct_raw_failure_status(active_root)
-        raw_total = raw_failure_status["raw_parse_failures"] + raw_failure_status["raw_validation_failures"]
+        raw_total = (
+            raw_failure_status["raw_parse_failures"]
+            + raw_failure_status["raw_validation_failures"]
+            + raw_failure_status["raw_maintenance_failures"]
+        )
         if raw_total:
             env.ui.console.print(
                 "  Raw failures: "

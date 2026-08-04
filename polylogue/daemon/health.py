@@ -705,7 +705,8 @@ def _check_raw_failures_medium() -> HealthAlert:
             )
         elif total_failures == 0:
             severity = HealthSeverity.WARNING
-            message = f"{deferred} deferred retryable raw capture(s); daemon work remains pending"
+            terminal_context = f"; {terminal} terminal rejection(s) recorded" if terminal else ""
+            message = f"{deferred} deferred retryable raw capture(s){terminal_context}; daemon work remains pending"
         elif total_failures <= _RAW_FAILURE_WARN_COUNT:
             severity = HealthSeverity.WARNING
             message = (

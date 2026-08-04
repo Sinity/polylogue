@@ -1043,7 +1043,7 @@ def _archive_raw_failure_info(
                 WHERE parse_error IS NOT NULL OR validation_status = 'failed'
                 ORDER BY acquired_at_ms DESC
                 """
-            ).fetchall():
+            ):
                 parse_err = str(row[2] or "") if row[2] else ""
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
