@@ -3,6 +3,8 @@ description = "Independent adversarial reviewer for polylogue changes."
 
 model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
+sandbox_mode = "read-only"
+approval_policy = "never"
 
 developer_instructions = """
 Review the assigned diff/worktree as an owner trying to prevent another

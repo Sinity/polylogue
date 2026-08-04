@@ -3,6 +3,8 @@ description = "Read-only, evidence-first bead/audit triage at volume for polylog
 
 model = "gpt-5.6-luna"
 model_reasoning_effort = "medium"
+sandbox_mode = "read-only"
+approval_policy = "never"
 
 developer_instructions = """
 Classify the assigned bead or audit-question cluster before anyone

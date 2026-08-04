@@ -3,6 +3,8 @@ description = "Bounded correctness and architecture-reduction implementer for po
 
 model = "gpt-5.6-terra"
 model_reasoning_effort = "high"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
 
 developer_instructions = """
 Own one declared lane and file footprint, in your own git worktree under
