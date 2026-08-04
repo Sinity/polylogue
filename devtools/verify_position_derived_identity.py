@@ -14,15 +14,13 @@ make ``attachment_identity_hash`` (``polylogue/pipeline/ids.py``) stop
 reading either the real or synthetic attachment id at all for comparison
 purposes.
 
-polylogue-gysk3 found the identical hazard still live one level up:
+polylogue-gysk3 found the identical hazard one level up:
 ``message_identity_hash`` (``polylogue/pipeline/ids.py``) hashes a message's
 ``id`` directly, and that id IS ``provider_message_id`` -- multiple parsers
 construct it as ``f"msg-{index}"`` or similar whenever the raw record
-carries no native id of its own. Fixing every existing instance is a
-separate, higher-risk follow-on (polylogue-gysk3); this lint (ds4b4 item 3)
-is the preventive half -- it stops a *new* occurrence of the same shape from
-being added silently, in a parser or anywhere else, without requiring every
-already-known instance to be ripped out first.
+carries no native id of its own. The production repair removed every known
+instance. This lint (ds4b4 item 3) prevents the same shape returning in a
+parser or shared parser helper.
 
 What this lint checks
 ----------------------
@@ -35,12 +33,11 @@ the value expression is an f-string, ``str.format()`` call, or ``+``
 concatenation that references a variable named like a loop index/position
 (``index``, ``idx``, ``i``, ``pos``, ``position`` -- ``ENUMERATE_VAR_NAMES``).
 
-Every currently-known instance is recorded in the acknowledgment manifest
-(``docs/plans/position-derived-identity-acks.json``), each referencing
-polylogue-gysk3 (the tracked follow-up to actually fix them). A *new*
-occurrence with no manifest entry fails the gate -- it must either avoid
-positional identity, or be explicitly acknowledged (naming a tracked
-follow-up bead/issue) via ``--ack``.
+No current finding needs an acknowledgement. The optional acknowledgement
+manifest (``docs/plans/position-derived-identity-acks.json``) is absent while
+the audit is clean and is created only by ``--ack`` for a newly discovered,
+temporarily accepted finding with a tracked follow-up. An unacknowledged
+occurrence fails the gate; a stale acknowledgement fails it too.
 
 Scope and false-positive discipline
 ------------------------------------
