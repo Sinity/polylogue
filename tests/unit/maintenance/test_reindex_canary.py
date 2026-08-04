@@ -817,7 +817,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
 
     assert durable.unclassified_count == 0
     assert report_path.exists()
-    assert loaded["schema_version"] == 1
+    assert loaded["schema_version"] == 2
     comparison_payload = loaded["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]

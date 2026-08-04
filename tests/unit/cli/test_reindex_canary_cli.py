@@ -20,6 +20,7 @@ from polylogue.maintenance.reindex_canary import (
     DifferenceOperation,
     RowDifference,
     UnclassifiedCanaryDiffError,
+    load_canary_report,
     run_reindex_canary,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -277,6 +278,7 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
     )
     review_path.write_text(json.dumps({"reviews": [review.to_dict()]}), encoding="utf-8")
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.load_canary_report", lambda path: {})
 
     result = CliRunner().invoke(
         cli,
@@ -306,6 +308,55 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
     assert persisted["comparison"]["summary"]["expected_count"] == 1
 
 
+def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Manifest coverage is exact down to the changed-column signature."""
+
+    index_path = tmp_path / "index.db"
+    index_path.touch()
+    report_path = tmp_path / "canary.json"
+    review_path = tmp_path / "reviews.json"
+    run_result = _nonempty_run_result(index_path)
+    difference = run_result.comparison.differences[0]
+    assert isinstance(difference, RowDifference)
+    review = CanaryDifferenceReview(
+        table=difference.table,
+        operation=difference.operation,
+        identity=difference.identity,
+        changed_columns=("different_column",),
+        classification=DifferenceClassification.EXPECTED,
+        reference="polylogue-review",
+        rationale="wrong signature",
+    )
+    review_path.write_text(json.dumps({"reviews": [review.to_dict()]}), encoding="utf-8")
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(tmp_path),
+            "--input",
+            str(index_path),
+            "--report",
+            str(report_path),
+            "--review-manifest",
+            str(review_path),
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "classification is incomplete" in result.output
+    assert not report_path.exists()
+
+
 def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -315,6 +366,7 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
         "polylogue.maintenance.reindex_canary.run_reindex_canary",
         lambda *args, **kwargs: _nonempty_run_result(index_path),
     )
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.load_canary_report", lambda path: {})
 
     result = CliRunner().invoke(
         cli,
@@ -379,6 +431,98 @@ def test_reindex_canary_cli_persists_unreviewed_real_candidate_lifecycle(
     assert persisted["comparison"]["differences"]
     assert persisted["comparison"]["candidate_index"] != persisted["comparison"]["current_index"]
     assert persisted["rebuild_receipt"]["generation"]["state"] == "inactive"
+
+    persisted["review_status"] = "reviewed"
+    persisted["comparison"]["differences"] = []
+    persisted["comparison"]["summary"] = {
+        "difference_count": 0,
+        "expected_count": 0,
+        "unexpected_count": 0,
+        "unclassified_count": 0,
+        "counts_by_table": {},
+    }
+    report_path.write_text(json.dumps(persisted), encoding="utf-8")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="comparison attestation"):
+        load_canary_report(report_path)
+
+
+def test_reindex_canary_cli_rejects_manifest_with_mismatched_changed_columns_from_real_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CLI review manifests must bind each real difference's column signature."""
+
+    live_root = tmp_path / "configured-live"
+    canary_root = tmp_path / "isolated-canary"
+    observed_report_path = tmp_path / "unreviewed.json"
+    rejected_report_path = tmp_path / "rejected.json"
+    review_path = tmp_path / "reviews.json"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(canary_root))
+    _seed_isolated_canary(canary_root)
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
+    with sqlite3.connect(canary_root / "index.db") as connection:
+        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+
+    observed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(observed_report_path),
+            "--sample",
+            "1",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert observed.exit_code == 1
+    observed_report = json.loads(observed_report_path.read_text(encoding="utf-8"))
+    differences = observed_report["comparison"]["differences"]
+    assert isinstance(differences, list) and differences
+    reviews = [
+        {
+            "table": difference["table"],
+            "operation": difference["operation"],
+            "identity": difference["identity"],
+            "changed_columns": difference["changed_columns"],
+            "classification": "expected",
+            "reference": "polylogue-review",
+            "rationale": "reviewed materializer change",
+        }
+        for difference in differences
+    ]
+    reviews[0]["changed_columns"] = ["forged_column"]
+    review_path.write_text(json.dumps({"reviews": reviews}), encoding="utf-8")
+
+    rejected = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(rejected_report_path),
+            "--review-manifest",
+            str(review_path),
+            "--sample",
+            "1",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert rejected.exit_code == 1
+    assert "classification is incomplete" in rejected.output
+    assert not rejected_report_path.exists()
 
 
 def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
