@@ -1746,6 +1746,22 @@ async def _load_message_counts_async(
     return {str(row["session_id"]): int(row["message_count"] or 0) for row in rows}
 
 
+async def _session_profile_records_for_session_ids_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> list[SessionProfileRecord]:
+    """Async sibling of ``_session_profile_records_for_session_ids_sync``."""
+    if not session_ids:
+        return []
+    placeholders = ", ".join("?" for _ in session_ids)
+    cursor = await conn.execute(
+        f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+        tuple(session_ids),
+    )
+    rows = await cursor.fetchall()
+    return [_row_to_session_profile_record(row) for row in rows]
+
+
 def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
@@ -2116,6 +2132,15 @@ async def rebuild_session_insights_async(
             # Run-projection cache tables are no longer materialized (polylogue-dab).
             # Reads fall back to source-derived CTEs when the tables are absent.
 
+    # polylogue-lyv4: the pre-rebuild provider/day groups of the targeted
+    # subset, unioned below with the post-rebuild groups actually produced —
+    # mirrors rebuild_session_insights_sync's ``previous_profile_groups`` so a
+    # session whose rebuild moves it to a different provider/day group still
+    # gets both the old and new group's rollup refreshed, not just one.
+    previous_profile_groups: set[tuple[str, str]] = set()
+    refreshed_profile_groups: set[tuple[str, str]] = set()
+    degraded_session_ids: set[str] = set()
+
     if session_ids is None:
         all_session_ids = [
             str(row["session_id"]) for row in await (await conn.execute(_ALL_SESSION_IDS_SQL)).fetchall()
@@ -2123,6 +2148,11 @@ async def rebuild_session_insights_async(
         target_session_ids = tuple(all_session_ids)
     else:
         target_session_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+        previous_profile_groups = {
+            group
+            for record in await _session_profile_records_for_session_ids_async(conn, target_session_ids)
+            if (group := profile_provider_day(record)) is not None
+        }
 
     message_counts = await _load_message_counts_async(conn, target_session_ids)
     session_chunks = _chunk_session_ids_by_message_budget_sync(
@@ -2144,6 +2174,7 @@ async def rebuild_session_insights_async(
         record_bundles: list[SessionInsightRecordBundle] = []
         batch: SessionInsightArchiveBatch | None = None
         if chunk_degraded_ids:
+            degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
             for session_id in chunk_degraded_ids:
                 record_bundles.append(
                     await build_large_session_insight_record_bundle_async(
@@ -2166,6 +2197,10 @@ async def rebuild_session_insights_async(
 
         chunk_profiles, chunk_work_events, chunk_phases = _count_record_bundles(record_bundles)
         await write_record_bundles(record_bundles)
+        for bundle in record_bundles:
+            group = profile_provider_day(bundle.profile_record)
+            if group is not None:
+                refreshed_profile_groups.add(group)
         profile_count += chunk_profiles
         work_event_count += chunk_work_events
         phase_count += chunk_phases
@@ -2183,12 +2218,50 @@ async def rebuild_session_insights_async(
         if commit_per_chunk:
             await conn.commit()
 
-    if session_ids is None:
-        # Full rebuild upserted per-session insight rows without an upfront
-        # clear; prune rows for sessions deleted since the last rebuild before
-        # the aggregate phase (foreign_keys=ON normally cascades, but prune
-        # explicitly for safety — parity with the sync path).
-        await _delete_orphan_session_insights_async(conn, progress_callback=progress_callback)
+    if session_ids is not None:
+        # polylogue-lyv4: scoped refresh, matching rebuild_session_insights_
+        # sync's targeted branch. The unscoped code below (DELETE FROM
+        # threads / session_tag_rollups, then rebuild every root/group
+        # archive-wide) is only correct for a full rebuild (session_ids is
+        # None); running it for an explicit subset wiped and rebuilt EVERY
+        # thread and provider/day rollup in the archive regardless of how
+        # small the subset was.
+        thread_refresh_session_ids = tuple(
+            session_id for session_id in target_session_ids if session_id not in degraded_session_ids
+        )
+        root_ids_by_session = await thread_root_ids_async(conn, thread_refresh_session_ids)
+        affected_roots = tuple(dict.fromkeys(str(root_id) for root_id in root_ids_by_session.values()))
+        thread_count = 0
+        if affected_roots:
+            records_by_root = await build_thread_records_for_roots_async(conn, affected_roots)
+            for root_id in affected_roots:
+                record = records_by_root.get(root_id)
+                if record is None:
+                    continue
+                await replace_thread(conn, record.thread_id, record, transaction_depth)
+                thread_count += 1
+        await refresh_async_provider_day_aggregates(
+            conn,
+            previous_profile_groups | refreshed_profile_groups,
+            transaction_depth=transaction_depth,
+        )
+        tag_rollup_row = await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone()
+        tag_rollup_count = int(tag_rollup_row[0]) if tag_rollup_row is not None else 0
+        if commit_per_chunk:
+            await conn.commit()
+        return _finalize_rebuild_counts(
+            profiles=profile_count,
+            work_events=work_event_count,
+            phases=phase_count,
+            threads=thread_count,
+            tag_rollups=int(tag_rollup_count),
+        )
+
+    # Full rebuild upserted per-session insight rows without an upfront
+    # clear; prune rows for sessions deleted since the last rebuild before
+    # the aggregate phase (foreign_keys=ON normally cascades, but prune
+    # explicitly for safety — parity with the sync path).
+    await _delete_orphan_session_insights_async(conn, progress_callback=progress_callback)
 
     await conn.execute("DELETE FROM threads")
     thread_count = 0
@@ -2209,6 +2282,8 @@ async def rebuild_session_insights_async(
     )
     tag_rollup_row = await (await conn.execute("SELECT COUNT(*) FROM session_tag_rollups")).fetchone()
     tag_rollup_count = int(tag_rollup_row[0]) if tag_rollup_row is not None else 0
+    if commit_per_chunk:
+        await conn.commit()
     return _finalize_rebuild_counts(
         profiles=profile_count,
         work_events=work_event_count,
