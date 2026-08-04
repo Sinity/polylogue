@@ -23,7 +23,7 @@ class SessionWorkEventRecord(BaseModel):
     event_id: str
     session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
-    materialized_at: str
+    materialized_at: str | None = None
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
@@ -51,7 +51,6 @@ class SessionWorkEventRecord(BaseModel):
     @field_validator(
         "event_id",
         "session_id",
-        "materialized_at",
         "source_name",
         "heuristic_label",
         "summary",
@@ -69,7 +68,7 @@ class SessionPhaseRecord(BaseModel):
     phase_id: str
     session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
-    materialized_at: str
+    materialized_at: str | None = None
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
@@ -97,7 +96,6 @@ class SessionPhaseRecord(BaseModel):
     @field_validator(
         "phase_id",
         "session_id",
-        "materialized_at",
         "source_name",
         "kind",
         "search_text",

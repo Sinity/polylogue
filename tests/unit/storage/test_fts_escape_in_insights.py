@@ -204,3 +204,41 @@ async def test_list_work_events_escaped_query_matches_literal_phrase() -> None:
         assert len(result_hit) == 1
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_timeline_read_keeps_missing_materialization_unknown_and_orders_by_event_time() -> None:
+    """Read SQL must not turn freshness metadata into event-time ordering."""
+
+    conn = await _make_work_events_db()
+    try:
+        await conn.executescript(
+            """
+            INSERT INTO sessions (session_id, origin) VALUES ('c2', 'claude-code-session');
+            INSERT INTO insight_materialization (
+                insight_type, session_id, materializer_version, materialized_at_ms, input_row_count
+            ) VALUES ('work_events', 'c2', 5, 1893456000000, 1);
+            INSERT INTO session_work_events (
+                session_id, position, work_event_type, summary, search_text
+            ) VALUES ('c2', 0, 'edit', 'timeless but freshly materialized', 'timeless');
+            """
+        )
+        await conn.commit()
+
+        rows = await list_work_events(conn, SessionTimelineListQuery(limit=5))
+
+        # c2 has the later materialization timestamp but no event/source time;
+        # c1's recorded timestamp must still order before it.
+        assert [row.session_id for row in rows] == ["c1", "c2"]
+        timeless = next(row for row in rows if row.session_id == "c2")
+        assert timeless.materialized_at == "2030-01-01T00:00:00.000Z"
+        assert timeless.start_time is None
+        assert timeless.end_time is None
+        assert timeless.canonical_session_date is None
+
+        await conn.execute("DELETE FROM insight_materialization WHERE session_id = 'c2'")
+        await conn.commit()
+        without_marker = (await list_work_events(conn, SessionTimelineListQuery(session_id="c2", limit=5)))[0]
+        assert without_marker.materialized_at is None
+    finally:
+        await conn.close()

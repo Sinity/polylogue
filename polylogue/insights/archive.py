@@ -177,7 +177,10 @@ class ArchiveDebtInsightQuery(PaginatedInsightQuery):
 
 class _InsightRecordWithProvenance(Protocol):
     materializer_version: int
-    materialized_at: str
+
+    @property
+    def materialized_at(self) -> str | None: ...
+
     source_updated_at: str | None
     source_sort_key: float | None
     input_high_water_mark: str | None
@@ -625,7 +628,7 @@ def records_provenance(
         for row in row_list
         if getattr(row, materialized_at_attr, None)
     ]
-    materialized_at = max(materialized_at_values).isoformat() if materialized_at_values else "1970-01-01T00:00:00+00:00"
+    materialized_at = max(materialized_at_values).isoformat() if materialized_at_values else None
     source_updated_at_values = [
         _parse_iso_timestamp(str(getattr(row, source_updated_at_attr)))
         for row in row_list

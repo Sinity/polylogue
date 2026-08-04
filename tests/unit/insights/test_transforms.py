@@ -714,6 +714,14 @@ def test_successor_context_marks_missing_evidence_explicitly() -> None:
     assert "- [missing-evidence] events: No structured tool or test outcome events were extracted." in rendered
 
 
+def test_session_digest_keeps_absent_source_time_unknown() -> None:
+    """A storage-free public transform must not fabricate an epoch instant."""
+
+    digest = compile_session_digest(_sparse_session())
+
+    assert digest.transform.computed_at is None
+
+
 def test_successor_context_does_not_promote_random_hex_to_commit_ref() -> None:
     session = Session(
         id=SessionId("codex-session:hex-output"),

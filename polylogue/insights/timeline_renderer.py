@@ -72,7 +72,7 @@ class TimelineEntry:
     duration_ms: int
     fidelity: FidelityTag
     timing_provenance: str
-    confidence: float = 0.0
+    confidence: float | None = None
     tools_used: tuple[str, ...] = ()
     file_paths: tuple[str, ...] = ()
     word_count: int = 0
@@ -152,7 +152,7 @@ def _phase_entry(insight: SessionPhaseInsight, *, phase_kind: str = "phase") -> 
         duration_ms=evidence.duration_ms,
         fidelity=fidelity_for(evidence.timing_provenance),
         timing_provenance=evidence.timing_provenance,
-        confidence=inference.confidence if inference is not None else 0.0,
+        confidence=inference.confidence if inference is not None else None,
         word_count=evidence.word_count,
     )
 

@@ -26,8 +26,7 @@ _WORK_EVENT_SELECT = f"""
     swe.event_id,
     swe.session_id,
     COALESCE(im.materializer_version, 1) AS materializer_version,
-    COALESCE(strftime({_ISO_MS}, im.materialized_at_ms / 1000.0, 'unixepoch'), '1970-01-01T00:00:00.000Z')
-        AS materialized_at,
+    strftime({_ISO_MS}, im.materialized_at_ms / 1000.0, 'unixepoch') AS materialized_at,
     strftime({_ISO_MS}, im.source_updated_at_ms / 1000.0, 'unixepoch') AS source_updated_at,
     im.source_sort_key_ms / 1000.0 AS source_sort_key,
     swe.input_high_water_mark,
@@ -58,8 +57,7 @@ _PHASE_SELECT = f"""
     sph.phase_id,
     sph.session_id,
     COALESCE(im.materializer_version, 1) AS materializer_version,
-    COALESCE(strftime({_ISO_MS}, im.materialized_at_ms / 1000.0, 'unixepoch'), '1970-01-01T00:00:00.000Z')
-        AS materialized_at,
+    strftime({_ISO_MS}, im.materialized_at_ms / 1000.0, 'unixepoch') AS materialized_at,
     strftime({_ISO_MS}, im.source_updated_at_ms / 1000.0, 'unixepoch') AS source_updated_at,
     im.source_sort_key_ms / 1000.0 AS source_sort_key,
     sph.input_high_water_mark,
@@ -206,15 +204,12 @@ async def list_work_events(
         params.append(escape_fts5_query(query.query))
         order_by = (
             "ORDER BY bm25(session_work_events_fts), "
-            "COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) DESC, swe.position"
+            "COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms) DESC, swe.position"
         )
     else:
         from_clause = _WORK_EVENT_FROM
         where = []
-        order_by = (
-            "ORDER BY COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) DESC, "
-            "swe.position"
-        )
+        order_by = "ORDER BY COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms) DESC, swe.position"
 
     if query.session_id:
         where.append("swe.session_id = ?")
@@ -227,12 +222,12 @@ async def list_work_events(
         params.append(query.heuristic_label)
     if query.since:
         where.append(
-            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(swe.ended_at_ms, swe.started_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') >= ?"
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(swe.ended_at_ms, swe.started_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') >= ?"
         )
         params.append(query.since)
     if query.until:
         where.append(
-            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') <= ?"
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(swe.started_at_ms, swe.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') <= ?"
         )
         params.append(query.until)
     if query.session_date_since:
@@ -275,12 +270,12 @@ async def list_session_phases(
         params.append(query.kind)
     if query.since:
         where.append(
-            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(sph.ended_at_ms, sph.started_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') >= ?"
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(sph.ended_at_ms, sph.started_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') >= ?"
         )
         params.append(query.since)
     if query.until:
         where.append(
-            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) / 1000.0, 'unixepoch') <= ?"
+            "strftime('%Y-%m-%dT%H:%M:%fZ', COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms) / 1000.0, 'unixepoch') <= ?"
         )
         params.append(query.until)
     if query.session_date_since:
@@ -297,7 +292,7 @@ async def list_session_phases(
     sql = f"SELECT {_PHASE_SELECT} {_PHASE_FROM}"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms, im.materialized_at_ms) DESC, sph.position"
+    sql += " ORDER BY COALESCE(sph.started_at_ms, sph.ended_at_ms, im.source_sort_key_ms) DESC, sph.position"
     if query.limit is not None:
         sql += " LIMIT ? OFFSET ?"
         params.extend([query.limit, query.offset])

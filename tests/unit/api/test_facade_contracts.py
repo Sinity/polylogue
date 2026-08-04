@@ -5337,6 +5337,55 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         await archive.close()
 
 
+async def test_archive_tiers_api_hydrates_unknown_temporal_provenance_without_marker(tmp_path: Path) -> None:
+    """The public async facade preserves row-level temporal provenance."""
+
+    archive = _archive(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="api-temporal-provenance",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="timeless API event")],
+            )
+        ],
+    )
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            session_id = archive_db.write_parsed(session)
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO session_work_events (
+                    session_id, position, work_event_type, summary,
+                    input_high_water_mark, input_high_water_mark_source
+                ) VALUES (?, 0, 'implementation', 'timeless API event', ?, 'provider_ts')
+                """,
+                (session_id, "2026-08-04T09:30:00Z"),
+            )
+            conn.execute(
+                """
+                INSERT INTO session_phases (
+                    session_id, position, input_high_water_mark, input_high_water_mark_source
+                ) VALUES (?, 0, ?, 'provider_ts')
+                """,
+                (session_id, "2026-08-04T09:30:00Z"),
+            )
+            conn.commit()
+
+        work_event = (await archive.get_session_work_event_insights(session_id))[0]
+        phase = (await archive.get_session_phase_insights(session_id))[0]
+
+        for insight in (work_event, phase):
+            assert insight.provenance.materialized_at is None
+            assert insight.provenance.input_high_water_mark_source == "provider_ts"
+            assert insight.provenance.time_confidence == "recorded"
+    finally:
+        await archive.close()
+
+
 async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_path: Path) -> None:
     """Session insight status projects readiness."""
     import sqlite3

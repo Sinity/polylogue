@@ -24,7 +24,7 @@ class SessionProfileRecord(BaseModel):
     session_id: SessionId
     logical_session_id: SessionId
     materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION
-    materialized_at: str
+    materialized_at: str | None = None
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None
@@ -99,7 +99,6 @@ class SessionProfileRecord(BaseModel):
         "session_id",
         "logical_session_id",
         "source_name",
-        "materialized_at",
         "search_text",
         "evidence_search_text",
         "inference_search_text",
