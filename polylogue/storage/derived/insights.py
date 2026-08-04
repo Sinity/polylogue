@@ -236,15 +236,6 @@ def build_timeline_statuses(metrics: Metrics) -> dict[str, DerivedModelStatus]:
             orphan_key="orphan_phase_rows",
         ),
         "threads": _threads_status(metrics),
-        "threads_fts": _fts_status(
-            metrics,
-            name="threads_fts",
-            label="Thread FTS",
-            ready_key="thread_fts_ready",
-            source_rows_key="thread_rows",
-            materialized_rows_key="thread_fts_rows",
-            duplicate_key="thread_fts_duplicates",
-        ),
     }
 
 

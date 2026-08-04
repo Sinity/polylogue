@@ -462,7 +462,7 @@ def test_drain_convergence_debt_retries_optional_fts_surface(
     cursor.record_convergence_debt(
         stage="fts",
         subject_type="fts_surface",
-        subject_id="threads_fts",
+        subject_id="session_work_events_fts",
         error="optional FTS startup repair failed",
     )
     repairs: list[tuple[Path, str]] = []
@@ -480,7 +480,7 @@ def test_drain_convergence_debt_retries_optional_fts_surface(
     debt_after = cursor.list_convergence_debt()
 
     assert retried == 1
-    assert repairs == [(db, "threads_fts")]
+    assert repairs == [(db, "session_work_events_fts")]
     assert debt_after == []
 
 
@@ -2857,12 +2857,6 @@ def test_optional_fts_startup_failure_records_convergence_debt(monkeypatch: pyte
             "stage": "fts",
             "subject_type": "fts_surface",
             "subject_id": "session_work_events_fts",
-            "error": "optional surfaces still stale",
-        },
-        {
-            "stage": "fts",
-            "subject_type": "fts_surface",
-            "subject_id": "threads_fts",
             "error": "optional surfaces still stale",
         },
     ]

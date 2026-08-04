@@ -834,6 +834,30 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=63,
+        # polylogue-eizc: drops `threads_fts`, a maintained FTS surface
+        # with triggers and rebuild/repair/freshness machinery but no
+        # application-layer consumers. Its only MATCH reader had zero
+        # production callers, while the live thread-search path already
+        # uses a LIKE scan. This is a clone-safe CACHE_REMOVAL delta, so
+        # fast-forward drops the table and its triggers without raw replay.
+        # `blocks_command_trigram` remains because affordance usage has a
+        # real production consumer for it.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            FastForwardOperation(
+                name="v63-drop-threads-fts",
+                kind=FastForwardOperationKind.DROP_TABLE,
+                objects=(
+                    ("trigger", "threads_fts_ai"),
+                    ("trigger", "threads_fts_ad"),
+                    ("trigger", "threads_fts_au"),
+                    ("table", "threads_fts"),
+                ),
+            ),
+        ),
+    ),
 )
 
 

@@ -23,7 +23,6 @@ SessionInsightReadyFlag: TypeAlias = Literal[
     "observed_event_rows_ready",
     "context_snapshot_rows_ready",
     "threads_ready",
-    "threads_fts_ready",
     "tag_rollups_ready",
 ]
 
@@ -153,8 +152,6 @@ class SessionInsightStatusSnapshot:
     observed_event_count: int = 0
     context_snapshot_count: int = 0
     thread_count: int = 0
-    thread_fts_count: int = 0
-    thread_fts_duplicate_count: int = 0
     tag_rollup_count: int = 0
     day_summary_count: int = 0
     missing_profile_row_count: int = 0
@@ -204,7 +201,6 @@ class SessionInsightStatusSnapshot:
     observed_event_rows_ready: bool = False
     context_snapshot_rows_ready: bool = False
     threads_ready: bool = False
-    threads_fts_ready: bool = False
     tag_rollups_ready: bool = False
 
     def ready_flag(self, key: SessionInsightReadyFlag) -> bool:

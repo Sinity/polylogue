@@ -17,7 +17,7 @@ Models inventoried:
 * ``messages_fts``,
   ``session_profile_rows``, ``session_work_events``,
   ``session_work_events_fts``, phase interval rows,
-  ``threads``, ``threads_fts``, ``session_tag_rollups`` — derived read
+  ``threads``, ``session_tag_rollups`` — derived read
   models reported by ``collect_derived_model_statuses_sync``.
 * ``transcript_embeddings``, ``retrieval_evidence``,
   ``retrieval_inference``, ``retrieval_enrichment`` — retrieval-layer
@@ -261,7 +261,6 @@ _DERIVED_MODEL_NAMES: frozenset[str] = frozenset(
         "session_work_events_fts",
         "session_phases",
         "threads",
-        "threads_fts",
         "session_tag_rollups",
     }
 )

@@ -342,7 +342,6 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
         "session_work_events_fts_count": 8,
         "session_phases_count": 3,
         "threads_count": 2,
-        "threads_fts_count": 2,
         "session_tag_rollups_count": 4,
     }
     table_counts = iter((before, after))
@@ -389,6 +388,5 @@ def test_session_insight_materialization_campaign_reports_rebuild_counts(
         "session_work_events_fts_after": 8,
         "session_phases_after": 3,
         "threads_after": 2,
-        "threads_fts_after": 2,
         "session_tag_rollups_after": 4,
     }

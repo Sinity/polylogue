@@ -30,12 +30,6 @@ _FTS_SURFACES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
         "session_work_events_fts",
         ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au"),
     ),
-    (
-        "threads_fts",
-        "threads",
-        "threads_fts",
-        ("threads_fts_ai", "threads_fts_ad", "threads_fts_au"),
-    ),
 )
 
 _ARCHIVE_BLOCKS_FTS_TRIGGERS = ("messages_fts_ai", "messages_fts_ad", "messages_fts_au")
@@ -45,7 +39,6 @@ class FTSReadiness(BaseModel):
     indexed_surface: str = "messages_fts"
     messages_ready: bool = False
     session_work_events_ready: bool = False
-    threads_ready: bool = False
     invariant_ready: bool = False
     message_indexed_count: int | None = 0
     message_indexable_count: int | None = 0
@@ -320,7 +313,6 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
         "indexed_surface": "messages_fts",
         "messages_ready": invariant_ready,
         "session_work_events_ready": True,
-        "threads_ready": True,
         "invariant_ready": invariant_ready,
         "message_indexed_count": block_indexed_rows,
         "message_indexable_count": block_source_rows,
@@ -353,7 +345,6 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             "indexed_surface": "messages_fts",
             "messages_ready": False,
             "session_work_events_ready": True,
-            "threads_ready": True,
             "invariant_ready": False,
             "coverage_pct": 0.0,
             "surfaces": {},
@@ -369,7 +360,6 @@ def _exact_readiness_payload(snapshot: FtsInvariantSnapshot) -> dict[str, object
     return {
         "messages_ready": messages.ready,
         "session_work_events_ready": snapshot.session_work_events.ready,
-        "threads_ready": snapshot.threads.ready,
         "invariant_ready": snapshot.ready,
         "message_indexed_count": messages.indexed_rows,
         "message_indexable_count": messages.source_rows,
@@ -474,7 +464,6 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
         return {
             "messages_ready": False,
             "session_work_events_ready": False,
-            "threads_ready": False,
             "invariant_ready": False,
             "coverage_pct": 0.0,
             "surfaces": {},
@@ -482,14 +471,12 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
 
     messages = surfaces["messages_fts"]
     session_work_events = surfaces["session_work_events_fts"]
-    threads = surfaces["threads_fts"]
     invariant_ready = all(bool(surface["ready"]) for surface in surfaces.values())
     message_source_rows = _payload_int(messages, "source_rows")
     message_indexed_rows = _payload_int(messages, "indexed_rows")
     return {
         "messages_ready": messages["ready"],
         "session_work_events_ready": session_work_events["ready"],
-        "threads_ready": threads["ready"],
         "invariant_ready": invariant_ready,
         "message_indexed_count": message_indexed_rows,
         "message_indexable_count": message_source_rows,

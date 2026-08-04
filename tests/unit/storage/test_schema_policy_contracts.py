@@ -54,9 +54,6 @@ _CANONICAL_FTS_TRIGGERS = frozenset(
         "session_work_events_fts_ai",
         "session_work_events_fts_ad",
         "session_work_events_fts_au",
-        "threads_fts_ai",
-        "threads_fts_ad",
-        "threads_fts_au",
         # ohbx: blocks_command_trigram is a narrower-purpose substring-lookup
         # index (not a message-search freshness surface tracked by
         # fts_trigger_state), but it's still a real FTS-backing trigger set

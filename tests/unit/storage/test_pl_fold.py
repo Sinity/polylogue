@@ -125,9 +125,9 @@ def test_messages_fts_tokenizer_matches_across_both_canonical_ddl_sites() -> Non
 
 
 def test_all_contentless_fts_surfaces_use_the_same_diacritic_folding_tokenizer() -> None:
-    """threads_fts and session_work_events_fts get the same tokenizer bump for parity."""
+    """session_work_events_fts gets the same tokenizer bump as messages_fts for parity."""
     index_site = _tokenizers(INDEX_DDL)
-    for surface in ("messages_fts", "threads_fts", "session_work_events_fts"):
+    for surface in ("messages_fts", "session_work_events_fts"):
         assert index_site[surface] == "unicode61 remove_diacritics 2", surface
 
 

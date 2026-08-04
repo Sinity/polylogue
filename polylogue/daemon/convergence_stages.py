@@ -1250,9 +1250,10 @@ def _mark_message_fts_ready_after_targeted_repair(conn: sqlite3.Connection) -> N
     blocks missing from the index while the ledger reported ``ready`` with
     ``missing_rows=0``.
 
-    Fix: mirror ``threads_fts``, which only ever gets its freshness row from
-    an exact, archive-wide invariant snapshot (``fts_invariant_snapshot_sync``)
-    -- never a scoped/cheap approximation. Reuse that same snapshot here for
+    Fix: mirror ``session_work_events_fts``, which only ever gets its
+    freshness row from an exact, archive-wide invariant snapshot
+    (``fts_invariant_snapshot_sync``) -- never a scoped/cheap approximation.
+    Reuse that same snapshot here for
     the messages surface; it runs the identical anti-join query the hourly
     ``fts_orphan_audit`` sweep already accepts at that cadence
     (``storage/fts/fts_lifecycle.py``'s ``_trigger_invariant_sync``), so its
@@ -1703,7 +1704,7 @@ def repair_fts_surface(db_path: Path, surface: str) -> bool:
     """Repair a named archive FTS surface from daemon convergence debt."""
     if surface == "messages_fts":
         return repair_messages_fts_surface(db_path)
-    if surface not in {"session_work_events_fts", "threads_fts"}:
+    if surface != "session_work_events_fts":
         logger.warning("fts: unsupported archive FTS surface debt surface=%s", surface)
         return False
     archive_db = _active_archive_index_path(db_path) or db_path

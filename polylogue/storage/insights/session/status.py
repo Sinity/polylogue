@@ -196,8 +196,6 @@ SESSION_OBSERVED_EVENT_COUNT_SQL = (
 )
 SESSION_CONTEXT_SNAPSHOT_COUNT_SQL = f"{context_snapshot_relation_sql()} SELECT COUNT(*) FROM context_snapshots"
 THREAD_COUNT_SQL = "SELECT COUNT(*) FROM threads"
-THREAD_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT thread_id) FROM threads_fts"
-THREAD_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT thread_id) FROM threads_fts"
 SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
 TOTAL_SESSIONS_SQL = "SELECT COUNT(*) FROM sessions"
 HOT_SOURCE_GRACE_SECONDS = 600
@@ -462,10 +460,6 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         table_name="insight_materialization",
     ),
     SessionInsightTableDescriptor(
-        key="threads_fts",
-        table_name="threads_fts",
-    ),
-    SessionInsightTableDescriptor(
         key="session_tag_rollups",
         table_name="session_tag_rollups",
         count_key="tag_rollup_count",
@@ -483,16 +477,6 @@ _FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = (
         distinct_sql=SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL,
         duplicate_sql=SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL,
         ready_key="work_event_inference_fts_ready",
-    ),
-    SessionInsightFtsDescriptor(
-        table_key="threads_fts",
-        table_name="threads_fts",
-        count_key="thread_fts_count",
-        duplicate_count_key="thread_fts_duplicate_count",
-        source_count_key="thread_count",
-        distinct_sql=THREAD_FTS_DOC_COUNT_SQL,
-        duplicate_sql=THREAD_FTS_DUPLICATE_COUNT_SQL,
-        ready_key="threads_fts_ready",
     ),
 )
 
@@ -866,7 +850,6 @@ def _status_payload(
         observed_event_rows_ready=ready_flags["observed_event_rows_ready"],
         context_snapshot_rows_ready=ready_flags["context_snapshot_rows_ready"],
         threads_ready=ready_flags["threads_ready"],
-        threads_fts_ready=ready_flags["threads_fts_ready"],
         tag_rollups_ready=ready_flags["tag_rollups_ready"],
     )
 

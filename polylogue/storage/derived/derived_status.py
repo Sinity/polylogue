@@ -10,9 +10,8 @@ ready status rather than crashing:
 
 * ``messages_fts`` — the search index is external-content over ``blocks``;
   message-level FTS readiness is reported off ``messages_fts``.
-* ``threads_fts`` / ``session_tag_rollups`` — no dedicated FTS or rollup
-  tables exist in ``index.db``; thread counts come from ``threads`` and rollups are
-  moot.
+* ``session_tag_rollups`` — no dedicated rollup tables exist in ``index.db``;
+  thread counts come from ``threads`` and rollups are moot.
 * ``transcript_embeddings`` — embeddings live in a separate ``embeddings.db``
   tier, not ``index.db``; embedding stats are reported as empty/ready off the
   ``index.db`` connection (embedding readiness has its own surface).
@@ -119,8 +118,6 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "work_event_fts_duplicates": session_status.work_event_inference_fts_duplicate_count,
         "phase_rows": session_status.phase_count,
         "thread_rows": session_status.thread_count,
-        "thread_fts_rows": session_status.thread_fts_count,
-        "thread_fts_duplicates": session_status.thread_fts_duplicate_count,
         "total_thread_roots": session_status.root_threads,
         "tag_rollup_rows": session_status.tag_rollup_count,
         "expected_tag_rollup_rows": session_status.expected_tag_rollup_count,
@@ -141,7 +138,6 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "work_event_fts_ready": session_status.work_event_inference_fts_ready,
         "phase_rows_ready": session_status.phase_rows_ready,
         "threads_ready": session_status.threads_ready,
-        "thread_fts_ready": session_status.threads_fts_ready,
         "tag_rollups_ready": session_status.tag_rollups_ready,
     }
 
