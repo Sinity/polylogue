@@ -12,12 +12,38 @@ These tests verify:
 
 from __future__ import annotations
 
+import sqlite3
+from pathlib import Path
+
 import pytest
 
 syrupy = pytest.importorskip("syrupy")
 pytest.importorskip("pyte", reason="pyte not installed")
 
+from tests.infra.cli_subprocess import setup_isolated_workspace
 from tests.infra.pty_cli import grid_to_text, run_in_pty, sanitize_grid
+
+
+def _seed_schema_drift(root: Path) -> None:
+    """Create an operational schema-drift signal in an isolated archive."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    root.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(root / "ops.db") as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        for index in range(5):
+            record_schema_drift_sample(
+                conn,
+                origin="codex-session",
+                element_kind="session_record",
+                classification="field_changed",
+                unseen_key_signature="",
+                native_id_example=f"raw-{index}",
+                raw_id=f"raw-{index}",
+                observed_at_ms=2_000_000_000_000,
+            )
 
 
 class TestHelpOutput:
@@ -48,15 +74,41 @@ class TestHelpOutput:
 class TestCommandOutputs:
     """Test individual command outputs."""
 
-    def test_check_output_snapshot(self, snapshot: object) -> None:
-        """Verify check command output renders correctly."""
-        result = run_in_pty(["ops", "doctor", "--help"], rows=80)
-        assert result.exit_code == 0
+    def test_doctor_help_is_hermetic_and_status_reports_drift(self, tmp_path: Path) -> None:
+        """Help ignores archive state while an explicit status command reports it."""
+        workspace = setup_isolated_workspace(tmp_path)
+        clean_root = workspace["paths"]["archive_root"]
+        drift_root = tmp_path / "drift-archive"
 
-        grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
-        output = grid_to_text(grid)
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        assert output == snapshot
+        with ArchiveStore(drift_root):
+            pass
+        _seed_schema_drift(drift_root)
+
+        clean_env = {**workspace["env"], "POLYLOGUE_ARCHIVE_ROOT": str(clean_root)}
+        drift_env = {**workspace["env"], "POLYLOGUE_ARCHIVE_ROOT": str(drift_root)}
+        clean_help = run_in_pty(["ops", "doctor", "--help"], rows=80, env=clean_env)
+        drift_help = run_in_pty(["ops", "doctor", "--help"], rows=80, env=drift_env)
+
+        assert clean_help.exit_code == drift_help.exit_code == 0
+        clean_help_text = grid_to_text(clean_help.grid)
+        drift_help_text = grid_to_text(drift_help.grid)
+        assert clean_help_text == drift_help_text
+        assert "Usage: polylogue ops doctor [OPTIONS]" in drift_help_text
+        assert "format drift" not in drift_help_text
+
+        status = run_in_pty(
+            ["--plain", "ops", "status", "--daemon-url", "http://127.0.0.1:1"],
+            rows=80,
+            env=drift_env,
+        )
+
+        assert status.exit_code == 0
+        status_text = grid_to_text(status.grid)
+        assert "Format drift sentinel" in status_text
+        assert "codex-session" in status_text
+        assert "carry unseen shapes" in status_text
 
 
 class TestErrorOutput:

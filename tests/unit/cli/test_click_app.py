@@ -748,7 +748,9 @@ class TestQueryFirstGroupParseArgs:
     def test_subcommand_dispatches_normally(self, cli_runner: CliRunner) -> None:
         from polylogue.cli.click_app import cli
 
-        result = cli_runner.invoke(cli, ["ops", "doctor", "--help"], catch_exceptions=False)
+        with patch("polylogue.config.resolve_runtime_config", side_effect=AssertionError("help must not load config")):
+            result = cli_runner.invoke(cli, ["ops", "doctor", "--help"], catch_exceptions=False)
+
         assert result.exit_code == 0
         assert "health" in result.output.lower() or "repair" in result.output.lower()
 

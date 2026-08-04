@@ -2201,18 +2201,9 @@ def test_rebuild_index_deadline_defers_postflight_until_resume(
         )
     # `monkeypatch.setattr("polylogue.maintenance.rebuild_index.time.time", ...)`
     # patches the *stdlib* `time` module's `time` attribute (modules are
-    # process-wide singletons), not a private copy scoped to rebuild_index.py
-    # -- every `time.time()` call anywhere in the process during this
-    # invocation draws from the same mock. #3362 (84b8504cf) added an earlier
-    # `time.time()` call to the CLI callback itself
-    # (`click_app.py:_emit_schema_drift_marker`), which consumed the first of
-    # a hand-tuned 2-value `[100.0, 102.0]` list before rebuild_index.py's own
-    # `pass_started_at_ms` read it, collapsing the intended 2-second gap to
-    # zero and silently defeating the deadline check this test exists to
-    # prove. A monotonically-advancing fake clock with a large per-call step
-    # is robust to however many intervening `time.time()` calls production
-    # code makes before/between the two reads this test actually cares
-    # about, rather than pinning an exact call count.
+    # process-wide singletons), not a private copy scoped to rebuild_index.py.
+    # Use a monotonically-advancing fake clock rather than pinning an exact
+    # call count before/between the deadline reads this test exercises.
     #
     # polylogue-uhgm: the deadline is now ALSO checked between replay
     # cohorts (not only once, post-hoc, after the whole page replayed), so
