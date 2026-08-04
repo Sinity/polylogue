@@ -145,19 +145,23 @@ def _ensure_worktree(root: Path, worktree: Path, branch: str, base: str) -> str 
     return None
 
 
+def _lane_env(worktree: Path) -> dict[str, str]:
+    """Return an environment that cannot inherit another checkout's Python."""
+    env = os.environ.copy()
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    env["UV_PROJECT_ENVIRONMENT"] = str(worktree / ".venv")
+    return env
+
+
 def _provision_venv(worktree: Path) -> str | None:
     # dev-common+speed = the devshell's effective test/verify surface without
     # platform-fragile extras (atheris has no cp314t wheel).
     cmd = ["uv", "sync", "--extra", "dev-common", "--extra", "speed"]
     if (worktree / "uv.lock").exists():
         cmd.append("--frozen")
-    env = os.environ.copy()
-    # A coordinator commonly has its own editable venv activated. Letting uv
-    # inherit it recreates the shared-venv escape lane-init is meant to prevent.
-    env.pop("VIRTUAL_ENV", None)
-    env.pop("PYTHONHOME", None)
-    env["UV_PROJECT_ENVIRONMENT"] = str(worktree / ".venv")
-    result = _run(cmd, cwd=worktree, env=env)
+    result = _run(cmd, cwd=worktree, env=_lane_env(worktree))
     if result.returncode != 0:
         return f"uv sync failed: {result.stderr.strip()[-800:]}"
     return None
@@ -168,8 +172,9 @@ def _guard_check(worktree: Path) -> str | None:
     if not python.exists():
         return f"no venv python at {python}"
     result = _run(
-        [str(python), "-c", "import polylogue, sys; print(polylogue.__file__)"],
+        [str(python), "-P", "-c", "import polylogue; print(polylogue.__file__)"],
         cwd=worktree,
+        env=_lane_env(worktree),
     )
     if result.returncode != 0:
         return f"lane venv cannot import polylogue: {result.stderr.strip()[-400:]}"

@@ -52,10 +52,19 @@ def test_guard_check_runs_lane_interpreter_from_lane_root(tmp_path: Path) -> Non
     lane = tmp_path / "lane"
     python = lane / ".venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
-    python.write_text("#!/bin/sh\nprintf '%s/polylogue/__init__.py\\n' \"$PWD\"\n")
+    python.write_text(
+        "#!/bin/sh\n"
+        'if [ -n "$PYTHONPATH" ]; then\n'
+        "  printf '%s\\n' /foreign/polylogue/__init__.py\n"
+        "else\n"
+        "  printf '%s/polylogue/__init__.py\\n' \"$PWD\"\n"
+        "fi\n"
+    )
     python.chmod(0o755)
 
-    assert lane_init._guard_check(lane) is None
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setenv("PYTHONPATH", "/foreign")
+        assert lane_init._guard_check(lane) is None
 
 
 def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -63,6 +72,7 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch:
     lane.mkdir()
     monkeypatch.setenv("VIRTUAL_ENV", "/coordinator/.venv")
     monkeypatch.setenv("PYTHONHOME", "/coordinator/pythonhome")
+    monkeypatch.setenv("PYTHONPATH", "/coordinator/pythonpath")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/coordinator/.venv")
     captured: dict[str, object] = {}
 
@@ -78,8 +88,10 @@ def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(lane_init, "_run", fake_run)
 
     assert lane_init._provision_venv(lane) is None
+    assert captured["cwd"] == lane
     env = captured["env"]
     assert isinstance(env, dict)
     assert "VIRTUAL_ENV" not in env
     assert "PYTHONHOME" not in env
+    assert "PYTHONPATH" not in env
     assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")

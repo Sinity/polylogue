@@ -44,7 +44,6 @@ from typing import Any
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
-    checkout_environment_fingerprint,
 )
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
@@ -2543,15 +2542,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
+    bootstrap_message = maybe_bootstrap_testmon_seed(
+        ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    if bootstrap_message is not None:
+        sys.stderr.write(bootstrap_message + "\n")
     try:
-        polylogue_import_path = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
     except CheckoutImportMismatchError as exc:
         sys.stderr.write(f"verify: {exc}\n")
         return 125
-    environment_fingerprint = checkout_environment_fingerprint(
-        ROOT,
-        polylogue_import_path=polylogue_import_path,
-    ).as_dict()
+    polylogue_import_path = fingerprint.polylogue_import_path
+    environment_fingerprint = fingerprint.as_dict()
     sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
 
     if args.history:
@@ -2576,12 +2579,6 @@ def main(argv: list[str] | None = None) -> int:
         tier = "testmon"
 
     full_pytest = bool(args.all or args.full)
-    bootstrap_message = maybe_bootstrap_testmon_seed(
-        ROOT,
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-    )
-    if bootstrap_message is not None:
-        sys.stderr.write(bootstrap_message + "\n")
     preflight_error = _testmon_preflight(
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,

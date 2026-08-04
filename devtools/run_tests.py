@@ -34,7 +34,6 @@ from pathlib import Path
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
-    checkout_environment_fingerprint,
 )
 from devtools.verify import (
     PYTEST_CONTAINMENT_PATH,
@@ -127,14 +126,12 @@ def _run_lock(*, enabled: bool) -> Iterator[None]:
 
 def main(argv: list[str] | None = None) -> int:
     try:
-        polylogue_import_path = assert_polylogue_matches_checkout(ROOT, context="devtools test")
+        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
         sys.stderr.write(f"{exc}\n")
         return 125
-    environment_fingerprint = checkout_environment_fingerprint(
-        ROOT,
-        polylogue_import_path=polylogue_import_path,
-    ).as_dict()
+    polylogue_import_path = fingerprint.polylogue_import_path
+    environment_fingerprint = fingerprint.as_dict()
     sys.stderr.write(f"devtools test: polylogue package → {polylogue_import_path}\n")
 
     selection = list(sys.argv[1:] if argv is None else argv)

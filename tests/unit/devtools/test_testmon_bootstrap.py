@@ -19,6 +19,9 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
+import devtools.testmon_bootstrap as testmon_bootstrap
 from devtools.testmon_bootstrap import (
     BootstrapDecision,
     bootstrap_testmon_seed_files,
@@ -247,6 +250,53 @@ def test_bootstrap_seed_files_marks_destination_and_source_checkout(tmp_path: Pa
     payload = json.loads(local_stamp.read_text())
     assert payload["checkout_root"] == str((tmp_path / "lane").resolve())
     assert payload["inherited_from"] == str((tmp_path / "main").resolve())
+    source = json.loads(main_stamp.read_text())
+    assert {key: payload[key] for key in source} == source
+
+
+def test_bootstrap_seed_files_keeps_copied_state_when_stamp_turns_invalid(tmp_path: Path) -> None:
+    main_data = tmp_path / "main" / "testmondata"
+    main_stamp = tmp_path / "main" / "seed.json"
+    _write_sqlite_db(main_data)
+    main_stamp.parent.mkdir(parents=True, exist_ok=True)
+    main_stamp.write_text("{concurrent rewrite")
+    local_data = tmp_path / "lane" / "testmondata"
+    local_stamp = tmp_path / "lane" / "seed.json"
+
+    stamped = bootstrap_testmon_seed_files(
+        BootstrapDecision(True, "test", main_testmon_data=main_data, main_seed_stamp=main_stamp),
+        local_testmon_data=local_data,
+        local_seed_stamp=local_stamp,
+        checkout_root=tmp_path / "lane",
+        inherited_from=tmp_path / "main",
+    )
+
+    assert stamped is False
+    assert local_data.is_file()
+    assert local_stamp.read_text() == "{concurrent rewrite"
+
+
+def test_maybe_bootstrap_migrates_a_valid_legacy_local_stamp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lane = tmp_path / "lane"
+    main = tmp_path / "main"
+    local_data = lane / "cache" / "testmondata"
+    local_stamp = lane / "cache" / "seed.json"
+    _write_sqlite_db(local_data)
+    _write_valid_seed_stamp(local_stamp)
+    monkeypatch.setattr(testmon_bootstrap, "_git_worktree_info", lambda _root: (True, main))
+
+    message = testmon_bootstrap.maybe_bootstrap_testmon_seed(
+        lane,
+        testmon_data_relpath="cache/testmondata",
+        seed_stamp_relpath="cache/seed.json",
+        protocol_version=PROTOCOL_VERSION,
+    )
+
+    payload = json.loads(local_stamp.read_text())
+    assert message is not None and "migrated legacy" in message
+    assert payload["checkout_root"] == str(lane.resolve())
+    assert payload["protocol_version"] == PROTOCOL_VERSION
+    assert payload["status"] == "complete"
 
 
 def test_bootstrap_seed_files_noop_when_decision_says_no(tmp_path: Path) -> None:

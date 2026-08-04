@@ -35,8 +35,8 @@ def test_resolved_polylogue_path_matches_the_running_package() -> None:
 
 def test_assert_matches_checkout_passes_for_the_real_checkout() -> None:
     repo_root = Path(polylogue.__file__).resolve().parents[1]
-    resolved = assert_polylogue_matches_checkout(repo_root, context="test")
-    assert resolved == Path(polylogue.__file__).resolve()
+    fingerprint = assert_polylogue_matches_checkout(repo_root, context="test")
+    assert fingerprint.polylogue_import_path == Path(polylogue.__file__).resolve()
 
 
 def test_assert_matches_checkout_raises_for_an_unrelated_root(tmp_path: Path) -> None:
@@ -209,18 +209,37 @@ def test_checkout_preflight_reports_seeded_artifacts_and_main_interpreter(
 
 
 def test_verify_run_persists_environment_fingerprint(tmp_path: Path) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    (root / "node_modules").mkdir()
     fingerprint = checkout_environment_fingerprint(
-        tmp_path,
-        polylogue_import_path=tmp_path / "polylogue" / "__init__.py",
+        root,
+        polylogue_import_path=root / "polylogue" / "__init__.py",
         python_executable=Path("/usr/bin/python"),
     )
     run = VerifyRun(
         tier="environment-fingerprint",
         argv=["--quick"],
         git_head="head",
-        root=tmp_path,
+        root=root,
         environment_fingerprint=fingerprint.as_dict(),
     )
 
     payload = json.loads((run.run_dir / "run.json").read_text())
+    assert fingerprint.artifacts
     assert payload["environment_fingerprint"] == fingerprint.as_dict()
+    assert payload["checkout_root"] == str(root.resolve())
+
+
+def test_verify_run_marker_is_attributable_without_a_fingerprint(tmp_path: Path) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    run = VerifyRun(tier="legacy-marker", argv=[], git_head=None, root=root)
+
+    fingerprint = checkout_environment_fingerprint(
+        root,
+        polylogue_import_path=root / "polylogue" / "__init__.py",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.verify_state_origin == root.resolve()
+    assert json.loads((root / ".cache" / "verify" / "current-run.json").read_text())["run_id"] == run.run_id

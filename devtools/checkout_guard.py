@@ -407,13 +407,12 @@ def assert_polylogue_matches_checkout(
     *,
     context: str,
     python_executable: Path | None = None,
-) -> Path:
+) -> CheckoutEnvironmentFingerprint:
     """Raise loudly when import or environment provenance does not match ``repo_root``.
 
-    Returns the resolved package path on success, so callers can also use it
-    as the "print the resolved path in the receipt" observability hook
-    (requirement (3) of the worktree-import hazard fix) without importing
-    ``polylogue`` a second time.
+    Returns the validated environment fingerprint on success, so callers can
+    persist the exact provenance the guard checked without reading the
+    filesystem a second time.
     """
     resolved_root = repo_root.resolve()
     resolved_pkg = resolved_polylogue_path()
@@ -443,4 +442,4 @@ def assert_polylogue_matches_checkout(
         python_executable=python_executable,
     )
     _raise_environment_mismatch(context, fingerprint)
-    return resolved_pkg
+    return fingerprint
