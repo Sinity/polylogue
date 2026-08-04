@@ -230,6 +230,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
+        "Cursor Authority Census, 2026-08-04",
+        "evidence/polylogue-xeck9-cursor-authority-census-2026-08-04.md",
+        "Privacy-safe read-only census of cursor and accepted-head readiness evidence.",
+        "evidence",
+    ),
+    _entry(
         "Proof Artifacts",
         "proof-artifacts.md",
         "Claim-to-proof map for public-facing demo and evidence claims.",
