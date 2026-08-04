@@ -83,10 +83,10 @@ def build_a_second(records):
     }
 
 
-def test_real_parsers_directory_findings_are_all_acknowledged(capsys: pytest.CaptureFixture[str]) -> None:
-    """Every currently-known instance (polylogue-gysk3's tracked follow-up)
-    must be recorded in the committed manifest -- this is the regression
-    test that a NEW, unacknowledged occurrence would fail."""
+def test_real_parsers_directory_is_clean_without_acknowledgements(capsys: pytest.CaptureFixture[str]) -> None:
+    """A clean parser audit has no manifest; new findings must fail or use
+    a temporary ``--ack`` entry with a tracked follow-up."""
+    assert not lint.MANIFEST_PATH.exists()
     assert lint.main(["--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True
