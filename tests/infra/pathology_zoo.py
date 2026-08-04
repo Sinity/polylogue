@@ -10,13 +10,14 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
+from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,7 @@ class PathologyZooMember:
     motivating_beads: tuple[str, ...]
     session_ids: tuple[str, ...]
     raw_paths: tuple[str, ...]
+    durable_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,35 +67,35 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             "whale-component",
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-whale",),
-            ("generated/codex-00.jsonl",),
+            ("generated/zoo-00-00.jsonl",),
         ),
         PathologyZooMember(
             "append-self-describing",
             "append-revision-chain",
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-append-self",),
-            ("generated/codex-01.jsonl", "generated/codex-02.jsonl"),
+            ("generated/zoo-01-00.jsonl", "generated/zoo-02-00.jsonl"),
         ),
         PathologyZooMember(
             "append-opaque",
             "append-revision-chain",
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-append-opaque",),
-            ("generated/codex-03.jsonl", "generated/codex-04.jsonl"),
+            ("generated/zoo-03-00.jsonl", "generated/zoo-04-00.jsonl"),
         ),
         PathologyZooMember(
             "fork-prefix-tail",
             "fork-resume-prefix-tail-lineage",
             ("polylogue-yazae",),
-            (f"{_CLAUDE_CODE}:zoo-lineage-parent", f"{_CLAUDE_CODE}:zoo-lineage-child"),
-            ("manual/lineage.jsonl",),
+            (f"{_CODEX}:zoo-lineage-parent", f"{_CODEX}:zoo-lineage-child"),
+            ("manual/lineage-parent.jsonl", "manual/lineage-child.jsonl"),
         ),
         PathologyZooMember(
             "lineage-cycle",
             "lineage-cycle-candidate",
             ("polylogue-yazae",),
-            (f"{_CLAUDE_CODE}:zoo-cycle-a", f"{_CLAUDE_CODE}:zoo-cycle-b"),
-            ("manual/lineage.jsonl",),
+            (f"{_CODEX}:zoo-cycle-a", f"{_CODEX}:zoo-cycle-b"),
+            ("manual/lineage-cycle-a.jsonl", "manual/lineage-cycle-b.jsonl", "manual/lineage-cycle-z-a-update.jsonl"),
         ),
         PathologyZooMember(
             "grouped-jsonl",
@@ -106,8 +108,8 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             "quarantined-head",
             "quarantined-head-open-blocker",
             ("polylogue-yazae",),
-            (f"{_CLAUDE_CODE}:zoo-orphan-head",),
-            ("manual/lineage.jsonl",),
+            (f"{_CODEX}:zoo-orphan-head",),
+            ("manual/lineage-orphan.jsonl",),
         ),
         PathologyZooMember(
             "empty-session",
@@ -120,8 +122,8 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             "hook-event",
             "hook-event-raw",
             ("polylogue-yazae",),
-            (f"{_CLAUDE_CODE}:zoo-hook-event",),
-            ("manual/hook-event.jsonl",),
+            (),
+            ("hook-spool/zoo-hook-event.json",),
         ),
         PathologyZooMember(
             "claude-design",
@@ -156,14 +158,14 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             "non-stream-safe-origin",
             ("polylogue-yazae",),
             ("antigravity-session:zoo-06-00:zoo-06-00.md",),
-            ("generated/brain/zoo-06-00/zoo-06-00.md.metadata.json",),
+            ("generated",),
         ),
         PathologyZooMember(
             "attachment-with-bytes",
             "attachment-with-acquired-bytes",
             ("polylogue-yazae",),
             (f"{_GEMINI}:zoo-attachment-bytes",),
-            ("generated/gemini-00.json",),
+            ("generated/zoo-05-00.json",),
         ),
         PathologyZooMember(
             "attachment-without-bytes",
@@ -185,10 +187,6 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
 def pathology_zoo_integration_gaps() -> tuple[PathologyZooIntegrationGap, ...]:
     """Keep absent consumer hooks visible until their owning lanes expose one."""
     return (
-        PathologyZooIntegrationGap(
-            "polylogue-t0m73",
-            "No registry pytest binding exists in this checkout; iterate pathology_zoo_manifest() when the red-twin extension point lands.",
-        ),
         PathologyZooIntegrationGap(
             "polylogue-0x7nh",
             "No differ canary-set extension point exists in this checkout; include pathology_zoo_manifest() members when the canary registry lands.",
@@ -223,6 +221,30 @@ def _code_record(
     return record
 
 
+def _codex_records(
+    session_id: str, texts: tuple[str, ...], *, parent: str | None = None, subagent: bool = False
+) -> tuple[dict[str, object], ...]:
+    meta: dict[str, object] = {"id": session_id, "timestamp": "2026-08-04T00:00:00Z"}
+    if parent is not None:
+        meta["forked_from_id"] = parent
+    if subagent:
+        meta["source"] = {"subagent": {"thread_spawn": True}}
+    records: list[dict[str, object]] = [{"type": "session_meta", "payload": meta}]
+    for position, text in enumerate(texts):
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"{session_id}-m{position}",
+                    "role": "user" if position % 2 == 0 else "assistant",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
+    return tuple(records)
+
+
 def _chatgpt_payload(conversation_id: str, nodes: list[dict[str, object]]) -> dict[str, object]:
     return {
         "id": conversation_id,
@@ -252,15 +274,6 @@ def _chatgpt_node(
 
 def _write_manual_members(root: Path) -> tuple[Path, ...]:
     manual = root / "manual"
-    lineage_records = (
-        _code_record("zoo-lineage-parent", "parent-1", "user", "shared prompt"),
-        _code_record("zoo-lineage-parent", "parent-2", "assistant", "parent tail", parent="parent-1"),
-        _code_record("zoo-lineage-child", "parent-1", "user", "shared prompt"),
-        _code_record("zoo-lineage-child", "child-2", "assistant", "child tail", parent="parent-1"),
-        _code_record("zoo-cycle-a", "cycle-a", "user", "cycle A", parent="cycle-b"),
-        _code_record("zoo-cycle-b", "cycle-b", "assistant", "cycle B", parent="cycle-a"),
-        _code_record("zoo-orphan-head", "orphan-1", "assistant", "unresolved parent", parent="missing-parent"),
-    )
     grouped_records = (
         _code_record("zoo-group-a", "group-a-1", "user", "grouped A"),
         _code_record("zoo-group-b", "group-b-1", "user", "grouped B"),
@@ -277,12 +290,24 @@ def _write_manual_members(root: Path) -> tuple[Path, ...]:
         _chatgpt_node("lifecycle-b", "assistant", "answer", parent="lifecycle-a", lifecycle=True),
     ]
     return (
-        _write_jsonl(manual / "lineage.jsonl", lineage_records),
+        _write_jsonl(
+            manual / "lineage-parent.jsonl", _codex_records("zoo-lineage-parent", ("shared prompt", "parent tail"))
+        ),
+        _write_jsonl(
+            manual / "lineage-child.jsonl",
+            _codex_records("zoo-lineage-child", ("shared prompt", "child tail"), parent="zoo-lineage-parent"),
+        ),
+        _write_jsonl(manual / "lineage-cycle-a.jsonl", _codex_records("zoo-cycle-a", ("cycle A",))),
+        _write_jsonl(
+            manual / "lineage-cycle-b.jsonl",
+            _codex_records("zoo-cycle-b", ("cycle B",), parent="zoo-cycle-a", subagent=True),
+        ),
+        _write_jsonl(
+            manual / "lineage-orphan.jsonl",
+            _codex_records("zoo-orphan-head", ("unresolved parent",), parent="never-ingested"),
+        ),
         _write_jsonl(manual / "grouped.jsonl", grouped_records),
         _write_jsonl(manual / "empty.jsonl", ({"type": "progress", "sessionId": "zoo-empty", "uuid": "empty-1"},)),
-        _write_jsonl(
-            manual / "hook-event.jsonl", (_code_record("zoo-hook-event", "hook-1", "user", "hook-backed transcript"),)
-        ),
         _write_json(manual / "vintage-old.json", _chatgpt_payload("zoo-vintage-reorder", vintage_nodes)),
         _write_json(
             manual / "vintage-new.json", _chatgpt_payload("zoo-vintage-reorder", list(reversed(vintage_nodes)))
@@ -339,7 +364,7 @@ def _write_manual_members(root: Path) -> tuple[Path, ...]:
     )
 
 
-def _write_generated_members(root: Path) -> tuple[Path, ...]:
+def _write_generated_members(root: Path, *, indexes: tuple[int, ...] | None = None) -> tuple[Path, ...]:
     generated = root / "generated"
     specs = (
         CorpusSpec.for_provider(
@@ -415,10 +440,25 @@ def _write_generated_members(root: Path) -> tuple[Path, ...]:
         ),
     )
     paths: list[Path] = []
-    for index, spec in enumerate(specs):
+    for index in indexes or tuple(range(len(specs))):
+        spec = specs[index]
         written = SyntheticCorpus.write_spec_artifacts(spec, generated, prefix=f"zoo-{index:02d}")
         paths.extend(written.files)
     return tuple(paths)
+
+
+def _bind_durable_paths(
+    manifest: tuple[PathologyZooMember, ...], wire_root: Path, hook_event_path: Path
+) -> tuple[PathologyZooMember, ...]:
+    return tuple(
+        replace(
+            member,
+            durable_paths=(str(hook_event_path),)
+            if member.member_id == "hook-event"
+            else tuple(str(wire_root / raw_path) for raw_path in member.raw_paths),
+        )
+        for member in manifest
+    )
 
 
 def _validate_manifest(root: Path, manifest: tuple[PathologyZooMember, ...]) -> None:
@@ -430,21 +470,64 @@ def _validate_manifest(root: Path, manifest: tuple[PathologyZooMember, ...]) -> 
     missing = sorted({session_id for member in manifest for session_id in member.session_ids} - session_ids)
     if missing:
         raise RuntimeError(f"pathology zoo members missing after production ingest: {missing}")
+    with sqlite3.connect(root / "source.db") as conn:
+        for member in manifest:
+            table = "raw_hook_events" if member.member_id == "hook-event" else "raw_sessions"
+            missing_paths = [
+                path
+                for path in member.durable_paths
+                if conn.execute(f"SELECT 1 FROM {table} WHERE source_path = ?", (path,)).fetchone() is None
+            ]
+            if missing_paths:
+                raise RuntimeError(
+                    f"pathology zoo durable {table} rows missing for {member.member_id}: {missing_paths}"
+                )
+    with sqlite3.connect(root / "index.db") as conn:
+        cycle = conn.execute(
+            "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
+            (f"{_CODEX}:zoo-cycle-a",),
+        ).fetchone()
+        orphan = conn.execute(
+            "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
+            (f"{_CODEX}:zoo-orphan-head",),
+        ).fetchone()
+    if cycle != ("quarantined", None):
+        raise RuntimeError(f"pathology zoo cycle link was not quarantined: {cycle}")
+    if orphan != (None, None):
+        raise RuntimeError(f"pathology zoo orphan link was not unresolved: {orphan}")
 
 
 def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
     """Build the v0 zoo through the production source-to-archive harness."""
     wire_root = archive_root / "wire"
-    _write_generated_members(wire_root)
+    _write_generated_members(wire_root, indexes=(0, 1, 3, 5, 6))
     _write_manual_members(wire_root)
+    sources = [Source(name="pathology-zoo", path=wire_root), Source(name="antigravity", path=wire_root / "generated")]
     asyncio.run(
         parse_sources_archive(
             archive_root,
-            [Source(name="pathology-zoo", path=wire_root), Source(name="antigravity", path=wire_root / "generated")],
+            sources,
             parse_workers=1,
         )
     )
-    manifest = pathology_zoo_manifest()
+    _write_generated_members(wire_root, indexes=(2, 4))
+    _write_jsonl(
+        wire_root / "manual" / "lineage-cycle-z-a-update.jsonl",
+        _codex_records("zoo-cycle-a", ("cycle A", "cycle A revised"), parent="zoo-cycle-b", subagent=True),
+    )
+    asyncio.run(parse_sources_archive(archive_root, sources, parse_workers=1))
+    hook_event_path = enqueue_hook_event(
+        event_id="zoo-hook-event",
+        provider="claude-code",
+        event_type="PostToolUse",
+        session_id="zoo-hook-parent",
+        timestamp="2026-08-04T00:00:00Z",
+        payload={"tool_name": "Bash", "tool_call_id": "zoo-hook-call"},
+        root=archive_root / "hook-spool",
+    )
+    if drain_hook_event_spool(archive_root, root=archive_root / "hook-spool").acknowledged != 1:
+        raise RuntimeError("pathology zoo hook event did not drain through the durable source route")
+    manifest = _bind_durable_paths(pathology_zoo_manifest(), wire_root, hook_event_path)
     _validate_manifest(archive_root, manifest)
     return PathologyZoo(archive_root=archive_root, manifest=manifest)
 
