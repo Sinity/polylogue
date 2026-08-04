@@ -1,7 +1,16 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
+from polylogue.schemas.observation_identity import resolve_provider_config
+from polylogue.schemas.observation_models import ObservationTerminalStatus
+from polylogue.schemas.sampling_db import _iter_schema_units_from_db
+from polylogue.sources.live.batch_support import _parse_path_as_session_artifact
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 def test_relationship_index_jsonl_is_metadata_not_session_stream() -> None:
@@ -181,27 +190,16 @@ def test_workflow_run_snapshot_never_classifies_as_session() -> None:
     assert artifact.parse_as_session is False
 
 
-def test_antigravity_brain_metadata_sidecar_never_schema_eligible_or_session() -> None:
-    """Regression pin for polylogue-3m3de: a real ``brain/<uuid>/*.md.metadata
-    .json`` sidecar (content shape verified against this machine's real
-    ``~/.gemini/antigravity/brain`` corpus, 940 files, 0 leaks) must never
-    become a session, AND must never be ``schema_eligible`` -- the latter is
-    what keeps it out of schema-inference sampling
-    (``schemas/sampling_db.py``'s ``_iter_schema_units_from_db`` already
-    excludes any ``classify_artifact_path`` result with
-    ``schema_eligible=False``, which this pins for antigravity specifically).
+def test_antigravity_brain_metadata_sidecar_is_rejected_from_live_and_schema_routes(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """polylogue-3m3de: a realistic brain sidecar is rejected before both
+    live session parsing and schema inference.
 
-    polylogue-3m3de's live measurement (232 growing ``raw_sessions`` rows,
-    zero ``.pb`` conversations acquired) is raw-tier acquisition volume --
-    ``source.db`` durably retains every acquired file regardless of
-    classification, by design -- not evidence that this classification gate
-    is missing; this test locks in that the gate itself is intact. The
-    unaddressed half is acquiring the real ``.pb`` conversations at all: the
-    live daemon watcher only watches ``antigravity`` sources for
-    ``.metadata.json`` (``sources/live/watcher.py``), never ``.pb`` -- a
-    separate acquisition-wiring gap, not a classification one, and out of
-    this fix's scope (would need the language-server RPC bridge wired into
-    the live daemon, not merely a classification tightening).
+    If the path-specific Antigravity sidecar rule is removed, the production
+    classifier admits this payload as a session document. The test therefore
+    traverses real admission boundaries instead of asserting a fixture that
+    neither route consumes.
     """
     real_metadata: JSONValue = {
         "artifactType": "ARTIFACT_TYPE_OTHER",
@@ -213,16 +211,78 @@ def test_antigravity_brain_metadata_sidecar_never_schema_eligible_or_session() -
         ),
         "updatedAt": "2026-01-07T19:08:15.216541610Z",
     }
+    metadata_path = (
+        tmp_path
+        / ".gemini"
+        / "antigravity"
+        / "brain"
+        / "03c22aa3-8b7f-438d-baa8-d12567249cd9"
+        / "comprehensive_audit.md.metadata.json"
+    )
+    metadata_path.parent.mkdir(parents=True)
+    payload = json.dumps(real_metadata).encode("utf-8")
+    metadata_path.write_bytes(payload)
 
     artifact = classify_artifact(
         real_metadata,
-        provider="antigravity",
-        source_path="/tmp/.gemini/antigravity/brain/03c22aa3-8b7f-438d-baa8-d12567249cd9/comprehensive_audit.md.metadata.json",
+        provider=Provider.ANTIGRAVITY,
+        source_path=metadata_path,
     )
 
     assert artifact.kind is ArtifactKind.AGENT_SIDECAR_META
     assert artifact.parse_as_session is False
     assert artifact.schema_eligible is False
+    assert _parse_path_as_session_artifact(metadata_path, provider=Provider.ANTIGRAVITY) is False
+    assert (
+        classify_artifact(
+            real_metadata,
+            provider=Provider.ANTIGRAVITY,
+            source_path=metadata_path.with_name("comprehensive_audit.json"),
+        ).parse_as_session
+        is True
+    )
+
+    archive_root = workspace_env["archive_root"]
+    with ArchiveStore(archive_root) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.ANTIGRAVITY,
+            payload=payload,
+            source_path=str(metadata_path),
+            acquired_at_ms=1_767_798_895_216,
+        )
+
+    terminals: list[tuple[str, ObservationTerminalStatus, str | None, str | None]] = []
+
+    def record_terminal(
+        *,
+        raw_id: str,
+        status: ObservationTerminalStatus,
+        reason: str | None,
+        artifact_kind: str | None,
+        source_path: str | None,
+    ) -> None:
+        del source_path
+        terminals.append((raw_id, status, reason, artifact_kind))
+
+    units = list(
+        _iter_schema_units_from_db(
+            Provider.ANTIGRAVITY,
+            db_path=archive_root / "index.db",
+            config=resolve_provider_config(Provider.ANTIGRAVITY),
+            terminal_recorder=record_terminal,
+        )
+    )
+
+    assert units == []
+    assert terminals == [
+        (
+            raw_id,
+            "intentionally_excluded",
+            "artifact_taxonomy:Antigravity brain-artifact metadata sidecar "
+            "(superseded by language-server conversation export; polylogue-eo81)",
+            ArtifactKind.AGENT_SIDECAR_META.value,
+        )
+    ]
 
 
 def test_tool_result_sidecar_never_classifies_as_session_even_when_content_looks_like_one() -> None:

@@ -25,6 +25,7 @@ from polylogue.daemon.antigravity_conversation_acquisition import (
     acquire_antigravity_conversations_once,
 )
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary
+from polylogue.storage.blob_store import BlobStore
 
 
 class _FakeLanguageServerClient:
@@ -57,15 +58,17 @@ def _touch_conversation_pb(antigravity_root: Path, *cascade_ids: str) -> None:
         (conversations / f"{cascade_id}.pb").write_bytes(b"fake-protobuf-bytes-" + cascade_id.encode())
 
 
-def _raw_source_paths(source_db: Path) -> list[str]:
+def _raw_pb_blobs_by_source_path(source_db: Path) -> dict[str, str]:
     import sqlite3
 
     conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
     try:
-        rows = conn.execute("SELECT source_path FROM raw_sessions WHERE origin = 'antigravity-session'").fetchall()
+        rows = conn.execute(
+            "SELECT source_path, blob_hash FROM raw_sessions WHERE origin = 'antigravity-session'"
+        ).fetchall()
     finally:
         conn.close()
-    return [row[0] for row in rows]
+    return {str(source_path): bytes(blob_hash).hex() for source_path, blob_hash in rows}
 
 
 @pytest.fixture
@@ -105,8 +108,16 @@ def test_acquires_real_pb_conversations_not_yet_in_raw_sessions(
     acquired = acquire_antigravity_conversations_once(archive_root)
 
     assert acquired == 2
-    source_paths = _raw_source_paths(archive_root / "source.db")
-    assert sorted(source_paths) == sorted(str(antigravity_root / "conversations" / f"cascade-{i}.pb") for i in range(2))
+    expected_payloads = {
+        str(path): path.read_bytes() for path in sorted((antigravity_root / "conversations").glob("*.pb"))
+    }
+    raw_blobs = _raw_pb_blobs_by_source_path(archive_root / "source.db")
+
+    assert sorted(raw_blobs) == sorted(expected_payloads)
+    blob_store = BlobStore(archive_root / "blob")
+    assert {
+        source_path: blob_store.read_all(blob_hash) for source_path, blob_hash in raw_blobs.items()
+    } == expected_payloads
 
 
 def test_rerun_after_full_acquisition_is_a_noop(
