@@ -135,6 +135,10 @@ dump. The tracked `.agent` surface stays small (this file, README, scripts,
 demos, reports, task-history, tools, archive); everything else is ignored
 live state. New tracked files get a deliberate `.gitignore` allowlist entry.
 
+## Pathology Zoo Growth Rule
+
+Every production incident adds its smallest production-ingested reproduction to `tests/infra/pathology_zoo.py` in the fix PR. Add the pathology label and motivating bead id to the queryable manifest with the fixture, rather than leaving the incident represented only by a comment or a parser-local example.
+
 ## Fixture Identifier Hygiene
 
 This repo is **public**. Never commit a real session/conversation identifier
