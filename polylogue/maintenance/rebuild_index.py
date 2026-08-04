@@ -651,7 +651,11 @@ async def _rebuild_index_from_source_owned(
     request: RebuildIndexRequest, *, root: Path, owned: OwnedArchiveLocation
 ) -> RebuildIndexReceipt:
     """Ownership-proven body of :func:`rebuild_index_from_source`."""
-    from polylogue.maintenance.archive_verification import REINDEX_ACCEPTANCE_CHECKS, verify_archive
+    from polylogue.maintenance.archive_verification import (
+        CORPUS_FIDELITY_CHECKS,
+        REINDEX_ACCEPTANCE_CHECKS,
+        verify_archive,
+    )
     from polylogue.maintenance.replay import rebuild_index_from_source as replay_source
     from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
     from polylogue.storage.archive_readiness import archive_readiness_status
@@ -1074,14 +1078,24 @@ async def _rebuild_index_from_source_owned(
                     elapsed_s=round(elapsed_s, 3),
                 )
             terminal_started_at = time.perf_counter()
-            # polylogue-t0m73: the reindex acceptance gate -- every
+            # polylogue-t0m73: the index-only reindex acceptance gate -- every
             # ground-truth check whose universe is satisfiable from a
             # generation directory's index.db alone (source.db/user.db/
             # embeddings.db live once at the archive root, not per
             # generation, so cross-tier checks are excluded; see
             # REINDEX_ACCEPTANCE_CHECKS' docstring). This subsumed the older
             # fts-parity-only gate.
-            acceptance_report = verify_archive(generation_root, checks=list(REINDEX_ACCEPTANCE_CHECKS))
+            acceptance_reports = (
+                verify_archive(generation_root, checks=REINDEX_ACCEPTANCE_CHECKS),
+                # polylogue-f1vg: an inactive generation has only index.db, so
+                # corpus fidelity combines that candidate with the durable
+                # source tier at the archive root before promotion.
+                verify_archive(
+                    root,
+                    checks=CORPUS_FIDELITY_CHECKS,
+                    index_path_override=Path(generation.index_path),
+                ),
+            )
             terminal_timings_s["terminal.reindex_acceptance"] = time.perf_counter() - terminal_started_at
             logger.info(
                 "rebuild_terminal_stage_complete",
@@ -1089,10 +1103,11 @@ async def _rebuild_index_from_source_owned(
                 stage="reindex_acceptance",
                 elapsed_s=round(terminal_timings_s["terminal.reindex_acceptance"], 3),
             )
-            if acceptance_report.blocking:
+            if any(report.blocking for report in acceptance_reports):
                 failing = "; ".join(
                     f"{check.name}: {check.summary}"
-                    for check in acceptance_report.checks
+                    for report in acceptance_reports
+                    for check in report.checks
                     if check.status.value == "error" and getattr(check, "waived_bead_id", None) is None
                 )
                 raise RuntimeError(

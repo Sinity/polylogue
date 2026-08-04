@@ -95,6 +95,26 @@ def test_replayed_receipt_carries_selection_phase_timing(tmp_path: Path, monkeyp
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
 
 
+def test_partial_rebuild_cannot_complete_when_candidate_omits_source_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``rebuild_index_from_source_sync`` must reject the real candidate
+    generation when its selected raw subset omits a source-backed document.
+    Partial requests are independently forbidden from promotion, so this
+    uses their allowed ``promote=False`` route. Removing the candidate-index
+    corpus report lets that real route report a completed rebuild instead.
+    """
+    root = tmp_path / "archive"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
+    raw_ids = _seed_distinct_codex_sessions(root, 2)
+
+    with pytest.raises(RuntimeError, match="reindex acceptance gate failed.*corpus-absences"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, raw_ids=(raw_ids[0],), promote=False))
+
+    with sqlite3.connect(root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
 def test_deferred_pass_cost_carries_selection_phase_timing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A resumable pass that defers on its pass deadline still records the
     selection-phase cost -- the same key as the final "replayed" receipt,
