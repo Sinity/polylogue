@@ -83,12 +83,17 @@ def _orphaned_raw_payload_refs(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     ).fetchall()
 
 
-def _hook_events_missing_blob_hash(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+def _hook_events_without_canonical_blob_ref(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT hook_event_id, origin, native_id, source_path
-        FROM raw_hook_events
-        WHERE blob_hash IS NULL
+        SELECT h.hook_event_id, h.origin, h.native_id, h.source_path, h.blob_hash
+        FROM raw_hook_events AS h
+        WHERE NOT EXISTS (
+            SELECT 1 FROM blob_refs AS b
+            WHERE b.blob_hash = h.blob_hash
+              AND b.ref_type = 'hook_payload'
+              AND b.ref_id = h.hook_event_id
+        )
         """
     ).fetchall()
 
@@ -108,7 +113,7 @@ def plan_hook_payload_ref_reconciliation(conn: sqlite3.Connection) -> HookPayloa
         return HookPayloadRefReconciliationPlan(scanned_count=0, matched=(), unmatched_count=0)
 
     candidates_by_source_path: dict[str | None, list[sqlite3.Row]] = {}
-    for row in _hook_events_missing_blob_hash(conn):
+    for row in _hook_events_without_canonical_blob_ref(conn):
         candidates_by_source_path.setdefault(row["source_path"], []).append(row)
 
     matched: list[HookPayloadRefReconciliationCandidate] = []
@@ -118,6 +123,12 @@ def plan_hook_payload_ref_reconciliation(conn: sqlite3.Connection) -> HookPayloa
         candidates = candidates_by_source_path.get(ref["source_path"], ())
         hits: list[str] = []
         for candidate in candidates:
+            # A completed post-v22 write already owns its canonical ref and
+            # was excluded above. An interrupted/historical re-key may have
+            # written the durable hash to the hook row but not restored that
+            # ref; it is the same payload only when the hashes agree.
+            if candidate["blob_hash"] is not None and bytes(candidate["blob_hash"]) != blob_hash:
+                continue
             recomputed = deterministic_raw_session_id(
                 candidate["origin"],
                 ref["source_path"] or "",

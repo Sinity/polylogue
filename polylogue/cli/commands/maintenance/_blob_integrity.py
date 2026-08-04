@@ -11,12 +11,92 @@ import click
 from polylogue.paths import archive_root
 
 if TYPE_CHECKING:
+    from polylogue.maintenance.blob_ref_liveness_reconciliation import BlobRefLivenessReconciliationReport
     from polylogue.storage.blob_integrity import (
         BlobReferenceDebtClassificationReport,
         BlobReferenceOrphanPruneReport,
         BlobReferenceRecoveryPlanReport,
         BlobReferenceSourceReplaceReport,
     )
+
+
+@click.command("blob-reference-liveness")
+@click.option("--apply", "apply_changes", is_flag=True, help="Apply the proven orphan set; default is read-only.")
+@click.option(
+    "--backup-manifest",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Verified source-tier backup manifest required with --apply.",
+)
+@click.option(
+    "--receipt-file",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="New JSONL receipt path required with --apply.",
+)
+@click.option("--sample-limit", type=int, default=30, show_default=True)
+@click.option(
+    "--output-format",
+    "output_format",
+    type=click.Choice(["plain", "json"]),
+    default="plain",
+    show_default=True,
+)
+def blob_reference_liveness_command(
+    apply_changes: bool,
+    backup_manifest: Path | None,
+    receipt_file: Path | None,
+    sample_limit: int,
+    output_format: str,
+) -> None:
+    """Classify source-tier orphan refs; apply only with backup and receipt."""
+    from polylogue.maintenance.blob_ref_liveness_reconciliation import reconcile_blob_ref_liveness
+
+    report = reconcile_blob_ref_liveness(
+        archive_root(),
+        backup_manifest=backup_manifest,
+        receipt_path=receipt_file,
+        dry_run=not apply_changes,
+    )
+    payload = {
+        "mode": "blob_reference_liveness",
+        "mutates": report.applied,
+        **report.to_dict(sample_limit=sample_limit),
+    }
+    if output_format == "json":
+        click.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    _render_blob_reference_liveness_plain(report, sample_limit=sample_limit)
+
+
+def _render_blob_reference_liveness_plain(report: BlobRefLivenessReconciliationReport, *, sample_limit: int) -> None:
+    click.echo("Blob reference liveness reconciliation")
+    click.echo(f"Source DB:    {report.source_db}")
+    click.echo(f"Mode:         {'apply' if report.applied else 'dry-run'}")
+    click.echo(f"Scanned:      {report.classification.scanned_count:,} blob_refs row(s)")
+    click.echo(f"Orphans:      {len(report.classification.candidates):,} row(s)")
+    click.echo(f"Deleted:      {report.deleted_count:,} row(s)")
+    click.echo(f"Safe to apply: {'yes' if report.classification.safe_to_apply else 'no'}")
+    if report.classification.rekeyable_hook_payload_count:
+        click.echo(
+            "Hook refs:    "
+            f"{report.classification.rekeyable_hook_payload_count:,} legacy raw_payload ref(s) require re-keying"
+        )
+    if report.classification.orphaned_by_ref_type:
+        click.echo(
+            "By ref type:  "
+            + ", ".join(
+                f"{ref_type}={count:,}"
+                for ref_type, count in sorted(report.classification.orphaned_by_ref_type.items())
+            )
+        )
+    if report.receipt_path is not None:
+        click.echo(f"Receipt:      {report.receipt_path}")
+    for candidate in report.classification.candidates[: max(0, sample_limit)]:
+        click.echo(
+            f"  orphan {candidate.ref_type} ref_id={candidate.ref_id} "
+            f"join={candidate.referent_table}.{candidate.referent_column} blob={candidate.blob_hash}"
+        )
 
 
 @click.command("blob-reference-debt")

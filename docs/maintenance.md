@@ -113,6 +113,29 @@ Heuristics:
 
 ## Subcommands
 
+### `polylogue ops maintenance blob-reference-liveness` - historical blob-ref reconciliation
+
+Read-only by default. It classifies source-tier `blob_refs` rows with the
+actual referent join for each `ref_type`; source-tier `attachment` refs join
+`raw_sessions.raw_id` because they are keyed by the parent raw acquisition,
+not by index-tier `attachment_refs`. Unknown or unavailable ref types block an
+apply. The command never deletes blob files.
+
+```bash
+polylogue ops maintenance blob-reference-liveness --output-format json
+polylogue ops maintenance blob-reference-liveness --apply \
+  --backup-manifest /path/to/verified-source-backup-manifest.json \
+  --receipt-file /path/to/new/blob-ref-liveness.jsonl \
+  --output-format json
+```
+
+The apply command requires the daemon and all archive writers to be stopped,
+an existing verified backup manifest covering the current `source.db`, and a
+new receipt path that does not already exist. It revalidates the backup and
+reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
+deleting the exact candidate set. Review the receipt's final `committed` line
+before treating the pass as complete.
+
 ### `polylogue ops maintenance preview` — staleness inventory
 
 Read-only. Produces a per-model inventory of stale, missing, orphan,
