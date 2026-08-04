@@ -414,6 +414,28 @@ def test_claude_idless_message_reordering_keeps_revision_identity() -> None:
     )
 
 
+def test_claude_multiple_idless_messages_remain_distinct_and_choose_one_leaf() -> None:
+    rows = [
+        {"sender": "human", "text": "First id-less turn.", "created_at": "2026-07-01T10:00:00Z"},
+        {"sender": "assistant", "text": "Second id-less turn.", "created_at": "2026-07-01T10:00:01Z"},
+    ]
+
+    forward = parse_payload(Provider.CLAUDE_AI, {"uuid": "claude-idless-many", "chat_messages": rows}, "fallback")[0]
+    reordered = parse_payload(
+        Provider.CLAUDE_AI,
+        {"uuid": "claude-idless-many", "chat_messages": list(reversed(rows))},
+        "fallback",
+    )[0]
+
+    assert [message.provider_message_id for message in forward.messages] == ["", ""]
+    assert [message.text for message in forward.messages] == ["First id-less turn.", "Second id-less turn."]
+    assert sum(message.is_active_leaf is True for message in forward.messages) == 1
+    assert forward.messages[-1].is_active_leaf is True
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
+
+
 def test_authenticated_browser_capture_uses_native_payload_and_enriches_attachment() -> None:
     """Mutations: detector-order theft or attachment replacement loss must fail."""
     direct = _parse_real_route(_native_claude_payload())

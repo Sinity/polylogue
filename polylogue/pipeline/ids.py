@@ -235,6 +235,7 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
 #: Namespaced so it can never collide with a real provider id string (a
 #: provider id never contains this literal token by construction).
 _TIMESTAMP_ANCHOR_PREFIX = "__polylogue_msg_ts_anchor__"
+_CONTENT_ANCHOR_PREFIX = "__polylogue_msg_content_anchor__"
 
 
 def _message_comparison_id(message: ParsedMessage, index: int) -> str:
@@ -250,13 +251,10 @@ def _message_comparison_id(message: ParsedMessage, index: int) -> str:
     array position would get two different fallback "ids" and compare as a
     conflict instead of the same message (polylogue-gysk3).
 
-    The fix: fall back to a content-derived anchor -- role plus timestamp --
-    instead of array position, so reordering an otherwise-unchanged id-less
-    message no longer changes its comparison identity. Only when a message
-    carries NEITHER a provider id NOR a timestamp does this still fall back
-    to structural position: a known, accepted limit (nothing else
-    distinguishes the message), the same shape as the accepted limit already
-    documented on ``attachment_identity_hash``.
+    The fix: fall back to a content-derived anchor -- role plus timestamp,
+    or role plus message text when no timestamp exists -- instead of array
+    position, so reordering an otherwise-unchanged id-less message never
+    changes its comparison identity.
 
     SCOPE NOTE: this closes the fallback instance local to this module.
     Several parsers (``sources/parsers/*``, e.g. ``claude/common.py``,
@@ -273,7 +271,7 @@ def _message_comparison_id(message: ParsedMessage, index: int) -> str:
         return message.provider_message_id
     if message.timestamp:
         return f"{_TIMESTAMP_ANCHOR_PREFIX}:{message.role}:{message.timestamp}"
-    return f"msg-{index}"
+    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload({'role': str(message.role), 'text': _normalize_for_hash(message.text)})}"
 
 
 def message_identity_hash(*, id: str) -> bytes:

@@ -44,7 +44,7 @@ def _with_id(provider_message_id: str, role: str, text: str, timestamp: str) -> 
     )
 
 
-def _id_less(role: str, text: str, timestamp: str) -> ParsedMessage:
+def _id_less(role: str, text: str, timestamp: str | None) -> ParsedMessage:
     """A message the parser could not assign a native id to (empty string)."""
     return ParsedMessage(provider_message_id="", role=Role.normalize(role), text=text, timestamp=timestamp)
 
@@ -73,18 +73,11 @@ def test_id_less_messages_with_distinct_timestamps_do_not_collide() -> None:
     assert len(projection.message_contents) == 2
 
 
-def test_id_less_and_timestamp_less_message_falls_back_to_position() -> None:
-    """Documented, accepted limit: with neither a provider id nor a timestamp,
-    nothing content-derived distinguishes the message, so position remains
-    the last resort -- unlike the two cases above, this one is NOT claimed
-    to be reorder-stable.
-    """
-    bare = ParsedMessage(provider_message_id="", role=Role.normalize("user"), text="x", timestamp=None)
+def test_id_less_and_timestamp_less_message_uses_content_anchor() -> None:
+    bare = _id_less("user", "x", None)
     keyed = _with_id("m1", "assistant", "y", "2024-01-01T00:00:00Z")
 
     forward = session_revision_projection(_session([keyed, bare]))
     reordered = session_revision_projection(_session([bare, keyed]))
 
-    # Position-anchored fallback: the bare message's content payload embeds
-    # its array-position id, which differs between the two orderings.
-    assert forward.message_contents != reordered.message_contents
+    assert forward.message_contents == reordered.message_contents

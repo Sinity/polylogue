@@ -1237,6 +1237,31 @@ def test_regeneration_preserves_all_branches_and_marks_active_leaf() -> None:
     assert conv.active_leaf_message_provider_id == "a_new"
 
 
+def test_idless_active_path_marks_only_the_current_node_as_leaf() -> None:
+    payload = {
+        "title": "Id-less active path",
+        "mapping": {
+            "first": {
+                "message": {"author": {"role": "user"}, "content": {"parts": ["First"]}},
+                "parent": None,
+                "children": ["last"],
+            },
+            "last": {
+                "message": {"author": {"role": "assistant"}, "content": {"parts": ["Last"]}},
+                "parent": "first",
+                "children": [],
+            },
+        },
+        "current_node": "last",
+    }
+
+    conv = chatgpt_parse(payload, "fallback-id")
+
+    assert [message.provider_message_id for message in conv.messages] == ["", ""]
+    assert sum(message.is_active_leaf is True for message in conv.messages) == 1
+    assert conv.messages[-1].is_active_leaf is True
+
+
 def test_chatgpt_position_stays_mapping_order_when_active_path_timestamps_are_scrambled() -> None:
     """Archive row positions remain unique while active-path membership stays explicit."""
     root = _branch_node("root", "system", "", parent=None, children=["u1"])

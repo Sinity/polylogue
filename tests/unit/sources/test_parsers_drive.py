@@ -214,6 +214,26 @@ def test_parse_chunked_prompt_idless_messages_keep_one_active_leaf() -> None:
     assert result.messages[-1].is_active_leaf is True
 
 
+def test_parse_chunked_prompt_reordering_keeps_timestamp_less_idless_revision_identity() -> None:
+    first = {"role": "user", "text": "First"}
+    second = {"role": "assistant", "text": "Second"}
+    forward = parse_chunked_prompt(
+        "gemini",
+        {"id": "gemini-timestamp-less-order", "chunkedPrompt": {"chunks": [first, second]}},
+        "fallback",
+    )
+    reordered = parse_chunked_prompt(
+        "gemini",
+        {"id": "gemini-timestamp-less-order", "chunkedPrompt": {"chunks": [second, first]}},
+        "fallback",
+    )
+
+    assert [message.provider_message_id for message in forward.messages] == ["", ""]
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
+
+
 def test_parse_chunked_prompt_idless_attachment_survives_archive_write(workspace_env: Mapping[str, Path]) -> None:
     result = parse_chunked_prompt(
         "gemini",
