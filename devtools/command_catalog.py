@@ -229,6 +229,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render query-discovery", "devtools render query-discovery --check"),
     ),
     CommandSpec(
+        "render api-operation-parity",
+        "generated surfaces",
+        "Render the committed semantic-operation parity matrix and Python facade reference.",
+        "devtools.render_api_operation_parity",
+        use_when=(
+            "Refresh or verify stable Python API operation IDs, cross-surface bindings, intentional exclusions, "
+            "and the signature-aware generated section in docs/library-api.md."
+        ),
+        examples=("devtools render api-operation-parity", "devtools render api-operation-parity --check"),
+    ),
+    CommandSpec(
         "render mcp-equivalence",
         "generated surfaces",
         "Render docs/generated/mcp-equivalence.json from executable MCP declarations.",
