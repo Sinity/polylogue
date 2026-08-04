@@ -127,6 +127,7 @@ async def test_async_attached_tier_profiles_map_main_only(
         for schema in ("main", *_ATTACHED_SCHEMAS):
             cursor = await conn.execute(f"PRAGMA {schema}.mmap_size")
             row = await cursor.fetchone()
+            assert row is not None
             values[schema] = int(row[0])
         assert values == {
             "main": configured_mmap_size,
