@@ -5171,7 +5171,13 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
         )
 
 
-def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> None:
+def _write_repo_edges(
+    conn: sqlite3.Connection,
+    session_id: str,
+    session: ParsedSession,
+    *,
+    update_session_observations: bool = True,
+) -> None:
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at)
     raw_root_paths = tuple(path.strip() for path in session.working_directories if path.strip())
     origin_url = (session.git_repository_url or "").strip()
@@ -5244,21 +5250,22 @@ def _write_repo_edges(conn: sqlite3.Connection, session_id: str, session: Parsed
             """,
             (repo_id, _sqlite_text(root_path), observed_at_ms or 0, observed_at_ms or 0),
         )
-        conn.execute(
-            """
-            INSERT OR REPLACE INTO session_repos (
-                session_id, repo_id, root_path, branch_name, observed_at_ms
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                repo_id,
-                _sqlite_text(root_path),
-                _sqlite_text(session.git_branch or ""),
-                observed_at_ms or 0,
-            ),
-        )
-        if session.git_commit_hash:
+        if update_session_observations:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session_repos (
+                    session_id, repo_id, root_path, branch_name, observed_at_ms
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    repo_id,
+                    _sqlite_text(root_path),
+                    _sqlite_text(session.git_branch or ""),
+                    observed_at_ms or 0,
+                ),
+            )
+        if update_session_observations and session.git_commit_hash:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO session_commits (

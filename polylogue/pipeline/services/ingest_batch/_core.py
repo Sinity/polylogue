@@ -75,7 +75,9 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import (
+    _message_content_hash,
     _timestamp_ms,
+    _write_repo_edges,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -394,6 +396,81 @@ def _append_delta_payload(
     return payload.parsed_session.model_copy(update={"messages": delta_messages}), len(
         payload.parsed_session.messages
     ) - len(delta_messages)
+
+
+def _append_payload_changes_existing_message(
+    conn: sqlite3.Connection,
+    payload: SessionWritePayload,
+) -> bool:
+    """Return whether an incoming append revision changes an existing message.
+
+    Native ids identify the same message across a growing provider revision,
+    but the message's blocks can still be revised. A newer full revision must
+    replace such overlap before appending its tail, otherwise the resulting
+    session depends on arrival order.
+    """
+    existing_rows = {
+        str(row[0]): (int(row[1]), int(row[2]), row[3])
+        for row in conn.execute(
+            """
+            SELECT native_id, position, variant_index, content_hash
+            FROM messages
+            WHERE session_id = ? AND native_id IS NOT NULL
+            """,
+            (payload.session_id,),
+        ).fetchall()
+    }
+    for message in payload.parsed_session.messages:
+        existing = existing_rows.get(message.provider_message_id)
+        if existing is None:
+            continue
+        position, variant_index, existing_hash = existing
+        incoming_hash = _message_content_hash(
+            payload.session_id,
+            message,
+            position=position,
+            variant_index=variant_index,
+        )
+        if incoming_hash != existing_hash:
+            return True
+    return False
+
+
+def _repair_stale_revision_observations(
+    conn: sqlite3.Connection,
+    payload: SessionWritePayload,
+) -> None:
+    """Merge monotonic facts from a stale revision without replacing content."""
+    conn.execute(
+        "DELETE FROM insight_materialization WHERE session_id = ?",
+        (payload.session_id,),
+    )
+    candidate_created_at_ms = _timestamp_ms(payload.parsed_session.created_at)
+    if candidate_created_at_ms is None:
+        message_timestamps = [
+            timestamp_ms
+            for message in payload.parsed_session.messages
+            if (timestamp_ms := _timestamp_ms(message.timestamp)) is not None
+        ]
+        candidate_created_at_ms = min(message_timestamps, default=None)
+    if candidate_created_at_ms is not None:
+        conn.execute(
+            """
+            UPDATE sessions
+            SET created_at_ms = CASE
+                WHEN created_at_ms IS NULL THEN ?
+                ELSE MIN(created_at_ms, ?)
+            END
+            WHERE session_id = ?
+            """,
+            (candidate_created_at_ms, candidate_created_at_ms, payload.session_id),
+        )
+    _write_repo_edges(
+        conn,
+        payload.session_id,
+        payload.parsed_session,
+        update_session_observations=False,
+    )
 
 
 def _incoming_write_regresses_attachment_coverage(
@@ -814,6 +891,8 @@ def _write_session(
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     session_to_write = payload.parsed_session
     merge_append = False
+    append_force_replace = False
+    freshness_force_replace = False
     browser_precedence: BrowserCapturePrecedence = "default"
 
     drive_revision_plan = _bind_drive_revision_lineage(
@@ -894,6 +973,7 @@ def _write_session(
                 session_id=payload.session_id,
                 events=payload.parsed_session.session_events,
             )
+            _repair_stale_revision_observations(conn, payload)
             counts["session_events"] = counts.get("session_events", 0) + outage_events
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
@@ -915,11 +995,13 @@ def _write_session(
             incoming_freshness_ms=incoming_freshness_ms,
             existing_updated_at_ms=existing_updated_at_int,
         ):
+            _repair_stale_revision_observations(conn, payload)
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
             return False, counts
+        freshness_force_replace = True
         if (
             existing_updated_at_int is not None
             and incoming_freshness_ms == existing_updated_at_int
@@ -936,20 +1018,55 @@ def _write_session(
             return False, counts
 
     if payload.append_only and existing_row is not None:
-        delta, skipped_messages = _append_delta_payload(conn, payload)
-        counts["skipped_messages"] = skipped_messages
-        if delta is None:
-            if payload.parsed_session.ingest_flags:
-                upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
-            counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
+        existing_updated_at_ms = existing_row["updated_at_ms"]
+        existing_updated_at_int = int(existing_updated_at_ms) if existing_updated_at_ms is not None else None
+        if (
+            incoming_freshness_ms is not None
+            and existing_updated_at_int is not None
+            and incoming_freshness_ms < existing_updated_at_int
+        ):
+            # Append-only captures can arrive out of order after a restart or
+            # replay. An older full revision may carry the same native
+            # messages plus stale session metadata and attachment/event
+            # projections. Once a newer revision is stored, accepting that
+            # older envelope would create a hybrid session even though its
+            # message delta is empty. Preserve the newer authority and leave
+            # the raw row available for audit/replay.
             counts["skipped_sessions"] = 1
+            counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count
             counts["skipped_session_events"] = len(payload.parsed_session.session_events)
-            if _needs_session_fts_repair(conn, payload.session_id):
-                counts[_FTS_REPAIR_COUNT_KEY] = 1
             return False, counts
-        session_to_write = delta
-        merge_append = True
+        newer_revision = (
+            incoming_freshness_ms is not None
+            and existing_updated_at_int is not None
+            and incoming_freshness_ms > existing_updated_at_int
+        )
+        delta: ParsedSession | None = None
+        if newer_revision and _append_payload_changes_existing_message(conn, payload):
+            # A later full revision can revise an already-seen native message
+            # as well as add a tail. Replace it authoritatively so message,
+            # block, attachment, and event projections all come from the same
+            # revision. Older/equal replays continue through the append delta
+            # path and retain its unchanged-row contract.
+            counts["skipped_messages"] = 0
+            append_force_replace = True
+        else:
+            delta, skipped_messages = _append_delta_payload(conn, payload)
+            counts["skipped_messages"] = skipped_messages
+        if not append_force_replace:
+            if delta is None:
+                if payload.parsed_session.ingest_flags:
+                    upsert_parser_ingest_flag_tags(conn, payload.session_id, payload.parsed_session.ingest_flags)
+                counts["raw_links"] = int(_refresh_session_raw_link(conn, payload.session_id, payload.raw_id))
+                counts["skipped_sessions"] = 1
+                counts["skipped_attachments"] = payload.attachment_count
+                counts["skipped_session_events"] = len(payload.parsed_session.session_events)
+                if _needs_session_fts_repair(conn, payload.session_id):
+                    counts[_FTS_REPAIR_COUNT_KEY] = 1
+                return False, counts
+            session_to_write = delta
+            merge_append = True
 
     if not force_write and content_unchanged:
         if browser_precedence == "replace":
@@ -1007,7 +1124,9 @@ def _write_session(
         content_hash=payload.content_hash,
         raw_id=payload.raw_id,
         merge_append=merge_append,
-        force_replace=force_write or browser_precedence == "replace",
+        force_replace=(
+            force_write or browser_precedence == "replace" or append_force_replace or freshness_force_replace
+        ),
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
         preacquired_attachment_blobs=preacquired_attachment_blobs,
@@ -1018,6 +1137,10 @@ def _write_session(
         # whale-session rewrite held the daemon writer >1h at 260GB of reads
         # with zero commits (2026-07-22) under per-row mode.
         bulk_fts=True,
+    )
+    conn.execute(
+        "DELETE FROM insight_materialization WHERE session_id = ?",
+        (payload.session_id,),
     )
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)

@@ -109,6 +109,7 @@ class ArchiveSnapshot:
     profiles: tuple[FactRow, ...]
     semantic_tables: tuple[tuple[str, tuple[FactRow, ...]], ...]
     fts_matches: tuple[tuple[str, object], ...]
+    raw_authority: tuple[FactRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,10 +242,14 @@ def ingest_convergence_pathology(
 
 def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
     """Run the real FTS and insight debt stages for the materialized sessions."""
+    with sqlite3.connect(archive.root / "index.db") as conn:
+        persisted_session_ids = tuple(
+            str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
+        )
     converger = DaemonConverger(
         (make_fts_stage(archive.root / "index.db"), make_insights_stage(archive.root / "index.db"))
     )
-    states, _timings = converger.converge_sessions(archive.session_ids)
+    states, _timings = converger.converge_sessions(persisted_session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:
         raise AssertionError(f"production convergence left pending work: {not_converged}")
@@ -307,6 +312,7 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
             (table, _table_rows(conn, table, order_by=order_by)) for table, order_by in _SEMANTIC_TABLES
         )
         fts_matches = _fts_match_snapshot(conn)
+    raw_authority = raw_authority_facts(root / "source.db", archive_root=root)
     return ArchiveSnapshot(
         sessions=_fact_rows(sessions),
         messages=_fact_rows(messages),
@@ -315,6 +321,7 @@ def archive_snapshot(root: Path) -> ArchiveSnapshot:
         profiles=profiles,
         semantic_tables=semantic_tables,
         fts_matches=fts_matches,
+        raw_authority=raw_authority,
     )
 
 
@@ -352,17 +359,26 @@ def replay_convergence_archive(
 ) -> ConvergenceArchive:
     """Build a fresh canonical archive from the exact writes seen so far."""
     initialize_active_archive(root)
-    archive: ConvergenceArchive | None = None
+    source_paths: list[Path] = []
+    session_ids: list[str] = []
     for index in session_indexes:
-        archive = ingest_convergence_pathology(
+        step = ingest_convergence_pathology(
             root,
             pathology,
             session_indexes=(index,),
             converge_after_each=False,
             append_only=append_only,
         )
-    if archive is None:
+        source_paths.extend(step.source_paths)
+        session_ids.extend(step.session_ids)
+    if not session_ids:
         raise ValueError("replay_convergence_archive requires at least one session index")
+    archive = ConvergenceArchive(
+        root,
+        pathology,
+        tuple(source_paths),
+        tuple(dict.fromkeys(session_ids)),
+    )
     converge_convergence_archive(archive)
     assert_archive_verification_green(root)
     return archive
@@ -513,21 +529,65 @@ def _table_rows(conn: sqlite3.Connection, table: str, *, order_by: str) -> tuple
 
 
 def _fts_match_snapshot(conn: sqlite3.Connection) -> tuple[tuple[str, object], ...]:
-    """Capture FTS postings for fixture tokens, not merely index row counts."""
-    text_rows = conn.execute("SELECT text FROM blocks WHERE text IS NOT NULL ORDER BY rowid").fetchall()
+    """Capture semantic FTS postings for fixture tokens, never physical rowids."""
+    text_rows = conn.execute("SELECT text FROM blocks WHERE text IS NOT NULL ORDER BY block_id").fetchall()
     tokens = sorted({token.lower() for row in text_rows for token in re.findall(r"[A-Za-z0-9_]{3,}", str(row[0]))})
     matches: list[tuple[str, object]] = []
     for token in tokens:
-        rowids = conn.execute(
-            "SELECT rowid FROM messages_fts WHERE messages_fts MATCH ? ORDER BY rowid",
+        block_ids = conn.execute(
+            """
+            SELECT i.block_id
+            FROM messages_fts AS f
+            JOIN messages_fts_identity AS i ON i.rowid = f.rowid
+            WHERE messages_fts MATCH ?
+            ORDER BY i.block_id
+            """,
             (f'"{token}"',),
         ).fetchall()
-        matches.append((token, tuple(int(row[0]) for row in rowids)))
+        matches.append((f"messages_fts:{token}", tuple(str(row[0]) for row in block_ids)))
     fts_identity_table = "messages_fts_" + "identity"
     identity_rows = conn.execute(
-        f"SELECT rowid, block_id, hex(source_hash), recipe_id FROM {fts_identity_table} ORDER BY rowid"
+        f"SELECT block_id, hex(source_hash), recipe_id FROM {fts_identity_table} ORDER BY block_id"
     ).fetchall()
-    matches.append(("__identity__", _fact_rows(identity_rows)))
+    matches.append(("messages_fts:identity", _fact_rows(identity_rows)))
+
+    command_rows = conn.execute(
+        "SELECT tool_detail_text FROM blocks WHERE tool_detail_text IS NOT NULL ORDER BY block_id"
+    ).fetchall()
+    command_tokens = sorted(
+        {token.lower() for row in command_rows for token in re.findall(r"[A-Za-z0-9_]{3,}", str(row[0]))}
+    )
+    for token in command_tokens:
+        block_ids = conn.execute(
+            """
+            SELECT b.block_id
+            FROM blocks_command_trigram AS f
+            JOIN blocks AS b ON b.rowid = f.rowid
+            WHERE blocks_command_trigram MATCH ?
+            ORDER BY b.block_id
+            """,
+            (f'"{token}"',),
+        ).fetchall()
+        matches.append((f"blocks_command_trigram:{token}", tuple(str(row[0]) for row in block_ids)))
+
+    event_rows = conn.execute(
+        "SELECT search_text FROM session_work_events WHERE search_text IS NOT NULL ORDER BY event_id"
+    ).fetchall()
+    event_tokens = sorted(
+        {token.lower() for row in event_rows for token in re.findall(r"[A-Za-z0-9_]{3,}", str(row[0]))}
+    )
+    for token in event_tokens:
+        event_ids = conn.execute(
+            """
+            SELECT e.event_id
+            FROM session_work_events_fts AS f
+            JOIN session_work_events AS e ON e.event_id = f.event_id
+            WHERE session_work_events_fts MATCH ?
+            ORDER BY e.event_id
+            """,
+            (f'"{token}"',),
+        ).fetchall()
+        matches.append((f"session_work_events_fts:{token}", tuple(str(row[0]) for row in event_ids)))
     return tuple(matches)
 
 
@@ -680,17 +740,25 @@ def messages_fts_match_count(index_db: Path, query: str) -> int:
     return 0 if row is None else int(row[0])
 
 
-def raw_authority_facts(source_db: Path) -> tuple[FactRow, ...]:
+def raw_authority_facts(source_db: Path, *, archive_root: Path | None = None) -> tuple[FactRow, ...]:
     with sqlite3.connect(source_db) as conn:
         rows = conn.execute(
             """
-            SELECT raw_id, origin, native_id, source_path, hex(blob_hash),
-                   blob_size, acquired_at_ms
+            SELECT raw_id, origin, capture_mode, native_id, source_path, source_index,
+                   hex(blob_hash), blob_size, acquired_at_ms, logical_source_key,
+                   revision_kind, source_revision, predecessor_source_revision,
+                   predecessor_raw_id, baseline_raw_id, append_start_offset,
+                   append_end_offset, acquisition_generation, revision_authority,
+                   revision_authority_evidence
             FROM raw_sessions
             ORDER BY raw_id
             """
         ).fetchall()
-    return _fact_rows(rows)
+    if archive_root is None:
+        return _fact_rows(rows)
+    normalized_rows = [(*row[1:4], str(Path(str(row[4])).relative_to(archive_root)), *row[5:]) for row in rows]
+    normalized_rows.sort(key=lambda row: tuple("" if value is None else str(value) for value in row))
+    return _fact_rows(normalized_rows)
 
 
 def session_materialization_facts(index_db: Path, *, session_id: str) -> SessionMaterializationFacts:
