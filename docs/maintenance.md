@@ -752,6 +752,14 @@ systemctl --user start polylogued.service
 polylogue ops doctor
 ```
 
+The daemon and `migrate-tier` command share the stable
+`<archive-root>/.archive-ownership.lock` archive lease. `daemon.pid` is process
+metadata only and is never reclaimed by unlinking it as a lock. A crash during
+the train apply phase leaves a checksummed manifest under
+`.maintenance-state/durable-change-trains/`; the next daemon startup acquires
+the same archive lease, reconciles the interrupted version, and persists the
+recovery evidence before opening normal archive components.
+
 Never hand-edit a tier or use a plain manifest as migration authority. A
 durable migration requires a successful scratch-restore receipt authenticated
 by the exact live tier's local key; public hashes and an in-memory "Verification: OK" are

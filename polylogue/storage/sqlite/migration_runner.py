@@ -13,15 +13,14 @@ import stat
 import time
 import types
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager
+from collections.abc import Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
 from importlib import resources
 from pathlib import Path
 from typing import Final, cast, get_args, get_origin, get_type_hints
 
-from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation, assert_owns_archive_location
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
     BackupAttestationError,
@@ -45,15 +44,6 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 class MigrationError(RuntimeError):
     """Raised when a durable tier cannot be migrated safely."""
-
-
-@contextmanager
-def hold_durable_migration_writer(archive_root: Path, *, owner_id: str) -> Iterator[None]:
-    """Hold the established archive ownership lease around offline migration."""
-    location = ArchiveLocation.resolve(archive_root)
-    with OwnedArchiveLocation.acquire(location, owner_id=owner_id) as owned:
-        assert_owns_archive_location(owned, location)
-        yield
 
 
 @dataclass(frozen=True, slots=True)
@@ -809,12 +799,20 @@ def migrate_archive_tier(
     tier: ArchiveTier,
     *,
     backup_manifest: Path | None,
+    target_version: int | None = None,
 ) -> MigrationResult:
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
         raise MigrationError(f"{tier.value} tier does not support in-place migrations")
     _checkpoint_live_tier(conn)
-    target_version = ARCHIVE_VERSION_BY_TIER[tier]
+    runtime_target_version = ARCHIVE_VERSION_BY_TIER[tier]
+    if target_version is None:
+        target_version = runtime_target_version
+    if target_version > runtime_target_version:
+        raise MigrationError(
+            f"{tier.value} migration target {target_version} is newer than this runtime expects "
+            f"({runtime_target_version})"
+        )
 
     # Lock-free precheck: fail fast (no wasted write-lock acquisition) when a
     # backup manifest is required but missing. This read is intentionally not
@@ -840,10 +838,7 @@ def migrate_archive_tier(
     )
     from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
 
-    validate_durable_migration_sidecars(
-        tier,
-        tuple((step.name, step.sql) for step in precheck_steps),
-    )
+    validate_durable_migration_sidecars(tier, tuple((step.name, step.sql) for step in _load_migrations(tier)))
     precheck_requires_backup = any(step.requires_backup for step in precheck_steps)
     if precheck_requires_backup and backup_manifest is None:
         raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
@@ -888,10 +883,13 @@ def migrate_archive_tier(
                 f"{tier.value} tier version {current_version} is newer than this runtime expects ({target_version})"
             )
         steps = _pending_migration_steps(conn, tier, current_version=current_version, target_version=target_version)
-        sidecars = validate_durable_migration_sidecars(
+        all_steps = _load_migrations(tier)
+        all_sidecars = validate_durable_migration_sidecars(
             tier,
-            tuple((step.name, step.sql) for step in steps),
+            tuple((step.name, step.sql) for step in all_steps),
         )
+        pending_versions = {step.version for step in steps}
+        sidecars = tuple(sidecar for sidecar in all_sidecars if sidecar.slot in pending_versions)
         requires_backup = any(step.requires_backup for step in steps)
         if requires_backup and backup_manifest is None:
             raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
@@ -2067,7 +2065,12 @@ def apply_durable_change_train(
             or observed_pre.row_counts != pre.row_counts
         ):
             raise DurableChangeTrainError("live durable tier changed after pre-apply evidence was authorized")
-        result = migrate_archive_tier(conn, train.tier, backup_manifest=backup_manifest)
+        result = migrate_archive_tier(
+            conn,
+            train.tier,
+            backup_manifest=backup_manifest,
+            target_version=train.target_version,
+        )
         if (
             result.from_version != train.current_version
             or result.to_version != train.target_version
@@ -2898,12 +2901,18 @@ def reconcile_interrupted_durable_change_train(
             "keep the daemon stopped and restore the exact authenticated backup",
             failed_train=failed,
         )
-    return recover_durable_change_train(
+    recovered = recover_durable_change_train(
         conn,
         failed,
         recovery_evidence_ref=evidence_ref,
         writer_release_evidence_ref=writer_release_evidence_ref,
     )
+    # The failed classification is an in-memory recovery decision. The
+    # durable manifest records one atomic startup-recovery transition and
+    # retains the recovery evidence in its proof references.
+    recovered = replace(recovered, revision=train.revision + 1)
+    validate_durable_change_train_manifest(recovered)
+    return recovered
 
 
 def _manifest_json_value(value: object) -> object:

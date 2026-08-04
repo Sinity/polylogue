@@ -18,6 +18,9 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
+    durable_change_train_manifest_path,
+    durable_change_train_policy_report,
+    execute_durable_change_train,
     validate_durable_migration_sidecars,
 )
 from polylogue.storage.sqlite.migration_runner import (
@@ -110,6 +113,29 @@ def _rider(*, consumer_count: int = 2, trust_floor_exception_ref: str | None = N
         runtime_consumers=consumers,
         behavior_proof_refs=tuple(consumer.behavior_proof_ref for consumer in consumers),
         trust_floor_exception_ref=trust_floor_exception_ref,
+    )
+
+
+def _production_rider() -> DurableChangeRider:
+    return DurableChangeRider(
+        rider_id="rider:startup",
+        owner_ref="owner:startup-rider",
+        schema_objects=("table:durable_items",),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                "proof:bootstrap",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "daemon-health",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:daemon-health",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
     )
 
 
@@ -402,6 +428,98 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='future_items'").fetchone() == ("future_items",)
 
 
+def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    package_root = tmp_path / "fixture_migrations_maintenance"
+    source_package = package_root / "source"
+    source_package.mkdir(parents=True)
+    (package_root / "__init__.py").write_text("", encoding="utf-8")
+    (source_package / "__init__.py").write_text("", encoding="utf-8")
+    sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
+    (source_package / "002_future_items.sql").write_text(sql, encoding="utf-8")
+    claim = durable_migration_claim_for_sql(
+        ArchiveTier.SOURCE,
+        "002_future_items.sql",
+        sql,
+        owner_ref="owner:maintenance-source",
+    )
+    rider = DurableChangeRider(
+        rider_id="rider:maintenance",
+        owner_ref="owner:maintenance-rider",
+        schema_objects=("table:future_items",),
+        runtime_consumers=(
+            DurableRuntimeConsumer(
+                "bootstrap",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                "proof:bootstrap",
+                ("write",),
+            ),
+            DurableRuntimeConsumer(
+                "daemon-health",
+                "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                "proof:daemon-health",
+                ("read",),
+            ),
+        ),
+        behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+    )
+    declared = declare_durable_change_train(
+        train_id="train:source:v2",
+        tier=ArchiveTier.SOURCE,
+        current_version=1,
+        target_version=2,
+        slot=2,
+        owner_ref="owner:maintenance-source",
+        migration=claim,
+        riders=(rider,),
+        declared_at_ms=1,
+    )
+    (source_package / "002.train.json").write_text(
+        json.dumps(migration_runner.durable_change_train_to_payload(declared)), encoding="utf-8"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: "fixture_migrations_maintenance.source")
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda _tier: "fixture_migrations_maintenance.source",
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
+        {ArchiveTier.SOURCE: 1, ArchiveTier.USER: 1},
+    )
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = 2
+    monkeypatch.setattr("polylogue.storage.sqlite.migration_runner.ARCHIVE_VERSION_BY_TIER", versions)
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+
+    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = (
+        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; CREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;"
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+
+    released: list[bool] = []
+    result = execute_durable_change_train(
+        tmp_path,
+        ArchiveTier.SOURCE,
+        backup_manifest=None,
+        daemon_stopped_evidence_ref="proof:daemon-stopped",
+        single_writer_evidence_ref="proof:archive-ownership-lock",
+        release_archive_ownership=lambda: released.append(True),
+    )
+
+    assert result.train is not None
+    assert result.train.state is DurableChangeTrainState.RELEASED
+    assert result.migration_result is not None
+    assert result.migration_result.applied_versions == (2,)
+    assert released == [True]
+    manifest_path = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
+    assert load_durable_change_train_manifest(manifest_path).state is DurableChangeTrainState.RELEASED
+
+
 def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -483,6 +601,15 @@ def test_missing_future_sidecar_is_rejected_at_the_migration_runner_choke_point(
     sidecar.unlink()
     with pytest.raises(MigrationError, match="missing durable migration train sidecar"):
         migration_runner._load_migrations(ArchiveTier.SOURCE)
+    policy = durable_change_train_policy_report(ArchiveTier.SOURCE)
+    assert policy["ok"] is False
+    violations = cast(list[str], policy["violations"])
+    assert any("missing durable migration train sidecar" in violation for violation in violations)
+    (source_package / "028.train.json").write_text(
+        json.dumps(migration_runner.durable_change_train_to_payload(train)), encoding="utf-8"
+    )
+    with pytest.raises(DurableChangeTrainError, match="no matching SQL resource"):
+        validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
 
 
 def test_migration_transaction_control_cannot_escape_rollback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -843,6 +970,92 @@ def test_interrupted_commit_recovers_at_applied_without_reapplying(
     assert recovered.apply_evidence is not None
     assert recovered.apply_evidence.recovered_after_interrupt is True
     assert recovered.reservation is not None and recovered.reservation.active is False
+
+
+def test_bootstrap_reconciles_and_persists_interrupted_train_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, bootstrap
+
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = _TARGET_VERSION
+    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = (
+        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; "
+        "CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    train = _admitted(ArchiveTier.SOURCE, rider=_production_rider())
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        conn.execute("CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
+        conn.execute(f"PRAGMA user_version = {_TARGET_VERSION}")
+        conn.commit()
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    write_durable_change_train_manifest(manifest, train, expected_revision=-1)
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    recovered = load_durable_change_train_manifest(manifest)
+    assert recovered.state is DurableChangeTrainState.RELEASED
+    assert recovered.apply_evidence is not None
+    assert recovered.apply_evidence.recovered_after_interrupt is True
+    assert "proof:startup-recovery:train:source:v2" in recovered.proof_refs
+
+
+def test_bootstrap_finishes_persisted_applied_train_without_reapplying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, bootstrap
+
+    versions = dict(ARCHIVE_VERSION_BY_TIER)
+    versions[ArchiveTier.SOURCE] = _TARGET_VERSION
+    monkeypatch.setattr(bootstrap, "ARCHIVE_VERSION_BY_TIER", versions)
+    ddl = dict(ARCHIVE_DDL_BY_TIER)
+    ddl[ArchiveTier.SOURCE] = (
+        "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT; "
+        "CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
+    )
+    monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    db_path = tmp_path / "source.db"
+    _create_current_database(db_path)
+    train = _admitted(ArchiveTier.SOURCE, rider=_production_rider())
+    with sqlite3.connect(db_path) as conn:
+        train = _reserve_and_authorize(conn, train, archive_root=tmp_path)
+        conn.execute("CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
+        conn.execute(f"PRAGMA user_version = {_TARGET_VERSION}")
+        conn.commit()
+        train = reconcile_interrupted_durable_change_train(
+            conn,
+            train,
+            interruption_evidence_ref="proof:post-commit-crash",
+            writer_release_evidence_ref="proof:lease-expired",
+        )
+    assert train.reservation is not None
+    train = replace(
+        train,
+        revision=train.revision + 1,
+        reservation=replace(train.reservation, active=True, released_at_ms=None, release_evidence_ref=None),
+    )
+    manifest = tmp_path / ".maintenance-state" / "durable-change-trains" / "source-002.json"
+    write_durable_change_train_manifest(manifest, train, expected_revision=-1)
+    monkeypatch.setattr(
+        migration_runner,
+        "migrate_archive_tier",
+        lambda *_args, **_kwargs: pytest.fail("startup attempted to reapply a committed train"),
+    )
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import reconcile_durable_change_trains_on_startup
+
+    assert reconcile_durable_change_trains_on_startup(tmp_path) == (manifest,)
+    recovered = load_durable_change_train_manifest(manifest)
+    assert recovered.state is DurableChangeTrainState.RELEASED
+    assert recovered.proof is not None
+    assert recovered.apply_evidence is not None and recovered.apply_evidence.recovered_after_interrupt is True
 
 
 def test_interrupted_unknown_version_requires_authenticated_restore(tmp_path: Path) -> None:

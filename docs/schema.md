@@ -49,7 +49,10 @@ one migration. Schema policy JSON reports every reservation and violation.
 
 Applying a train still uses the existing stopped-daemon gate, verified backup
 receipt, SQLite transaction, integrity and foreign-key checks, canonical DDL
-parity checks, and restart convergence proof. No train state table and no
+parity checks, and restart convergence proof. The maintenance route persists
+each lifecycle transition under `<archive-root>/.maintenance-state/durable-change-trains/`.
+Daemon startup reconciles a backup-authorized manifest left by a crash before
+schema probing and retains the recovery evidence. No train state table and no
 parallel migration engine are created.
 
 The runtime table inventory per tier is also enumerated in

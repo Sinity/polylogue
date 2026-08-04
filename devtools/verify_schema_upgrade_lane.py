@@ -104,6 +104,9 @@ _HELPER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^ensure_schema_upgrades_v\d+$"),
 )
 
+_DURABLE_MIGRATION_SQL_RE = re.compile(r"^\d{3,}_[a-z0-9_]+\.sql$")
+_DURABLE_MIGRATION_SIDECAR_RE = re.compile(r"^\d{3,}\.train\.json$")
+
 
 @dataclass(frozen=True, slots=True)
 class HelperHit:
@@ -203,7 +206,10 @@ def _invalid_migration_paths() -> list[Path]:
         if (
             len(rel.parts) != 2
             or rel.parts[0] not in ALLOWED_MIGRATION_TIERS
-            or not re.match(r"^\d{3,}_[a-z0-9_]+\.sql$", rel.parts[1])
+            or not (
+                _DURABLE_MIGRATION_SQL_RE.fullmatch(rel.parts[1])
+                or _DURABLE_MIGRATION_SIDECAR_RE.fullmatch(rel.parts[1])
+            )
         ):
             invalid.append(path)
     return invalid

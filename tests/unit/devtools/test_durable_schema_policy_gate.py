@@ -30,6 +30,22 @@ def test_checked_in_durable_migrations_have_unique_contention_keys() -> None:
     assert {claim.tier for claim in claims} == {ArchiveTier.SOURCE, ArchiveTier.USER}
 
 
+def test_schema_policy_accepts_only_canonical_train_sidecar_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    migrations = tmp_path / "migrations"
+    source = migrations / "source"
+    source.mkdir(parents=True)
+    (source / "027_future.sql").write_text("SELECT 1;\n", encoding="utf-8")
+    (source / "027.train.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(verify_schema_upgrade_lane, "MIGRATIONS_DIR", migrations)
+
+    assert verify_schema_upgrade_lane._invalid_migration_paths() == []
+
+    (source / "027_future.bad.json").write_text("{}\n", encoding="utf-8")
+    assert verify_schema_upgrade_lane._invalid_migration_paths() == [source / "027_future.bad.json"]
+
+
 def test_policy_json_names_every_duplicate_owner(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

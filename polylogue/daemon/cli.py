@@ -2144,10 +2144,35 @@ async def run_daemon_services(
 
     log_mapped_bytes_budget_check(logger, check_mapped_bytes_budget_against_cgroup_limit())
 
+    # One stable archive ownership lock is shared with offline maintenance.
+    # The pidfile below remains process metadata only and is never the
+    # authority used to exclude a concurrent migration or startup.
+    from polylogue.operations.durable_change_train import (
+        acquire_durable_archive_ownership,
+        reconcile_durable_change_trains_on_startup,
+    )
+
+    archive_owner = acquire_durable_archive_ownership(archive_root_path, owner_id=f"daemon:{os.getpid()}")
+    try:
+        recovered_train_paths = reconcile_durable_change_trains_on_startup(archive_root_path)
+        if recovered_train_paths:
+            logger.warning(
+                "daemon: reconciled %d interrupted durable change train(s) during startup: %s",
+                len(recovered_train_paths),
+                ", ".join(str(path) for path in recovered_train_paths),
+            )
+    except BaseException:
+        archive_owner.release()
+        raise
+
     # Schema preflight runs FIRST, before any DB-touching startup task. A
     # mismatched runtime/db combination must not even open the DB for FTS or
     # heartbeat queries — that is the IO cost #1003 is meant to avoid.
-    schema_alert = _check_schema_version_fast()
+    try:
+        schema_alert = _check_schema_version_fast()
+    except BaseException:
+        archive_owner.release()
+        raise
     # polylogue-gbs02: "watcher_blocked" here means "the derived tier (or
     # worse) is stale, so materialize/index-writing maintenance loops must
     # stay parked" -- unchanged from before, still gates the loops/converger/
@@ -2215,13 +2240,16 @@ async def run_daemon_services(
 
     # Prevent concurrent daemon instances: verify existing pidfile, then
     # acquire an advisory flock.
-    if pidfile.exists():
-        if _verify_pidfile(pidfile):
+    try:
+        if pidfile.exists() and _verify_pidfile(pidfile):
             old_pid = pidfile.read_text().strip()
             raise RuntimeError(f"Daemon already running (PID {old_pid}). Stop it first or remove {pidfile}")
-        pidfile.unlink(missing_ok=True)
-
-    pidfile_fd = _acquire_pidfile(pidfile)
+        # A stale pidfile is overwritten in place after the stable archive
+        # lock is held. It is never unlinked as a lock-reclamation strategy.
+        pidfile_fd = _acquire_pidfile(pidfile)
+    except BaseException:
+        archive_owner.release()
+        raise
     # Only register the pidfile for atexit cleanup AFTER lock acquisition.
     # Setting _pidfile_path before _acquire_pidfile() means a failed lock
     # attempt by an ephemeral instance would still atexit-unlink the live
@@ -2244,31 +2272,45 @@ async def run_daemon_services(
                 await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
         writer_drained = await write_coordinator.shutdown(timeout=5.0)
         _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        if writer_drained:
+            archive_owner.release()
         _daemon_lifecycle = None
         raise
 
-    # Ensure all configured source roots exist so health checks don't flag
-    # never-yet-used sources (e.g. hooks sidecar dir) as missing.
-    for src in sources:
-        src.root.mkdir(parents=True, exist_ok=True)
+    try:
+        # Ensure all configured source roots exist so health checks don't flag
+        # never-yet-used sources (e.g. hooks sidecar dir) as missing.
+        for src in sources:
+            src.root.mkdir(parents=True, exist_ok=True)
 
-    if lifecycle_events_enabled:
-        await _emit_daemon_lifecycle_event(
-            "startup",
-            archive_root_path=archive_root_path,
-            status="starting",
-            payload={
-                "api_enabled": enable_api,
-                "api_host": api_host,
-                "api_port": api_port,
-                "browser_capture_enabled": enable_browser_capture,
-                "browser_capture_host": browser_capture_host,
-                "browser_capture_port": browser_capture_port,
-                "watch_enabled": enable_watch,
-                "source_catchup_enabled": enable_source_catchup,
-                "source_roots": [str(src.root) for src in sources],
-            },
-        )
+        if lifecycle_events_enabled:
+            await _emit_daemon_lifecycle_event(
+                "startup",
+                archive_root_path=archive_root_path,
+                status="starting",
+                payload={
+                    "api_enabled": enable_api,
+                    "api_host": api_host,
+                    "api_port": api_port,
+                    "browser_capture_enabled": enable_browser_capture,
+                    "browser_capture_host": browser_capture_host,
+                    "browser_capture_port": browser_capture_port,
+                    "watch_enabled": enable_watch,
+                    "source_catchup_enabled": enable_source_catchup,
+                    "source_roots": [str(src.root) for src in sources],
+                },
+            )
+    except BaseException:
+        lifecycle = _daemon_lifecycle
+        if lifecycle is not None:
+            with contextlib.suppress(Exception):
+                await write_coordinator.run_sync("daemon.lifecycle.stop", lifecycle.stop, exit_kind="error")
+        writer_drained = await write_coordinator.shutdown(timeout=5.0)
+        _release_pidfile_after_writer_drain(pidfile_fd, writer_drained=writer_drained)
+        if writer_drained:
+            archive_owner.release()
+        _daemon_lifecycle = None
+        raise
 
     # Periodic maintenance tasks. If schema preflight blocks the watcher, do
     # not start any background loop that opens the archive: a mismatched
@@ -2311,6 +2353,7 @@ async def run_daemon_services(
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
+    writer_drained = False
     try:
         if enable_browser_capture:
             resolved_browser_capture_auth_token = resolve_receiver_auth_token(
@@ -2629,6 +2672,8 @@ async def run_daemon_services(
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
             restore_signal_handlers(previous_signal_handlers)
+            if writer_drained:
+                archive_owner.release()
             _daemon_lifecycle = None
 
     logger.info("daemon stopped")

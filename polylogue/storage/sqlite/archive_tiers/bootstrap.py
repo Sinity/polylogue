@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -286,8 +287,23 @@ def initialize_archive_database(path: Path, tier: ArchiveTier) -> None:
 
 def initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
-    for spec in ARCHIVE_TIER_SPECS.values():
-        initialize_archive_database(root / spec.filename, spec.tier)
+    from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLocation
+
+    with OwnedArchiveLocation.acquire(
+        ArchiveLocation.resolve(root),
+        owner_id=f"bootstrap:{os.getpid()}",
+        allow_reentrant=True,
+    ):
+        reconcile_durable_change_trains_on_startup(root)
+        for spec in ARCHIVE_TIER_SPECS.values():
+            initialize_archive_database(root / spec.filename, spec.tier)
+
+
+def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
+    """Reconcile persisted durable trains without executing migration SQL."""
+    from polylogue.storage.sqlite.durable_change_train import reconcile_durable_change_train_startup
+
+    return reconcile_durable_change_train_startup(root)
 
 
 __all__ = [
@@ -297,5 +313,6 @@ __all__ = [
     "initialize_active_archive_root",
     "initialize_archive_database",
     "initialize_archive_tier",
+    "reconcile_durable_change_trains_on_startup",
     "archive_tier_spec",
 ]

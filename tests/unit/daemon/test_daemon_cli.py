@@ -3357,6 +3357,70 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
     assert not (tmp_path / "daemon.pid").exists()
 
 
+def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
+
+    events: list[str] = []
+
+    class Coordinator:
+        async def run_sync(self, actor: str, _function: object, /, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            if actor == "daemon.lifecycle.start":
+                raise RuntimeError("startup stopped")
+            return None
+
+        async def shutdown(self, *, timeout: float) -> bool:
+            assert timeout == 5.0
+            return True
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: tmp_path / "index.db"
+    )
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: Coordinator())
+
+    def reconcile(root: Path) -> tuple[Path, ...]:
+        events.append(f"reconcile:{root}")
+        return (tmp_path / "recovered.json",)
+
+    def schema_ok() -> HealthAlert:
+        events.append("schema")
+        return HealthAlert(
+            check_name="schema_version",
+            tier=HealthTier.FAST,
+            severity=HealthSeverity.OK,
+            message="ok",
+            checked_at="now",
+        )
+
+    monkeypatch.setattr(
+        "polylogue.operations.durable_change_train.reconcile_durable_change_trains_on_startup", reconcile
+    )
+    monkeypatch.setattr(
+        daemon_cli,
+        "_check_schema_version_fast",
+        schema_ok,
+    )
+
+    with pytest.raises(RuntimeError, match="startup stopped"):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert events == [f"reconcile:{tmp_path}", "schema"]
+    assert (tmp_path / ".archive-ownership.lock").exists()
+    assert not (tmp_path / "daemon.pid").exists()
+
+
 def test_run_daemon_services_checks_archive_identity_before_component_startup(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.archive_identity import ArchiveIdentityConflictError
