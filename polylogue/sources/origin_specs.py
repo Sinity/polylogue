@@ -94,6 +94,12 @@ def _source_path(path: str) -> Path:
     return (candidate if candidate.is_absolute() else _SOURCE_ROOT / candidate).resolve()
 
 
+def _source_file_from_reference(reference: str) -> str:
+    """Return the file portion of a declared ``path:Symbol`` reference."""
+    path, separator, _symbol = reference.partition(":")
+    return path if separator else reference
+
+
 def _source_signature(path: Path) -> tuple[str, int, int]:
     stat = path.stat()
     return str(path), stat.st_mtime_ns, stat.st_size
@@ -393,7 +399,15 @@ class OriginSpec:
 
     def parser_fingerprint(self) -> str:
         """Return the origin-scoped fingerprint of parser output semantics."""
-        return _fingerprint_sources(self.parser_paths, namespace=f"parser:{self.origin.value}")
+        declared_paths = list(self.parser_paths)
+        declared_paths.extend(self.assembly_paths)
+        if self.stream_parser_path is not None:
+            declared_paths.append(self.stream_parser_path)
+        if self.assembly_spec_path is not None:
+            declared_paths.append(self.assembly_spec_path)
+        declared_paths.extend(rule.parser_path for rule in self.artifact_rules if rule.parser_path is not None)
+        source_paths = tuple(dict.fromkeys(_source_file_from_reference(path) for path in declared_paths))
+        return _fingerprint_sources(source_paths, namespace=f"parser:{self.origin.value}")
 
 
 def lowering_fingerprint() -> str:

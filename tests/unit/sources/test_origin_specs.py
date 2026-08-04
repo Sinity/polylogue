@@ -91,6 +91,34 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
     assert before != after
 
 
+def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_path: Path) -> None:
+    """Assembly enrichment is part of the origin's normalized output contract."""
+    spec = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.AISTUDIO_DRIVE)
+    parser_source = tmp_path / "parser.py"
+    assembly_source = tmp_path / "assembly.py"
+    helper_source = tmp_path / "support.py"
+    parser_source.write_text("def parse(payload):\n    return payload\n", encoding="utf-8")
+    assembly_source.write_text(
+        "from .support import enrich\n\n"
+        "class AssemblySpec:\n"
+        "    def enrich_session(self, session):\n"
+        "        return enrich(session)\n",
+        encoding="utf-8",
+    )
+    helper_source.write_text("def enrich(value):\n    return value.strip()\n", encoding="utf-8")
+    synthetic = replace(
+        spec,
+        parser_paths=(str(parser_source),),
+        assembly_spec_path=f"{assembly_source}:AssemblySpec",
+    )
+
+    before = synthetic.parser_fingerprint()
+    helper_source.write_text("def enrich(value):\n    return value.strip().casefold()\n", encoding="utf-8")
+    after = synthetic.parser_fingerprint()
+
+    assert before != after
+
+
 def test_production_fingerprints_are_stable_across_a_fresh_interpreter() -> None:
     current_parser = parser_fingerprint_for_origin(Origin.CODEX_SESSION)
     command = (
