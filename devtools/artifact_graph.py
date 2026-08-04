@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Fail with exit 1 if any runtime artifact, operation, maintenance target, or operation path is uncovered.",
+        help="Fail with exit 1 if any runtime artifact, declared operation, maintenance target, or operation path is uncovered.",
     )
     args = parser.parse_args(argv)
     sys.stdout.write(render_artifact_graph(as_json=args.json))
@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         if (
             coverage.uncovered_artifacts
             or coverage.uncovered_operations
+            or coverage.uncovered_declared_operations
             or coverage.uncovered_maintenance_targets
             or any(not path.complete for path in coverage.paths.values())
         ):

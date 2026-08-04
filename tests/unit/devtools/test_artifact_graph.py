@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
+
+import pytest
 
 from devtools import artifact_graph
+from devtools.scenario_coverage import build_runtime_scenario_coverage
 
 
 def test_render_artifact_graph_text_mentions_the_current_runtime_paths() -> None:
@@ -201,3 +205,15 @@ def test_render_artifact_graph_json_is_machine_readable() -> None:
     assert payload["scenario_coverage"]["paths"]["session-insight-repair-loop"]["complete"] is True
     assert payload["scenario_coverage"]["uncovered_artifacts"] == []
     assert payload["scenario_coverage"]["uncovered_operations"] == []
+    assert payload["scenario_coverage"]["uncovered_declared_operations"] == []
+
+
+def test_strict_graph_rejects_an_uncovered_declared_operation(monkeypatch: pytest.MonkeyPatch) -> None:
+    coverage = build_runtime_scenario_coverage()
+    monkeypatch.setattr(
+        artifact_graph,
+        "build_runtime_scenario_coverage",
+        lambda: replace(coverage, uncovered_declared_operations=("cross-surface-operation",)),
+    )
+
+    assert artifact_graph.main(["--strict"]) == 1
