@@ -228,6 +228,21 @@ def _parse_bool_token(value: str) -> bool | None:
     return None
 
 
+def _parse_memory_budget_bytes(value: object, *, source: str) -> int | None:
+    """Parse an optional positive process memory budget in bytes."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ConfigError(f"{source}={value!r} is not a valid positive integer byte budget.")
+    try:
+        parsed = int(str(value).strip(), 10)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{source}={value!r} is not a valid positive integer byte budget.") from exc
+    if parsed <= 0:
+        raise ConfigError(f"{source}={value!r} must be greater than zero.")
+    return parsed
+
+
 def _require_bool_config_value(data: Mapping[str, object], key: str) -> bool:
     """Strictly resolve a capability-boundary boolean config value.
 
@@ -271,6 +286,7 @@ class PolylogueConfig:
 
     def __post_init__(self) -> None:
         frozen_data = {str(key): _freeze_config_value(value) for key, value in self._data.items()}
+        _parse_memory_budget_bytes(frozen_data.get("memory_budget_bytes"), source="memory_budget_bytes")
         object.__setattr__(self, "_data", MappingProxyType(frozen_data))
         object.__setattr__(self, "_layers", MappingProxyType(dict(self._layers)))
         object.__setattr__(self, "_layer_paths", MappingProxyType(dict(self._layer_paths)))
@@ -728,6 +744,11 @@ class PolylogueConfig:
         if value is None:
             return None
         return float(str(value))
+
+    @property
+    def memory_budget_bytes(self) -> int | None:
+        """Optional positive process memory budget used by SQLite profiles."""
+        return _parse_memory_budget_bytes(self._data.get("memory_budget_bytes"), source="memory_budget_bytes")
 
     @property
     def mcp_write_enabled(self) -> bool:
@@ -1380,6 +1401,17 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Maximum concurrent workers for live full-artifact ingestion.",
     ),
     ConfigInventoryEntry(
+        "memory_budget_bytes",
+        toml_path="resource.memory_budget_bytes",
+        env_var="POLYLOGUE_MEMORY_BUDGET_BYTES",
+        owner_class="resource-policy",
+        reload_behavior="startup-bound",
+        description=(
+            "Optional process memory budget in bytes. SQLite mmap/cache profile "
+            "limits scale proportionally; absent preserves the measured default."
+        ),
+    ),
+    ConfigInventoryEntry(
         "raw_authority_commit_batch_size",
         toml_path="pipeline.raw_authority.commit_batch_size",
         env_var="POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE",
@@ -1589,6 +1621,7 @@ _INT_CONFIG_KEYS = frozenset(
         "notification_email_max_per_hour",
         "ingest_commit_batch_messages",
         "live_full_ingest_workers",
+        "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
         "raw_authority_commit_batch_size",
@@ -1816,6 +1849,7 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "antigravity_language_server": None,
         "ingest_commit_batch_messages": 8000,
         "live_full_ingest_workers": 1,
+        "memory_budget_bytes": None,
         "raw_authority_commit_batch_size": None,
         "raw_authority_whale_payload_bytes": None,
         "subscription_plans": (),
@@ -2027,6 +2061,8 @@ def _coerce_env_value(cfg_key: str, env_var: str, value: str) -> object:
             "use one of 1/true/yes/on or 0/false/no/off (case-insensitive)."
         )
     if cfg_key in _INT_CONFIG_KEYS:
+        if cfg_key == "memory_budget_bytes":
+            return _parse_memory_budget_bytes(value, source=env_var)
         try:
             return int(value)
         except ValueError:

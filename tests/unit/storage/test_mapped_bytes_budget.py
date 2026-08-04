@@ -13,6 +13,10 @@ empty would make ``test_at_risk_when_limit_at_or_below_budget`` fail to warn.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+
 import pytest
 
 from polylogue.storage.sqlite.connection_profile import (
@@ -20,6 +24,8 @@ from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_MMAP_SIZE_BYTES,
     DAEMON_WRITE_CACHE_SIZE_KIB,
     DAEMON_WRITE_MMAP_SIZE_BYTES,
+    DEFAULT_MEMORY_BUDGET_BYTES,
+    MEMORY_BUDGET_BYTES,
     READ_CACHE_SIZE_KIB,
     READ_MMAP_SIZE_BYTES,
     MappedBytesBudgetCheck,
@@ -27,6 +33,133 @@ from polylogue.storage.sqlite.connection_profile import (
     log_mapped_bytes_budget_check,
     mapped_bytes_budget,
 )
+
+
+def _import_profile_values(*, budget_bytes: int | None) -> dict[str, int]:
+    env = os.environ.copy()
+    if budget_bytes is None:
+        env.pop("POLYLOGUE_MEMORY_BUDGET_BYTES", None)
+    else:
+        env["POLYLOGUE_MEMORY_BUDGET_BYTES"] = str(budget_bytes)
+    code = """
+from polylogue.storage.sqlite.connection_profile import (
+    BULK_BUILD_CACHE_SIZE_KIB,
+    BULK_BUILD_MMAP_SIZE_BYTES,
+    DAEMON_WRITE_CACHE_SIZE_KIB,
+    DAEMON_WRITE_MMAP_SIZE_BYTES,
+    MEMORY_BUDGET_BYTES,
+    READ_CACHE_SIZE_KIB,
+    READ_MMAP_SIZE_BYTES,
+    WRITE_CACHE_SIZE_KIB,
+    WRITE_MMAP_SIZE_BYTES,
+)
+print(" ".join(str(value) for value in (
+    MEMORY_BUDGET_BYTES,
+    WRITE_CACHE_SIZE_KIB,
+    DAEMON_WRITE_CACHE_SIZE_KIB,
+    READ_CACHE_SIZE_KIB,
+    BULK_BUILD_CACHE_SIZE_KIB,
+    WRITE_MMAP_SIZE_BYTES,
+    DAEMON_WRITE_MMAP_SIZE_BYTES,
+    READ_MMAP_SIZE_BYTES,
+    BULK_BUILD_MMAP_SIZE_BYTES,
+)))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    values = [int(value) for value in completed.stdout.split()]
+    keys = (
+        "memory_budget_bytes",
+        "write_cache_size_kib",
+        "daemon_write_cache_size_kib",
+        "read_cache_size_kib",
+        "bulk_build_cache_size_kib",
+        "write_mmap_size_bytes",
+        "daemon_write_mmap_size_bytes",
+        "read_mmap_size_bytes",
+        "bulk_build_mmap_size_bytes",
+    )
+    return dict(zip(keys, values, strict=True))
+
+
+def test_declared_budget_preserves_defaults_when_absent() -> None:
+    values = _import_profile_values(budget_bytes=None)
+    assert values == {
+        "memory_budget_bytes": DEFAULT_MEMORY_BUDGET_BYTES,
+        "write_cache_size_kib": 131072,
+        "daemon_write_cache_size_kib": 16384,
+        "read_cache_size_kib": 32768,
+        "bulk_build_cache_size_kib": 524288,
+        "write_mmap_size_bytes": 1073741824,
+        "daemon_write_mmap_size_bytes": 67108864,
+        "read_mmap_size_bytes": 134217728,
+        "bulk_build_mmap_size_bytes": 4294967296,
+    }
+
+
+def test_declared_budget_scales_all_profile_mmap_and_cache_sizes() -> None:
+    values = _import_profile_values(budget_bytes=DEFAULT_MEMORY_BUDGET_BYTES // 2)
+    assert values == {
+        "memory_budget_bytes": DEFAULT_MEMORY_BUDGET_BYTES // 2,
+        "write_cache_size_kib": 65536,
+        "daemon_write_cache_size_kib": 8192,
+        "read_cache_size_kib": 16384,
+        "bulk_build_cache_size_kib": 262144,
+        "write_mmap_size_bytes": 536870912,
+        "daemon_write_mmap_size_bytes": 33554432,
+        "read_mmap_size_bytes": 67108864,
+        "bulk_build_mmap_size_bytes": 2147483648,
+    }
+
+
+def test_scaled_budget_drives_startup_warning_threshold() -> None:
+    env = os.environ.copy()
+    env["POLYLOGUE_MEMORY_BUDGET_BYTES"] = str(DEFAULT_MEMORY_BUDGET_BYTES // 2)
+    code = """
+import polylogue.core.metrics as metrics
+from polylogue.storage.sqlite.connection_profile import (
+    MEMORY_BUDGET_BYTES,
+    check_mapped_bytes_budget_against_cgroup_limit,
+    mapped_bytes_budget,
+)
+budget = mapped_bytes_budget()
+metrics.read_cgroup_memory_max_bytes = lambda: budget
+metrics.read_cgroup_memory_high_bytes = lambda: budget
+check = check_mapped_bytes_budget_against_cgroup_limit()
+print(check.memory_budget_bytes, check.budget_bytes, check.at_risk_limits)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    budget_value, mapped_value, thresholds = completed.stdout.strip().split(maxsplit=2)
+    assert int(budget_value) == DEFAULT_MEMORY_BUDGET_BYTES // 2
+    assert int(mapped_value) > 0
+    assert thresholds == "('memory.max', 'memory.high')"
+
+
+@pytest.mark.parametrize("raw_budget", ["", "0", "-1", "not-a-number"])
+def test_invalid_declared_budget_fails_loudly(raw_budget: str) -> None:
+    env = os.environ.copy()
+    env["POLYLOGUE_MEMORY_BUDGET_BYTES"] = raw_budget
+    code = "from polylogue.storage.sqlite.connection_profile import MEMORY_BUDGET_BYTES; print(MEMORY_BUDGET_BYTES)"
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert completed.returncode != 0
+    assert "POLYLOGUE_MEMORY_BUDGET_BYTES" in completed.stderr
 
 
 def test_mapped_bytes_budget_reflects_documented_worst_case() -> None:
@@ -66,6 +199,7 @@ def test_check_reads_cgroup_limits_via_core_metrics(monkeypatch: pytest.MonkeyPa
     assert check.memory_max_bytes == 20 * 1024 * 1024 * 1024
     assert check.memory_high_bytes == 16 * 1024 * 1024 * 1024
     assert check.budget_bytes == mapped_bytes_budget()
+    assert check.memory_budget_bytes == MEMORY_BUDGET_BYTES
 
 
 def test_at_risk_when_limit_at_or_below_budget() -> None:
@@ -157,6 +291,38 @@ def test_warns_when_at_risk() -> None:
     assert level == "warning"
     assert message == "mmap_budget_at_or_above_cgroup_limit"
     assert kw["at_risk_limits"] == ["memory.high"]
+    assert kw["memory_budget_bytes"] == MEMORY_BUDGET_BYTES
+
+
+def test_warning_threshold_uses_effective_budget() -> None:
+    budget = mapped_bytes_budget()
+    check = MappedBytesBudgetCheck(
+        budget_bytes=budget,
+        memory_max_bytes=budget,
+        memory_high_bytes=budget,
+        concurrent_read_connections=4,
+        memory_budget_bytes=MEMORY_BUDGET_BYTES,
+    )
+
+    class _Recorder:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+        def debug(self, message: str, **kw: object) -> None:
+            self.calls.append(("debug", message, kw))
+
+        def info(self, message: str, **kw: object) -> None:
+            self.calls.append(("info", message, kw))
+
+        def warning(self, message: str, **kw: object) -> None:
+            self.calls.append(("warning", message, kw))
+
+    recorder = _Recorder()
+    log_mapped_bytes_budget_check(recorder, check)  # type: ignore[arg-type]
+
+    assert recorder.calls[0][0] == "warning"
+    assert recorder.calls[0][2]["memory_budget_bytes"] == MEMORY_BUDGET_BYTES
+    assert recorder.calls[0][2]["budget_mb"] == round(budget / (1024 * 1024), 1)
 
 
 def test_logs_info_when_within_limits() -> None:

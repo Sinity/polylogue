@@ -638,6 +638,11 @@ default off) and `ce0cd45cf`/`5e23e6abf` if the GIL parse path itself needs
 to come back; neither revert is expected to be necessary since the warm has
 no writer-hold interaction and degrades safely on any interpreter.
 
+### SQLite memory budget
+
+The optional `POLYLOGUE_MEMORY_BUDGET_BYTES` startup setting declares the
+process memory budget in bytes. The SQLite read, write, daemon-write, and bulk-build mmap and cache limits scale together from that value. The same setting is available through the layered config contract as `[resource].memory_budget_bytes`. When absent, the measured 18 GiB default preserves the existing profile constants. Values must be positive base-10 integers; invalid values fail configuration resolution loudly. Daemon startup observability reports both the mapped SQLite budget and the effective declared memory budget before comparing the mapped budget with cgroup limits.
+
 ### Operator-Owned Tasks
 
 These are heavier operations that should run outside the daemon via
