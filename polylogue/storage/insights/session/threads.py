@@ -27,12 +27,17 @@ _ROOT_THREAD_IDS_SQL = """
     WHERE parent.session_id IS NULL
     ORDER BY c.session_id
 """
+# These walks use ``UNION`` deliberately.  A parent cycle revisits the same
+# session row, so deduplicating recursive rows terminates the walk while the
+# root predicates still return no fabricated root for the cyclic component.
+# Keep the same cycle boundary across the single-root, batched-root,
+# descendant, and profile-loading queries below.
 _THREAD_ROOT_ID_SQL = """
     WITH RECURSIVE ancestors(session_id, parent_session_id) AS (
         SELECT session_id, parent_session_id
         FROM sessions
         WHERE session_id = ?
-        UNION ALL
+        UNION
         SELECT c.session_id, c.parent_session_id
         FROM sessions c
         JOIN ancestors a ON a.parent_session_id = c.session_id
@@ -47,7 +52,7 @@ _THREAD_ROOT_IDS_SQL_TEMPLATE = """
         SELECT session_id, session_id, parent_session_id
         FROM sessions
         WHERE session_id IN ({placeholders})
-        UNION ALL
+        UNION
         SELECT a.target_id, c.session_id, c.parent_session_id
         FROM sessions c
         JOIN ancestors a ON a.parent_session_id = c.session_id
@@ -61,7 +66,7 @@ _THREAD_SESSION_IDS_SQL = """
         SELECT session_id
         FROM sessions
         WHERE session_id = ?
-        UNION ALL
+        UNION
         SELECT c.session_id
         FROM sessions c
         JOIN descendants d ON c.parent_session_id = d.session_id
@@ -75,7 +80,7 @@ _THREAD_PROFILE_RECORDS_BY_ROOT_SQL_TEMPLATE = """
         SELECT session_id, session_id
         FROM sessions
         WHERE session_id IN ({placeholders})
-        UNION ALL
+        UNION
         SELECT d.root_id, c.session_id
         FROM sessions c
         JOIN descendants d ON c.parent_session_id = d.session_id
