@@ -49,13 +49,14 @@ The focused checks passed.
         "The focused checks passed.",
     ]
     assert session.messages[0].blocks[0].type == BlockType.TEXT
-    assert session.messages[0].provider_message_id == "cascade-1:0:user_input"
-    assert session.messages[1].provider_message_id == "cascade-1:1:planner_response"
+    assert session.messages[0].provider_message_id.startswith("synthetic-")
+    assert session.messages[1].provider_message_id.startswith("synthetic-")
+    assert session.messages[0].provider_message_id != session.messages[1].provider_message_id
     assert [message.position for message in session.messages] == [0, 1]
     assert [message.variant_index for message in session.messages] == [0, 0]
     assert [message.is_active_path for message in session.messages] == [True, True]
     assert [message.is_active_leaf for message in session.messages] == [False, True]
-    assert session.active_leaf_message_provider_id == "cascade-1:1:planner_response"
+    assert session.active_leaf_message_provider_id == session.messages[1].provider_message_id
 
 
 def test_mark_active_leaf_flags_exactly_one_message_with_duplicate_ids() -> None:
@@ -90,11 +91,11 @@ Unstructured transcript body.
     session = parse_markdown_export(markdown, summary)
 
     assert [message.role for message in session.messages] == [Role.ASSISTANT]
-    assert session.messages[0].provider_message_id == "cascade-2:0:export"
+    assert session.messages[0].provider_message_id.startswith("synthetic-")
     assert session.messages[0].text == "Unstructured transcript body."
     assert session.messages[0].position == 0
     assert session.messages[0].is_active_leaf is True
-    assert session.active_leaf_message_provider_id == "cascade-2:0:export"
+    assert session.active_leaf_message_provider_id == session.messages[0].provider_message_id
 
 
 def test_parse_brain_metadata_reads_adjacent_artifact(tmp_path: Path) -> None:

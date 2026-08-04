@@ -28,6 +28,7 @@ from .base import (
     ParsedSession,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    synthetic_message_id,
 )
 
 _METADATA_SUFFIX = ".metadata.json"
@@ -430,7 +431,13 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             continue
         heading = section.group("title")
         role = Role.USER if heading == "User Input" else Role.ASSISTANT
-        provider_message_id = f"{cascade_id}:{index}:{_message_kind(heading)}"
+        provider_message_id = synthetic_message_id(
+            namespace=cascade_id,
+            role=role,
+            text=text,
+            timestamp=None,
+            kind=_message_kind(heading),
+        )
         messages.append(
             ParsedMessage(
                 provider_message_id=provider_message_id,
@@ -460,7 +467,13 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
         return []
     return [
         ParsedMessage(
-            provider_message_id=f"{cascade_id}:0:export",
+            provider_message_id=synthetic_message_id(
+                namespace=cascade_id,
+                role=Role.ASSISTANT,
+                text=text,
+                timestamp=None,
+                kind="export",
+            ),
             role=Role.ASSISTANT,
             text=text,
             blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.core.enums import Provider
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.browser_capture import (
@@ -385,6 +386,32 @@ def test_claude_export_normalization_survives_record_reordering() -> None:
     )
     assert revision.source_message_provider_id == "a-new"
     assert revision.payload["revision_id"] == "revision-a-new-2"
+
+
+def test_claude_idless_message_reordering_keeps_revision_identity() -> None:
+    rows = {
+        "idless": {
+            "sender": "human",
+            "text": "An id-less turn.",
+            "created_at": "2026-07-01T10:00:00Z",
+        },
+        "native": {
+            "uuid": "native-1",
+            "sender": "assistant",
+            "text": "A native turn.",
+            "created_at": "2026-07-01T10:00:01Z",
+        },
+    }
+    forward_payload = {"uuid": "claude-idless", "chat_messages": [rows["idless"], rows["native"]]}
+    reordered_payload = {"uuid": "claude-idless", "chat_messages": [rows["native"], rows["idless"]]}
+
+    forward = parse_payload(Provider.CLAUDE_AI, forward_payload, "fallback")[0]
+    reordered = parse_payload(Provider.CLAUDE_AI, reordered_payload, "fallback")[0]
+
+    assert "" in [message.provider_message_id for message in forward.messages]
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
 
 
 def test_authenticated_browser_capture_uses_native_payload_and_enriches_attachment() -> None:

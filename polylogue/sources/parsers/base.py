@@ -23,6 +23,7 @@ from .base_support import (
     fill_linear_parent_chain,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    synthetic_message_id,
     text_blocks_prose,
 )
 
@@ -44,5 +45,6 @@ __all__ = [
     "fill_linear_parent_chain",
     "human_authored_override",
     "mark_last_occurrence_as_active_leaf",
+    "synthetic_message_id",
     "text_blocks_prose",
 ]

@@ -912,7 +912,7 @@ def normalize_chat_messages(
             "provider_message_id",
         )
         if message_id is None:
-            message_id = f"msg-{index}"
+            message_id = ""
             ingest_flags.append(CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG)
 
         raw_role = _raw_role(item)

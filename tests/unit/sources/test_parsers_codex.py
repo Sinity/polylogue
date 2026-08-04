@@ -529,6 +529,7 @@ class TestMessageParsing:
         assert len(message.blocks) == 1
         assert message.blocks[0].type == BlockType.THINKING
         assert message.blocks[0].text == "**Preparing to analyze git changes**"
+        assert message.provider_message_id.startswith("synthetic-")
 
     def test_reasoning_with_only_encrypted_content_still_recorded(self) -> None:
         """No recoverable text (summary absent, content null) -- the block
@@ -1308,7 +1309,7 @@ class TestEdgeCases:
         assert result.updated_at == "2024-03-15T10:45:00Z"
 
     def test_message_id_fallback(self) -> None:
-        """Message ID falls back to f'msg-{idx}' if not provided."""
+        """An id-less message leaves the provider id empty for comparison fallback."""
         payload = [
             {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "first"}]},
             {
@@ -1320,8 +1321,9 @@ class TestEdgeCases:
         ]
         result = parse(payload, "fallback")
         assert len(result.messages) == 2
-        # First message should have fallback ID
-        assert result.messages[0].provider_message_id.startswith("msg-")
+        # First message should leave the provider id empty so the content
+        # anchor in pipeline.ids handles comparison identity.
+        assert result.messages[0].provider_message_id == ""
         # Second message should use explicit ID
         assert result.messages[1].provider_message_id == "explicit-id"
 

@@ -30,6 +30,7 @@ from .base import (
     ParsedSessionEvent,
     content_blocks_from_segments,
     fill_linear_parent_chain,
+    synthetic_message_id,
 )
 
 logger = get_logger(__name__)
@@ -2009,7 +2010,12 @@ def _codex_reasoning_message(
     combined_text = "\n\n".join(t for t in (summary_text, content_text) if t) or None
     timestamp = _iso_or_none(_record_timestamp(record) or timestamp_fallback)
     return ParsedMessage(
-        provider_message_id=f"reasoning-{index}",
+        provider_message_id=synthetic_message_id(
+            role=Role.ASSISTANT,
+            text=combined_text,
+            timestamp=timestamp,
+            kind="codex-reasoning",
+        ),
         role=Role.ASSISTANT,
         text=combined_text,
         timestamp=timestamp,
@@ -2385,7 +2391,12 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
             if summary_text:
                 messages.append(
                     ParsedMessage(
-                        provider_message_id=f"compaction-summary-{idx}",
+                        provider_message_id=synthetic_message_id(
+                            role=Role.SYSTEM,
+                            text=summary_text,
+                            timestamp=timestamp,
+                            kind="codex-compaction-summary",
+                        ),
                         role=Role.SYSTEM,
                         text=summary_text,
                         timestamp=timestamp,
@@ -2686,7 +2697,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
                 continue
             role = Role.normalize(raw_role)
 
-            msg_id = _record_id(message_record) or f"msg-{idx}"
+            msg_id = _record_id(message_record) or ""
             if not content_blocks and text:
                 content_blocks = [ParsedContentBlock(type=BlockType.TEXT, text=text)]
             token_usage = _token_usage(message_record)

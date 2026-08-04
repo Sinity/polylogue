@@ -350,7 +350,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         session_events.append(model_event)
     branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunks)
     message_position = 0
-    for idx, chunk in enumerate(chunks, start=1):
+    for _idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
             chunk_obj: JSONDocument = {"text": chunk}
         elif isinstance(chunk, dict):
@@ -363,7 +363,7 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         if not isinstance(role_val, str) or not role_val:
             continue
         role = Role.normalize(role_val)
-        msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
+        msg_id = str(chunk_obj.get("id") or "")
         message_timestamp = _chunk_timestamp(chunk_obj, default_timestamp)
         model_name = _string_field(chunk_obj, "model", "modelName", "model_name") or default_model_name
         if model_name is not None:
