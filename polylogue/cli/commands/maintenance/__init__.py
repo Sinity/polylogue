@@ -116,6 +116,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Classify source-tier orphan refs; apply only with backup and receipt.",
     ),
     (
+        "blob-namespace-quarantine",
+        "_blob_namespace_quarantine",
+        "blob_namespace_quarantine_command",
+        "Dry-run-first offline quarantine for invalid blob namespace entries.",
+    ),
+    (
         "attachment-acquisition-debt",
         "_blob_integrity",
         "attachment_acquisition_debt_command",

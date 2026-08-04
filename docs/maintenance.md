@@ -113,6 +113,50 @@ Heuristics:
 
 ## Subcommands
 
+### `polylogue ops maintenance blob-namespace-quarantine`: offline filesystem quarantine
+
+Read-only by default. This is the actuator for entries that
+`BlobStore.iter_namespace()` classifies outside the canonical
+`blob/<2-hex>/<62-hex>` layout: historical SQLite `-wal`/`-shm` sidecars,
+stranded `.blob.*` files, malformed shards, and non-regular entries. It does
+not classify orphaned canonical blobs and never runs GC.
+
+```bash
+polylogue ops maintenance blob-namespace-quarantine --output-format json
+polylogue ops maintenance blob-namespace-quarantine --apply \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --receipt-dir /path/to/new/namespace-quarantine-receipt \
+  --output-format json
+polylogue ops maintenance blob-namespace-quarantine --recover \
+  --receipt-dir /path/to/existing/namespace-quarantine-receipt
+```
+
+Apply requires the daemon stopped, no archive writer lease, the archive-wide
+exclusive maintenance lease, a successful attested source-tier backup manifest
+whose live identity still matches `source.db`, and a clean WAL checkpoint. The
+receipt directory must be new and explicit. Before the first move, the command
+writes and fsyncs immutable `before.json`; afterwards it writes immutable
+`after.json`. Invalid entries move with same-filesystem `os.replace()` into a
+sibling `blob-namespace-quarantine/<operation-id>/` tree. Existing destination
+paths, path escapes, symlinks in required directories, stat/read failures, and
+canonical-shaped hash mismatches all refuse the operation.
+
+No SQLite rows are changed, canonical blobs are never moved, and no deletion
+or garbage collection occurs. The after receipt proves the canonical inventory
+is byte-identical, every candidate is present in quarantine with its recorded
+no-follow tree digest, no invalid namespace entries remain, and the full
+canonical hash pass has no failures. Run the independent final operator gate
+before treating a production pass as complete:
+
+```bash
+polylogue ops doctor --blob-integrity --full --format json
+```
+
+`--recover` is read-only and idempotent. It reports `rolled_back` when every
+source still exists and every destination is absent, `committed` when every
+destination matches the before receipt, and `indeterminate` for mixed or
+conflicting state. It never attempts a repair move.
+
 ### `polylogue ops maintenance blob-reference-liveness` - historical blob-ref reconciliation
 
 Read-only by default. It classifies source-tier `blob_refs` rows with the
