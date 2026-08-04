@@ -215,8 +215,8 @@ def test_parse_chunked_prompt_idless_messages_keep_one_active_leaf() -> None:
 
 
 def test_parse_chunked_prompt_reordering_keeps_timestamp_less_idless_revision_identity() -> None:
-    first = {"role": "user", "text": "First"}
-    second = {"role": "assistant", "text": "Second"}
+    first: JSONDocument = {"role": "user", "text": "First"}
+    second: JSONDocument = {"role": "assistant", "text": "Second"}
     forward = parse_chunked_prompt(
         "gemini",
         {"id": "gemini-timestamp-less-order", "chunkedPrompt": {"chunks": [first, second]}},
