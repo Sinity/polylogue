@@ -15,6 +15,8 @@ import pytest
 
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
+    CanaryDiffReport,
+    CanarySelection,
     CanarySelectionError,
     DifferenceClassification,
     DifferenceOperation,
@@ -22,6 +24,7 @@ from polylogue.maintenance.reindex_canary import (
     UnclassifiedCanaryDiffError,
     compare_reindex_generations,
     load_canary_report,
+    run_reindex_canary,
     select_canary_sessions,
     write_canary_report,
 )
@@ -73,6 +76,31 @@ def _seed_index(
                 (session_id, profile_materialized_at, profile_message_count, '{"b":2,"a":1}'),
             )
         connection.commit()
+
+
+def _empty_selection(index_path: Path) -> CanarySelection:
+    return CanarySelection(
+        index_path=index_path,
+        sessions_per_origin=1,
+        selected_session_ids=(),
+        selected_raw_ids=(),
+        sampled_session_ids=(),
+        pathology_session_ids=(),
+        sample_session_ids=(),
+        origin_counts=(),
+    )
+
+
+def _empty_comparison(current: Path, candidate: Path, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+    return CanaryDiffReport(
+        current_index=current,
+        candidate_index=candidate,
+        session_ids=session_ids,
+        compared_tables=(),
+        missing_tables=(),
+        missing_columns=(),
+        differences=(),
+    )
 
 
 def test_equal_real_generations_ignore_only_materialization_metadata(tmp_path: Path) -> None:
@@ -278,6 +306,83 @@ def test_selector_refuses_unknown_or_non_replayable_explicit_sessions(tmp_path: 
         connection.commit()
     with pytest.raises(CanarySelectionError, match="no raw_id"):
         select_canary_sessions(index, pathology_session_ids=("codex-session:alpha",))
+
+
+def test_run_reindex_canary_compares_its_own_inactive_generation(tmp_path: Path, monkeypatch) -> None:
+    current = tmp_path / "current.db"
+    current.touch()
+    generation_id = "gen-canary"
+    candidate = tmp_path / ".index-generations" / generation_id / "index.db"
+    candidate.parent.mkdir(parents=True)
+    candidate.touch()
+    root = tmp_path
+    selection = _empty_selection(current)
+
+    class Receipt:
+        archive_root = str(root.resolve())
+        selected_raw_count = len(selection.selected_raw_ids)
+        status = "replayed"
+        materialized = True
+        generation = {
+            "generation_id": generation_id,
+            "owner_id": "owner",
+            "archive_root": str(root.resolve()),
+            "index_path": str(candidate),
+            "state": "inactive",
+            "source_snapshot": "snapshot",
+        }
+
+        def to_dict(self) -> dict[str, object]:
+            return {"generation": self.generation}
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
+    )
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.compare_reindex_generations",
+        lambda current_path, candidate_path, *, session_ids: (
+            captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
+            or _empty_comparison(current_path, candidate_path, session_ids)
+        ),
+    )
+
+    result = run_reindex_canary(root, input_index=current, no_promote=True)
+
+    assert result.comparison.candidate_index == candidate
+    assert captured["paths"] == (current, candidate)
+
+
+def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch) -> None:
+    current = tmp_path / "current.db"
+    current.touch()
+    arbitrary = tmp_path / "arbitrary.db"
+    arbitrary.touch()
+    selection = _empty_selection(current)
+
+    class Receipt:
+        archive_root = str(tmp_path.resolve())
+        selected_raw_count = 0
+        status = "replayed"
+        materialized = True
+        generation = {
+            "generation_id": "gen-canary",
+            "owner_id": "owner",
+            "archive_root": str(tmp_path.resolve()),
+            "index_path": str(arbitrary),
+            "state": "inactive",
+            "source_snapshot": "snapshot",
+        }
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
+    )
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+
+    with pytest.raises(CanarySelectionError, match="outside this archive's generation root"):
+        run_reindex_canary(tmp_path, input_index=current, no_promote=True)
 
 
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:

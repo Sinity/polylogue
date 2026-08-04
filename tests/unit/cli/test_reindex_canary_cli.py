@@ -161,14 +161,26 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(tmp_path: Path,
 
 def test_shared_canary_runner_uses_existing_inactive_rebuild_route(tmp_path: Path, monkeypatch) -> None:
     current_index = tmp_path / "current.db"
-    candidate_index = tmp_path / "candidate.db"
+    candidate_index = tmp_path / ".index-generations" / "gen-test" / "index.db"
     current_index.touch()
+    candidate_index.parent.mkdir(parents=True)
     candidate_index.touch()
     selection = _run_result(current_index).selection
     captured: dict[str, object] = {}
 
     class Receipt:
-        generation = {"index_path": str(candidate_index)}
+        archive_root = str(tmp_path.resolve())
+        selected_raw_count = len(selection.selected_raw_ids)
+        status = "replayed"
+        materialized = True
+        generation = {
+            "generation_id": "gen-test",
+            "owner_id": "owner",
+            "archive_root": str(tmp_path.resolve()),
+            "index_path": str(candidate_index),
+            "state": "inactive",
+            "source_snapshot": "snapshot",
+        }
 
         def to_dict(self) -> dict[str, object]:
             return {"generation": self.generation}
@@ -206,4 +218,4 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(tmp_path: Pat
     assert request.raw_ids == selection.selected_raw_ids  # type: ignore[attr-defined]
     assert request.promote is False  # type: ignore[attr-defined]
     assert captured["compare"] == (current_index, candidate_index, selection.selected_session_ids)
-    assert result.rebuild_receipt == {"generation": {"index_path": str(candidate_index)}}
+    assert result.rebuild_receipt == {"generation": Receipt.generation}

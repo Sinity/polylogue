@@ -300,12 +300,15 @@ def run_reindex_canary(
             promote=False,
         )
     )
-    candidate_value = receipt.generation.get("index_path")
-    if not isinstance(candidate_value, str):
-        raise CanarySelectionError("rebuild receipt did not identify an inactive candidate index")
+    candidate_path = _validate_canary_candidate(
+        root,
+        current_index=current_index,
+        selection=selection,
+        receipt=receipt,
+    )
     comparison = compare_reindex_generations(
         current_index,
-        Path(candidate_value),
+        candidate_path,
         session_ids=selection.selected_session_ids,
     )
     return CanaryRunResult(
@@ -313,6 +316,61 @@ def run_reindex_canary(
         comparison=comparison,
         rebuild_receipt=receipt.to_dict(),
     )
+
+
+def _validate_canary_candidate(
+    archive_root: Path,
+    *,
+    current_index: Path,
+    selection: CanarySelection,
+    receipt: object,
+) -> Path:
+    """Prove the compared index is this run's own inactive generation."""
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    root = archive_root.resolve()
+    receipt_root = getattr(receipt, "archive_root", None)
+    if not isinstance(receipt_root, str) or Path(receipt_root).resolve() != root:
+        raise CanarySelectionError("rebuild receipt belongs to a different archive root")
+    if getattr(receipt, "status", None) != "replayed" or getattr(receipt, "materialized", None) is not True:
+        raise CanarySelectionError("rebuild receipt is not a completed materialized replay")
+    if getattr(receipt, "selected_raw_count", None) != len(selection.selected_raw_ids):
+        raise CanarySelectionError("rebuild receipt selected a different raw-id set than the canary")
+
+    generation = getattr(receipt, "generation", None)
+    if not isinstance(generation, dict):
+        raise CanarySelectionError("rebuild receipt did not identify an inactive candidate generation")
+    if generation.get("archive_root") != str(root):
+        raise CanarySelectionError("candidate generation belongs to a different archive root")
+    if generation.get("state") != "inactive":
+        raise CanarySelectionError("reindex canary candidate must remain an inactive generation")
+    generation_id = generation.get("generation_id")
+    owner_id = generation.get("owner_id")
+    source_snapshot = generation.get("source_snapshot")
+    candidate_value = generation.get("index_path")
+    if not all(
+        isinstance(value, str) and value for value in (generation_id, owner_id, source_snapshot, candidate_value)
+    ):
+        raise CanarySelectionError("rebuild receipt did not identify a complete inactive candidate generation")
+
+    location = ArchiveLocation.resolve(archive_root)
+    anchor = location.active_pointer or location.configured_tier("index").configured_path
+    expected_generation_root = anchor.parent / ".index-generations"
+    candidate_path = Path(candidate_value)
+    try:
+        candidate_resolved = candidate_path.resolve(strict=True)
+        current_resolved = Path(current_index).resolve(strict=True)
+    except OSError as exc:
+        raise CanarySelectionError("rebuild receipt candidate index is not readable") from exc
+    if candidate_resolved == current_resolved:
+        raise CanarySelectionError("rebuild receipt candidate index is the active index")
+    if (
+        candidate_resolved.name != "index.db"
+        or candidate_resolved.parent.name != generation_id
+        or candidate_resolved.parent.parent != expected_generation_root.resolve()
+    ):
+        raise CanarySelectionError("rebuild receipt candidate is outside this archive's generation root")
+    return candidate_path
 
 
 @dataclass(frozen=True, slots=True)
