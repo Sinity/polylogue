@@ -24,6 +24,7 @@ from typing import cast
 
 from devtools.clone_support import reflink_clone
 from polylogue.config import Config
+from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.index_generation import IndexGenerationStore, RebuildLease, source_revision_snapshot
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
@@ -299,6 +300,20 @@ def _require_daemon_stopped(archive_root: Path) -> None:
         raise IndexV37FastForwardError(f"polylogued PID {pid} is still running")
 
 
+def _require_candidate_corpus_fidelity(archive_root: Path, candidate_index: Path) -> None:
+    """Require the managed-rebuild corpus gate before this candidate activates."""
+    report = verify_archive(
+        archive_root,
+        checks=CORPUS_FIDELITY_CHECKS,
+        index_path_override=candidate_index,
+    )
+    if report.blocking:
+        failing = "; ".join(
+            f"{check.name}: {check.summary}" for check in report.checks if check.status.value == "error"
+        )
+        raise IndexV37FastForwardError(f"candidate corpus fidelity gate failed: {failing}")
+
+
 def _checkpoint_stopped_database(path: Path, *, label: str = "active index") -> None:
     """Consolidate a stopped writer's committed WAL before clone evidence."""
     resolved = path.resolve(strict=True)
@@ -508,6 +523,7 @@ def activate_forward(*, receipt_path: Path) -> dict[str, object]:
             raise IndexV37FastForwardError("canonical v37 schema changed since clone preparation")
         if _proven_clone_identity(clone) != receipt.get("clone_identity"):
             raise IndexV37FastForwardError("prepared clone bytes changed before activation")
+        _require_candidate_corpus_fidelity(archive_root, clone)
         if status == "prepared":
             receipt.update({"status": "activating", "activation_started_at_ms": _now_ms()})
             _write_receipt(receipt_path, receipt)
