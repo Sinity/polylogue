@@ -29,15 +29,8 @@ class PathologyZooMember:
     motivating_beads: tuple[str, ...]
     session_ids: tuple[str, ...]
     raw_paths: tuple[str, ...]
+    archive_verification_checks: tuple[str, ...]
     durable_paths: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class PathologyZooIntegrationGap:
-    """A consumer named by the zoo design but not yet extensible in this tree."""
-
-    consumer: str
-    follow_up: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +42,16 @@ class PathologyZoo:
 
     def members_for(self, pathology: str) -> tuple[PathologyZooMember, ...]:
         return tuple(member for member in self.manifest if member.pathology == pathology)
+
+    @property
+    def canary_session_ids(self) -> tuple[str, ...]:
+        """Every replayable zoo session supplied to the production canary selector."""
+        return tuple(sorted({session_id for member in self.manifest for session_id in member.session_ids}))
+
+    @property
+    def archive_verification_checks(self) -> tuple[str, ...]:
+        """Registry checks that consume the fixture's durable pathology evidence."""
+        return tuple(sorted({check for member in self.manifest for check in member.archive_verification_checks}))
 
 
 _CODEX = "codex-session"
@@ -68,6 +71,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-whale",),
             ("generated/zoo-00-00.jsonl",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "append-self-describing",
@@ -75,6 +79,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-append-self",),
             ("generated/zoo-01-00.jsonl", "generated/zoo-02-00.jsonl"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "append-opaque",
@@ -82,6 +87,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-append-opaque",),
             ("generated/zoo-03-00.jsonl", "generated/zoo-04-00.jsonl"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "fork-prefix-tail",
@@ -89,6 +95,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-lineage-parent", f"{_CODEX}:zoo-lineage-child"),
             ("manual/lineage-parent.jsonl", "manual/lineage-child.jsonl"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "lineage-cycle",
@@ -96,6 +103,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-cycle-a", f"{_CODEX}:zoo-cycle-b"),
             ("manual/lineage-cycle-a.jsonl", "manual/lineage-cycle-b.jsonl", "manual/lineage-cycle-z-a-update.jsonl"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "grouped-jsonl",
@@ -103,6 +111,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CLAUDE_CODE}:zoo-group-a", f"{_CLAUDE_CODE}:zoo-group-b"),
             ("manual/grouped.jsonl",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "quarantined-head",
@@ -110,6 +119,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CODEX}:zoo-orphan-head",),
             ("manual/lineage-orphan.jsonl",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "empty-session",
@@ -117,6 +127,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CLAUDE_CODE}:zoo-empty",),
             ("manual/empty.jsonl",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "hook-event",
@@ -124,6 +135,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (),
             ("hook-spool/zoo-hook-event.json",),
+            ("blob-refs-liveness",),
         ),
         PathologyZooMember(
             "claude-design",
@@ -131,6 +143,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_DESIGN}:zoo-design-session",),
             ("manual/design.json",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "vintage-reorder",
@@ -138,6 +151,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae", "polylogue-slshy"),
             (f"{_CHATGPT}:zoo-vintage-reorder",),
             ("manual/vintage-old.json", "manual/vintage-new.json"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "content-blocks-vintage",
@@ -145,6 +159,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae", "polylogue-0qfy"),
             (f"{_CLAUDE_AI}:zoo-content-blocks-vintage",),
             ("manual/content-blocks-old.json", "manual/content-blocks-new.json"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "lifecycle-anchor-drift",
@@ -152,6 +167,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae", "polylogue-uqwd"),
             (f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
             ("manual/lifecycle-old.json", "manual/lifecycle-new.json"),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "non-stream-safe",
@@ -159,6 +175,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             ("antigravity-session:zoo-06-00:zoo-06-00.md",),
             ("generated",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "attachment-with-bytes",
@@ -166,6 +183,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_GEMINI}:zoo-attachment-bytes",),
             ("generated/zoo-05-00.json",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "attachment-without-bytes",
@@ -173,6 +191,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CLAUDE_AI}:zoo-attachment-metadata",),
             ("manual/attachment-metadata.json",),
+            ("corpus-absences",),
         ),
         PathologyZooMember(
             "events-sidecars",
@@ -180,16 +199,7 @@ def pathology_zoo_manifest() -> tuple[PathologyZooMember, ...]:
             ("polylogue-yazae",),
             (f"{_CHATGPT}:zoo-lifecycle-anchor-drift",),
             ("manual/lifecycle-old.json",),
-        ),
-    )
-
-
-def pathology_zoo_integration_gaps() -> tuple[PathologyZooIntegrationGap, ...]:
-    """Keep absent consumer hooks visible until their owning lanes expose one."""
-    return (
-        PathologyZooIntegrationGap(
-            "polylogue-0x7nh",
-            "No differ canary-set extension point exists in this checkout; include pathology_zoo_manifest() members when the canary registry lands.",
+            ("corpus-absences",),
         ),
     )
 
@@ -534,9 +544,7 @@ def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
 
 __all__ = [
     "PathologyZoo",
-    "PathologyZooIntegrationGap",
     "PathologyZooMember",
     "build_pathology_zoo",
-    "pathology_zoo_integration_gaps",
     "pathology_zoo_manifest",
 ]

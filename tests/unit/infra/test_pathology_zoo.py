@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
+from shutil import copytree
 
 import pytest
 
+from polylogue.maintenance.reindex_canary import CanarySelectionError, select_canary_sessions
 from tests.infra.pathology_zoo import (
     PathologyZoo,
     build_pathology_zoo,
-    pathology_zoo_integration_gaps,
-    pathology_zoo_manifest,
 )
 
 
@@ -40,7 +41,8 @@ def test_pathology_zoo_manifest_covers_every_v0_dimension(pathology_zoo: Patholo
     }
     assert expected <= {member.pathology for member in pathology_zoo.manifest}
     assert all(
-        member.motivating_beads and member.raw_paths and member.durable_paths for member in pathology_zoo.manifest
+        member.motivating_beads and member.raw_paths and member.durable_paths and member.archive_verification_checks
+        for member in pathology_zoo.manifest
     )
 
 
@@ -207,8 +209,28 @@ def test_zoo_preserves_the_named_vintage_and_lifecycle_red_cases(pathology_zoo: 
     assert vintage_raws == (2,)
 
 
-def test_only_the_absent_canary_hook_is_deferred() -> None:
-    """The archive-verification consumer exists; only the differ canary remains absent."""
-    manifest_ids = {member.member_id for member in pathology_zoo_manifest()}
-    assert {"vintage-reorder", "content-blocks-vintage", "lifecycle-anchor-drift"} <= manifest_ids
-    assert [gap.consumer for gap in pathology_zoo_integration_gaps()] == ["polylogue-0x7nh"]
+def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
+    pathology_zoo: PathologyZoo, tmp_path: Path
+) -> None:
+    """0x7nh's selector receives every replayable manifest member as a raw-id input."""
+    selection = select_canary_sessions(
+        pathology_zoo.archive_root / "index.db",
+        sessions_per_origin=1,
+        pathology_session_ids=pathology_zoo.canary_session_ids,
+    )
+
+    assert selection.pathology_session_ids == pathology_zoo.canary_session_ids
+    assert set(pathology_zoo.canary_session_ids) <= set(selection.selected_session_ids)
+    assert len(selection.selected_raw_ids) == len(set(selection.selected_raw_ids))
+
+    mutated_root = tmp_path / "pathology-zoo-canary-mutation"
+    copytree(pathology_zoo.archive_root, mutated_root)
+    with sqlite3.connect(mutated_root / "index.db") as conn:
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", ("codex-session:zoo-append-self",))
+        conn.commit()
+    with pytest.raises(CanarySelectionError, match="not indexed"):
+        select_canary_sessions(
+            mutated_root / "index.db",
+            sessions_per_origin=1,
+            pathology_session_ids=pathology_zoo.canary_session_ids,
+        )

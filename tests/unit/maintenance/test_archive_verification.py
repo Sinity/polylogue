@@ -1281,7 +1281,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "fts-parity": "test_deleted_fts_row_trips_message_fts_parity",
     "lineage-sanity": "test_dangling_resolved_dst_trips_lineage_sanity",
     "enum-superset-check": "test_missing_enum_value_trips_enum_superset_check",
-    "blob-refs-liveness": "test_blob_ref_with_no_referent_trips_blob_refs_liveness",
+    "blob-refs-liveness": "test_pathology_zoo_manifest_archive_verification_red_twin",
     "embeddings-refs-liveness": "test_orphaned_embedding_ref_trips_embeddings_refs_liveness",
     "session-lineage-acyclic": "test_parent_session_id_cycle_trips_session_lineage_acyclic",
     "message-count-projection": "test_drifted_message_count_trips_message_count_projection",
@@ -1291,7 +1291,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
     "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
     "raw-quarantine-group-dedup": "test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup",
-    "corpus-absences": "test_pathology_zoo_corpus_absences_red_twin",
+    "corpus-absences": "test_pathology_zoo_manifest_archive_verification_red_twin",
     "corpus-attachment-fidelity": "test_corpus_attachment_fidelity_red_twin",
     "corpus-revision-fidelity": "test_corpus_revision_fidelity_red_twin",
 }
@@ -1320,12 +1320,12 @@ def test_corpus_absences_red_twin(tmp_path: Path) -> None:
     assert _check(report, "corpus-absences").status is OutcomeStatus.ERROR
 
 
-def test_pathology_zoo_corpus_absences_red_twin(tmp_path: Path) -> None:
-    """The zoo consumes t0m73's red-twin registry through a real two-wave archive."""
+def test_pathology_zoo_manifest_archive_verification_red_twin(tmp_path: Path) -> None:
+    """Manifest-declared checks are green on ingest, then trip on their real evidence mutations."""
     zoo = build_pathology_zoo(tmp_path / "zoo")
-    clean = verify_archive(zoo.archive_root, checks=("corpus-absences", "corpus-revision-fidelity"))
+    clean = verify_archive(zoo.archive_root, checks=zoo.archive_verification_checks)
     assert _check(clean, "corpus-absences").status is OutcomeStatus.OK
-    assert _check(clean, "corpus-revision-fidelity").status is OutcomeStatus.OK
+    assert _check(clean, "blob-refs-liveness").status is OutcomeStatus.OK
 
     with _connect(zoo.archive_root / "index.db") as conn:
         conn.execute("DELETE FROM sessions WHERE session_id = ?", ("codex-session:zoo-append-self",))
@@ -1333,6 +1333,42 @@ def test_pathology_zoo_corpus_absences_red_twin(tmp_path: Path) -> None:
 
     red = verify_archive(zoo.archive_root, checks=("corpus-absences",))
     assert _check(red, "corpus-absences").status is OutcomeStatus.ERROR
+
+    hook_zoo = build_pathology_zoo(tmp_path / "hook-zoo")
+    with _connect(hook_zoo.archive_root / "source.db") as conn:
+        conn.execute("DELETE FROM raw_hook_events WHERE hook_event_id = ?", ("hook:zoo-hook-event",))
+        conn.commit()
+    hook_red = verify_archive(hook_zoo.archive_root, checks=("blob-refs-liveness",))
+    assert _check(hook_red, "blob-refs-liveness").status is OutcomeStatus.ERROR
+
+
+def test_pathology_zoo_manifest_members_have_registered_check_and_red_twin_coverage(tmp_path: Path) -> None:
+    """A manifest addition must name an exercised archive verification consumer."""
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    registry = set(ARCHIVE_VERIFICATION_CHECK_NAMES)
+    module_globals = globals()
+
+    uncovered = {
+        member.member_id: tuple(
+            check
+            for check in member.archive_verification_checks
+            if check not in registry
+            or RED_TWIN_TESTS.get(check) != "test_pathology_zoo_manifest_archive_verification_red_twin"
+            or not callable(module_globals.get(RED_TWIN_TESTS.get(check, "")))
+        )
+        for member in zoo.manifest
+        if not member.archive_verification_checks
+        or any(
+            check not in registry
+            or RED_TWIN_TESTS.get(check) != "test_pathology_zoo_manifest_archive_verification_red_twin"
+            or not callable(module_globals.get(RED_TWIN_TESTS.get(check, "")))
+            for check in member.archive_verification_checks
+        )
+    }
+    assert not uncovered, f"manifest members without registry/red-twin coverage: {uncovered}"
+
+    report = verify_archive(zoo.archive_root, checks=zoo.archive_verification_checks)
+    assert all(check.status is OutcomeStatus.OK for check in report.checks)
 
 
 def test_corpus_attachment_fidelity_red_twin(tmp_path: Path) -> None:
