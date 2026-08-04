@@ -30,6 +30,7 @@ from .base import (
     ParsedSessionEvent,
     content_blocks_from_segments,
     fill_linear_parent_chain,
+    mark_last_occurrence_as_active_leaf,
     synthetic_message_id,
 )
 
@@ -2809,13 +2810,7 @@ def _parse_records(records: Iterable[object], fallback_id: str) -> ParsedSession
         if isinstance(commit_val, str) and commit_val.strip():
             git_commit_hash_typed = commit_val.strip()
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    if active_leaf_message_provider_id is not None:
-        messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
-        ]
+    messages = mark_last_occurrence_as_active_leaf(messages)
     # bd polylogue-ksgg: Codex rollout messages carry no parent-message
     # evidence at all (0% parented, 0 variant_index>0 rows) -- a strictly
     # linear turn sequence. Chain each message to the previous one so

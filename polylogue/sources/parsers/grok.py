@@ -28,13 +28,9 @@ timestamps, since the shape is reconstructed from secondary sources rather
 than one authoritative spec.
 
 Neither the conversation nor its responses carry a native id in any of the
-confirmed shapes above, so ``provider_session_id``/``provider_message_id``
-are synthesized from the dispatch-provided fallback id and positional index
-within the export file -- the same convention used elsewhere in this codebase
-for id-less sources (e.g. Antigravity brain-artifact fragments in
-``antigravity.py``). This is stable across re-ingest of the same physical
-export file (whose per-conversation position does not change) but is not a
-provider-native identity.
+confirmed shapes above, so ``provider_session_id`` comes from the dispatch
+fallback and ``provider_message_id`` is content-derived. The resulting ids are
+not provider-native, but they remain stable if a re-export reorders responses.
 """
 
 from __future__ import annotations
@@ -53,6 +49,7 @@ from .base import (
     ParsedSession,
     fill_linear_parent_chain,
     human_authored_override,
+    mark_last_occurrence_as_active_leaf,
     synthetic_message_id,
 )
 
@@ -177,13 +174,7 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
         )
 
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    if active_leaf_message_provider_id is not None:
-        messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
-        ]
+    messages = mark_last_occurrence_as_active_leaf(messages)
     # bd polylogue-ksgg: Grok exports carry no native conversation/message id
     # or parent evidence at all (see module docstring) -- a plain ordered
     # response list. Chain each message to the previous one so this origin

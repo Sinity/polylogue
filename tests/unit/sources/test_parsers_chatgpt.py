@@ -12,6 +12,7 @@ import pytest
 
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, MaterialOrigin
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
@@ -379,6 +380,42 @@ def test_chatgpt_idless_message_does_not_get_a_positional_provider_id() -> None:
     messages, _attachments = extract_messages_from_mapping(mapping)
 
     assert [message.provider_message_id for message in messages] == [""]
+
+
+def test_chatgpt_idless_message_reordering_keeps_revision_identity_and_native_ids() -> None:
+    idless: ChatGPTMapping = {
+        "message": {
+            "author": {"role": "user"},
+            "content": {"parts": ["Question"]},
+            "create_time": 1_700_000_000.0,
+        },
+        "parent": None,
+        "children": [],
+    }
+    native: ChatGPTMapping = {
+        "id": "native-node",
+        "message": {
+            "id": "native-message",
+            "author": {"role": "assistant"},
+            "content": {"parts": ["Answer"]},
+            "create_time": 1_700_000_001.0,
+        },
+        "parent": None,
+        "children": [],
+    }
+    forward = chatgpt_parse(
+        {"id": "chatgpt-order", "mapping": {"idless": idless, "native": native}},
+        "fallback",
+    )
+    reordered = chatgpt_parse(
+        {"id": "chatgpt-order", "mapping": {"native": native, "idless": idless}},
+        "fallback",
+    )
+
+    assert [message.provider_message_id for message in forward.messages] == ["", "native-message"]
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
 
 
 # MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 17)

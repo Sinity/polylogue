@@ -5,6 +5,7 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.antigravity import (
     BRAIN_METADATA_FRAGMENT_FLAG,
     AntigravitySessionSummary,
@@ -57,6 +58,22 @@ The focused checks passed.
     assert [message.is_active_path for message in session.messages] == [True, True]
     assert [message.is_active_leaf for message in session.messages] == [False, True]
     assert session.active_leaf_message_provider_id == session.messages[1].provider_message_id
+
+
+def test_parse_markdown_export_reordering_keeps_synthetic_revision_identity() -> None:
+    summary = AntigravitySessionSummary(cascade_id="cascade-order")
+    forward = parse_markdown_export(
+        "### User Input\n\nQuestion\n\n### Planner Response\n\nAnswer\n",
+        summary,
+    )
+    reordered = parse_markdown_export(
+        "### Planner Response\n\nAnswer\n\n### User Input\n\nQuestion\n",
+        summary,
+    )
+
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
 
 
 def test_mark_active_leaf_flags_exactly_one_message_with_duplicate_ids() -> None:

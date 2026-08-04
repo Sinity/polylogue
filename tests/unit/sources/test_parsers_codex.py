@@ -11,6 +11,7 @@ from typing import Any, cast
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Role
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.codex import _tool_input_from_arguments, parse_stream
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
@@ -530,6 +531,36 @@ class TestMessageParsing:
         assert message.blocks[0].type == BlockType.THINKING
         assert message.blocks[0].text == "**Preparing to analyze git changes**"
         assert message.provider_message_id.startswith("synthetic-")
+
+    def test_reasoning_reordering_keeps_synthetic_revision_identity(self) -> None:
+        first = {
+            "type": "response_item",
+            "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "First"}]},
+        }
+        second = {
+            "type": "response_item",
+            "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Second"}]},
+        }
+
+        forward = parse([first, second], "codex-order")
+        reordered = parse([second, first], "codex-order")
+
+        assert (
+            session_revision_projection(forward).message_contents
+            == session_revision_projection(reordered).message_contents
+        )
+
+    def test_duplicate_reasoning_ids_keep_one_active_leaf(self) -> None:
+        record = {
+            "type": "response_item",
+            "payload": {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Repeat"}]},
+        }
+
+        result = parse([record, record], "codex-duplicate-reasoning")
+
+        assert result.messages[0].provider_message_id == result.messages[1].provider_message_id
+        assert sum(message.is_active_leaf is True for message in result.messages) == 1
+        assert result.messages[-1].is_active_leaf is True
 
     def test_reasoning_with_only_encrypted_content_still_recorded(self) -> None:
         """No recoverable text (summary absent, content null) -- the block

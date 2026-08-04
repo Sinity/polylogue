@@ -32,6 +32,7 @@ from ..base import (
     ParsedSessionEvent,
     attachment_from_meta,
     human_authored_override,
+    mark_last_occurrence_as_active_leaf,
     synthetic_message_id,
 )
 from .common import (
@@ -256,14 +257,13 @@ def _design_assistant_messages(
     messages: list[ParsedMessage] = []
     position = start_position
     current_blocks: list[ParsedContentBlock] = []
-    segment_index = 0
     # turn-level facts (turnInputTokens) are attributed to the FIRST emitted
     # segment of the turn -- an arbitrary but documented single anchor point,
     # since the count describes the whole turn, not any one segment.
     first_segment_emitted = False
 
     def flush() -> None:
-        nonlocal current_blocks, segment_index, position, first_segment_emitted
+        nonlocal current_blocks, position, first_segment_emitted
         if not current_blocks:
             return
         text_parts = [
@@ -278,7 +278,7 @@ def _design_assistant_messages(
                 role=Role.ASSISTANT,
                 text=segment_text,
                 timestamp=timestamp_str,
-                kind=f"claude-design-assistant-segment:{segment_index}",
+                kind="claude-design-assistant-segment",
             )
         )
         input_tokens = 0
@@ -299,7 +299,6 @@ def _design_assistant_messages(
             )
         )
         position += 1
-        segment_index += 1
         current_blocks = []
 
     for raw_block in raw_blocks:
@@ -519,13 +518,7 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
             )
 
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
-    if active_leaf_message_provider_id is not None:
-        messages = [
-            message.model_copy(
-                update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id}
-            )
-            for message in messages
-        ]
+    messages = mark_last_occurrence_as_active_leaf(messages)
 
     title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
         payload, resolved_session_id, ref_prefix="claude-design-title"

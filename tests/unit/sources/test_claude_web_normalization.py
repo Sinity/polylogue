@@ -408,7 +408,7 @@ def test_claude_idless_message_reordering_keeps_revision_identity() -> None:
     forward = parse_payload(Provider.CLAUDE_AI, forward_payload, "fallback")[0]
     reordered = parse_payload(Provider.CLAUDE_AI, reordered_payload, "fallback")[0]
 
-    assert "" in [message.provider_message_id for message in forward.messages]
+    assert [message.provider_message_id for message in forward.messages] == ["", "native-1"]
     assert (
         session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
     )

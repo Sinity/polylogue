@@ -288,7 +288,7 @@ def test_user_interjection_splits_the_assistant_turn_and_preserves_ordering() ->
             _assistant_message(
                 "a1",
                 [
-                    {"type": "text", "text": "before"},
+                    {"type": "text", "text": "repeat"},
                     {
                         "type": "user_interjection",
                         "message": {
@@ -299,7 +299,7 @@ def test_user_interjection_splits_the_assistant_turn_and_preserves_ordering() ->
                             "timestamp": "2026-04-22T16:30:16.922Z",
                         },
                     },
-                    {"type": "text", "text": "after"},
+                    {"type": "text", "text": "repeat"},
                 ],
             ),
         ],
@@ -308,16 +308,17 @@ def test_user_interjection_splits_the_assistant_turn_and_preserves_ordering() ->
     roles = [message.role for message in session.messages]
     texts = [message.text for message in session.messages]
     assert roles == [Role.USER, Role.ASSISTANT, Role.USER, Role.ASSISTANT]
-    assert texts == ["start", "before", "actually, do X instead", "after"]
+    assert texts == ["start", "repeat", "actually, do X instead", "repeat"]
     assert session.messages[2].provider_message_id == "interjection-1"
     # Segments have no independent provider id. Their content-derived ids are
     # stable across re-export ordering and do not encode the segment position.
     assert session.messages[1].provider_message_id.startswith("synthetic-")
     assert session.messages[3].provider_message_id.startswith("synthetic-")
-    assert session.messages[1].provider_message_id != session.messages[3].provider_message_id
+    assert session.messages[1].provider_message_id == session.messages[3].provider_message_id
     # active leaf is the true last message, not the raw turn's nominal end
     assert session.active_leaf_message_provider_id == session.messages[3].provider_message_id
     assert session.messages[-1].is_active_leaf is True
+    assert sum(message.is_active_leaf is True for message in session.messages) == 1
 
 
 def test_unrecognized_content_block_type_is_dropped_not_guessed(caplog: Any) -> None:
