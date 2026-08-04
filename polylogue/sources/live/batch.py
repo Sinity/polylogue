@@ -47,7 +47,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_TERMINAL_EVIDENCE_KINDS, RawFailureEvidenceKind
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -1438,8 +1438,11 @@ class LiveBatchProcessor:
     def _latest_raw_fingerprint(self, path: Path) -> str | None:
         return self._latest_archive_tiers_raw_fingerprint(path)
 
+    def _archive_source_db_path(self) -> Path:
+        return Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent)) / "source.db"
+
     def _latest_archive_tiers_raw_fingerprint(self, path: Path) -> str | None:
-        source_db = self._cursor._db_path.with_name("source.db")
+        source_db = self._archive_source_db_path()
         if not source_db.exists():
             return None
         try:
@@ -2930,7 +2933,7 @@ class LiveBatchProcessor:
         or not a 'full' head -- callers fall through to the existing
         full-capture path exactly as before this fallback existed.
         """
-        source_db = self._cursor._db_path.with_name("source.db")
+        source_db = self._archive_source_db_path()
         if not source_db.exists():
             return None
         try:
@@ -3024,19 +3027,19 @@ class LiveBatchProcessor:
             mtime_ns=None,
         )
 
-    def _cursor_references_terminal_raw_failure(self, path: Path, cursor: CursorRecord) -> bool:
-        """Return whether this cursor's complete prefix was terminally rejected.
+    def _cursor_references_raw_failure_requiring_full_replay(self, path: Path, cursor: CursorRecord) -> bool:
+        """Return whether a typed raw failure invalidates append-only replay.
 
-        A terminally typed full capture is durably useful evidence, but it has
-        no materialized session from which an append-only parser can recover
-        the missing prefix. When the same file subsequently grows, route it
-        through full replay so the completed record is parsed with its header
-        and preceding messages intact.
+        Typed raw-failure evidence retains a source observation that did not
+        materialize a session. Whether it was terminally rejected or deferred
+        while hot, an append-only parser cannot recover its missing prefix.
+        When the file subsequently grows, replay the complete source so the
+        parser receives its header and preceding messages intact.
         """
-        source_db = self._cursor._db_path.with_name("source.db")
+        source_db = self._archive_source_db_path()
         if not source_db.exists() or cursor.content_fingerprint is None:
             return False
-        placeholders = ", ".join("?" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_KINDS)
+        placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
         try:
             conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
             try:
@@ -3052,7 +3055,7 @@ class LiveBatchProcessor:
                           AND a.artifact_kind IN ({placeholders})
                         LIMIT 1
                         """,
-                        (cursor.content_fingerprint, str(path), *sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS)),
+                        (cursor.content_fingerprint, str(path), *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
                     ).fetchone()
                     is not None
                 )
@@ -3098,7 +3101,7 @@ class LiveBatchProcessor:
             or cursor.content_fingerprint is None
         ):
             return None
-        if self._cursor_references_terminal_raw_failure(path, cursor):
+        if self._cursor_references_raw_failure_requiring_full_replay(path, cursor):
             return None
         expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
         if expected_prefix_hash is None:

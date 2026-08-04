@@ -21,7 +21,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
-from polylogue.core.enums import Provider
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -47,10 +47,18 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+    initialize_active_archive_root,
+    initialize_archive_database,
+)
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.source_write import read_archive_raw_session_envelope
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    read_archive_raw_session_envelope,
+    upsert_raw_artifact,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
@@ -3190,6 +3198,190 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
         assert conn.execute(
             "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
         ).fetchall() == [("zero",), ("one",)]
+
+
+def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deferred full capture cannot resume through an append-only tail."""
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "prior-session.jsonl"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"prior-session"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    completed_record = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    split_at = len(completed_record) // 2
+    path.write_bytes(baseline)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="current-parser",
+    )
+
+    seeded = asyncio.run(processor.ingest_files([path]))
+    assert seeded.succeeded_file_count == 1
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [("message-0",)]
+
+    seed_cursor = cursor.get_record(path)
+    assert seed_cursor is not None
+    cursor.set(
+        path,
+        seed_cursor.byte_size,
+        byte_offset=seed_cursor.byte_offset,
+        last_complete_newline=seed_cursor.last_complete_newline,
+        parser_fingerprint="previous-parser",
+        content_fingerprint=seed_cursor.content_fingerprint,
+        tail_hash=seed_cursor.tail_hash,
+        source_name=seed_cursor.source_name,
+        st_dev=seed_cursor.st_dev,
+        st_ino=seed_cursor.st_ino,
+        mtime_ns=seed_cursor.mtime_ns,
+    )
+    path.write_bytes(baseline + completed_record[:split_at])
+    original_boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+    completed = False
+
+    def complete_source_after_capture(**kwargs: object) -> bool:
+        nonlocal completed
+        if not completed:
+            path.write_bytes(baseline + completed_record)
+            completed = True
+        return original_boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", complete_source_after_capture)
+
+    deferred = asyncio.run(processor.ingest_files([path]))
+
+    assert deferred.full_file_count == 1
+    assert deferred.succeeded_file_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute(
+            """
+            SELECT a.artifact_kind, lower(hex(r.blob_hash))
+            FROM raw_artifacts AS a
+            JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+            WHERE a.artifact_kind = 'deferred_hot_jsonl_capture'
+            """
+        ).fetchone()
+    assert artifact is not None
+    assert artifact[0] == "deferred_hot_jsonl_capture"
+    deferred_raw_fingerprint = str(artifact[1])
+    completed_stat = path.stat()
+    cursor.set(
+        path,
+        len(baseline),
+        byte_offset=len(baseline),
+        last_complete_newline=len(baseline),
+        parser_fingerprint="current-parser",
+        content_fingerprint=deferred_raw_fingerprint,
+        tail_hash=_cursor_hash_authority(baseline),
+        source_name="codex",
+        st_dev=completed_stat.st_dev,
+        st_ino=completed_stat.st_ino,
+        mtime_ns=completed_stat.st_mtime_ns,
+    )
+
+    replayed = asyncio.run(processor.ingest_files([path]))
+
+    assert replayed.full_file_count == 1
+    assert replayed.append_file_count == 0
+    assert replayed.succeeded_file_count == 1
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.failure_count == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
+            ("message-0",),
+            ("message-1",),
+        ]
+
+
+def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_path: Path) -> None:
+    """The active index generation never owns durable raw-failure evidence."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    index_db = generation / "index.db"
+    sqlite3.connect(index_db).close()
+    (archive_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
+    source_db = archive_root / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    path = archive_root / "sessions" / "terminal.jsonl"
+    path.parent.mkdir()
+    path.write_bytes(b'{"type":"session_meta"')
+    payload_hash = "ab" * 32
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error, detection_warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "terminal-raw",
+                "codex-session",
+                "terminal",
+                str(path),
+                bytes.fromhex(payload_hash),
+                path.stat().st_size,
+                1_770_000_000_000,
+                "captured JSONL payload ends before a complete record boundary",
+                "[]",
+            ),
+        )
+        upsert_raw_artifact(
+            conn,
+            "terminal-raw",
+            ArchiveSourceArtifact(
+                artifact_id="terminal-evidence",
+                origin="codex-session",
+                source_path=str(path),
+                source_index=0,
+                artifact_kind="terminal_corrupt_input",
+                classification_reason="terminal_corrupt_input",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+            ),
+        )
+    cursor = CursorStore(index_db)
+    stat = path.stat()
+    cursor.set(
+        path,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        last_complete_newline=stat.st_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint=payload_hash,
+        tail_hash=_cursor_hash_authority(path.read_bytes()),
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    record = cursor.get_record(path)
+
+    assert record is not None
+    assert processor._cursor_references_raw_failure_requiring_full_replay(path, record)
 
 
 def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
