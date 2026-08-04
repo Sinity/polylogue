@@ -528,6 +528,47 @@ def test_archive_tiers_writer_does_not_collapse_duplicate_message_native_ids(tmp
     assert session_row["active_leaf_message_id"] == f"{session_id}:1.0"
 
 
+def test_archive_tiers_writer_normalizes_duplicate_idless_active_leaves_by_position(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.GEMINI_CLI,
+            provider_session_id="gemini-idless-leaves",
+            title="Id-less leaves",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.USER,
+                    text="first",
+                    position=0,
+                    is_active_leaf=True,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="first")],
+                ),
+                ParsedMessage(
+                    provider_message_id="",
+                    role=Role.ASSISTANT,
+                    text="second",
+                    position=1,
+                    is_active_leaf=True,
+                    blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second")],
+                ),
+            ],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        leaf_positions = [
+            row[0]
+            for row in conn.execute(
+                "SELECT position FROM messages WHERE session_id = ? AND is_active_leaf = 1 ORDER BY position",
+                (session_id,),
+            )
+        ]
+        assert leaf_positions == [1]
+    finally:
+        conn.close()
+
+
 def test_archive_tiers_writer_replaces_lone_surrogates_before_sqlite(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(

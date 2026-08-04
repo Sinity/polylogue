@@ -294,6 +294,43 @@ def test_gemini_cli_session_metadata_and_scratchpad_survive_as_session_events() 
     assert scratchpad_event.payload["memory_scratchpad"] == payload["memoryScratchpad"]
 
 
+@pytest.mark.parametrize(
+    ("source_name", "payload"),
+    [
+        (
+            "gemini-cli",
+            {
+                "sessionId": "idless-gemini",
+                "kind": "chat",
+                "messages": [
+                    {"type": "user", "content": ["first"]},
+                    {"type": "gemini", "content": "second"},
+                ],
+            },
+        ),
+        (
+            "hermes",
+            {
+                "session_id": "idless-hermes",
+                "platform": "linux",
+                "messages": [
+                    {"role": "user", "content": "first"},
+                    {"role": "assistant", "content": "second"},
+                ],
+            },
+        ),
+    ],
+)
+def test_local_agent_idless_messages_have_exactly_one_active_leaf(
+    source_name: str,
+    payload: JSONDocument,
+) -> None:
+    [session] = parse_payload(source_name, payload, "fallback")
+
+    assert [message.provider_message_id for message in session.messages] == ["", ""]
+    assert [message.is_active_leaf for message in session.messages] == [False, True]
+
+
 def test_hermes_session_document_parses_through_dispatch() -> None:
     payload: JSONDocument = {
         "session_id": "hermes-session-1",
@@ -498,6 +535,23 @@ def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
     assert child.parent_session_provider_id == root.provider_session_id
     assert child.branch_type is not None
     assert child.branch_type.value == "subagent"
+
+
+def test_hermes_state_db_duplicate_platform_ids_keep_one_active_leaf(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE messages SET platform_message_id = ? WHERE id IN (?, ?)",
+            ("duplicate-platform-id", 1, 4),
+        )
+
+    [root, _child] = hermes_state.parse_state_db(db_path, fallback_id="fallback")
+
+    leaves = [message for message in root.messages if message.is_active_leaf]
+    assert [message.provider_message_id for message in leaves] == ["duplicate-platform-id"]
+    assert leaves == [root.messages[4]]
+    assert root.active_leaf_message_provider_id == "duplicate-platform-id"
 
 
 def test_hermes_state_db_retains_empty_rows_and_their_state(tmp_path: Path) -> None:

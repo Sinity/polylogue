@@ -18,6 +18,7 @@ from .base import (
     ParsedSessionEvent,
     fill_linear_parent_chain,
     human_authored_override,
+    mark_last_occurrence_as_active_leaf,
 )
 
 
@@ -335,13 +336,7 @@ def _parse_hermes_message(
 
 
 def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
-    if not messages:
-        return messages
-    active_leaf_message_provider_id = messages[-1].provider_message_id
-    return [
-        message.model_copy(update={"is_active_leaf": message.provider_message_id == active_leaf_message_provider_id})
-        for message in messages
-    ]
+    return mark_last_occurrence_as_active_leaf(messages)
 
 
 def _non_negative_int(value: object) -> int | None:
