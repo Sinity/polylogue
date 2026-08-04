@@ -1263,7 +1263,70 @@ RED_TWIN_TESTS: dict[str, str] = {
     "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
     "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
     "raw-quarantine-group-dedup": "test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup",
+    "corpus-absences": "test_corpus_absences_red_twin",
+    "corpus-attachment-fidelity": "test_corpus_attachment_fidelity_red_twin",
+    "corpus-revision-fidelity": "test_corpus_revision_fidelity_red_twin",
 }
+
+
+def test_corpus_absences_red_twin(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-corpus-absence', 'codex-session', 'missing', '/missing', ?, 1, 1)
+            """,
+            (b"c" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES ('raw-corpus-absence', 'codex:missing', 'missing', 'r1', ?, 1)
+            """,
+            (b"d" * 32,),
+        )
+    report = verify_archive(tmp_path, checks=("corpus-absences",))
+    assert _check(report, "corpus-absences").status is OutcomeStatus.ERROR
+
+
+def test_corpus_attachment_fidelity_red_twin(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute("INSERT INTO attachments(attachment_id) VALUES ('raw-attachment')")
+        conn.execute(
+            """
+            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
+            VALUES ('raw-attachment', 'codex-session:session', 'codex-session:session:0.0', 0, 'drive')
+            """
+        )
+    report = verify_archive(tmp_path, checks=("corpus-attachment-fidelity",))
+    assert _check(report, "corpus-attachment-fidelity").status is OutcomeStatus.ERROR
+
+
+def test_corpus_revision_fidelity_red_twin(tmp_path: Path) -> None:
+    _seed_coherent_archive(tmp_path)
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-corpus-revision', 'codex-session', 'session', '/revision', ?, 1, 1)
+            """,
+            (b"e" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES ('raw-corpus-revision', 'codex:session', 'session', 'r2', ?, 100)
+            """,
+            (b"f" * 32,),
+        )
+    report = verify_archive(tmp_path, checks=("corpus-revision-fidelity",))
+    assert _check(report, "corpus-revision-fidelity").status is OutcomeStatus.ERROR
 
 
 def test_every_non_complexity_check_has_a_red_twin_test() -> None:

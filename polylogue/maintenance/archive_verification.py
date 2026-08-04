@@ -44,6 +44,11 @@ from typing import Any
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.logging import get_logger
+from polylogue.maintenance.corpus_fidelity import (
+    audit_absences,
+    audit_attachment_fidelity,
+    audit_revision_fidelity,
+)
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1438,6 +1443,106 @@ def _gib_str(byte_count: int) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Checks: corpus acceptance measures (polylogue-f1vg)
+# ---------------------------------------------------------------------------
+
+
+def _check_corpus_absences(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    index_path = _resolve_index_path(archive_root)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("corpus-absences", "source.db or index.db not present")
+    try:
+        source = _open_ro(source_path)
+        index = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("corpus-absences", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        evidence = audit_absences(source, index, sample_limit=sample_limit)
+    except sqlite3.Error as exc:
+        return _error_check("corpus-absences", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index.close()
+        source.close()
+    count = int(evidence["absent_total"]) + int(evidence["raws_without_attributable_identity"])
+    details = [item for values in evidence["samples"].values() for item in values]
+    details.extend(evidence["unattributable_sample"])
+    return ArchiveVerificationCheck(
+        name="corpus-absences",
+        status=OutcomeStatus.ERROR if count else OutcomeStatus.OK,
+        summary=(
+            f"{evidence['absent_total']:,} absent document(s), "
+            f"{evidence['raws_without_attributable_identity']:,} raw(s) without attributable identity"
+            if count
+            else f"all {evidence['documents_known']:,} source-backed document(s) are indexed"
+        ),
+        count=count,
+        details=details[:sample_limit],
+        evidence=evidence,
+    )
+
+
+def _check_corpus_attachment_fidelity(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    index_path = _resolve_index_path(archive_root)
+    if not index_path.exists():
+        return _skip_check("corpus-attachment-fidelity", "index.db not present")
+    try:
+        index = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("corpus-attachment-fidelity", f"could not open index.db: {exc}", exc=exc)
+    try:
+        evidence = audit_attachment_fidelity(index)
+    except sqlite3.Error as exc:
+        return _error_check("corpus-attachment-fidelity", f"could not read index.db: {exc}", exc=exc)
+    finally:
+        index.close()
+    unfetched = int(evidence["refs_unfetched"])
+    return ArchiveVerificationCheck(
+        name="corpus-attachment-fidelity",
+        status=OutcomeStatus.ERROR if unfetched else OutcomeStatus.OK,
+        summary=(
+            f"{unfetched:,} attachment reference(s) remain unfetched"
+            if unfetched
+            else f"all attachment references are acquired or typed unavailable ({evidence['refs_unavailable']:,} unavailable)"
+        ),
+        count=unfetched,
+        evidence=evidence,
+    )
+
+
+def _check_corpus_revision_fidelity(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    index_path = _resolve_index_path(archive_root)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("corpus-revision-fidelity", "source.db or index.db not present")
+    try:
+        source = _open_ro(source_path)
+        index = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check("corpus-revision-fidelity", f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        evidence = audit_revision_fidelity(source, index, sample_limit=sample_limit)
+    except sqlite3.Error as exc:
+        return _error_check("corpus-revision-fidelity", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index.close()
+        source.close()
+    shortfall = int(evidence["unexplained_shortfall"])
+    return ArchiveVerificationCheck(
+        name="corpus-revision-fidelity",
+        status=OutcomeStatus.ERROR if shortfall else OutcomeStatus.OK,
+        summary=(
+            f"{shortfall:,} document(s) below best recorded evidence"
+            if shortfall
+            else f"indexed evidence meets every comparable recorded revision ({evidence['explained_by_event_reclassification']:,} event-reclassified)"
+        ),
+        count=shortfall,
+        details=[str(item["session_id"]) for item in evidence["worst"]],
+        evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Check: stalled append-cursor freshness (polylogue-2qrx)
 # ---------------------------------------------------------------------------
 
@@ -1934,6 +2039,24 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "source_path within a fully-quarantined group (polylogue-zm4w8).",
         _check_raw_quarantine_group_dedup,
         ArchiveVerificationCheckClass.STATE_INVARIANT,
+    ),
+    ArchiveVerificationCheckSpec(
+        "corpus-absences",
+        "Every source-backed logical corpus document is represented by an indexed session (polylogue-f1vg).",
+        _check_corpus_absences,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+    ),
+    ArchiveVerificationCheckSpec(
+        "corpus-attachment-fidelity",
+        "Every attachment reference is acquired or explicitly typed unavailable, bucketed by origin and upload origin (polylogue-f1vg).",
+        _check_corpus_attachment_fidelity,
+        ArchiveVerificationCheckClass.FIDELITY,
+    ),
+    ArchiveVerificationCheckSpec(
+        "corpus-revision-fidelity",
+        "Indexed comparable evidence is not smaller than the best recorded source revision (polylogue-f1vg).",
+        _check_corpus_revision_fidelity,
+        ArchiveVerificationCheckClass.FIDELITY,
     ),
 )
 

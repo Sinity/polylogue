@@ -23,6 +23,12 @@ def seeded_archive() -> SeededArchiveArtifact:
     return build_seeded_archive(schema_coverage_corpus_specs())
 
 
+@pytest.fixture(scope="session")
+def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArchiveArtifact:
+    """Real production-route archive used by corpus acceptance gate tests."""
+    return seeded_archive
+
+
 @pytest.fixture
 def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Path) -> SeededArchiveClone:
     """Private full-root clone for a mutating consumer."""
