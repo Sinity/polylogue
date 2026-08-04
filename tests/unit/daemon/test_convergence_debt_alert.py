@@ -323,6 +323,45 @@ def test_convergence_debt_summary_fresh_empty_ledger_is_healthy(tmp_path: Path) 
     assert summary.deferred_count == 0
 
 
+def test_convergence_debt_summary_rejects_unknown_status(tmp_path: Path) -> None:
+    ops_path = tmp_path / "ops.db"
+    initialize_archive_database(ops_path, ArchiveTier.OPS)
+    with sqlite3.connect(ops_path) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        add_convergence_debt(
+            conn,
+            stage="fts",
+            target_type="session_id",
+            target_id="corrupt-status",
+            status="corrupt",
+            attempts=1,
+            created_at_ms=1_770_000_000_000,
+            updated_at_ms=1_770_000_000_000,
+        )
+
+    summary = convergence_debt_summary_info(tmp_path / "archive.db", ops_db=ops_path)
+
+    assert summary.available is False
+    assert summary.failed_count == 0
+    assert summary.deferred_count == 0
+    assert "unknown status" in (summary.error or "")
+    assert "corrupt" in (summary.error or "")
+
+
+def test_convergence_debt_summary_rejects_missing_required_columns(tmp_path: Path) -> None:
+    ops_path = tmp_path / "ops.db"
+    with sqlite3.connect(ops_path) as conn:
+        conn.execute("CREATE TABLE convergence_debt (status TEXT NOT NULL)")
+        conn.commit()
+
+    summary = convergence_debt_summary_info(tmp_path / "archive.db", ops_db=ops_path)
+
+    assert summary.available is False
+    assert summary.failed_count == 0
+    assert summary.deferred_count == 0
+    assert "missing required column" in (summary.error or "")
+
+
 # ---------------------------------------------------------------------------
 # Threshold resolution
 # ---------------------------------------------------------------------------

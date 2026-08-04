@@ -908,6 +908,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
 # cannot substantiate.
 _WORKLOAD_THROUGHPUT_WINDOW_MS = 5 * 60 * 1000
 _WORKLOAD_HEARTBEAT_STALE_MS = 90 * 1000
+_CONVERGENCE_DEBT_STATUSES = frozenset(("failed", "deferred"))
 
 
 def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
@@ -990,13 +991,24 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
                 ),
             }
 
-        debt = {
-            status: _safe_int(count, 0)
-            for status, count in conn.execute(
-                "SELECT status, COUNT(*) FROM convergence_debt GROUP BY status"
-            ).fetchall()
-        }
+        debt_rows = conn.execute("SELECT status, COUNT(*) FROM convergence_debt GROUP BY status").fetchall()
+        unknown_statuses = sorted(
+            {repr(status) for status, _count in debt_rows if status not in _CONVERGENCE_DEBT_STATUSES}
+        )
+        if unknown_statuses:
+            return {
+                "available": False,
+                "reason": "convergence debt status unavailable: "
+                f"unknown status value(s): {', '.join(unknown_statuses)}",
+            }
+        debt = {status: _safe_int(count, 0) for status, count in debt_rows}
         debt_total = sum(debt.values())
+    except Exception as exc:
+        # A present but malformed ledger is unknown, not an empty workload.
+        # Keep this explicit so both direct status renderers can preserve the
+        # ledger failure and block claims instead of falling into the generic
+        # archive-query fallback.
+        return {"available": False, "reason": f"convergence debt status unavailable: {exc}"}
     finally:
         conn.close()
 

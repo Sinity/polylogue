@@ -15,6 +15,24 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
+_REQUIRED_CONVERGENCE_DEBT_COLUMNS = frozenset(
+    (
+        "debt_id",
+        "stage",
+        "target_type",
+        "target_id",
+        "status",
+        "priority",
+        "attempts",
+        "last_error",
+        "next_retry_at",
+        "materializer_version",
+        "created_at_ms",
+        "updated_at_ms",
+    )
+)
+_CONVERGENCE_DEBT_STATUSES = frozenset(("failed", "deferred"))
+
 
 class ConvergenceDebtStageSummary(BaseModel):
     stage: str
@@ -75,6 +93,11 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                     available=False,
                     error="convergence debt table is unavailable",
                 )
+            table_info = conn.execute("PRAGMA table_info(convergence_debt)").fetchall()
+            columns = {str(row[1]) for row in table_info if len(row) > 1}
+            missing_columns = sorted(_REQUIRED_CONVERGENCE_DEBT_COLUMNS - columns)
+            if missing_columns:
+                raise ValueError("convergence_debt is missing required column(s): " + ", ".join(missing_columns))
             rows = conn.execute(
                 """
                 SELECT stage, target_type, target_id, status, attempts,
@@ -91,7 +114,7 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
         # An unreadable authoritative debt ledger is unknown, not empty. The
         # claim guard must be able to distinguish this from a genuinely empty
         # convergence_debt table (polylogue-cpf.4).
-        logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc, exc_info=True)
+        logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc)
         return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
     try:
@@ -111,6 +134,12 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
         ]
         if not items:
             return ConvergenceDebtSummary()
+
+        unknown_statuses = sorted(
+            {repr(item.status) for item in items if item.status not in _CONVERGENCE_DEBT_STATUSES}
+        )
+        if unknown_statuses:
+            raise ValueError("convergence_debt contains unknown status value(s): " + ", ".join(unknown_statuses))
 
         now = datetime.now(UTC)
         recent = [
@@ -141,7 +170,7 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
         ]
         return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
     except Exception as exc:
-        logger.warning("convergence-debt summary projection failed for %s: %s", ops_db, exc, exc_info=True)
+        logger.warning("convergence-debt summary projection failed for %s: %s", ops_db, exc)
         return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
 

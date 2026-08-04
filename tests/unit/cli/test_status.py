@@ -2286,6 +2286,64 @@ class TestStatusDiagnosticIntegration:
             "POLYLOGUE_DAEMON_URL": "http://127.0.0.1:1",
         }
 
+    def _malformed_convergence_debt_archive(self, tmp_path: Path) -> Path:
+        archive_root = tmp_path / "polylogue"
+        for tier in (
+            ArchiveTier.SOURCE,
+            ArchiveTier.INDEX,
+            ArchiveTier.EMBEDDINGS,
+            ArchiveTier.USER,
+            ArchiveTier.OPS,
+        ):
+            initialize_archive_database(archive_root / f"{tier.value}.db", tier)
+        with sqlite3.connect(archive_root / "ops.db") as conn:
+            conn.execute("DROP TABLE convergence_debt")
+            conn.execute("CREATE TABLE convergence_debt (wrong_column TEXT)")
+            conn.commit()
+        return archive_root
+
+    def _malformed_archive_env(self, tmp_path: Path, archive_root: Path) -> dict[str, str]:
+        env = self._xdg_env(tmp_path)
+        env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
+        return env
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_convergence_debt_json_is_explicitly_unavailable(self, tmp_path: Path) -> None:
+        """Malformed convergence debt must yield valid JSON and block convergence claims."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_convergence_debt_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status", "--json", "--full"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["ingest_workload"]["available"] is False
+        assert "convergence debt status unavailable" in payload["ingest_workload"]["reason"]
+        assert payload["convergence"]["available"] is False
+        assert "convergence debt status unavailable" in payload["convergence"]["error"]
+        assert payload["claim_guard"]["converged"]["value"] is False
+
+    @pytest.mark.integration
+    def test_status_subprocess_malformed_convergence_debt_human_is_explicitly_unavailable(self, tmp_path: Path) -> None:
+        """Malformed convergence debt must not collapse human status into generic unavailable output."""
+        from tests.infra.cli_subprocess import run_cli
+
+        archive_root = self._malformed_convergence_debt_archive(tmp_path)
+        result = run_cli(
+            ["--plain", "ops", "status"],
+            env=self._malformed_archive_env(tmp_path, archive_root),
+        )
+
+        output_lower = result.output.lower()
+        assert result.exit_code == 0, result.output
+        assert "convergence debt: unavailable" in output_lower
+        assert "convergence debt status unavailable" in output_lower
+        assert "could not be queried" not in output_lower
+        assert "traceback" not in output_lower
+
     @pytest.mark.integration
     def test_status_subprocess_schema_mismatch(self, tmp_path: Path) -> None:
         """A db with the wrong PRAGMA user_version yields actionable text, no traceback."""
