@@ -312,6 +312,44 @@ def test_selector_refuses_unknown_or_non_replayable_explicit_sessions(tmp_path: 
         select_canary_sessions(index, pathology_session_ids=("codex-session:alpha",))
 
 
+def test_run_reindex_canary_automatically_includes_production_pathology_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real canary runner supplements operator IDs from the production manifest."""
+    from polylogue.maintenance.pathology_zoo import pathology_zoo_session_ids
+
+    current = tmp_path / "current.db"
+    pathology_session_ids = pathology_zoo_session_ids()
+    native_ids = tuple(session_id.split(":", 1)[1] for session_id in pathology_session_ids)
+    origins = tuple(session_id.split(":", 1)[0] for session_id in pathology_session_ids)
+    _seed_index(current, sessions=native_ids, origins=origins)
+    captured: dict[str, tuple[str, ...]] = {}
+
+    class Receipt:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "replayed"}
+
+    def fake_rebuild(request: object) -> Receipt:
+        captured["raw_ids"] = tuple(request.raw_ids)  # type: ignore[attr-defined]
+        return Receipt()
+
+    def fake_compare(current_index: Path, candidate_index: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+        captured["session_ids"] = session_ids
+        return _empty_comparison(current_index, candidate_index, session_ids)
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fake_rebuild)
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: current
+    )
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
+
+    result = run_reindex_canary(tmp_path, input_index=current, sessions_per_origin=1, no_promote=True)
+
+    assert result.selection.pathology_session_ids == pathology_session_ids
+    assert set(pathology_session_ids) <= set(captured["session_ids"])
+    assert len(captured["raw_ids"]) == len(pathology_session_ids)
+
+
 def test_run_reindex_canary_compares_its_own_inactive_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

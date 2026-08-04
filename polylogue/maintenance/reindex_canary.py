@@ -295,10 +295,14 @@ def run_reindex_canary(
             "run it against an explicitly provisioned isolated canary archive"
         )
     current_index = Path(input_index) if input_index is not None else ArchiveLocation.resolve(root).active_index_path
+    from polylogue.maintenance.pathology_zoo import pathology_zoo_session_ids
+
+    automatic_pathology_ids = pathology_zoo_session_ids()
+    requested_pathology_ids = tuple(dict.fromkeys((*automatic_pathology_ids, *pathology_session_ids)))
     selection = select_canary_sessions(
         current_index,
         sessions_per_origin=sessions_per_origin,
-        pathology_session_ids=pathology_session_ids,
+        pathology_session_ids=requested_pathology_ids,
         sample_session_ids=sample_session_ids,
     )
     receipt = rebuild_index_from_source_sync(

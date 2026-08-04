@@ -8,10 +8,10 @@ from shutil import copytree
 
 import pytest
 
+from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST, PathologyZooCanaryEligibility
 from polylogue.maintenance.reindex_canary import CanarySelectionError, select_canary_sessions
 from tests.infra.pathology_zoo import (
     PathologyZoo,
-    PathologyZooCanaryEligibility,
     build_pathology_zoo,
 )
 
@@ -67,22 +67,6 @@ def test_pathology_zoo_manifest_binds_every_wire_path_to_durable_evidence(pathol
                 ).fetchone() == (1,)
 
 
-def test_pathology_zoo_contracts_are_green_then_red_on_their_own_mutation(
-    pathology_zoo: PathologyZoo, tmp_path: Path
-) -> None:
-    """Every declared pathology has a specific production-archive red twin."""
-    for member in pathology_zoo.manifest:
-        assert member.verification.is_satisfied(pathology_zoo.archive_root), member.verification.condition
-
-        mutated_root = tmp_path / member.member_id
-        copytree(pathology_zoo.archive_root, mutated_root)
-        member.verification.make_red(mutated_root)
-
-        assert not member.verification.is_satisfied(mutated_root), (
-            f"{member.member_id}: {member.verification.condition} stayed green after its red mutation"
-        )
-
-
 def test_pathology_zoo_canary_eligibility_is_explicit(pathology_zoo: PathologyZoo) -> None:
     session_backed = [
         member
@@ -123,6 +107,16 @@ def test_pathology_zoo_manifest_is_consumed_by_real_canary_selection(
     pathology_zoo: PathologyZoo, tmp_path: Path
 ) -> None:
     """0x7nh's selector receives every replayable manifest member as a raw-id input."""
+    assert pathology_zoo.canary_session_ids == tuple(
+        sorted(
+            {
+                session_id
+                for member in PATHOLOGY_ZOO_MANIFEST
+                if member.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED
+                for session_id in member.session_ids
+            }
+        )
+    )
     selection = select_canary_sessions(
         pathology_zoo.archive_root / "index.db",
         sessions_per_origin=1,

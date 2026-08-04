@@ -989,6 +989,48 @@ def _check_blob_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveV
     )
 
 
+def _check_pathology_zoo_invariants(archive_root: Path, _sample_limit: int) -> ArchiveVerificationCheck:
+    """Run each production-owned pathology-zoo invariant when its corpus is present."""
+    from polylogue.maintenance.pathology_zoo import (
+        PATHOLOGY_ZOO_MANIFEST,
+        PathologyZooMember,
+        pathology_zoo_is_present,
+    )
+
+    if not pathology_zoo_is_present(archive_root):
+        return ArchiveVerificationCheck(
+            name="pathology-zoo-invariants",
+            status=OutcomeStatus.OK,
+            summary="no pathology-zoo corpus detected; zoo-specific invariants are not applicable",
+            evidence={"active": False, "checked_member_ids": [], "failed_member_ids": []},
+        )
+
+    failed: list[PathologyZooMember] = []
+    for member in PATHOLOGY_ZOO_MANIFEST:
+        try:
+            satisfied = member.invariant.is_satisfied(archive_root)
+        except sqlite3.Error:
+            satisfied = False
+        if not satisfied:
+            failed.append(member)
+    return ArchiveVerificationCheck(
+        name="pathology-zoo-invariants",
+        status=OutcomeStatus.ERROR if failed else OutcomeStatus.OK,
+        summary=(
+            f"{len(failed)} pathology-zoo invariant(s) failed"
+            if failed
+            else f"all {len(PATHOLOGY_ZOO_MANIFEST)} pathology-zoo invariants hold"
+        ),
+        count=len(failed),
+        details=[f"{member.member_id}: {member.invariant.condition}" for member in failed],
+        evidence={
+            "active": True,
+            "checked_member_ids": [member.member_id for member in PATHOLOGY_ZOO_MANIFEST],
+            "failed_member_ids": [member.member_id for member in failed],
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Check: embeddings refs resolve in the index tier (I4, polylogue-t0m73)
 # ---------------------------------------------------------------------------
@@ -1999,6 +2041,12 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "not membership in blob_refs itself (polylogue-t0m73 I3).",
         _check_blob_refs_liveness,
         ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "pathology-zoo-invariants",
+        "Every present pathology-zoo member satisfies its production-owned invariant.",
+        _check_pathology_zoo_invariants,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
     ArchiveVerificationCheckSpec(
         "embeddings-refs-liveness",

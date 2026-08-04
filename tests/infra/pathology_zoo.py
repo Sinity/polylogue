@@ -15,6 +15,15 @@ from enum import StrEnum
 from pathlib import Path
 
 from polylogue.config import Source
+from polylogue.maintenance.pathology_zoo import (
+    PATHOLOGY_ZOO_MANIFEST as PRODUCTION_PATHOLOGY_ZOO_MANIFEST,
+)
+from polylogue.maintenance.pathology_zoo import (
+    PathologyZooMember as ProductionPathologyZooMember,
+)
+from polylogue.maintenance.pathology_zoo import (
+    pathology_zoo_session_ids as production_pathology_zoo_session_ids,
+)
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -71,24 +80,15 @@ class PathologyZoo:
     """A materialized archive plus its manifest of intentional pathologies."""
 
     archive_root: Path
-    manifest: tuple[PathologyZooMember, ...]
+    manifest: tuple[ProductionPathologyZooMember, ...]
 
-    def members_for(self, pathology: str) -> tuple[PathologyZooMember, ...]:
+    def members_for(self, pathology: str) -> tuple[ProductionPathologyZooMember, ...]:
         return tuple(member for member in self.manifest if member.pathology == pathology)
 
     @property
     def canary_session_ids(self) -> tuple[str, ...]:
-        """Every replayable zoo session supplied to the production canary selector."""
-        return tuple(
-            sorted(
-                {
-                    session_id
-                    for member in self.manifest
-                    if member.canary_eligibility is PathologyZooCanaryEligibility.SESSION_BACKED
-                    for session_id in member.session_ids
-                }
-            )
-        )
+        """The fixture exposes the production canary manifest without re-declaring it."""
+        return production_pathology_zoo_session_ids()
 
 
 _CODEX = "codex-session"
@@ -693,8 +693,8 @@ def _write_generated_members(root: Path, *, indexes: tuple[int, ...] | None = No
 
 
 def _bind_durable_paths(
-    manifest: tuple[PathologyZooMember, ...], wire_root: Path, hook_event_path: Path
-) -> tuple[PathologyZooMember, ...]:
+    manifest: tuple[ProductionPathologyZooMember, ...], wire_root: Path, hook_event_path: Path
+) -> tuple[ProductionPathologyZooMember, ...]:
     return tuple(
         replace(
             member,
@@ -706,7 +706,7 @@ def _bind_durable_paths(
     )
 
 
-def _validate_manifest(root: Path, manifest: tuple[PathologyZooMember, ...]) -> None:
+def _validate_manifest(root: Path, manifest: tuple[ProductionPathologyZooMember, ...]) -> None:
     try:
         with sqlite3.connect(root / "index.db") as conn:
             session_ids = {str(row[0]) for row in conn.execute("SELECT session_id FROM sessions")}
@@ -772,14 +772,21 @@ def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
     )
     if drain_hook_event_spool(archive_root, root=archive_root / "hook-spool").acknowledged != 1:
         raise RuntimeError("pathology zoo hook event did not drain through the durable source route")
-    manifest = _bind_durable_paths(pathology_zoo_manifest(), wire_root, hook_event_path)
+    manifest = _bind_durable_paths(PRODUCTION_PATHOLOGY_ZOO_MANIFEST, wire_root, hook_event_path)
     _validate_manifest(archive_root, manifest)
     return PathologyZoo(archive_root=archive_root, manifest=manifest)
+
+
+def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
+    """Apply the fixture-only red mutation for one production manifest member."""
+    legacy_member = next(member for member in pathology_zoo_manifest() if member.member_id == member_id)
+    legacy_member.verification.make_red(archive_root)
 
 
 __all__ = [
     "PathologyZoo",
     "PathologyZooMember",
     "build_pathology_zoo",
+    "make_pathology_zoo_member_red",
     "pathology_zoo_manifest",
 ]
