@@ -6357,8 +6357,13 @@ def _active_leaf_message_id(
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> str | None:
     if explicit_native_id:
-        for fallback_position, message in enumerate(messages):
-            if message.provider_message_id == explicit_native_id:
+        matching_messages = [
+            (fallback_position, message)
+            for fallback_position, message in enumerate(messages)
+            if message.provider_message_id == explicit_native_id
+        ]
+        for fallback_position, message in matching_messages:
+            if message.is_active_leaf:
                 return _message_id(
                     session_id,
                     message,
@@ -6366,6 +6371,15 @@ def _active_leaf_message_id(
                     position_offset=position_offset,
                     duplicate_native_ids=duplicate_native_ids,
                 )
+        if matching_messages:
+            fallback_position, message = matching_messages[0]
+            return _message_id(
+                session_id,
+                message,
+                fallback_position,
+                position_offset=position_offset,
+                duplicate_native_ids=duplicate_native_ids,
+            )
     for fallback_position, message in enumerate(messages):
         if message.is_active_leaf:
             return _message_id(
