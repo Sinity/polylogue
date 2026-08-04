@@ -65,6 +65,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.core.dates import parse_date
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.json import JSONValue, require_json_value
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.refs import delegation_edge_object_id
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
@@ -212,6 +213,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_rebuild_selection,
     raw_revision_replay_adoptable,
     raw_revision_replay_plan,
+    record_raw_failure_evidence,
     release_provisional_full_revisions,
     replace_raw_membership_census,
     unclassified_raw_revision_rows,
@@ -2523,6 +2525,26 @@ class ArchiveStore:
 
     def mark_raw_parse_failed(self, raw_id: str, *, provider: Provider, error: BaseException) -> None:
         return mark_raw_parse_failed(self, raw_id, provider=provider, error=error)
+
+    def record_raw_failure_evidence(
+        self,
+        raw_id: str,
+        *,
+        provider: Provider,
+        source_path: str,
+        source_index: int,
+        acquired_at_ms: int,
+        kind: RawFailureEvidenceKind,
+    ) -> None:
+        return record_raw_failure_evidence(
+            self,
+            raw_id,
+            provider=provider,
+            source_path=source_path,
+            source_index=source_index,
+            acquired_at_ms=acquired_at_ms,
+            kind=kind,
+        )
 
     def mark_raw_parse_succeeded(self, raw_id: str, *, provider: Provider) -> None:
         return mark_raw_parse_succeeded(self, raw_id, provider=provider)

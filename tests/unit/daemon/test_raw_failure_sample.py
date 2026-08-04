@@ -10,12 +10,14 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.daemon.status import (
     DaemonStatus,
     RawFailureSample,
     _raw_failure_info,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -317,6 +319,73 @@ class TestRawFailureInfoProducesTypedSamples:
         assert isinstance(sample, RawFailureSample)
         # Non-JSON parse error → "parse_error" (the error IS a parse error, just not JSON-specific)
         assert sample.failure_kind == "parse_error"
+
+    def test_raw_failure_info_separates_closed_lifecycle_evidence(self, tmp_path: Path) -> None:
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-deferred",
+            origin="claude-code-session",
+            native_id="native-deferred",
+            source_path="/data/deferred.jsonl",
+            parse_error="captured JSONL payload ends before a complete record boundary",
+            acquired_at_ms=1_770_000_000_001,
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-terminal",
+            origin="unknown-export",
+            native_id="native-terminal",
+            source_path="/data/terminal.json",
+            parse_error="parsed raw payload produced no sessions",
+            acquired_at_ms=1_770_000_000_002,
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-unexplained",
+            origin="codex-session",
+            native_id="native-unexplained",
+            source_path="/data/unexplained.jsonl",
+            parse_error="raw revision CAS rejected an older accepted frontier",
+            acquired_at_ms=1_770_000_000_003,
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-deferred",
+                ArchiveSourceArtifact(
+                    artifact_id="deferred-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/deferred.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_hot_jsonl_capture",
+                    classification_reason="deferred_hot_jsonl_capture",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-terminal",
+                ArchiveSourceArtifact(
+                    artifact_id="terminal-evidence",
+                    origin="unknown-export",
+                    source_path="/data/terminal.json",
+                    source_index=0,
+                    artifact_kind="terminal_unsupported_shape",
+                    classification_reason="terminal_unsupported_shape",
+                    support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                ),
+            )
+
+        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+            info = _raw_failure_info()
+
+        assert info["deferred_failures"] == 1
+        assert info["terminal_rejections"] == 1
+        assert info["unexplained_failures"] == 1
+        samples = cast(list[RawFailureSample], info["samples"])
+        assert {sample.lifecycle for sample in samples} == {"deferred", "terminal", "unexplained"}
 
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
         db = tmp_path / "index.db"

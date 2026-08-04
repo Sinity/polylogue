@@ -1549,6 +1549,9 @@ def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
         "validation": "raw_validation_failures",
         "quarantined": "raw_quarantined",
         "maintenance": "raw_maintenance_failures",
+        "deferred_retryable": "raw_deferred_failures",
+        "terminal_rejections": "raw_terminal_rejections",
+        "unexplained": "raw_unexplained_failures",
         "detection_warnings": "raw_detection_warnings",
     }
     failures = {label: status[key] for label, key in keys.items() if key in status}
@@ -1556,6 +1559,23 @@ def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
     if isinstance(samples, list):
         failures["sample_count"] = len(samples)
     return failures
+
+
+def _direct_raw_failure_status(root: Path) -> dict[str, Any]:
+    """Adapt the archive raw-failure ledger for the stopped-daemon surface."""
+    from polylogue.daemon.status import raw_failure_info_for_root
+
+    info = raw_failure_info_for_root(root)
+    return {
+        "raw_parse_failures": _safe_int(info.get("parse_failures")),
+        "raw_validation_failures": _safe_int(info.get("validation_failures")),
+        "raw_quarantined": _safe_int(info.get("quarantined")),
+        "raw_maintenance_failures": _safe_int(info.get("maintenance_failures")),
+        "raw_deferred_failures": _safe_int(info.get("deferred_failures")),
+        "raw_terminal_rejections": _safe_int(info.get("terminal_rejections")),
+        "raw_unexplained_failures": _safe_int(info.get("unexplained_failures")),
+        "raw_failure_samples": info.get("samples", []),
+    }
 
 
 def _show_daemon_status_unavailable_json(env: AppEnv) -> None:
@@ -1654,6 +1674,7 @@ def _show_direct_json(
         "next_action": diag.next_action,
         "diagnostic": diagnostic_payload(diag),
     }
+    payload.update(_direct_raw_failure_status(active_root))
     if active_db is not None and active_db.exists():
         payload["active_db_path"] = str(active_db)
         try:
@@ -2241,6 +2262,15 @@ def _show_direct_status(
         env.ui.console.print(f"  Sessions: {convs:,}")
         env.ui.console.print(f"  Messages: {msgs:,}")
         env.ui.console.print(f"  Raw records: {raw:,}")
+        raw_failure_status = _direct_raw_failure_status(active_root)
+        raw_total = raw_failure_status["raw_parse_failures"] + raw_failure_status["raw_validation_failures"]
+        if raw_total:
+            env.ui.console.print(
+                "  Raw failures: "
+                f"{raw_total:,} total, {raw_failure_status['raw_deferred_failures']:,} deferred retryable, "
+                f"{raw_failure_status['raw_terminal_rejections']:,} terminal, "
+                f"{raw_failure_status['raw_unexplained_failures']:,} unexplained"
+            )
         if unidentified:
             env.ui.console.print(
                 f"  Unidentified artifacts: [yellow]{unidentified:,}[/yellow] "

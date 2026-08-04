@@ -352,39 +352,7 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A zero-byte captured ``.jsonl`` must not be flagged as a mid-write
-    truncation.
-
-    Before the fix, ``_captured_jsonl_ends_at_record_boundary`` returned
-    ``False`` whenever ``blob_size <= 0``, so every genuinely empty session
-    file raised "captured JSONL payload ends before a complete record
-    boundary" once it reached the archive write stage -- 59 raws in the live
-    archive carry exactly this error with ``blob_size = 0``
-    (2026-07-29 raw-failure accounting). The live cases arise from a scan/
-    write race (a byte sample taken at scan time observes real content, but
-    the file reads back as empty bytes moments later when the writer stage
-    re-reads it -- e.g. an atomic rewrite of the session file in between),
-    which is why the ordinary "is this even a session artifact" pre-filter
-    (``_jsonl_provider_and_session_artifact``, exercised by
-    ``test_full_ingest_heartbeats_small_file_groups_with_current_path`` above)
-    does not by itself prevent it: that decision is made before the write
-    stage's own read. Force the same "treat as a session artifact" decision
-    that pre-filter would make on real content, so this test exercises the
-    write stage's boundary check exactly as the race does. An empty payload
-    has zero records, none complete and none incomplete, so it is trivially
-    at a record boundary.
-
-    polylogue-9ykn superseded this test's original outcome: an empty
-    capture used to "cleanly materialize as a legitimately empty parsed
-    session" -- exactly the silent-inflation default that bead eliminates.
-    The correct outcome for a zero-record capture is now the same bounded,
-    recorded ``require_positive_conversational_evidence`` refusal any other
-    zero-message parse gets (``failed``, not ``succeeded``), NOT the
-    misleading truncation-boundary error the original fix targeted. Both
-    halves of the original claim still hold: no misleading truncation
-    error, and no crash/quarantine loop -- just an honest "no positive
-    conversational evidence" outcome instead of a phantom session.
-    """
+    """An empty session candidate is a terminal typed refusal, not a retry."""
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "empty.jsonl"
@@ -403,16 +371,94 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
 
     result = processor._ingest_full_paths_sync([path], source_name="codex")
 
-    assert result.succeeded == []
-    assert result.failed == [path]
+    assert result.succeeded == [path]
+    assert result.failed == []
     parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
     assert parse_error != "captured JSONL payload ends before a complete record boundary"
-    # polylogue-9ykn: a zero-record capture carries no positive
-    # conversational evidence -- refused with a recorded, honest reason
-    # (never the misleading truncation-boundary error), not silently
-    # accepted as a phantom empty session.
     assert isinstance(parse_error, str) and "no sessions with positive conversational evidence" in parse_error
     assert parsed_at_ms is None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unsupported_shape", "unsupported_parseable", 0)
+
+
+def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full-ingest route defers a capture only after byte-prefix proof.
+
+    The empty-capture test above is the red twin. Both paths retain the raw
+    and advance the cursor, but only this test changes the source so its
+    captured bytes can be verified as a strict current prefix.
+    """
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "active.jsonl"
+    captured = b'{"type":"session_meta"'
+    path.write_bytes(captured)
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    captured_boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+
+    def grow_source_after_capture(**kwargs: object) -> bool:
+        path.write_bytes(captured + b"\n")
+        return captured_boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", grow_source_after_capture)
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    _parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert isinstance(parse_error, str) and parse_error.endswith(
+        "captured JSONL payload ends before a complete record boundary"
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("deferred_hot_jsonl_capture", "partial_decode", 1)
+
+
+def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incomplete static capture is terminal evidence, never deferred."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "static.jsonl"
+    path.write_bytes(b'{"type":"session_meta"')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
 
 
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(

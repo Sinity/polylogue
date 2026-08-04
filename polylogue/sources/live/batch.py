@@ -47,6 +47,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -162,6 +163,26 @@ _CODEX_OUT_OF_SCOPE_STATE_DB_NAMES = frozenset({"logs_2.sqlite", "codex-dev.db"}
 
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _hot_capture_prefix_is_proven(path: str, payload: bytes | None, *, blob_size: int) -> bool:
+    """Prove a rejected JSONL capture is a live prefix, never merely assume it.
+
+    A later source size alone is insufficient because a rewrite can have the
+    same pathname.  The retained bytes must still be the exact current prefix
+    and the source must have grown beyond them.
+    """
+    if payload is None:
+        return False
+    source = Path(path)
+    try:
+        stat = source.stat()
+        if stat.st_size <= blob_size:
+            return False
+        fingerprint, _bytes_read = sha256_range_from_path(source, start_offset=0, end_offset=blob_size)
+    except (EOFError, OSError):
+        return False
+    return fingerprint == sha256(payload).hexdigest()
 
 
 def _write_codex_thread_state_evidence(
@@ -2164,7 +2185,43 @@ class LiveBatchProcessor:
                         blob_hash=blob_hash,
                         blob_size=record.blob_size,
                     ):
-                        raise ValueError("captured JSONL payload ends before a complete record boundary")
+                        if _hot_capture_prefix_is_proven(
+                            record.source_path,
+                            payload,
+                            blob_size=record.blob_size,
+                        ):
+                            archive.record_raw_failure_evidence(
+                                source_raw_id,
+                                provider=provider,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                kind=RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+                            )
+                            archive.mark_raw_parse_failed(
+                                source_raw_id,
+                                provider=provider,
+                                error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                            )
+                            result.raw_ids[record.raw_id] = source_raw_id
+                            _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                            continue
+                        archive.record_raw_failure_evidence(
+                            source_raw_id,
+                            provider=provider,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+                        )
+                        archive.mark_raw_parse_failed(
+                            source_raw_id,
+                            provider=provider,
+                            error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                        )
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     t0 = time.perf_counter()
                     cached_sessions = (
                         parsed_sessions_by_raw_id.pop(record.raw_id, None) if parsed_sessions_by_raw_id else None
@@ -2260,6 +2317,14 @@ class LiveBatchProcessor:
                         time.perf_counter() - t0
                     )
                     if not sessions:
+                        archive.record_raw_failure_evidence(
+                            source_raw_id,
+                            provider=provider,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE,
+                        )
                         archive.mark_raw_parse_failed(
                             source_raw_id,
                             provider=provider,
@@ -2267,6 +2332,8 @@ class LiveBatchProcessor:
                                 "parsed raw payload produced no sessions with positive conversational evidence"
                             ),
                         )
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     record_raw_id = source_raw_id
                     record_session_ids: list[str] = []

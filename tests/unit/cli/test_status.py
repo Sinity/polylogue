@@ -31,8 +31,10 @@ from polylogue.cli.commands.status import (
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
@@ -531,6 +533,74 @@ class TestNoArchiveStatus:
         assert payload["sessions"] == 1
         assert payload["messages"] == 3
         assert payload["raw_records"] == 2
+
+    def test_direct_status_json_keeps_stopped_daemon_lifecycle_visible(self, tmp_path: Path) -> None:
+        """The direct fallback retains retryable and unexplained distinctions."""
+        env = _make_app_env()
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(source_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-deferred",
+                    "claude-code-session",
+                    "native-deferred",
+                    "/data/deferred.jsonl",
+                    bytes(32),
+                    32,
+                    1_770_000_000_000,
+                    "captured JSONL payload ends before a complete record boundary",
+                    "[]",
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-deferred",
+                ArchiveSourceArtifact(
+                    artifact_id="deferred-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/deferred.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_hot_jsonl_capture",
+                    classification_reason="deferred_hot_jsonl_capture",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "custom.sqlite"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is False
+        assert payload["raw_failures"] == {
+            "parse": 1,
+            "validation": 0,
+            "quarantined": 1,
+            "maintenance": 0,
+            "deferred_retryable": 1,
+            "terminal_rejections": 0,
+            "unexplained": 0,
+            "sample_count": 1,
+        }
 
     def test_direct_status_json_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
         env = _make_app_env()

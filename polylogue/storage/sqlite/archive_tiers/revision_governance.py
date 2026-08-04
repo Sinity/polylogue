@@ -129,6 +129,7 @@ from polylogue.archive.revision_replay import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -2828,6 +2829,42 @@ def mark_raw_parse_failed(
 ) -> None:
     """Persist a bounded parse/index failure for retained raw evidence."""
     finalize_raw_parse_state(store, raw_id, state=_raw_parse_failure_state(provider, error))
+
+
+def record_raw_failure_evidence(
+    store: RawRevisionGovernanceHost,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_index: int,
+    acquired_at_ms: int,
+    kind: RawFailureEvidenceKind,
+) -> None:
+    """Persist a closed parse-outcome classification beside retained bytes."""
+    from hashlib import sha256
+
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
+
+    artifact_id = "raw-failure:" + sha256(f"{raw_id}:{kind.value}".encode()).hexdigest()
+    upsert_raw_artifact(
+        store._ensure_source_conn(),
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id=artifact_id,
+            origin=origin_from_provider(provider),
+            source_path=source_path,
+            source_index=source_index,
+            artifact_kind=kind.value,
+            classification_reason=kind.value,
+            support_status=kind.support_status,
+            parse_as_session=kind is RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+            schema_eligible=kind is RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+            first_observed_at_ms=acquired_at_ms,
+            last_observed_at_ms=acquired_at_ms,
+        ),
+    )
 
 
 def mark_raw_parse_succeeded(store: RawRevisionGovernanceHost, raw_id: str, *, provider: Provider) -> None:
