@@ -87,7 +87,7 @@
     "archive_cursor": "polylogue-demo-seed-fixture-world",
     "commit_sha": "fdd5ea848",
     "measure_version": "demo-packet-v2",
-    "run_date": "2026-07-10",
+    "run_date": "2026-07-09",
     "sample_frame_predicate": "all 11 sessions in the deterministic demo archive"
   },
   "receipts": [
