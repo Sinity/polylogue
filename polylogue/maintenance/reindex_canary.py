@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import tempfile
 from collections import Counter
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -495,19 +497,35 @@ def write_canary_report(
     durable = DurableCanaryReport(selection=selection, comparison=reviewed_comparison, reviews=review_list)
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
     payload = json.dumps(durable.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
-    with temporary.open("w", encoding="utf-8") as stream:
-        stream.write(payload)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        _fsync_directory(path.parent)
+    except BaseException:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink()
+        raise
     return durable
 
 
 def load_canary_report(path: Path) -> dict[str, object]:
-    """Read a durable report and reject any persisted unclassified summary."""
+    """Read and structurally revalidate a durable report's review coverage."""
 
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
@@ -516,9 +534,127 @@ def load_canary_report(path: Path) -> dict[str, object]:
     if not isinstance(comparison, dict):
         raise UnclassifiedCanaryDiffError("canary report has no comparison object")
     summary = comparison.get("summary")
-    if not isinstance(summary, dict) or summary.get("unclassified_count"):
-        raise UnclassifiedCanaryDiffError("canary report contains unclassified differences")
+    if not isinstance(summary, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no comparison summary object")
+    raw_differences = comparison.get("differences")
+    if not isinstance(raw_differences, list):
+        raise UnclassifiedCanaryDiffError("canary report has no differences list")
+    differences = tuple(_difference_from_dict(item) for item in raw_differences)
+    raw_reviews = payload.get("reviews")
+    if not isinstance(raw_reviews, list):
+        raise UnclassifiedCanaryDiffError("canary report has no reviews list")
+    reviews = tuple(_review_from_dict(item) for item in raw_reviews)
+    difference_keys = tuple(_difference_key(difference) for difference in differences)
+    review_keys = tuple(review.key for review in reviews)
+    if len(set(difference_keys)) != len(difference_keys) or len(set(review_keys)) != len(review_keys):
+        raise UnclassifiedCanaryDiffError("canary report contains duplicate difference or review identities")
+    difference_by_key = dict(zip(difference_keys, differences, strict=True))
+    review_by_key = dict(zip(review_keys, reviews, strict=True))
+    missing_keys = set(difference_by_key).difference(review_by_key)
+    extra_keys = set(review_by_key).difference(difference_by_key)
+    if missing_keys or extra_keys:
+        raise UnclassifiedCanaryDiffError(
+            f"canary report review coverage is incomplete (missing={len(missing_keys)}, extra={len(extra_keys)})"
+        )
+    for key, difference in difference_by_key.items():
+        review = review_by_key[key]
+        if review.classification is not difference.classification:
+            raise UnclassifiedCanaryDiffError("canary report review classification disagrees with its difference")
+    comparison["summary"] = _summary_for_differences(differences)
     return cast(dict[str, object], payload)
+
+
+def _difference_key(difference: RowDifference) -> tuple[str, DifferenceOperation, tuple[tuple[str, object], ...]]:
+    return difference.table, difference.operation, difference.identity
+
+
+def _difference_from_dict(value: object) -> RowDifference:
+    if not isinstance(value, dict):
+        raise UnclassifiedCanaryDiffError("canary report difference must be an object")
+    identity = value.get("identity")
+    changed_columns = value.get("changed_columns")
+    if (
+        not isinstance(identity, dict)
+        or not isinstance(changed_columns, list)
+        or not all(isinstance(column, str) for column in changed_columns)
+    ):
+        raise UnclassifiedCanaryDiffError("canary report difference has invalid identity or changed columns")
+    before = value.get("before")
+    after = value.get("after")
+    if before is not None and not isinstance(before, dict):
+        raise UnclassifiedCanaryDiffError("canary report difference has invalid before row")
+    if after is not None and not isinstance(after, dict):
+        raise UnclassifiedCanaryDiffError("canary report difference has invalid after row")
+    table = value.get("table")
+    rationale = value.get("rationale")
+    if not isinstance(table, str) or not isinstance(rationale, str):
+        raise UnclassifiedCanaryDiffError("canary report difference has invalid table or rationale")
+    try:
+        operation = DifferenceOperation(value["operation"])
+        classification = DifferenceClassification(value["classification"])
+    except (KeyError, ValueError) as exc:
+        raise UnclassifiedCanaryDiffError("canary report difference has invalid operation or classification") from exc
+    return RowDifference(
+        table=table,
+        operation=operation,
+        identity=tuple((str(key), item) for key, item in identity.items()),
+        before=cast(dict[str, object] | None, before),
+        after=cast(dict[str, object] | None, after),
+        changed_columns=tuple(cast(list[str], changed_columns)),
+        classification=classification,
+        rationale=rationale,
+    )
+
+
+def _review_from_dict(value: object) -> CanaryDifferenceReview:
+    if not isinstance(value, dict):
+        raise UnclassifiedCanaryDiffError("canary report review must be an object")
+    identity = value.get("identity")
+    table = value.get("table")
+    reference = value.get("reference")
+    rationale = value.get("rationale")
+    if (
+        not isinstance(identity, dict)
+        or not isinstance(table, str)
+        or not isinstance(reference, str)
+        or not isinstance(rationale, str)
+        or not reference.strip()
+        or not rationale.strip()
+    ):
+        raise UnclassifiedCanaryDiffError("every canary review needs a valid reference and rationale")
+    try:
+        operation = DifferenceOperation(value["operation"])
+        classification = DifferenceClassification(value["classification"])
+    except (KeyError, ValueError) as exc:
+        raise UnclassifiedCanaryDiffError("canary report review has invalid operation or classification") from exc
+    return CanaryDifferenceReview(
+        table=table,
+        operation=operation,
+        identity=tuple((str(key), item) for key, item in identity.items()),
+        classification=classification,
+        reference=reference,
+        rationale=rationale,
+    )
+
+
+def _summary_for_differences(differences: tuple[RowDifference, ...]) -> dict[str, object]:
+    expected_count = sum(item.classification is DifferenceClassification.EXPECTED for item in differences)
+    unexpected_count = sum(item.classification is DifferenceClassification.UNEXPECTED for item in differences)
+    return {
+        "difference_count": len(differences),
+        "expected_count": expected_count,
+        "unexpected_count": unexpected_count,
+        "unclassified_count": 0,
+        "counts_by_table": dict(sorted(Counter(item.table for item in differences).items())),
+    }
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(str(directory), os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 # These are SQLite implementation details rather than semantic read models.

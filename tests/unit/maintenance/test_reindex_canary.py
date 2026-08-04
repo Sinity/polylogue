@@ -8,11 +8,14 @@ green, while the real blocks read model must report the changed row.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import polylogue.maintenance.reindex_canary as reindex_canary
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
     CanaryDiffReport,
@@ -429,3 +432,139 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert isinstance(summary, dict)
     assert summary["unclassified_count"] == 0
     assert summary["unexpected_count"] == len(reviews)
+
+
+def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["reviews"] = payload["reviews"][:-1]
+    payload["comparison"]["summary"] = {
+        "difference_count": 0,
+        "expected_count": 0,
+        "unexpected_count": 0,
+        "unclassified_count": 0,
+        "counts_by_table": {},
+    }
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="review coverage is incomplete"):
+        load_canary_report(report_path)
+
+
+def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["comparison"]["summary"] = {
+        "difference_count": 0,
+        "expected_count": 0,
+        "unexpected_count": 0,
+        "unclassified_count": 0,
+        "counts_by_table": {},
+    }
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_canary_report(report_path)
+
+    summary = loaded["comparison"]["summary"]
+    assert isinstance(summary, dict)
+    assert summary["difference_count"] == len(reviews)
+    assert summary["unexpected_count"] == len(reviews)
+
+
+def test_canary_report_uses_unique_temporary_names(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+    original = reindex_canary.tempfile.NamedTemporaryFile
+    names: list[str] = []
+
+    def recording_named_temporary_file(*args: Any, **kwargs: Any) -> Any:
+        stream = original(*args, **kwargs)
+        names.append(stream.name)
+        return stream
+
+    monkeypatch.setattr(reindex_canary.tempfile, "NamedTemporaryFile", recording_named_temporary_file)
+    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+
+    assert len(names) == 2
+    assert len(set(names)) == 2
+    assert list(report_path.parent.glob(f".{report_path.name}.*.tmp")) == []
+
+
+def test_canary_report_cleans_temporary_file_when_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+
+    def fail_replace(source: object, destination: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(reindex_canary.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="replace failed"):
+        write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+
+    assert not report_path.exists()
+    assert list(report_path.parent.glob(f".{report_path.name}.*.tmp")) == []
