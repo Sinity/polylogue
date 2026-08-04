@@ -44,48 +44,48 @@ This datasheet is generated from the deterministic demo family registry, the dec
 
 ## Declared Construct Coverage
 
-| Construct | Observed | Minimum | Status |
-| --- | ---: | ---: | --- |
-| Multi-origin sessions (`multi_origin_sessions`) | 8 | 3 | `ok` |
-| Session profiles (`session_profiles`) | 19 | 3 | `ok` |
-| Tool-use blocks (`tool_use_blocks`) | 26 | 1 | `ok` |
-| Tool-result blocks (`tool_result_blocks`) | 28 | 1 | `ok` |
-| Failed tool results (`failed_tool_results`) | 7 | 1 | `ok` |
-| Provider usage messages (`provider_usage_messages`) | 9 | 1 | `ok` |
-| Attachment rows (`attachment_rows`) | 1 | 1 | `ok` |
-| Acquired attachment rows (`acquired_attachment_rows`) | 1 | 1 | `ok` |
-| Temporary session rows (`temporary_session_rows`) | 1 | 1 | `ok` |
-| Token-budget web constructs (`token_budget_web_constructs`) | 1 | 1 | `ok` |
-| Capture-gap events (`capture_gap_events`) | 1 | 1 | `ok` |
-| Browser-capture raw variants (`browser_capture_raw_variants`) | 3 | 3 | `ok` |
-| Browser-capture coalesced session (`browser_capture_coalesced_session`) | 1 | 1 | `ok` |
-| Source-outage interval events (`source_outage_interval_events`) | 1 | 1 | `ok` |
-| Ambiguous cross-material duplicate (`ambiguous_cross_material_duplicate`) | 2 | 1 | `ok` |
-| Compaction omits a failed attempt (`compaction_omits_failed_attempt`) | 1 | 1 | `ok` |
-| Gemini CLI origin rows (`gemini_cli_origin_rows`) | 1 | 1 | `ok` |
-| Antigravity origin rows (`antigravity_origin_rows`) | 1 | 1 | `ok` |
-| Hermes origin rows (`hermes_origin_rows`) | 1 | 1 | `ok` |
-| Session-link rows (`session_link_rows`) | 3 | 1 | `ok` |
-| Generic branch links (`generic_branch_links`) | 1 | 1 | `ok` |
-| Prefix-sharing lineage links (`prefix_sharing_links`) | 2 | 1 | `ok` |
-| Continuation links (`continuation_links`) | 1 | 1 | `ok` |
-| Subagent links (`subagent_links`) | 1 | 1 | `ok` |
-| Sidechain sessions (`sidechain_sessions`) | 1 | 1 | `ok` |
-| Compaction events (`compaction_events`) | 1 | 1 | `ok` |
-| Run projection rows (`run_projection_rows`) | 19 | 1 | `ok` |
-| Observed-event rows (`observed_event_rows`) | 43 | 1 | `ok` |
-| Context snapshot rows (`context_snapshot_rows`) | 19 | 1 | `ok` |
-| Subagent context snapshots (`subagent_context_snapshots`) | 1 | 1 | `ok` |
-| Subagent run rows (`subagent_run_rows`) | 1 | 1 | `ok` |
-| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | 5 | 1 | `ok` |
-| Error terminal-state rows (`error_terminal_state_rows`) | 2 | 1 | `ok` |
-| Receipts failed test action (`receipts_failed_test_action`) | 1 | 1 | `ok` |
-| Receipts successful recovery action (`receipts_successful_recovery_action`) | 1 | 1 | `ok` |
-| Receipts conflicting claim (`receipts_conflicting_claim`) | 1 | 1 | `ok` |
-| Anti-grep negative control (`anti_grep_control`) | 1 | 1 | `ok` |
-| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | 41 | 1 | `ok` |
-| Synthetic message embedding rows (`synthetic_message_embedding_rows`) | 2 | 1 | `ok` |
-| Embedding status rows (`embedding_status_rows`) | 1 | 1 | `ok` |
+| Construct | Required coverage | Status |
+| --- | ---: | --- |
+| Multi-origin sessions (`multi_origin_sessions`) | >= 3 | `ok` |
+| Session profiles (`session_profiles`) | >= 3 | `ok` |
+| Tool-use blocks (`tool_use_blocks`) | >= 1 | `ok` |
+| Tool-result blocks (`tool_result_blocks`) | >= 1 | `ok` |
+| Failed tool results (`failed_tool_results`) | >= 1 | `ok` |
+| Provider usage messages (`provider_usage_messages`) | >= 1 | `ok` |
+| Attachment rows (`attachment_rows`) | >= 1 | `ok` |
+| Acquired attachment rows (`acquired_attachment_rows`) | >= 1 | `ok` |
+| Temporary session rows (`temporary_session_rows`) | >= 1 | `ok` |
+| Token-budget web constructs (`token_budget_web_constructs`) | >= 1 | `ok` |
+| Capture-gap events (`capture_gap_events`) | >= 1 | `ok` |
+| Browser-capture raw variants (`browser_capture_raw_variants`) | >= 3 | `ok` |
+| Browser-capture coalesced session (`browser_capture_coalesced_session`) | >= 1 | `ok` |
+| Source-outage interval events (`source_outage_interval_events`) | >= 1 | `ok` |
+| Ambiguous cross-material duplicate (`ambiguous_cross_material_duplicate`) | >= 1 | `ok` |
+| Compaction omits a failed attempt (`compaction_omits_failed_attempt`) | >= 1 | `ok` |
+| Gemini CLI origin rows (`gemini_cli_origin_rows`) | >= 1 | `ok` |
+| Antigravity origin rows (`antigravity_origin_rows`) | >= 1 | `ok` |
+| Hermes origin rows (`hermes_origin_rows`) | >= 1 | `ok` |
+| Session-link rows (`session_link_rows`) | >= 1 | `ok` |
+| Generic branch links (`generic_branch_links`) | >= 1 | `ok` |
+| Prefix-sharing lineage links (`prefix_sharing_links`) | >= 1 | `ok` |
+| Continuation links (`continuation_links`) | >= 1 | `ok` |
+| Subagent links (`subagent_links`) | >= 1 | `ok` |
+| Sidechain sessions (`sidechain_sessions`) | >= 1 | `ok` |
+| Compaction events (`compaction_events`) | >= 1 | `ok` |
+| Run projection rows (`run_projection_rows`) | >= 1 | `ok` |
+| Observed-event rows (`observed_event_rows`) | >= 1 | `ok` |
+| Context snapshot rows (`context_snapshot_rows`) | >= 1 | `ok` |
+| Subagent context snapshots (`subagent_context_snapshots`) | >= 1 | `ok` |
+| Subagent run rows (`subagent_run_rows`) | >= 1 | `ok` |
+| Unfinished terminal-state rows (`unfinished_terminal_state_rows`) | >= 1 | `ok` |
+| Error terminal-state rows (`error_terminal_state_rows`) | >= 1 | `ok` |
+| Receipts failed test action (`receipts_failed_test_action`) | >= 1 | `ok` |
+| Receipts successful recovery action (`receipts_successful_recovery_action`) | >= 1 | `ok` |
+| Receipts conflicting claim (`receipts_conflicting_claim`) | >= 1 | `ok` |
+| Anti-grep negative control (`anti_grep_control`) | >= 1 | `ok` |
+| Embedding candidate prose messages (`embedding_candidate_prose_messages`) | >= 1 | `ok` |
+| Synthetic message embedding rows (`synthetic_message_embedding_rows`) | >= 1 | `ok` |
+| Embedding status rows (`embedding_status_rows`) | >= 1 | `ok` |
 
 ## Interpretation Notes
 
