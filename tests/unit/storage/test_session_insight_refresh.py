@@ -501,6 +501,129 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
     assert claude_thread["search_text"] == "sentinel thread untouched"
 
 
+@pytest.mark.asyncio
+async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_groups_and_roots(
+    tmp_path: Path,
+) -> None:
+    """polylogue-lyv4 RED TWIN: async twin of
+    ``test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots``
+    above. Before the fix, ``rebuild_session_insights_async(conn, session_ids=
+    [...])`` unconditionally ran ``DELETE FROM threads`` / ``DELETE FROM
+    session_tag_rollups`` then rebuilt every root/group archive-wide,
+    regardless of the requested subset -- with only this multi-session,
+    multi-thread, multi-provider-day fixture does that unscoped wipe become
+    observable (a single-session fixture, e.g. the existing
+    ``test_async_large_session_rebuild_uses_bounded_degraded_profile``, never
+    exercises a second thread/group whose sentinel value would be destroyed).
+    Also proves the async function commits its own work internally: the
+    assertions read back through a *new* connection after the ``async with``
+    block closes, with no caller-side ``commit()`` in between.
+    """
+    db_path = tmp_path / "refresh-async-targeted.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "conv-chatgpt-a",
+                source_name="chatgpt",
+                title="ChatGPT A",
+                created_at="2026-04-02T10:00:00+00:00",
+                updated_at="2026-04-02T10:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-a:msg-1",
+                    "conv-chatgpt-a",
+                    text="ChatGPT A message",
+                    timestamp="2026-04-02T10:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            session=make_session(
+                "conv-claude-a",
+                source_name="claude-ai",
+                title="Claude A",
+                created_at="2026-04-03T09:00:00+00:00",
+                updated_at="2026-04-03T09:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-claude-a:msg-1",
+                    "conv-claude-a",
+                    text="Claude A message",
+                    timestamp="2026-04-03T09:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        rebuild_session_insights_sync(conn)
+        conn.execute(
+            "UPDATE session_tag_rollups SET search_text = ? WHERE source_name = ?",
+            ("sentinel tag untouched", "claude-ai-export"),
+        )
+        conn.execute(
+            "UPDATE threads SET search_text = ? WHERE thread_id = ?",
+            ("sentinel thread untouched", _sid("conv-claude-a", "claude-ai-export")),
+        )
+        store_records(
+            session=make_session(
+                "conv-chatgpt-b",
+                source_name="chatgpt",
+                title="ChatGPT B",
+                created_at="2026-04-02T11:00:00+00:00",
+                updated_at="2026-04-02T11:05:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-chatgpt-b:msg-1",
+                    "conv-chatgpt-b",
+                    text="ChatGPT B message",
+                    timestamp="2026-04-02T11:00:00+00:00",
+                )
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        conn.commit()
+
+    async with aiosqlite.connect(db_path) as async_conn:
+        async_conn.row_factory = sqlite3.Row
+        counts = await rebuild_mod.rebuild_session_insights_async(
+            async_conn,
+            session_ids=[_sid("conv-chatgpt-b", "chatgpt-export")],
+        )
+        # No caller-side commit here -- the function must commit its own work
+        # internally (the second half of this bead's AC).
+
+    with open_connection(db_path) as conn:
+        tag_rows = conn.execute(
+            """
+            SELECT source_name, bucket_day, session_count, search_text
+            FROM session_tag_rollups
+            WHERE tag = 'origin:' || source_name
+            ORDER BY source_name, bucket_day
+            """
+        ).fetchall()
+        claude_thread = conn.execute(
+            "SELECT search_text FROM threads WHERE thread_id = ?",
+            (_sid("conv-claude-a", "claude-ai-export"),),
+        ).fetchone()
+
+    assert counts.profiles == 1
+    assert [(row["source_name"], row["bucket_day"], row["session_count"]) for row in tag_rows] == [
+        ("chatgpt-export", "2026-04-02", 2),
+        ("claude-ai-export", "2026-04-03", 1),
+    ]
+    assert [row["search_text"] for row in tag_rows if row["source_name"] == "claude-ai-export"] == [
+        "sentinel tag untouched"
+    ]
+    assert claude_thread is not None
+    assert claude_thread["search_text"] == "sentinel thread untouched"
+
+
 def test_targeted_session_insight_rebuild_moves_tag_rollup_between_days(
     tmp_path: Path,
 ) -> None:
