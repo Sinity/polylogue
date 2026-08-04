@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from polylogue.archive.models import Session
@@ -55,6 +55,71 @@ class ComposedPathology:
     sessions: tuple[Session, ...] = ()
     raw_payloads: tuple[object, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
+    components: tuple[ComposedPathology, ...] = ()
+    raw_ingestion_order: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize and validate the raw sequence a harness will ingest."""
+        order = self.raw_ingestion_order
+        if order is None:
+            order = tuple(range(len(self.raw_payloads)))
+            object.__setattr__(self, "raw_ingestion_order", order)
+
+        expected = tuple(range(len(self.raw_payloads)))
+        if len(order) != len(expected) or not all(type(index) is int for index in order) or set(order) != set(expected):
+            raise ValueError("raw_ingestion_order must be a permutation of raw_payloads indexes")
+
+    @property
+    def raw_payloads_in_ingestion_order(self) -> tuple[object, ...]:
+        """Return raw payloads in the deterministic order a harness should ingest."""
+        assert self.raw_ingestion_order is not None
+        return tuple(self.raw_payloads[index] for index in self.raw_ingestion_order)
+
+    def with_raw_ingestion_order(self, raw_ingestion_order: Sequence[int]) -> ComposedPathology:
+        """Return this arrangement with a different deterministic raw ingest order."""
+        return replace(self, raw_ingestion_order=tuple(raw_ingestion_order))
+
+    def compose(
+        self,
+        *pathologies: ComposedPathology,
+        name: str | None = None,
+        raw_ingestion_order: Sequence[int] | None = None,
+    ) -> ComposedPathology:
+        """Nest this arrangement with others without introducing a corpus DSL."""
+        return compose_pathologies(
+            self,
+            *pathologies,
+            name=name,
+            raw_ingestion_order=raw_ingestion_order,
+        )
+
+
+def compose_pathologies(
+    *pathologies: ComposedPathology,
+    name: str | None = None,
+    raw_ingestion_order: Sequence[int] | None = None,
+) -> ComposedPathology:
+    """Combine existing arrangements and optionally permute their raw ingestion.
+
+    The result retains each direct component for inspection while exposing its
+    sessions and raw payloads as one flat corpus. ``raw_ingestion_order`` is a
+    permutation over that flat raw-payload sequence, so a metamorphic test can
+    feed the same artifacts through the real ingestion path under many orders.
+    """
+    if not pathologies:
+        raise ValueError("compose_pathologies requires at least one pathology")
+
+    component_names = tuple(pathology.name for pathology in pathologies)
+    return ComposedPathology(
+        name=name if name is not None else "+".join(component_names),
+        pathology="+".join(pathology.pathology for pathology in pathologies),
+        motivated_by="; ".join(pathology.motivated_by for pathology in pathologies),
+        description=f"Composition of archive pathologies: {', '.join(component_names)}.",
+        sessions=tuple(session for pathology in pathologies for session in pathology.sessions),
+        raw_payloads=tuple(payload for pathology in pathologies for payload in pathology.raw_payloads),
+        components=pathologies,
+        raw_ingestion_order=None if raw_ingestion_order is None else tuple(raw_ingestion_order),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -454,6 +519,7 @@ def extract_new_shape_turns(payload: JSONRecord) -> list[tuple[str, str]]:
 
 __all__ = [
     "ComposedPathology",
+    "compose_pathologies",
     "compose_append_revision_chain",
     "compose_fork_prefix_tail_lineage",
     "compose_multi_session_bundle",
