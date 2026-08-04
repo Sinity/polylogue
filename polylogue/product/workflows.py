@@ -258,7 +258,7 @@ ACTION_UNIT_EVIDENCE: tuple[ActionUnitEvidence, ...] = (
     ActionUnitEvidence(
         action_id="select",
         evidence_unit="session target_ref / identity_key",
-        evidence_surface="select --json emits id, origin, title, and date for the chosen row.",
+        evidence_surface="select --format json emits id, origin, title, and date for the chosen row.",
         negative_guard="Zero matches produce no selected target; multi-match selection remains explicit.",
     ),
     ActionUnitEvidence(

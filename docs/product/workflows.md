@@ -53,7 +53,7 @@ Action units are the evidence grain for query-action execution. They define the 
 
 | Action unit | Evidence unit | Evidence surface | Negative guard |
 | --- | --- | --- | --- |
-| `select` | session target_ref / identity_key | select --json emits id, origin, title, and date for the chosen row. | Zero matches produce no selected target; multi-match selection remains explicit. |
+| `select` | session target_ref / identity_key | select --format json emits id, origin, title, and date for the chosen row. | Zero matches produce no selected target; multi-match selection remains explicit. |
 | `read` | session/message/block target_ref plus read-view payload | read --view messages/raw/context uses shared CLI and HTTP read-view profiles; exact refs read the selected session payload. | Zero matches return no target; many matches require --all/--first/bounded export; unsupported formats/views fail instead of widening. |
 | `continue` | ContextImage seed_refs and read_views | continue --format json records seed_refs, redaction policy, assertions, candidates, and context segments. | Ambiguous query results require selection before continuation. |
 | `analyze` | query-scoped stats/facet rows | analyze --facets --format json exposes scoped/global buckets plus family_status labels, deferred state, and omitted/noisy counts. | Unsupported grouping/format combinations fail loudly; deferred facet families are marked deferred rather than displayed as authoritative empties. |
