@@ -1876,11 +1876,12 @@ def rebuild_session_insights_sync(
         if chunk_degraded_ids and not chunk_full_ids:
             t0 = time.perf_counter()
             degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
+            degraded_root_ids = thread_root_ids_sync(conn, chunk_degraded_ids)
             record_bundles = [
                 build_large_session_insight_record_bundle_sync(
                     conn,
                     session_id,
-                    logical_session_id=session_id,
+                    logical_session_id=degraded_root_ids.get(session_id),
                 )
                 for session_id in chunk_degraded_ids
             ]
@@ -1892,11 +1893,12 @@ def rebuild_session_insights_sync(
             if chunk_degraded_ids:
                 t0 = time.perf_counter()
                 degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
+                degraded_root_ids = thread_root_ids_sync(conn, chunk_degraded_ids)
                 record_bundles.extend(
                     build_large_session_insight_record_bundle_sync(
                         conn,
                         session_id,
-                        logical_session_id=session_id,
+                        logical_session_id=degraded_root_ids.get(session_id),
                     )
                     for session_id in chunk_degraded_ids
                 )
@@ -2175,12 +2177,13 @@ async def rebuild_session_insights_async(
         batch: SessionInsightArchiveBatch | None = None
         if chunk_degraded_ids:
             degraded_session_ids.update(str(session_id) for session_id in chunk_degraded_ids)
+            degraded_root_ids = await thread_root_ids_async(conn, chunk_degraded_ids)
             for session_id in chunk_degraded_ids:
                 record_bundles.append(
                     await build_large_session_insight_record_bundle_async(
                         conn,
                         session_id,
-                        logical_session_id=session_id,
+                        logical_session_id=degraded_root_ids.get(session_id),
                     )
                 )
         if chunk_full_ids:

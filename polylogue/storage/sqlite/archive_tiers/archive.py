@@ -4008,6 +4008,10 @@ class ArchiveStore:
         terminal_state: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
+        first_message_since: str | None = None,
+        first_message_until: str | None = None,
+        session_date_since: str | None = None,
+        session_date_until: str | None = None,
         tier: str = "merged",
         limit: int | None = 50,
         offset: int = 0,
@@ -4044,6 +4048,18 @@ class ArchiveStore:
         if until_ms is not None:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
+        if first_message_since is not None:
+            where.append("sp.first_message_at >= ?")
+            params.append(first_message_since)
+        if first_message_until is not None:
+            where.append("sp.first_message_at <= ?")
+            params.append(first_message_until)
+        if session_date_since is not None:
+            where.append("sp.canonical_session_date >= date(?)")
+            params.append(session_date_since)
+        if session_date_until is not None:
+            where.append("sp.canonical_session_date <= date(?)")
+            params.append(session_date_until)
         if min_wallclock_seconds is not None:
             where.append(f"COALESCE({wall_expr}, 0) >= ?")
             params.append(int(min_wallclock_seconds * 1000))

@@ -205,6 +205,66 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
     assert json.loads(tag_rollup["logical_session_ids_json"]) == [_sid("root", "claude-code-session")]
 
 
+def test_degraded_session_insight_rebuild_preserves_logical_thread_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The bounded path must use the topology root for rollup deduplication."""
+    db_path = _current_index_db(tmp_path, "logical-heavy-child")
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "root",
+                source_name="codex",
+                title="Root",
+                created_at="2026-05-25T10:00:00+00:00",
+            ),
+            messages=[make_message("root:msg-1", "root", text="root", timestamp="2026-05-25T10:00:00+00:00")],
+            attachments=[],
+            conn=conn,
+        )
+        store_records(
+            session=make_session(
+                "child",
+                source_name="codex",
+                title="Child",
+                parent_session_id="root",
+                created_at="2026-05-25T10:05:00+00:00",
+            ),
+            messages=[make_message("child:msg-1", "child", text="child", timestamp="2026-05-25T10:05:00+00:00")],
+            attachments=[],
+            conn=conn,
+        )
+        conn.execute(
+            "UPDATE sessions SET message_count = ?, word_count = ?, tool_use_count = ? WHERE session_id = ?",
+            (50, 1234, 7, _sid("child", "codex-session")),
+        )
+        conn.commit()
+        monkeypatch.setattr(rebuild_mod, "_SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD", 10)
+        rebuild_session_insights_sync(conn)
+
+        rows = conn.execute(
+            "SELECT session_id, logical_session_id FROM session_profiles ORDER BY session_id"
+        ).fetchall()
+        rollup = conn.execute(
+            """
+            SELECT session_count, logical_session_count, logical_session_ids_json
+            FROM session_tag_rollups
+            WHERE source_name = 'codex-session' AND bucket_day = '2026-05-25'
+              AND tag = 'origin:codex-session'
+            """
+        ).fetchone()
+
+    assert {tuple(row) for row in rows} == {
+        (_sid("child", "codex-session"), _sid("root", "codex-session")),
+        (_sid("root", "codex-session"), _sid("root", "codex-session")),
+    }
+    assert rollup is not None
+    assert rollup["session_count"] == 2
+    assert rollup["logical_session_count"] == 1
+    assert json.loads(rollup["logical_session_ids_json"]) == [_sid("root", "codex-session")]
+
+
 @pytest.mark.asyncio
 async def test_apply_session_insight_session_updates_async_counts_session_event_compactions(
     tmp_path: Path,
