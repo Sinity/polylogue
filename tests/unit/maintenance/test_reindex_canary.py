@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.maintenance import reindex_canary as reindex_canary_module
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
     CanaryDiffReport,
@@ -34,6 +35,22 @@ from polylogue.maintenance.reindex_canary import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_report_provenance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep structural report tests independent of the CLI lifecycle route.
+
+    The CLI red twins exercise the real archive-owned provenance capture and
+    reload path. These focused tests construct standalone index pairs solely
+    to pin comparison and review serialization behavior.
+    """
+
+    monkeypatch.setattr(
+        reindex_canary_module,
+        "_capture_archive_provenance",
+        lambda *args, **kwargs: {},
+    )
 
 
 def _seed_index(
@@ -613,18 +630,17 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
         rebuild_receipt=_rebuild_receipt(selection, comparison),
         reviews=reviews,
     )
-    loaded = load_canary_report(report_path)
-
     assert durable.unclassified_count == 0
     assert report_path.exists()
-    assert loaded["schema_version"] == 2
-    comparison_payload = loaded["comparison"]
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 3
+    comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]
     assert isinstance(summary, dict)
     assert summary["unclassified_count"] == 0
     assert summary["unexpected_count"] == len(reviews)
-    assert "rebuild_receipt" in loaded
+    assert "rebuild_receipt" in payload
 
 
 def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:
@@ -741,7 +757,7 @@ def test_loading_canary_report_rejects_tampered_selection_binding(tmp_path: Path
         load_canary_report(report_path)
 
 
-def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path) -> None:
+def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
     report_path = tmp_path / "reports" / "canary.json"
@@ -775,6 +791,7 @@ def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path) -> No
         "counts_by_table": {},
     }
     report_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(reindex_canary_module, "_validate_archive_provenance", lambda *args, **kwargs: None)
 
     loaded = load_canary_report(report_path)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.maintenance import _reindex_canary as command_module
 from polylogue.core.enums import Provider
+from polylogue.maintenance import reindex_canary as reindex_canary_module
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
@@ -64,6 +66,45 @@ def _seed_isolated_canary(root: Path) -> None:
         )
     receipt = rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root, promote=True))
     assert receipt.status == "replayed"
+
+
+def _write_real_unreviewed_canary_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, dict[str, object]]:
+    """Exercise the CLI to produce a report bound to one disposable archive."""
+
+    live_root = tmp_path / "configured-live"
+    canary_root = tmp_path / "isolated-canary"
+    report_path = tmp_path / "unreviewed.json"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(canary_root))
+    _seed_isolated_canary(canary_root)
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
+    with sqlite3.connect(canary_root / "index.db") as connection:
+        connection.execute("UPDATE blocks SET text = 'mutated active projection'")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(report_path),
+            "--sample",
+            "1",
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 1
+    assert "unreviewed canary report written" in result.output
+    return canary_root, report_path, json.loads(report_path.read_text(encoding="utf-8"))
 
 
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
@@ -169,6 +210,7 @@ def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplicat
             reviews=(),
             review_status="reviewed",
             comparison_fingerprint="0" * 64,
+            archive_provenance={},
         )
 
     monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
@@ -251,7 +293,7 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
 def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The CLI's real report writer accepts an explicit per-difference review."""
+    """The CLI forwards an explicit per-difference review to report writing."""
 
     index_path = tmp_path / "index.db"
     index_path.touch()
@@ -266,9 +308,25 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
         reference="polylogue-review",
         rationale="reviewed materializer change",
     )
+    captured: dict[str, object] = {}
+
+    def fake_write(path: Path, **kwargs: object) -> DurableCanaryReport:
+        captured["path"] = path
+        captured["reviews"] = kwargs["reviews"]
+        return DurableCanaryReport(
+            selection=run_result.selection,
+            comparison=run_result.comparison,
+            rebuild_receipt=run_result.rebuild_receipt,
+            reviews=(review,),
+            review_status="reviewed",
+            comparison_fingerprint="0" * 64,
+            archive_provenance={},
+        )
+
     review_path.write_text(json.dumps({"reviews": [review.to_dict()]}), encoding="utf-8")
     monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.write_canary_report", fake_write)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.load_canary_report", lambda path: {})
 
     result = CliRunner().invoke(
@@ -292,9 +350,8 @@ def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
     )
 
     assert result.exit_code == 0
-    persisted = json.loads(report_path.read_text(encoding="utf-8"))
-    assert persisted["reviews"] == [review.to_dict()]
-    assert persisted["comparison"]["summary"]["expected_count"] == 1
+    assert captured == {"path": report_path, "reviews": (review,)}
+    assert json.loads(result.stdout)["reviews"] == [review.to_dict()]
 
 
 def test_reindex_canary_cli_rejects_manifest_with_wrong_changed_columns(
@@ -350,11 +407,25 @@ def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest
 ) -> None:
     index_path = tmp_path / "index.db"
     index_path.touch()
+    run_result = _nonempty_run_result(index_path)
+
+    def fake_write(path: Path, **kwargs: object) -> DurableCanaryReport:
+        return DurableCanaryReport(
+            selection=run_result.selection,
+            comparison=run_result.comparison,
+            rebuild_receipt=run_result.rebuild_receipt,
+            reviews=(),
+            review_status="unreviewed",
+            comparison_fingerprint="0" * 64,
+            archive_provenance={},
+        )
+
     monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
     monkeypatch.setattr(
         "polylogue.maintenance.reindex_canary.run_reindex_canary",
-        lambda *args, **kwargs: _nonempty_run_result(index_path),
+        lambda *args, **kwargs: run_result,
     )
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.write_canary_report", fake_write)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.load_canary_report", lambda path: {})
 
     result = CliRunner().invoke(
@@ -431,6 +502,91 @@ def test_reindex_canary_cli_persists_unreviewed_real_candidate_lifecycle(
     report_path.write_text(json.dumps(persisted), encoding="utf-8")
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="comparison attestation"):
+        load_canary_report(report_path)
+
+
+def test_cli_canary_report_red_twin_rejects_arbitrary_copied_indexes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copied pair must not become an approved archive just by rewriting JSON."""
+
+    canary_root, report_path, payload = _write_real_unreviewed_canary_report(tmp_path, monkeypatch)
+    comparison = payload["comparison"]
+    receipt = payload["rebuild_receipt"]
+    selection = payload["selection"]
+    assert isinstance(comparison, dict)
+    assert isinstance(receipt, dict)
+    assert isinstance(selection, dict)
+    generation = receipt["generation"]
+    assert isinstance(generation, dict)
+    original_candidate = Path(str(comparison["candidate_index"]))
+
+    copied_root = tmp_path / "copied-archive"
+    copied_candidate = copied_root / "unowned-copy" / "index.db"
+    copied_current = copied_root / "index.db"
+    copied_candidate.parent.mkdir(parents=True)
+    shutil.copy2(canary_root / "source.db", copied_root / "source.db")
+    shutil.copy2(canary_root / "index.db", copied_current)
+    shutil.copy2(original_candidate, copied_candidate)
+
+    comparison["current_index"] = str(copied_current)
+    comparison["candidate_index"] = str(copied_candidate)
+    selection["index_path"] = str(copied_current)
+    receipt["archive_root"] = str(copied_root)
+    generation["archive_root"] = str(copied_root)
+    generation["index_path"] = str(copied_candidate)
+    payload["comparison_fingerprint"] = reindex_canary_module._comparison_fingerprint(
+        reindex_canary_module.compare_reindex_generations(
+            copied_current,
+            copied_candidate,
+            session_ids=tuple(selection["selected_session_ids"]),
+        )
+    )
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="archive-owned"):
+        load_canary_report(report_path)
+
+
+def test_cli_canary_report_red_twin_rejects_replaced_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Replacing the same candidate path after review must invalidate the report."""
+
+    _canary_root, report_path, payload = _write_real_unreviewed_canary_report(tmp_path, monkeypatch)
+    comparison = payload["comparison"]
+    assert isinstance(comparison, dict)
+    candidate = Path(str(comparison["candidate_index"]))
+    replacement = tmp_path / "replacement.db"
+    shutil.copy2(candidate, replacement)
+    replacement.replace(candidate)
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="candidate index identity"):
+        load_canary_report(report_path)
+
+
+@pytest.mark.parametrize("drift", ("active-pointer", "candidate-generation", "source-snapshot"))
+def test_cli_canary_report_red_twin_rejects_lifecycle_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    """The report is invalid when live pointer or generation metadata no longer match."""
+
+    canary_root, report_path, payload = _write_real_unreviewed_canary_report(tmp_path, monkeypatch)
+    comparison = payload["comparison"]
+    assert isinstance(comparison, dict)
+    if drift == "active-pointer":
+        alternate = canary_root / "alternate-generation" / "index.db"
+        alternate.parent.mkdir()
+        shutil.copy2(canary_root / "index.db", alternate)
+        (canary_root / ".index-active-pointer").write_text(str(alternate), encoding="utf-8")
+    elif drift == "candidate-generation":
+        candidate_metadata = Path(str(comparison["candidate_index"])).with_name("generation.json")
+        metadata = json.loads(candidate_metadata.read_text(encoding="utf-8"))
+        metadata["owner_id"] = "replaced-owner"
+        candidate_metadata.write_text(json.dumps(metadata), encoding="utf-8")
+    else:
+        with sqlite3.connect(canary_root / "source.db") as connection:
+            connection.execute("UPDATE raw_sessions SET acquired_at_ms = acquired_at_ms + 1")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="archive-owned"):
         load_canary_report(report_path)
 
 
