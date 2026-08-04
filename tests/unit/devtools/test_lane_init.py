@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -137,58 +139,95 @@ def test_provision_venv_ignores_inherited_uv_project(tmp_path: Path, monkeypatch
     assert lane_init._provision_venv(lane) is None
 
 
-def test_main_verifies_a_new_lane_with_its_own_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The production command must leave a main-checkout shell before verifying.
+def test_main_provisions_and_verifies_a_real_lane_from_a_poisoned_coordinator(tmp_path: Path) -> None:
+    """Run the full lane-init process boundary against a real linked worktree.
 
-    Mutation proof: restoring the former ``sys.executable``/coordinator-cwd
-    verification route makes the simulated checkout guard return 125 before
-    lane-init can report the lane as ready.
+    The coordinator copy deliberately makes its verify-worktree module fail.
+    The outer process also names that coordinator in every Python and uv
+    routing variable. A successful run therefore proves that lane-init creates
+    the linked worktree, provisions its venv, runs the shared checkout guard,
+    invokes verify-worktree through the lane interpreter, and appends its
+    ledger without using coordinator code or environment state.
+
+    Mutation proof: restoring the former coordinator interpreter/environment
+    route executes the coordinator canary and makes lane-init fail. Removing
+    either Python or uv environment scrubbing causes the lane guard to resolve
+    the coordinator package and return the asserted exit 125 below.
     """
     coordinator = tmp_path / "main"
     lane = tmp_path / "lane"
-    coordinator.mkdir()
-    lane.mkdir()
-    lane_python = lane / ".venv" / "bin" / "python"
-    lane_python.parent.mkdir(parents=True)
-    lane_python.touch()
+    project_root = Path(__file__).resolve().parents[3]
+    subprocess.run(
+        ["git", "clone", "--shared", str(project_root), str(coordinator)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     coordinator_python = coordinator / ".venv" / "bin" / "python"
+    coordinator_python.parent.mkdir(parents=True)
+    coordinator_python.symlink_to(Path(sys.executable))
+    (coordinator / "devtools" / "verify_worktree.py").write_text(
+        "raise SystemExit('coordinator verify-worktree must not run')\n",
+        encoding="utf-8",
+    )
 
-    monkeypatch.setattr(lane_init, "repo_root", lambda: coordinator)
-    monkeypatch.setattr(lane_init, "_ensure_worktree", lambda *_: None)
-    monkeypatch.setattr(sys, "executable", str(coordinator_python))
-    monkeypatch.setenv("VIRTUAL_ENV", str(coordinator / ".venv"))
-    monkeypatch.setenv("PYTHONPATH", str(coordinator))
-    monkeypatch.setattr(lane_init, "coordinator_root", lambda root: root)
-    monkeypatch.setattr(lane_init, "append_ledger", lambda root, record: root / lane_init.LEDGER_RELPATH)
+    poisoned_env = os.environ | {
+        "VIRTUAL_ENV": str(coordinator / ".venv"),
+        "PYTHONPATH": str(coordinator),
+        "UV_PROJECT": str(coordinator),
+        "UV_WORKING_DIR": str(coordinator),
+    }
+    driver = "from devtools.lane_init import main; import sys; raise SystemExit(main(sys.argv[1:]))"
+    result = subprocess.run(
+        [
+            str(coordinator_python),
+            "-c",
+            driver,
+            str(lane),
+            "--branch",
+            "feature/test/real-lane",
+            "--base",
+            "HEAD",
+        ],
+        cwd=coordinator,
+        env=poisoned_env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "lane ready:" in result.stdout
+    assert "coordinator verify-worktree must not run" not in result.stderr
+    assert (lane / ".git").is_file()
+    lane_python = lane / ".venv" / "bin" / "python"
+    assert lane_python.is_file()
 
-    events: list[str] = []
+    ledger = coordinator / lane_init.LEDGER_RELPATH
+    record = json.loads(ledger.read_text(encoding="utf-8").splitlines()[-1])
+    assert record["worktree"] == str(lane)
+    assert record["branch"] == "feature/test/real-lane"
+    assert record["venv"] is True
 
-    def provision(worktree: Path) -> None:
-        assert worktree == lane
-        events.append("provision")
-        return None
-
-    def guard(worktree: Path) -> None:
-        assert worktree == lane
-        events.append("guard")
-        return None
-
-    def run(cmd: Sequence[str], *, cwd: Path | None = None, env: dict[str, str] | None = None) -> CompletedProcess[str]:
-        if "verify-worktree" in cmd:
-            events.append("verify")
-            if cmd[0] != str(lane_python) or cwd != lane or env is None:
-                return CompletedProcess(cmd, 125, "", "guard: coordinator editable import\n")
-            assert "VIRTUAL_ENV" not in env
-            assert "PYTHONPATH" not in env
-            assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
-            return CompletedProcess(cmd, 0, "", "")
-        if cmd[:4] == ["git", "-C", str(lane), "rev-parse"]:
-            return CompletedProcess(cmd, 0, "abcdef123\n", "")
-        raise AssertionError(f"unexpected command: {cmd}")
-
-    monkeypatch.setattr(lane_init, "_provision_venv", provision)
-    monkeypatch.setattr(lane_init, "_guard_check", guard)
-    monkeypatch.setattr(lane_init, "_run", run)
-
-    assert lane_init.main([str(lane), "--branch", "feature/test/lane-env"]) == 0
-    assert events == ["provision", "guard", "verify"]
+    foreign_guard = subprocess.run(
+        [
+            str(lane_python),
+            "-P",
+            "-c",
+            (
+                "from pathlib import Path\n"
+                "import sys\n"
+                "from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout\n"
+                "try:\n"
+                "    assert_polylogue_matches_checkout(Path.cwd(), context='poisoned lane')\n"
+                "except CheckoutImportMismatchError as exc:\n"
+                "    print(exc, file=sys.stderr)\n"
+                "    raise SystemExit(125)\n"
+            ),
+        ],
+        cwd=lane,
+        env=poisoned_env,
+        capture_output=True,
+        text=True,
+    )
+    assert foreign_guard.returncode == 125
+    assert "resolved OUTSIDE this checkout" in foreign_guard.stderr
+    assert "give this checkout its own venv" in foreign_guard.stderr
