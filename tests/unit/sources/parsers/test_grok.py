@@ -5,6 +5,7 @@ from typing import Any
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import grok
 
@@ -94,11 +95,12 @@ def test_parse_conversation_nested_response_shape() -> None:
     assert session.messages[0].text == "Why is my useEffect running twice?"
     assert session.messages[0].timestamp == "2024-04-01T19:33:21+00:00"
     assert session.messages[0].blocks[0].type is BlockType.TEXT
-    assert session.messages[0].provider_message_id == "grok-1:0"
-    assert session.messages[1].provider_message_id == "grok-1:1"
+    assert session.messages[0].provider_message_id.startswith("synthetic-")
+    assert session.messages[1].provider_message_id.startswith("synthetic-")
+    assert session.messages[0].provider_message_id != session.messages[1].provider_message_id
     assert [m.position for m in session.messages] == [0, 1]
     assert [m.is_active_leaf for m in session.messages] == [False, True]
-    assert session.active_leaf_message_provider_id == "grok-1:1"
+    assert session.active_leaf_message_provider_id == session.messages[1].provider_message_id
     assert session.updated_at == session.messages[-1].timestamp
 
 
@@ -179,6 +181,18 @@ def test_parse_conversation_id_stable_across_reparse() -> None:
     first = grok.parse_conversation(payload, "grok-1")
     second = grok.parse_conversation(payload, "grok-1")
     assert first.provider_session_id == second.provider_session_id == "grok-1"
+
+
+def test_parse_conversation_reordered_idless_responses_keep_revision_identity() -> None:
+    payload = _flat_conversation()
+    reversed_payload = {**payload, "responses": list(reversed(payload["responses"]))}
+
+    forward = grok.parse_conversation(payload, "grok-order")
+    reordered = grok.parse_conversation(reversed_payload, "grok-order")
+
+    assert (
+        session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
+    )
 
 
 # ---------------------------------------------------------------------------

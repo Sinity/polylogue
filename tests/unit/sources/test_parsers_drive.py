@@ -152,6 +152,17 @@ def test_parse_chunked_prompt_preserves_core_session_metadata() -> None:
     assert result.messages[1].duration_ms == 1500
 
 
+def test_parse_chunked_prompt_idless_chunk_does_not_get_a_positional_provider_id() -> None:
+    payload: JSONDocument = {
+        "id": "gemini-idless",
+        "chunkedPrompt": {"chunks": [{"role": "user", "text": "Question", "createTime": "2024-01-15T10:30:00Z"}]},
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "fallback-id")
+
+    assert [message.provider_message_id for message in result.messages] == [""]
+
+
 def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:
     """runSettings (polylogue-2qx.4 / polylogue-cgfy) must reach ``ParsedSession.run_settings``.
 

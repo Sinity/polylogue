@@ -365,6 +365,22 @@ def test_chatgpt_message_extraction_sorts_iso_timestamps() -> None:
     assert [message.provider_message_id for message in messages] == ["early", "late"]
 
 
+def test_chatgpt_idless_message_does_not_get_a_positional_provider_id() -> None:
+    mapping = {
+        "node": {
+            "message": {
+                "author": {"role": "user"},
+                "content": {"parts": ["hello"]},
+                "create_time": "2024-01-15T10:30:00Z",
+            }
+        }
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+
+    assert [message.provider_message_id for message in messages] == [""]
+
+
 # MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 17)
 
 

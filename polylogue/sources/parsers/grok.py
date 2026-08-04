@@ -53,6 +53,7 @@ from .base import (
     ParsedSession,
     fill_linear_parent_chain,
     human_authored_override,
+    synthetic_message_id,
 )
 
 _SENDER_ROLE: dict[str, Role] = {
@@ -138,20 +139,27 @@ def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> Parse
     created_at = _timestamp_text(conversation.get("create_time"))
 
     messages: list[ParsedMessage] = []
-    for index, entry in enumerate(responses):
+    for _index, entry in enumerate(responses):
         fields = _response_fields(entry)
         text_raw = fields.get("message")
         text = text_raw if isinstance(text_raw, str) else None
         if not text:
             continue
-        provider_message_id = f"{fallback_id}:{index}"
         grok_role = _role_for_sender(fields.get("sender"))
+        timestamp = _timestamp_text(fields.get("create_time"))
+        provider_message_id = synthetic_message_id(
+            namespace=fallback_id,
+            role=grok_role,
+            text=text,
+            timestamp=timestamp,
+            kind="grok-response",
+        )
         messages.append(
             ParsedMessage(
                 provider_message_id=provider_message_id,
                 role=grok_role,
                 text=text,
-                timestamp=_timestamp_text(fields.get("create_time")),
+                timestamp=timestamp,
                 blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 position=len(messages),
                 variant_index=0,

@@ -615,9 +615,7 @@ def extract_messages_from_mapping(
             continue
         role = Role.normalize(str(raw_role))
         timestamp = msg.get("create_time")
-        msg_id = msg.get("id") or node.get("id") or ""
-        if not msg_id:
-            msg_id = f"msg-{idx}"
+        msg_id = str(msg.get("id") or node.get("id") or "")
 
         # Extract parent message reference and calculate branch index
         parent_id = node.get("parent")
