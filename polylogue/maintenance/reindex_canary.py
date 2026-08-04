@@ -354,6 +354,7 @@ def _validate_canary_candidate(
         isinstance(value, str) and value for value in (generation_id, owner_id, source_snapshot, candidate_value)
     ):
         raise CanarySelectionError("rebuild receipt did not identify a complete inactive candidate generation")
+    assert isinstance(candidate_value, str)
 
     location = ArchiveLocation.resolve(archive_root)
     anchor = location.active_pointer or location.configured_tier("index").configured_path
@@ -726,8 +727,12 @@ def compare_reindex_generations(
             candidate_columns = _table_columns(candidate, table) if table in candidate_tables else ()
             operation = DifferenceOperation.REMOVED if current_present else DifferenceOperation.ADDED
             changed_columns = tuple(sorted(set(current_columns).union(candidate_columns)))
-            before = {"table": table, "columns": list(current_columns)} if current_present else None
-            after = {"table": table, "columns": list(candidate_columns)} if table in candidate_tables else None
+            before: dict[str, object] | None = (
+                {"table": table, "columns": list(current_columns)} if current_present else None
+            )
+            after: dict[str, object] | None = (
+                {"table": table, "columns": list(candidate_columns)} if table in candidate_tables else None
+            )
             schema_differences.append(
                 _build_difference(
                     table=table,
