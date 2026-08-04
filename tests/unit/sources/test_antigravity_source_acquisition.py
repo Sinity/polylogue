@@ -55,4 +55,4 @@ def test_unavailable_language_server_never_promotes_brain_sidecars_to_sessions(
     sessions = list(iter_antigravity_language_server_sessions(Source(name="antigravity", path=root)))
 
     assert sessions == []
-    assert "no session coverage" in caplog.messages[-1]
+    assert "antigravity_coverage_gap" in caplog.messages[-1]

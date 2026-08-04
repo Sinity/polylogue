@@ -254,6 +254,9 @@ language-server export is the only session route. A missing directory or any
 `AntigravityExportError` is logged as an explicit coverage gap. Brain-artifact
 `*.md.metadata.json` files remain artifact-only, so an unavailable exporter
 cannot pollute session or schema-inference populations with fragment sessions.
+The warning uses the structured `antigravity_coverage_gap` event with
+`source_path`, `reason`, and an actionable `action`; the daemon reconciliation
+route invokes this same iterator even when `conversations/` is absent.
 
 ## Key Abstractions
 
