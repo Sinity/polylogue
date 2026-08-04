@@ -110,6 +110,20 @@ def test_scan_blob_integrity_reports_invalid_namespace_entries(tmp_path: Path) -
     assert finding.sample == (sidecar.name,)
 
 
+def test_scan_blob_integrity_reports_file_backed_root(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    root = tmp_path / "blob"
+    root.write_bytes(b"not a directory")
+    _make_db(db_path).close()
+
+    report = scan_blob_integrity(db_path, store=BlobStore(root), full=True)
+
+    finding = next(finding for finding in report.findings if finding.kind == "invalid_namespace_entries")
+    assert finding.severity == "critical"
+    assert finding.count == 1
+    assert finding.sample == (".",)
+
+
 def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     store = BlobStore(tmp_path / "blob")

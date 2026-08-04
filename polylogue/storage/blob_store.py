@@ -337,6 +337,12 @@ class BlobStore:
         except FileNotFoundError:
             return
         except OSError:
+            yield BlobNamespaceEntry(
+                kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                path=self.root,
+                relative_path=".",
+                issue=BlobNamespaceIssue.STAT_FAILED,
+            )
             return
 
         for shard_path in root_entries:

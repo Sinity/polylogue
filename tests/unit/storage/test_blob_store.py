@@ -184,6 +184,18 @@ def test_verify_all_handles_removed_prefix_dir(tmp_path: Path) -> None:
     assert result.checked == 0
 
 
+def test_verify_all_reports_file_backed_root(tmp_path: Path) -> None:
+    root = tmp_path / "blobs"
+    root.write_bytes(b"not a directory")
+
+    result = BlobStore(root).verify_all()
+
+    assert result.checked == 0
+    assert [(failure.reason, failure.path, failure.detail) for failure in result.failures] == [
+        ("invalid_namespace_entry", ".", ".: stat_failed")
+    ]
+
+
 def test_verify_all_reports_malformed_leaf_without_hash_path_parsing(tmp_path: Path) -> None:
     """A malformed leaf is a namespace fault, not a malformed hash exception."""
     blob_store = BlobStore(tmp_path / "blobs")
