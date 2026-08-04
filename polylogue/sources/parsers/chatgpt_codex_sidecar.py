@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
+from polylogue.archive.message.artifacts import classify_material_origin
+from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, Role, SessionRefKind, WebConstructType
 
 from .base import (
@@ -36,6 +38,7 @@ from .base import (
     ParsedSessionEvent,
     ParsedSessionRef,
     ParsedWebConstruct,
+    human_authored_override,
 )
 
 INGEST_FLAG = "capture:chatgpt-codex-cloud-task"
@@ -132,11 +135,28 @@ def _turn_message(turn: Mapping[str, object], *, position: int, parent_id: str |
     blocks: list[ParsedContentBlock] = []
     if constructs:
         blocks.append(ParsedContentBlock(type=BlockType.TEXT, web_constructs=constructs))
+    message_type = MessageType.MESSAGE
     return ParsedMessage(
         provider_message_id=turn_id,
         role=role,
         text=text or None,
         blocks=blocks,
+        message_type=message_type,
+        # codex.json is a ChatGPT-export sidecar, not a local agent transcript:
+        # a role=user MESSAGE turn is positive human evidence. Apply the same
+        # parser-level override as the main chat-export path so this independent
+        # construction route does not depend on ParsedSession's later broad
+        # export upgrade (polylogue-gzgyl continuation).
+        material_origin=human_authored_override(
+            role,
+            message_type,
+            classify_material_origin(
+                role=role,
+                message_type=message_type,
+                text=text or None,
+                block_types=tuple(block.type for block in blocks),
+            ),
+        ),
         parent_message_provider_id=parent_id,
         position=position,
     )
