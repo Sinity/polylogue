@@ -1,11 +1,9 @@
 """Windowed format-drift status derivation (light import path).
 
-This lives outside ``polylogue.cli.commands.status`` deliberately: the root
-CLI callback's drift marker (``click_app._emit_schema_drift_marker``) and the
-daemon health check both need only this derivation, while ``status`` pulls the
-readiness/repair stack (~1s of imports). Keeping this module stdlib-light means
-every ``polylogue`` invocation that never touches the status surface does not
-pay that import tax just to print the drift sentinel.
+This lives outside ``polylogue.cli.commands.status`` deliberately: the status
+surface and daemon health check both need this derivation, while ``status``
+pulls the readiness/repair stack (~1s of imports). Keeping this module
+stdlib-light keeps the daemon health path independent from the CLI surface.
 """
 
 from __future__ import annotations
