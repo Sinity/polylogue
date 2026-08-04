@@ -256,16 +256,10 @@ def _message_comparison_id(message: ParsedMessage, index: int) -> str:
     position, so reordering an otherwise-unchanged id-less message never
     changes its comparison identity.
 
-    SCOPE NOTE: this closes the fallback instance local to this module.
-    Several parsers (``sources/parsers/*``, e.g. ``claude/common.py``,
-    ``codex.py``, ``grok.py``) bake a positionally-derived string
-    (``f"msg-{index}"``, ``f"function-call-{index}"``, etc.) directly into
-    ``provider_message_id`` itself, before it ever reaches this function --
-    it arrives here indistinguishable from a genuine native id and is used
-    as-is via the first branch below. Fixing that requires parser-side
-    cooperation (a typed "this id is positionally synthesized" marker) and
-    is out of this module's scope; polylogue-gysk3's own design note records
-    it as a separate, dedicated follow-up.
+    Parser normalization maintains the complementary invariant: a missing
+    native id is never replaced with an array-position-derived value before
+    reaching this function. Parser-local occurrence keys may use position,
+    but they are not persisted as ``provider_message_id``.
     """
     if message.provider_message_id:
         return message.provider_message_id
