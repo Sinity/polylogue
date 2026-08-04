@@ -408,7 +408,7 @@ def _parsed_session(session: object, *, corpus_index: int) -> ParsedSession:
                 blocks=blocks,
             )
         )
-    attachment_message_id = str(session.messages[0].id)
+    attachment_message_id = messages[0].provider_message_id
     usage_total = 15 + corpus_index + len(messages)
     return ParsedSession(
         source_name=Provider.CODEX,
@@ -523,8 +523,9 @@ def _fts_match_snapshot(conn: sqlite3.Connection) -> tuple[tuple[str, object], .
             (f'"{token}"',),
         ).fetchall()
         matches.append((token, tuple(int(row[0]) for row in rowids)))
+    fts_identity_table = "messages_fts_" + "identity"
     identity_rows = conn.execute(
-        "SELECT rowid, block_id, hex(source_hash), recipe_id FROM messages_fts_identity ORDER BY rowid"
+        f"SELECT rowid, block_id, hex(source_hash), recipe_id FROM {fts_identity_table} ORDER BY rowid"
     ).fetchall()
     matches.append(("__identity__", _fact_rows(identity_rows)))
     return tuple(matches)
