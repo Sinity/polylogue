@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -65,10 +66,11 @@ def test_every_declared_route_class_has_a_real_route_proof_binding() -> None:
 
 
 def test_rendered_matrix_preserves_stable_operation_bindings() -> None:
-    payload = build_parity_payload()
+    payload = cast(dict[str, Any], build_parity_payload())
+    operations = cast(list[dict[str, Any]], payload["operations"])
     assert payload["operation_count"] == len(API_OPERATIONS)
-    assert {row["operation_id"] for row in payload["operations"]} == {row.operation_id for row in API_OPERATIONS}
-    embedding = next(row for row in payload["operations"] if row["operation_id"] == "api.embedding.preflight")
+    assert {row["operation_id"] for row in operations} == {row.operation_id for row in API_OPERATIONS}
+    embedding = next(row for row in operations if row["operation_id"] == "api.embedding.preflight")
     assert embedding["python"][0]["binding"] == "Polylogue.embedding_preflight"
     assert embedding["route_class"] == "embedding-preflight"
 
