@@ -1,5 +1,7 @@
 === Q1: SEQ thrash-loop hunt (repeated shell calls) ===
-$ polylogue find "sessions where seq(action:shell -> action:shell)" then select --json
+# Historical receipt (captured before the post-verb --json alias was removed):
+# polylogue find "sessions where seq(action:shell -> action:shell)" then select --json
+$ polylogue find "sessions where seq(action:shell -> action:shell)" then select --format json
 [{"id":"claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6","origin":"claude-code-session","title":"63705dcc-f3e5-4378-8118-8bc21e53bbb6","date":"2024-11-02"},{"id":"codex-session:demo-00","origin":"codex-session","title":"Could you review this code for potential issues?","date":"2024-01-23"}]
 
 Bare 'find' (no then-verb) on the SAME predicate incorrectly shows an unfiltered total -- see report.md counterexamples / filed bug:

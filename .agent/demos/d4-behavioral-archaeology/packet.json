@@ -97,7 +97,7 @@
       "kind": "artifact",
       "ref": "artifact:d4-behavioral-archaeology-evidence",
       "resolved": true,
-      "sha256": "5437f3c0dd75ba2e7f190b6397f3b467bbd2f9879fc8efa694c0745a8d211e49"
+      "sha256": "8ada6a96cc0a996165d0821d4607102ae7203802ed51a1212f7873fef6b6b5f3"
     },
     {
       "artifact_path": "PROMPT.md",
@@ -105,7 +105,7 @@
       "kind": "artifact",
       "ref": "artifact:d4-behavioral-archaeology-predeclaration",
       "resolved": true,
-      "sha256": "25ca56325470a4a7ab8b3cc8a99d9c7a4758842cdf17d8de6a52ab4dfedf6fd3"
+      "sha256": "478e73d60135183895f680e0adbbd961527510d9f56b1a3795989776e5ca65d2"
     }
   ],
   "reproduction": {

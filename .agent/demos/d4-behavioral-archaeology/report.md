@@ -22,7 +22,9 @@ output captured in `run.log`. Query 1 additionally demonstrated with
 1. **SEQ thrash-loop hunt** — `seq(action:shell -> action:shell)` finds
    sessions with back-to-back shell-tool calls (a real repeated-attempt
    signal): 2 of 11 sessions match (`claude-code-session:63705dcc-...`,
-   `codex-session:demo-00`), confirmed via `then select --json`.
+   `codex-session:demo-00`), confirmed by the current `then select
+   --format json` reproduction. The historical receipt used the retired
+   `then select --json` alias.
 2. **Tool call volume** — grouping actions by tool: Bash 9, Read 8, Task 1,
    Write 1, exec_command 1. Bash dominates this fixture's tool usage.
 3. **Which tools break** — grouping failed actions (`is_error:true`) by
@@ -60,8 +62,10 @@ See `evidence.ndjson` for the cited session/query refs.
 **A real defect surfaced while authoring query 1.** The bare command
 `polylogue find "sessions where seq(action:shell -> action:shell)"` (no
 `then` verb) returns `mode: list, total: 11` — the FULL unfiltered session
-set — while the identical predicate via `then select --json` correctly
-returns only the 2 matching sessions. This is not SEQ-specific: bare `find
+set — while the identical predicate via the historical receipt's retired
+`then select --json` spelling correctly returned only the 2 matching sessions.
+The current reproduction uses `then select --format json`. This is not
+SEQ-specific: bare `find
 "sessions where origin:codex-session"` also returns the unfiltered total
 (11), while the equivalent compact form `find "origin:codex-session"`
 (no `sessions where` prefix) correctly filters to 5. The explicit boolean-
