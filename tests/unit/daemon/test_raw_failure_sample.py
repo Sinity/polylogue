@@ -10,12 +10,14 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from polylogue.core.enums import ArtifactSupportStatus
 from polylogue.daemon.status import (
     DaemonStatus,
     RawFailureSample,
     _raw_failure_info,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -238,7 +240,10 @@ class TestRawFailureInfoProducesTypedSamples:
             )
             conn.commit()
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         assert info["parse_failures"] == 1
@@ -262,7 +267,10 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=1024,
         )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = info["samples"]
@@ -287,7 +295,10 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=512,
         )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -308,7 +319,10 @@ class TestRawFailureInfoProducesTypedSamples:
             blob_size=256,
         )
 
-        with patch("polylogue.daemon.status._active_status_db_path", return_value=index_db):
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
             info = _raw_failure_info()
 
         samples = cast(list[RawFailureSample], info["samples"])
@@ -317,6 +331,208 @@ class TestRawFailureInfoProducesTypedSamples:
         assert isinstance(sample, RawFailureSample)
         # Non-JSON parse error → "parse_error" (the error IS a parse error, just not JSON-specific)
         assert sample.failure_kind == "parse_error"
+
+    def test_raw_failure_info_separates_closed_lifecycle_evidence(self, tmp_path: Path) -> None:
+        index_db = _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-deferred",
+            origin="claude-code-session",
+            native_id="native-deferred",
+            source_path="/data/deferred.jsonl",
+            parse_error="captured JSONL payload ends before a complete record boundary",
+            acquired_at_ms=1_770_000_000_001,
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-terminal",
+            origin="unknown-export",
+            native_id="native-terminal",
+            source_path="/data/terminal.json",
+            parse_error="parsed raw payload produced no sessions",
+            acquired_at_ms=1_770_000_000_002,
+        )
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-unexplained",
+            origin="codex-session",
+            native_id="native-unexplained",
+            source_path="/data/unexplained.jsonl",
+            parse_error="raw revision CAS rejected an older accepted frontier",
+            acquired_at_ms=1_770_000_000_003,
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-deferred",
+                ArchiveSourceArtifact(
+                    artifact_id="deferred-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/deferred.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_hot_jsonl_capture",
+                    classification_reason="deferred_hot_jsonl_capture",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-terminal",
+                ArchiveSourceArtifact(
+                    artifact_id="terminal-evidence",
+                    origin="unknown-export",
+                    source_path="/data/terminal.json",
+                    source_index=0,
+                    artifact_kind="terminal_unsupported_shape",
+                    classification_reason="terminal_unsupported_shape",
+                    support_status=ArtifactSupportStatus.UNSUPPORTED_PARSEABLE,
+                ),
+            )
+
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=index_db),
+        ):
+            info = _raw_failure_info()
+
+        assert info["deferred_failures"] == 1
+        assert info["terminal_rejections"] == 1
+        assert info["unexplained_failures"] == 1
+        samples = cast(list[RawFailureSample], info["samples"])
+        assert {sample.lifecycle for sample in samples} == {"deferred", "terminal", "unexplained"}
+
+    def test_raw_failure_info_uses_root_source_tier_for_pointer_index(self, tmp_path: Path) -> None:
+        generation = tmp_path / "generation"
+        generation.mkdir()
+        active_index = generation / "index.db"
+        sqlite3.connect(active_index).close()
+        (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+        _seed_archive_raw_session(
+            tmp_path,
+            raw_id="raw-terminal",
+            origin="codex-session",
+            native_id="terminal",
+            source_path="/data/terminal.jsonl",
+            parse_error="captured JSONL payload ends before a complete record boundary",
+        )
+        with sqlite3.connect(tmp_path / "source.db") as conn:
+            upsert_raw_artifact(
+                conn,
+                "raw-terminal",
+                ArchiveSourceArtifact(
+                    artifact_id="terminal-evidence",
+                    origin="codex-session",
+                    source_path="/data/terminal.jsonl",
+                    source_index=0,
+                    artifact_kind="terminal_corrupt_input",
+                    classification_reason="terminal_corrupt_input",
+                    support_status=ArtifactSupportStatus.DECODE_FAILED,
+                ),
+            )
+
+        with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
+            info = _raw_failure_info()
+
+        assert info["parse_failures"] == 1
+        assert info["terminal_rejections"] == 1
+
+    def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
+        """Lifecycle counts cover every failed raw without bulk-fetching rows."""
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        rows = []
+        with sqlite3.connect(source_db) as conn:
+            for index in range(120):
+                raw_id = f"raw-{index}"
+                rows.append(
+                    (
+                        raw_id,
+                        "codex-session",
+                        raw_id,
+                        f"/data/{raw_id}.jsonl",
+                        index.to_bytes(32, "big"),
+                        128,
+                        1_770_000_000_000 + index,
+                        "captured JSONL payload ends before a complete record boundary",
+                        "[]",
+                    )
+                )
+            conn.executemany(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+            for index, row in enumerate(rows):
+                deferred = index % 2 == 0
+                upsert_raw_artifact(
+                    conn,
+                    str(row[0]),
+                    ArchiveSourceArtifact(
+                        artifact_id=f"artifact-{index}",
+                        origin="codex-session",
+                        source_path=str(row[3]),
+                        source_index=0,
+                        artifact_kind="deferred_hot_jsonl_capture" if deferred else "terminal_corrupt_input",
+                        classification_reason="raw-failure",
+                        support_status=(
+                            ArtifactSupportStatus.PARTIAL_DECODE if deferred else ArtifactSupportStatus.DECODE_FAILED
+                        ),
+                    ),
+                )
+
+        class GuardedCursor:
+            def __init__(self, cursor: sqlite3.Cursor, sql: str) -> None:
+                self._cursor = cursor
+                self._sql = sql
+
+            def fetchone(self) -> object:
+                return self._cursor.fetchone()
+
+            def fetchall(self) -> list[object]:
+                normalized = " ".join(self._sql.split()).lower()
+                if "from raw_sessions as r" in normalized and "order by acquired_at_ms desc" in normalized:
+                    raise AssertionError("raw-failure lifecycle rows must stream instead of fetchall")
+                return self._cursor.fetchall()
+
+            def __iter__(self) -> object:
+                normalized = " ".join(self._sql.split()).lower()
+                if "from raw_sessions as r" in normalized and "limit 50" not in normalized:
+                    raise AssertionError("raw-failure lifecycle totals must aggregate in SQL")
+                return iter(self._cursor)
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(self._cursor, name)
+
+        class GuardedConnection:
+            def __init__(self, connection: sqlite3.Connection) -> None:
+                self._connection = connection
+
+            def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> GuardedCursor:
+                return GuardedCursor(self._connection.execute(sql, parameters), sql)
+
+            def close(self) -> None:
+                self._connection.close()
+
+        with (
+            patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+            patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+            patch(
+                "polylogue.daemon.status.open_readonly_connection",
+                side_effect=lambda *_args, **_kwargs: GuardedConnection(sqlite3.connect(source_db)),
+            ),
+        ):
+            info = _raw_failure_info()
+
+        assert info["parse_failures"] == 120
+        assert info["deferred_failures"] == 60
+        assert info["terminal_rejections"] == 60
+        assert info["unexplained_failures"] == 0
+        assert len(cast(list[RawFailureSample], info["samples"])) == 50
 
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
         db = tmp_path / "index.db"

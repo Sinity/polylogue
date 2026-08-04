@@ -47,6 +47,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -162,6 +163,36 @@ _CODEX_OUT_OF_SCOPE_STATE_DB_NAMES = frozenset({"logs_2.sqlite", "codex-dev.db"}
 
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _hot_capture_prefix_is_proven(
+    path: str,
+    payload: bytes | None,
+    *,
+    blob_hash: str,
+    blob_size: int,
+) -> bool:
+    """Prove a rejected JSONL capture is a live prefix, never merely assume it.
+
+    A later source size alone is insufficient because a rewrite can have the
+    same pathname.  The retained bytes must still be the exact current prefix
+    and the source must have grown beyond them.
+    """
+    expected_fingerprint = sha256(payload).hexdigest() if payload is not None else blob_hash.lower()
+    if len(expected_fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_fingerprint
+    ):
+        return False
+    source = Path(path)
+    try:
+        proof_start = source.stat()
+        if proof_start.st_size <= blob_size:
+            return False
+        fingerprint, _bytes_read = sha256_range_from_path(source, start_offset=0, end_offset=blob_size)
+        proof_end = source.stat()
+    except (EOFError, OSError):
+        return False
+    return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
 
 
 def _write_codex_thread_state_evidence(
@@ -1153,7 +1184,15 @@ class LiveBatchProcessor:
         assert prefix_proof.stat is not None
         stat = prefix_proof.stat
         if source_revision is not None:
-            fp = source_revision
+            # Ordinary append cursors use the blob-backed source revision as
+            # their byte-proof identity. A retained raw failure instead binds
+            # the cursor to its durable source-tier ID so the next growth can
+            # find typed failure evidence and force full replay.
+            fp = (
+                raw_fingerprint
+                if raw_fingerprint is not None and self._raw_failure_requires_full_replay(path, raw_fingerprint)
+                else source_revision
+            )
             last_nl = byte_size
             tail_hash = source_revision
             if captured_content_hash is not None:
@@ -1417,8 +1456,11 @@ class LiveBatchProcessor:
     def _latest_raw_fingerprint(self, path: Path) -> str | None:
         return self._latest_archive_tiers_raw_fingerprint(path)
 
+    def _archive_source_db_path(self) -> Path:
+        return Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent)) / "source.db"
+
     def _latest_archive_tiers_raw_fingerprint(self, path: Path) -> str | None:
-        source_db = self._cursor._db_path.with_name("source.db")
+        source_db = self._archive_source_db_path()
         if not source_db.exists():
             return None
         try:
@@ -2164,7 +2206,44 @@ class LiveBatchProcessor:
                         blob_hash=blob_hash,
                         blob_size=record.blob_size,
                     ):
-                        raise ValueError("captured JSONL payload ends before a complete record boundary")
+                        if _hot_capture_prefix_is_proven(
+                            record.source_path,
+                            payload,
+                            blob_hash=blob_hash,
+                            blob_size=record.blob_size,
+                        ):
+                            archive.record_raw_failure_evidence(
+                                source_raw_id,
+                                provider=provider,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                kind=RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
+                            )
+                            archive.mark_raw_parse_failed(
+                                source_raw_id,
+                                provider=provider,
+                                error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                            )
+                            result.raw_ids[record.raw_id] = source_raw_id
+                            _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                            continue
+                        archive.record_raw_failure_evidence(
+                            source_raw_id,
+                            provider=provider,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            kind=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+                        )
+                        archive.mark_raw_parse_failed(
+                            source_raw_id,
+                            provider=provider,
+                            error=ValueError("captured JSONL payload ends before a complete record boundary"),
+                        )
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     t0 = time.perf_counter()
                     cached_sessions = (
                         parsed_sessions_by_raw_id.pop(record.raw_id, None) if parsed_sessions_by_raw_id else None
@@ -2262,6 +2341,14 @@ class LiveBatchProcessor:
                         time.perf_counter() - t0
                     )
                     if not sessions:
+                        archive.record_raw_failure_evidence(
+                            source_raw_id,
+                            provider=provider,
+                            source_path=record.source_path,
+                            source_index=record.source_index or 0,
+                            acquired_at_ms=acquired_at_ms,
+                            kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE,
+                        )
                         archive.mark_raw_parse_failed(
                             source_raw_id,
                             provider=provider,
@@ -2269,6 +2356,8 @@ class LiveBatchProcessor:
                                 "parsed raw payload produced no sessions with positive conversational evidence"
                             ),
                         )
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     record_raw_id = source_raw_id
                     record_session_ids: list[str] = []
@@ -2865,7 +2954,7 @@ class LiveBatchProcessor:
         or not a 'full' head -- callers fall through to the existing
         full-capture path exactly as before this fallback existed.
         """
-        source_db = self._cursor._db_path.with_name("source.db")
+        source_db = self._archive_source_db_path()
         if not source_db.exists():
             return None
         try:
@@ -2959,6 +3048,49 @@ class LiveBatchProcessor:
             mtime_ns=None,
         )
 
+    def _cursor_references_raw_failure_requiring_full_replay(self, path: Path, cursor: CursorRecord) -> bool:
+        """Return whether a typed raw failure invalidates append-only replay.
+
+        Typed raw-failure evidence retains a source observation that did not
+        materialize a session. Whether it was terminally rejected or deferred
+        while hot, an append-only parser cannot recover its missing prefix.
+        When the file subsequently grows, replay the complete source so the
+        parser receives its header and preceding messages intact.
+        """
+        if cursor.content_fingerprint is None:
+            return False
+        return self._raw_failure_requires_full_replay(path, cursor.content_fingerprint)
+
+    def _raw_failure_requires_full_replay(self, path: Path, raw_id: str) -> bool:
+        """Return whether one durable raw ID carries replay-blocking evidence."""
+        source_db = self._archive_source_db_path()
+        if not source_db.exists():
+            return False
+        placeholders = ", ".join("?" for _ in RAW_FAILURE_EVIDENCE_KINDS)
+        try:
+            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            try:
+                return (
+                    conn.execute(
+                        f"""
+                        SELECT 1
+                        FROM raw_sessions AS r
+                        JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
+                        WHERE r.raw_id = ?
+                          AND r.source_path = ?
+                          AND r.parse_error IS NOT NULL
+                          AND a.artifact_kind IN ({placeholders})
+                        LIMIT 1
+                        """,
+                        (raw_id, str(path), *sorted(RAW_FAILURE_EVIDENCE_KINDS)),
+                    ).fetchone()
+                    is not None
+                )
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+
     def _append_plan(self, path: Path, *, cursor: CursorRecord | None = None) -> _AppendPlan | _DeferredAppend | None:
         # Append planning is safe only for newline-delimited record streams.
         # Watch-source names describe acquisition routes, not file semantics:
@@ -2995,6 +3127,8 @@ class LiveBatchProcessor:
             or cursor.parser_fingerprint != self._current_parser_fingerprint()
             or cursor.content_fingerprint is None
         ):
+            return None
+        if self._cursor_references_raw_failure_requiring_full_replay(path, cursor):
             return None
         expected_prefix_hash = cursor_prefix_hash(cursor.tail_hash)
         if expected_prefix_hash is None:

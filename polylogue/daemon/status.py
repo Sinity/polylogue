@@ -22,6 +22,10 @@ from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_DEFERRED_EVIDENCE_KINDS,
+    RAW_FAILURE_TERMINAL_EVIDENCE_KINDS,
+)
 from polylogue.core.stats import percentile
 from polylogue.daemon.catchup_status import (
     CatchupStatus as CatchupStatus,
@@ -404,6 +408,7 @@ class RawFailureSample(BaseModel):
     source: Literal["ingest", "maintenance"] = "ingest"
     operation_id: str | None = None
     locator: str | None = None
+    lifecycle: Literal["deferred", "terminal", "unexplained"] | None = None
 
     @field_validator("redacted_error", mode="before")
     @classmethod
@@ -486,6 +491,9 @@ class DaemonStatus(BaseModel):
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
     raw_maintenance_failures: int = 0
+    raw_deferred_failures: int = 0
+    raw_terminal_rejections: int = 0
+    raw_unexplained_failures: int = 0
     raw_failure_samples: list[RawFailureSample] = Field(default_factory=list)
     raw_detection_warnings: int = 0
     health: DaemonHealth = Field(default_factory=DaemonHealth)
@@ -830,11 +838,13 @@ def _raw_failure_info() -> dict[str, object]:
     distinguish ``"ingest"`` rows from ``"maintenance"`` rows without
     re-querying.
     """
+    root = archive_root()
     dbf = _active_status_db_path()
+    source_db = root / "source.db"
     maintenance_samples, maintenance_count = _maintenance_failure_info()
     if not dbf.exists():
         archive_info = _archive_raw_failure_info(
-            dbf.with_name("source.db"),
+            source_db,
             maintenance_samples=maintenance_samples,
             maintenance_count=maintenance_count,
         )
@@ -845,14 +855,17 @@ def _raw_failure_info() -> dict[str, object]:
             "validation_failures": 0,
             "quarantined": 0,
             "maintenance_failures": maintenance_count,
+            "deferred_failures": 0,
+            "terminal_rejections": 0,
+            "unexplained_failures": 0,
             "samples": maintenance_samples,
         }
     archive_info = _archive_raw_failure_info(
-        dbf.with_name("source.db"),
+        source_db,
         maintenance_samples=maintenance_samples,
         maintenance_count=maintenance_count,
     )
-    if dbf.with_name("source.db").exists() and archive_info is not None:
+    if source_db.exists() and archive_info is not None:
         return archive_info
 
     try:
@@ -871,6 +884,9 @@ def _raw_failure_info() -> dict[str, object]:
                     "quarantined": 0,
                     "detection_warnings": 0,
                     "maintenance_failures": maintenance_count,
+                    "deferred_failures": 0,
+                    "terminal_rejections": 0,
+                    "unexplained_failures": 0,
                     "samples": maintenance_samples,
                 }
 
@@ -948,6 +964,9 @@ def _raw_failure_info() -> dict[str, object]:
             "quarantined": quarantined,
             "detection_warnings": detection_warnings_count,
             "maintenance_failures": maintenance_count,
+            "deferred_failures": 0,
+            "terminal_rejections": 0,
+            "unexplained_failures": parse_fail + validation_fail,
             "samples": combined,
         }
     except sqlite3.Error as exc:
@@ -958,6 +977,9 @@ def _raw_failure_info() -> dict[str, object]:
             "quarantined": 0,
             "detection_warnings": 0,
             "maintenance_failures": maintenance_count,
+            "deferred_failures": 0,
+            "terminal_rejections": 0,
+            "unexplained_failures": 0,
             "samples": maintenance_samples,
         }
 
@@ -1003,20 +1025,60 @@ def _archive_raw_failure_info(
                 ).fetchone()[0]
                 or 0
             )
+            deferred_kinds = tuple(sorted(RAW_FAILURE_DEFERRED_EVIDENCE_KINDS))
+            terminal_kinds = tuple(sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS))
+            known_kinds = deferred_kinds + terminal_kinds
+            deferred_placeholders = ", ".join("?" for _ in deferred_kinds)
+            terminal_placeholders = ", ".join("?" for _ in terminal_kinds)
+            known_placeholders = ", ".join("?" for _ in known_kinds)
+            lifecycle_totals = conn.execute(
+                f"""
+                WITH raw_failures AS (
+                    SELECT (
+                        SELECT a.artifact_kind
+                        FROM raw_artifacts AS a
+                        WHERE a.raw_id = r.raw_id
+                        ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
+                        LIMIT 1
+                    ) AS artifact_kind
+                    FROM raw_sessions AS r
+                    WHERE r.parse_error IS NOT NULL OR r.validation_status = 'failed'
+                )
+                SELECT
+                    COALESCE(SUM(artifact_kind IN ({deferred_placeholders})), 0),
+                    COALESCE(SUM(artifact_kind IN ({terminal_placeholders})), 0),
+                    COALESCE(SUM(artifact_kind IS NULL OR artifact_kind NOT IN ({known_placeholders})), 0)
+                FROM raw_failures
+                """,
+                (*deferred_kinds, *terminal_kinds, *known_kinds),
+            ).fetchone()
+            assert lifecycle_totals is not None
+            deferred_failures = int(lifecycle_totals[0] or 0)
+            terminal_rejections = int(lifecycle_totals[1] or 0)
+            unexplained_failures = int(lifecycle_totals[2] or 0)
             samples: list[RawFailureSample] = []
             for row in conn.execute(
                 """
-                SELECT raw_id, origin, parse_error, validation_status, validation_error
-                FROM raw_sessions
+                SELECT r.raw_id, r.origin, r.parse_error, r.validation_status, r.validation_error,
+                       (
+                           SELECT a.artifact_kind
+                           FROM raw_artifacts AS a
+                           WHERE a.raw_id = r.raw_id
+                           ORDER BY a.last_observed_at_ms DESC, a.artifact_id DESC
+                           LIMIT 1
+                       ) AS artifact_kind
+                FROM raw_sessions AS r
                 WHERE parse_error IS NOT NULL OR validation_status = 'failed'
                 ORDER BY acquired_at_ms DESC
                 LIMIT 50
                 """
-            ).fetchall():
+            ):
                 parse_err = str(row[2] or "") if row[2] else ""
                 val_status = str(row[3] or "") if row[3] else ""
                 val_err = str(row[4] or "") if row[4] else ""
                 origin = str(row[1]) if row[1] else None
+                artifact_kind = str(row[5]) if row[5] is not None else None
+                lifecycle = _raw_failure_lifecycle(artifact_kind)
                 if "JSONDecodeError" in parse_err or "decode error" in parse_err.lower():
                     kind: Literal["decode_error", "parse_error", "schema_violation", "unknown"] = "decode_error"
                 elif val_status == "failed":
@@ -1030,6 +1092,7 @@ def _archive_raw_failure_info(
                         failure_kind=kind,
                         provider_hint=origin,
                         redacted_error=parse_err or val_err,
+                        lifecycle=lifecycle,
                     )
                 )
         finally:
@@ -1044,13 +1107,47 @@ def _archive_raw_failure_info(
             "quarantined": quarantined,
             "detection_warnings": detection_warnings_count,
             "maintenance_failures": maintenance_count,
+            "deferred_failures": deferred_failures,
+            "terminal_rejections": terminal_rejections,
+            "unexplained_failures": unexplained_failures,
             "samples": combined,
         }
     except sqlite3.Error:
         return None
 
 
-def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
+def _raw_failure_lifecycle(artifact_kind: str | None) -> Literal["deferred", "terminal", "unexplained"]:
+    """Classify only closed source-tier evidence, never a diagnostic string."""
+    if artifact_kind in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS:
+        return "deferred"
+    if artifact_kind in RAW_FAILURE_TERMINAL_EVIDENCE_KINDS:
+        return "terminal"
+    return "unexplained"
+
+
+def raw_failure_info_for_root(root: Path) -> dict[str, object]:
+    """Return raw lifecycle evidence from one archive root without a daemon."""
+    maintenance_samples, maintenance_count = _maintenance_failure_info(root)
+    archive_info = _archive_raw_failure_info(
+        root / "source.db",
+        maintenance_samples=maintenance_samples,
+        maintenance_count=maintenance_count,
+    )
+    if archive_info is not None:
+        return archive_info
+    return {
+        "parse_failures": 0,
+        "validation_failures": 0,
+        "quarantined": 0,
+        "maintenance_failures": maintenance_count,
+        "deferred_failures": 0,
+        "terminal_rejections": 0,
+        "unexplained_failures": 0,
+        "samples": maintenance_samples,
+    }
+
+
+def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int]:
     """Read routed maintenance failures into typed daemon samples (#1198).
 
     Returns a ``(samples, total_count)`` pair so the caller can both
@@ -1063,9 +1160,9 @@ def _maintenance_failure_info() -> tuple[list[RawFailureSample], int]:
     )
 
     try:
-        root = archive_root()
-        records = read_maintenance_failures(root)
-        total = count_maintenance_failures(root)
+        archive = root or archive_root()
+        records = read_maintenance_failures(archive)
+        total = count_maintenance_failures(archive)
     except Exception as exc:
         logger.warning("status: maintenance-failure read failed: %s", exc, exc_info=True)
         return [], 0
@@ -2659,6 +2756,9 @@ def build_daemon_status(
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
         raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
         raw_maintenance_failures=_safe_int(raw_failures.get("maintenance_failures", 0)),
+        raw_deferred_failures=_safe_int(raw_failures.get("deferred_failures", 0)),
+        raw_terminal_rejections=_safe_int(raw_failures.get("terminal_rejections", 0)),
+        raw_unexplained_failures=_safe_int(raw_failures.get("unexplained_failures", 0)),
         raw_failure_samples=_typed_failure_samples(raw_failures.get("samples")),
         raw_detection_warnings=_safe_int(raw_failures.get("detection_warnings", 0)),
         daemon_liveness=_check_daemon_liveness(daemon_lifecycle),
@@ -2856,6 +2956,9 @@ def daemon_status_payload(
             "raw_validation_failures": status.raw_validation_failures,
             "raw_quarantined": status.raw_quarantined,
             "raw_maintenance_failures": status.raw_maintenance_failures,
+            "raw_deferred_failures": status.raw_deferred_failures,
+            "raw_terminal_rejections": status.raw_terminal_rejections,
+            "raw_unexplained_failures": status.raw_unexplained_failures,
             "raw_detection_warnings": status.raw_detection_warnings,
             "raw_failure_samples": [s.model_dump() for s in status.raw_failure_samples],
         }
@@ -3264,12 +3367,18 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     raw_val = _safe_int(payload.get("raw_validation_failures"))
     raw_quarantined = _safe_int(payload.get("raw_quarantined"))
     raw_maintenance = _safe_int(payload.get("raw_maintenance_failures"))
+    raw_deferred = _safe_int(payload.get("raw_deferred_failures"))
+    raw_terminal = _safe_int(payload.get("raw_terminal_rejections"))
+    raw_unexplained = _safe_int(payload.get("raw_unexplained_failures"))
     total_raw = raw_parse + raw_val + raw_maintenance
     if total_raw > 0:
         breakdown = f"{raw_parse} parse + {raw_val} validation"
         if raw_maintenance > 0:
             breakdown += f" + {raw_maintenance} maintenance"
         lines.append(f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {breakdown}")
+        lines.append(
+            f"  Lifecycle: {raw_deferred} deferred retryable, {raw_terminal} terminal, {raw_unexplained} unexplained"
+        )
         samples = payload.get("raw_failure_samples")
         if isinstance(samples, list) and samples:
             for s in samples[:5]:

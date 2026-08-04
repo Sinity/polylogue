@@ -31,8 +31,12 @@ from polylogue.cli.commands.status import (
     status_command,
 )
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.enums import ArtifactSupportStatus
+from polylogue.maintenance.failure_routing import route_failure_sample
+from polylogue.maintenance.planner import FailureSample
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
@@ -250,6 +254,14 @@ def test_archive_facade_route_catalog_covers_public_async_facade() -> None:
     assert routing["routes"]["health_check"]["route"] == "archive_routed"
     assert routing["routes"]["get_session"]["route"] == "archive_routed"
     assert routing["routes"]["search"]["route"] == "archive_routed"
+    assert routing["routes"]["search_similar_sessions"] == {
+        "route": "archive_routed",
+        "tier": "embeddings",
+        "detail": "ranks archived sessions through embeddings.db vectors",
+    }
+    for method in ("get_setting", "list_settings", "set_setting"):
+        assert routing["routes"][method]["route"] == "archive_routed"
+        assert routing["routes"][method]["tier"] == "user"
     assert routing["unsupported_methods"] == []
 
 
@@ -355,6 +367,48 @@ class TestNoArchiveStatus:
         assert "Sessions: 1" in combined
         assert "Messages: 2" in combined
         assert "Raw records: 1" in combined
+
+    def test_direct_status_counts_maintenance_raw_failures(self, tmp_path: Path) -> None:
+        env = _make_app_env()
+        db_anchor = tmp_path / "custom.sqlite"
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        with sqlite3.connect(source_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY);
+                INSERT INTO raw_sessions VALUES ('raw-1');
+                """
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=db_anchor),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+            patch(
+                "polylogue.cli.commands.status._direct_raw_failure_status",
+                return_value={
+                    "raw_parse_failures": 0,
+                    "raw_validation_failures": 0,
+                    "raw_quarantined": 0,
+                    "raw_maintenance_failures": 3,
+                    "raw_deferred_failures": 0,
+                    "raw_terminal_rejections": 0,
+                    "raw_unexplained_failures": 0,
+                    "raw_failure_samples": [],
+                },
+            ),
+            patch("polylogue.cli.commands.status_diagnostics.diagnose_first_run"),
+        ):
+            _show_direct_status(env)
+
+        assert "Raw failures: 3 total" in _combined_calls(env)
 
     def test_direct_status_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -532,6 +586,74 @@ class TestNoArchiveStatus:
         assert payload["messages"] == 3
         assert payload["raw_records"] == 2
 
+    def test_direct_status_json_keeps_stopped_daemon_lifecycle_visible(self, tmp_path: Path) -> None:
+        """The direct fallback retains retryable and unexplained distinctions."""
+        env = _make_app_env()
+        index_db = tmp_path / "index.db"
+        source_db = tmp_path / "source.db"
+        with sqlite3.connect(index_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE sessions (session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL);
+                INSERT INTO sessions VALUES ('codex-session:one', 1);
+                """
+            )
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        with sqlite3.connect(source_db) as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_sessions (
+                    raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                    acquired_at_ms, parse_error, detection_warnings_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "raw-deferred",
+                    "claude-code-session",
+                    "native-deferred",
+                    "/data/deferred.jsonl",
+                    bytes(32),
+                    32,
+                    1_770_000_000_000,
+                    "captured JSONL payload ends before a complete record boundary",
+                    "[]",
+                ),
+            )
+            upsert_raw_artifact(
+                conn,
+                "raw-deferred",
+                ArchiveSourceArtifact(
+                    artifact_id="deferred-evidence",
+                    origin="claude-code-session",
+                    source_path="/data/deferred.jsonl",
+                    source_index=0,
+                    artifact_kind="deferred_hot_jsonl_capture",
+                    classification_reason="deferred_hot_jsonl_capture",
+                    support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                    parse_as_session=True,
+                    schema_eligible=True,
+                ),
+            )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=tmp_path / "custom.sqlite"),
+            patch("polylogue.paths.archive_root", return_value=tmp_path),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["daemon_liveness"] is False
+        assert payload["raw_failures"] == {
+            "parse": 1,
+            "validation": 0,
+            "quarantined": 1,
+            "maintenance": 0,
+            "deferred_retryable": 1,
+            "terminal_rejections": 0,
+            "unexplained": 0,
+            "sample_count": 1,
+        }
+
     def test_direct_status_json_reports_sqlite_maintenance_state(self, tmp_path: Path) -> None:
         env = _make_app_env()
         db_anchor = tmp_path / "custom.sqlite"
@@ -615,6 +737,36 @@ class TestNoArchiveStatus:
         assert payload["archive_tiers"]["index"]["table_counts"]["sessions"] == 1
         assert payload["archive_tiers"]["user"]["exists"] is False
         assert payload["raw_records"] == 1
+
+    def test_direct_status_json_reads_maintenance_failure_from_configured_root_with_external_index(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        env = _make_app_env()
+        configured_root = tmp_path / "archive"
+        generation = tmp_path / "generation"
+        configured_root.mkdir()
+        generation.mkdir()
+        index_db = generation / "index.db"
+        initialize_archive_database(configured_root / "source.db", ArchiveTier.SOURCE)
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
+        (configured_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
+        route_failure_sample(
+            FailureSample(kind="RuntimeError", locator="target:session_insights", message="root maintenance failure"),
+            operation_id="root-maintenance",
+            archive_root=configured_root,
+            target="session_insights",
+        )
+
+        with (
+            patch("polylogue.paths.db_path", return_value=configured_root / "index.db"),
+            patch("polylogue.paths.archive_root", return_value=configured_root),
+        ):
+            _show_direct_json(env)
+
+        payload = json.loads(_combined_calls(env))
+        assert payload["active_db_path"] == str(index_db)
+        assert payload["raw_failures"]["maintenance"] == 1
 
     def test_direct_status_reports_archive_surface_blockers(self, tmp_path: Path) -> None:
         env = _make_app_env()

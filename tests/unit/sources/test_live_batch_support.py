@@ -21,7 +21,7 @@ from polylogue.archive.revision_authority import (
     RawRevisionKind,
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
-from polylogue.core.enums import Provider
+from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live import LiveWatcher, WatchSource
@@ -47,10 +47,18 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+    initialize_active_archive_root,
+    initialize_archive_database,
+)
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.source_write import read_archive_raw_session_envelope
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    read_archive_raw_session_envelope,
+    upsert_raw_artifact,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
@@ -352,39 +360,7 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A zero-byte captured ``.jsonl`` must not be flagged as a mid-write
-    truncation.
-
-    Before the fix, ``_captured_jsonl_ends_at_record_boundary`` returned
-    ``False`` whenever ``blob_size <= 0``, so every genuinely empty session
-    file raised "captured JSONL payload ends before a complete record
-    boundary" once it reached the archive write stage -- 59 raws in the live
-    archive carry exactly this error with ``blob_size = 0``
-    (2026-07-29 raw-failure accounting). The live cases arise from a scan/
-    write race (a byte sample taken at scan time observes real content, but
-    the file reads back as empty bytes moments later when the writer stage
-    re-reads it -- e.g. an atomic rewrite of the session file in between),
-    which is why the ordinary "is this even a session artifact" pre-filter
-    (``_jsonl_provider_and_session_artifact``, exercised by
-    ``test_full_ingest_heartbeats_small_file_groups_with_current_path`` above)
-    does not by itself prevent it: that decision is made before the write
-    stage's own read. Force the same "treat as a session artifact" decision
-    that pre-filter would make on real content, so this test exercises the
-    write stage's boundary check exactly as the race does. An empty payload
-    has zero records, none complete and none incomplete, so it is trivially
-    at a record boundary.
-
-    polylogue-9ykn superseded this test's original outcome: an empty
-    capture used to "cleanly materialize as a legitimately empty parsed
-    session" -- exactly the silent-inflation default that bead eliminates.
-    The correct outcome for a zero-record capture is now the same bounded,
-    recorded ``require_positive_conversational_evidence`` refusal any other
-    zero-message parse gets (``failed``, not ``succeeded``), NOT the
-    misleading truncation-boundary error the original fix targeted. Both
-    halves of the original claim still hold: no misleading truncation
-    error, and no crash/quarantine loop -- just an honest "no positive
-    conversational evidence" outcome instead of a phantom session.
-    """
+    """An empty session candidate is a terminal typed refusal, not a retry."""
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "empty.jsonl"
@@ -403,16 +379,156 @@ def test_full_ingest_empty_jsonl_is_not_misclassified_as_truncated(
 
     result = processor._ingest_full_paths_sync([path], source_name="codex")
 
-    assert result.succeeded == []
-    assert result.failed == [path]
+    assert result.succeeded == [path]
+    assert result.failed == []
     parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
     assert parse_error != "captured JSONL payload ends before a complete record boundary"
-    # polylogue-9ykn: a zero-record capture carries no positive
-    # conversational evidence -- refused with a recorded, honest reason
-    # (never the misleading truncation-boundary error), not silently
-    # accepted as a phantom empty session.
     assert isinstance(parse_error, str) and "no sessions with positive conversational evidence" in parse_error
     assert parsed_at_ms is None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_unsupported_shape", "unsupported_parseable", 0)
+
+
+def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full-ingest route defers a capture only after byte-prefix proof.
+
+    The empty-capture test above is the red twin. Both paths retain the raw
+    and advance the cursor, but only this test changes the source so its
+    captured bytes can be verified as a strict current prefix.
+    """
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "active.jsonl"
+    captured = b'{"type":"session_meta"'
+    path.write_bytes(captured)
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    captured_boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+
+    def grow_source_after_capture(**kwargs: object) -> bool:
+        path.write_bytes(captured + b"\n")
+        return captured_boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", grow_source_after_capture)
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    _parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    assert isinstance(parse_error, str) and parse_error.endswith(
+        "captured JSONL payload ends before a complete record boundary"
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("deferred_hot_jsonl_capture", "partial_decode", 1)
+
+
+def test_streamed_incomplete_jsonl_capture_defers_then_replays_completed_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A streamed hot capture proves its retained blob against the live prefix."""
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "streaming-active.jsonl"
+    captured = b'{"type":"session_meta","payload":{"id":"streaming-active"}'
+    completed = (
+        b'{"type":"session_meta","payload":{"id":"streaming-active"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"complete"}]}}\n'
+    )
+    path.write_bytes(captured)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", len(captured) - 1)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+    boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+    source_completed = False
+
+    def complete_source_after_capture(**kwargs: object) -> bool:
+        nonlocal source_completed
+        if not source_completed:
+            path.write_bytes(completed)
+            source_completed = True
+        return boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", complete_source_after_capture)
+
+    deferred = asyncio.run(processor.ingest_files([path]))
+
+    assert deferred.full_file_count == 1
+    assert deferred.succeeded_file_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind FROM raw_artifacts ORDER BY last_observed_at_ms DESC").fetchone()
+    assert artifact == ("deferred_hot_jsonl_capture",)
+
+    replayed = asyncio.run(processor.ingest_files([path]))
+
+    assert replayed.full_file_count == 1
+    assert replayed.append_file_count == 0
+    assert replayed.succeeded_file_count == 1
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.failure_count == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-0",)]
+
+
+def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An incomplete static capture is terminal evidence, never deferred."""
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "static.jsonl"
+    path.write_bytes(b'{"type":"session_meta"')
+    db_path = tmp_path / "archive.sqlite"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
+        (WatchSource(name="codex", root=root),),
+        cursor=CursorStore(db_path),
+        parser_fingerprint="test-parser",
+    )
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._jsonl_provider_and_session_artifact",
+        lambda _path, fallback_provider: (fallback_provider, True),
+    )
+
+    result = processor._ingest_full_paths_sync([path], source_name="codex")
+
+    assert result.succeeded == [path]
+    assert result.failed == []
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
+    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
 
 
 def test_full_ingest_heartbeats_small_file_groups_with_current_path(
@@ -3080,17 +3196,32 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     first = asyncio.run(processor.ingest_files([path]))
 
     assert first.full_file_count == 1
-    assert first.succeeded_file_count == 0
-    assert first.failed_file_count == 1
-    failed_cursor = cursor.get_record(path)
-    assert failed_cursor is not None
-    assert failed_cursor.byte_offset == 0
-    assert failed_cursor.content_fingerprint is None
+    # Retaining and classifying the captured raw bytes is a successful source
+    # write, even though the incomplete session is terminally unmaterialized.
+    assert first.succeeded_file_count == 1
+    assert first.failed_file_count == 0
+    captured_cursor = cursor.get_record(path)
+    assert captured_cursor is not None
+    # The cursor records the acquired source snapshot, but raw-failure
+    # evidence below still prohibits an append from that frontier.
+    assert captured_cursor.byte_offset == path.stat().st_size
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
+        raw_id = conn.execute(
+            """
+            SELECT r.raw_id
+            FROM raw_sessions AS r
+            JOIN raw_artifacts AS a ON a.raw_id = r.raw_id
+            WHERE a.artifact_kind = 'terminal_corrupt_input'
+            """
+        ).fetchone()[0]
         parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
         assert "complete record boundary" in str(parse_error)
+    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
+    assert captured_cursor.content_fingerprint == raw_id
+    assert processor._cursor_references_raw_failure_requiring_full_replay(path, captured_cursor)
 
     with path.open("ab") as handle:
         handle.write(split_record[split_at:])
@@ -3120,7 +3251,6 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
     assert second.failed_file_count == 0
     final_cursor = cursor.get_record(path)
     assert final_cursor is not None
-    assert final_cursor.byte_offset == path.stat().st_size
     assert final_cursor.failure_count == 0
     assert any(
         call.get("stage") == "fts" and call.get("subject_id") == "codex-session:split-record" for call in recorded_debt
@@ -3141,6 +3271,194 @@ def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
         assert conn.execute(
             "SELECT b.search_text FROM messages_fts AS f JOIN blocks AS b ON b.rowid = f.rowid ORDER BY b.message_id"
         ).fetchall() == [("zero",), ("one",)]
+
+
+def test_deferred_full_jsonl_with_prior_session_replays_completed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deferred full capture cannot resume through an append-only tail."""
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "prior-session.jsonl"
+    baseline = (
+        b'{"type":"session_meta","payload":{"id":"prior-session"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-0","role":"user",'
+        b'"content":[{"type":"input_text","text":"zero"}]}}\n'
+    )
+    completed_record = (
+        b'{"type":"response_item","payload":{"type":"message","id":"message-1","role":"assistant",'
+        b'"content":[{"type":"output_text","text":"one"}]}}\n'
+    )
+    split_at = len(completed_record) // 2
+    path.write_bytes(baseline)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="current-parser",
+    )
+
+    seeded = asyncio.run(processor.ingest_files([path]))
+    assert seeded.succeeded_file_count == 1
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [("message-0",)]
+
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="previous-parser",
+    )
+    path.write_bytes(baseline + completed_record[:split_at])
+    original_boundary_check = live_batch._captured_jsonl_ends_at_record_boundary
+    completed = False
+
+    def complete_source_after_capture(**kwargs: object) -> bool:
+        nonlocal completed
+        if not completed:
+            path.write_bytes(baseline + completed_record)
+            completed = True
+        return original_boundary_check(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(live_batch, "_captured_jsonl_ends_at_record_boundary", complete_source_after_capture)
+
+    deferred = asyncio.run(processor.ingest_files([path]))
+
+    assert deferred.full_file_count == 1
+    assert deferred.succeeded_file_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute(
+            """
+            SELECT a.artifact_kind
+            FROM raw_artifacts AS a
+            WHERE a.artifact_kind = 'deferred_hot_jsonl_capture'
+            """
+        ).fetchone()
+    assert artifact is not None
+    assert artifact[0] == "deferred_hot_jsonl_capture"
+    replayed = asyncio.run(processor.ingest_files([path]))
+
+    assert replayed.full_file_count == 1
+    assert replayed.append_file_count == 0
+    assert replayed.succeeded_file_count == 1
+    final_cursor = cursor.get_record(path)
+    assert final_cursor is not None
+    assert final_cursor.failure_count == 0
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute("SELECT native_id FROM messages ORDER BY position").fetchall() == [
+            ("message-0",),
+            ("message-1",),
+        ]
+
+
+def test_hot_capture_prefix_proof_rejects_in_place_rewrite_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hash read cannot prove a prefix that changed before its post-check."""
+    from polylogue.sources.live import batch as live_batch
+
+    path = tmp_path / "racing.jsonl"
+    captured = b'{"type":"session_meta","payload":{"id":"racing"}}\n'
+    path.write_bytes(captured + b'{"type":"message"}\n')
+    original_hash = sha256_range_from_path
+
+    def rewrite_after_hash(*args: object, **kwargs: object) -> tuple[str, int]:
+        result = original_hash(*args, **kwargs)  # type: ignore[arg-type]
+        path.write_bytes(b"x" * path.stat().st_size)
+        return result
+
+    monkeypatch.setattr(live_batch, "sha256_range_from_path", rewrite_after_hash)
+
+    assert (
+        live_batch._hot_capture_prefix_is_proven(
+            str(path),
+            captured,
+            blob_hash=sha256(captured).hexdigest(),
+            blob_size=len(captured),
+        )
+        is False
+    )
+
+
+def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_path: Path) -> None:
+    """The active index generation never owns durable raw-failure evidence."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    generation = tmp_path / "generation"
+    generation.mkdir()
+    index_db = generation / "index.db"
+    sqlite3.connect(index_db).close()
+    (archive_root / ".index-active-pointer").write_text(str(index_db), encoding="utf-8")
+    source_db = archive_root / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    path = archive_root / "sessions" / "terminal.jsonl"
+    path.parent.mkdir()
+    path.write_bytes(b'{"type":"session_meta"')
+    payload_hash = "ab" * 32
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error, detection_warnings_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "terminal-raw",
+                "codex-session",
+                "terminal",
+                str(path),
+                bytes.fromhex(payload_hash),
+                path.stat().st_size,
+                1_770_000_000_000,
+                "captured JSONL payload ends before a complete record boundary",
+                "[]",
+            ),
+        )
+        upsert_raw_artifact(
+            conn,
+            "terminal-raw",
+            ArchiveSourceArtifact(
+                artifact_id="terminal-evidence",
+                origin="codex-session",
+                source_path=str(path),
+                source_index=0,
+                artifact_kind="terminal_corrupt_input",
+                classification_reason="terminal_corrupt_input",
+                support_status=ArtifactSupportStatus.DECODE_FAILED,
+            ),
+        )
+    cursor = CursorStore(index_db)
+    stat = path.stat()
+    cursor.set(
+        path,
+        stat.st_size,
+        byte_offset=stat.st_size,
+        last_complete_newline=stat.st_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint="terminal-raw",
+        tail_hash=_cursor_hash_authority(path.read_bytes()),
+        source_name="codex",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    record = cursor.get_record(path)
+
+    assert record is not None
+    assert processor._cursor_references_raw_failure_requiring_full_replay(path, record)
 
 
 def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
@@ -3174,16 +3492,19 @@ def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
 
     result = asyncio.run(processor.ingest_files([path]))
 
-    assert result.succeeded_file_count == 0
-    assert result.failed_file_count == 1
-    failed_cursor = cursor.get_record(path)
-    assert failed_cursor is None or failed_cursor.byte_offset == 0
+    # The acquired bytes were durably retained with a terminal classification;
+    # source disappearance cannot turn that completed archive write into a
+    # retryable transport failure.
+    assert result.succeeded_file_count == 1
+    assert result.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (0,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         parse_error = conn.execute("SELECT parse_error FROM raw_sessions").fetchone()[0]
+        artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
         assert "complete record boundary" in str(parse_error)
+    assert artifact == ("terminal_corrupt_input", "decode_failed", 0)
 
 
 def test_append_persistence_failure_preserves_frontier_for_next_tick(
