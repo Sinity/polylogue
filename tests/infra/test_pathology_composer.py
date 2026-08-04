@@ -1,9 +1,8 @@
 """Tests proving each pathology composer's claimed structural property.
 
-These are pure structural assertions on the returned ``ComposedPathology``
-(no archive/database writes) -- see the module docstring in
-``pathology_composer.py`` for why a live write is not required to prove the
-claimed shape.
+These are structural assertions on returned ``ComposedPathology`` values. The
+composer is the test-infrastructure route that supplies ordered raw payloads
+to future production-ingestion metamorphic tests.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from tests.infra.pathology_composer import (
     compose_append_revision_chain,
     compose_fork_prefix_tail_lineage,
     compose_multi_session_bundle,
+    compose_pathologies,
     compose_quarantined_head_arrangement,
     compose_vintage_variant_pair,
     compose_whale_scale_component,
@@ -220,6 +220,38 @@ def test_vintage_variant_pair_extracted_content_is_equal_despite_shape_differenc
     new_turns = extract_new_shape_turns(new_shape)
 
     assert old_turns == new_turns == list(turns)
+
+
+# ---------------------------------------------------------------------------
+# Composition and ingestion order
+# ---------------------------------------------------------------------------
+
+
+def test_composition_nests_existing_pathologies_and_orders_flat_raw_payloads() -> None:
+    bundle = compose_multi_session_bundle([{"record": 1}, {"record": 2}], session_count=2)
+    variants = compose_vintage_variant_pair()
+    nested = compose_pathologies(bundle, variants, name="raw-shapes")
+    composed = compose_append_revision_chain(session_id="nested-append", revision_count=2).compose(
+        nested,
+        raw_ingestion_order=(2, 0, 1),
+    )
+
+    assert composed.components == (compose_append_revision_chain(session_id="nested-append", revision_count=2), nested)
+    assert nested.components == (bundle, variants)
+    assert composed.raw_ingestion_order == (2, 0, 1)
+    assert composed.raw_payloads_in_ingestion_order == (
+        variants.raw_payloads[1],
+        bundle.raw_payloads[0],
+        variants.raw_payloads[0],
+    )
+
+
+@pytest.mark.parametrize("order", [(0, 0), (0,), (0, 2), ("0", 1)])
+def test_raw_ingestion_order_must_be_a_complete_index_permutation(order: tuple[object, ...]) -> None:
+    pathology = compose_vintage_variant_pair()
+
+    with pytest.raises(ValueError, match="permutation"):
+        pathology.with_raw_ingestion_order(order)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
