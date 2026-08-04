@@ -352,6 +352,62 @@ def test_run_reindex_canary_automatically_includes_production_pathology_sessions
     assert captured["acceptance_checks"] == ("pathology-zoo-invariants",)
 
 
+def test_run_reindex_canary_rejects_input_index_outside_archive_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    external_index = tmp_path / "external" / "index.db"
+    external_index.parent.mkdir()
+    external_index.touch()
+    monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: tmp_path / "configured-live")
+    selector_called = False
+
+    def unexpected_selector(*args: object, **kwargs: object) -> None:
+        nonlocal selector_called
+        selector_called = True
+        raise AssertionError("an outside-root input must be rejected before selection")
+
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.select_canary_sessions", unexpected_selector)
+
+    with pytest.raises(CanarySelectionError, match="inside or bound to the selected archive root"):
+        run_reindex_canary(root, input_index=external_index, no_promote=True)
+    assert not selector_called
+
+
+def test_run_reindex_canary_accepts_input_index_bound_by_active_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "archive"
+    root.mkdir()
+    external_index = tmp_path / "external" / "index.db"
+    external_index.parent.mkdir()
+    external_index.touch()
+    (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    selection = _empty_selection(external_index)
+
+    class Receipt:
+        def to_dict(self) -> dict[str, object]:
+            return {"status": "replayed"}
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
+    )
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: external_index
+    )
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.compare_reindex_generations",
+        lambda current, candidate, *, session_ids: _empty_comparison(current, candidate, session_ids),
+    )
+
+    result = run_reindex_canary(root, input_index=external_index, no_promote=True)
+
+    assert result.selection.index_path == external_index
+    assert result.comparison.current_index == external_index
+
+
 def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

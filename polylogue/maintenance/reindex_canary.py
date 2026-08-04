@@ -286,7 +286,6 @@ def run_reindex_canary(
         raise CanarySelectionError("reindex canary requires --no-promote")
     from polylogue.config import resolve_archive_root
     from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-    from polylogue.storage.archive_identity import ArchiveLocation
 
     root = Path(archive_root)
     if root.resolve() == resolve_archive_root().resolve():
@@ -294,7 +293,7 @@ def run_reindex_canary(
             "reindex canary refuses the configured live archive root; "
             "run it against an explicitly provisioned isolated canary archive"
         )
-    current_index = Path(input_index) if input_index is not None else ArchiveLocation.resolve(root).active_index_path
+    current_index = _resolve_canary_input_index(root, input_index)
     from polylogue.maintenance.archive_verification import REINDEX_CANARY_ACCEPTANCE_CHECKS
     from polylogue.maintenance.pathology_zoo import pathology_zoo_is_present, pathology_zoo_session_ids
 
@@ -332,6 +331,31 @@ def run_reindex_canary(
         comparison=comparison,
         rebuild_receipt=receipt.to_dict(),
     )
+
+
+def _resolve_canary_input_index(archive_root: Path, input_index: Path | None) -> Path:
+    """Resolve an explicit index only when it belongs to the selected archive."""
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    location = ArchiveLocation.resolve(archive_root)
+    if input_index is None:
+        return location.active_index_path
+
+    candidate = Path(input_index)
+    try:
+        candidate_resolved = candidate.resolve()
+        archive_resolved = Path(archive_root).resolve()
+    except (OSError, RuntimeError) as exc:
+        raise CanarySelectionError("explicit canary input index path cannot be resolved") from exc
+
+    try:
+        candidate_resolved.relative_to(archive_resolved)
+    except ValueError:
+        if candidate_resolved != location.active_index.resolved_path:
+            raise CanarySelectionError(
+                "explicit canary input index must be inside or bound to the selected archive root"
+            ) from None
+    return candidate
 
 
 def _validate_canary_candidate(

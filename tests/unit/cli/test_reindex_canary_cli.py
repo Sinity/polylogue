@@ -63,6 +63,46 @@ def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
     assert "requires --no-promote" in result.output
 
 
+def test_reindex_canary_cli_rejects_input_outside_archive_root_before_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    external_index = tmp_path / "external" / "index.db"
+    external_index.parent.mkdir()
+    external_index.touch()
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
+    rebuild_called = False
+
+    def unexpected_rebuild(*args: object, **kwargs: object) -> None:
+        nonlocal rebuild_called
+        rebuild_called = True
+        raise AssertionError("the CLI must reject an outside-root input before rebuild")
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", unexpected_rebuild)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(archive_root),
+            "--input",
+            str(external_index),
+            "--report",
+            str(tmp_path / "canary.json"),
+            "--no-promote",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "inside or bound to the selected archive root" in result.output
+    assert not rebuild_called
+
+
 def test_reindex_canary_cli_runs_real_no_promote_route(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

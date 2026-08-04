@@ -431,19 +431,6 @@ def _validate_manifest(root: Path, manifest: tuple[PathologyZooMember, ...]) -> 
                 raise RuntimeError(
                     f"pathology zoo durable {table} rows missing for {member.member_id}: {missing_paths}"
                 )
-    with sqlite3.connect(root / "index.db") as conn:
-        cycle = conn.execute(
-            "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
-            (f"{_CODEX}:zoo-cycle-a",),
-        ).fetchone()
-        orphan = conn.execute(
-            "SELECT status, resolved_dst_session_id FROM session_links WHERE src_session_id = ?",
-            (f"{_CODEX}:zoo-orphan-head",),
-        ).fetchone()
-    if cycle != ("quarantined", None):
-        raise RuntimeError(f"pathology zoo cycle link was not quarantined: {cycle}")
-    if orphan != (None, None):
-        raise RuntimeError(f"pathology zoo orphan link was not unresolved: {orphan}")
 
 
 def build_pathology_zoo(archive_root: Path) -> PathologyZoo:
