@@ -49,6 +49,7 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_attachment_fidelity,
     audit_revision_fidelity,
 )
+from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -888,9 +889,7 @@ def _check_enum_superset(archive_root: Path, _sample_limit: int) -> ArchiveVerif
 #: intends), so a ref_type this check doesn't recognize is itself a gap the
 #: check surfaces via `_error_check`, not a silent skip.
 _BLOB_REF_REFERENT_TABLES: dict[str, tuple[str, str]] = {
-    "raw_payload": ("raw_sessions", "raw_id"),
-    "attachment": ("raw_artifacts", "artifact_id"),
-    "sidecar": ("history_sidecars", "sidecar_id"),
+    ref_type: (referent_table, referent_column) for ref_type, referent_table, referent_column in BLOB_REF_LIVENESS_JOIN
 }
 
 
