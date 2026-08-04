@@ -305,6 +305,26 @@ def test_artifact_graph_rejects_unknown_operation_paths(monkeypatch: pytest.Monk
         artifact_graph_module.build_artifact_graph()
 
 
+def test_artifact_graph_rejects_operation_artifacts_absent_from_its_declared_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_path_edge = OperationSpec(
+        name="missing-path-edge",
+        kind=OperationKind.MAINTENANCE,
+        description="test-only invalid graph edge",
+        consumes=("message_fts",),
+        path_targets=("session-insight-repair-loop",),
+    )
+    monkeypatch.setattr(
+        artifact_graph_module,
+        "build_runtime_operation_catalog",
+        lambda: OperationCatalog(specs=(missing_path_edge,)),
+    )
+
+    with pytest.raises(ValueError, match=r"missing-path-edge.*message_fts"):
+        artifact_graph_module.build_artifact_graph()
+
+
 def test_artifact_graph_lists_operations_for_each_runtime_path() -> None:
     graph = build_artifact_graph()
 

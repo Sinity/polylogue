@@ -729,6 +729,7 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "embedding_metadata_rows",
             "embedding_status_rows",
             "message_embedding_vectors",
+            "message_fts",
             "session_insight_readiness",
             "retrieval_band_readiness",
             "archive_readiness",
@@ -818,6 +819,8 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         nodes=(
             "session_insight_readiness",
             "archive_readiness",
+            "embedding_status_results",
+            "message_fts",
             "archive_debt_results",
         ),
     ),
@@ -828,6 +831,7 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
             "message_source_rows",
             "message_fts",
             "session_insight_readiness",
+            "retrieval_band_readiness",
             "archive_readiness",
         ),
     ),
@@ -835,6 +839,7 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
         name="session-query-loop",
         description="Lexical message FTS through session-level query and search result projections.",
         nodes=(
+            "message_source_rows",
             "message_fts",
             "session_query_results",
         ),
@@ -938,17 +943,17 @@ RUNTIME_ARTIFACT_PATHS: tuple[ArtifactPath, ...] = (
     ArtifactPath(
         name="session-delete-loop",
         description="Archive session deletion through its projected deletion outcome.",
-        nodes=("sessions", "archive_deleted_session"),
+        nodes=("archive_session_rows", "sessions", "archive_deleted_session"),
     ),
     ArtifactPath(
         name="session-excision-loop",
         description="Raw session and blob references through the durable session-excision receipt.",
-        nodes=("raw_sessions", "blob_refs", "excision_receipt"),
+        nodes=("archive_session_rows", "raw_sessions", "blob_refs", "excision_receipt"),
     ),
     ArtifactPath(
         name="identity-reset-loop",
         description="Raw session selection through durable identity-reset suppression records.",
-        nodes=("raw_sessions", "suppression_rows"),
+        nodes=("archive_session_rows", "raw_sessions", "suppression_rows"),
     ),
 )
 

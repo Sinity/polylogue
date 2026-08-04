@@ -125,6 +125,25 @@ def build_artifact_graph() -> ArtifactGraph:
     }
     if invalid_operation_paths:
         raise ValueError(f"Artifact graph declared unknown OperationSpec path refs: {invalid_operation_paths}")
+    path_nodes = {path.name: set(path.nodes) for path in paths}
+    invalid_operation_path_edges = {
+        operation.name: {
+            path: tuple(
+                artifact for artifact in (*operation.consumes, *operation.produces) if artifact not in path_nodes[path]
+            )
+            for path in operation.path_targets
+            if any(artifact not in path_nodes[path] for artifact in (*operation.consumes, *operation.produces))
+        }
+        for operation in operations
+        if any(
+            any(artifact not in path_nodes[path] for artifact in (*operation.consumes, *operation.produces))
+            for path in operation.path_targets
+        )
+    }
+    if invalid_operation_path_edges:
+        raise ValueError(
+            f"Artifact graph declared OperationSpec refs absent from target paths: {invalid_operation_path_edges}"
+        )
     invalid_refs = {
         node.name: tuple(target for target in node.repair_targets if target not in maintenance_target_names)
         for node in nodes
