@@ -22,6 +22,7 @@ from polylogue.cli.commands.status import (
     _archive_facade_route_status,
     _direct_claim_guard,
     _direct_status_ok,
+    _ops_workload_status,
     _render_raw_replay_backlog,
     _show_daemon_status,
     _show_direct_json,
@@ -1532,6 +1533,16 @@ class TestNoArchiveStatus:
             convergence=ConvergenceDebtSummary(),
         )
         assert idle_guard["perf_measurable"]["value"] is True
+
+    def test_ops_workload_status_requires_convergence_debt_table(self, tmp_path: Path) -> None:
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            conn.execute("DROP TABLE convergence_debt")
+            conn.commit()
+
+        workload = _ops_workload_status(tmp_path, now_ms=1_770_000_000_000)
+
+        assert workload == {"available": False, "reason": "missing_convergence_debt"}
 
     def test_direct_status_requires_raw_frontier_component_presence(self) -> None:
         assert _direct_status_ok({}) is False

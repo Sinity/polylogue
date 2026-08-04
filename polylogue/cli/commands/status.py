@@ -927,6 +927,8 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     try:
         if not _table_exists(conn, "ingest_attempts"):
             return {"available": False, "reason": "missing_ingest_attempts"}
+        if not _table_exists(conn, "convergence_debt"):
+            return {"available": False, "reason": "missing_convergence_debt"}
 
         running_rows = conn.execute(
             """
@@ -988,14 +990,12 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
                 ),
             }
 
-        debt: dict[str, int] = {}
-        if _table_exists(conn, "convergence_debt"):
-            debt = {
-                status: _safe_int(count, 0)
-                for status, count in conn.execute(
-                    "SELECT status, COUNT(*) FROM convergence_debt GROUP BY status"
-                ).fetchall()
-            }
+        debt = {
+            status: _safe_int(count, 0)
+            for status, count in conn.execute(
+                "SELECT status, COUNT(*) FROM convergence_debt GROUP BY status"
+            ).fetchall()
+        }
         debt_total = sum(debt.values())
     finally:
         conn.close()
@@ -2051,6 +2051,28 @@ def _render_ingest_workload(env: AppEnv, workload: dict[str, Any]) -> None:
         env.ui.console.print(f"    convergence debt: [yellow]{debt_total}[/yellow] ({detail})")
 
 
+def _render_convergence_debt(env: AppEnv, summary: ConvergenceDebtSummary) -> None:
+    """Render the authoritative convergence-debt ledger state."""
+    if not summary.available:
+        env.ui.console.print("  Convergence debt: [yellow]unavailable[/yellow]")
+        if summary.error:
+            env.ui.console.print(f"    [yellow]{summary.error}[/yellow]")
+        return
+
+    pending_parts = [
+        f"{summary.failed_count} failed" if summary.failed_count else "",
+        f"{summary.deferred_count} deferred" if summary.deferred_count else "",
+    ]
+    pending_parts = [part for part in pending_parts if part]
+    if not pending_parts:
+        env.ui.console.print("  Convergence debt: [green]none (ledger healthy)[/green]")
+        return
+
+    if summary.retry_due_count:
+        pending_parts.append(f"{summary.retry_due_count} retry due")
+    env.ui.console.print(f"  Convergence debt: [yellow]{', '.join(pending_parts)}[/yellow]")
+
+
 def _render_schema_drift_status(env: AppEnv, drift: dict[str, Any]) -> None:
     """Render windowed format-drift rates: 'origin X: N% ... carry unseen shapes'.
 
@@ -2243,6 +2265,8 @@ def _show_direct_status(
         if active_db.name == "index.db":
             active_root = active_db.parent
             _render_ingest_workload(env, workload)
+            convergence = convergence_debt_summary_info(active_db, ops_db=active_root / "ops.db")
+            _render_convergence_debt(env, convergence)
             _render_schema_drift_status(env, schema_drift_status(active_root, now_ms=now_ms))
             tiers = _archive_tier_status(active_root)
             present = ", ".join(tier for tier, info in tiers.items() if info["exists"])
