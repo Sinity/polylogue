@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -34,6 +35,7 @@ from polylogue.maintenance.reindex_canary import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.workload_artifacts import build_seeded_archive, clone_seeded_archive
 
 
 def _seed_index(
@@ -375,37 +377,53 @@ def test_run_reindex_canary_rejects_input_index_outside_archive_root(
     assert not selector_called
 
 
-def test_run_reindex_canary_accepts_input_index_bound_by_active_pointer(
+def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_validator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = tmp_path / "archive"
-    root.mkdir()
-    external_index = tmp_path / "external" / "index.db"
-    external_index.parent.mkdir()
-    external_index.touch()
+    artifact = build_seeded_archive(cache_root=tmp_path / "seeded-cache")
+    root = clone_seeded_archive(artifact, tmp_path / "archive").root
+    external_index_root = tmp_path / "external-index-root"
+    external_index_root.mkdir()
+    external_index = external_index_root / "index.db"
+    shutil.move(root / "index.db", external_index)
     (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
-    selection = _empty_selection(external_index)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "configured-live"))
 
-    class Receipt:
-        def to_dict(self) -> dict[str, object]:
-            return {"status": "replayed"}
+    result = run_reindex_canary(root, input_index=external_index, sessions_per_origin=1, no_promote=True)
 
-    monkeypatch.setattr(
-        "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
-    )
-    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
-    monkeypatch.setattr(
-        "polylogue.maintenance.reindex_canary._validate_canary_candidate", lambda *args, **kwargs: external_index
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.reindex_canary.compare_reindex_generations",
-        lambda current, candidate, *, session_ids: _empty_comparison(current, candidate, session_ids),
-    )
-
-    result = run_reindex_canary(root, input_index=external_index, no_promote=True)
-
+    receipt = result.rebuild_receipt
+    generation = receipt["generation"]
+    assert isinstance(generation, dict)
+    generation_id = generation["generation_id"]
+    owner_id = generation["owner_id"]
+    source_snapshot = generation["source_snapshot"]
+    candidate_path = Path(str(generation["index_path"]))
+    expected_candidate_path = external_index_root / ".index-generations" / str(generation_id) / "index.db"
     assert result.selection.index_path == external_index
-    assert result.comparison.current_index == external_index
+    assert result.comparison.current_index.resolve() == external_index.resolve()
+    assert result.comparison.candidate_index == candidate_path
+    assert candidate_path == expected_candidate_path.resolve()
+    assert candidate_path.is_file()
+    assert generation["archive_root"] == str(root.resolve())
+    assert generation["state"] == "inactive"
+    assert isinstance(owner_id, str) and owner_id
+    assert isinstance(source_snapshot, str) and source_snapshot
+    assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
+
+    transaction = receipt["transaction"]
+    operation = receipt["operation"]
+    assert transaction is None
+    assert isinstance(operation, dict)
+    operation_owner = operation["owner"]
+    operation_generation = operation["generation"]
+    operation_delta = operation["delta"]
+    assert isinstance(operation_owner, dict)
+    assert isinstance(operation_generation, dict)
+    assert isinstance(operation_delta, dict)
+    assert operation_owner["generation_owner_id"] == owner_id
+    assert operation_generation == {"generation_id": generation_id, "state": "inactive"}
+    assert operation_delta["transaction_source_snapshot"] == source_snapshot
+    assert operation_delta["source_snapshot_matches"] is True
 
 
 def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
