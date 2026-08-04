@@ -2047,6 +2047,7 @@ def _daemon_claim_guard(
     raw_frontier_integrity: RawFrontierIntegrity,
     fts_readiness: FTSReadiness,
     live_ingest_attempts: LiveIngestAttemptSummary,
+    convergence: ConvergenceDebtSummary,
 ) -> dict[str, object]:
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
@@ -2058,6 +2059,18 @@ def _daemon_claim_guard(
         writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
     if rebuild_attempts:
         writer_parts.append(f"{rebuild_attempts} index rebuild attempt(s) running")
+    convergence_debt_pending = convergence.failed_count > 0 or convergence.deferred_count > 0
+    if not convergence.available:
+        convergence_debt_summary = convergence.error or "convergence debt unavailable; convergence state is unknown"
+    elif convergence_debt_pending:
+        pending_parts: list[str] = []
+        if convergence.failed_count:
+            pending_parts.append(f"{convergence.failed_count} failed")
+        if convergence.deferred_count:
+            pending_parts.append(f"{convergence.deferred_count} deferred")
+        convergence_debt_summary = f"convergence debt pending: {', '.join(pending_parts)}"
+    else:
+        convergence_debt_summary = "no pending convergence debt"
     guard = derive_claim_guard(
         archive_schema_ready=archive_storage.archive_schema_ready,
         schema_mismatches=archive_storage.schema_mismatches,
@@ -2070,6 +2083,9 @@ def _daemon_claim_guard(
         search_summary=fts_component.summary,
         active_writer=active_writer,
         active_writer_summary="; ".join(writer_parts),
+        convergence_debt_available=convergence.available,
+        convergence_debt_pending=convergence_debt_pending,
+        convergence_debt_summary=convergence_debt_summary,
     )
     return cast(dict[str, object], guard.to_dict())
 
@@ -2790,6 +2806,7 @@ def build_daemon_status(
             raw_frontier_integrity=raw_frontier_integrity,
             fts_readiness=fts_readiness,
             live_ingest_attempts=live_ingest_attempts,
+            convergence=convergence,
         ),
         health=health,
         health_tiers=health_tiers,

@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_tier,
 )
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
+    add_convergence_debt,
     record_daemon_stage_event,
     record_ingest_attempt,
     upsert_ingest_cursor,
@@ -1618,6 +1619,77 @@ def test_build_daemon_status_claim_guard_reports_openable_but_not_converged(tmp_
     assert claim_guard["perf_measurable"]["value"] is True
 
 
+@pytest.mark.parametrize("debt_setup", ["pending", "unreadable"])
+def test_build_daemon_status_claim_guard_blocks_pending_or_unknown_convergence_debt(
+    tmp_path: Path, debt_setup: str
+) -> None:
+    """The production status route must never claim convergence without debt authority."""
+    storage = status_module.ArchiveStorageStatus(
+        active_store="archive_file_set",
+        active_db_path=str(tmp_path / "index.db"),
+        archive_root=str(tmp_path),
+        configured_archive_root=str(tmp_path),
+        archive_ready=True,
+        archive_materialization_ready=True,
+        final_shape_ready=True,
+        archive_schema_ready=True,
+        present_tiers=["source", "index", "embeddings", "user", "ops"],
+    )
+    raw_readiness = status_module.RawMaterializationReadiness(
+        available=True,
+        raw_authority_frontier={"lifecycle_status": "completed"},
+    )
+    frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")
+    if debt_setup == "pending":
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        with sqlite3.connect(tmp_path / "ops.db") as conn:
+            add_convergence_debt(
+                conn,
+                stage="fts",
+                target_type="source_path",
+                target_id="pending.jsonl",
+                status="deferred",
+                attempts=1,
+                last_error="bounded deferral",
+                created_at_ms=1_770_000_000_000,
+                updated_at_ms=1_770_000_000_000,
+            )
+    else:
+        (tmp_path / "ops.db").write_bytes(b"not a sqlite database")
+
+    with (
+        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
+        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
+        patch("polylogue.daemon.status._archive_storage_info", return_value=storage),
+        patch("polylogue.daemon.status._raw_materialization_readiness_info", return_value=raw_readiness),
+        patch("polylogue.daemon.status._raw_frontier_integrity_info", return_value=frontier),
+        patch("polylogue.daemon.status._db_size_info", return_value={}),
+        patch("polylogue.daemon.status._fts_readiness_info", return_value={"messages_ready": True}),
+        patch("polylogue.daemon.status._insight_freshness_info", return_value={}),
+        patch("polylogue.daemon.status._live_cursor_summary_info", return_value=status_module.LiveCursorSummary()),
+        patch(
+            "polylogue.daemon.status._live_ingest_attempt_summary_info",
+            return_value=status_module.LiveIngestAttemptSummary(),
+        ),
+        patch("polylogue.daemon.status.cursor_lag_summary_info", return_value=status_module.CursorLagSummary()),
+        patch("polylogue.daemon.status.catchup_status_info", return_value=status_module.CatchupStatus()),
+        patch("polylogue.daemon.status._raw_failure_info", return_value={}),
+        patch("polylogue.daemon.status.embedding_readiness_info", return_value={}),
+        patch("polylogue.daemon.status._check_daemon_liveness", return_value=False),
+    ):
+        status = build_daemon_status(sources=(), browser_capture_enabled=False)
+
+    assert status.convergence.available is (debt_setup == "pending")
+    claim_guard = cast(dict[str, dict[str, object]], status.claim_guard)
+    assert claim_guard["converged"]["value"] is False
+    reason = str(claim_guard["converged"]["reason"])
+    if debt_setup == "pending":
+        assert reason == "convergence debt pending: 1 deferred"
+    else:
+        assert "convergence debt status unavailable" in reason
+        assert "unknown debt" in str(claim_guard["converged"]["signal"])
+
+
 def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_path: Path) -> None:
     """polylogue-yla8.7 AC: a current accepted append head whose predecessor
     chain is broken must surface through ``raw_frontier_integrity``, render
@@ -1785,6 +1857,7 @@ def test_daemon_and_direct_claim_guard_share_mixed_frontier_summary(tmp_path: Pa
         raw_frontier_integrity=integrity,
         fts_readiness=FTSReadiness(messages_ready=True),
         live_ingest_attempts=status_module.LiveIngestAttemptSummary(),
+        convergence=status_module.ConvergenceDebtSummary(),
     )
     direct_guard = _direct_claim_guard(
         archive_tiers={

@@ -263,6 +263,20 @@ def test_convergence_debt_summary_ignores_old_single_file_debt_when_ops_empty(tm
     assert summary.recent == []
 
 
+def test_convergence_debt_summary_marks_unreadable_ops_as_unavailable(tmp_path: Path) -> None:
+    db_path = tmp_path / "archive.db"
+    ops_path = tmp_path / "ops.db"
+    db_path.touch()
+    ops_path.write_bytes(b"not a sqlite database")
+
+    summary = convergence_debt_summary_info(db_path, ops_db=ops_path)
+
+    assert summary.available is False
+    assert summary.failed_count == 0
+    assert summary.deferred_count == 0
+    assert "unavailable" in (summary.error or "")
+
+
 # ---------------------------------------------------------------------------
 # Threshold resolution
 # ---------------------------------------------------------------------------

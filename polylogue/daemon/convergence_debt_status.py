@@ -45,6 +45,8 @@ class ConvergenceDebtItem(BaseModel):
 
 
 class ConvergenceDebtSummary(BaseModel):
+    available: bool = True
+    error: str | None = None
     failed_count: int = 0
     deferred_count: int = 0
     retry_due_count: int = 0
@@ -56,16 +58,13 @@ class ConvergenceDebtSummary(BaseModel):
 def convergence_debt_summary_info(dbf: Path, *, ops_db: Path | None = None) -> ConvergenceDebtSummary:
     """Return durable post-ingest convergence debt snapshots."""
     resolved_ops_db = ops_db if ops_db is not None else dbf.with_name("ops.db")
-    ops_summary = _archive_convergence_debt_summary_info(dbf, resolved_ops_db)
-    if ops_summary is not None:
-        return ops_summary
-    return ConvergenceDebtSummary()
+    return _archive_convergence_debt_summary_info(dbf, resolved_ops_db)
 
 
-def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> ConvergenceDebtSummary | None:
+def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> ConvergenceDebtSummary:
     """Return the archive ops convergence-debt projection when populated."""
     if not ops_db.exists():
-        return None
+        return ConvergenceDebtSummary(available=False, error=f"convergence debt database is missing: {ops_db}")
     try:
         conn = open_readonly_connection(ops_db)
         try:
@@ -73,7 +72,10 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
             ).fetchone()
             if has_table is None:
-                return None
+                return ConvergenceDebtSummary(
+                    available=False,
+                    error="convergence debt table is unavailable",
+                )
             rows = conn.execute(
                 """
                 SELECT stage, target_type, target_id, status, attempts,
@@ -83,17 +85,15 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
                 """
             ).fetchall()
             if not rows:
-                return None
+                return ConvergenceDebtSummary()
         finally:
             conn.close()
     except sqlite3.Error as exc:
-        # Falls through to convergence_debt_summary_info()'s bare
-        # ConvergenceDebtSummary() default, which reports zero debt — the
-        # same shape as a genuinely converged archive. Log loudly so a
-        # transient ops.db failure isn't mistaken for "no debt"
-        # (polylogue-cpf.4).
+        # An unreadable authoritative debt ledger is unknown, not empty. The
+        # claim guard must be able to distinguish this from a genuinely empty
+        # convergence_debt table (polylogue-cpf.4).
         logger.warning("convergence-debt summary query failed for %s: %s", ops_db, exc, exc_info=True)
-        return None
+        return ConvergenceDebtSummary(available=False, error=f"convergence debt status unavailable: {exc}")
 
     items = [
         ConvergenceDebtItem(

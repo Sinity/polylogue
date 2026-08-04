@@ -21,6 +21,8 @@ import sqlite3
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger, FileState, StageState
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
@@ -225,8 +227,11 @@ def test_real_converger_outcomes_reach_status_and_read_surfaces(tmp_path: Path) 
     assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
 
 
-def test_convergence_debt_status_transition_updates_same_pending_row(tmp_path: Path) -> None:
-    """A status change cannot be hidden by the same-error retry fast path."""
+@pytest.mark.parametrize("initial_deferred,next_deferred", [(False, True), (True, False)])
+def test_convergence_debt_status_transition_preserves_attempts_and_deadline(
+    tmp_path: Path, initial_deferred: bool, next_deferred: bool
+) -> None:
+    """A classification-only change preserves retry scheduling in both directions."""
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
     subject_id = str(tmp_path / "source.jsonl")
@@ -236,16 +241,18 @@ def test_convergence_debt_status_transition_updates_same_pending_row(tmp_path: P
         subject_type="source_path",
         subject_id=subject_id,
         error=error,
+        deferred=initial_deferred,
     )
 
+    exact_deadline = "9999-01-01T00:00:00+00:00"
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         conn.execute(
             """
             UPDATE convergence_debt
-            SET next_retry_at = '9999-01-01T00:00:00+00:00'
+            SET next_retry_at = ?
             WHERE stage = 'fts' AND target_type = 'source_path' AND target_id = ?
             """,
-            (subject_id,),
+            (exact_deadline, subject_id),
         )
         conn.commit()
 
@@ -254,16 +261,16 @@ def test_convergence_debt_status_transition_updates_same_pending_row(tmp_path: P
         subject_type="source_path",
         subject_id=subject_id,
         error=error,
-        deferred=True,
+        deferred=next_deferred,
     )
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         row = conn.execute(
             """
-            SELECT status, attempts
+            SELECT status, attempts, next_retry_at
             FROM convergence_debt
             WHERE stage = 'fts' AND target_type = 'source_path' AND target_id = ?
             """,
             (subject_id,),
         ).fetchone()
-    assert row == ("deferred", 1)
+    assert row == ("deferred" if next_deferred else "failed", 1, exact_deadline)
