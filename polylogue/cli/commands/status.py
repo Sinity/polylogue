@@ -1268,6 +1268,16 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
             if parts:
                 env.ui.console.print(f"  Ingest: {', '.join(parts)}")
 
+    convergence = status.get("convergence", {})
+    if isinstance(convergence, dict):
+        failed_count = int(convergence.get("failed_count", 0) or 0)
+        deferred_count = int(convergence.get("deferred_count", 0) or 0)
+        retry_due_count = int(convergence.get("retry_due_count", 0) or 0)
+        if failed_count or deferred_count:
+            env.ui.console.print(
+                f"  Convergence debt: {failed_count} failed, {deferred_count} deferred, {retry_due_count} retry due"
+            )
+
     # FTS
     fts = status.get("fts_readiness", {})
     if isinstance(fts, dict):

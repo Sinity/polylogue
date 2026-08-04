@@ -20,6 +20,7 @@ logger = get_logger(__name__)
 class ConvergenceDebtStageSummary(BaseModel):
     stage: str
     failed_count: int = 0
+    deferred_count: int = 0
     retry_due_count: int = 0
 
 
@@ -28,6 +29,7 @@ class ConvergenceDebtFamilySummary(BaseModel):
 
     family: str
     failed_count: int = 0
+    deferred_count: int = 0
 
 
 class ConvergenceDebtItem(BaseModel):
@@ -44,6 +46,7 @@ class ConvergenceDebtItem(BaseModel):
 
 class ConvergenceDebtSummary(BaseModel):
     failed_count: int = 0
+    deferred_count: int = 0
     retry_due_count: int = 0
     stage_summaries: list[ConvergenceDebtStageSummary] = Field(default_factory=list)
     family_summaries: list[ConvergenceDebtFamilySummary] = Field(default_factory=list)
@@ -105,26 +108,36 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
             last_error=_optional_str(row[6]),
         )
         for row in rows
-        if _required_str(row[3]) == "failed"
     ]
     if not items:
         return ConvergenceDebtSummary()
 
     now = datetime.now(UTC)
-    recent = [item.model_copy(update={"retry_due": _retry_due(item.next_retry_at, now=now)}) for item in items[:10]]
+    recent = [
+        item.model_copy(update={"retry_due": item.status == "failed" and _retry_due(item.next_retry_at, now=now)})
+        for item in items[:10]
+    ]
     failed_by_stage: dict[str, int] = {}
+    deferred_by_stage: dict[str, int] = {}
     retry_due_by_stage: dict[str, int] = {}
     for item in items:
-        failed_by_stage[item.stage] = failed_by_stage.get(item.stage, 0) + 1
-        if _retry_due(item.next_retry_at, now=now):
-            retry_due_by_stage[item.stage] = retry_due_by_stage.get(item.stage, 0) + 1
+        if item.status == "failed":
+            failed_by_stage[item.stage] = failed_by_stage.get(item.stage, 0) + 1
+            if _retry_due(item.next_retry_at, now=now):
+                retry_due_by_stage[item.stage] = retry_due_by_stage.get(item.stage, 0) + 1
+        elif item.status == "deferred":
+            deferred_by_stage[item.stage] = deferred_by_stage.get(item.stage, 0) + 1
     stage_summaries = [
         ConvergenceDebtStageSummary(
             stage=stage,
-            failed_count=failed_count,
+            failed_count=failed_by_stage.get(stage, 0),
+            deferred_count=deferred_by_stage.get(stage, 0),
             retry_due_count=retry_due_by_stage.get(stage, 0),
         )
-        for stage, failed_count in sorted(failed_by_stage.items(), key=lambda item: (-item[1], item[0]))
+        for stage in sorted(
+            set(failed_by_stage) | set(deferred_by_stage),
+            key=lambda stage: (-(failed_by_stage.get(stage, 0) + deferred_by_stage.get(stage, 0)), stage),
+        )
     ]
     return _summary_from_parts(stage_summaries=stage_summaries, recent=recent)
 
@@ -141,17 +154,26 @@ def _summary_from_parts(
     # operators can correlate alert messages with status output directly.
     from polylogue.daemon.convergence_debt_alert import source_family_for_subject
 
-    family_counts: dict[str, int] = {}
+    family_counts: dict[str, dict[str, int]] = {}
     for item in recent:
         family = source_family_for_subject(item.subject_type, item.subject_id)
-        family_counts[family] = family_counts.get(family, 0) + 1
+        counts = family_counts.setdefault(family, {"failed": 0, "deferred": 0})
+        if item.status in counts:
+            counts[item.status] += 1
     family_summaries = [
-        ConvergenceDebtFamilySummary(family=family, failed_count=count)
-        for family, count in sorted(family_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ConvergenceDebtFamilySummary(
+            family=family,
+            failed_count=counts["failed"],
+            deferred_count=counts["deferred"],
+        )
+        for family, counts in sorted(
+            family_counts.items(), key=lambda kv: (-(kv[1]["failed"] + kv[1]["deferred"]), kv[0])
+        )
     ]
 
     return ConvergenceDebtSummary(
         failed_count=sum(item.failed_count for item in stage_summaries),
+        deferred_count=sum(item.deferred_count for item in stage_summaries),
         retry_due_count=sum(item.retry_due_count for item in stage_summaries),
         stage_summaries=stage_summaries,
         family_summaries=family_summaries,

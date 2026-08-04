@@ -92,6 +92,21 @@ def test_unavailable_when_archive_root_is_absent(tmp_path: Path) -> None:
     assert any("archive root does not exist" in caveat for caveat in health.caveats)
 
 
+def test_deferred_convergence_debt_is_reported_without_degrading(workspace_env: dict[str, Path]) -> None:
+    hermes_root = workspace_env["data_root"] / "hermes-deferred-debt"
+    hermes_root.mkdir(parents=True)
+
+    health = build_hermes_integration_health(
+        workspace_env["archive_root"],
+        hermes_root=hermes_root,
+        convergence_debt_deferred_count=2,
+    )
+
+    assert health.convergence_debt_failed_count == 0
+    assert health.convergence_debt_deferred_count == 2
+    assert health.verdict == "healthy"
+
+
 def test_malformed_event_renders_explicit_parser_failure(workspace_env: dict[str, Path]) -> None:
     """A non-JSON file under the Hermes root is surfaced as a named parser failure, not dropped."""
 

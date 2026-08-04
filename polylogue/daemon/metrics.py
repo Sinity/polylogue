@@ -44,7 +44,7 @@ varies on a known-bounded dimension):
 - ``polylogue_live_ingest_storage_route_total`` (counter) — labels: route
 - ``polylogue_live_ingest_attempt_duration_seconds`` (gauge buckets:
   min, mean, max derived from recent completed attempts)
-- ``polylogue_convergence_debt_count`` (gauge) — labels: stage
+- ``polylogue_convergence_debt_count`` (gauge) — labels: stage, status
 - ``polylogue_fts_trigger_present`` (gauge) — labels: trigger
 - ``polylogue_fts_triggers_all_present`` (gauge, 0/1)
 - ``polylogue_fts_freshness_ready`` (gauge, 0/1) — labels: surface
@@ -372,7 +372,7 @@ def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[floa
     return [max(0.0, (int(row[1]) - int(row[0])) / 1000.0) for row in rows if row[0] is not None and row[1] is not None]
 
 
-def _convergence_debt_by_stage(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, int]]:
+def _convergence_debt_by_stage(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> list[tuple[str, str, int]]:
     ops_rows = _ops_convergence_debt_by_stage(ops_db) if ops_db is not None else []
     if ops_rows:
         return ops_rows
@@ -380,17 +380,17 @@ def _convergence_debt_by_stage(conn: sqlite3.Connection, *, ops_db: Path | None 
         return []
     rows = conn.execute(
         """
-        SELECT stage, COUNT(*)
+        SELECT stage, status, COUNT(*)
         FROM live_convergence_debt
-        WHERE status != 'resolved'
-        GROUP BY stage
-        ORDER BY stage
+        WHERE status IN ('failed', 'deferred')
+        GROUP BY stage, status
+        ORDER BY stage, status
         """
     ).fetchall()
-    return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
+    return [(str(row[0] or "unknown"), str(row[1] or "unknown"), int(row[2] or 0)) for row in rows]
 
 
-def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, int]]:
+def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, str, int]]:
     if ops_db is None or not ops_db.exists():
         return []
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -402,10 +402,10 @@ def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, int]]
                 return []
             rows = conn.execute(
                 """
-                SELECT stage, COUNT(*)
+                SELECT stage, status, COUNT(*)
                 FROM convergence_debt
-                GROUP BY stage
-                ORDER BY stage
+                GROUP BY stage, status
+                ORDER BY stage, status
                 """
             ).fetchall()
         finally:
@@ -413,7 +413,7 @@ def _ops_convergence_debt_by_stage(ops_db: Path | None) -> list[tuple[str, int]]
     except sqlite3.Error as exc:
         logger.warning("metrics: ops convergence-debt-by-stage query failed for %s: %s", ops_db, exc, exc_info=True)
         return []
-    return [(str(row[0] or "unknown"), int(row[1] or 0)) for row in rows]
+    return [(str(row[0] or "unknown"), str(row[1] or "unknown"), int(row[2] or 0)) for row in rows]
 
 
 def _fts_trigger_presence(conn: sqlite3.Connection) -> dict[str, bool]:
@@ -1201,15 +1201,15 @@ def format_metrics(
             _emit_metric(
                 lines,
                 name="polylogue_convergence_debt_count",
-                help_text="Unresolved convergence-debt rows by stage.",
+                help_text="Unresolved convergence-debt rows by stage and status.",
                 metric_type="gauge",
-                samples=[({"stage": stage}, count) for stage, count in debt],
+                samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt],
             )
         else:
             _emit_metric(
                 lines,
                 name="polylogue_convergence_debt_count",
-                help_text="Unresolved convergence-debt rows by stage.",
+                help_text="Unresolved convergence-debt rows by stage and status.",
                 metric_type="gauge",
                 samples=[(None, 0)],
             )
@@ -1326,9 +1326,9 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> str | None:
     _emit_metric(
         lines,
         name="polylogue_convergence_debt_count",
-        help_text="Unresolved convergence-debt rows by stage.",
+        help_text="Unresolved convergence-debt rows by stage and status.",
         metric_type="gauge",
-        samples=[({"stage": stage}, count) for stage, count in debt] if debt else [(None, 0)],
+        samples=[({"stage": stage, "status": status}, count) for stage, status, count in debt] if debt else [(None, 0)],
     )
     _emit_metric(
         lines,

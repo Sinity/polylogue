@@ -1452,6 +1452,7 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     debt = convergence_debt_summary_info(archive_root / "source.db")
     family_summary = next((item for item in debt.family_summaries if item.family == hermes_family), None)
     convergence_debt_failed_count = family_summary.failed_count if family_summary is not None else 0
+    convergence_debt_deferred_count = family_summary.deferred_count if family_summary is not None else 0
     convergence_debt_retry_due_count = sum(
         1
         for item in debt.recent
@@ -1462,6 +1463,7 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
         archive_root,
         hermes_root=hermes_root,
         convergence_debt_failed_count=convergence_debt_failed_count,
+        convergence_debt_deferred_count=convergence_debt_deferred_count,
         convergence_debt_retry_due_count=convergence_debt_retry_due_count,
     )
 
