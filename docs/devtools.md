@@ -107,6 +107,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools render agent-manual` | Render the declaration-generated six-tool agent manual and packaged integration assets. |
 | `devtools render all` | Refresh or verify generated docs and agent files. |
+| `devtools render api-operation-parity` | Render the committed semantic-operation parity matrix and Python facade reference. |
 | `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
 | `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
 | `devtools render demo-corpus-datasheet` | Render docs/plans/demo-corpus-construct-audit.md from the demo family registry and a measured seed archive. |

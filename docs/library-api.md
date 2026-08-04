@@ -330,6 +330,342 @@ asyncio.run(main())
 | `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
 
+<!-- BEGIN GENERATED API OPERATION PARITY -->
+
+## Generated facade operation index
+
+This reference is generated from `polylogue/api/operation_parity.py`. Each live public facade callable is bound to a stable semantic operation ID; exported data models and adapter helpers are listed as intentional exclusions in the committed [machine-readable matrix](generated/api-operation-parity.json).
+
+### Lifecycle and builders
+
+#### `api.lifecycle.construct`
+
+Construct, open, and close a facade bound to one archive runtime.
+
+Route/tier class: `lifecycle`. CLI: Intentional absence: `polylogue-s1kr`. MCP: Intentional absence: `polylogue-s1kr`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue` | Constructed facade builder |
+| `Polylogue.__init__` | `(archive_root: 'str | Path | None' = None, db_path: 'str | Path | None' = None, *, runtime: 'ResolvedRuntimeConfig | None' = None) -> 'None'` |
+| `Polylogue.open` | `(*, config: 'Config | None' = None, runtime: 'ResolvedRuntimeConfig | None' = None, **kwargs: 'object') -> 'Polylogue'` |
+| `Polylogue.__aenter__` | `async (self) -> 'Polylogue'` |
+| `Polylogue.__aexit__` | `async (self, exc_type: 'object', exc_val: 'object', exc_tb: 'object') -> 'None'` |
+| `Polylogue.close` | `async (self) -> 'None'` |
+
+### Embedding readiness
+
+#### `api.embedding.status`
+
+Read the no-spend embedding readiness state.
+
+Route/tier class: `embedding-status`. CLI: `ops embed status`. MCP: `status`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.embedding_status` | `(self, *, detail: 'bool' = False) -> 'dict[str, object]'` |
+
+#### `api.embedding.preflight`
+
+Calculate a bounded no-provider-call embedding catch-up window.
+
+Route/tier class: `embedding-preflight`. CLI: `ops embed preflight`. MCP: `status`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.embedding_preflight` | `(self, *, rebuild: 'bool' = False, max_sessions: 'int | None' = None, max_messages: 'int | None' = None, max_cost_usd: 'float | None' = None) -> 'dict[str, object]'` |
+
+### Embedding retrieval
+
+#### `api.embedding.search`
+
+Search stored session vectors using the embeddings tier.
+
+Route/tier class: `embedding-read`. CLI: `find similar`. MCP: `query`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.search_similar_sessions` | `async (self, session_id: 'str', *, limit: 'int' = 10, vector_provider: 'VectorProvider | None' = None, voyage_api_key: 'str | None' = None) -> 'dict[str, object]'` |
+
+### Ingestion and derived maintenance
+
+#### `api.ingest.parse`
+
+Parse configured or explicit sources into source and index tiers.
+
+Route/tier class: `source-index-write`. CLI: `import`. MCP: `run`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.parse_file` | `async (self, path: 'str | Path', *, source_name: 'str | None' = None) -> 'ParseResult'` |
+| `Polylogue.parse_sources` | `async (self, sources: 'list[Source] | None' = None, *, download_assets: 'bool' = True) -> 'ParseResult'` |
+
+#### `api.index.rebuild`
+
+Rebuild or update the derived index through the mutation executor.
+
+Route/tier class: `index-write`. CLI: `ops reset --index`. MCP: `maintenance`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.rebuild_index` | `async (self) -> 'bool'` |
+| `Polylogue.update_index` | `async (self, session_ids: 'list[str]') -> 'bool'` |
+| `Polylogue.rebuild_insights` | `async (self, session_ids: 'Sequence[str] | None' = None, *, progress_callback: 'ProgressCallback | None' = None) -> 'SessionInsightCounts'` |
+
+### Archive reads
+
+#### `api.archive.session-read`
+
+Read sessions, summaries, messages, actions, and archive statistics from the index tier.
+
+Route/tier class: `index-read`. CLI: `find`, `read`. MCP: `query`, `read`, `get`, `status`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.get_session` | `async (self, session_id: 'str', *, content_projection: 'ContentProjectionSpec | None' = None) -> 'Session | None'` |
+| `Polylogue.get_sessions` | `async (self, session_ids: 'list[str]', *, content_projection: 'ContentProjectionSpec | None' = None) -> 'list[Session]'` |
+| `Polylogue.get_actions_batch` | `async (self, session_ids: 'builtins.list[str]') -> 'dict[str, tuple[Action, ...]]'` |
+| `Polylogue.list_sessions` | `async (self, origin: 'str | None' = None, limit: 'int | None' = None, content_projection: 'ContentProjectionSpec | None' = None) -> 'list[Session]'` |
+| `Polylogue.list_summaries` | `async (self, *, limit: 'int | None' = 50, offset: 'int' = 0, origin: 'str | None' = None) -> 'builtins.list[SessionSummary]'` |
+| `Polylogue.list_sessions_for_spec` | `async (self, spec: 'SessionQuerySpec', *, content_projection: 'ContentProjectionSpec | None' = None) -> 'list[Session]'` |
+| `Polylogue.search_session_hits` | `async (self, spec: 'SessionQuerySpec') -> 'builtins.list[SessionSearchHit]'` |
+| `Polylogue.search` | `async (self, query: 'str', *, limit: 'int' = 100, source: 'str | None' = None, since: 'str | None' = None) -> 'SearchResult'` |
+| `Polylogue.search_envelope` | `async (self, query: 'str', *, limit: 'int' = 50, offset: 'int' = 0, origin: 'str | None' = None, since: 'str | None' = None, until: 'str | None' = None, retrieval_lane: 'str' = 'auto', sort: 'str | None' = None, cursor: 'str | None' = None) -> 'SearchEnvelope'` |
+| `Polylogue.archive_count_sessions` | `async (self, *, origin: 'str | None' = None, excluded_origins: 'Sequence[str]' = (), tags: 'Sequence[str]' = (), excluded_tags: 'Sequence[str]' = (), repo_names: 'Sequence[str]' = (), project_refs: 'Sequence[str]' = (), has_types: 'Sequence[str]' = (), has_tool_use: 'bool' = False, has_thinking: 'bool' = False, has_paste: 'bool' = False, tool_terms: 'Sequence[str]' = (), excluded_tool_terms: 'Sequence[str]' = (), action_terms: 'Sequence[str]' = (), excluded_action_terms: 'Sequence[str]' = (), action_sequence: 'Sequence[str]' = (), action_text_terms: 'Sequence[str]' = (), referenced_paths: 'Sequence[str]' = (), cwd_prefix: 'str | None' = None, typed_only: 'bool' = False, message_type: 'str | None' = None, title: 'str | None' = None, min_messages: 'int | None' = None, max_messages: 'int | None' = None, min_words: 'int | None' = None, max_words: 'int | None' = None, since: 'str | None' = None, until: 'str | None' = None) -> 'int'` |
+| `Polylogue.archive_get_session` | `async (self, session_id: 'str') -> 'ArchiveSessionEnvelope | None'` |
+| `Polylogue.get_messages_paginated` | `async (self, session_id: 'str', *, message_role: 'MessageRoleFilter' = (), message_type: 'MessageTypeName | None' = None, material_origin: 'tuple[MaterialOrigin, ...]' = (), limit: 'int' = 50, offset: 'int' = 0, content_projection: 'ContentProjectionSpec | None' = None) -> 'tuple[list[Message], int, LineageCompleteness]'` |
+| `Polylogue.iter_messages` | `(self, session_id: 'str', *, message_roles: 'MessageRoleFilter' = (), material_origin: 'tuple[MaterialOrigin, ...]' = (), limit: 'int | None' = None) -> 'AsyncIterator[Message]'` |
+| `Polylogue.bulk_get_messages` | `async (self, session_ids: 'Sequence[str]', *, since: 'str | None' = None, until: 'str | None' = None, message_role: 'MessageRoleFilter' = (), material_origin: 'tuple[MaterialOrigin, ...]' = (), content_projection: 'ContentProjectionSpec | None' = None) -> 'dict[str, list[Message]]'` |
+| `Polylogue.query_sessions` | `async (self, *, origin: 'str | None' = None, tag: 'str | None' = None, since: 'str | None' = None, until: 'str | None' = None, sort: 'str | None' = None, limit: 'int | None' = None, offset: 'int' = 0, has_tool_use: 'bool' = False, has_thinking: 'bool' = False, has_paste: 'bool' = False, typed_only: 'bool' = False, min_messages: 'int | None' = None, max_messages: 'int | None' = None, min_words: 'int | None' = None, **kwargs: 'object') -> 'builtins.list[dict[str, object]]'` |
+| `Polylogue.count_sessions` | `async (self, *, origin: 'str | None' = None, since: 'str | None' = None, until: 'str | None' = None, **kwargs: 'object') -> 'int'` |
+| `Polylogue.get_session_summary` | `async (self, session_id: 'str') -> 'SessionSummary | None'` |
+| `Polylogue.get_session_stats` | `async (self, session_id: 'str') -> 'dict[str, int]'` |
+| `Polylogue.get_stats_by` | `async (self, group_by: 'str' = 'origin') -> 'dict[str, int]'` |
+| `Polylogue.get_index_status` | `async (self) -> 'IndexStatus'` |
+| `Polylogue.stats` | `async (self) -> 'ArchiveStats'` |
+| `Polylogue.storage_stats` | `async (self) -> 'StorageArchiveStats'` |
+| `Polylogue.facets` | `async (self, spec: 'SessionQuerySpec | None' = None, *, include_idf: 'bool' = True, include_deferred: 'bool' = True) -> 'FacetsResponse'` |
+| `Polylogue.health_check` | `async (self) -> 'ReadinessReport'` |
+| `Polylogue.filter` | `(self) -> 'SessionFilter'` |
+| `Polylogue.list_read_view_profiles` | `async (self) -> 'list[JSONDocument]'` |
+
+#### `api.archive.query-analysis`
+
+Compile, explain, diagnose, and resolve archive query and reference projections.
+
+Route/tier class: `index-read`. CLI: `find`, `read`, `analyze`. MCP: `query`, `read`, `get`, `explain`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.explain_query_expression` | `async (self, expression: 'str') -> 'JSONDocument'` |
+| `Polylogue.query_units` | `async (self, expression: 'str | None' = None, *, limit: 'int | None' = None, offset: 'int | None' = None, origin: 'str | None' = None, origins: 'tuple[str, ...]' = (), excluded_origins: 'tuple[str, ...]' = (), tag: 'str | None' = None, tags: 'tuple[str, ...]' = (), excluded_tags: 'tuple[str, ...]' = (), repo: 'str | None' = None, repo_names: 'tuple[str, ...]' = (), project: 'str | None' = None, project_refs: 'tuple[str, ...]' = (), has_types: 'tuple[str, ...]' = (), tool_terms: 'tuple[str, ...]' = (), excluded_tool_terms: 'tuple[str, ...]' = (), action_terms: 'tuple[str, ...]' = (), excluded_action_terms: 'tuple[str, ...]' = (), action_sequence: 'tuple[str, ...]' = (), action_text_terms: 'tuple[str, ...]' = (), referenced_paths: 'tuple[str, ...]' = (), cwd_prefix: 'str | None' = None, title: 'str | None' = None, since: 'str | None' = None, until: 'str | None' = None, has_tool_use: 'bool' = False, has_thinking: 'bool' = False, has_paste: 'bool' = False, typed_only: 'bool' = False, min_messages: 'int | None' = None, max_messages: 'int | None' = None, min_words: 'int | None' = None, max_words: 'int | None' = None, message_type: 'str | None' = None, continuation: 'str | None' = None) -> 'QueryUnitResultEnvelope'` |
+| `Polylogue.query_completions` | `async (self, kind: 'str', *, incomplete: 'str' = '', unit: 'str | None' = None, field: 'str | None' = None) -> 'JSONDocument'` |
+| `Polylogue.diagnose_query_miss` | `async (self, spec: 'SessionQuerySpec', *, full: 'bool' = False) -> 'QueryMissDiagnostics'` |
+| `Polylogue.resolve_ref` | `async (self, ref: 'str') -> 'PublicRefResolutionPayload'` |
+| `Polylogue.export_otel` | `async (self, *, source_ref: 'str', expressions: 'Sequence[str]', limit: 'int' = 50, include_message_text: 'bool' = False) -> 'OtelProjectionPayload'` |
+| `Polylogue.neighbor_candidates` | `async (self, *, session_id: 'str | None' = None, query: 'str | None' = None, origin: 'str | None' = None, limit: 'int' = 10, window_hours: 'int' = 24) -> 'list[SessionNeighborCandidate]'` |
+| `Polylogue.neighbor_candidate_payloads` | `async (self, *, session_id: 'str | None' = None, query: 'str | None' = None, origin: 'str | None' = None, limit: 'int' = 10, window_hours: 'int' = 24) -> 'list[JSONDocument]'` |
+| `Polylogue.session_correlation_payload` | `async (self, session_id: 'str', *, repo_path: 'str | None' = None, since_hours: 'int' = 2, confidence_threshold: 'float' = 0.3) -> 'JSONDocument | None'` |
+| `Polylogue.origin_usage_report` | `async (self, *, origin: 'str | None' = None, limit: 'int | None' = 25, detail: 'str' = 'full') -> 'ProviderUsageReport'` |
+| `Polylogue.session_usage_reconciliation` | `async (self, session_id: 'str') -> 'SessionUsageReconciliation'` |
+| `Polylogue.resume_brief` | `async (self, session_id: 'str', *, related_limit: 'int' = 6, repo_path: 'str | None' = None, recent_files: 'Sequence[str]' = ()) -> 'ResumeBrief | None'` |
+| `Polylogue.find_resume_candidates` | `async (self, *, repo_path: 'str', cwd: 'str | None' = None, recent_files: 'Sequence[str]' = (), limit: 'int' = 10) -> 'tuple[ResumeCandidate, ...]'` |
+
+### Source evidence reads
+
+#### `api.archive.source-evidence-read`
+
+Read raw artifacts and provider-side evidence retained in the durable source tier.
+
+Route/tier class: `source-read`. CLI: `read`, `analyze`. MCP: `read`, `explain`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.explain_import` | `async (self, path: 'str | Path | None' = None, *, raw_ref: 'str | None' = None, source_path: 'str | None' = None, source_name: 'str' = 'unknown', limit: 'int' = 100, redact_paths: 'bool' = True) -> 'ImportExplainPayload'` |
+| `Polylogue.get_raw_artifacts_for_session` | `async (self, session_id: 'str', *, limit: 'int' = 50, offset: 'int' = 0) -> 'tuple[list[dict[str, object]], int]'` |
+| `Polylogue.get_hook_event_summary_for_session` | `async (self, session_id: 'str') -> 'dict[str, object] | None'` |
+| `Polylogue.get_session_events` | `async (self, session_id: 'str', *, event_type: 'str | None' = None, limit: 'int | None' = None) -> 'list[dict[str, object]] | None'` |
+| `Polylogue.get_file_edits` | `async (self, session_id: 'str') -> 'list[dict[str, object]] | None'` |
+| `Polylogue.get_web_content_constructs` | `async (self, session_id: 'str', *, construct_type: 'str | None' = None) -> 'list[dict[str, object]] | None'` |
+| `Polylogue.get_agent_policies` | `async (self, session_id: 'str') -> 'list[dict[str, object]] | None'` |
+
+### Insights and topology
+
+#### `api.archive.insight-read`
+
+Read materialized archive insights, topology, and derived archive health from the index tier.
+
+Route/tier class: `index-read`. CLI: `analyze`, `read`. MCP: `query`, `get`, `status`, `explain`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.get_session_insight_status` | `async (self) -> 'SessionInsightStatusSnapshot'` |
+| `Polylogue.get_session_profile_insight` | `async (self, session_id: 'str', *, tier: 'str' = 'merged') -> 'SessionProfileInsight | None'` |
+| `Polylogue.get_session_profile_record` | `async (self, session_id: 'str') -> 'SessionProfileRecord | None'` |
+| `Polylogue.list_session_profile_insights` | `async (self, query: 'SessionProfileInsightQuery | None' = None) -> 'list[SessionProfileInsight]'` |
+| `Polylogue.insight_readiness_report` | `async (self, query: 'InsightReadinessQuery | None' = None) -> 'InsightReadinessReport'` |
+| `Polylogue.insight_rigor_audit` | `async (self, query: 'InsightRigorAuditQuery | None' = None) -> 'InsightRigorAuditReport'` |
+| `Polylogue.archive_debt` | `async (self, *, kinds: 'Iterable[str] | None' = None, only_actionable: 'bool' = False, limit: 'int | None' = None, exact_fts: 'bool' = False) -> 'ArchiveDebtListPayload'` |
+| `Polylogue.get_session_work_event_insights` | `async (self, session_id: 'str') -> 'list[SessionWorkEventInsight]'` |
+| `Polylogue.list_session_work_event_insights` | `async (self, query: 'SessionWorkEventInsightQuery | None' = None) -> 'list[SessionWorkEventInsight]'` |
+| `Polylogue.get_session_phase_insights` | `async (self, session_id: 'str') -> 'list[SessionPhaseInsight]'` |
+| `Polylogue.list_session_phase_insights` | `async (self, query: 'SessionPhaseInsightQuery | None' = None) -> 'list[SessionPhaseInsight]'` |
+| `Polylogue.get_thread_insight` | `async (self, thread_id: 'str') -> 'ThreadInsight | None'` |
+| `Polylogue.list_thread_insights` | `async (self, query: 'ThreadInsightQuery | None' = None) -> 'list[ThreadInsight]'` |
+| `Polylogue.list_session_tag_rollup_insights` | `async (self, query: 'SessionTagRollupQuery | None' = None) -> 'list[SessionTagRollupInsight]'` |
+| `Polylogue.list_archive_coverage_insights` | `async (self, query: 'ArchiveCoverageInsightQuery | None' = None) -> 'list[ArchiveCoverageInsight]'` |
+| `Polylogue.list_tool_usage_insights` | `async (self, query: 'ToolUsageInsightQuery | None' = None) -> 'list[ToolUsageInsight]'` |
+| `Polylogue.list_session_cost_insights` | `async (self, query: 'SessionCostInsightQuery | None' = None) -> 'list[SessionCostInsight]'` |
+| `Polylogue.get_session_latency_profile_insight` | `async (self, session_id: 'str') -> 'SessionLatencyProfileInsight | None'` |
+| `Polylogue.list_session_latency_profile_insights` | `async (self, query: 'SessionLatencyProfileInsightQuery | None' = None) -> 'list[SessionLatencyProfileInsight]'` |
+| `Polylogue.find_stuck_session_latency_profile_insights` | `async (self, query: 'SessionLatencyProfileInsightQuery | None' = None) -> 'list[SessionLatencyProfileInsight]'` |
+| `Polylogue.list_cost_rollup_insights` | `async (self, query: 'CostRollupInsightQuery | None' = None) -> 'list[CostRollupInsight]'` |
+| `Polylogue.list_usage_timeline_insights` | `async (self, query: 'UsageTimelineInsightQuery | None' = None) -> 'list[UsageTimelineInsight]'` |
+| `Polylogue.list_archive_debt_insights` | `async (self, query: 'ArchiveDebtInsightQuery | None' = None) -> 'list[ArchiveDebtInsight]'` |
+| `Polylogue.cost_outlook` | `async (self, plan_name: 'str', *, now: 'datetime | None' = None, method: 'ProjectionMethod' = <ProjectionMethod.linear: 'linear'>) -> 'CycleOutlook | None'` |
+| `Polylogue.aggregate_sessions` | `async (self, *, group_by: 'str' = 'workflow_shape', since: 'str | None' = None, until: 'str | None' = None, origin: 'str | None' = None) -> 'dict[str, object]'` |
+| `Polylogue.workflow_shape_distribution` | `async (self, *, group_by: 'str' = 'week', since: 'str | None' = None, until: 'str | None' = None, origin: 'str | None' = None) -> 'dict[str, object]'` |
+| `Polylogue.find_abandoned_sessions` | `async (self, *, since: 'str | None' = None, repo_path: 'str | None' = None, min_severity: 'str' = 'question_left', limit: 'int' = 20) -> 'dict[str, object]'` |
+| `Polylogue.tool_call_latency_distribution` | `async (self, *, since: 'str | None' = None, until: 'str | None' = None, origin: 'str | None' = None, tool_category: 'str | None' = None, limit: 'int' = 500) -> 'dict[str, object]'` |
+| `Polylogue.compare_sessions` | `async (self, session_ids: 'Sequence[str]') -> 'dict[str, object]'` |
+| `Polylogue.find_similar_sessions_by_metadata` | `async (self, session_id: 'str', *, limit: 'int' = 10, candidate_pool_limit: 'int' = 200) -> 'dict[str, object] | None'` |
+| `Polylogue.correlate_sessions` | `async (self, *, metric_x: 'str', metric_y: 'str', origin: 'str | None' = None, since: 'str | None' = None, until: 'str | None' = None) -> 'dict[str, object]'` |
+| `Polylogue.get_session_topology` | `async (self, session_id: 'str') -> 'SessionTopology | None'` |
+| `Polylogue.get_ancestors` | `async (self, session_id: 'str') -> 'list[SessionRef]'` |
+| `Polylogue.get_descendants` | `async (self, session_id: 'str') -> 'list[SessionRef]'` |
+| `Polylogue.get_siblings` | `async (self, session_id: 'str') -> 'list[SessionRef]'` |
+| `Polylogue.get_thread` | `async (self, session_id: 'str') -> 'list[SessionRef]'` |
+| `Polylogue.get_logical_session` | `async (self, session_id: 'str') -> 'LogicalSession | None'` |
+| `Polylogue.get_session_tree` | `async (self, session_id: 'str') -> 'list[Session]'` |
+| `Polylogue.postmortem_bundle` | `async (self, spec: 'SessionQuerySpec | None' = None, *, limit: 'int | None' = None) -> 'PostmortemBundle'` |
+| `Polylogue.pathology_report` | `async (self, spec: 'SessionQuerySpec | None' = None, *, limit: 'int | None' = None) -> 'PathologyReport'` |
+| `Polylogue.portfolio_bundle` | `async (self, spec: 'SessionQuerySpec | None' = None, *, limit: 'int | None' = None, top_n: 'int' = 10) -> 'PortfolioBundle'` |
+| `Polylogue.export_insight_bundle` | `async (self, request: 'InsightExportBundleRequest') -> 'InsightExportBundleResult'` |
+
+### Context and evidence
+
+#### `api.context.delivery`
+
+Compile context and record or inspect durable delivery receipts.
+
+Route/tier class: `cross-tier`. CLI: `continue`, `read`. MCP: `context`, `get`, `status`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.compile_context` | `async (self, spec: 'ContextSpec') -> 'ContextImage'` |
+| `Polylogue.context_image_payload` | `async (self, *, project_path: 'str | None' = None, project_repo: 'str | None' = None, since: 'str | None' = None, until: 'str | None' = None, origin: 'str | None' = None, query: 'str | None' = None, max_sessions: 'int' = 5, max_tokens: 'int | None' = None, max_messages_per_session: 'int | None' = 24, max_chars_per_message: 'int | None' = 1800, include_messages: 'bool' = True, include_assertions: 'bool' = True, redact_paths: 'bool' = True, seed_session_id: 'str | None' = None) -> 'ContextImage'` |
+| `Polylogue.context_preamble_payload` | `async (self, session_id: 'str', *, related_limit: 'int' = 5) -> 'Any'` |
+| `Polylogue.get_context_delivery` | `async (self, snapshot_ref: 'str', *, recipient_ref: 'str') -> 'ArchiveContextDeliveryEnvelope | None'` |
+| `Polylogue.list_context_deliveries` | `async (self, *, recipient_ref: 'str | None' = None, assertion_ref: 'str | None' = None, limit: 'int' = 50) -> 'list[ArchiveContextDeliveryEnvelope]'` |
+| `Polylogue.record_context_delivery` | `async (self, *, image: 'ContextImage', boundary: 'str', recipient_ref: 'str', delivered_by_ref: 'str', run_ref: 'str | None' = None, inheritance_mode: 'str' = 'explicit') -> 'ArchiveContextDeliveryEnvelope'` |
+| `Polylogue.compile_and_record_context` | `async (self, *, recipient_ref: 'str', delivered_by_ref: 'str', boundary: 'str', query: 'str | None' = None, max_sessions: 'int' = 5, max_tokens: 'int | None' = None, include_messages: 'bool' = True, include_assertions: 'bool' = True, redact_paths: 'bool' = True, seed_session_id: 'str | None' = None, run_ref: 'str | None' = None, inheritance_mode: 'str' = 'explicit') -> 'ArchiveContextDeliveryEnvelope'` |
+| `Polylogue.correlate_hermes_context_deliveries` | `async (self, hermes_session_native_id: 'str') -> 'tuple[HermesContextDeliveryCorrelation, ...]'` |
+| `Polylogue.reconcile_hermes_session_lifecycle` | `async (self, hermes_session_native_id: 'str') -> 'HermesLifecycleReconciliation | None'` |
+| `Polylogue.reconcile_codex_spawn_edges` | `async (self) -> 'CodexSpawnEdgeReconciliation | None'` |
+| `Polylogue.hermes_integration_health` | `async (self) -> 'HermesIntegrationHealth'` |
+
+### Assertions and judgments
+
+#### `api.assertion.review`
+
+Read, capture, and judge durable assertions and comparative evidence.
+
+Route/tier class: `cross-tier`. CLI: `mark`, `read`. MCP: `write`, `judge`, `read`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.import_annotation_batch` | `async (self, request: 'AnnotationBatchImportRequest', *, registry: 'AnnotationSchemaRegistry | None' = None) -> 'AnnotationBatchImportResult'` |
+| `Polylogue.list_assertion_claims` | `async (self, *, kinds: 'Sequence[str | AssertionKind] | None' = None, target_ref: 'str | None' = None, scope_ref: 'str | None' = None, statuses: 'Sequence[str | AssertionStatus] | None' = ('active', 'candidate'), context_inject: 'bool | None' = None, limit: 'int | None' = None) -> 'list[ArchiveAssertionEnvelope]'` |
+| `Polylogue.list_assertion_claim_payloads` | `async (self, *, kinds: 'Sequence[str | AssertionKind] | None' = None, target_ref: 'str | None' = None, scope_ref: 'str | None' = None, statuses: 'Sequence[str | AssertionStatus] | None' = ('active', 'candidate'), context_inject: 'bool | None' = None, limit: 'int | None' = None) -> 'list[AssertionClaimPayload]'` |
+| `Polylogue.list_assertion_candidates` | `async (self, *, target_ref: 'str | None' = None, kinds: 'Sequence[str | AssertionKind] | None' = None, limit: 'int | None' = None) -> 'list[AssertionClaimPayload]'` |
+| `Polylogue.list_assertion_candidate_reviews` | `async (self, *, target_ref: 'str | None' = None, kinds: 'Sequence[str | AssertionKind] | None' = None, statuses: 'Sequence[str | AssertionStatus] | None' = None, limit: 'int | None' = None) -> 'AssertionCandidateReviewListPayload'` |
+| `Polylogue.assertion_candidate_queue_health` | `async (self) -> 'AssertionCandidateQueueHealthPayload'` |
+| `Polylogue.judge_assertion_candidate` | `async (self, *, candidate_ref: 'str', decision: 'str', reason: 'str | None' = None, actor_ref: 'str' = 'user:local', inject: 'bool' = False, replacement_kind: 'str | None' = None, replacement_body_text: 'str | None' = None, replacement_value: 'object | None' = None) -> 'AssertionJudgmentResultPayload'` |
+| `Polylogue.capture_assertion_candidate` | `async (self, *, body_text: 'str', kind: 'AssertionKind', refs: 'Sequence[str]' = (), scope_refs: 'Sequence[str]' = (), cwd: 'Path | None' = None, author_ref: 'str' = 'user:local', author_kind: 'str' = 'user', idempotency_key: 'str | None' = None, ttl_seconds: 'int | None' = None) -> 'AssertionClaimPayload'` |
+| `Polylogue.judge_assertion_candidates` | `async (self, *, items: 'Sequence[Any]') -> 'AssertionBulkJudgmentPayload'` |
+| `Polylogue.record_comparative_judgment` | `async (self, judgment: 'ComparativeJudgment', *, author_kind: 'str' = 'user') -> 'ArchiveAssertionEnvelope'` |
+| `Polylogue.list_comparative_judgments` | `async (self) -> 'list[ComparativeJudgment]'` |
+| `Polylogue.join_typed_annotations` | `async (self, *, schema_id: 'str', schema_version: 'int', statuses: 'Sequence[str | AssertionStatus]', target_kind: 'str | None' = None, group_by: "Sequence[Literal['repo', 'model', 'time', 'origin']]" = (), limit: 'int' = 500, offset: 'int' = 0) -> 'AnnotationStructuralJoinResult'` |
+
+### Archive mutations
+
+#### `api.archive.session-delete`
+
+Delete a session and its archive records through the shared mutation executor.
+
+Route/tier class: `cross-tier`. CLI: `delete`. MCP: `write`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.delete_session` | `async (self, session_id: 'str') -> 'bool'` |
+| `Polylogue.delete_session_safe` | `async (self, session_id: 'str', *, actor: 'str' = 'user:api') -> 'DeleteSessionResult'` |
+
+### Durable user state
+
+#### `api.user-state.read`
+
+Read tags, marks, annotations, views, recall packs, workspaces, corrections, notes, and settings from user.db.
+
+Route/tier class: `user-read`. CLI: `read`, `mark`. MCP: `read`, `get`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.list_tags` | `async (self, *, origin: 'str | None' = None) -> 'dict[str, int]'` |
+| `Polylogue.get_metadata` | `async (self, session_id: 'str') -> 'dict[str, str]'` |
+| `Polylogue.list_marks` | `async (self, *, mark_type: 'str | None' = None, session_id: 'str | None' = None, target_type: 'str | None' = None, target_id: 'str | None' = None, message_id: 'str | None' = None) -> 'list[dict[str, str]]'` |
+| `Polylogue.get_annotation` | `async (self, annotation_id: 'str') -> 'dict[str, str] | None'` |
+| `Polylogue.list_annotations` | `async (self, *, session_id: 'str | None' = None, target_type: 'str | None' = None, target_id: 'str | None' = None, message_id: 'str | None' = None) -> 'list[dict[str, str]]'` |
+| `Polylogue.get_view` | `async (self, view_id: 'str') -> 'dict[str, str] | None'` |
+| `Polylogue.list_views` | `async (self) -> 'list[dict[str, str]]'` |
+| `Polylogue.get_recall_pack` | `async (self, pack_id: 'str') -> 'dict[str, str] | None'` |
+| `Polylogue.list_recall_packs` | `async (self) -> 'list[dict[str, str]]'` |
+| `Polylogue.get_workspace` | `async (self, workspace_id: 'str') -> 'dict[str, str] | None'` |
+| `Polylogue.list_workspaces` | `async (self) -> 'list[dict[str, str]]'` |
+| `Polylogue.list_corrections` | `async (self, *, session_id: 'str | None' = None, kind: 'str | None' = None) -> 'list[LearningCorrection]'` |
+| `Polylogue.list_blackboard_notes` | `async (self, *, kind: 'str | None' = None, scope_repo: 'str | None' = None, unresolved: 'bool' = False, limit: 'int' = 20) -> 'list[BlackboardNote]'` |
+| `Polylogue.get_setting` | `async (self, setting_key: 'str') -> 'ArchiveUserSettingEnvelope | None'` |
+| `Polylogue.list_settings` | `async (self) -> 'list[ArchiveUserSettingEnvelope]'` |
+
+#### `api.user-state.write`
+
+Mutate tags, metadata, marks, annotations, views, recall packs, workspaces, corrections, notes, and settings in user.db.
+
+Route/tier class: `user-write`. CLI: `mark`, `delete`. MCP: `write`.
+
+| Python callable | Signature |
+|---|---|
+| `Polylogue.add_tag` | `async (self, session_id: 'str', tag: 'str', *, author_ref: 'str | None' = None, author_kind: 'str | None' = None) -> 'TagMutationResult'` |
+| `Polylogue.remove_tag` | `async (self, session_id: 'str', tag: 'str') -> 'TagMutationResult'` |
+| `Polylogue.update_metadata` | `async (self, session_id: 'str', key: 'str', value: 'str') -> 'bool'` |
+| `Polylogue.set_metadata` | `async (self, session_id: 'str', key: 'str', value: 'object') -> 'MetadataMutationResult'` |
+| `Polylogue.delete_metadata` | `async (self, session_id: 'str', key: 'str') -> 'MetadataMutationResult'` |
+| `Polylogue.bulk_tag_sessions` | `async (self, session_ids: 'list[str]', tags: 'list[str]', *, author_ref: 'str | None' = None, author_kind: 'str | None' = None) -> 'BulkTagMutationResult'` |
+| `Polylogue.add_mark` | `async (self, session_id: 'str', mark_type: 'str', *, target_type: 'str' = 'session', target_id: 'str | None' = None, message_id: 'str | None' = None) -> 'bool'` |
+| `Polylogue.remove_mark` | `async (self, session_id: 'str', mark_type: 'str', *, target_type: 'str' = 'session', target_id: 'str | None' = None, message_id: 'str | None' = None) -> 'bool'` |
+| `Polylogue.save_annotation` | `async (self, annotation_id: 'str', session_id: 'str', note_text: 'str', *, target_type: 'str' = 'session', target_id: 'str | None' = None, message_id: 'str | None' = None) -> 'bool'` |
+| `Polylogue.delete_annotation` | `async (self, annotation_id: 'str') -> 'bool'` |
+| `Polylogue.save_view` | `async (self, view_id: 'str', name: 'str', query_json: 'str') -> 'bool'` |
+| `Polylogue.delete_view` | `async (self, view_id: 'str') -> 'bool'` |
+| `Polylogue.create_recall_pack` | `async (self, pack_id: 'str', label: 'str', payload_json: 'str') -> 'bool'` |
+| `Polylogue.delete_recall_pack` | `async (self, pack_id: 'str') -> 'bool'` |
+| `Polylogue.save_workspace` | `async (self, workspace_id: 'str', name: 'str', mode: 'str', open_targets_json: 'str', layout_json: 'str', active_target_json: 'str' = '{}') -> 'bool'` |
+| `Polylogue.delete_workspace` | `async (self, workspace_id: 'str') -> 'bool'` |
+| `Polylogue.record_correction` | `async (self, session_id: 'str', kind: 'str', payload: 'dict[str, str]', *, note: 'str | None' = None, author_ref: 'str | None' = None, author_kind: 'str | None' = None) -> 'LearningCorrection'` |
+| `Polylogue.delete_correction` | `async (self, session_id: 'str', kind: 'str') -> 'bool'` |
+| `Polylogue.clear_corrections` | `async (self, session_id: 'str') -> 'int'` |
+| `Polylogue.post_blackboard_note` | `async (self, *, kind: 'str', title: 'str', content: 'str', scope_repo: 'str | None' = None, scope_session: 'str | None' = None, scope_issue: 'int | None' = None, scope_path: 'str | None' = None, related_sessions: 'tuple[str, ...]' = (), author_ref: 'str | None' = None, author_kind: 'str' = 'user', evidence_refs: 'tuple[str, ...]' = (), staleness: 'dict[str, object] | None' = None, context_policy: 'dict[str, object] | None' = None) -> 'BlackboardNote'` |
+| `Polylogue.set_setting` | `async (self, setting_key: 'str', value: 'object', *, author_ref: 'str' = 'user:local') -> 'ArchiveUserSettingEnvelope'` |
+
+### Intentional exclusions
+
+| Export | Reason | Authority |
+|---|---|---|
+| `ArchiveStats` | Result data model, not an executable archive operation. | `polylogue-s1kr` |
+| `select_pending_embedding_session_window` | Public adapter helper for daemon/CLI window selection. It is intentionally not a facade operation. | `polylogue-s1kr` |
+| `Polylogue.__repr__` | Diagnostic representation protocol, not an archive operation. | `polylogue-s1kr` |
+
+<!-- END GENERATED API OPERATION PARITY -->
+
 ---
 
 **See also:** [CLI Reference](cli-reference.md) · [Data Model](data-model.md) · [Configuration](configuration.md)
