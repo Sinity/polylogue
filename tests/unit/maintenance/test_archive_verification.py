@@ -26,6 +26,7 @@ from polylogue.maintenance.archive_verification import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.pathology_zoo import build_pathology_zoo
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
 
@@ -1290,7 +1291,7 @@ RED_TWIN_TESTS: dict[str, str] = {
     "excluded-cursor-vocabulary-honesty": "test_excluded_cursor_with_live_next_retry_at_trips_vocabulary_honesty",
     "stalled-append-cursor-freshness": "test_stalled_append_cursor_trips_freshness_check",
     "raw-quarantine-group-dedup": "test_fully_quarantined_duplicate_group_trips_raw_quarantine_group_dedup",
-    "corpus-absences": "test_corpus_absences_red_twin",
+    "corpus-absences": "test_pathology_zoo_corpus_absences_red_twin",
     "corpus-attachment-fidelity": "test_corpus_attachment_fidelity_red_twin",
     "corpus-revision-fidelity": "test_corpus_revision_fidelity_red_twin",
 }
@@ -1317,6 +1318,21 @@ def test_corpus_absences_red_twin(tmp_path: Path) -> None:
         )
     report = verify_archive(tmp_path, checks=("corpus-absences",))
     assert _check(report, "corpus-absences").status is OutcomeStatus.ERROR
+
+
+def test_pathology_zoo_corpus_absences_red_twin(tmp_path: Path) -> None:
+    """The zoo consumes t0m73's red-twin registry through a real two-wave archive."""
+    zoo = build_pathology_zoo(tmp_path / "zoo")
+    clean = verify_archive(zoo.archive_root, checks=("corpus-absences", "corpus-revision-fidelity"))
+    assert _check(clean, "corpus-absences").status is OutcomeStatus.OK
+    assert _check(clean, "corpus-revision-fidelity").status is OutcomeStatus.OK
+
+    with _connect(zoo.archive_root / "index.db") as conn:
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", ("codex-session:zoo-append-self",))
+        conn.commit()
+
+    red = verify_archive(zoo.archive_root, checks=("corpus-absences",))
+    assert _check(red, "corpus-absences").status is OutcomeStatus.ERROR
 
 
 def test_corpus_attachment_fidelity_red_twin(tmp_path: Path) -> None:
