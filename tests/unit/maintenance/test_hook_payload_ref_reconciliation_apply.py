@@ -13,6 +13,7 @@ Builds the exact pre-v22 orphan shape (see
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -22,6 +23,11 @@ from polylogue.maintenance.hook_payload_ref_reconciliation_apply import (
     HookPayloadRefReconciliationApplyError,
     apply_hook_payload_ref_reconciliation,
 )
+from polylogue.maintenance.hook_payload_ref_reconciliation_receipt import (
+    backup_manifest_identity,
+    write_prepared_receipt,
+)
+from polylogue.storage.hook_payload_ref_reconciliation import plan_hook_payload_ref_reconciliation
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     deterministic_blob_hash,
@@ -77,6 +83,23 @@ def _blob_refs_rows(archive_root: Path) -> set[tuple[str, str]]:
         return {(row[0], row[1]) for row in conn.execute("SELECT ref_type, ref_id FROM blob_refs")}
 
 
+def _manifest(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"manifest":"test"}', encoding="utf-8")
+    return path
+
+
+def _accept_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        return manifest.with_name("verification-receipt.json")
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.hook_payload_ref_reconciliation_apply.validate_migration_backup_manifest",
+        _fake_validate,
+    )
+
+
 def test_dry_run_never_mutates(tmp_path: Path) -> None:
     archive_root = _build_fixture_archive(tmp_path)
     before = _blob_refs_rows(archive_root)
@@ -93,22 +116,26 @@ def test_dry_run_never_mutates(tmp_path: Path) -> None:
 
 def test_apply_rekeys_only_the_confirmed_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive_root = _build_fixture_archive(tmp_path)
-
-    def _fake_validate(manifest: Path, tier: object, *, connection: sqlite3.Connection) -> Path:
-        assert connection.execute("SELECT 1").fetchone() == (1,)
-        return manifest.with_name("verification-receipt.json")
-
-    monkeypatch.setattr(
-        "polylogue.maintenance.hook_payload_ref_reconciliation_apply.validate_migration_backup_manifest",
-        _fake_validate,
+    _accept_manifest(monkeypatch)
+    manifest = _manifest(tmp_path / "verified-backup" / "manifest.json")
+    receipt_path = tmp_path / "receipts" / "apply.jsonl"
+    report = apply_hook_payload_ref_reconciliation(
+        archive_root,
+        backup_manifest=manifest,
+        receipt_path=receipt_path,
+        dry_run=False,
     )
-
-    manifest = tmp_path / "verified-backup" / "manifest.json"
-    report = apply_hook_payload_ref_reconciliation(archive_root, backup_manifest=manifest, dry_run=False)
 
     assert report.applied is True
     assert report.matched_count == 1
     assert report.reconciled_hook_event_ids == ("hook-matched",)
+    assert report.receipt_path == receipt_path
+    assert report.post_classification == {
+        "scanned_count": 1,
+        "matched_count": 0,
+        "matched_bytes": 0,
+        "unmatched_count": 1,
+    }
 
     rows = _blob_refs_rows(archive_root)
     assert ("hook_payload", "hook-matched") in rows
@@ -121,12 +148,200 @@ def test_apply_rekeys_only_the_confirmed_match(tmp_path: Path, monkeypatch: pyte
         ).fetchone()[0]
         assert blob_hash is not None
 
+    receipt = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert receipt[0]["phase"] == "prepared"
+    assert receipt[0]["tool_version"] == "hook-payload-ref-reconciliation-apply-v1"
+    assert receipt[0]["backup_manifest"]["path"] == str(manifest.resolve())
+    assert receipt[0]["pre_classification"] == {
+        "scanned_count": 2,
+        "matched_count": 1,
+        "matched_bytes": len(b'{"event":"PostToolUse","n":1}'),
+        "unmatched_count": 1,
+    }
+    assert receipt[-1]["terminal_state"] == "committed"
+    assert receipt[-1]["post_classification"] == report.post_classification
+    assert receipt[-1]["reconciled_hook_event_ids"] == ["hook-matched"]
+    assert len(receipt[-1]["reconciled_ids_digest"]) == 64
+
 
 def test_apply_refuses_without_backup_manifest(tmp_path: Path) -> None:
     archive_root = _build_fixture_archive(tmp_path)
     before = _blob_refs_rows(archive_root)
 
     with pytest.raises(HookPayloadRefReconciliationApplyError, match="backup manifest"):
-        apply_hook_payload_ref_reconciliation(archive_root, backup_manifest=None, dry_run=False)
+        apply_hook_payload_ref_reconciliation(
+            archive_root,
+            backup_manifest=None,
+            receipt_path=tmp_path / "receipt.jsonl",
+            dry_run=False,
+        )
 
     assert _blob_refs_rows(archive_root) == before
+
+
+def test_apply_refuses_without_explicit_receipt_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _build_fixture_archive(tmp_path)
+    before = _blob_refs_rows(archive_root)
+    _accept_manifest(monkeypatch)
+
+    with pytest.raises(HookPayloadRefReconciliationApplyError, match="receipt output"):
+        apply_hook_payload_ref_reconciliation(
+            archive_root,
+            backup_manifest=_manifest(tmp_path / "verified-backup" / "manifest.json"),
+            dry_run=False,
+        )
+
+    assert _blob_refs_rows(archive_root) == before
+
+
+def test_apply_refuses_when_manifest_validation_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _build_fixture_archive(tmp_path)
+    before = _blob_refs_rows(archive_root)
+    manifest = _manifest(tmp_path / "verified-backup" / "manifest.json")
+    receipt_path = tmp_path / "receipts" / "apply.jsonl"
+
+    def _reject_manifest(_manifest_path: Path, _tier: object, *, connection: sqlite3.Connection) -> Path:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        raise ValueError("backup manifest does not match source.db")
+
+    monkeypatch.setattr(
+        "polylogue.maintenance.hook_payload_ref_reconciliation_apply.validate_migration_backup_manifest",
+        _reject_manifest,
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        apply_hook_payload_ref_reconciliation(
+            archive_root,
+            backup_manifest=manifest,
+            receipt_path=receipt_path,
+            dry_run=False,
+        )
+
+    assert _blob_refs_rows(archive_root) == before
+    assert not receipt_path.exists()
+
+
+def test_apply_refuses_when_offline_guard_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _build_fixture_archive(tmp_path)
+    before = _blob_refs_rows(archive_root)
+    _accept_manifest(monkeypatch)
+    monkeypatch.setattr(
+        "polylogue.maintenance.hook_payload_ref_reconciliation_apply.offline_maintenance_block_reason",
+        lambda *_args, **_kwargs: "source maintenance requires the daemon to be offline",
+    )
+
+    with pytest.raises(HookPayloadRefReconciliationApplyError, match="daemon to be offline"):
+        apply_hook_payload_ref_reconciliation(
+            archive_root,
+            backup_manifest=_manifest(tmp_path / "verified-backup" / "manifest.json"),
+            receipt_path=tmp_path / "receipts" / "apply.jsonl",
+            dry_run=False,
+        )
+
+    assert _blob_refs_rows(archive_root) == before
+
+
+def test_apply_leaves_same_path_non_exact_orphan_untouched(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _build_fixture_archive(tmp_path)
+    _accept_manifest(monkeypatch)
+    wrong_blob_hash = deterministic_blob_hash(b"same source path, wrong deterministic identity")
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'not-the-exact-hook-id', 'raw_payload', '/hooks/matched.jsonl', 3, 1)
+            """,
+            (wrong_blob_hash,),
+        )
+        conn.commit()
+
+    apply_hook_payload_ref_reconciliation(
+        archive_root,
+        backup_manifest=_manifest(tmp_path / "verified-backup" / "manifest.json"),
+        receipt_path=tmp_path / "receipts" / "apply.jsonl",
+        dry_run=False,
+    )
+
+    assert ("raw_payload", "not-the-exact-hook-id") in _blob_refs_rows(archive_root)
+
+
+def test_existing_prepared_receipt_is_recovered_after_committed_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root = _build_fixture_archive(tmp_path)
+    _accept_manifest(monkeypatch)
+    manifest = _manifest(tmp_path / "verified-backup" / "manifest.json")
+    receipt_path = tmp_path / "receipts" / "prepared.jsonl"
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        plan = plan_hook_payload_ref_reconciliation(conn)
+        candidate = plan.matched[0]
+        write_prepared_receipt(
+            receipt_path,
+            source_db=archive_root / "source.db",
+            tool_version="hook-payload-ref-reconciliation-apply-v1",
+            backup_manifest=backup_manifest_identity(manifest),
+            plan=plan,
+        )
+        conn.execute(
+            "DELETE FROM blob_refs WHERE blob_hash = ? AND ref_type = 'raw_payload' AND ref_id = ?",
+            (candidate.blob_hash, candidate.orphaned_ref_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, ?, 'hook_payload', ?, ?, ?)
+            """,
+            (
+                candidate.blob_hash,
+                candidate.hook_event_id,
+                candidate.source_path,
+                candidate.size_bytes,
+                candidate.acquired_at_ms,
+            ),
+        )
+        conn.execute(
+            "UPDATE raw_hook_events SET blob_hash = ? WHERE hook_event_id = ?",
+            (candidate.blob_hash, candidate.hook_event_id),
+        )
+        conn.commit()
+
+    with pytest.raises(
+        HookPayloadRefReconciliationApplyError, match="recovered existing prepared receipt as recovered_committed"
+    ):
+        apply_hook_payload_ref_reconciliation(
+            archive_root,
+            backup_manifest=manifest,
+            receipt_path=receipt_path,
+            dry_run=False,
+        )
+
+    receipt = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert receipt[-1]["terminal_state"] == "recovered_committed"
+    assert receipt[-1]["post_classification"] == {
+        "scanned_count": 1,
+        "matched_count": 0,
+        "matched_bytes": 0,
+        "unmatched_count": 1,
+    }
+
+
+def test_apply_records_empty_reconciliation_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_root = _build_fixture_archive(tmp_path)
+    _accept_manifest(monkeypatch)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("DELETE FROM blob_refs WHERE ref_id = ?", ("raw-no-candidate",))
+        conn.execute("DELETE FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id != ?", ("raw-no-candidate",))
+        conn.commit()
+
+    receipt_path = tmp_path / "receipts" / "empty.jsonl"
+    report = apply_hook_payload_ref_reconciliation(
+        archive_root,
+        backup_manifest=_manifest(tmp_path / "verified-backup" / "manifest.json"),
+        receipt_path=receipt_path,
+        dry_run=False,
+    )
+
+    assert report.reconciled_hook_event_ids == ()
+    receipt = [json.loads(line) for line in receipt_path.read_text(encoding="utf-8").splitlines()]
+    assert receipt[-1]["terminal_state"] == "committed"
+    assert receipt[-1]["reconciled_hook_event_ids"] == []
+    assert len(receipt[-1]["reconciled_ids_digest"]) == 64

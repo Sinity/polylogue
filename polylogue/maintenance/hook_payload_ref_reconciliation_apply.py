@@ -16,11 +16,9 @@ source-tier repair actuators (``raw_append_chain_backfill_apply``,
   same shape ``write_source_hook_event`` writes for a hook event captured
   after v22.
 
-Unlike the byte-proof actuators above, this module does not mint a receipt
-row: there is no external evidence being witnessed, just an exact-match
-recomputation of an existing deterministic id from data already in the
-archive. The re-keyed ``blob_refs``/``raw_hook_events`` rows are themselves
-the durable record of what changed.
+Every apply writes an exclusive, fsynced JSONL receipt before mutation. The
+receipt records the verified backup identity and exact pre/post classifier
+counts, then receives a committed, aborted, or recovered terminal record.
 
 This module never runs against the live archive as part of any automated
 pipeline -- applying it is an explicit operator action
@@ -31,10 +29,19 @@ package.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
+from polylogue.maintenance.hook_payload_ref_reconciliation_receipt import (
+    HookPayloadRefReconciliationReceiptError,
+    append_terminal_receipt,
+    backup_manifest_identity,
+    classification_counts,
+    recover_prepared_receipt,
+    write_prepared_receipt,
+)
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
 from polylogue.paths import render_root
 from polylogue.storage.hook_payload_ref_reconciliation import (
@@ -60,6 +67,21 @@ class HookPayloadRefReconciliationApplyReport:
     reconciled_hook_event_ids: tuple[str, ...]
     applied: bool
     backup_manifest: Path | None = None
+    receipt_path: Path | None = None
+    post_classification: dict[str, int] | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "scanned_count": self.scanned_count,
+            "matched_count": self.matched_count,
+            "matched_bytes": self.matched_bytes,
+            "unmatched_count": self.unmatched_count,
+            "reconciled_hook_event_ids": list(self.reconciled_hook_event_ids),
+            "applied": self.applied,
+            "backup_manifest": str(self.backup_manifest) if self.backup_manifest is not None else None,
+            "receipt_path": str(self.receipt_path) if self.receipt_path is not None else None,
+            "post_classification": self.post_classification,
+        }
 
     @classmethod
     def from_plan(
@@ -69,6 +91,8 @@ class HookPayloadRefReconciliationApplyReport:
         applied: bool,
         reconciled_hook_event_ids: tuple[str, ...] | None = None,
         backup_manifest: Path | None = None,
+        receipt_path: Path | None = None,
+        post_plan: HookPayloadRefReconciliationPlan | None = None,
     ) -> HookPayloadRefReconciliationApplyReport:
         reconciled = (
             tuple(c.hook_event_id for c in plan.matched)
@@ -83,6 +107,8 @@ class HookPayloadRefReconciliationApplyReport:
             reconciled_hook_event_ids=reconciled,
             applied=applied,
             backup_manifest=backup_manifest,
+            receipt_path=receipt_path,
+            post_classification=classification_counts(post_plan) if post_plan is not None else None,
         )
 
 
@@ -94,6 +120,7 @@ def apply_hook_payload_ref_reconciliation(
     archive_root: Path,
     *,
     backup_manifest: Path | None = None,
+    receipt_path: Path | None = None,
     dry_run: bool = True,
 ) -> HookPayloadRefReconciliationApplyReport:
     """Re-key the provable subset of orphaned hook-payload blob refs.
@@ -101,9 +128,9 @@ def apply_hook_payload_ref_reconciliation(
     ``dry_run=True`` (the default) never opens a write transaction; it runs
     the same classifier a real apply would and reports what it would do.
 
-    ``dry_run=False`` requires ``backup_manifest`` and re-runs classification
-    live, inside the same ``BEGIN IMMEDIATE`` write transaction the re-key
-    UPDATE/DELETE/INSERT triples run in.
+    ``dry_run=False`` requires ``backup_manifest`` plus a new ``receipt_path``.
+    It re-runs classification live, inside the same ``BEGIN IMMEDIATE`` write
+    transaction the re-key UPDATE/DELETE/INSERT triples run in.
     """
     source_db = archive_root / "source.db"
     if not source_db.exists():
@@ -112,20 +139,35 @@ def apply_hook_payload_ref_reconciliation(
     if dry_run:
         conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
         try:
-            plan = plan_hook_payload_ref_reconciliation(conn)
+            dry_run_plan = plan_hook_payload_ref_reconciliation(conn)
         finally:
             conn.close()
-        return HookPayloadRefReconciliationApplyReport.from_plan(plan, applied=False)
+        return HookPayloadRefReconciliationApplyReport.from_plan(dry_run_plan, applied=False)
 
     if backup_manifest is None:
         raise HookPayloadRefReconciliationApplyError(
             "applying hook-payload-ref-reconciliation requires a verified backup manifest (--backup-manifest)"
         )
+    if receipt_path is None:
+        raise HookPayloadRefReconciliationApplyError(
+            "applying hook-payload-ref-reconciliation requires an explicit receipt output (--receipt-file)"
+        )
     if reason := offline_maintenance_block_reason(_offline_config(archive_root), active=True, dry_run=False):
         raise HookPayloadRefReconciliationApplyError(reason)
+    if receipt_path.exists():
+        try:
+            outcome = recover_prepared_receipt(source_db, receipt_path)
+        except HookPayloadRefReconciliationReceiptError as exc:
+            raise HookPayloadRefReconciliationApplyError(str(exc)) from exc
+        raise HookPayloadRefReconciliationApplyError(
+            f"recovered existing prepared receipt as {outcome}: {receipt_path}; choose a fresh receipt path before retrying"
+        )
 
     conn = sqlite3.connect(source_db)
     reconciled: list[str] = []
+    plan: HookPayloadRefReconciliationPlan | None = None
+    post_plan: HookPayloadRefReconciliationPlan | None = None
+    prepared = False
     try:
         try:
             row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -142,6 +184,14 @@ def apply_hook_payload_ref_reconciliation(
             validate_migration_backup_manifest(backup_manifest, ArchiveTier.SOURCE, connection=conn)
 
             plan = plan_hook_payload_ref_reconciliation(conn)
+            write_prepared_receipt(
+                receipt_path,
+                source_db=source_db,
+                tool_version=TOOL_VERSION,
+                backup_manifest=backup_manifest_identity(backup_manifest),
+                plan=plan,
+            )
+            prepared = True
             for candidate in plan.matched:
                 deleted = conn.execute(
                     "DELETE FROM blob_refs WHERE blob_hash = ? AND ref_type = 'raw_payload' AND ref_id = ?",
@@ -172,6 +222,8 @@ def apply_hook_payload_ref_reconciliation(
                 )
                 reconciled.append(candidate.hook_event_id)
 
+            post_plan = plan_hook_payload_ref_reconciliation(conn)
+
             quick_check = conn.execute("PRAGMA quick_check").fetchone()
             if quick_check is None or str(quick_check[0]).lower() != "ok":
                 raise HookPayloadRefReconciliationApplyError(
@@ -183,14 +235,34 @@ def apply_hook_payload_ref_reconciliation(
             raise
         else:
             conn.commit()
+    except Exception as exc:
+        if prepared:
+            with suppress(OSError):
+                append_terminal_receipt(receipt_path, terminal_state="aborted", error=str(exc))
+        raise
     finally:
         conn.close()
 
+    assert plan is not None
+    assert post_plan is not None
+    try:
+        append_terminal_receipt(
+            receipt_path,
+            terminal_state="committed",
+            post_plan=post_plan,
+            reconciled_hook_event_ids=tuple(reconciled),
+        )
+    except OSError as exc:
+        raise HookPayloadRefReconciliationApplyError(
+            f"source.db committed but could not finalize receipt {receipt_path}"
+        ) from exc
     return HookPayloadRefReconciliationApplyReport.from_plan(
         plan,
         applied=True,
         reconciled_hook_event_ids=tuple(reconciled),
         backup_manifest=backup_manifest,
+        receipt_path=receipt_path,
+        post_plan=post_plan,
     )
 
 

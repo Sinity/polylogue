@@ -136,6 +136,28 @@ reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
 deleting the exact candidate set. Review the receipt's final `committed` line
 before treating the pass as complete.
 
+### `polylogue ops maintenance hook-payload-ref-reconcile` - legacy hook-ref repair
+
+Read-only by default. It classifies historical orphaned `raw_payload` refs and
+only re-keys a row when its deterministic legacy id exactly matches one
+unambiguous `raw_hook_events` candidate. Unmatched rows remain untouched.
+
+```bash
+polylogue ops maintenance hook-payload-ref-reconcile --output-format json
+polylogue ops maintenance hook-payload-ref-reconcile --apply \
+  --backup-manifest /path/to/verified-source-backup-manifest.json \
+  --receipt-file /path/to/new/hook-payload-reconciliation.jsonl \
+  --output-format json
+```
+
+Apply requires the daemon and all archive writers to be offline, a verified
+backup manifest for the current `source.db`, and a new receipt destination.
+The receipt records the tool version, backup-manifest identity, exact
+pre/post classifications, reconciled hook ids, and a terminal committed or
+recovered state. If an interrupted apply leaves a prepared receipt, rerun the
+same command with that receipt path to record recovery; use a fresh path only
+after reviewing the recovered terminal state.
+
 ### `polylogue ops maintenance preview` — staleness inventory
 
 Read-only. Produces a per-model inventory of stale, missing, orphan,

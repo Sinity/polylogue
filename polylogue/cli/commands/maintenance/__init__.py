@@ -116,6 +116,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Classify source-tier orphan refs; apply only with backup and receipt.",
     ),
     (
+        "hook-payload-ref-reconcile",
+        "_hook_payload_ref_reconciliation",
+        "hook_payload_ref_reconcile_command",
+        "Classify legacy hook refs; apply exact matches with backup and receipt.",
+    ),
+    (
         "attachment-acquisition-debt",
         "_blob_integrity",
         "attachment_acquisition_debt_command",
