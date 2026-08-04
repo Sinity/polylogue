@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -13,7 +15,10 @@ from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.sources.dispatch import detect_provider, parse_payload
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES, LiveBatchProcessor
 from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, _parse_path_as_session_artifact
+from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity, hermes_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
@@ -1052,6 +1057,26 @@ def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_
     )
     assert session.provider_session_id == "cascade-json"
     assert [message.text for message in session.messages] == ["hello", "hi"]
+
+    assert metadata_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
+    assert conversation_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="antigravity", root=tmp_path),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    admission = processor._ingest_full_paths_sync(
+        [metadata_path, conversation_path],
+        source_name="antigravity",
+    )
+
+    assert admission.succeeded == [conversation_path]
+    assert admission.failed == []
+    assert str(metadata_path) in processor._cursor.list_excluded()
+    assert str(conversation_path) not in processor._cursor.list_excluded()
 
 
 def test_antigravity_language_server_markdown_export_parses_turns() -> None:
