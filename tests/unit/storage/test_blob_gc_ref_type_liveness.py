@@ -132,6 +132,10 @@ def test_hook_payload_ref_survives_gc_while_hook_event_row_exists_then_is_reclai
     # Delete through the source-tier route. The hook event's own ref must be
     # removed with the event, so GC sees the payload as truly dead.
     assert _delete_hook_event(archive_root, hook_event_id="hook-live") is True
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = 'hook-live'"
+        ).fetchone() == (0,)
 
     deleted = run_blob_gc(archive_root / "source.db", archive_root / "blob", max_batch=10)
     assert deleted == 1
