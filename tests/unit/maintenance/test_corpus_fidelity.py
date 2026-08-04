@@ -135,7 +135,37 @@ def test_absence_gate_does_not_hide_raw_without_identity(
     assert check.evidence["unattributable_sample"] == ["raw-unattributable"]
 
 
-def test_attachment_gate_only_blocks_unfetched_and_reports_typed_unavailable(
+def test_absence_gate_excludes_membershipless_non_session_artifact(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    tmp_path: Path,
+) -> None:
+    root = _clone(corpus_fidelity_archive, tmp_path / "non-session-artifact")
+    with _connect(root / "source.db") as conn:
+        _insert_raw(
+            conn,
+            raw_id="raw-membershipless-non-session",
+            origin="codex-session",
+            native_id="settings-artifact",
+            logical_source_key="codex:settings-artifact",
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_membership_census(
+                raw_id, parser_fingerprint, status, member_count, censused_at_ms
+            ) VALUES (?, 'fixture', 'non_session', 0, 100)
+            """,
+            ("raw-membershipless-non-session",),
+        )
+
+    report, check = _check(root, "corpus-absences")
+
+    assert not report.blocking
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["absent_total"] == 0
+    assert check.evidence["membershipless_non_session_artifacts_excluded"] == 1
+
+
+def test_attachment_gate_requires_provenance_for_unavailable_refs(
     corpus_fidelity_archive: SeededArchiveArtifact,
     tmp_path: Path,
 ) -> None:
@@ -154,6 +184,9 @@ def test_attachment_gate_only_blocks_unfetched_and_reports_typed_unavailable(
             "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('attachment-unavailable', 'unavailable')"
         )
         conn.execute(
+            "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('attachment-unavailable-untyped', 'unavailable')"
+        )
+        conn.execute(
             """
             INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin)
             VALUES ('attachment-unfetched', ?, ?, 0, 'drive')
@@ -167,13 +200,21 @@ def test_attachment_gate_only_blocks_unfetched_and_reports_typed_unavailable(
             """,
             (session_id, message_id),
         )
+        conn.execute(
+            """
+            INSERT INTO attachment_refs(attachment_id, session_id, message_id, position)
+            VALUES ('attachment-unavailable-untyped', ?, ?, 2)
+            """,
+            (session_id, message_id),
+        )
 
     report, check = _check(root, "corpus-attachment-fidelity")
 
     assert report.blocking
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["refs_unfetched"] == 1
-    assert check.evidence["refs_unavailable"] == 1
+    assert check.evidence["refs_unavailable"] == 2
+    assert check.evidence["refs_unavailable_without_provenance"] == 1
     assert check.evidence["breakdown"]["aistudio-drive/drive/unfetched"] == 1
 
     with _connect(root / "index.db") as conn:
@@ -181,10 +222,26 @@ def test_attachment_gate_only_blocks_unfetched_and_reports_typed_unavailable(
             "UPDATE attachments SET acquisition_status = 'unavailable' WHERE attachment_id = 'attachment-unfetched'"
         )
     report, check = _check(root, "corpus-attachment-fidelity")
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["refs_unfetched"] == 0
+    assert check.evidence["refs_unavailable"] == 3
+    assert check.evidence["refs_unavailable_without_provenance"] == 1
+
+    with _connect(root / "index.db") as conn:
+        conn.execute(
+            """
+            UPDATE attachment_refs
+            SET source_url = 'https://fixture.invalid/unavailable.bin'
+            WHERE attachment_id = 'attachment-unavailable-untyped'
+            """
+        )
+    report, check = _check(root, "corpus-attachment-fidelity")
     assert not report.blocking
     assert check.status is OutcomeStatus.OK
     assert check.evidence["refs_unfetched"] == 0
-    assert check.evidence["refs_unavailable"] == 2
+    assert check.evidence["refs_unavailable"] == 3
+    assert check.evidence["refs_unavailable_without_provenance"] == 0
 
 
 def test_revision_gate_catches_smaller_index_than_best_recorded_revision(
@@ -233,7 +290,14 @@ def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
             conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
         )
         event_count = int(
-            conn.execute("SELECT COUNT(*) FROM session_events WHERE session_id = ?", (session_id,)).fetchone()[0]
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM session_events
+                WHERE session_id = ?
+                  AND (source_message_id IS NOT NULL OR source_message_provider_id IS NOT NULL)
+                """,
+                (session_id,),
+            ).fetchone()[0]
         )
         next_position = int(
             conn.execute(
@@ -242,8 +306,9 @@ def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
         )
         conn.execute(
             """
-            INSERT INTO session_events(session_id, position, event_type, summary)
-            VALUES (?, ?, 'fixture-reclassified', 'event represented a historical message')
+            INSERT INTO session_events(
+                session_id, source_message_provider_id, position, event_type, summary
+            ) VALUES (?, 'fixture-missing-message', ?, 'message_revision', 'event represented a historical message')
             """,
             (session_id, next_position),
         )
@@ -277,3 +342,67 @@ def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
     assert check.status is OutcomeStatus.OK
     assert check.evidence["unexplained_shortfall"] == 0
     assert check.evidence["explained_by_event_reclassification"] == 1
+
+
+def test_revision_gate_rejects_unattributed_event_as_message_replacement(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    tmp_path: Path,
+) -> None:
+    root = _clone(corpus_fidelity_archive, tmp_path / "unattributed-event")
+    session_id = _first_session_id(root)
+    origin, native_id = session_id.split(":", 1)
+    with _connect(root / "index.db") as conn:
+        message_count = int(
+            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
+        )
+        attributed_event_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM session_events
+                WHERE session_id = ?
+                  AND (source_message_id IS NOT NULL OR source_message_provider_id IS NOT NULL)
+                """,
+                (session_id,),
+            ).fetchone()[0]
+        )
+        next_position = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM session_events WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+        )
+        conn.execute(
+            """
+            INSERT INTO session_events(session_id, position, event_type, summary)
+            VALUES (?, ?, 'fixture-arbitrary', 'unrelated timeline event')
+            """,
+            (session_id, next_position),
+        )
+    with _connect(root / "source.db") as conn:
+        _insert_raw(
+            conn,
+            raw_id="raw-unattributed-event",
+            origin=origin,
+            native_id=native_id,
+            logical_source_key=f"fixture:{native_id}",
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_session_memberships(
+                raw_id, logical_source_key, provider_session_id, source_revision,
+                normalized_content_hash, message_count
+            ) VALUES (?, ?, ?, 'rev-unattributed-event', ?, ?)
+            """,
+            (
+                "raw-unattributed-event",
+                f"fixture:{native_id}",
+                native_id,
+                b"h" * 32,
+                message_count + attributed_event_count + 1,
+            ),
+        )
+
+    report, check = _check(root, "corpus-revision-fidelity")
+
+    assert report.blocking
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["unexplained_shortfall"] == 1

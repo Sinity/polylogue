@@ -1497,15 +1497,19 @@ def _check_corpus_attachment_fidelity(archive_root: Path, _sample_limit: int) ->
     finally:
         index.close()
     unfetched = int(evidence["refs_unfetched"])
+    unprovenanced_unavailable = int(evidence["refs_unavailable_without_provenance"])
+    blocking_count = unfetched + unprovenanced_unavailable
     return ArchiveVerificationCheck(
         name="corpus-attachment-fidelity",
-        status=OutcomeStatus.ERROR if unfetched else OutcomeStatus.OK,
+        status=OutcomeStatus.ERROR if blocking_count else OutcomeStatus.OK,
         summary=(
             f"{unfetched:,} attachment reference(s) remain unfetched"
             if unfetched
+            else f"{unprovenanced_unavailable:,} unavailable attachment reference(s) lack structured provenance"
+            if unprovenanced_unavailable
             else f"all attachment references are acquired or typed unavailable ({evidence['refs_unavailable']:,} unavailable)"
         ),
-        count=unfetched,
+        count=blocking_count,
         evidence=evidence,
     )
 

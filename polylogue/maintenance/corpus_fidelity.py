@@ -48,15 +48,21 @@ def audit_absences(
 
     unattributable_sample: list[str] = []
     unattributable = 0
-    for raw_id, origin, logical_source_key, native_id in source.execute(
+    non_session_artifacts = 0
+    for raw_id, origin, logical_source_key, native_id, status in source.execute(
         """
-        SELECT r.raw_id, r.origin, r.logical_source_key, r.native_id
+        SELECT r.raw_id, r.origin, r.logical_source_key, r.native_id,
+               COALESCE(c.status, '')
         FROM raw_sessions AS r
+        LEFT JOIN raw_membership_census AS c USING (raw_id)
         WHERE NOT EXISTS (
             SELECT 1 FROM raw_session_memberships AS m WHERE m.raw_id = r.raw_id
         )
         """
     ):
+        if status == "non_session":
+            non_session_artifacts += 1
+            continue
         provider_session_id: str | None = None
         if logical_source_key and ":" in str(logical_source_key):
             provider_session_id = str(logical_source_key).split(":", 1)[1]
@@ -91,6 +97,7 @@ def audit_absences(
         "documents_present": len(by_document) - sum(absent.values()),
         "absent_total": sum(absent.values()),
         "raws_without_attributable_identity": unattributable,
+        "membershipless_non_session_artifacts_excluded": non_session_artifacts,
         "absent_by_origin_cause": {
             f"{origin}/{cause}": count
             for (origin, cause), count in sorted(absent.items(), key=lambda item: (-item[1], item[0]))
@@ -103,28 +110,48 @@ def audit_absences(
 def audit_attachment_fidelity(index: sqlite3.Connection) -> dict[str, Any]:
     """Report attachment acquisition by origin, upload origin, and status.
 
-    ``unavailable`` is a typed terminal outcome and does not fail the gate.
-    Only ``unfetched`` references are actionable fidelity failures.
+    ``unavailable`` is terminal only when the reference retains structured
+    provenance explaining where the unavailable bytes came from. An
+    unprovenanced terminal status is indistinguishable from a blanket waiver
+    and remains an actionable fidelity failure.
     """
     rows = index.execute(
         """
-        SELECT s.origin, COALESCE(r.upload_origin, '<none>'), a.acquisition_status, COUNT(*)
+        SELECT s.origin,
+               COALESCE(r.upload_origin, '<none>'),
+               a.acquisition_status,
+               CASE WHEN a.acquisition_status = 'unavailable'
+                          AND NOT (
+                              NULLIF(TRIM(COALESCE(r.upload_origin, '')), '') IS NOT NULL
+                              OR NULLIF(TRIM(COALESCE(r.source_url, '')), '') IS NOT NULL
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM attachment_native_ids AS n
+                                  WHERE n.ref_id = r.ref_id
+                              )
+                          )
+                    THEN 1 ELSE 0 END,
+               COUNT(*)
         FROM attachments AS a
         JOIN attachment_refs AS r USING (attachment_id)
         JOIN sessions AS s USING (session_id)
-        GROUP BY 1, 2, 3
+        GROUP BY 1, 2, 3, 4
         """
     ).fetchall()
     breakdown: dict[str, int] = {}
     counts = collections.Counter[str]()
-    for origin, upload_origin, status, count in rows:
+    unprovenanced_unavailable = 0
+    for origin, upload_origin, status, unprovenanced, count in rows:
         amount = int(count)
         breakdown[f"{origin}/{upload_origin}/{status}"] = amount
         counts[str(status)] += amount
+        if int(unprovenanced):
+            unprovenanced_unavailable += amount
     return {
         "refs_acquired": counts["acquired"],
         "refs_unfetched": counts["unfetched"],
         "refs_unavailable": counts["unavailable"],
+        "refs_unavailable_without_provenance": unprovenanced_unavailable,
         "refs_not_acquired": counts["unfetched"] + counts["unavailable"],
         "breakdown": breakdown,
     }
@@ -153,7 +180,16 @@ def audit_revision_fidelity(
         str(row[0]): int(row[1]) for row in index.execute("SELECT session_id, COUNT(*) FROM messages GROUP BY 1")
     }
     events = {
-        str(row[0]): int(row[1]) for row in index.execute("SELECT session_id, COUNT(*) FROM session_events GROUP BY 1")
+        str(row[0]): int(row[1])
+        for row in index.execute(
+            """
+            SELECT session_id, COUNT(*)
+            FROM session_events
+            WHERE source_message_id IS NOT NULL
+               OR NULLIF(TRIM(COALESCE(source_message_provider_id, '')), '') IS NOT NULL
+            GROUP BY 1
+            """
+        )
     }
     shortfalls: collections.Counter[str] = collections.Counter()
     explained: collections.Counter[str] = collections.Counter()
@@ -207,6 +243,7 @@ def _failing_measures(report: dict[str, Any]) -> dict[str, int]:
         "absent_documents": int(absence["absent_total"]),
         "raws_without_attributable_identity": int(absence["raws_without_attributable_identity"]),
         "unfetched_attachment_refs": int(attachment["refs_unfetched"]),
+        "unprovenanced_unavailable_attachment_refs": int(attachment["refs_unavailable_without_provenance"]),
         "unexplained_revision_shortfall": int(revision["unexplained_shortfall"]),
     }
     return {key: value for key, value in failures.items() if value}
