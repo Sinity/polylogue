@@ -269,7 +269,6 @@ class TestLoadSamplesFromDb:
         raw_content = "\n".join(
             json.dumps(record)
             for record in [
-                {"type": "session_meta", "id": "sess-1"},
                 {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "x" * 2048}]},
                 {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
             ]
@@ -289,8 +288,8 @@ class TestLoadSamplesFromDb:
 
         result = load_samples_from_db("codex", db_path=db, max_samples=2)
         assert len(result) == 2
-        assert {sample["type"] for sample in result} == {"session_meta", "message"}
-        message_sample = next(sample for sample in result if sample["type"] == "message")
+        assert {sample["type"] for sample in result} == {"message"}
+        message_sample = result[0]
         content = message_sample.get("content")
         assert isinstance(content, list)
         first_block = schema_node(content[0]) if content else {}
@@ -306,9 +305,7 @@ class TestLoadSamplesFromDb:
         record_count = 1_024
         raw_content = "\n".join(
             json.dumps(
-                {"type": "session_meta", "id": "sess-1"}
-                if index == 0
-                else {
+                {
                     "type": "message",
                     "role": "user" if index % 2 else "assistant",
                     "content": [{"type": "input_text", "text": f"message-{index}"}],
@@ -329,7 +326,7 @@ class TestLoadSamplesFromDb:
         samples = units[0].schema_samples
         assert isinstance(samples, ReplayableRecordSamples)
         assert len(samples) == record_count
-        assert samples[0]["type"] == "session_meta"
+        assert samples[0]["type"] == "message"
         assert samples[-1]["type"] == "message"
 
         generation = generate_provider_schema("codex", db_path=db, full_corpus=True)
@@ -398,7 +395,11 @@ class TestLoadSamplesFromDb:
             db_path=db,
             origin="codex-session",
             source_path="/tmp/good.jsonl",
-            raw_content=b'{"type":"session_meta","payload":{"id":"sess-1"}}\n',
+            raw_content=(
+                b'{"type":"session_meta","payload":{"id":"sess-1"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+            ),
         )
         bad_raw_id = _insert_raw_session(
             db_path=db,
@@ -449,17 +450,12 @@ class TestLoadSamplesFromDb:
         from polylogue.storage.sqlite.connection import open_connection
 
         db = _archive_index_db(tmp_path)
-        # A record-granularity codex session needs at least one message-shaped
-        # record to be schema-eligible -- a lone ``session_meta`` line (as used
-        # by other tests in this file that only assert on decode/terminal
-        # bookkeeping) does not register any schema unit, which would make
-        # ``iter_schema_units`` fall through to its real
-        # ``~/.codex/sessions`` directory-scan fallback and defeat this test's
-        # isolation.
+        # A record-granularity Codex session needs at least one supported
+        # message-shaped record to be schema-eligible. Pure direct-message
+        # streams use the acquisition fallback identity.
         raw_content = (
             b"\n".join(
                 [
-                    b'{"type":"session_meta","id":"sess-1"}',
                     b'{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}',
                 ]
             )
@@ -508,10 +504,20 @@ class TestLoadSamplesFromDb:
             "reason": "duplicate_blob_content",
         }
 
-    def test_schema_observation_includes_repeated_bare_codex_session_meta_records(self, tmp_path: Path) -> None:
-        """The DB-backed record sampler reaches the shared envelope eligibility route."""
+    def test_schema_observation_classifies_supported_and_unsupported_codex_streams(self, tmp_path: Path) -> None:
+        """DB sampling admits real envelopes and refuses bare session headers."""
         db = _archive_index_db(tmp_path)
-        raw_id = _insert_raw_session(
+        supported_raw_id = _insert_raw_session(
+            db_path=db,
+            origin="codex-session",
+            source_path="/tmp/rollout-supported.jsonl",
+            raw_content=(
+                b'{"type":"session_meta","payload":{"id":"supported-session"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","role":"user",'
+                b'"content":[{"type":"input_text","text":"hello"}]}}\n'
+            ),
+        )
+        unsupported_raw_id = _insert_raw_session(
             db_path=db,
             origin="codex-session",
             source_path="/tmp/rollout-repeated.jsonl",
@@ -528,16 +534,22 @@ class TestLoadSamplesFromDb:
             )
         )
 
-        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(raw_id, "session_record_stream")]
-        assert [outcome for outcome in outcomes if outcome["raw_id"] == raw_id] == [
-            {
-                "raw_id": raw_id,
-                "status": "included",
-                "artifact_kind": "session_record_stream",
-                "source_path": "/tmp/rollout-repeated.jsonl",
-                "reason": "observed_schema_units",
-            }
-        ]
+        assert [(unit.raw_id, unit.artifact_kind) for unit in units] == [(supported_raw_id, "session_record_stream")]
+        outcomes_by_raw_id = {outcome["raw_id"]: outcome for outcome in outcomes}
+        assert outcomes_by_raw_id[supported_raw_id] == {
+            "raw_id": supported_raw_id,
+            "status": "included",
+            "artifact_kind": "session_record_stream",
+            "source_path": "/tmp/rollout-supported.jsonl",
+            "reason": "observed_schema_units",
+        }
+        assert outcomes_by_raw_id[unsupported_raw_id] == {
+            "raw_id": unsupported_raw_id,
+            "status": "unsupported",
+            "artifact_kind": None,
+            "source_path": "/tmp/rollout-repeated.jsonl",
+            "reason": "no_schema_eligible_units",
+        }
 
     def test_schema_observation_excludes_hermes_sqlite_evidence_before_json_decode(self, tmp_path: Path) -> None:
         db = _archive_index_db(tmp_path)
