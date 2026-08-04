@@ -213,6 +213,7 @@ def _make_messages_spec() -> TableColumnSpec:
         "occurred_at_ms": record(
             "occurred_at_ms",
             record_name="sort_key",
+            domain_name="timestamp",
             select_expression="{alias}.occurred_at_ms / 1000.0",
             domain_transform=_epoch_seconds_to_datetime,
         ),
