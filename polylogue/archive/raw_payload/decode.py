@@ -330,6 +330,7 @@ def build_raw_payload_envelope(
     fallback_provider: str | Provider,
     payload_provider: str | Provider | None = None,
     jsonl_dict_only: bool = False,
+    sqlite_immutable: bool = False,
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity.
 
@@ -340,7 +341,11 @@ def build_raw_payload_envelope(
     """
     provider_for_binary = Provider.from_string(payload_provider or fallback_provider)
     if isinstance(raw_content, Path):
-        hermes_marker = _hermes_sqlite_marker_payload(raw_content, source_path=source_path)
+        hermes_marker = _hermes_sqlite_marker_payload(
+            raw_content,
+            source_path=source_path,
+            immutable=sqlite_immutable,
+        )
         if hermes_marker is not None:
             provider = Provider.HERMES
             return RawPayloadEnvelope(
@@ -392,7 +397,12 @@ def build_raw_payload_envelope(
     )
 
 
-def _hermes_sqlite_marker_payload(path: Path, *, source_path: str | Path | None) -> JSONDocument | None:
+def _hermes_sqlite_marker_payload(
+    path: Path,
+    *,
+    source_path: str | Path | None,
+    immutable: bool = False,
+) -> JSONDocument | None:
     """Route a raw Hermes SQLite blob (state.db / verification_evidence.db) to its marker payload.
 
     Binary-capable detection BEFORE any text decode, mirroring the rebuild
@@ -414,10 +424,10 @@ def _hermes_sqlite_marker_payload(path: Path, *, source_path: str | Path | None)
     from polylogue.sources.parsers import hermes_state, hermes_verification
 
     profile_root = Path(source_path).parent if source_path is not None else None
-    if hermes_state.looks_like_state_db_path(path):
-        return hermes_state.marker_payload(path, profile_root=profile_root)
-    if hermes_verification.looks_like_verification_evidence_db_path(path):
-        return hermes_verification.marker_payload(path, profile_root=profile_root)
+    if hermes_state.looks_like_state_db_path(path, immutable=immutable):
+        return hermes_state.marker_payload(path, profile_root=profile_root, immutable=immutable)
+    if hermes_verification.looks_like_verification_evidence_db_path(path, immutable=immutable):
+        return hermes_verification.marker_payload(path, profile_root=profile_root, immutable=immutable)
     return None
 
 

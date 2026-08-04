@@ -2179,20 +2179,22 @@ class LiveBatchProcessor:
                         # SAME parse, never a different one.
                         sessions = cached_sessions
                     elif provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
-                        blob_store.blob_path(blob_hash)
+                        blob_store.blob_path(blob_hash), immutable=True
                     ):
                         sessions = hermes_state.parse_state_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
+                            immutable=True,
                         )
                     elif provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_path(
-                        blob_store.blob_path(blob_hash)
+                        blob_store.blob_path(blob_hash), immutable=True
                     ):
                         sessions = hermes_verification.parse_verification_evidence_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
+                            immutable=True,
                         )
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
                         blob_store.blob_path(blob_hash)

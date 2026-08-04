@@ -834,6 +834,7 @@ def ingest_record(
             source_path=raw_record.source_path,
             fallback_provider=raw_record.source_name or "",
             payload_provider=stored_payload_provider,
+            sqlite_immutable=True,
         )
     except Exception as exc:
         return _record_result(

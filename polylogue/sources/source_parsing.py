@@ -270,6 +270,7 @@ def parse_one_source_path(
             retained_path,
             fallback_id=path.stem,
             profile_root=(original_source_path or path).parent,
+            immutable=True,
         ):
             yield (raw_data, session)
         return
@@ -303,6 +304,7 @@ def parse_one_source_path(
             retained_path,
             fallback_id=path.stem,
             profile_root=(original_source_path or path).parent,
+            immutable=True,
         ):
             yield (raw_data, session)
         return

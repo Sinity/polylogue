@@ -315,11 +315,11 @@
       }
     },
     "polylogue/sources/parsers/hermes_state.py:looks_like_state_db_path": {
-      "fingerprint": "afbeb93cabf5d6f6e41e2bac0c9d19919e46c01b720fa190b94ae4659a1e5d0f",
+      "fingerprint": "ca8622ef35e983ab1f7553dc2a081397c2c814b38dc1341203d5e2e29876f6cf",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "reason": "Immutable blob reads preserve SQLite bytes and parsed rows while preventing sidecar creation.",
+        "ref": "polylogue-84ake"
       }
     },
     "polylogue/sources/parsers/hermes_state.py:looks_like_state_db_payload": {
@@ -331,11 +331,11 @@
       }
     },
     "polylogue/sources/parsers/hermes_verification.py:looks_like_verification_evidence_db_path": {
-      "fingerprint": "afbeb93cabf5d6f6e41e2bac0c9d19919e46c01b720fa190b94ae4659a1e5d0f",
+      "fingerprint": "ca8622ef35e983ab1f7553dc2a081397c2c814b38dc1341203d5e2e29876f6cf",
       "covered_by": {
         "kind": "acknowledged_safe",
-        "reason": "Baseline snapshot at classifier-fingerprint gate introduction (polylogue-gucv).",
-        "ref": "polylogue-gucv"
+        "reason": "Immutable blob reads preserve SQLite bytes and parsed rows while preventing sidecar creation.",
+        "ref": "polylogue-84ake"
       }
     },
     "polylogue/sources/parsers/hermes_verification.py:looks_like_verification_evidence_db_payload": {

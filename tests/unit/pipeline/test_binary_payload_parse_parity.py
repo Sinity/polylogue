@@ -168,7 +168,7 @@ def _profile_key(profile_dir: Path) -> str:
     return profile_key(profile_dir)
 
 
-def _write_hermes_state_db(path: Path) -> None:
+def _write_hermes_state_db(path: Path, *, wal_mode: bool = False) -> None:
     """Minimal state.db fixture covering every column ``_has_required_tables`` checks.
 
     Independent minimal copy of the shape
@@ -178,6 +178,8 @@ def _write_hermes_state_db(path: Path) -> None:
     ``_HERMES_SIGNATURE_*_COLUMNS``) are needed for this parity check.
     """
     with sqlite3.connect(path) as conn:
+        if wal_mode:
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(
             """
             CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -211,6 +213,8 @@ def _write_hermes_state_db(path: Path) -> None:
             ("hermes-root", "assistant", "hi from state.db", 1_775_000_001.0),
         )
         conn.commit()
+        if wal_mode:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobStore, tmp_path: Path) -> None:
@@ -241,3 +245,28 @@ def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobS
 
     assert ingest_ids == rebuild_ids
     assert "hermes-root" in ingest_ids
+
+
+def test_ingest_record_keeps_wal_sqlite_blob_namespace_pristine(blob_store: BlobStore, tmp_path: Path) -> None:
+    """The real retained-blob decode route never creates SQLite sidecars.
+
+    A WAL-mode SQLite header makes a plain ``mode=ro`` connection create
+    ``-wal`` and ``-shm`` beside the immutable blob. The live
+    ``ingest_record`` path must carry the immutable marker through both the
+    structural probe and final Hermes parser, leaving ``verify_all`` with one
+    canonical blob and no invalid namespace entries.
+    """
+    profile_dir = tmp_path / ".hermes"
+    profile_dir.mkdir(parents=True)
+    db_path = profile_dir / "state.db"
+    _write_hermes_state_db(db_path, wal_mode=True)
+    record = _record(blob_store, db_path.read_bytes(), source_path=str(db_path))
+
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
+    verified = blob_store.verify_all()
+
+    assert result.error is None, result.error
+    assert len(result.sessions) == 1
+    assert verified.passed
+    assert verified.checked == 1
+    assert verified.failures == ()

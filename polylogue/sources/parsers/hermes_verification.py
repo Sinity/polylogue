@@ -157,7 +157,12 @@ def hermes_verification_session_id_for(conversational_session_id: str) -> str:
     return observer_session_provider_id(raw_id, profile_key)
 
 
-def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocument:
+def marker_payload(
+    path: Path,
+    *,
+    profile_root: Path | None = None,
+    immutable: bool = False,
+) -> JSONDocument:
     """Return the JSON marker that routes a raw SQLite blob to this parser."""
     payload: JSONDocument = {
         "polylogue_artifact": HERMES_VERIFICATION_DB_MARKER,
@@ -165,6 +170,8 @@ def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocum
     }
     if profile_root is not None:
         payload["profile_root"] = str(profile_root)
+    if immutable:
+        payload["sqlite_immutable"] = True
     return payload
 
 
@@ -174,17 +181,20 @@ def looks_like_verification_evidence_db_payload(payload: JSONDocument) -> bool:
     )
 
 
-def looks_like_verification_evidence_db_path(path: Path) -> bool:
+def looks_like_verification_evidence_db_path(path: Path, *, immutable: bool = False) -> bool:
     """Return true when *path* is a readable Hermes verification_evidence.db."""
     try:
-        with _connect_readonly(path) as conn:
+        with _connect_readonly(path, immutable=immutable) as conn:
             return _has_required_tables(conn)
     except sqlite3.Error:
         return False
 
 
-def _connect_readonly(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    uri = path.resolve().as_uri() + "?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -229,7 +239,12 @@ def parse_verification_evidence_db_payload(
     if profile_root is None:
         profile_value = payload.get("profile_root")
         profile_root = Path(profile_value) if isinstance(profile_value, str) and profile_value else None
-    return parse_verification_evidence_db(Path(path_value), fallback_id=fallback_id, profile_root=profile_root)
+    return parse_verification_evidence_db(
+        Path(path_value),
+        fallback_id=fallback_id,
+        profile_root=profile_root,
+        immutable=payload.get("sqlite_immutable") is True,
+    )
 
 
 def parse_verification_evidence_db(
@@ -237,6 +252,7 @@ def parse_verification_evidence_db(
     *,
     fallback_id: str | None = None,
     profile_root: Path | None = None,
+    immutable: bool = False,
 ) -> list[ParsedSession]:
     """Parse every verification event/state row from a Hermes verification_evidence.db file.
 
@@ -252,7 +268,7 @@ def parse_verification_evidence_db(
     unresolved.
     """
     del fallback_id
-    with _connect_readonly(path) as conn:
+    with _connect_readonly(path, immutable=immutable) as conn:
         if not _has_required_tables(conn):
             raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
         schema_version = _schema_version(conn)
