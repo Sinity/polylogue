@@ -9,6 +9,7 @@ point at a different checkout than the one a tool is actually invoked from
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -18,11 +19,14 @@ import devtools.run_tests as run_tests
 import devtools.verify as verify
 import polylogue
 from devtools.checkout_guard import (
+    CheckoutEnvironmentMismatchError,
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
+    checkout_environment_fingerprint,
     find_git_worktree_root,
     resolved_polylogue_path,
 )
+from devtools.verify_runs import VerifyRun
 
 
 def test_resolved_polylogue_path_matches_the_running_package() -> None:
@@ -31,8 +35,8 @@ def test_resolved_polylogue_path_matches_the_running_package() -> None:
 
 def test_assert_matches_checkout_passes_for_the_real_checkout() -> None:
     repo_root = Path(polylogue.__file__).resolve().parents[1]
-    resolved = assert_polylogue_matches_checkout(repo_root, context="test")
-    assert resolved == Path(polylogue.__file__).resolve()
+    fingerprint = assert_polylogue_matches_checkout(repo_root, context="test")
+    assert fingerprint.polylogue_import_path == Path(polylogue.__file__).resolve()
 
 
 def test_assert_matches_checkout_raises_for_an_unrelated_root(tmp_path: Path) -> None:
@@ -151,3 +155,91 @@ def test_verify_main_refuses_on_checkout_mismatch(
     exit_code = verify.main(["--quick"])
     assert exit_code == 125
     assert "mismatch against" in capsys.readouterr().err
+
+
+def _fake_linked_checkout(tmp_path: Path) -> Path:
+    root = tmp_path / "lane"
+    root.mkdir()
+    (root / ".git").write_text("gitdir: /main/.git/worktrees/lane\n")
+    return root
+
+
+def test_checkout_environment_fingerprint_accepts_clean_linked_worktree(tmp_path: Path) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    fingerprint = checkout_environment_fingerprint(
+        root,
+        polylogue_import_path=root / "polylogue" / "__init__.py",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.linked_worktree is True
+    assert fingerprint.python_environment_root == root
+
+
+def test_checkout_preflight_reports_seeded_artifacts_and_main_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    main = tmp_path / "main-checkout"
+    main_venv = main / ".venv" / "bin"
+    main_venv.mkdir(parents=True)
+    main_python = main_venv / "python"
+    (root / ".venv").mkdir()
+    (root / "node_modules").mkdir()
+    (root / ".cache" / "testmon").mkdir(parents=True)
+    (root / ".cache" / "testmon" / "seed.json").write_text(json.dumps({"status": "complete"}))
+    (root / ".cache" / "verify").mkdir(parents=True)
+    verify_marker = root / ".cache" / "verify" / "current-run.json"
+    verify_marker.write_text(json.dumps({"checkout_root": str(main)}))
+    package_path = root / "polylogue" / "__init__.py"
+    monkeypatch.setattr("devtools.checkout_guard.resolved_polylogue_path", lambda: package_path)
+
+    with pytest.raises(CheckoutEnvironmentMismatchError) as excinfo:
+        assert_polylogue_matches_checkout(root, context="seeded lane", python_executable=main_python)
+
+    message = str(excinfo.value)
+    assert str(main_python) in message
+    assert str(root / ".venv") in message
+    assert str(root / "node_modules") in message
+    assert str(root / ".cache" / "testmon" / "seed.json") in message
+    assert str(verify_marker) in message
+    assert "direnv allow" in message
+    assert "remediation" in message
+
+
+def test_verify_run_persists_environment_fingerprint(tmp_path: Path) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    (root / "node_modules").mkdir()
+    fingerprint = checkout_environment_fingerprint(
+        root,
+        polylogue_import_path=root / "polylogue" / "__init__.py",
+        python_executable=Path("/usr/bin/python"),
+    )
+    run = VerifyRun(
+        tier="environment-fingerprint",
+        argv=["--quick"],
+        git_head="head",
+        root=root,
+        environment_fingerprint=fingerprint.as_dict(),
+    )
+
+    payload = json.loads((run.run_dir / "run.json").read_text())
+    assert fingerprint.artifacts
+    assert payload["environment_fingerprint"] == fingerprint.as_dict()
+    assert payload["checkout_root"] == str(root.resolve())
+
+
+def test_verify_run_marker_is_attributable_without_a_fingerprint(tmp_path: Path) -> None:
+    root = _fake_linked_checkout(tmp_path)
+    run = VerifyRun(tier="legacy-marker", argv=[], git_head=None, root=root)
+
+    fingerprint = checkout_environment_fingerprint(
+        root,
+        polylogue_import_path=root / "polylogue" / "__init__.py",
+        python_executable=root / ".venv" / "bin" / "python",
+    )
+
+    assert fingerprint.clean
+    assert fingerprint.verify_state_origin == root.resolve()
+    assert json.loads((root / ".cache" / "verify" / "current-run.json").read_text())["run_id"] == run.run_id

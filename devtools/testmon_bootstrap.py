@@ -125,6 +125,32 @@ def _atomic_copy_bytes(src: Path, dst: Path) -> None:
     tmp.replace(dst)
 
 
+def _stamp_seed_checkout_origin(
+    seed_stamp: Path,
+    *,
+    checkout_root: Path,
+    inherited_from: Path | None = None,
+) -> bool:
+    """Mark a copied seed with its destination checkout and source provenance."""
+    try:
+        payload = json.loads(seed_stamp.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    payload["checkout_root"] = str(checkout_root.resolve())
+    if inherited_from is not None:
+        payload["inherited_from"] = str(inherited_from.resolve())
+    tmp = seed_stamp.with_name(f"{seed_stamp.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(seed_stamp)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        return False
+    return True
+
+
 def _atomic_copy_sqlite_db(src: Path, dst: Path) -> None:
     """Copy a (possibly concurrently-written) sqlite db via the online backup API.
 
@@ -154,14 +180,19 @@ def bootstrap_testmon_seed_files(
     *,
     local_testmon_data: Path,
     local_seed_stamp: Path,
-) -> None:
-    """Perform the copy `decision` describes. No-op unless `should_bootstrap`."""
+    checkout_root: Path | None = None,
+    inherited_from: Path | None = None,
+) -> bool:
+    """Perform the copy `decision` describes and report whether it was stamped."""
     if not decision.should_bootstrap:
-        return
+        return True
     assert decision.main_testmon_data is not None
     assert decision.main_seed_stamp is not None
     _atomic_copy_sqlite_db(decision.main_testmon_data, local_testmon_data)
     _atomic_copy_bytes(decision.main_seed_stamp, local_seed_stamp)
+    if checkout_root is not None and inherited_from is not None:
+        return _stamp_seed_checkout_origin(local_seed_stamp, checkout_root=checkout_root, inherited_from=inherited_from)
+    return True
 
 
 def _git_worktree_info(repo_root: Path) -> tuple[bool, Path] | None:
@@ -228,12 +259,32 @@ def maybe_bootstrap_testmon_seed(
         protocol_version=protocol_version,
     )
     if not decision.should_bootstrap:
+        if local_testmon_data.is_file() and _is_valid_complete_seed_stamp(
+            local_seed_stamp, protocol_version=protocol_version
+        ):
+            try:
+                local_payload = json.loads(local_seed_stamp.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            if (
+                isinstance(local_payload, dict)
+                and not local_payload.get("checkout_root")
+                and _stamp_seed_checkout_origin(local_seed_stamp, checkout_root=repo_root)
+            ):
+                return f"verify: migrated legacy pytest-testmon seed marker in {local_seed_stamp.parent}"
         return None
-    bootstrap_testmon_seed_files(
+    stamped = bootstrap_testmon_seed_files(
         decision,
         local_testmon_data=local_testmon_data,
         local_seed_stamp=local_seed_stamp,
+        checkout_root=repo_root,
+        inherited_from=main_checkout,
     )
+    if not stamped:
+        return (
+            f"verify: bootstrapped pytest-testmon seed into {local_testmon_data.parent}, "
+            "but could not record its checkout provenance"
+        )
     return (
         f"verify: bootstrapped pytest-testmon seed from main checkout {main_checkout} "
         f"into {local_testmon_data.parent} (worktree had no local seed)"

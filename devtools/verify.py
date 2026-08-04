@@ -41,7 +41,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.checkout_guard import (
+    CheckoutImportMismatchError,
+    assert_polylogue_matches_checkout,
+)
 from devtools.pytest_supervisor import (
     SupervisorLaunch,
     build_supervisor_launch,
@@ -2489,6 +2492,7 @@ def _finalize_testmon_seed_attempt(
             "protocol_version": TESTMON_SEED_PROTOCOL_VERSION,
             "status": "complete",
             "timestamp": payload["finished_at"],
+            "checkout_root": str(ROOT.resolve()),
             "git_head": dict(prepared["identity"]).get("git_head"),
             "identity": prepared["identity"],
             "expected_count": payload["expected_count"],
@@ -2538,11 +2542,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", default=None, help="Write structured JSON to stdout.")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
+    bootstrap_message = maybe_bootstrap_testmon_seed(
+        ROOT,
+        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
+    )
+    if bootstrap_message is not None:
+        sys.stderr.write(bootstrap_message + "\n")
     try:
-        polylogue_import_path = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
+        fingerprint = assert_polylogue_matches_checkout(ROOT, context="devtools verify")
     except CheckoutImportMismatchError as exc:
         sys.stderr.write(f"verify: {exc}\n")
         return 125
+    polylogue_import_path = fingerprint.polylogue_import_path
+    environment_fingerprint = fingerprint.as_dict()
     sys.stderr.write(f"verify: polylogue package → {polylogue_import_path}\n")
 
     if args.history:
@@ -2567,12 +2579,6 @@ def main(argv: list[str] | None = None) -> int:
         tier = "testmon"
 
     full_pytest = bool(args.all or args.full)
-    bootstrap_message = maybe_bootstrap_testmon_seed(
-        ROOT,
-        protocol_version=TESTMON_SEED_PROTOCOL_VERSION,
-    )
-    if bootstrap_message is not None:
-        sys.stderr.write(bootstrap_message + "\n")
     preflight_error = _testmon_preflight(
         seed_testmon=bool(args.seed_testmon),
         full_pytest=full_pytest,
@@ -2590,6 +2596,7 @@ def main(argv: list[str] | None = None) -> int:
         argv=list(sys.argv[1:] if argv is None else argv),
         git_head=head,
         polylogue_import_path=str(polylogue_import_path),
+        environment_fingerprint=environment_fingerprint,
     )
     seed_identity: dict[str, Any] | None = None
     resume_testmon_seed = False

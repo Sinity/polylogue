@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
+from subprocess import CompletedProcess
+
+import pytest
 
 from devtools import lane_init
 
@@ -42,3 +46,52 @@ def test_guard_check_flags_escaped_resolution(tmp_path: Path) -> None:
     python.chmod(0o755)
     error = lane_init._guard_check(lane)
     assert error is not None and "guard violation" in error
+
+
+def test_guard_check_runs_lane_interpreter_from_lane_root(tmp_path: Path) -> None:
+    lane = tmp_path / "lane"
+    python = lane / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text(
+        "#!/bin/sh\n"
+        'if [ -n "$PYTHONPATH" ]; then\n'
+        "  printf '%s\\n' /foreign/polylogue/__init__.py\n"
+        "else\n"
+        "  printf '%s/polylogue/__init__.py\\n' \"$PWD\"\n"
+        "fi\n"
+    )
+    python.chmod(0o755)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setenv("PYTHONPATH", "/foreign")
+        assert lane_init._guard_check(lane) is None
+
+
+def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    monkeypatch.setenv("VIRTUAL_ENV", "/coordinator/.venv")
+    monkeypatch.setenv("PYTHONHOME", "/coordinator/pythonhome")
+    monkeypatch.setenv("PYTHONPATH", "/coordinator/pythonpath")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/coordinator/.venv")
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        cmd: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> CompletedProcess[str]:
+        captured.update(cmd=cmd, cwd=cwd, env=env)
+        return CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(lane_init, "_run", fake_run)
+
+    assert lane_init._provision_venv(lane) is None
+    assert captured["cwd"] == lane
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert "VIRTUAL_ENV" not in env
+    assert "PYTHONHOME" not in env
+    assert "PYTHONPATH" not in env
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")

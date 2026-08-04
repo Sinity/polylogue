@@ -60,6 +60,10 @@ call); a script that wants the guarantee can import and call
 
 from __future__ import annotations
 
+import json
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import tomllib
@@ -67,6 +71,66 @@ import tomllib
 
 class CheckoutImportMismatchError(RuntimeError):
     """``import polylogue`` resolved to a package outside the invoking checkout."""
+
+
+class CheckoutEnvironmentMismatchError(CheckoutImportMismatchError):
+    """The checkout contains environment state that makes results untrustworthy."""
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentArtifact:
+    """One checkout-local artifact that can poison a linked-worktree run."""
+
+    kind: str
+    path: Path
+    detail: str
+    remediation: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "path": str(self.path),
+            "detail": self.detail,
+            "remediation": self.remediation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CheckoutEnvironmentFingerprint:
+    """Provenance and contamination evidence attached to verification receipts."""
+
+    checkout_root: Path
+    polylogue_import_path: Path
+    python_executable: Path
+    python_environment_root: Path | None
+    linked_worktree: bool
+    testmon_state_origin: Path | None
+    verify_state_origin: Path | None
+    artifacts: tuple[EnvironmentArtifact, ...]
+
+    @property
+    def clean(self) -> bool:
+        return not self.artifacts
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "checkout_root": str(self.checkout_root),
+            "polylogue_import_path": str(self.polylogue_import_path),
+            "python_executable": str(self.python_executable),
+            "python_environment_root": (
+                str(self.python_environment_root) if self.python_environment_root is not None else None
+            ),
+            "linked_worktree": self.linked_worktree,
+            "testmon_state_origin": str(self.testmon_state_origin) if self.testmon_state_origin else None,
+            "verify_state_origin": str(self.verify_state_origin) if self.verify_state_origin else None,
+            "artifacts": [artifact.as_dict() for artifact in self.artifacts],
+        }
+
+
+_TESTMON_STATE_DIR = Path(".cache/testmon")
+_TESTMON_STATE_MARKER = _TESTMON_STATE_DIR / "seed.json"
+_VERIFY_STATE_DIR = Path(".cache/verify")
+_VERIFY_STATE_MARKER = _VERIFY_STATE_DIR / "current-run.json"
 
 
 def resolved_polylogue_path() -> Path:
@@ -155,13 +219,200 @@ def find_git_worktree_root(start: Path) -> Path | None:
     return None
 
 
-def assert_polylogue_matches_checkout(repo_root: Path, *, context: str) -> Path:
-    """Raise loudly when the imported ``polylogue`` package lives outside ``repo_root``.
+def _is_linked_worktree(repo_root: Path) -> bool:
+    """Return whether ``repo_root`` has Git's linked-worktree ``.git`` file."""
+    try:
+        return (repo_root / ".git").is_file()
+    except OSError:
+        return False
 
-    Returns the resolved package path on success, so callers can also use it
-    as the "print the resolved path in the receipt" observability hook
-    (requirement (3) of the worktree-import hazard fix) without importing
-    ``polylogue`` a second time.
+
+def _python_environment_root(executable: Path) -> Path | None:
+    """Return the checkout owning a ``.venv`` executable, when identifiable."""
+    # Keep the lexical ``.venv`` component. Nix/direnv Python launchers are
+    # symlinks into the Nix store, so resolving first would erase the checkout
+    # boundary and falsely classify a valid lane-local interpreter as foreign.
+    candidate = executable if executable.is_absolute() else Path.cwd() / executable
+    for parent in (candidate, *candidate.parents):
+        if parent.name == ".venv":
+            return parent.parent.resolve()
+    return None
+
+
+def _marker_origin(marker: Path) -> Path | None:
+    """Read a marker's checkout origin, returning ``None`` for legacy state."""
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("checkout_root")
+    if raw is None:
+        fingerprint = payload.get("environment_fingerprint")
+        if isinstance(fingerprint, Mapping):
+            raw = fingerprint.get("checkout_root")
+    if not isinstance(raw, str) or not raw:
+        return None
+    return Path(raw).resolve()
+
+
+def _cache_artifact(
+    *,
+    repo_root: Path,
+    state_dir: Path,
+    marker: Path,
+    kind: str,
+    remediation: str,
+) -> tuple[Path | None, EnvironmentArtifact | None]:
+    """Classify one cache directory by its explicit checkout-root marker."""
+    state_path = repo_root / state_dir
+    if not state_path.exists():
+        return None, None
+    try:
+        if state_path.is_dir() and not any(state_path.iterdir()):
+            return None, None
+    except OSError:
+        pass
+    origin = _marker_origin(repo_root / marker)
+    if origin == repo_root:
+        return origin, None
+    if origin is None:
+        detail = f"{state_path} has no verifiable checkout-root marker"
+    else:
+        detail = f"{state_path} was produced by checkout {origin}, not {repo_root}"
+    return (
+        origin,
+        EnvironmentArtifact(
+            kind=kind,
+            path=repo_root / marker if (repo_root / marker).exists() else state_path,
+            detail=detail,
+            remediation=remediation,
+        ),
+    )
+
+
+def checkout_environment_fingerprint(
+    repo_root: Path,
+    *,
+    polylogue_import_path: Path | None = None,
+    python_executable: Path | None = None,
+) -> CheckoutEnvironmentFingerprint:
+    """Collect cheap, deterministic provenance and contamination evidence.
+
+    Artifact checks are intentionally scoped to linked worktrees. The main
+    checkout owns the shared development environment and its caches; a lane
+    worktree must either have a lane-local interpreter/cache marker or refuse
+    before verification starts.
+    """
+    resolved_root = repo_root.resolve()
+    resolved_pkg = (polylogue_import_path or resolved_polylogue_path()).resolve()
+    executable_input = python_executable or Path(sys.executable)
+    environment_root = _python_environment_root(executable_input)
+    executable = executable_input.resolve()
+    linked = _is_linked_worktree(resolved_root)
+    artifacts: list[EnvironmentArtifact] = []
+    testmon_origin: Path | None = None
+    verify_origin: Path | None = None
+
+    if linked:
+        if environment_root is not None and environment_root != resolved_root:
+            artifacts.append(
+                EnvironmentArtifact(
+                    kind="interpreter_from_other_checkout",
+                    path=executable,
+                    detail=(
+                        f"interpreter environment {environment_root} belongs to another checkout; "
+                        f"this run executes code from {resolved_root}"
+                    ),
+                    remediation=(f"run `cd {resolved_root} && direnv allow` to provision this worktree's venv"),
+                )
+            )
+        local_venv = resolved_root / ".venv"
+        if local_venv.exists() and environment_root != resolved_root:
+            artifacts.append(
+                EnvironmentArtifact(
+                    kind="stray_venv",
+                    path=local_venv,
+                    detail="checkout-local .venv is present but is not the active interpreter environment",
+                    remediation=(
+                        f"remove {local_venv} and run `cd {resolved_root} && direnv allow`, "
+                        "or activate its own venv before verifying"
+                    ),
+                )
+            )
+        node_modules = resolved_root / "node_modules"
+        if node_modules.exists():
+            artifacts.append(
+                EnvironmentArtifact(
+                    kind="stray_node_modules",
+                    path=node_modules,
+                    detail="root-level node_modules is untracked lane state and can be inherited from another checkout",
+                    remediation=f"remove {node_modules} before running the lane verification",
+                )
+            )
+        testmon_origin, testmon_artifact = _cache_artifact(
+            repo_root=resolved_root,
+            state_dir=_TESTMON_STATE_DIR,
+            marker=_TESTMON_STATE_MARKER,
+            kind="inherited_testmon_cache",
+            remediation=(
+                f"remove {resolved_root / _TESTMON_STATE_DIR} and let `devtools verify --seed-testmon` "
+                "or the managed bootstrap recreate it"
+            ),
+        )
+        verify_origin, verify_artifact = _cache_artifact(
+            repo_root=resolved_root,
+            state_dir=_VERIFY_STATE_DIR,
+            marker=_VERIFY_STATE_MARKER,
+            kind="inherited_verify_cache",
+            remediation=f"remove {resolved_root / _VERIFY_STATE_DIR} and rerun the managed devtools command",
+        )
+        if testmon_artifact is not None:
+            artifacts.append(testmon_artifact)
+        if verify_artifact is not None:
+            artifacts.append(verify_artifact)
+
+    return CheckoutEnvironmentFingerprint(
+        checkout_root=resolved_root,
+        polylogue_import_path=resolved_pkg,
+        python_executable=executable,
+        python_environment_root=environment_root,
+        linked_worktree=linked,
+        testmon_state_origin=testmon_origin,
+        verify_state_origin=verify_origin,
+        artifacts=tuple(artifacts),
+    )
+
+
+def _raise_environment_mismatch(context: str, fingerprint: CheckoutEnvironmentFingerprint) -> None:
+    if fingerprint.clean:
+        return
+    lines = [
+        f"{context}: checkout environment is untrustworthy; refusing to run before it is repaired.",
+    ]
+    for artifact in fingerprint.artifacts:
+        lines.extend(
+            (
+                f"  offending path : {artifact.path}",
+                f"  reason         : {artifact.detail}",
+                f"  remediation    : {artifact.remediation}",
+            )
+        )
+    raise CheckoutEnvironmentMismatchError("\n".join(lines))
+
+
+def assert_polylogue_matches_checkout(
+    repo_root: Path,
+    *,
+    context: str,
+    python_executable: Path | None = None,
+) -> CheckoutEnvironmentFingerprint:
+    """Raise loudly when import or environment provenance does not match ``repo_root``.
+
+    Returns the validated environment fingerprint on success, so callers can
+    persist the exact provenance the guard checked without reading the
+    filesystem a second time.
     """
     resolved_root = repo_root.resolve()
     resolved_pkg = resolved_polylogue_path()
@@ -185,4 +436,10 @@ def assert_polylogue_matches_checkout(repo_root: Path, *, context: str) -> Path:
             f"  - re-install editable from THIS checkout so its own `.pth` entry "
             f"wins: `uv pip install -e {resolved_root}`.\n"
         ) from None
-    return resolved_pkg
+    fingerprint = checkout_environment_fingerprint(
+        repo_root,
+        polylogue_import_path=resolved_pkg,
+        python_executable=python_executable,
+    )
+    _raise_environment_mismatch(context, fingerprint)
+    return fingerprint
