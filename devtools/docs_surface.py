@@ -450,6 +450,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "I3 live evidence, source-tier reconciliation safeguards, and the direct-reindex gate.",
         "archive",
     ),
+    _entry(
+        "ChatGPT Lifecycle-Anchor Evidence Packet",
+        "audits/2026-08-04-polylogue-uqwd-chatgpt-lifecycle-anchor.md",
+        "Current-corpus evidence for ChatGPT generation lifecycle-anchor drift.",
+        "archive",
+    ),
     _entry("Audit Record Index", "audits/README.md", "Index of dated investigation records.", "archive"),
     _entry(
         "1498 Cascade Retrospective",

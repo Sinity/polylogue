@@ -619,6 +619,51 @@ def test_refuses_generation_lifecycle_state_change_despite_duration_tolerance() 
     assert result.ambiguous_raw_ids == ("raw-new",)
 
 
+def test_refuses_different_content_moved_generation_lifecycle_anchor() -> None:
+    """A moved anchor does not excuse different lifecycle content.
+
+    This is the red twin for the proposed, deliberately unlanded comparison
+    exception in polylogue-uqwd. A future exception may fold one orphaned
+    lifecycle event per side only when the non-anchor content is equal. It
+    must keep this different-state pair as a conflict even though the event
+    anchor moves between revisions.
+    """
+
+    def revision(raw_id: str, anchor: str, state: str) -> MembershipRevision:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="session",
+            messages=[ParsedMessage(provider_message_id="0", role=Role.ASSISTANT, text="answer")],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="generation_lifecycle",
+                    timestamp="13.0",
+                    source_message_provider_id=anchor,
+                    payload={
+                        "state": state,
+                        "evidence_source": "provider_native",
+                        "fidelity": "exact",
+                        "duration_semantics": "provider_reported_elapsed",
+                        "elapsed_duration_ms": 13000,
+                    },
+                )
+            ],
+        )
+        return MembershipRevision(raw_id, session_revision_projection(session))
+
+    left = revision("raw-left", "anchor-left", "completed")
+    right = revision("raw-right", "anchor-right", "in_progress")
+
+    assert left.projection.message_contents == right.projection.message_contents
+    assert left.projection.event_contents != right.projection.event_contents
+    assert _relation(left.projection, right.projection) == "conflict"
+
+    result = classify_membership_revisions([left, right], existing_accepted_raw_id="raw-left")
+
+    assert result.accepted_raw_ids == ()
+    assert result.ambiguous_raw_ids == ("raw-left", "raw-right")
+
+
 def test_non_allowlisted_event_type_keeps_its_full_payload_as_content() -> None:
     """The allowlist is scoped to `generation_lifecycle` -- an unrelated event
     type with no registered allowlist compares its FULL payload, so a real
