@@ -159,8 +159,8 @@ SESSION_WORK_EVENT_FTS_TRIGGER_DDL = [
 ]
 
 # polylogue-eizc: THREAD_FTS_TRIGGER_DDL / threads_fts dropped in
-# INDEX_SCHEMA_VERSION 62 -- zero application-layer consumers (see
-# lifecycle.py's v62 declaration and archive_tiers/index.py's threads_fts
+# INDEX_SCHEMA_VERSION 63 -- zero application-layer consumers (see
+# lifecycle.py's v63 declaration and archive_tiers/index.py's threads_fts
 # removal comment).
 
 # Combined trigger DDL for all FTS surfaces.

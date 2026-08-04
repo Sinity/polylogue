@@ -40,10 +40,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+import secrets
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Literal, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
+
+if TYPE_CHECKING:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.bindings import OperationBinding
 
 #: Destructive/mutating classification. Ordered roughly by blast radius:
 #: ``reversible`` writes (tags/metadata) can be undone by another write;
@@ -52,7 +57,19 @@ from typing import Literal, Protocol, TypeVar, runtime_checkable
 #: source can resurrect them; ``excise`` is the durable, cross-tier,
 #: re-ingest-proof removal (right-to-forget); ``maintenance`` rewrites
 #: rebuildable derived state without removing authored evidence.
-DestructiveClass = Literal["reversible", "maintenance", "reset", "delete", "excise"]
+DestructiveClass = Literal["additive", "reversible", "maintenance", "reset", "delete", "excise"]
+
+Surface = Literal["cli", "api", "mcp", "daemon", "maintenance", "internal"]
+IdempotencyPolicy = Literal["none", "effect_key", "convergent", "compare_and_set"]
+RecoveryPolicy = Literal[
+    "rebuild",
+    "restore_verified_backup",
+    "reauthenticate",
+    "retry_convergent",
+    "reconcile_required",
+    "none",
+]
+TargetDurability = Literal["durable", "derived", "disposable", "external"]
 
 #: Confirmation strength a caller can present at AUTHORIZE time, ordered
 #: weakest to strongest. Each :class:`MutationActuator` declares the floor it
@@ -71,6 +88,15 @@ _STRENGTH_ORDER: dict[ConfirmationStrength, int] = {
     "role_only": 0,
     "confirm_flag": 1,
     "bound_token": 2,
+}
+
+_CLASS_ORDER: dict[DestructiveClass, int] = {
+    "additive": 0,
+    "reversible": 1,
+    "maintenance": 2,
+    "reset": 3,
+    "delete": 4,
+    "excise": 5,
 }
 
 #: Per-target outcome vocabulary for a mutation receipt (kwsb.2 AC3).
@@ -102,8 +128,132 @@ class AuthorizationMismatchError(MutationTransactionError):
     """EXECUTE was attempted with an authorization bound to a different plan."""
 
 
+class CapabilityDeniedError(MutationTransactionError):
+    """The authenticated principal lacks an exact capability declared by the spec."""
+
+
+class SurfaceDeniedError(MutationTransactionError):
+    """The operation is not declared for the requesting surface."""
+
+
+class TokenExpiredError(MutationTransactionError):
+    """A bound authorization is outside its short validity window."""
+
+
+class TokenConsumedError(MutationTransactionError):
+    """A bound authorization was already consumed."""
+
+
+class AuditFinalizationError(MutationTransactionError):
+    """The domain result could not be durably finalized in audit.db."""
+
+
+@dataclass(frozen=True, slots=True)
+class MutationPrincipal:
+    """Authenticated identity and exact capabilities for one mutation request."""
+
+    actor_ref: str
+    capabilities: frozenset[str]
+    surface: Surface
+    role_label: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.actor_ref:
+            raise ValueError("mutation principal actor_ref must not be empty")
+        if any(not capability for capability in self.capabilities):
+            raise ValueError("mutation principal capabilities must not contain empty values")
+
+
+@dataclass(frozen=True, slots=True)
+class TargetAuthorityPolicy:
+    """Spec-owned policy for one closed target-key vocabulary entry."""
+
+    key: str
+    target_kinds: tuple[str, ...]
+    required_capabilities: tuple[str, ...]
+    destructive_class: DestructiveClass
+    required_confirmation: ConfirmationStrength
+    allowed_durabilities: tuple[TargetDurability, ...]
+    allowed_recovery: tuple[RecoveryPolicy, ...]
+
+    def __post_init__(self) -> None:
+        if not self.key or not self.target_kinds or not self.required_capabilities:
+            raise ValueError("target authority policies require key, target kinds, and capabilities")
+        if len(set(self.required_capabilities)) != len(self.required_capabilities):
+            raise ValueError(f"duplicate capabilities in target policy {self.key!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class MutationTarget:
+    """Canonical typed target included in a prepared plan and audit rows."""
+
+    kind: str
+    ref: str
+    policy_key: str
+    identity_digest: str
+    effect_identity: str
+    durability: TargetDurability
+    recovery: RecoveryPolicy
+
+    def canonical_dict(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "ref": self.ref,
+            "policy_key": self.policy_key,
+            "identity_digest": self.identity_digest,
+            "effect_identity": self.effect_identity,
+            "durability": self.durability,
+            "recovery": self.recovery,
+        }
+
+
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _canonical_json(payload: object) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _sha256_document(payload: object) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def compute_target_digest(targets: tuple[MutationTarget, ...]) -> str:
+    """Hash ordered typed targets without stringifying arbitrary objects."""
+
+    return _sha256_document([target.canonical_dict() for target in targets])
+
+
+def compute_typed_plan_hash(
+    *,
+    operation: str,
+    operation_version: int,
+    archive_instance_id: str,
+    archive_identity_digest: str,
+    parameter_digest: str,
+    target_digest: str,
+    required_capabilities: tuple[str, ...],
+    destructive_class: DestructiveClass,
+    required_confirmation: ConfirmationStrength,
+    affected_tiers: tuple[str, ...],
+) -> str:
+    """Hash every authority-relevant field of a typed mutation plan."""
+
+    return _sha256_document(
+        {
+            "operation": operation,
+            "operation_version": operation_version,
+            "archive_instance_id": archive_instance_id,
+            "archive_identity_digest": archive_identity_digest,
+            "parameter_digest": parameter_digest,
+            "target_digest": target_digest,
+            "required_capabilities": list(required_capabilities),
+            "destructive_class": destructive_class,
+            "required_confirmation": required_confirmation,
+            "affected_tiers": list(affected_tiers),
+        }
+    )
 
 
 def compute_plan_hash(
@@ -152,6 +302,16 @@ class MutationPlan:
     prepared_at: str
     plan_hash: str
     context: Mapping[str, object] = field(default_factory=dict)
+    operation_version: int = 1
+    archive_instance_id: str = "legacy"
+    archive_identity_digest: str = "legacy"
+    required_capabilities: tuple[str, ...] = ()
+    required_confirmation: ConfirmationStrength = "role_only"
+    targets: tuple[MutationTarget, ...] = ()
+    parameter_digest: str = ""
+    target_digest: str = ""
+    prepared_at_ms: int = 0
+    expires_at_ms: int = 0
 
     @property
     def target_count(self) -> int:
@@ -168,7 +328,76 @@ class MutationPlan:
             "plan_hash": self.plan_hash,
             "target_count": self.target_count,
             "context": dict(self.context),
+            "operation_version": self.operation_version,
+            "archive_instance_id": self.archive_instance_id,
+            "archive_identity_digest": self.archive_identity_digest,
+            "required_capabilities": list(self.required_capabilities),
+            "required_confirmation": self.required_confirmation,
+            "targets": [target.canonical_dict() for target in self.targets],
+            "parameter_digest": self.parameter_digest,
+            "target_digest": self.target_digest,
+            "prepared_at_ms": self.prepared_at_ms,
+            "expires_at_ms": self.expires_at_ms,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class MutationPreview:
+    """Durable preview reference and its immutable typed plan."""
+
+    preview_ref: str
+    plan: MutationPlan
+
+
+def build_typed_plan(
+    *,
+    operation: str,
+    operation_version: int,
+    archive_instance_id: str,
+    archive_identity_digest: str,
+    targets: tuple[MutationTarget, ...],
+    affected_tiers: tuple[str, ...],
+    parameter_digest: str,
+    required_capabilities: tuple[str, ...],
+    destructive_class: DestructiveClass,
+    required_confirmation: ConfirmationStrength,
+    prepared_at_ms: int,
+    expires_at_ms: int,
+) -> MutationPlan:
+    """Construct a plan whose hash covers the complete typed authority input."""
+
+    target_digest = compute_target_digest(targets)
+    plan_hash = compute_typed_plan_hash(
+        operation=operation,
+        operation_version=operation_version,
+        archive_instance_id=archive_instance_id,
+        archive_identity_digest=archive_identity_digest,
+        parameter_digest=parameter_digest,
+        target_digest=target_digest,
+        required_capabilities=required_capabilities,
+        destructive_class=destructive_class,
+        required_confirmation=required_confirmation,
+        affected_tiers=affected_tiers,
+    )
+    return MutationPlan(
+        operation=operation,
+        destructive_class=destructive_class,
+        target_refs=tuple(target.ref for target in targets),
+        affected_tiers=affected_tiers,
+        reversible=destructive_class in {"additive", "reversible"},
+        prepared_at=datetime.fromtimestamp(prepared_at_ms / 1000, UTC).isoformat(),
+        plan_hash=plan_hash,
+        operation_version=operation_version,
+        archive_instance_id=archive_instance_id,
+        archive_identity_digest=archive_identity_digest,
+        required_capabilities=required_capabilities,
+        required_confirmation=required_confirmation,
+        targets=targets,
+        parameter_digest=parameter_digest,
+        target_digest=target_digest,
+        prepared_at_ms=prepared_at_ms,
+        expires_at_ms=expires_at_ms,
+    )
 
 
 def build_plan(
@@ -212,6 +441,12 @@ class MutationAuthorization:
     capability: str
     confirmation_strength: ConfirmationStrength
     authorized_at: str
+    preview_ref: str | None = None
+    authorization_id: str | None = None
+    token: str | None = None
+    expires_at_ms: int | None = None
+    capabilities: tuple[str, ...] = ()
+    surface: Surface | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -221,6 +456,11 @@ class MutationAuthorization:
             "capability": self.capability,
             "confirmation_strength": self.confirmation_strength,
             "authorized_at": self.authorized_at,
+            "preview_ref": self.preview_ref,
+            "authorization_id": self.authorization_id,
+            "expires_at_ms": self.expires_at_ms,
+            "capabilities": list(self.capabilities),
+            "surface": self.surface,
         }
 
 
@@ -237,6 +477,7 @@ class MutationReceipt:
     receipt_ref: str | None
     applied_at: str
     domain_receipt: Mapping[str, object] = field(default_factory=dict)
+    operation_id: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -249,6 +490,7 @@ class MutationReceipt:
             "receipt_ref": self.receipt_ref,
             "applied_at": self.applied_at,
             "domain_receipt": dict(self.domain_receipt),
+            "operation_id": self.operation_id,
         }
 
 
@@ -298,10 +540,237 @@ class OperationExecutor:
     through this class. No adapter calls ``actuator.apply`` directly.
     """
 
+    def __init__(
+        self,
+        *,
+        audit: AuditRepository | None = None,
+        now_ms: Callable[[], int] | None = None,
+        token_factory: Callable[[], str] | None = None,
+    ) -> None:
+        self._audit = audit
+        self._now_ms = now_ms or (lambda: int(datetime.now(UTC).timestamp() * 1000))
+        self._token_factory = token_factory or (lambda: secrets.token_urlsafe(32))
+
     def prepare(self, actuator: MutationActuator[ArgsT], args: ArgsT) -> MutationPlan:
         """PREPARE: resolve exact targets from live state. Never mutates."""
 
         return actuator.prepare(args)
+
+    def prepare_bound(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        args: ArgsT,
+        principal: MutationPrincipal,
+        *,
+        archive_instance_id: str,
+        archive_identity_digest: str,
+        parameter_digest: str,
+        expires_at_ms: int | None = None,
+    ) -> MutationPreview:
+        """Prepare and durably record a versioned, capability-bound preview."""
+
+        binding.validate()
+        if principal.surface not in binding.spec.allowed_surfaces:
+            raise SurfaceDeniedError(f"{binding.spec.name!r} is not allowed on {principal.surface!r}")
+        plan = self._typed_plan_from_actuator(
+            binding,
+            binding.actuator.prepare(args),
+            archive_instance_id=archive_instance_id,
+            archive_identity_digest=archive_identity_digest,
+            parameter_digest=parameter_digest,
+            expires_at_ms=expires_at_ms or self._now_ms() + 60_000,
+        )
+        if self._audit is None:
+            return MutationPreview(preview_ref=f"preview:{plan.plan_hash}", plan=plan)
+        preview_ref = self._audit.create_preview(plan, principal)
+        return MutationPreview(preview_ref=preview_ref, plan=plan)
+
+    def authorize_bound(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        preview: MutationPreview,
+        principal: MutationPrincipal,
+        *,
+        confirmation_strength: ConfirmationStrength | None = None,
+    ) -> MutationAuthorization:
+        """Issue a random one-time token bound to the persisted preview."""
+
+        binding.validate()
+        plan = preview.plan
+        required = set(plan.required_capabilities)
+        if not required.issubset(principal.capabilities):
+            missing = sorted(required - principal.capabilities)
+            raise CapabilityDeniedError(f"principal lacks declared capabilities: {missing}")
+        if self._now_ms() >= plan.expires_at_ms:
+            raise TokenExpiredError("cannot authorize an expired preview")
+        strength = confirmation_strength or plan.required_confirmation
+        if _STRENGTH_ORDER[strength] < _STRENGTH_ORDER[plan.required_confirmation]:
+            raise ConfirmationRequiredError(
+                f"{binding.spec.name!r} requires {plan.required_confirmation!r}, got {strength!r}"
+            )
+        token = self._token_factory()
+        authorization = MutationAuthorization(
+            plan_hash=plan.plan_hash,
+            actor=principal.actor_ref,
+            role=principal.role_label or "",
+            capability=plan.required_capabilities[0] if plan.required_capabilities else "",
+            confirmation_strength=strength,
+            authorized_at=_utcnow_iso(),
+            preview_ref=preview.preview_ref,
+            token=token,
+            expires_at_ms=plan.expires_at_ms,
+            capabilities=tuple(sorted(required)),
+            surface=principal.surface,
+        )
+        if self._audit is not None:
+            authorization_id = self._audit.issue_authorization(preview, principal, authorization)
+            authorization = replace(authorization, authorization_id=authorization_id)
+        return authorization
+
+    def execute_bound(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        preview: MutationPreview,
+        authorization: MutationAuthorization,
+        args: ArgsT,
+    ) -> MutationReceipt:
+        """Consume a bound token, journal intent, apply, and finalize honestly."""
+
+        binding.validate()
+        if authorization.preview_ref != preview.preview_ref or authorization.token is None:
+            raise AuthorizationMismatchError("authorization is not bound to this preview")
+        if authorization.expires_at_ms is not None and self._now_ms() >= authorization.expires_at_ms:
+            raise TokenExpiredError("authorization token is expired")
+        fresh_plan = self._typed_plan_from_actuator(
+            binding,
+            binding.actuator.prepare(args),
+            archive_instance_id=preview.plan.archive_instance_id,
+            archive_identity_digest=preview.plan.archive_identity_digest,
+            parameter_digest=preview.plan.parameter_digest,
+            expires_at_ms=preview.plan.expires_at_ms,
+        )
+        if fresh_plan.plan_hash != preview.plan.plan_hash:
+            raise PlanStaleError(
+                f"{binding.spec.name!r} preview {preview.plan.plan_hash!r} is stale; "
+                f"live state now resolves to {fresh_plan.plan_hash!r}"
+            )
+        operation_id: str | None = None
+        if self._audit is not None:
+            operation_id = self._audit.consume_authorization_and_start(preview, authorization)
+        try:
+            result = binding.actuator.apply(fresh_plan, args)
+        except Exception as exc:
+            if self._audit is not None and operation_id is not None:
+                self._audit.finalize_attempt(
+                    operation_id,
+                    status="unknown",
+                    error_summary=str(exc)[:512],
+                    unknown_reason="actuator exception after durable intent",
+                )
+            raise
+        receipt = result
+        if self._audit is not None and operation_id is not None:
+            try:
+                self._audit.finalize_attempt(operation_id, status=receipt.status, receipt=receipt)
+            except Exception as exc:
+                raise AuditFinalizationError(
+                    "domain effect is not reported completed without audit finalization"
+                ) from exc
+            receipt = replace(
+                receipt,
+                receipt_ref=f"mutation-operation:{operation_id}",
+                operation_id=operation_id,
+            )
+        return receipt
+
+    def reconcile_operation(
+        self,
+        operation_id: str,
+        *,
+        outcome: Literal["applied", "absent", "unknown"],
+        domain_receipt_ref: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        """Record explicit reconciliation without inferring success from a crash."""
+
+        if self._audit is None:
+            raise MutationTransactionError("reconciliation requires a durable audit repository")
+        self._audit.reconcile_attempt(
+            operation_id,
+            outcome=outcome,
+            domain_receipt_ref=domain_receipt_ref,
+            reason=reason,
+        )
+
+    def _typed_plan_from_actuator(
+        self,
+        binding: OperationBinding[ArgsT, object],
+        plan: MutationPlan,
+        *,
+        archive_instance_id: str,
+        archive_identity_digest: str,
+        parameter_digest: str,
+        expires_at_ms: int,
+    ) -> MutationPlan:
+        policies = {policy.key: policy for policy in binding.spec.target_authority}
+        targets = plan.targets
+        if not targets:
+            default = next(iter(policies.values()), None)
+            if default is None:
+                raise MutationTransactionError(f"{binding.spec.name!r} has no target authority policy")
+            targets = tuple(
+                MutationTarget(
+                    kind=ref.split(":", 1)[0],
+                    ref=ref,
+                    policy_key=default.key,
+                    identity_digest=_sha256_document({"ref": ref}),
+                    effect_identity=f"{binding.spec.name}:{ref}",
+                    durability="derived",
+                    recovery="none",
+                )
+                for ref in plan.target_refs
+            )
+        for target in targets:
+            policy = policies.get(target.policy_key)
+            if policy is None:
+                raise MutationTransactionError(f"actuator returned unregistered target policy {target.policy_key!r}")
+            if target.kind not in policy.target_kinds:
+                raise MutationTransactionError(f"target kind {target.kind!r} is not allowed by {policy.key!r}")
+            if target.durability not in policy.allowed_durabilities:
+                raise MutationTransactionError(
+                    f"target durability {target.durability!r} is not allowed by {policy.key!r}"
+                )
+            if target.recovery not in policy.allowed_recovery:
+                raise MutationTransactionError(f"target recovery {target.recovery!r} is not allowed by {policy.key!r}")
+        required_capabilities = tuple(
+            sorted(
+                {capability for target in targets for capability in policies[target.policy_key].required_capabilities}
+            )
+        )
+        destructive_class = max(
+            (policies[target.policy_key].destructive_class for target in targets),
+            key=lambda value: _CLASS_ORDER[value],
+            default=plan.destructive_class,
+        )
+        required_confirmation = max(
+            (policies[target.policy_key].required_confirmation for target in targets),
+            key=lambda value: _STRENGTH_ORDER[value],
+            default=plan.required_confirmation,
+        )
+        return build_typed_plan(
+            operation=binding.spec.name,
+            operation_version=binding.spec.operation_version,
+            archive_instance_id=archive_instance_id,
+            archive_identity_digest=archive_identity_digest,
+            targets=targets,
+            affected_tiers=binding.spec.affected_tiers or plan.affected_tiers,
+            parameter_digest=parameter_digest,
+            required_capabilities=required_capabilities,
+            destructive_class=destructive_class,
+            required_confirmation=required_confirmation,
+            prepared_at_ms=self._now_ms(),
+            expires_at_ms=expires_at_ms,
+        )
 
     def authorize(
         self,
@@ -371,18 +840,34 @@ def make_target_ref(kind: Literal["session", "message", "block", "source"], valu
 
 __all__ = [
     "AuthorizationMismatchError",
+    "AuditFinalizationError",
+    "CapabilityDeniedError",
     "ConfirmationRequiredError",
     "ConfirmationStrength",
     "DestructiveClass",
+    "IdempotencyPolicy",
     "MutationActuator",
     "MutationAuthorization",
+    "MutationPreview",
+    "MutationPrincipal",
     "MutationPlan",
     "MutationReceipt",
+    "MutationTarget",
     "MutationTargetStatus",
     "MutationTransactionError",
     "OperationExecutor",
     "PlanStaleError",
+    "RecoveryPolicy",
+    "Surface",
+    "SurfaceDeniedError",
+    "TargetAuthorityPolicy",
+    "TargetDurability",
+    "TokenConsumedError",
+    "TokenExpiredError",
     "build_plan",
+    "build_typed_plan",
     "compute_plan_hash",
+    "compute_target_digest",
+    "compute_typed_plan_hash",
     "make_target_ref",
 ]

@@ -8,6 +8,11 @@ from functools import lru_cache
 from typing import Literal
 
 from polylogue.core.json import JSONDocument, JSONDocumentList, json_document
+from polylogue.operations.mutation_transaction import (
+    IdempotencyPolicy,
+    Surface,
+    TargetAuthorityPolicy,
+)
 
 Effect = Literal["Pure", "DbRead", "DbWrite", "FileWrite", "Network", "LiveArchive", "Destructive"]
 """Declared runtime effect of an operation.
@@ -70,6 +75,15 @@ class OperationSpec:
     safety_guards: tuple[SafetyGuard, ...] = ()
     executor_status: ExecutorStatus | None = None
     """t46.9 AC1: required (non-``None``) whenever ``mutates_state`` is ``True``."""
+    operation_version: int = 1
+    capability_family: Literal["write", "judge", "maintenance"] = "write"
+    allowed_surfaces: tuple[Surface, ...] = ()
+    target_authority: tuple[TargetAuthorityPolicy, ...] = ()
+    affected_tiers: tuple[str, ...] = ()
+    idempotency: IdempotencyPolicy = "none"
+    resumable: bool = False
+    receipt_schema: str = "polylogue.mutation-receipt/v1"
+    reconstructible: bool = False
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -88,6 +102,26 @@ class OperationSpec:
                 "effects": list(self.effects),
                 "safety_guards": list(self.safety_guards),
                 "executor_status": self.executor_status,
+                "operation_version": self.operation_version,
+                "capability_family": self.capability_family,
+                "allowed_surfaces": list(self.allowed_surfaces),
+                "target_authority": [
+                    {
+                        "key": policy.key,
+                        "target_kinds": list(policy.target_kinds),
+                        "required_capabilities": list(policy.required_capabilities),
+                        "destructive_class": policy.destructive_class,
+                        "required_confirmation": policy.required_confirmation,
+                        "allowed_durabilities": list(policy.allowed_durabilities),
+                        "allowed_recovery": list(policy.allowed_recovery),
+                    }
+                    for policy in self.target_authority
+                ],
+                "affected_tiers": list(self.affected_tiers),
+                "idempotency": self.idempotency,
+                "resumable": self.resumable,
+                "receipt_schema": self.receipt_schema,
+                "reconstructible": self.reconstructible,
             }
         )
 

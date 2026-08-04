@@ -217,7 +217,7 @@ def _apply_operation(
         if operation.kind is FastForwardOperationKind.DROP_TABLE:
             # A DROP_TABLE operation may bundle the table's own triggers as
             # ("trigger", name) objects ahead of the ("table", name) object
-            # itself (see lifecycle.py's v62 threads_fts declaration) --
+            # itself (see lifecycle.py's v63 threads_fts declaration) --
             # trigger definitions on the SOURCE table (e.g. `AFTER INSERT ON
             # threads`) are not implicitly dropped just because the target
             # FTS5 virtual table is, and would otherwise fail on their next

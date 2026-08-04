@@ -499,19 +499,19 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
     assert row == (1000, 500, 1, 0.05, "priced")
 
 
-def test_v62_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> None:
-    """polylogue-eizc: the v62 DROP_TABLE declaration drops threads_fts and
+def test_v63_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> None:
+    """polylogue-eizc: the v63 DROP_TABLE declaration drops threads_fts and
     its three triggers via the real ``apply_index_fast_forward`` plan
     machinery, not just the low-level ``_apply_operation`` dispatch.
 
-    Builds a pre-v62 shaped archive (``threads`` + ``threads_fts`` +
+    Builds a pre-v63 shaped archive (``threads`` + ``threads_fts`` +
     triggers all present, as a v61 archive would have), applies the plan
-    covering just the real v62 declaration, and asserts both the table and
+    covering just the real v63 declaration, and asserts both the table and
     all three triggers are gone afterward while an unrelated sibling
     surface (``blocks_command_trigram``, kept -- not part of this
     declaration) survives untouched.
 
-    ANTI-VACUITY: reverting lifecycle.py's v62 declaration (or the
+    ANTI-VACUITY: reverting lifecycle.py's v63 declaration (or the
     executor's trigger-object DROP_TABLE handling in
     ``index_fast_forward_executor.py``) makes the ``threads_fts`` table
     survive `apply_index_fast_forward` -- the ``exists_after`` assertion
@@ -520,8 +520,8 @@ def test_v62_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> 
     import polylogue.storage.sqlite.lifecycle as lifecycle
     from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
 
-    v62_real = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 62)
-    plan = lifecycle.IndexFastForwardPlan(source_version=61, target_version=62, declarations=(v62_real,))
+    v63_real = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 63)
+    plan = lifecycle.IndexFastForwardPlan(source_version=62, target_version=63, declarations=(v63_real,))
 
     path = tmp_path / "scratch.db"
     conn = sqlite3.connect(path)
@@ -552,7 +552,7 @@ def test_v62_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> 
             """
         )
         conn.execute("INSERT INTO threads (thread_id, search_text) VALUES ('t1', 'needle')")
-        conn.execute("PRAGMA user_version = 61")
+        conn.execute("PRAGMA user_version = 62")
         conn.commit()
 
         apply_index_fast_forward(conn, plan)
@@ -571,7 +571,7 @@ def test_v62_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> 
     assert "threads_fts_au" not in surfaces
     assert "threads" in surfaces
     assert "blocks_command_trigram" in surfaces
-    assert version == 62
+    assert version == 63
 
 
 def test_shape_forward_targeted_reprocess_enqueues_bounded_ops_debt(tmp_path: Path) -> None:

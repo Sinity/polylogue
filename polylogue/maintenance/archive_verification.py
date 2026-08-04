@@ -1348,6 +1348,96 @@ def _check_excluded_cursor_vocabulary_honesty(archive_root: Path, sample_limit: 
 
 
 # ---------------------------------------------------------------------------
+# Check: raw quarantine group dedup (polylogue-zm4w8)
+# ---------------------------------------------------------------------------
+
+
+def _check_raw_quarantine_group_dedup(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """No raw_sessions row is an unindexed byte-identical duplicate of another sharing its source_path.
+
+    polylogue-zm4w8: a raw_sessions row is flagged when it belongs to a
+    ``(source_path, blob_hash)`` group of more than one quarantined row AND
+    no member of that group (nor any other raw sharing that blob_hash
+    anywhere) already has a materialized ``index.db`` session or a
+    non-quarantined ``revision_authority``. This is the residual,
+    genuinely-unresolved population: content acquired more than once that
+    was never chosen as its group's representative and materialized --
+    distinct from ``source-index-coverage``'s ``byte_dup_of_indexed_count``
+    (which requires an *already-indexed* twin) and from what
+    ``raw-byte-duplicate-supersession-apply`` (the actuator for that
+    already-indexed case) can catch by construction. The one-shot
+    ``raw-quarantine-group-dedup-apply`` actuator resolves a flagged group by
+    materializing exactly one representative raw and marking the rest
+    ``byte_proven`` -- once run, this check should report clean, and stays
+    part of the registry as the standing regression guard against the
+    pattern recurring.
+    """
+    from polylogue.storage.raw_quarantine_group_dedup import plan_raw_quarantine_group_dedup
+
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    index_path = _resolve_index_path(archive_root)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check("raw-quarantine-group-dedup", "source.db or index.db not present")
+
+    try:
+        source_conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check("raw-quarantine-group-dedup", f"could not open source.db: {exc}", exc=exc)
+
+    try:
+        index_conn = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        source_conn.close()
+        return _error_check("raw-quarantine-group-dedup", f"could not open index.db: {exc}", exc=exc)
+
+    try:
+        plan = plan_raw_quarantine_group_dedup(source_conn, index_conn)
+    except sqlite3.Error as exc:
+        return _error_check("raw-quarantine-group-dedup", f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index_conn.close()
+        source_conn.close()
+
+    group_count = len(plan.groups)
+    duplicate_count = plan.duplicate_count
+    sample = [
+        {
+            "source_path": group.source_path,
+            "representative_raw_id": group.representative_raw_id,
+            "duplicate_raw_ids": list(group.duplicate_raw_ids),
+        }
+        for group in plan.groups[:sample_limit]
+    ]
+
+    status = OutcomeStatus.ERROR if group_count else OutcomeStatus.OK
+    summary = (
+        f"{group_count:,} fully-quarantined duplicate group(s), {duplicate_count:,} unindexed duplicate row(s) "
+        f"({_gib_str(plan.duplicate_bytes)}); run raw-quarantine-group-dedup-apply"
+        if group_count
+        else f"no fully-quarantined byte-identical duplicate groups ({plan.scanned_count:,} quarantined row(s) scanned)"
+    )
+    return ArchiveVerificationCheck(
+        name="raw-quarantine-group-dedup",
+        status=status,
+        summary=summary,
+        count=duplicate_count,
+        details=[f"group:{group.source_path}" for group in plan.groups[:sample_limit]],
+        evidence={
+            "scanned_count": plan.scanned_count,
+            "group_count": group_count,
+            "duplicate_count": duplicate_count,
+            "duplicate_bytes": plan.duplicate_bytes,
+            "already_resolved_group_count": plan.already_resolved_group_count,
+            "group_sample": sample,
+        },
+    )
+
+
+def _gib_str(byte_count: int) -> str:
+    return f"{byte_count / (1024**3):.2f} GiB"
+
+
+# ---------------------------------------------------------------------------
 # Check: stalled append-cursor freshness (polylogue-2qrx)
 # ---------------------------------------------------------------------------
 
@@ -1837,6 +1927,13 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         "the stall-escalation threshold (polylogue-2qrx).",
         _check_stalled_append_cursor_freshness,
         ArchiveVerificationCheckClass.LIVENESS,
+    ),
+    ArchiveVerificationCheckSpec(
+        "raw-quarantine-group-dedup",
+        "No raw_sessions row is an unindexed byte-identical duplicate of another sharing its "
+        "source_path within a fully-quarantined group (polylogue-zm4w8).",
+        _check_raw_quarantine_group_dedup,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
     ),
 )
 

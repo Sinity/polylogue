@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL, AUDIT_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL, EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL, OPS_SCHEMA_VERSION
@@ -17,6 +18,7 @@ ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_DDL,
     ArchiveTier.USER: USER_DDL,
     ArchiveTier.OPS: OPS_DDL,
+    ArchiveTier.AUDIT: AUDIT_DDL,
 }
 
 ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
@@ -25,6 +27,7 @@ ARCHIVE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = {
     ArchiveTier.EMBEDDINGS: EMBEDDINGS_SCHEMA_VERSION,
     ArchiveTier.USER: USER_SCHEMA_VERSION,
     ArchiveTier.OPS: OPS_SCHEMA_VERSION,
+    ArchiveTier.AUDIT: AUDIT_SCHEMA_VERSION,
 }
 
 
