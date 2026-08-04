@@ -27,14 +27,19 @@ from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection import open_read_connection
 
 logger = get_logger(__name__)
 
-BlobIntegrityKind = Literal["orphan_blobs", "missing_referenced_blobs", "hash_mismatch"]
+BlobIntegrityKind = Literal[
+    "orphan_blobs",
+    "missing_referenced_blobs",
+    "hash_mismatch",
+    "invalid_namespace_entries",
+]
 BlobIntegritySeverity = Literal["warning", "critical"]
 
 _DEFAULT_SAMPLE_SIZE = 100
@@ -2092,6 +2097,24 @@ def scan_blob_integrity(
                 count=len(hash_mismatches),
                 sample=tuple(hash_mismatches[:_MAX_FINDING_SAMPLE]),
                 suggested_action="replace corrupted blob files from backup or re-ingest the affected raw sources",
+            )
+        )
+
+    namespace_entries: Iterable[BlobNamespaceEntry] = blob_store.iter_namespace()
+    if not full:
+        namespace_entries = islice(namespace_entries, max(0, sample_size))
+    namespace_issues = [entry for entry in namespace_entries if entry.hash_hex is None]
+    if namespace_issues:
+        findings.append(
+            BlobIntegrityFinding(
+                kind="invalid_namespace_entries",
+                severity="critical",
+                count=len(namespace_issues),
+                sample=tuple(entry.relative_path for entry in namespace_issues[:_MAX_FINDING_SAMPLE]),
+                suggested_action=(
+                    "quiesce blob writers and classify the invalid entries; do not delete them without "
+                    "a verified cleanup plan and durable receipt"
+                ),
             )
         )
 

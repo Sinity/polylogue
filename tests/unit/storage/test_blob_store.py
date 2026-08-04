@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.blob_store import (
+    BlobNamespaceEntryKind,
+    BlobNamespaceIssue,
     BlobStore,
     BlobVerifyAllResult,
     BlobVerifyFailure,
@@ -180,6 +182,49 @@ def test_verify_all_handles_removed_prefix_dir(tmp_path: Path) -> None:
     result = blob_store.verify_all()
     # The prefix dir is gone, so iter_all yields nothing
     assert result.checked == 0
+
+
+def test_verify_all_reports_malformed_leaf_without_hash_path_parsing(tmp_path: Path) -> None:
+    """A malformed leaf is a namespace fault, not a malformed hash exception."""
+    blob_store = BlobStore(tmp_path / "blobs")
+    valid_hash, _ = blob_store.write_from_bytes(b"valid")
+    shard = blob_store.root / valid_hash[:2]
+    malformed_leaf = shard / f"{valid_hash[2:]}-wal"
+    malformed_leaf.write_bytes(b"sqlite wal sidecar")
+
+    entries = tuple(blob_store.iter_namespace())
+    assert [(entry.kind, entry.relative_path, entry.issue) for entry in entries] == [
+        (BlobNamespaceEntryKind.BLOB, f"{valid_hash[:2]}/{valid_hash[2:]}", None),
+        (
+            BlobNamespaceEntryKind.INVALID_SHARD_ENTRY,
+            f"{valid_hash[:2]}/{valid_hash[2:]}-wal",
+            BlobNamespaceIssue.INVALID_LEAF_NAME,
+        ),
+    ]
+
+    result = blob_store.verify_all()
+
+    assert result.checked == 1
+    assert result.failed_count == 1
+    assert result.failures[0].hash == ""
+    assert result.failures[0].reason == "invalid_namespace_entry"
+    assert result.failures[0].path == f"{valid_hash[:2]}/{valid_hash[2:]}-wal"
+    assert result.failures[0].detail.endswith("invalid_leaf_name")
+
+
+def test_verify_all_reports_sqlite_sidecars_at_namespace_root(tmp_path: Path) -> None:
+    blob_store = BlobStore(tmp_path / "blobs")
+    blob_hash, _ = blob_store.write_from_bytes(b"valid")
+    for suffix in ("-wal", "-shm"):
+        (blob_store.root / f"{blob_hash}{suffix}").write_bytes(b"sidecar")
+
+    result = blob_store.verify_all()
+
+    assert result.checked == 1
+    assert [(failure.path, failure.detail) for failure in result.failures] == [
+        (f"{blob_hash}-shm", f"{blob_hash}-shm: invalid_shard_name"),
+        (f"{blob_hash}-wal", f"{blob_hash}-wal: invalid_shard_name"),
+    ]
 
 
 # ---------------------------------------------------------------------------

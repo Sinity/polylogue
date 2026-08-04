@@ -835,6 +835,28 @@ def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: 
         hermes_state.parse_state_db(corrupted_path, profile_root=db_path.parent)
 
 
+def test_hermes_snapshot_parse_route_leaves_only_canonical_blob_namespace_entries(tmp_path: Path) -> None:
+    """The production snapshot-to-retained-parse seam must not leave SQLite sidecars."""
+    db_path = tmp_path / "state.db"
+    blob_root = tmp_path / "blob"
+    _write_hermes_state_db(db_path)
+
+    rows = list(
+        iter_source_sessions_with_raw(
+            Source(name="hermes", path=db_path),
+            capture_raw=True,
+            blob_root=blob_root,
+        )
+    )
+
+    raw = rows[0][0]
+    assert raw is not None and raw.blob_hash is not None
+    store = BlobStore(blob_root)
+    entries = tuple(store.iter_namespace())
+    assert [(entry.kind, entry.hash_hex) for entry in entries] == [("blob", raw.blob_hash)]
+    assert store.verify_all().passed is True
+
+
 def test_hermes_state_db_raw_payload_envelope_uses_marker(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)

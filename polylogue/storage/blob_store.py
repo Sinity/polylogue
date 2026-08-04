@@ -20,11 +20,13 @@ import hashlib
 import logging
 import os
 import re
+import stat
 import tempfile
 import threading
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import IO, BinaryIO
 
@@ -38,6 +40,8 @@ _CHUNK_SIZE = 1024 * 1024  # 1 MiB
 # newline-suffixed hash is rejected at the boundary rather than silently
 # accepted (jsy).
 _VALID_HEX = re.compile(r"[0-9a-f]{64}")
+_VALID_SHARD = re.compile(r"[0-9a-f]{2}")
+_VALID_LEAF = re.compile(r"[0-9a-f]{62}")
 
 Heartbeat = Callable[[], None]
 
@@ -59,6 +63,41 @@ class PreparedBlob:
     hash_hex: str
     size_bytes: int
     temporary_path: Path
+
+
+class BlobNamespaceEntryKind(StrEnum):
+    """Classification for one direct entry in the blob namespace."""
+
+    BLOB = "blob"
+    INVALID_ROOT_ENTRY = "invalid_root_entry"
+    INVALID_SHARD_ENTRY = "invalid_shard_entry"
+
+
+class BlobNamespaceIssue(StrEnum):
+    """Why a filesystem entry is outside the canonical blob namespace."""
+
+    INVALID_SHARD_NAME = "invalid_shard_name"
+    NOT_DIRECTORY = "not_directory"
+    INVALID_LEAF_NAME = "invalid_leaf_name"
+    NOT_REGULAR_FILE = "not_regular_file"
+    STAT_FAILED = "stat_failed"
+
+
+@dataclass(frozen=True, slots=True)
+class BlobNamespaceEntry:
+    """One canonical blob or invalid direct namespace entry.
+
+    A valid blob is exactly ``{root}/{two lowercase hex chars}/{62 lowercase
+    hex chars}`` and its leaf is a regular file. Invalid entries retain their
+    on-disk path and issue for verification, but never carry a hash that could
+    be fed into content-addressed path construction.
+    """
+
+    kind: BlobNamespaceEntryKind
+    path: Path
+    relative_path: str
+    hash_hex: str | None = None
+    issue: BlobNamespaceIssue | None = None
 
 
 class BlobStore:
@@ -279,15 +318,102 @@ class BlobStore:
         return hasher.hexdigest() == hash_hex
 
     def iter_all(self) -> Iterator[str]:
-        """Yield all blob hashes present on disk."""
-        if not self.root.exists():
+        """Yield hashes for canonical regular blob files only."""
+        for entry in self.iter_namespace():
+            if entry.kind is BlobNamespaceEntryKind.BLOB:
+                assert entry.hash_hex is not None
+                yield entry.hash_hex
+
+    def iter_namespace(self) -> Iterator[BlobNamespaceEntry]:
+        """Classify direct namespace entries in deterministic path order.
+
+        This is deliberately stricter than a best-effort filesystem walk:
+        only two lowercase-hex shard directories containing 62 lowercase-hex
+        regular-file leaves qualify as blobs. Everything else is surfaced as a
+        typed invalid entry and never converted into a candidate blob hash.
+        """
+        try:
+            root_entries = sorted(self.root.iterdir(), key=lambda path: path.name)
+        except FileNotFoundError:
             return
-        for prefix_dir in sorted(self.root.iterdir()):
-            if not prefix_dir.is_dir() or len(prefix_dir.name) != 2:
+        except OSError:
+            return
+
+        for shard_path in root_entries:
+            try:
+                shard_mode = shard_path.stat(follow_symlinks=False).st_mode
+            except OSError:
+                yield BlobNamespaceEntry(
+                    kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                    path=shard_path,
+                    relative_path=shard_path.name,
+                    issue=BlobNamespaceIssue.STAT_FAILED,
+                )
                 continue
-            for blob_file in sorted(prefix_dir.iterdir()):
-                if blob_file.is_file() and not blob_file.name.startswith(".blob."):
-                    yield prefix_dir.name + blob_file.name
+
+            if not _VALID_SHARD.fullmatch(shard_path.name):
+                yield BlobNamespaceEntry(
+                    kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                    path=shard_path,
+                    relative_path=shard_path.name,
+                    issue=BlobNamespaceIssue.INVALID_SHARD_NAME,
+                )
+                continue
+            if not stat.S_ISDIR(shard_mode):
+                yield BlobNamespaceEntry(
+                    kind=BlobNamespaceEntryKind.INVALID_ROOT_ENTRY,
+                    path=shard_path,
+                    relative_path=shard_path.name,
+                    issue=BlobNamespaceIssue.NOT_DIRECTORY,
+                )
+                continue
+
+            try:
+                leaf_paths = sorted(shard_path.iterdir(), key=lambda path: path.name)
+            except OSError:
+                yield BlobNamespaceEntry(
+                    kind=BlobNamespaceEntryKind.INVALID_SHARD_ENTRY,
+                    path=shard_path,
+                    relative_path=shard_path.name,
+                    issue=BlobNamespaceIssue.STAT_FAILED,
+                )
+                continue
+
+            for leaf_path in leaf_paths:
+                relative_path = f"{shard_path.name}/{leaf_path.name}"
+                try:
+                    leaf_mode = leaf_path.stat(follow_symlinks=False).st_mode
+                except OSError:
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_SHARD_ENTRY,
+                        path=leaf_path,
+                        relative_path=relative_path,
+                        issue=BlobNamespaceIssue.STAT_FAILED,
+                    )
+                    continue
+
+                if not _VALID_LEAF.fullmatch(leaf_path.name):
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_SHARD_ENTRY,
+                        path=leaf_path,
+                        relative_path=relative_path,
+                        issue=BlobNamespaceIssue.INVALID_LEAF_NAME,
+                    )
+                    continue
+                if not stat.S_ISREG(leaf_mode):
+                    yield BlobNamespaceEntry(
+                        kind=BlobNamespaceEntryKind.INVALID_SHARD_ENTRY,
+                        path=leaf_path,
+                        relative_path=relative_path,
+                        issue=BlobNamespaceIssue.NOT_REGULAR_FILE,
+                    )
+                    continue
+                yield BlobNamespaceEntry(
+                    kind=BlobNamespaceEntryKind.BLOB,
+                    path=leaf_path,
+                    relative_path=relative_path,
+                    hash_hex=shard_path.name + leaf_path.name,
+                )
 
     def remove(self, hash_hex: str) -> bool:
         """Remove a blob from the store. Returns True if it existed."""
@@ -330,9 +456,26 @@ class BlobStore:
         checked_bytes = 0
         failures: list[BlobVerifyFailure] = []
 
-        for hash_hex in self.iter_all():
+        for entry in self.iter_namespace():
+            if entry.kind is not BlobNamespaceEntryKind.BLOB:
+                failures.append(
+                    BlobVerifyFailure(
+                        hash="",
+                        reason="invalid_namespace_entry",
+                        detail=(
+                            f"{entry.relative_path}: {entry.issue.value if entry.issue is not None else 'unknown'}"
+                        ),
+                        path=entry.relative_path,
+                    )
+                )
+                if len(failures) >= max_failures:
+                    break
+                continue
+
+            assert entry.hash_hex is not None
+            hash_hex = entry.hash_hex
             checked += 1
-            path = self.blob_path(hash_hex)
+            path = entry.path
             try:
                 file_size = path.stat().st_size
                 checked_bytes += file_size
@@ -493,8 +636,9 @@ class BlobVerifyFailure:
     """A single blob integrity verification failure."""
 
     hash: str
-    reason: str  # stat_failed | read_error | hash_mismatch
+    reason: str  # invalid_namespace_entry | stat_failed | read_error | hash_mismatch
     detail: str = ""
+    path: str = ""
 
 
 @dataclass(frozen=True)
@@ -575,6 +719,9 @@ def load_raw_content(raw_id: str) -> bytes:
 
 
 __all__ = [
+    "BlobNamespaceEntry",
+    "BlobNamespaceEntryKind",
+    "BlobNamespaceIssue",
     "BlobStore",
     "BlobVerifyAllResult",
     "BlobVerifyFailure",
