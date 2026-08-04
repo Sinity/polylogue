@@ -110,6 +110,8 @@ def test_plan_unknown_export_reclassification_classifies_every_row(tmp_path: Pat
     assert reclassified.recovered_provider is Provider.CHATGPT
     assert reclassified.recovered_origin is Origin.CHATGPT_EXPORT
     assert reclassified.blob_size == len(reclassifiable_payload)
+    assert {candidate.raw_id for candidate in plan.chatgpt_reclassifiable} == {"raw-reclassifiable"}
+    assert plan.non_chatgpt_reclassifiable == ()
 
     (still_unknown,) = plan.still_unknown
     assert still_unknown.verdict == UnknownExportReclassificationVerdict.STILL_UNKNOWN
@@ -149,3 +151,5 @@ def test_plan_unknown_export_reclassification_scopes_to_source_path_like(tmp_pat
 
     assert plan.scanned_count == 1
     assert {c.raw_id for c in plan.reclassifiable} == {"raw-in-scope"}
+    assert {c.raw_id for c in plan.non_chatgpt_reclassifiable} == {"raw-in-scope"}
+    assert plan.chatgpt_reclassifiable == ()

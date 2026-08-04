@@ -184,6 +184,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify ci-workflows` | Verify CI workflow files reference locally-known devtools commands and existing paths. |
 | `devtools verify closure-matrix` | Verify docs/plans/test-closure-matrix.yaml stays grounded in the realized tree. |
+| `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
 | `devtools verify degrade-loudly` | Verify broad except-handlers in daemon/storage/insights/coordination log or signal on failure. |
 | `devtools verify doc-commands` | Verify README/docs command examples resolve to live polylogue, polylogued, and devtools commands. |
@@ -263,6 +264,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace tool-result-history-reclassify-apply` | Persist raw_artifacts classification for tool-result/file-history-shaped raw rows. |
 | `devtools workspace tool-result-history-sweep` | Find claude-code-session raw rows that should reclassify as tool-result/file-history sidecars. |
 | `devtools workspace unknown-export-reclassification` | Re-run the fixed browser-capture provider probe against stored unknown-export rows. |
+| `devtools workspace unknown-export-reclassification-apply` | Reclassify proven ChatGPT browser-capture raws and write durable receipts. |
 | `devtools workspace verify-worktree` | Verify an agent lane's claimed worktree exists, is isolated, and is on the expected branch. |
 | `devtools workspace worktree-gc` | Safe worktree garbage collection — list and remove merged, squash-equivalent, or abandoned git worktrees. |
 

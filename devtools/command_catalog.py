@@ -324,6 +324,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify corpus-fidelity",
+        "verification",
+        "Run the production corpus-fidelity acceptance gate against an archive root.",
+        "devtools.corpus_fidelity",
+        use_when=(
+            "Run after a promoted index rebuild, alongside `polylogue ops maintenance verify-archive`, "
+            "to prove source-backed corpus absence, attachment, and revision fidelity from the registry."
+        ),
+        examples=(
+            "devtools verify corpus-fidelity --archive-root /path/to/archive",
+            "devtools verify corpus-fidelity --archive-root /path/to/archive --json",
+        ),
+    ),
+    CommandSpec(
         "release readiness",
         "release",
         "Validate the externally-presentable release gate definition.",
@@ -1297,6 +1311,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools workspace unknown-export-reclassification",
             "devtools workspace unknown-export-reclassification --json",
             "devtools workspace unknown-export-reclassification --source-path-like '' --limit 500",
+        ),
+    ),
+    CommandSpec(
+        "workspace unknown-export-reclassification-apply",
+        "workspace",
+        "Reclassify proven ChatGPT browser-capture raws and write durable receipts.",
+        "devtools.unknown_export_reclassification_apply",
+        use_when=(
+            "polylogue-s8s54: act only on rows whose complete browser-capture envelope proves "
+            "session.provider='chatgpt'. Default is dry-run; --apply requires a verified source-tier "
+            "backup manifest and remains locked to the measured ChatGPT spool. The source-tier origin/capture_mode update is receipt-backed, while the "
+            "generated index session identity remains untouched for the normal reparse route."
+        ),
+        examples=(
+            "devtools workspace unknown-export-reclassification-apply",
+            "devtools workspace unknown-export-reclassification-apply --json",
+            "devtools workspace unknown-export-reclassification-apply --apply "
+            "--backup-manifest /realm/staging/polylogue-backup/manifest.json",
         ),
     ),
     CommandSpec(

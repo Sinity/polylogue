@@ -38,6 +38,9 @@ def _candidate_payload(candidate: UnknownExportReclassificationCandidate) -> dic
     payload = asdict(candidate)
     payload["recovered_provider"] = candidate.recovered_provider.value if candidate.recovered_provider else None
     payload["recovered_origin"] = candidate.recovered_origin.value if candidate.recovered_origin else None
+    payload["previous_capture_mode"] = (
+        candidate.previous_capture_mode.value if candidate.previous_capture_mode else None
+    )
     return payload
 
 

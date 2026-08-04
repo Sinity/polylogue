@@ -41,6 +41,11 @@ from polylogue.storage.blob_store import BlobStore
 #: scan every ``unknown-export`` row regardless of where it came from.
 DEFAULT_SOURCE_PATH_LIKE: Final = "%browser-capture%"
 
+#: The durable repair is intentionally narrower than the report. The bead's
+#: measured population is the ChatGPT browser-capture spool, and the actuator
+#: must not reclassify another provider merely because its envelope is valid.
+CHATGPT_BROWSER_CAPTURE_SOURCE_PATH_LIKE: Final = "%/browser-capture/chatgpt/%"
+
 
 class UnknownExportReclassificationVerdict:
     """Closed vocabulary for one ``unknown-export`` raw row's re-detection outcome."""
@@ -60,6 +65,7 @@ class UnknownExportReclassificationCandidate:
     verdict: str
     recovered_provider: Provider | None = None
     recovered_origin: Origin | None = None
+    previous_capture_mode: Provider | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +103,21 @@ class UnknownExportReclassificationPlan:
             counts[key] = counts.get(key, 0) + 1
         return counts
 
+    @property
+    def chatgpt_reclassifiable(self) -> tuple[UnknownExportReclassificationCandidate, ...]:
+        """Return only rows proven by an embedded ChatGPT provider marker."""
+        return tuple(
+            candidate
+            for candidate in self.reclassifiable
+            if candidate.recovered_provider is Provider.CHATGPT and candidate.recovered_origin is Origin.CHATGPT_EXPORT
+        )
+
+    @property
+    def non_chatgpt_reclassifiable(self) -> tuple[UnknownExportReclassificationCandidate, ...]:
+        """Return valid envelopes the ChatGPT-only repair deliberately leaves alone."""
+        chatgpt_ids = {candidate.raw_id for candidate in self.chatgpt_reclassifiable}
+        return tuple(candidate for candidate in self.reclassifiable if candidate.raw_id not in chatgpt_ids)
+
 
 def plan_unknown_export_reclassification(
     source_conn: sqlite3.Connection,
@@ -115,7 +136,8 @@ def plan_unknown_export_reclassification(
     source_conn.row_factory = sqlite3.Row
     try:
         query = (
-            "SELECT raw_id, source_path, blob_size, lower(hex(blob_hash)) AS blob_hash_hex "
+            "SELECT raw_id, source_path, blob_size, capture_mode, "
+            "lower(hex(blob_hash)) AS blob_hash_hex "
             "FROM raw_sessions WHERE origin = 'unknown-export'"
         )
         params: list[object] = []
@@ -135,6 +157,9 @@ def plan_unknown_export_reclassification(
             raw_id = str(row["raw_id"])
             source_path = str(row["source_path"])
             blob_size = int(row["blob_size"] or 0)
+            previous_capture_mode = (
+                Provider.from_string(str(row["capture_mode"])) if row["capture_mode"] is not None else None
+            )
             blob_hash_hex = row["blob_hash_hex"]
             if blob_hash_hex is None or not blob_store.exists(blob_hash_hex):
                 blob_missing.append(
@@ -143,6 +168,7 @@ def plan_unknown_export_reclassification(
                         source_path=source_path,
                         blob_size=blob_size,
                         verdict=UnknownExportReclassificationVerdict.BLOB_MISSING,
+                        previous_capture_mode=previous_capture_mode,
                     )
                 )
                 continue
@@ -155,6 +181,7 @@ def plan_unknown_export_reclassification(
                         source_path=source_path,
                         blob_size=blob_size,
                         verdict=UnknownExportReclassificationVerdict.STILL_UNKNOWN,
+                        previous_capture_mode=previous_capture_mode,
                     )
                 )
                 continue
@@ -167,6 +194,7 @@ def plan_unknown_export_reclassification(
                     verdict=UnknownExportReclassificationVerdict.RECLASSIFIABLE,
                     recovered_provider=provider,
                     recovered_origin=origin_from_provider(provider),
+                    previous_capture_mode=previous_capture_mode,
                 )
             )
 
@@ -181,6 +209,7 @@ def plan_unknown_export_reclassification(
 
 
 __all__ = [
+    "CHATGPT_BROWSER_CAPTURE_SOURCE_PATH_LIKE",
     "DEFAULT_SOURCE_PATH_LIKE",
     "UnknownExportReclassificationCandidate",
     "UnknownExportReclassificationPlan",
