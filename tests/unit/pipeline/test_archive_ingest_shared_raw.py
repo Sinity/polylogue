@@ -48,9 +48,10 @@ from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
+def _write_carryover_chain(root: Path, *, session_prefix: str = "") -> tuple[Path, Path]:
     """Write parent-session.jsonl (real "parent" session) + child-session.jsonl
     (a 1-record carryover of parent's tail under `sessionId=parent-session`,
     then real "child-session" content) -- the exact structural shape found in
@@ -60,6 +61,8 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
     on, so the fixture must use real-shaped filenames, not human-readable
     stand-ins, to exercise it honestly).
     """
+    parent_session = f"{session_prefix}parent-session"
+    child_session = f"{session_prefix}child-session"
     parent_file = root / "parent-session.jsonl"
     child_file = root / "child-session.jsonl"
 
@@ -80,8 +83,8 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
     parent_file.write_text(
         "\n".join(
             [
-                rec("parent-session", "p-u1", "user", "p1"),
-                rec("parent-session", "p-a1", "assistant", "p2", parent_uuid="p-u1"),
+                rec(parent_session, "p-u1", "user", "p1"),
+                rec(parent_session, "p-a1", "assistant", "p2", parent_uuid="p-u1"),
             ]
         )
         + "\n"
@@ -92,14 +95,14 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
                 # Boundary carryover: same conversation thread, still tagged
                 # with the PARENT's sessionId, referencing parent's last uuid.
                 rec(
-                    "parent-session",
+                    parent_session,
                     "carryover",
                     "user",
                     "[Request interrupted by user for tool use]",
                     parent_uuid="p-a1",
                 ),
-                rec("child-session", "c-u1", "user", "c1"),
-                rec("child-session", "c-a1", "assistant", "c2", parent_uuid="c-u1"),
+                rec(child_session, "c-u1", "user", "c1"),
+                rec(child_session, "c-a1", "assistant", "c2", parent_uuid="c-u1"),
             ]
         )
         + "\n"
@@ -370,3 +373,58 @@ async def test_reordered_grouped_reingest_keeps_raw_identity_and_memberships(
         ("claude-code:parent-session:child-session", "parent-session:child-session"),
         ("claude-code:child-session", "child-session"),
     }
+
+
+@pytest.mark.asyncio
+async def test_batched_grouped_ingest_commits_census_before_next_raw(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grouped raw publication must not wait behind the index message batch."""
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    # Keep the index transaction open across both files. The default production
+    # threshold has the same shape for this small demo-sized input.
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "1000")
+    archive_root = workspace_env["archive_root"]
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    _first_parent, first_child = _write_carryover_chain(first_root)
+    _second_parent, second_child = _write_carryover_chain(second_root, session_prefix="second-")
+
+    original_census = ArchiveStore.replace_raw_membership_census
+    census_calls = 0
+
+    def require_source_transaction(
+        archive: ArchiveStore,
+        raw_id: str,
+        sessions: list[ParsedSession] | None,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal census_calls
+        census_calls += 1
+        assert kwargs["manage_transaction"] is True
+        original_census(archive, raw_id, sessions, **kwargs)
+
+    monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=first_child), Source(name="claude-code", path=second_child)],
+        parse_workers=1,
+    )
+
+    # Anti-vacuity: this calls the production grouped parser, raw admission,
+    # source census, and index writer with a positive batch threshold. Removing
+    # the source-tier transaction ownership fix fails at the first real census
+    # call, and without that guard the next file's publisher blocks on the
+    # census transaction's source.db write lock.
+    assert result.parse_failures == 0
+    assert census_calls == 4
+    assert result.counts["sessions"] == 4
+    assert len(_raw_rows_for_path(archive_root / "source.db", str(first_child))) == 1
+    assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 4

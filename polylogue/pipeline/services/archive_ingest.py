@@ -219,7 +219,11 @@ async def parse_sources_archive(
                         list(memberships.values()),
                         parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
                         censused_at_ms=acquired_at_ms,
-                        manage_transaction=not batched,
+                        # This mutates durable source.db state. Its transaction
+                        # must close before the next grouped raw publisher can
+                        # reserve through its separate source connection;
+                        # index message batching applies only to index.db.
+                        manage_transaction=True,
                     )
             except ContentExcisedError as exc:
                 # The archive can forget on purpose (polylogue-27m): this raw
