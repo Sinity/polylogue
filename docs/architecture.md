@@ -250,10 +250,10 @@ The adapter lives in `polylogue/sources/parsers/antigravity.py`:
 
 The ingest path is layered in `polylogue/sources/source_parsing.py`: when the
 source is `antigravity` and a `conversations/` subdirectory exists, the
-language-server export runs first; any `AntigravityExportError` (binary not
-found, connection failure, malformed response) is logged and the source falls
-back to the existing brain-artifact metadata walk. Both paths emit normalized
-`Provider.ANTIGRAVITY` sessions.
+language-server export is the only session route. A missing directory or any
+`AntigravityExportError` is logged as an explicit coverage gap. Brain-artifact
+`*.md.metadata.json` files remain artifact-only, so an unavailable exporter
+cannot pollute session or schema-inference populations with fragment sessions.
 
 ## Key Abstractions
 

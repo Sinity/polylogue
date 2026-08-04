@@ -189,11 +189,6 @@ def _classify_artifact_path_strong(
             # language-server export route now acquires directly --
             # polylogue-eo81, GH #1764). Still accounted for via
             # ``raw_artifacts.artifact_kind`` rather than silently dropped.
-            # The one legitimate use of this shape -- a degraded fallback
-            # when the language server truly cannot be reached -- is wired
-            # explicitly in ``source_parsing._iter_antigravity_brain_metadata_fallback``,
-            # which calls ``parse_brain_metadata`` directly and bypasses this
-            # path-only classification.
             return ArtifactClassification(
                 provider=provider_token,
                 kind=ArtifactKind.AGENT_SIDECAR_META,
