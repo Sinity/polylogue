@@ -98,8 +98,6 @@ def reindex_canary_command(
             sample_session_ids=sample_session_id,
             no_promote=no_promote,
         )
-        if result.comparison.differences and review_manifest is None:
-            raise UnclassifiedCanaryDiffError("non-empty canary differences require --review-manifest")
         reviews = load_canary_review_manifest(review_manifest) if review_manifest is not None else ()
         durable = write_canary_report(
             report_path,
@@ -107,8 +105,17 @@ def reindex_canary_command(
             comparison=result.comparison,
             rebuild_receipt=result.rebuild_receipt,
             reviews=reviews,
+            allow_unreviewed=review_manifest is None,
         )
         load_canary_report(report_path)
+        if result.comparison.differences and review_manifest is None:
+            identities = [dict(item.identity) for item in result.comparison.differences]
+            raise UnclassifiedCanaryDiffError(
+                "unreviewed canary report written to "
+                + str(report_path)
+                + "; observed identities="
+                + json.dumps(identities, sort_keys=True)
+            )
     except UnclassifiedCanaryDiffError as exc:
         raise click.ClickException(str(exc)) from exc
     except (OSError, RuntimeError, ValueError) as exc:
