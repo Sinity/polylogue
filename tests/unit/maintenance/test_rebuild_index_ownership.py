@@ -41,7 +41,9 @@ def test_rebuild_refuses_when_archive_location_already_owned(tmp_path: Path) -> 
             rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
         # Failure happened before any generation bookkeeping was created.
         assert not (root / ".index-generations").exists()
-        assert not (root / ".index-rebuild.lock").exists()
+        # The rebuild lease is now deliberately acquired before the general
+        # archive-location ownership attempt.  Its released lock file may
+        # remain as a diagnostic artifact, but no generation may be created.
     finally:
         owned.release()
 

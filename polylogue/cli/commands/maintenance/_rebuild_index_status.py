@@ -81,10 +81,20 @@ def rebuild_index_status_command(
             f"Transaction:  status={transaction['status']} "
             f"processed_raw_count={transaction['processed_raw_count']:,} "
             f"processed_blob_bytes={transaction['processed_blob_bytes']:,} "
-            f"last_raw_id={transaction['last_raw_id']} updated_at_ms={transaction['updated_at_ms']}"
+            f"last_raw_id={transaction['last_raw_id']} updated_at_ms={transaction['updated_at_ms']} "
+            f"heartbeat_at_ms={transaction.get('heartbeat_at_ms')}"
         )
     else:
         click.echo("Transaction:  none")
+    operation = status["operation"]
+    assert isinstance(operation, dict)
+    owner = operation["owner"]
+    assert isinstance(owner, dict)
+    click.echo(
+        f"Operation:    owner={owner.get('generation_owner_id')} pid={owner.get('pid')} "
+        f"host={owner.get('host')} cursor={operation.get('cursor')} "
+        f"recovery_state={operation.get('recovery_state')}"
+    )
     delta = status["delta"]
     if isinstance(delta, dict):
         click.echo(f"Delta:        source_snapshot_matches={delta['source_snapshot_matches']}")

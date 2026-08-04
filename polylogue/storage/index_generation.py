@@ -117,6 +117,13 @@ class IndexRebuildTransaction:
     pass_byte_budget: int | None = None
     pass_deadline_ms: int | None = None
     error: str | None = None
+    # The transaction record is also the durable operation receipt.  Keep the
+    # operating process separate from the opaque generation owner so a status
+    # reader can tell a retained candidate from the process that last made
+    # progress on it.
+    owner_pid: int | None = None
+    owner_host: str | None = None
+    heartbeat_at_ms: int | None = None
     # polylogue-v6i3: set once a RESUMED pass has explicitly emptied this
     # generation's messages_fts/blocks_command_trigram (defensive idempotent
     # bookkeeping -- a fresh generation starts empty by construction and never
@@ -461,6 +468,9 @@ class IndexGenerationStore:
             updated_at_ms=now,
             pass_byte_budget=pass_byte_budget,
             pass_deadline_ms=pass_deadline_ms,
+            owner_pid=os.getpid(),
+            owner_host=socket.gethostname(),
+            heartbeat_at_ms=now,
         )
         self.save_transaction(transaction)
         return transaction
@@ -494,7 +504,16 @@ class IndexGenerationStore:
 
     def save_transaction(self, transaction: IndexRebuildTransaction) -> IndexRebuildTransaction:
         """Atomically checkpoint a transaction after one bounded replay pass."""
-        updated = IndexRebuildTransaction(**{**asdict(transaction), "updated_at_ms": int(time.time() * 1000)})
+        now = int(time.time() * 1000)
+        updated = IndexRebuildTransaction(
+            **{
+                **asdict(transaction),
+                "updated_at_ms": now,
+                "owner_pid": os.getpid(),
+                "owner_host": socket.gethostname(),
+                "heartbeat_at_ms": now,
+            }
+        )
         path = self._transaction_path(transaction.operation_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".json.tmp")

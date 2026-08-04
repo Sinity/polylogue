@@ -145,9 +145,15 @@ def test_reports_transaction_cursor_and_no_delta_when_source_unchanged(tmp_path:
     assert isinstance(txn_payload, dict)
     assert txn_payload["operation_id"] == "status-probe-op"
     assert txn_payload["processed_raw_count"] == 1
+    assert txn_payload["heartbeat_at_ms"] is not None
     delta = status["delta"]
     assert isinstance(delta, dict)
     assert delta["source_snapshot_matches"] is True
+    operation = status["operation"]
+    assert isinstance(operation, dict)
+    assert operation["cursor"] is not None
+    assert operation["heartbeat"] == {"at_ms": txn_payload["heartbeat_at_ms"]}
+    assert operation["recovery_state"] == "paused"
     assert status["recovery"] == []
 
 
