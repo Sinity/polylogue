@@ -112,7 +112,7 @@ logger = get_logger(__name__)
 
 # Derived from the canonical tier specs so the expected schema version per tier
 # can never drift from ARCHIVE_VERSION_BY_TIER. (tier, filename, expected_version,
-# backup_required), preserving the source→index→embeddings→user→ops order.
+# backup_required), preserving the canonical archive-tier order.
 _ARCHIVE_TIER_FILES: tuple[tuple[str, str, int, bool], ...] = tuple(
     (spec.tier.value, spec.filename, spec.version, spec.backup_required) for spec in ARCHIVE_TIER_SPECS.values()
 )

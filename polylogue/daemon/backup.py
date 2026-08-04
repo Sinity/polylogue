@@ -29,7 +29,11 @@ from pydantic import BaseModel
 
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
-from polylogue.storage.backup_attestation import VERIFICATION_RECEIPT_FORMAT, sign_verification_receipt
+from polylogue.storage.backup_attestation import (
+    VERIFICATION_RECEIPT_FORMAT,
+    archive_tier_paths,
+    sign_verification_receipt,
+)
 from polylogue.storage.blob_integrity import BlobReferenceDebtReport, referenced_blob_hashes, scan_blob_reference_debt
 from polylogue.storage.blob_store import BlobStore
 
@@ -194,14 +198,7 @@ def _json_str_list(value: object) -> list[str]:
 
 
 def _all_archive_tiers(root: Path) -> dict[str, Path]:
-    return {
-        "source": root / "source.db",
-        "index": root / "index.db",
-        "embeddings": root / "embeddings.db",
-        "user": root / "user.db",
-        "ops": root / "ops.db",
-        "audit": root / "audit.db",
-    }
+    return archive_tier_paths(root)
 
 
 def _profile_archive_tiers(root: Path, profile: BackupProfile) -> dict[str, Path]:

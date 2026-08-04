@@ -12,8 +12,10 @@ from devtools.ingest_amplification_probe import (
     main,
     measure_ingest_amplification,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
-_COMPONENTS = {"source", "index", "embeddings", "user", "ops", "blob_store"}
+_TIER_NAMES = tuple(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
+_COMPONENTS = {*_TIER_NAMES, "blob_store"}
 _DELTA_KEYS = {"allocated_bytes", "wal_bytes", "total_bytes"}
 
 
@@ -24,7 +26,7 @@ def test_measure_emits_expected_shape(tmp_path: Path) -> None:
     assert report["report_version"] == REPORT_VERSION
     assert report["tool"] == "bench ingest-amplification"
     assert set(report["components"]) == _COMPONENTS
-    assert report["tiers"] == ["source", "index", "embeddings", "user", "ops"]
+    assert report["tiers"] == list(_TIER_NAMES)
 
     batches = report["batches"]
     assert len(batches) == 3

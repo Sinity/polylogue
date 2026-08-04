@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ArchiveInitAction, build_archive_init_plan
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -24,13 +25,9 @@ def test_archive_plan_creates_absent_tier_targets(tmp_path: Path) -> None:
 
     assert plan.ready is True
     assert plan.blockers == ()
-    assert {tier_plan.tier: tier_plan.action for tier_plan in plan.tiers} == {
-        ArchiveTier.SOURCE: ArchiveInitAction.CREATE,
-        ArchiveTier.INDEX: ArchiveInitAction.CREATE,
-        ArchiveTier.EMBEDDINGS: ArchiveInitAction.CREATE,
-        ArchiveTier.USER: ArchiveInitAction.CREATE,
-        ArchiveTier.OPS: ArchiveInitAction.CREATE,
-    }
+    assert {tier_plan.tier: tier_plan.action for tier_plan in plan.tiers} == dict.fromkeys(
+        ARCHIVE_TIER_SPECS, ArchiveInitAction.CREATE
+    )
 
 
 def test_archive_plan_blocks_existing_targets_by_default(tmp_path: Path) -> None:
@@ -46,11 +43,8 @@ def test_archive_plan_blocks_existing_targets_by_default(tmp_path: Path) -> None
 
 
 def test_archive_plan_classifies_replace_existing_by_durability(tmp_path: Path) -> None:
-    _planted_db(tmp_path / "source.db", user_version=1)
-    _planted_db(tmp_path / "index.db", user_version=1)
-    _planted_db(tmp_path / "embeddings.db", user_version=1)
-    _planted_db(tmp_path / "user.db", user_version=1)
-    _planted_db(tmp_path / "ops.db", user_version=1)
+    for spec in ARCHIVE_TIER_SPECS.values():
+        _planted_db(tmp_path / spec.filename, user_version=1)
 
     plan = build_archive_init_plan(
         archive_root=tmp_path,
@@ -59,11 +53,8 @@ def test_archive_plan_classifies_replace_existing_by_durability(tmp_path: Path) 
 
     assert plan.ready is True
     assert {tier_plan.tier: tier_plan.action for tier_plan in plan.tiers} == {
-        ArchiveTier.SOURCE: ArchiveInitAction.REPLACE_WITH_BACKUP,
-        ArchiveTier.INDEX: ArchiveInitAction.RECREATE_DISPOSABLE,
-        ArchiveTier.EMBEDDINGS: ArchiveInitAction.REPLACE_WITH_BACKUP,
-        ArchiveTier.USER: ArchiveInitAction.REPLACE_WITH_BACKUP,
-        ArchiveTier.OPS: ArchiveInitAction.RECREATE_DISPOSABLE,
+        tier: (ArchiveInitAction.REPLACE_WITH_BACKUP if spec.backup_required else ArchiveInitAction.RECREATE_DISPOSABLE)
+        for tier, spec in ARCHIVE_TIER_SPECS.items()
     }
 
 

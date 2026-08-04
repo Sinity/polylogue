@@ -37,8 +37,10 @@ from polylogue.daemon.metrics import (
     PROMETHEUS_CONTENT_TYPE,
     format_metrics,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 pytestmark = pytest.mark.uses_real_clock(
     "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
@@ -169,17 +171,11 @@ class TestFormatMetricsExpositionShape:
             assert len(labels["revision"]) == 40
 
     def test_archive_storage_metrics_report_archive_file_sets(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-        for filename, tier in (
-            ("source.db", ArchiveTier.SOURCE),
-            ("index.db", ArchiveTier.INDEX),
-            ("user.db", ArchiveTier.USER),
-            ("ops.db", ArchiveTier.OPS),
-        ):
-            initialize_archive_database(tmp_path / filename, tier)
+        for spec in ARCHIVE_TIER_SPECS.values():
+            if spec.tier is not ArchiveTier.EMBEDDINGS:
+                initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "embeddings.db") as conn:
             conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
             conn.commit()
@@ -189,7 +185,7 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_archive_tier_present{tier="source"} 1' in body
         assert 'polylogue_archive_tier_present{tier="index"} 1' in body
         assert 'polylogue_archive_tier_present{tier="embeddings"} 1' in body
-        assert 'polylogue_archive_tier_count{state="present"} 5' in body
+        assert f'polylogue_archive_tier_count{{state="present"}} {len(ARCHIVE_TIER_SPECS)}' in body
         assert 'polylogue_archive_tier_count{state="missing"} 0' in body
         assert f'polylogue_archive_tier_user_version{{tier="source"}} {SOURCE_SCHEMA_VERSION}' in body
         assert 'polylogue_archive_storage_layout{layout="archive_complete"} 1' in body
@@ -227,9 +223,6 @@ class TestFormatMetricsExpositionShape:
         assert "polylogue_archive_ready 0" in rebuilding_body
 
     def test_db_space_metrics_report_wal_and_planner_stats(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
         index_db = tmp_path / "index.db"
         initialize_archive_database(index_db, ArchiveTier.INDEX)
         with sqlite3.connect(index_db) as conn:
@@ -242,9 +235,6 @@ class TestFormatMetricsExpositionShape:
 
     def test_archive_storage_metrics_report_layout_blockers(self, tmp_path: Path) -> None:
         """Partial archive roots expose blockers without activating unrelated files."""
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
         initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
         unrelated_db = tmp_path / "custom.sqlite"
         with sqlite3.connect(unrelated_db) as conn:
@@ -255,7 +245,7 @@ class TestFormatMetricsExpositionShape:
 
         assert 'polylogue_archive_tier_present{tier="ops"} 1' in body
         assert 'polylogue_archive_tier_count{state="present"} 1' in body
-        assert 'polylogue_archive_tier_count{state="missing"} 4' in body
+        assert f'polylogue_archive_tier_count{{state="missing"}} {len(ARCHIVE_TIER_SPECS) - 1}' in body
         assert 'polylogue_archive_storage_layout{layout="archive_partial"} 1' in body
         assert 'polylogue_archive_storage_layout{layout="archive_missing"} 0' in body
         assert 'polylogue_archive_storage_ready{state="archive_runtime"} 0' in body
@@ -264,22 +254,16 @@ class TestFormatMetricsExpositionShape:
         assert 'polylogue_archive_active_store{store="empty"} 1' in body
         assert 'polylogue_archive_active_tier_role{role="unknown"} 1' in body
         assert "polylogue_archive_ready 0" in body
-        assert "polylogue_archive_blocker_count 4" in body
+        assert (
+            f"polylogue_archive_blocker_count {1 + sum(spec.backup_required for spec in ARCHIVE_TIER_SPECS.values())}"
+            in body
+        )
         assert 'polylogue_archive_blocker{blocker="missing_archive_tiers"} 1' in body
         assert 'polylogue_archive_blocker{blocker="missing_backup_required_tier:source"} 1' in body
 
     def test_archive_storage_metrics_gate_runtime_readiness_on_schema_match(self, tmp_path: Path) -> None:
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-        for filename, tier in (
-            ("source.db", ArchiveTier.SOURCE),
-            ("index.db", ArchiveTier.INDEX),
-            ("embeddings.db", ArchiveTier.EMBEDDINGS),
-            ("user.db", ArchiveTier.USER),
-            ("ops.db", ArchiveTier.OPS),
-        ):
-            initialize_archive_database(tmp_path / filename, tier)
+        for spec in ARCHIVE_TIER_SPECS.values():
+            initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute("PRAGMA user_version = 1")
 

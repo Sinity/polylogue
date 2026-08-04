@@ -732,11 +732,13 @@ def test_archive_tier_specs_capture_file_and_backup_policy() -> None:
         ArchiveTier.EMBEDDINGS: "embeddings.db",
         ArchiveTier.USER: "user.db",
         ArchiveTier.OPS: "ops.db",
+        ArchiveTier.AUDIT: "audit.db",
     }
     assert {tier.value for tier, spec in ARCHIVE_TIER_SPECS.items() if spec.backup_required} == {
         "source",
         "embeddings",
         "user",
+        "audit",
     }
 
 

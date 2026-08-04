@@ -10,6 +10,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_init import (
     ArchiveInitBlockedError,
     initialize_archive_tier_files,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
 
 def _fake_initialize_archive_database(path: Path, tier: object) -> None:
@@ -33,14 +34,8 @@ def test_initialize_archive_tier_files_creates_all_tiers(
     result = initialize_archive_tier_files(archive_root=tmp_path)
 
     assert not (tmp_path / "stray.sqlite.retired.bak").exists()
-    assert {tier.path.name for tier in result.tier_results} == {
-        "source.db",
-        "index.db",
-        "embeddings.db",
-        "user.db",
-        "ops.db",
-    }
-    for name in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db"):
+    assert {tier.path.name for tier in result.tier_results} == {spec.filename for spec in ARCHIVE_TIER_SPECS.values()}
+    for name in (spec.filename for spec in ARCHIVE_TIER_SPECS.values()):
         conn = sqlite3.connect(tmp_path / name)
         try:
             assert conn.execute("SELECT COUNT(*) FROM initialized").fetchone()[0] == 1
@@ -52,11 +47,8 @@ def test_initialize_archive_tier_files_backs_up_replaceable_targets(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    (tmp_path / "source.db").write_text("existing source target", encoding="utf-8")
-    (tmp_path / "index.db").write_text("existing index target", encoding="utf-8")
-    (tmp_path / "embeddings.db").write_text("existing embeddings target", encoding="utf-8")
-    (tmp_path / "user.db").write_text("existing user target", encoding="utf-8")
-    (tmp_path / "ops.db").write_text("existing ops target", encoding="utf-8")
+    for spec in ARCHIVE_TIER_SPECS.values():
+        (tmp_path / spec.filename).write_text(f"existing {spec.tier.value} target", encoding="utf-8")
     monkeypatch.setattr(archive_init, "initialize_archive_database", _fake_initialize_archive_database)
 
     result = initialize_archive_tier_files(
@@ -67,6 +59,7 @@ def test_initialize_archive_tier_files_backs_up_replaceable_targets(
     assert (tmp_path / "source.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing source target"
     assert (tmp_path / "embeddings.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing embeddings target"
     assert (tmp_path / "user.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing user target"
+    assert (tmp_path / "audit.db.pre-archive-init.bak").read_text(encoding="utf-8") == "existing audit target"
     assert not (tmp_path / "index.db.pre-archive-init.bak").exists()
     assert not (tmp_path / "ops.db.pre-archive-init.bak").exists()
     assert {tier.initialized for tier in result.tier_results} == {True}

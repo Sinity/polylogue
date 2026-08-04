@@ -49,7 +49,7 @@ _DEFAULT_MESSAGES_MAX = 8
 
 # Stable tier ordering for the report, sourced from the canonical tier specs.
 _TIER_ORDER: tuple[str, ...] = tuple(tier.value for tier in ARCHIVE_TIER_SPECS)
-# Attributed write surfaces: the five tier DB files plus the content-addressed
+# Attributed write surfaces: the archive tier DB files plus the content-addressed
 # blob store. Raw payloads land in the blob store (filesystem), not source.db,
 # so excluding it would understate write amplification.
 _BLOB_COMPONENT = "blob_store"
@@ -200,7 +200,7 @@ def measure_ingest_amplification(
 
         reset_blob_store()
 
-        # Bootstrap the five-tier archive file set up front so per-batch deltas
+        # Bootstrap the archive file set up front so per-batch deltas
         # exclude the one-time schema-DDL cost.
         ArchiveStore.open_existing(archive_root, read_only=False).close()
 

@@ -21,8 +21,8 @@ from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
-# Canonical tier order (source -> index -> embeddings -> user -> ops), taken
-# straight from the spec registry so it never diverges from the runtime tiers.
+# Canonical tier order, taken straight from the spec registry so it never
+# diverges from the runtime tiers.
 ARCHIVE_TIER_ORDER: tuple[str, ...] = tuple(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 
 # Tiers whose absence is itself a layout blocker because they carry

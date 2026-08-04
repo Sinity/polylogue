@@ -67,7 +67,7 @@ def build_archive_init_plan(
     blockers: list[str] = []
 
     tier_plans: list[ArchiveTierPlan] = []
-    for tier in ArchiveTier:
+    for tier in ARCHIVE_TIER_SPECS:
         tier_plan = _plan_tier(
             archive_root=resolved_archive_root,
             tier=tier,
