@@ -26,6 +26,7 @@ from polylogue.sources.source_parsing import (
 )
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
+from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
@@ -133,6 +134,7 @@ async def parse_sources_archive(
     # source_path, source_index, blob_hash) so a later re-ingest of identical
     # bytes resolves to the SAME raw_id every time. Ref polylogue-sjf6.
     shared_raw_ids: dict[tuple[str, str, int, str], str] = {}
+    shared_raw_memberships: dict[tuple[str, str, int, str], dict[str, ParsedSession]] = {}
 
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         counters["raw_rows"] += _admit_non_session_origin_artifacts(
@@ -198,6 +200,7 @@ async def parse_sources_archive(
                         acquired_at_ms=acquired_at_ms,
                         source_index=source_index,
                         raw_id=raw_id,
+                        shared_raw=shared_key is not None,
                         logical_source_key=(
                             f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
                         ),
@@ -207,8 +210,17 @@ async def parse_sources_archive(
                             raw_data.blob_publication_receipt_id if raw_data is not None else None
                         ),
                     )
-                    if shared_key is not None:
-                        shared_raw_ids[shared_key] = write_result.raw_id
+                if shared_key is not None:
+                    shared_raw_ids[shared_key] = write_result.raw_id
+                    memberships = shared_raw_memberships.setdefault(shared_key, {})
+                    memberships[session.provider_session_id] = session
+                    archive.replace_raw_membership_census(
+                        write_result.raw_id,
+                        list(memberships.values()),
+                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        censused_at_ms=acquired_at_ms,
+                        manage_transaction=not batched,
+                    )
             except ContentExcisedError as exc:
                 # The archive can forget on purpose (polylogue-27m): this raw
                 # payload's content hash is durably excised, so acquire

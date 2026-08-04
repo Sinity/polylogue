@@ -3114,6 +3114,7 @@ def admit_raw_and_parsed_result(
     logical_source_key: str,
     source_index: int = 0,
     raw_id: str | None = None,
+    shared_raw: bool = False,
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     manage_transaction: bool = True,
@@ -3139,6 +3140,12 @@ def admit_raw_and_parsed_result(
     binding) have their own governed paths and are explicitly out of scope
     for this entrypoint -- see the module docstring of ``raw_admission.py``
     and polylogue-1fijp's call-site survey notes.
+
+    ``shared_raw=True`` is the grouped-capture path: the raw row is keyed only
+    by its physical acquisition evidence (``native_id`` is NULL and no
+    per-session revision envelope is attached), while the caller records each
+    parsed session in ``raw_session_memberships``. This keeps raw identity
+    independent of grouped-session write order.
     """
 
     def add_timing(name: str, started_at: float) -> None:
@@ -3161,35 +3168,52 @@ def admit_raw_and_parsed_result(
     source_conn = store._ensure_source_conn()
     add_timing("source_connect", t0)
     t0 = time.perf_counter()
-    admission = admit_raw_observation(
-        source_conn,
-        origin=origin_from_provider(session.source_name),
-        capture_mode=session.source_name,
-        source_path=source_path,
-        source_index=source_index,
-        payload=payload,
-        acquired_at_ms=acquired_at_ms,
-        native_id=session.provider_session_id,
-        raw_id=raw_id,
-        logical_source_key=logical_source_key,
-        prior_head=None,
-        blob_publication_receipt_id=blob_publication_receipt_id,
-        additional_blob_refs=attachment_blob_refs,
-        manage_transaction=True,
-    )
-    add_timing("source_raw_write", t0)
-    if admission.arm is not RawAdmissionArm.BASELINE:
-        raise RuntimeError(
-            f"admit_raw_and_parsed_result: expected a BASELINE admission for "
-            f"logical_source_key={logical_source_key!r} (prior_head=None), got "
-            f"{admission.arm!r} instead -- the caller must guarantee no prior raw "
-            "observation exists for this key before calling this entrypoint"
+    if shared_raw:
+        resolved_raw_id = write_source_raw_session(
+            source_conn,
+            origin=origin_from_provider(session.source_name),
+            capture_mode=session.source_name,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=None,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=attachment_blob_refs,
+            manage_transaction=True,
         )
+    else:
+        admission = admit_raw_observation(
+            source_conn,
+            origin=origin_from_provider(session.source_name),
+            capture_mode=session.source_name,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=session.provider_session_id,
+            raw_id=raw_id,
+            logical_source_key=logical_source_key,
+            prior_head=None,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=attachment_blob_refs,
+            manage_transaction=True,
+        )
+        resolved_raw_id = admission.raw_id
+        if admission.arm is not RawAdmissionArm.BASELINE:
+            raise RuntimeError(
+                f"admit_raw_and_parsed_result: expected a BASELINE admission for "
+                f"logical_source_key={logical_source_key!r} (prior_head=None), got "
+                f"{admission.arm!r} instead -- the caller must guarantee no prior raw "
+                "observation exists for this key before calling this entrypoint"
+            )
+    add_timing("source_raw_write", t0)
     t0 = time.perf_counter()
     result = _index_parsed_for_retained_raw(
         store,
         session,
-        raw_id=admission.raw_id,
+        raw_id=resolved_raw_id,
         source_index=source_index,
         stage_timings_s=stage_timings_s,
         stage_timing_prefix=stage_timing_prefix,
