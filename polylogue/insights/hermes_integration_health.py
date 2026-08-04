@@ -131,6 +131,7 @@ class HermesIntegrationHealth:
     parser_failures: tuple[HermesParserFailure, ...] = ()
     fidelity_capabilities: tuple[HermesFidelityCapabilityStatus, ...] = ()
     convergence_debt_failed_count: int = 0
+    convergence_debt_deferred_count: int = 0
     convergence_debt_retry_due_count: int = 0
     lifecycle_debt: HermesLifecycleDebtSummary = field(
         default_factory=lambda: HermesLifecycleDebtSummary(0, 0, 0, 0, ())
@@ -212,6 +213,7 @@ def build_hermes_integration_health(
     source_limit: int = _DEFAULT_SOURCE_LIMIT,
     session_limit: int = _DEFAULT_SESSION_LIMIT,
     convergence_debt_failed_count: int = 0,
+    convergence_debt_deferred_count: int = 0,
     convergence_debt_retry_due_count: int = 0,
 ) -> HermesIntegrationHealth:
     """Project one bounded Hermes integration health rollup.
@@ -223,7 +225,8 @@ def build_hermes_integration_health(
     filenames, not absolute paths, and evidence refs/ids, never rendered
     bytes or transcript text.
 
-    ``convergence_debt_failed_count``/``convergence_debt_retry_due_count``
+    ``convergence_debt_failed_count``/``convergence_debt_deferred_count``/
+    ``convergence_debt_retry_due_count``
     are pre-computed by the caller (bucketed to the Hermes source family via
     :func:`polylogue.daemon.convergence_debt_status.convergence_debt_summary_info`)
     because this module may not import ``polylogue.daemon`` directly.
@@ -355,6 +358,7 @@ def build_hermes_integration_health(
         parser_failures=parser_failures,
         fidelity_capabilities=tuple(sorted(capability_totals.values(), key=lambda item: item.capability)),
         convergence_debt_failed_count=convergence_debt_failed_count,
+        convergence_debt_deferred_count=convergence_debt_deferred_count,
         convergence_debt_retry_due_count=convergence_debt_retry_due_count,
         lifecycle_debt=lifecycle_debt,
         delivery_correlation=delivery_correlation,

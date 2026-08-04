@@ -1649,6 +1649,23 @@ class TestNoArchiveStatus:
 
         assert "87.5% indexed" in _combined_calls(env)
 
+    def test_daemon_status_renders_failed_and_deferred_convergence_debt_separately(self) -> None:
+        env = _make_app_env()
+
+        _show_daemon_status(
+            env,
+            {
+                "daemon_liveness": True,
+                "convergence": {
+                    "failed_count": 1,
+                    "deferred_count": 2,
+                    "retry_due_count": 1,
+                },
+            },
+        )
+
+        assert "Convergence debt: 1 failed, 2 deferred, 1 retry due" in _combined_calls(env)
+
     def test_daemon_status_treats_null_fts_coverage_as_unknown_progress(self) -> None:
         """A null coverage_pct must render as explicitly unknown, never a
         fabricated percentage (polylogue-roax): defaulting an unmeasured

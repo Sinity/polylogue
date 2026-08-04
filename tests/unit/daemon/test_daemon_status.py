@@ -1301,6 +1301,13 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
         subject_id=str(source),
         error="legacy payload missing provenance",
     )
+    cursor.record_convergence_debt(
+        stage="fts",
+        subject_type="source_path",
+        subject_id=str(source),
+        error="bounded work deferred",
+        deferred=True,
+    )
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -1315,19 +1322,20 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     convergence = payload["convergence"]
     assert isinstance(convergence, dict)
     assert convergence["failed_count"] == 1
+    assert convergence["deferred_count"] == 1
     stages = convergence["stage_summaries"]
     assert isinstance(stages, list)
-    first_stage = stages[0]
-    assert isinstance(first_stage, dict)
-    assert first_stage["stage"] == "insights"
+    assert {stage["stage"] for stage in stages if isinstance(stage, dict)} == {"fts", "insights"}
     recent = convergence["recent"]
     assert isinstance(recent, list)
     first_recent = recent[0]
     assert isinstance(first_recent, dict)
     assert first_recent["subject_id"] == str(source)
+    assert {item["status"] for item in recent if isinstance(item, dict)} == {"failed", "deferred"}
     lines = format_daemon_status_lines(payload)
-    assert "Convergence debt: 1 failed, 0 retry due" in lines
-    assert "  insights: 1 failed, 0 retry due" in lines
+    assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
+    assert "  insights: 1 failed, 0 deferred, 0 retry due" in lines
+    assert "  fts: 0 failed, 1 deferred, 0 retry due" in lines
 
 
 def test_daemon_status_payload_exposes_claim_guard_block(tmp_path: Path) -> None:

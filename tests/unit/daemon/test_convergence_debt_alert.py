@@ -88,7 +88,8 @@ def test_convergence_debt_summary_does_not_count_deferred_as_failed(tmp_path: Pa
     summary = convergence_debt_summary_info(db_path)
 
     assert summary.failed_count == 1
-    assert [item.subject_id for item in summary.recent] == ["conv-failed"]
+    assert summary.deferred_count == 1
+    assert {item.status for item in summary.recent} == {"failed", "deferred"}
 
 
 def test_convergence_debt_summary_prefers_populated_archive_ops(tmp_path: Path) -> None:
@@ -209,7 +210,8 @@ def test_convergence_debt_summary_treats_archive_deferred_as_authoritative(tmp_p
     summary = convergence_debt_summary_info(db_path)
 
     assert summary.failed_count == 0
-    assert summary.recent == []
+    assert summary.deferred_count == 1
+    assert summary.recent[0].status == "deferred"
 
 
 def test_convergence_debt_summary_ignores_old_single_file_debt_when_ops_empty(tmp_path: Path) -> None:
@@ -350,6 +352,17 @@ def test_evaluate_emits_no_alerts_when_below_warning() -> None:
     thresholds = ConvergenceDebtThresholds(default_warning=5, default_error=10)
     state = AlertDedupState()
     summary = _summary([_item(subject_id="/x/a.jsonl")])  # only one item
+
+    alerts = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=0.0)
+
+    assert alerts == []
+
+
+def test_evaluate_ignores_deliberate_deferred_debt() -> None:
+    thresholds = ConvergenceDebtThresholds(default_warning=1, default_error=1)
+    state = AlertDedupState()
+    deferred = _item(subject_id="/x/deferred.jsonl").model_copy(update={"status": "deferred", "retry_due": False})
+    summary = ConvergenceDebtSummary(deferred_count=1, recent=[deferred])
 
     alerts = evaluate_convergence_debt(summary, thresholds=thresholds, state=state, now=0.0)
 

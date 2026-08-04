@@ -223,6 +223,8 @@ def aggregate_debt_by_family(summary: ConvergenceDebtSummary) -> dict[str, int]:
     """
     counts: dict[str, int] = {}
     for item in summary.recent:
+        if item.status != "failed":
+            continue
         family = source_family_for_subject(item.subject_type, item.subject_id)
         counts[family] = counts.get(family, 0) + 1
     return counts

@@ -17,6 +17,7 @@ independent of any one stage's error text.
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from polylogue.daemon.convergence import FileState, StageState
@@ -26,6 +27,8 @@ from polylogue.sources.live.convergence_debt import (
     convergence_debt_from_states,
     is_deferred_stage_state,
 )
+from polylogue.sources.live.convergence_outcome import record_convergence_outcome
+from polylogue.sources.live.cursor import CursorStore
 
 
 def test_is_deferred_stage_state_true_only_for_pending() -> None:
@@ -102,3 +105,50 @@ def test_convergence_debt_from_states_propagates_deferred_flag() -> None:
 
     assert len(debts) == 1
     assert debts[0].deferred is True
+
+
+def test_record_convergence_outcome_persists_deferred_and_failed_statuses(tmp_path: Path) -> None:
+    """The post-ingest route must preserve classification in the ops ledger.
+
+    This exercises the production bridge from ``FileState`` classification
+    through ``record_convergence_outcome`` and ``CursorStore``. A test that
+    only checks the dataclass flag would pass even if the writer silently
+    converted every row back to ``status = 'failed'``.
+    """
+    deferred_path = tmp_path / "deferred.jsonl"
+    failed_path = tmp_path / "failed.jsonl"
+    deferred_debts = convergence_debt_from_state(
+        deferred_path,
+        FileState(
+            path=deferred_path,
+            stages={"fts": StageState.PENDING},
+            last_error="stage fts returned False",
+        ),
+    )
+    failed_debts = convergence_debt_from_state(
+        failed_path,
+        FileState(
+            path=failed_path,
+            stages={"fts": StageState.FAILED},
+            last_error="fts writer failed",
+        ),
+    )
+    cursor = CursorStore(tmp_path / "live.sqlite")
+
+    record_convergence_outcome(cursor, deferred_path, deferred_debts)
+    record_convergence_outcome(cursor, failed_path, failed_debts)
+
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        rows = dict(
+            conn.execute(
+                """
+                SELECT target_id, status
+                FROM convergence_debt
+                WHERE target_type = 'source_path'
+                """
+            ).fetchall()
+        )
+    assert rows == {
+        str(deferred_path): "deferred",
+        str(failed_path): "failed",
+    }

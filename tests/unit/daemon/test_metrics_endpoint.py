@@ -387,6 +387,7 @@ class TestFormatMetricsReadsArchiveState:
                     ("d1", "parse", "failed"),
                     ("d2", "parse", "failed"),
                     ("d3", "convergence", "failed"),
+                    ("d5", "convergence", "deferred"),
                     ("d4", "convergence", "resolved"),  # filtered
                 ],
             )
@@ -467,8 +468,9 @@ class TestFormatMetricsReadsArchiveState:
 
     def test_convergence_debt_grouped_by_stage(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))
-        assert 'polylogue_convergence_debt_count{stage="convergence"} 1' in body
-        assert 'polylogue_convergence_debt_count{stage="parse"} 2' in body
+        assert 'polylogue_convergence_debt_count{stage="convergence",status="failed"} 1' in body
+        assert 'polylogue_convergence_debt_count{stage="convergence",status="deferred"} 1' in body
+        assert 'polylogue_convergence_debt_count{stage="parse",status="failed"} 2' in body
 
     def test_convergence_debt_prefers_archive_ops(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -495,10 +497,20 @@ class TestFormatMetricsReadsArchiveState:
                 attempts=1,
                 created_at_ms=1_770_000_001_000,
             )
+            add_convergence_debt(
+                conn,
+                stage="session_profile",
+                target_type="session_id",
+                target_id="conv-3",
+                status="deferred",
+                attempts=1,
+                created_at_ms=1_770_000_002_000,
+            )
 
         body = format_metrics(db)
 
-        assert 'polylogue_convergence_debt_count{stage="session_profile"} 2' in body
+        assert 'polylogue_convergence_debt_count{stage="session_profile",status="failed"} 2' in body
+        assert 'polylogue_convergence_debt_count{stage="session_profile",status="deferred"} 1' in body
         assert 'polylogue_convergence_debt_count{stage="parse"}' not in body
 
     def test_live_ingest_metrics_prefer_archive_ops_when_present(self, tmp_path: Path) -> None:
@@ -607,7 +619,7 @@ class TestFormatMetricsReadsArchiveState:
 
         assert 'polylogue_live_ingest_attempts_total{status="running"} 1' in body
         assert "polylogue_live_ingest_attempts_in_flight 1" in body
-        assert 'polylogue_convergence_debt_count{stage="session_profile"} 1' in body
+        assert 'polylogue_convergence_debt_count{stage="session_profile",status="failed"} 1' in body
 
     def test_fts_trigger_presence_partial(self, tmp_path: Path) -> None:
         body = format_metrics(self._make_db(tmp_path))

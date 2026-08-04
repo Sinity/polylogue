@@ -3087,8 +3087,9 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     convergence = payload.get("convergence")
     if isinstance(convergence, dict):
         failed_count = _safe_int(convergence.get("failed_count"))
+        deferred_count = _safe_int(convergence.get("deferred_count"))
         retry_due_count = _safe_int(convergence.get("retry_due_count"))
-        lines.append(f"Convergence debt: {failed_count} failed, {retry_due_count} retry due")
+        lines.append(f"Convergence debt: {failed_count} failed, {deferred_count} deferred, {retry_due_count} retry due")
         stages = convergence.get("stage_summaries")
         if isinstance(stages, list):
             for stage in stages[:5]:
@@ -3096,6 +3097,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     lines.append(
                         "  "
                         f"{stage.get('stage')}: {stage.get('failed_count', 0)} failed, "
+                        f"{stage.get('deferred_count', 0)} deferred, "
                         f"{stage.get('retry_due_count', 0)} retry due"
                     )
         families = convergence.get("family_summaries")
@@ -3103,7 +3105,10 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             lines.append("  by source family:")
             for family in families[:5]:
                 if isinstance(family, dict):
-                    lines.append(f"    {family.get('family')}: {family.get('failed_count', 0)} failed")
+                    lines.append(
+                        f"    {family.get('family')}: {family.get('failed_count', 0)} failed, "
+                        f"{family.get('deferred_count', 0)} deferred"
+                    )
     # Cursor lag summary (#1232) — degraded cursors are outside the lag SLO,
     # but must be surfaced even when no ordinary cursor is stuck.
     cursor_lag = payload.get("cursor_lag")
