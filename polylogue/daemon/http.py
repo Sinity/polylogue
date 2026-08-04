@@ -2637,7 +2637,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         Returns 200 when the configured health-check tiers pass, 503 when any
         non-OK health alert is present. Suitable for health check endpoints in
-        Docker, systemd, and CI pipelines. The default config runs FAST only.
+        Docker, systemd, and CI pipelines. The default config runs FAST and
+        MEDIUM; operators can set ``health.check_tiers = "fast"`` to opt out
+        of MEDIUM probes explicitly.
         """
         try:
             from polylogue.config import load_polylogue_config

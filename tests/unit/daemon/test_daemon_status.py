@@ -622,6 +622,48 @@ def test_health_alert_count_reflects_a_real_problem_not_ok(tmp_path: Path) -> No
     assert not any("ok (" in line and "1" in line for line in lines if line.startswith("Health:"))
 
 
+@pytest.mark.parametrize(
+    ("configured", "summary", "expected_tiers", "expected_states"),
+    [
+        (
+            "fast,medium",
+            {
+                "fast": {"ok": 1, "warning": 0, "error": 0, "critical": 0},
+                "medium": {"ok": 1, "warning": 0, "error": 0, "critical": 0},
+            },
+            ["fast", "medium"],
+            {"fast": "healthy", "medium": "healthy", "expensive": "disabled"},
+        ),
+        (
+            "fast",
+            {"fast": {"ok": 1, "warning": 0, "error": 0, "critical": 0}},
+            ["fast"],
+            {"fast": "healthy", "medium": "disabled", "expensive": "disabled"},
+        ),
+    ],
+)
+def test_status_labels_configured_and_disabled_health_tiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str,
+    summary: dict[str, dict[str, int]],
+    expected_tiers: list[str],
+    expected_states: dict[str, str],
+) -> None:
+    """MEDIUM opt-out is visible as disabled, never as an empty healthy tier."""
+    configured_set = {HealthTier(tier) for tier in configured.split(",")}
+    monkeypatch.setattr(status_module, "_configured_health_tiers", lambda **_kwargs: configured_set)
+    health = DaemonHealth(overall_status=HealthSeverity.OK, checked_at="now", tier_summary=summary)
+
+    payload = _health_payload(tmp_path, health)
+    health_payload = cast(dict[str, Any], payload["health"])
+
+    assert health_payload["configured_tiers"] == expected_tiers
+    assert health_payload["tiers"] == expected_states
+    lines = format_daemon_status_lines(payload)
+    assert "  Tiers: " + ", ".join(f"{tier}={state}" for tier, state in expected_states.items()) in lines
+
+
 def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     failed = tmp_path / "failed.jsonl"

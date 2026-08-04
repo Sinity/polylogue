@@ -9,10 +9,12 @@ issue #1349 are pinned here.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -26,7 +28,7 @@ from polylogue.daemon.cursor_lag_status import (
     CursorLagSummary,
     cursor_lag_summary_info,
 )
-from polylogue.daemon.health import HealthSeverity, _check_cursor_lag_medium
+from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier, _check_cursor_lag_medium
 from tests.infra.frozen_clock import FrozenClock
 
 # Pin ``datetime.now`` everywhere the cursor-lag stack reads it so the
@@ -254,6 +256,59 @@ anomaly_enabled = true
     # family per tick.
     assert len(row) == 1
     assert row[0][1] == 1
+
+
+@pytest.mark.asyncio
+async def test_default_periodic_health_schedule_runs_medium_probes_and_records_cursor_lag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
+) -> None:
+    """The real daemon health schedule must not regress to FAST-only.
+
+    This drives one scheduler tick against an isolated archive. The check runs
+    the production MEDIUM tier, proves FTS readiness was evaluated, and proves
+    the cursor-lag probe wrote its durable ops sample rather than merely
+    reporting a configured tier string.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    db = _isolated_archive(tmp_path, monkeypatch)
+    with ArchiveStore(db.parent):
+        pass
+    now = frozen_clock.now()
+    _seed_live_cursor(
+        db,
+        rows=[
+            ("/x/a.jsonl", 1000, 500, 0, 0, (now - timedelta(seconds=600)).isoformat()),
+        ],
+    )
+
+    observed: dict[str, object] = {}
+
+    class _OneTickCoordinator:
+        async def run_sync(self, actor: str, check: Callable[..., object], **kwargs: object) -> object:
+            assert actor == "maintenance.health_check"
+            observed["tiers"] = kwargs["tiers"]
+            health = check(**kwargs)
+            observed["health"] = health
+            raise asyncio.CancelledError
+
+    async def _immediate_sleep(interval: float) -> None:
+        assert interval == 300
+
+    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: _OneTickCoordinator())
+    monkeypatch.setattr("polylogue.daemon.cli.asyncio.sleep", _immediate_sleep)
+    monkeypatch.setattr("polylogue.daemon.notifications.send_notifications", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(asyncio.CancelledError):
+        await daemon_cli._periodic_health_check()
+
+    assert observed["tiers"] == {HealthTier.FAST, HealthTier.MEDIUM}
+    health = cast(DaemonHealth, observed["health"])
+    assert any(alert.check_name == "fts_readiness" for alert in health.alerts)
+    with sqlite3.connect(str(db.with_name("ops.db"))) as conn:
+        sample_count = conn.execute("SELECT COUNT(*) FROM cursor_lag_samples").fetchone()[0]
+    assert sample_count == 1
 
 
 # ---------------------------------------------------------------------------
