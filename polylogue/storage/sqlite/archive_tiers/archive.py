@@ -4356,11 +4356,14 @@ class ArchiveStore:
                 ),
                 provenance=ArchiveInsightProvenance(
                     materializer_version=1,
-                    materialized_at=_iso_from_ms(row["source_sort_key_ms"]) or "1970-01-01T00:00:00Z",
+                    materialized_at=None,
                     source_updated_at=_iso_from_ms(row["source_sort_key_ms"]),
                     source_sort_key=(
                         float(row["source_sort_key_ms"]) / 1000.0 if row["source_sort_key_ms"] is not None else None
                     ),
+                    input_high_water_mark=_iso_from_ms(row["source_sort_key_ms"]),
+                    input_high_water_mark_source="sort_key" if row["source_sort_key_ms"] is not None else None,
+                    time_confidence="estimated" if row["source_sort_key_ms"] is not None else "unknown",
                 ),
             )
             for row in rows
@@ -5032,11 +5035,14 @@ class ArchiveStore:
                 ),
                 provenance=ArchiveInsightProvenance(
                     materializer_version=1,
-                    materialized_at=_iso_from_ms(row["source_sort_key_ms"]) or "1970-01-01T00:00:00Z",
+                    materialized_at=None,
                     source_updated_at=_iso_from_ms(row["source_sort_key_ms"]),
                     source_sort_key=(
                         float(row["source_sort_key_ms"]) / 1000.0 if row["source_sort_key_ms"] is not None else None
                     ),
+                    input_high_water_mark=_iso_from_ms(row["source_sort_key_ms"]),
+                    input_high_water_mark_source="sort_key" if row["source_sort_key_ms"] is not None else None,
+                    time_confidence="estimated" if row["source_sort_key_ms"] is not None else "unknown",
                 ),
             )
             for row in rows
@@ -9092,38 +9098,61 @@ def _read_archive_materialization(
     conn: sqlite3.Connection,
     insight_type: str,
     session_id: str,
-) -> ArchiveInsightMaterialization:
+) -> ArchiveInsightMaterialization | None:
     try:
         return read_insight_materialization(conn, insight_type, session_id)
     except KeyError:
-        return ArchiveInsightMaterialization(
-            insight_type=insight_type,
-            session_id=session_id,
+        return None
+
+
+def _archive_provenance(
+    materialization: ArchiveInsightMaterialization | None,
+    *,
+    input_high_water_mark: str | None = None,
+    input_high_water_mark_source: str | None = None,
+) -> ArchiveInsightProvenance:
+    if materialization is None:
+        return ArchiveInsightProvenance(
             materializer_version=1,
-            materialized_at_ms=0,
-            source_updated_at_ms=None,
-            source_sort_key_ms=None,
-            input_high_water_mark_ms=None,
-            input_row_count=0,
+            materialized_at=None,
+            input_high_water_mark=input_high_water_mark,
+            input_high_water_mark_source=input_high_water_mark_source,
+            time_confidence=time_confidence_for_source(input_high_water_mark_source),
         )
-
-
-def _archive_provenance(materialization: ArchiveInsightMaterialization) -> ArchiveInsightProvenance:
+    resolved_hwm = (
+        input_high_water_mark
+        if input_high_water_mark is not None
+        else _iso_from_ms(materialization.input_high_water_mark_ms)
+    )
+    resolved_source = (
+        input_high_water_mark_source
+        if input_high_water_mark_source is not None
+        else materialization.input_high_water_mark_source
+    )
     return ArchiveInsightProvenance(
         materializer_version=materialization.materializer_version,
-        materialized_at=_iso_from_ms(materialization.materialized_at_ms) or "1970-01-01T00:00:00Z",
+        materialized_at=_iso_from_ms(materialization.materialized_at_ms),
         source_updated_at=_iso_from_ms(materialization.source_updated_at_ms),
         source_sort_key=(
             materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
         ),
-        input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
-        input_high_water_mark_source=materialization.input_high_water_mark_source,
-        time_confidence=time_confidence_for_source(materialization.input_high_water_mark_source),
+        input_high_water_mark=resolved_hwm,
+        input_high_water_mark_source=resolved_source,
+        time_confidence=time_confidence_for_source(resolved_source),
     )
 
 
-def _archive_inference_provenance(materialization: ArchiveInsightMaterialization) -> ArchiveInferenceProvenance:
-    base = _archive_provenance(materialization)
+def _archive_inference_provenance(
+    materialization: ArchiveInsightMaterialization | None,
+    *,
+    input_high_water_mark: str | None = None,
+    input_high_water_mark_source: str | None = None,
+) -> ArchiveInferenceProvenance:
+    base = _archive_provenance(
+        materialization,
+        input_high_water_mark=input_high_water_mark,
+        input_high_water_mark_source=input_high_water_mark_source,
+    )
     return ArchiveInferenceProvenance(
         materializer_version=base.materializer_version,
         materialized_at=base.materialized_at,
@@ -9132,12 +9161,14 @@ def _archive_inference_provenance(materialization: ArchiveInsightMaterialization
         input_high_water_mark=base.input_high_water_mark,
         input_high_water_mark_source=base.input_high_water_mark_source,
         time_confidence=base.time_confidence,
-        inference_version=materialization.materializer_version,
+        inference_version=base.materializer_version,
         inference_family="archive",
     )
 
 
-def _archive_enrichment_provenance(materialization: ArchiveInsightMaterialization) -> ArchiveEnrichmentProvenance:
+def _archive_enrichment_provenance(
+    materialization: ArchiveInsightMaterialization | None,
+) -> ArchiveEnrichmentProvenance:
     base = _archive_provenance(materialization)
     return ArchiveEnrichmentProvenance(
         materializer_version=base.materializer_version,
@@ -9147,7 +9178,7 @@ def _archive_enrichment_provenance(materialization: ArchiveInsightMaterializatio
         input_high_water_mark=base.input_high_water_mark,
         input_high_water_mark_source=base.input_high_water_mark_source,
         time_confidence=base.time_confidence,
-        enrichment_version=materialization.materializer_version,
+        enrichment_version=base.materializer_version,
         enrichment_family="archive",
     )
 
@@ -9156,7 +9187,7 @@ def _work_event_insight_from_archive_row(
     event: ArchiveSessionWorkEvent,
     *,
     origin: str,
-    materialization: ArchiveInsightMaterialization,
+    materialization: ArchiveInsightMaterialization | None,
 ) -> SessionWorkEventInsight:
     evidence_payload = {
         **event.evidence,
@@ -9180,8 +9211,16 @@ def _work_event_insight_from_archive_row(
         session_id=event.session_id,
         origin=origin,
         event_index=event.position,
-        provenance=_archive_provenance(materialization),
-        inference_provenance=_archive_inference_provenance(materialization),
+        provenance=_archive_provenance(
+            materialization,
+            input_high_water_mark=event.input_high_water_mark,
+            input_high_water_mark_source=event.input_high_water_mark_source,
+        ),
+        inference_provenance=_archive_inference_provenance(
+            materialization,
+            input_high_water_mark=event.input_high_water_mark,
+            input_high_water_mark_source=event.input_high_water_mark_source,
+        ),
         evidence=WorkEventEvidencePayload.model_validate(evidence_payload),
         inference=WorkEventInferencePayload.model_validate(inference_payload),
     )
@@ -9191,7 +9230,7 @@ def _phase_insight_from_archive_row(
     phase: ArchiveSessionPhase,
     *,
     origin: str,
-    materialization: ArchiveInsightMaterialization,
+    materialization: ArchiveInsightMaterialization | None,
 ) -> SessionPhaseInsight:
     evidence_payload = {
         **phase.evidence,
@@ -9207,7 +9246,11 @@ def _phase_insight_from_archive_row(
         session_id=phase.session_id,
         origin=origin,
         phase_index=phase.position,
-        provenance=_archive_provenance(materialization),
+        provenance=_archive_provenance(
+            materialization,
+            input_high_water_mark=phase.input_high_water_mark,
+            input_high_water_mark_source=phase.input_high_water_mark_source,
+        ),
         evidence=SessionPhaseEvidencePayload.model_validate(evidence_payload),
     )
 
@@ -9216,7 +9259,7 @@ def _phase_insight_from_archive_row(
 class _SessionProfileComponents:
     """Extracted session-profile payloads shared by the insight and record builders."""
 
-    materialization: ArchiveInsightMaterialization
+    materialization: ArchiveInsightMaterialization | None
     evidence: SessionEvidencePayload
     inference: SessionInferencePayload
     enrichment: SessionEnrichmentPayload | None
@@ -9322,7 +9365,7 @@ def _session_profile_components_from_archive_row(
                     terminal_state=inference.terminal_state,
                     terminal_state_confidence=inference.terminal_state_confidence,
                     terminal_state_evidence=dict(evidence.terminal_state_evidence),
-                    as_of=_iso_from_ms(materialization.source_updated_at_ms),
+                    as_of=_iso_from_ms(materialization.source_updated_at_ms) if materialization is not None else None,
                 )
             }
         )
@@ -9392,22 +9435,28 @@ def _session_profile_record_from_archive_row(
     source_name = str(row["origin"])
     title = str(row["title"]) if row["title"] is not None else None
     workflow_shape = str(row["workflow_shape"] or "unknown")
-    materialized_at = _iso_from_ms(materialization.materialized_at_ms) or "1970-01-01T00:00:00Z"
+    materialized_at = _iso_from_ms(materialization.materialized_at_ms) if materialization is not None else None
     # search_text* are FTS-only and not consumed by hydrate_session_profile;
     # synthesize a stable non-empty string so the record validates.
     search_text = title or workflow_shape or session_id
     return SessionProfileRecord(
         session_id=SessionId(session_id),
         logical_session_id=SessionId(logical_session_id),
-        materializer_version=materialization.materializer_version,
+        materializer_version=materialization.materializer_version if materialization is not None else 1,
         materialized_at=materialized_at,
-        source_updated_at=_iso_from_ms(materialization.source_updated_at_ms),
+        source_updated_at=_iso_from_ms(materialization.source_updated_at_ms) if materialization is not None else None,
         source_sort_key=(
-            materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
+            materialization.source_sort_key_ms / 1000.0
+            if materialization is not None and materialization.source_sort_key_ms is not None
+            else None
         ),
-        input_high_water_mark=_iso_from_ms(materialization.input_high_water_mark_ms),
-        input_high_water_mark_source=materialization.input_high_water_mark_source,
-        input_row_count=materialization.input_row_count,
+        input_high_water_mark=(
+            _iso_from_ms(materialization.input_high_water_mark_ms) if materialization is not None else None
+        ),
+        input_high_water_mark_source=(
+            materialization.input_high_water_mark_source if materialization is not None else None
+        ),
+        input_row_count=materialization.input_row_count if materialization is not None else 0,
         source_name=source_name,
         title=title,
         first_message_at=evidence.first_message_at,

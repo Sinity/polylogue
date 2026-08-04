@@ -38,7 +38,10 @@ class ArchiveInsightModel(BaseModel):
 
 class ArchiveInsightProvenance(ArchiveInsightModel):
     materializer_version: int
-    materialized_at: str
+    # Materialization is freshness metadata. A legacy row without its shared
+    # materialization marker must remain absent, rather than acquiring a
+    # synthetic epoch timestamp that callers could mistake for event time.
+    materialized_at: str | None = None
     source_updated_at: str | None = None
     source_sort_key: float | None = None
     input_high_water_mark: str | None = None

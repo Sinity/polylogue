@@ -64,6 +64,52 @@ def test_phase_since_until_window_includes_timeless_phase(tmp_path: Path) -> Non
     assert {row.session_id for row in until_rows} == {session_id}
 
 
+def test_archive_store_hydrates_unknown_time_without_epoch_or_marker_fallback(tmp_path: Path) -> None:
+    """A missing materialization marker is not event-time evidence.
+
+    This exercises the ArchiveStore path used by the public async API and CLI.
+    Restoring either the synthetic epoch materialization record or dropping the
+    row-level stored source tag makes the assertions below fail.
+    """
+
+    with ArchiveStore(tmp_path / "archive") as facade:
+        conn = facade._conn
+        session_id = _insert_timeless_session(conn, native_id="unknown-time")
+        conn.execute(
+            """
+            INSERT INTO session_work_events (
+                session_id, position, work_event_type, summary,
+                input_high_water_mark, input_high_water_mark_source
+            ) VALUES (?, 0, 'implementation', 'timeless event', ?, 'provider_ts')
+            """,
+            (session_id, "2026-08-04T09:30:00Z"),
+        )
+        conn.execute(
+            """
+            INSERT INTO session_phases (
+                session_id, position, input_high_water_mark, input_high_water_mark_source
+            ) VALUES (?, 0, ?, 'provider_ts')
+            """,
+            (session_id, "2026-08-04T09:30:00Z"),
+        )
+        conn.commit()
+
+        work_event = facade.get_session_work_event_insights(session_id)[0]
+        phase = facade.get_session_phase_insights(session_id)[0]
+
+    for insight in (work_event, phase):
+        assert insight.provenance.materialized_at is None
+        assert insight.provenance.input_high_water_mark == "2026-08-04T09:30:00Z"
+        assert insight.provenance.input_high_water_mark_source == "provider_ts"
+        assert insight.provenance.time_confidence == "recorded"
+    assert work_event.evidence.start_time is None
+    assert work_event.evidence.end_time is None
+    assert work_event.evidence.canonical_session_date is None
+    assert phase.evidence.start_time is None
+    assert phase.evidence.end_time is None
+    assert phase.evidence.canonical_session_date is None
+
+
 def test_work_event_since_until_window_still_excludes_out_of_range_timestamped_event(tmp_path: Path) -> None:
     """Sanity check the fix does not disturb ordinary since/until exclusion."""
     with ArchiveStore(tmp_path / "archive") as facade:

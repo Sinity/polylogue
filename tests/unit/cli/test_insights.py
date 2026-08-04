@@ -13,8 +13,14 @@ from click.testing import CliRunner, Result
 
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
-from polylogue.insights.archive import ArchiveCoverageInsight
-from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
+from polylogue.insights.archive import ArchiveCoverageInsight, SessionWorkEventInsight
+from polylogue.insights.archive_models import (
+    ARCHIVE_INSIGHT_CONTRACT_VERSION,
+    ArchiveInferenceProvenance,
+    ArchiveInsightProvenance,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
 from polylogue.insights.registry import get_insight_type, insight_items_payload
 from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
 from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
@@ -95,6 +101,44 @@ def test_insight_items_payload_can_render_cli_and_mcp_keys() -> None:
     assert json_object_list(cli_payload["archive_coverage"])[0]["insight_kind"] == "archive_coverage"
     assert mcp_payload["total"] == 1
     assert json_object_list(mcp_payload["items"])[0]["origin"] == "claude-code-session"
+
+    temporal = SessionWorkEventInsight(
+        event_id="temporal-event",
+        session_id="codex-session:temporal",
+        origin="codex-session",
+        event_index=0,
+        provenance=ArchiveInsightProvenance(
+            materializer_version=1,
+            materialized_at=None,
+            input_high_water_mark="2026-08-04T09:30:00Z",
+            input_high_water_mark_source="provider_ts",
+            time_confidence="recorded",
+        ),
+        inference_provenance=ArchiveInferenceProvenance(
+            materializer_version=1,
+            materialized_at=None,
+            input_high_water_mark="2026-08-04T09:30:00Z",
+            input_high_water_mark_source="provider_ts",
+            time_confidence="recorded",
+            inference_version=1,
+            inference_family="archive",
+        ),
+        evidence=WorkEventEvidencePayload(start_index=0, end_index=0),
+        inference=WorkEventInferencePayload(
+            heuristic_label="implementation",
+            summary="timeless event",
+            confidence=0.5,
+        ),
+    )
+    temporal_mcp_payload = insight_items_payload(
+        [temporal],
+        get_insight_type("session_work_events"),
+        item_key="items",
+    )
+    temporal_provenance = json_object(json_object_list(temporal_mcp_payload["items"])[0]["provenance"])
+    assert temporal_provenance["materialized_at"] is None
+    assert temporal_provenance["input_high_water_mark_source"] == "provider_ts"
+    assert temporal_provenance["time_confidence"] == "recorded"
 
 
 def _seed_products(cli_workspace: CliWorkspace) -> None:
@@ -799,6 +843,41 @@ def test_insights_profile_date_filters_and_phases_json(cli_workspace: CliWorkspa
     assert json_int(profile_payload["total"]) == 2
     assert json_int(phase_payload["total"]) >= 1
     assert json_object_list(phase_payload["session_phases"])[0]["insight_kind"] == "session_phase"
+
+
+def test_insights_work_events_json_preserves_archive_temporal_provenance_without_marker(
+    cli_workspace: CliWorkspace,
+) -> None:
+    """CLI serialization uses the ArchiveStore provenance, not an epoch fallback."""
+
+    db_path = cli_workspace["db_path"]
+    session_token = "temporal-provenance"
+    session_id = native_session_id_for("codex", session_token)
+    SessionBuilder(db_path, session_token).provider("codex").add_message("u1", role="user", text="timeless").save()
+    with open_index_db(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO session_work_events (
+                session_id, position, work_event_type, summary,
+                input_high_water_mark, input_high_water_mark_source
+            ) VALUES (?, 0, 'implementation', 'timeless event', ?, 'provider_ts')
+            """,
+            (session_id, "2026-08-04T09:30:00Z"),
+        )
+        conn.commit()
+
+    result = CliRunner().invoke(
+        cli,
+        ["analyze", "insights", "work-events", "--session-id", session_id, "--format", "json"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    row = json_object_list(extract_json_result(result.output)["session_work_events"])[0]
+    provenance = json_object(row["provenance"])
+    assert provenance["materialized_at"] is None
+    assert provenance["input_high_water_mark_source"] == "provider_ts"
+    assert provenance["time_confidence"] == "recorded"
 
 
 def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace) -> None:

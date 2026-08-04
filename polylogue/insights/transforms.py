@@ -112,11 +112,11 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _session_transform_timestamp(session: Session) -> str:
+def _session_transform_timestamp(session: Session) -> str | None:
     message_timestamps = [message.timestamp for message in session.messages if message.timestamp is not None]
     timestamp = session.updated_at or session.created_at or (max(message_timestamps) if message_timestamps else None)
     if timestamp is None:
-        return "1970-01-01T00:00:00+00:00"
+        return None
     return timestamp.astimezone(timezone.utc).isoformat()
 
 
@@ -178,7 +178,7 @@ class TransformMetadata(ArchiveInsightModel):
     transform_version: int
     input_session_id: str
     source_origin: str
-    computed_at: str = Field(default_factory=_utc_now_iso)
+    computed_at: str | None = Field(default_factory=_utc_now_iso)
     input_message_count: int = 0
 
 
@@ -868,7 +868,10 @@ def build_successor_context_bundle(digest: SessionDigest) -> SuccessorContextBun
         title=digest.title or digest.session_id,
         source_origin=digest.transform.source_origin,
         message_count=digest.size_metrics.message_count,
-        generated_at=digest.transform.computed_at,
+        # The context bundle's generation time is freshness metadata. It is
+        # deliberately independent of a session whose source event time is
+        # unknown, which remains null on TransformMetadata.
+        generated_at=digest.transform.computed_at or _utc_now_iso(),
         selection_strategy="single_session_session_digest_v0",
         scope=SuccessorContextScope(
             seed_refs=(f"session:{digest.session_id}",),

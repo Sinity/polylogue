@@ -287,6 +287,18 @@ class TestJsonContract:
         # Payload is JSON-serializable as-is
         json.dumps(payload)
 
+    def test_phase_without_inference_emits_unknown_confidence(self) -> None:
+        phase = _phase()
+        phase = phase.model_copy(update={"inference": None, "inference_provenance": None})
+
+        payload = build_session_timeline("conv-json", [], [phase]).to_dict()
+
+        entries = payload["entries"]
+        assert isinstance(entries, list)
+        entry = entries[0]
+        assert isinstance(entry, dict)
+        assert entry["confidence"] is None
+
 
 class TestSessionTimelineDataclass:
     def test_frozen(self) -> None:
