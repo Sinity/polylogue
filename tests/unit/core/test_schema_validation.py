@@ -20,6 +20,7 @@ from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
 from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_provider_export
+from polylogue.storage.blob_store import BlobStore
 
 pytestmark = pytest.mark.uses_real_clock(
     "Schema validator timestamp parsing uses a real now to assert lenient ISO parsing."
@@ -767,6 +768,40 @@ def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Path) -> No
     assert stats.skipped_no_schema == 1
     assert stats.valid_records == 0
     assert stats.invalid_records == 0
+
+
+def test_verify_raw_corpus_keeps_retained_wal_sqlite_blob_namespace_pristine(db_path: Path, tmp_path: Path) -> None:
+    """The schema corpus inspects retained SQLite bytes, never a mutable source path."""
+    source = tmp_path / "state.db"
+    with sqlite3.connect(source) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (id TEXT PRIMARY KEY, source TEXT, model_config TEXT, parent_session_id TEXT, started_at REAL);
+            CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_calls TEXT, timestamp REAL NOT NULL, observed INTEGER DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, compacted INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO sessions(id, model_config, started_at) VALUES ('corpus-wal', '{}', 1.0);
+            INSERT INTO messages(session_id, role, content, timestamp) VALUES ('corpus-wal', 'user', 'hello', 1.0);
+            """
+        )
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-hermes-wal",
+        source_name="hermes",
+        source_path=str(source),
+        raw_content=source.read_bytes(),
+    )
+
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["hermes"], max_samples=16),
+    )
+
+    assert report.total_records == 1
+    assert BlobStore(db_path.parent / "blob").verify_all().passed
 
 
 def test_verify_raw_corpus_counts_malformed_jsonl_as_decode_error(db_path: Path) -> None:

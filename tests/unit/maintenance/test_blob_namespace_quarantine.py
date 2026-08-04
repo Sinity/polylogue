@@ -221,6 +221,37 @@ def test_apply_refuses_active_writer_and_read_only_recovery_is_idempotent(
     assert classify_blob_namespace_quarantine_recovery(receipt_parent / "recovery").outcome == "indeterminate"
 
 
+def test_root_level_interrupted_blob_is_quarantined_and_recovery_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercise crash recovery through a real root-level ``.blob.*`` entry, never PreparedBlob cleanup."""
+    archive_root = _archive(tmp_path)
+    store = BlobStore(archive_root / "blob")
+    store.write_from_bytes(b"canonical")
+    interrupted = store.root / ".blob.crashed-before-publish"
+    interrupted.write_bytes(b"interrupted payload")
+    manifest = _verified_source_backup(archive_root, tmp_path, monkeypatch)
+    receipt_dir = tmp_path / "receipts" / "root-level-interrupted"
+    receipt_dir.parent.mkdir()
+
+    report = quarantine_blob_namespace(
+        archive_root,
+        backup_manifest=manifest,
+        receipt_dir=receipt_dir,
+        dry_run=False,
+    )
+
+    assert report.quarantine_root is not None
+    destination = report.quarantine_root / interrupted.name
+    assert not interrupted.exists()
+    assert destination.read_bytes() == b"interrupted payload"
+    assert store.verify_all().passed
+    assert classify_blob_namespace_quarantine_recovery(receipt_dir).outcome == "committed"
+
+    os.replace(destination, interrupted)
+    assert classify_blob_namespace_quarantine_recovery(receipt_dir).outcome == "rolled_back"
+
+
 def test_apply_refuses_live_daemon_busy_checkpoint_and_symlinked_receipt_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

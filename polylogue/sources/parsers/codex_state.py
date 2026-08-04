@@ -154,9 +154,12 @@ IN_SCOPE_KINDS: frozenset[CodexSqliteKind] = frozenset(
 )
 
 
-def _connect_readonly(path: Path, *, timeout: float = 1.0) -> sqlite3.Connection:
+def _connect_readonly(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> sqlite3.Connection:
     """Open *path* read-only. Never takes a write lock against a live Codex."""
-    return sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=timeout)
+    uri = path.resolve().as_uri() + "?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    return sqlite3.connect(uri, uri=True, timeout=timeout)
 
 
 def _table_names(conn: sqlite3.Connection) -> frozenset[str]:
@@ -164,14 +167,14 @@ def _table_names(conn: sqlite3.Connection) -> frozenset[str]:
     return frozenset(str(row[0]) for row in rows)
 
 
-def classify_codex_sqlite_path(path: Path) -> CodexSqliteKind:
+def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexSqliteKind:
     """Classify a live Codex SQLite file by its table shape.
 
     Returns ``"unknown"`` for anything unreadable or unrecognized rather than
     raising -- classification runs against a live, possibly-locked file.
     """
     try:
-        with closing(_connect_readonly(path)) as conn:
+        with closing(_connect_readonly(path, immutable=immutable)) as conn:
             tables = _table_names(conn)
     except sqlite3.Error:
         return "unknown"
@@ -181,18 +184,21 @@ def classify_codex_sqlite_path(path: Path) -> CodexSqliteKind:
     return "unknown"
 
 
-def is_in_scope_codex_sqlite_path(path: Path) -> bool:
+def is_in_scope_codex_sqlite_path(path: Path, *, immutable: bool = False) -> bool:
     """Return whether *path* is one of the databases this module acquires."""
-    return classify_codex_sqlite_path(path) in IN_SCOPE_KINDS
+    return classify_codex_sqlite_path(path, immutable=immutable) in IN_SCOPE_KINDS
 
 
-def marker_payload(path: Path, *, kind: CodexSqliteKind) -> JSONDocument:
+def marker_payload(path: Path, *, kind: CodexSqliteKind, immutable: bool = False) -> JSONDocument:
     """Return the JSON marker that routes a raw SQLite blob to this parser."""
-    return {
+    payload: JSONDocument = {
         "polylogue_artifact": CODEX_STATE_DB_MARKER,
         "state_db_path": str(path),
         "state_db_kind": kind,
     }
+    if immutable:
+        payload["sqlite_immutable"] = True
+    return payload
 
 
 def looks_like_state_db_payload(payload: JSONDocument) -> bool:
@@ -294,7 +300,7 @@ def _row_opt_int(row: sqlite3.Row, key: str) -> int | None:
     return int(value) if isinstance(value, (int, float)) else None
 
 
-def parse_codex_state_db(path: Path) -> CodexStateSnapshot:
+def parse_codex_state_db(path: Path, *, immutable: bool = False) -> CodexStateSnapshot:
     """Parse ``threads`` and ``thread_spawn_edges`` from a Codex ``state_5.sqlite`` snapshot.
 
     *path* must already be a consistent, non-live snapshot (see
@@ -303,7 +309,7 @@ def parse_codex_state_db(path: Path) -> CodexStateSnapshot:
     from the live file are responsible for snapshotting first (polylogue-0jf4
     acceptance criterion 4).
     """
-    with closing(_connect_readonly(path)) as conn:
+    with closing(_connect_readonly(path, immutable=immutable)) as conn:
         conn.row_factory = sqlite3.Row
         thread_rows = conn.execute(
             "SELECT id, title, cwd, created_at_ms, updated_at_ms, source, model, "
@@ -341,9 +347,9 @@ def parse_codex_state_db(path: Path) -> CodexStateSnapshot:
     return CodexStateSnapshot(threads=threads, spawn_edges=edges)
 
 
-def parse_codex_goals_db(path: Path) -> tuple[CodexThreadGoal, ...]:
+def parse_codex_goals_db(path: Path, *, immutable: bool = False) -> tuple[CodexThreadGoal, ...]:
     """Parse ``thread_goals`` from a Codex ``goals_1.sqlite`` snapshot."""
-    with closing(_connect_readonly(path)) as conn:
+    with closing(_connect_readonly(path, immutable=immutable)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT thread_id, goal_id, objective, status, token_budget, tokens_used, "
@@ -366,12 +372,12 @@ def parse_codex_goals_db(path: Path) -> tuple[CodexThreadGoal, ...]:
     )
 
 
-def parse_codex_memories_db(path: Path) -> tuple[CodexMemoryRecord, ...]:
+def parse_codex_memories_db(path: Path, *, immutable: bool = False) -> tuple[CodexMemoryRecord, ...]:
     """Parse structural facts from a Codex ``memories_1.sqlite`` snapshot.
 
     See ``CodexMemoryRecord`` -- raw memory text is deliberately not surfaced.
     """
-    with closing(_connect_readonly(path)) as conn:
+    with closing(_connect_readonly(path, immutable=immutable)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             "SELECT thread_id, source_updated_at, generated_at, usage_count, "

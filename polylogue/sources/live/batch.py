@@ -2179,23 +2179,25 @@ class LiveBatchProcessor:
                         # SAME parse, never a different one.
                         sessions = cached_sessions
                     elif provider is Provider.HERMES and hermes_state.looks_like_state_db_path(
-                        blob_store.blob_path(blob_hash)
+                        blob_store.blob_path(blob_hash), immutable=True
                     ):
                         sessions = hermes_state.parse_state_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
+                            immutable=True,
                         )
                     elif provider is Provider.HERMES and hermes_verification.looks_like_verification_evidence_db_path(
-                        blob_store.blob_path(blob_hash)
+                        blob_store.blob_path(blob_hash), immutable=True
                     ):
                         sessions = hermes_verification.parse_verification_evidence_db(
                             blob_store.blob_path(blob_hash),
                             fallback_id=fallback_id,
                             profile_root=Path(record.source_path).parent,
+                            immutable=True,
                         )
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
-                        blob_store.blob_path(blob_hash)
+                        blob_store.blob_path(blob_hash), immutable=True
                     ):
                         # polylogue-0jf4: Codex state dbs never become
                         # sessions of their own -- thread_state's evidence
@@ -2207,9 +2209,9 @@ class LiveBatchProcessor:
                         # snapshot admitted above is already durable
                         # evidence; no derived parse is wired in this change.
                         state_path = blob_store.blob_path(blob_hash)
-                        state_kind = codex_state.classify_codex_sqlite_path(state_path)
+                        state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
                         if state_kind == "thread_state":
-                            state_snapshot = codex_state.parse_codex_state_db(state_path)
+                            state_snapshot = codex_state.parse_codex_state_db(state_path, immutable=True)
                             _write_codex_thread_state_evidence(
                                 archive,
                                 state_snapshot,

@@ -36,6 +36,7 @@ from polylogue import Polylogue
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.storage.blob_store import BlobStore
 
 _THREAD_ID = "66c7b83d-1b42-43a5-977c-870299c489a6"
 _CHILD_THREAD_ID = "449dd1eb-ea3d-4710-925b-7398a78fe3a7"
@@ -74,8 +75,10 @@ def _write_codex_rollout(path: Path) -> None:
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
 
-def _write_state_5_sqlite(path: Path) -> None:
+def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
     with sqlite3.connect(path) as conn:
+        if wal_mode:
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(
             """
             CREATE TABLE threads (
@@ -106,6 +109,9 @@ def _write_state_5_sqlite(path: Path) -> None:
             "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
             (_THREAD_ID, _CHILD_THREAD_ID, "closed"),
         )
+        conn.commit()
+        if wal_mode:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
 
 def _make_processor(workspace_env: dict[str, Path], root_name: str, db_name: str) -> tuple[Polylogue, Path, Path]:
@@ -149,7 +155,7 @@ async def test_codex_state_ingest_leaves_session_count_unchanged(
         assert before_count == 1
 
         state_path = codex_state_root / "state_5.sqlite"
-        _write_state_5_sqlite(state_path)
+        _write_state_5_sqlite(state_path, wal_mode=True)
         state_metrics = await processor.ingest_files([state_path], emit_event=False)
         assert state_metrics.failed_file_count == 0
         # The state db produces zero NEW sessions -- its evidence attaches to
@@ -158,6 +164,7 @@ async def test_codex_state_ingest_leaves_session_count_unchanged(
 
         after_count = await archive.count_sessions()
         assert after_count == before_count == 1
+        assert BlobStore(workspace_env["archive_root"] / "blob").verify_all().passed
     finally:
         await archive.close()
 

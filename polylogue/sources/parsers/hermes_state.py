@@ -156,7 +156,12 @@ class HermesImportFidelity:
     caveats: tuple[str, ...]
 
 
-def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocument:
+def marker_payload(
+    path: Path,
+    *,
+    profile_root: Path | None = None,
+    immutable: bool = False,
+) -> JSONDocument:
     """Return the JSON marker that routes a raw SQLite blob to this parser."""
     payload: JSONDocument = {
         "polylogue_artifact": HERMES_STATE_DB_MARKER,
@@ -164,6 +169,8 @@ def marker_payload(path: Path, *, profile_root: Path | None = None) -> JSONDocum
     }
     if profile_root is not None:
         payload["profile_root"] = str(profile_root)
+    if immutable:
+        payload["sqlite_immutable"] = True
     return payload
 
 
@@ -171,10 +178,10 @@ def looks_like_state_db_payload(payload: JSONDocument) -> bool:
     return payload.get("polylogue_artifact") == HERMES_STATE_DB_MARKER and isinstance(payload.get("state_db_path"), str)
 
 
-def looks_like_state_db_path(path: Path) -> bool:
+def looks_like_state_db_path(path: Path, *, immutable: bool = False) -> bool:
     """Return true when *path* is a readable Hermes state database."""
     try:
-        with _connect_readonly(path) as conn:
+        with _connect_readonly(path, immutable=immutable) as conn:
             return _has_required_tables(conn)
     except sqlite3.Error:
         return False
@@ -186,7 +193,12 @@ def parse_state_db_payload(payload: JSONDocument, fallback_id: str) -> list[Pars
         raise ValueError("Hermes state.db marker is missing state_db_path")
     profile_value = payload.get("profile_root")
     profile_root = Path(profile_value) if isinstance(profile_value, str) and profile_value else None
-    return parse_state_db(Path(path_value), fallback_id=fallback_id, profile_root=profile_root)
+    return parse_state_db(
+        Path(path_value),
+        fallback_id=fallback_id,
+        profile_root=profile_root,
+        immutable=payload.get("sqlite_immutable") is True,
+    )
 
 
 def parse_state_db(
@@ -194,10 +206,11 @@ def parse_state_db(
     *,
     fallback_id: str | None = None,
     profile_root: Path | None = None,
+    immutable: bool = False,
 ) -> list[ParsedSession]:
     """Parse every session revision from a Hermes ``state.db`` file."""
     del fallback_id
-    with _connect_readonly(path) as conn:
+    with _connect_readonly(path, immutable=immutable) as conn:
         if not _has_required_tables(conn):
             raise ValueError(f"{path} is not a Hermes state.db file")
         session_columns = _columns(conn, "sessions")
@@ -471,8 +484,11 @@ def _fidelity_capability(
     )
 
 
-def _connect_readonly(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    uri = path.resolve().as_uri() + "?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 

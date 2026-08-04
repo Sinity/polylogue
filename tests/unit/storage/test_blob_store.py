@@ -436,9 +436,7 @@ def test_iter_all_skips_temp_files(tmp_path: Path) -> None:
     blob_store.write_from_bytes(b"real blob")
 
     # Create a fake temp file (like ones during writes)
-    prefix_dir = blob_store.root / "ab"
-    prefix_dir.mkdir(parents=True, exist_ok=True)
-    temp_file = prefix_dir / ".blob.temp123"
+    temp_file = blob_store.root / ".blob.temp123"
     temp_file.write_bytes(b"temp content")
 
     hashes = list(blob_store.iter_all())

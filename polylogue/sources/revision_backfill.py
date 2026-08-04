@@ -2569,15 +2569,19 @@ def _parse_one_raw(
         return []
     if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
-            if hermes_state.looks_like_state_db_path(sqlite_path):
+            if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
                 return hermes_state.parse_state_db(
                     sqlite_path,
                     fallback_id=fallback_id,
                     profile_root=Path(source_path).parent,
+                    immutable=True,
                 )
-            if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path):
+            if hermes_verification.looks_like_verification_evidence_db_path(sqlite_path, immutable=True):
                 return hermes_verification.parse_verification_evidence_db(
-                    sqlite_path, fallback_id=fallback_id, profile_root=Path(source_path).parent
+                    sqlite_path,
+                    fallback_id=fallback_id,
+                    profile_root=Path(source_path).parent,
+                    immutable=True,
                 )
     return parse_payload(
         provider,
