@@ -177,6 +177,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
     admit_raw_and_parsed_result,
+    admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
@@ -2200,6 +2201,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         classification: ArtifactClassification,
         source_index: int = 0,
+        raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
     ) -> RawAdmissionResult:
         """Route a non-conversational artifact payload through the raw-admission chokepoint.
@@ -2214,6 +2216,34 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             classification=classification,
             source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
+
+    def admit_raw_artifact_blob_ref(
+        self,
+        *,
+        provider: Provider,
+        blob_hash_hex: str,
+        blob_size: int,
+        source_path: str,
+        acquired_at_ms: int,
+        classification: ArtifactClassification,
+        source_index: int = 0,
+        raw_id: str | None = None,
+        blob_publication_receipt_id: str | None = None,
+    ) -> RawAdmissionResult:
+        """Route a prepublished non-conversational blob through typed admission."""
+        return admit_raw_artifact_blob_ref(
+            self,
+            provider=provider,
+            blob_hash_hex=blob_hash_hex,
+            blob_size=blob_size,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            classification=classification,
+            source_index=source_index,
+            raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 

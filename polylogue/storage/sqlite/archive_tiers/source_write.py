@@ -740,6 +740,7 @@ def write_source_raw_session_blob_ref(
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
+    artifact: ArchiveSourceArtifact | None = None,
     revision: RawRevisionEnvelope | None = None,
     manage_transaction: bool = True,
 ) -> str:
@@ -843,6 +844,8 @@ def write_source_raw_session_blob_ref(
                     publication_receipt_id=additional_ref.publication_receipt_id,
                 ),
             )
+        if artifact is not None:
+            _insert_artifact(conn, resolved_raw_id, artifact)
     return resolved_raw_id
 
 

@@ -150,6 +150,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionArm,
     RawAdmissionResult,
+    admit_raw_artifact_blob_observation,
     admit_raw_blob_observation,
     admit_raw_observation,
 )
@@ -613,6 +614,7 @@ def admit_raw_artifact_payload(
     acquired_at_ms: int,
     classification: ArtifactClassification,
     source_index: int = 0,
+    raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
 ) -> RawAdmissionResult:
     """Commit a non-conversational artifact payload through the raw-admission chokepoint.
@@ -642,11 +644,43 @@ def admit_raw_artifact_payload(
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
+        raw_id=raw_id,
         logical_source_key=f"{origin.value}:{source_path}",
         prior_head=None,
         artifact=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
         manage_transaction=True,
+    )
+
+
+def admit_raw_artifact_blob_ref(
+    store: RawRevisionGovernanceHost,
+    *,
+    provider: Provider,
+    blob_hash_hex: str,
+    blob_size: int,
+    source_path: str,
+    acquired_at_ms: int,
+    classification: ArtifactClassification,
+    source_index: int = 0,
+    raw_id: str | None = None,
+    blob_publication_receipt_id: str | None = None,
+) -> RawAdmissionResult:
+    """Admit a prepublished non-session artifact without a pending envelope."""
+    if store._blob_publisher is not None:
+        store._blob_publisher.flush()
+    return admit_raw_artifact_blob_observation(
+        store._ensure_source_conn(),
+        origin=origin_from_provider(provider),
+        capture_mode=provider,
+        source_path=source_path,
+        source_index=source_index,
+        blob_hash=bytes.fromhex(blob_hash_hex),
+        blob_size=blob_size,
+        acquired_at_ms=acquired_at_ms,
+        raw_id=raw_id,
+        classification=classification,
+        blob_publication_receipt_id=blob_publication_receipt_id,
     )
 
 

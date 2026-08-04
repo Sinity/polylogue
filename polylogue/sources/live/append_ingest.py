@@ -24,6 +24,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm
 
 logger = get_logger(__name__)
 
@@ -80,7 +81,7 @@ def _ingest_append_plans_archive(
     from polylogue.sources.decoders import _iter_json_stream
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
     from polylogue.sources.revision_backfill import (
-        _is_declared_non_session_artifact,
+        _declared_non_session_artifact_classification,
         parse_retained_raw_sessions,
     )
 
@@ -101,6 +102,33 @@ def _ingest_append_plans_archive(
                 raw_id: str | None = None
                 try:
                     provider = Provider.from_string(plan.source_name)
+                    json_stream_started = time.perf_counter()
+                    try:
+                        payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
+                    except Exception:
+                        # Preserve the pre-parse raw capture for malformed input;
+                        # the normal parser path below records the typed failure.
+                        payloads = None
+                    _add_timing(timings, "append.json_stream", json_stream_started)
+                    if payloads is not None:
+                        classification = _declared_non_session_artifact_classification(
+                            provider,
+                            str(plan.path),
+                            sample=payloads[:64],
+                        )
+                        if classification is not None:
+                            artifact_result = archive.admit_raw_artifact_payload(
+                                provider=provider,
+                                payload=plan.payload,
+                                source_path=str(plan.path),
+                                source_index=-1,
+                                acquired_at_ms=acquired_at_ms,
+                                classification=classification,
+                            )
+                            if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
+                                raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
+                            succeeded.append(plan)
+                            continue
                     t0 = time.perf_counter()
                     raw_id = archive.write_raw_payload(
                         provider=provider,
@@ -133,42 +161,6 @@ def _ingest_append_plans_archive(
                         # convergence picks it up once the derived tier is
                         # current again -- no special resolution needed.
                         succeeded.append(plan)
-                        continue
-                    t0 = time.perf_counter()
-                    payloads = list(_iter_json_stream(BytesIO(plan.payload), plan.path.name))
-                    _add_timing(timings, "append.json_stream", t0)
-                    # polylogue-xwkh: this was the third, ungated chokepoint.
-                    # Live daemon ingest (ingest_worker.py) and rebuild replay
-                    # (revision_backfill.py's _parse_one/_parse_stream) both
-                    # already refuse to session-parse an OriginSpec-declared
-                    # "fact" artifact (workflow_run_snapshot / workflow_journal
-                    # / agent_sidecar_meta / adopt_manifest) or non-
-                    # conversational content with no matching path rule, via
-                    # this same classify_artifact-backed check. This path had
-                    # none: parse_payload ran unconditionally below, so a
-                    # growing fact-artifact file (e.g. a workflow
-                    # journal.jsonl whose ops.db cursor was lost and
-                    # resynthesized from a durable 'full' baseline in
-                    # source.db -- see batch.py's
-                    # _resynthesize_cursor_from_source) reached parse_payload
-                    # ungated. Empirically it was NOT reaching
-                    # write_parsed_session_to_archive: parse_retained_raw_sessions
-                    # (used a few lines below, for replay) applies this same
-                    # gate and returns no sessions, which trips the
-                    # 'did not replay to exactly one session' RuntimeError and
-                    # the whole plan fails -- but only after a wasted raw
-                    # write, a wasted parse, and a crash-shaped failure log,
-                    # repeated on every single observation of the file
-                    # forever, since a failed append never advances its
-                    # cursor. Refusing here, before any of that work, closes
-                    # the third chokepoint on the same terms as the other two.
-                    if _is_declared_non_session_artifact(provider, str(plan.path), sample=payloads[:64]):
-                        archive.mark_raw_parse_failed(
-                            raw_id,
-                            provider=provider,
-                            error=ValueError("append payload is a declared non-session artifact"),
-                        )
-                        failed.append(plan)
                         continue
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session

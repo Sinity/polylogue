@@ -287,6 +287,7 @@ def admit_raw_observation(
             payload=payload,
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
+            raw_id=raw_id,
             artifact=artifact,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=manage_transaction,
@@ -513,6 +514,60 @@ def admit_raw_blob_observation(
     return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=admitted_raw_id)
 
 
+def admit_raw_artifact_blob_observation(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    capture_mode: Provider | str | None = None,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+    acquired_at_ms: int,
+    raw_id: str | None = None,
+    classification: ArtifactClassification,
+    blob_publication_receipt_id: str | None = None,
+) -> RawAdmissionResult:
+    """Admit a prepublished non-session artifact with typed authority."""
+    if classification.parse_as_session:
+        raise ValueError("artifact admission requires a non-session classification")
+    if len(blob_hash) != 32:
+        raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    artifact_id = artifact_observation_id(
+        source_name=_enum_value(origin),
+        source_path=source_path,
+        source_index=source_index,
+    )
+    admitted_raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=origin,
+        capture_mode=capture_mode,
+        source_path=source_path,
+        source_index=source_index,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+        acquired_at_ms=acquired_at_ms,
+        raw_id=raw_id,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        artifact=ArchiveSourceArtifact(
+            artifact_id=artifact_id,
+            origin=origin,
+            source_path=source_path,
+            artifact_kind=classification.cohort,
+            classification_reason=classification.reason,
+            support_status=ArtifactSupportStatus.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=classification.schema_eligible,
+            first_observed_at_ms=acquired_at_ms,
+            last_observed_at_ms=acquired_at_ms,
+            source_index=source_index,
+        ),
+        revision=None,
+        manage_transaction=True,
+    )
+    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
+
+
 def _admit_artifact(
     conn: sqlite3.Connection,
     *,
@@ -523,6 +578,7 @@ def _admit_artifact(
     payload: bytes,
     acquired_at_ms: int,
     native_id: str | None,
+    raw_id: str | None,
     artifact: ArtifactClassification,
     blob_publication_receipt_id: str | None,
     manage_transaction: bool,
@@ -542,6 +598,7 @@ def _admit_artifact(
         payload=payload,
         acquired_at_ms=acquired_at_ms,
         native_id=native_id,
+        raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         # Artifacts are acquisition-evidence, not part of any revision
         # chain: no logical_source_key/predecessor tracking applies to a
@@ -569,6 +626,7 @@ __all__ = [
     "PriorRawHead",
     "RawAdmissionArm",
     "RawAdmissionResult",
+    "admit_raw_artifact_blob_observation",
     "admit_raw_blob_observation",
     "admit_raw_observation",
 ]
