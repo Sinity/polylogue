@@ -7,20 +7,35 @@ ledger. It deliberately owns no alternate convergence state machine.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import polylogue.daemon.convergence_stages as convergence_stages
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.outcomes import OutcomeStatus
+from polylogue.daemon.convergence import DaemonConverger, SessionState
+from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.scenarios import WorkloadEnvelopeSpec, partial_convergence_canary_spec
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.pathology_composer import (
+    ComposedPathology,
+    compose_append_revision_chain,
+    compose_fork_prefix_tail_lineage,
+    compose_pathologies,
+    compose_quarantined_head_arrangement,
+)
 
 SqlValue = str | int | float | bytes | None
 FactRow = tuple[SqlValue, ...]
@@ -68,6 +83,282 @@ class SessionMaterializationFacts:
     threads: tuple[FactRow, ...]
     thread_sessions: tuple[FactRow, ...]
     table_counts: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSnapshot:
+    """Semantic archive state, deliberately excluding run-local stamps and ids."""
+
+    sessions: tuple[FactRow, ...]
+    messages: tuple[FactRow, ...]
+    blocks: tuple[FactRow, ...]
+    session_links: tuple[FactRow, ...]
+    profiles: tuple[FactRow, ...]
+    fts_counts: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ConvergenceArchive:
+    """A temporary archive created only through the raw-and-parsed write route."""
+
+    root: Path
+    pathology: ComposedPathology
+    source_paths: tuple[Path, ...]
+    session_ids: tuple[str, ...]
+
+
+def rich_convergence_pathology() -> ComposedPathology:
+    """Return the bounded default corpus with update, lineage, and orphan semantics.
+
+    The property loop exercises archive-write and convergence laws, not the
+    whale streaming route. One-message revisions and a one-message shared
+    prefix retain the distinct normalized states needed here while keeping
+    each default generated case small enough for the focused managed harness.
+    """
+    return compose_pathologies(
+        compose_append_revision_chain(revision_count=2, messages_per_revision=1),
+        compose_fork_prefix_tail_lineage(shared_prefix_len=1, child_tail_len=1),
+        compose_quarantined_head_arrangement(),
+        name="convergence-property-rich-corpus",
+    )
+
+
+def build_converged_archive(
+    root: Path,
+    pathology: ComposedPathology,
+    *,
+    session_order: Sequence[int] | None = None,
+    incremental: bool = False,
+) -> ConvergenceArchive:
+    """Materialize a composed corpus through production writes, then converge it."""
+    initialize_active_archive(root)
+    archive = ingest_convergence_pathology(
+        root,
+        pathology,
+        session_indexes=_complete_session_order(pathology, session_order),
+        converge_after_each=incremental,
+    )
+    if not incremental:
+        converge_convergence_archive(archive)
+    assert_archive_verification_green(archive.root)
+    return archive
+
+
+def initialize_active_archive(root: Path) -> None:
+    """Create all archive tiers for a temporary property-test archive."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+
+
+def ingest_convergence_pathology(
+    root: Path,
+    pathology: ComposedPathology,
+    *,
+    session_indexes: Sequence[int],
+    converge_after_each: bool,
+) -> ConvergenceArchive:
+    """Use the production raw and parsed-session writers for each selected member.
+
+    The test harness does not emulate archive materialization or convergence.
+    It writes source.db through the production raw writer and index.db through
+    the production parsed-session writer, exactly as the live ingestion layer
+    does after a provider parser has produced a ``ParsedSession``.
+    """
+    selected = _validate_session_indexes(pathology, session_indexes)
+    source_paths: list[Path] = []
+    session_ids: list[str] = []
+    for index in selected:
+        session = _parsed_session(pathology.sessions[index], corpus_index=index)
+        payload = _raw_payload(session)
+        source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(payload)
+        with sqlite3.connect(root / "source.db") as source_conn:
+            raw_id = write_source_raw_session(
+                source_conn,
+                origin="codex-session",
+                capture_mode=Provider.CODEX,
+                source_path=str(source_path),
+                source_index=index,
+                payload=payload,
+                acquired_at_ms=_acquired_at_ms(index),
+                native_id=session.provider_session_id,
+            )
+        with open_connection(root / "index.db") as index_conn:
+            session_id = write_parsed_session_to_archive(
+                index_conn,
+                session,
+                raw_id=raw_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+            )
+        source_paths.append(source_path)
+        session_ids.append(session_id)
+        make_messages_fts_stale(root / "index.db", session_id=session_id)
+        archive = ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
+        if converge_after_each:
+            converge_convergence_archive(archive)
+
+    return ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
+
+
+def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
+    """Run the real FTS and insight debt stages for the materialized sessions."""
+    converger = DaemonConverger(
+        (make_fts_stage(archive.root / "index.db"), make_insights_stage(archive.root / "index.db"))
+    )
+    states, _timings = converger.converge_sessions(archive.session_ids)
+    not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
+    if not_converged:
+        raise AssertionError(f"production convergence left pending work: {not_converged}")
+    _analyze_registry_tables(archive.root / "index.db")
+    return states
+
+
+def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
+    """Require every currently registered archive verification predicate to be green."""
+    report = verify_archive(root)
+    non_green = [
+        (check.name, check.status.value, check.summary, check.evidence)
+        for check in report.checks
+        if check.status is not OutcomeStatus.OK
+    ]
+    if non_green:
+        raise AssertionError(f"archive verification registry is not green: {non_green}")
+    return report
+
+
+def archive_snapshot(root: Path) -> ArchiveSnapshot:
+    """Return the one canonical archive comparator shared by all properties."""
+    with sqlite3.connect(root / "index.db") as conn:
+        sessions = conn.execute(
+            """
+            SELECT session_id, origin, native_id, title, parent_session_id,
+                   root_session_id, branch_type, active_leaf_message_id, message_count
+            FROM sessions ORDER BY session_id
+            """
+        ).fetchall()
+        messages = conn.execute(
+            """
+            SELECT session_id, native_id, position, variant_index, role,
+                   material_origin, message_type, parent_message_id
+            FROM messages ORDER BY session_id, position, variant_index
+            """
+        ).fetchall()
+        blocks = conn.execute(
+            """
+            SELECT session_id, message_id, position, block_type, text, tool_id,
+                   tool_name, tool_result_is_error, tool_result_exit_code
+            FROM blocks ORDER BY session_id, message_id, position
+            """
+        ).fetchall()
+        session_links = conn.execute(
+            """
+            SELECT src_session_id, dst_origin, dst_native_id, link_type,
+                   resolved_dst_session_id, branch_point_message_id, inheritance, status
+            FROM session_links
+            ORDER BY src_session_id, dst_origin, dst_native_id, link_type
+            """
+        ).fetchall()
+        profiles = conn.execute(
+            """
+            SELECT session_id, logical_session_id, message_count, work_event_count,
+                   phase_count, word_count, tool_use_count, workflow_shape, terminal_state
+            FROM session_profiles ORDER BY session_id
+            """
+        ).fetchall()
+        fts_counts = tuple(
+            (table, int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]))
+            for table in ("messages_fts_docsize", "messages_fts_identity", "blocks_command_trigram_docsize")
+        )
+    return ArchiveSnapshot(
+        sessions=_fact_rows(sessions),
+        messages=_fact_rows(messages),
+        blocks=_fact_rows(blocks),
+        session_links=_fact_rows(session_links),
+        profiles=_fact_rows(profiles),
+        fts_counts=fts_counts,
+    )
+
+
+def assert_archives_equivalent(left: ConvergenceArchive, right: ConvergenceArchive) -> None:
+    """Compare archives through ``archive_snapshot`` rather than database bytes."""
+    left_snapshot = archive_snapshot(left.root)
+    right_snapshot = archive_snapshot(right.root)
+    if left_snapshot != right_snapshot:
+        raise AssertionError(f"canonical archive snapshots differ:\nleft={left_snapshot!r}\nright={right_snapshot!r}")
+
+
+def _complete_session_order(pathology: ComposedPathology, order: Sequence[int] | None) -> tuple[int, ...]:
+    expected = tuple(range(len(pathology.sessions)))
+    candidate = expected if order is None else tuple(order)
+    if len(candidate) != len(expected) or set(candidate) != set(expected):
+        raise ValueError("session_order must be a permutation of every composed session index")
+    return candidate
+
+
+def rotated_session_order(pathology: ComposedPathology, shift: int) -> tuple[int, ...]:
+    """Return one generated, non-identity ordering of the complete corpus."""
+    session_count = len(pathology.sessions)
+    if not 0 < shift < session_count:
+        raise ValueError("shift must select a non-identity rotation")
+    indexes = tuple(range(session_count))
+    return indexes[shift:] + indexes[:shift]
+
+
+def _validate_session_indexes(pathology: ComposedPathology, indexes: Sequence[int]) -> tuple[int, ...]:
+    selected = tuple(indexes)
+    if len(selected) != len(set(selected)) or any(index < 0 or index >= len(pathology.sessions) for index in selected):
+        raise ValueError("session_indexes must be distinct valid composed-session indexes")
+    return selected
+
+
+def _parsed_session(session: object, *, corpus_index: int) -> ParsedSession:
+    from polylogue.archive.models import Session
+
+    if not isinstance(session, Session):
+        raise TypeError(f"expected composed Session, got {type(session)!r}")
+    timestamp = _corpus_timestamp(corpus_index)
+    messages = [
+        ParsedMessage(
+            provider_message_id=str(message.id),
+            role=Role.normalize(str(message.role)),
+            text=message.text,
+            position=position,
+            timestamp=timestamp,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=message.text)],
+        )
+        for position, message in enumerate(session.messages)
+    ]
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=str(session.id),
+        title=session.title,
+        created_at=timestamp,
+        updated_at=timestamp,
+        parent_session_provider_id=None if session.parent_id is None else str(session.parent_id),
+        branch_type=session.branch_type,
+        messages=messages,
+    )
+
+
+def _raw_payload(session: ParsedSession) -> bytes:
+    return json.dumps(session.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode()
+
+
+def _corpus_timestamp(index: int) -> str:
+    return (datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=index)).isoformat()
+
+
+def _acquired_at_ms(index: int) -> int:
+    return 1_767_225_600_000 + index
+
+
+def _analyze_registry_tables(index_db: Path) -> None:
+    with sqlite3.connect(index_db) as conn:
+        for table in ("blocks", "messages", "action_pairs"):
+            conn.execute(f"ANALYZE {table}")
+        conn.commit()
 
 
 def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
@@ -382,13 +673,24 @@ def _fact_rows(rows: list[tuple[object, ...]]) -> tuple[FactRow, ...]:
 
 
 __all__ = [
+    "ArchiveSnapshot",
+    "ConvergenceArchive",
     "DebtLedgerRow",
     "PartialConvergenceArchive",
     "SessionMaterializationFacts",
+    "archive_snapshot",
+    "assert_archive_verification_green",
+    "assert_archives_equivalent",
+    "build_converged_archive",
+    "converge_convergence_archive",
     "debt_ledger_row",
+    "ingest_convergence_pathology",
+    "initialize_active_archive",
     "make_messages_fts_stale",
     "messages_fts_match_count",
     "raw_authority_facts",
+    "rich_convergence_pathology",
+    "rotated_session_order",
     "seed_partial_convergence_archive",
     "session_materialization_facts",
     "set_debt_retry_at",
