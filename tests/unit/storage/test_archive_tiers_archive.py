@@ -10,7 +10,7 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
-from polylogue.core.enums import BlockType, Origin, Provider
+from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
 from polylogue.scenarios.workload import (
     BudgetVerdict,
     WorkloadPhaseObservation,
@@ -172,6 +172,56 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
     assert [(row.session_id, row.is_error, row.exit_code) for row in failed_rows] == [(session_id, 1, 2)]
     assert [(row.group_key, row.count) for row in error_counts] == [("1", 1)]
     assert [(row.group_key, row.count) for row in exit_counts] == [("2", 1)]
+
+
+def test_archive_facade_exposes_distinct_action_result_absence_states(tmp_path: Path) -> None:
+    """The repository route preserves the actions view's result-state split.
+
+    One result row is structurally unknown while the other call has no paired
+    row. If repository hydration drops result_state or derives both from the
+    nullable outcome columns, this real writer -> actions view -> repository
+    route cannot return the two distinct enum values.
+    """
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="codex-action-result-states",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-unknown",
+                        tool_input={"command": "unknown"},
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        tool_id="tool-unknown",
+                        text="provider did not report outcome",
+                    ),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_name="Bash",
+                        tool_id="tool-absent",
+                        tool_input={"command": "absent"},
+                    ),
+                ],
+            )
+        ],
+    )
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as facade:
+        session_id = facade.write_parsed(session)
+
+    with ArchiveStore.open_existing(root) as facade:
+        rows = facade.query_session_actions([session_id], limit=10)
+
+    assert [(row.tool_command, row.result_state, row.tool_result_block_id is None) for row in rows] == [
+        ("unknown", ActionResultState.OUTCOME_UNKNOWN, False),
+        ("absent", ActionResultState.NO_RESULT, True),
+    ]
 
 
 def test_exact_session_action_count_bounds_pairing_before_global_ranking(

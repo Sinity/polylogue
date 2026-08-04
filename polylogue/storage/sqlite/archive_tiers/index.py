@@ -426,6 +426,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #    source`, `daemon/http.py` status payloads), not confined to
 #    repair/status internals. price_catalogs metadata is out of scope here
 #    (table-level finding, tracked separately by polylogue-resk).
+# polylogue-cuxz.5: v64 adds the actions view-only ``result_state`` projection.
+# It is computed entirely from already-materialized ``action_pairs`` outcome
+# columns, so a fast-forward only replaces the view. No raw session needs
+# reparsing and no persisted value changes.
 # polylogue-eizc: v63 drops `threads_fts`, a maintained FTS surface with real
 # triggers and rebuild/repair/freshness machinery but no application-layer
 # consumers. Its only MATCH reader had zero production callers; the live
@@ -433,7 +437,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # `blocks_command_trigram` remains because `devtools/affordance_usage.py`'s
 # `_cli_action_rows` is a real consumer with a documented archive-scale
 # speedup. See the v63 declaration in lifecycle.py.
-INDEX_SCHEMA_VERSION = 63
+INDEX_SCHEMA_VERSION = 64
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1018,7 +1022,12 @@ CREATE VIEW IF NOT EXISTS actions AS
 SELECT
     ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
     ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
-    ap.is_error, ap.exit_code, ap.tool_result_block_id
+    ap.is_error, ap.exit_code, ap.tool_result_block_id,
+    CASE
+        WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
+        WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
+        ELSE 'outcome_reported'
+    END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
 LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;

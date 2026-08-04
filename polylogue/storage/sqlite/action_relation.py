@@ -81,7 +81,12 @@ SELECT
     ranked_results.output_text,
     ranked_results.is_error,
     ranked_results.exit_code,
-    ranked_results.tool_result_block_id
+    ranked_results.tool_result_block_id,
+    CASE
+        WHEN ranked_results.tool_result_block_id IS NULL THEN 'no_result'
+        WHEN ranked_results.is_error IS NULL AND ranked_results.exit_code IS NULL THEN 'outcome_unknown'
+        ELSE 'outcome_reported'
+    END AS result_state
 FROM ranked_uses
 LEFT JOIN ranked_results
     ON ranked_results.session_id = ranked_uses.session_id
@@ -102,7 +107,8 @@ SELECT
     NULL AS output_text,
     NULL AS is_error,
     NULL AS exit_code,
-    NULL AS tool_result_block_id
+    NULL AS tool_result_block_id,
+    'no_result' AS result_state
 FROM blocks u{session_index_hint}
 WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = ''){null_id_bound}
 """.strip()
