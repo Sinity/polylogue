@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
@@ -276,6 +279,83 @@ def test_revision_gate_catches_smaller_index_than_best_recorded_revision(
     assert check.evidence["unexplained_shortfall"] == 1
     assert check.evidence["worst"][0]["session_id"] == session_id
     assert check.evidence["worst"][0]["best_recorded_messages"] == 100000
+
+
+@pytest.mark.parametrize(
+    ("violation", "expected_check"),
+    (
+        ("absent", "corpus-absences"),
+        ("attachment", "corpus-attachment-fidelity"),
+        ("revision", "corpus-revision-fidelity"),
+    ),
+)
+def test_candidate_index_corpus_gate_reads_durable_source_and_inactive_index(
+    corpus_fidelity_archive: SeededArchiveArtifact,
+    tmp_path: Path,
+    violation: str,
+    expected_check: str,
+) -> None:
+    """Each candidate runner reads the real inactive index, not active state.
+
+    This mutates a separate candidate ``index.db`` plus the durable source
+    clone where the check needs source evidence. Removing a candidate runner,
+    or accidentally routing it through the active index, leaves the matching
+    mutation green instead of reporting the selected gate as blocking.
+    """
+    root = _clone(corpus_fidelity_archive, tmp_path / violation)
+    candidate_index = tmp_path / f"{violation}-candidate-index.db"
+    shutil.copy2(root / "index.db", candidate_index)
+    session_id = _first_session_id(root)
+
+    if violation == "attachment":
+        with _connect(candidate_index) as conn:
+            message_row = conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? LIMIT 1", (session_id,)
+            ).fetchone()
+            assert message_row is not None
+            conn.execute(
+                "INSERT INTO attachments(attachment_id, acquisition_status) VALUES ('candidate-unfetched', 'unfetched')"
+            )
+            conn.execute(
+                "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position, upload_origin) "
+                "VALUES ('candidate-unfetched', ?, ?, 99, 'drive')",
+                (session_id, message_row[0]),
+            )
+    else:
+        origin, native_id = session_id.split(":", 1)
+        raw_id = f"candidate-{violation}"
+        provider_session_id = native_id if violation == "revision" else "candidate-absent"
+        with _connect(root / "source.db") as conn:
+            _insert_raw(
+                conn,
+                raw_id=raw_id,
+                origin=origin,
+                native_id=provider_session_id,
+                logical_source_key=f"fixture:{provider_session_id}",
+            )
+            conn.execute(
+                """
+                INSERT INTO raw_session_memberships(
+                    raw_id, logical_source_key, provider_session_id, source_revision,
+                    normalized_content_hash, message_count
+                ) VALUES (?, ?, ?, 'candidate-revision', ?, ?)
+                """,
+                (
+                    raw_id,
+                    f"fixture:{provider_session_id}",
+                    provider_session_id,
+                    b"c" * 32,
+                    100_000 if violation == "revision" else 4,
+                ),
+            )
+
+    report = verify_archive(root, checks=(expected_check,), index_path_override=candidate_index)
+
+    assert report.blocking
+    assert len(report.checks) == 1
+    check = report.checks[0]
+    assert isinstance(check, ArchiveVerificationCheck)
+    assert check.status is OutcomeStatus.ERROR
 
 
 def test_revision_gate_explains_event_reclassification_without_hiding_shortfall(
