@@ -172,6 +172,22 @@ class CanarySelection:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CanaryRunResult:
+    """Evidence from one bounded inactive-generation canary run."""
+
+    selection: CanarySelection
+    comparison: CanaryDiffReport
+    rebuild_receipt: dict[str, object]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "selection": self.selection.to_dict(),
+            "comparison": self.comparison.to_dict(),
+            "rebuild_receipt": self.rebuild_receipt,
+        }
+
+
 def select_canary_sessions(
     index_path: Path,
     *,
@@ -246,6 +262,52 @@ def select_canary_sessions(
         pathology_session_ids=tuple(sorted(pathology)),
         sample_session_ids=tuple(sorted(explicit_samples)),
         origin_counts=tuple(sorted(origin_counts.items())),
+    )
+
+
+def run_reindex_canary(
+    archive_root: Path,
+    *,
+    input_index: Path | None = None,
+    sessions_per_origin: int = 100,
+    pathology_session_ids: Iterable[str] = (),
+    sample_session_ids: Iterable[str] = (),
+    no_promote: bool,
+) -> CanaryRunResult:
+    """Replay a selected canary through the existing inactive rebuild route."""
+
+    if not no_promote:
+        raise CanarySelectionError("reindex canary requires --no-promote")
+    from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    root = Path(archive_root)
+    current_index = Path(input_index) if input_index is not None else ArchiveLocation.resolve(root).active_index_path
+    selection = select_canary_sessions(
+        current_index,
+        sessions_per_origin=sessions_per_origin,
+        pathology_session_ids=pathology_session_ids,
+        sample_session_ids=sample_session_ids,
+    )
+    receipt = rebuild_index_from_source_sync(
+        RebuildIndexRequest(
+            archive_root=root,
+            raw_ids=selection.selected_raw_ids,
+            promote=False,
+        )
+    )
+    candidate_value = receipt.generation.get("index_path")
+    if not isinstance(candidate_value, str):
+        raise CanarySelectionError("rebuild receipt did not identify an inactive candidate index")
+    comparison = compare_reindex_generations(
+        current_index,
+        Path(candidate_value),
+        session_ids=selection.selected_session_ids,
+    )
+    return CanaryRunResult(
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=receipt.to_dict(),
     )
 
 
@@ -649,6 +711,7 @@ def _quote_identifier(value: str) -> str:
 __all__ = [
     "CanaryDifferenceReview",
     "CanaryDiffReport",
+    "CanaryRunResult",
     "CanarySelection",
     "CanarySelectionError",
     "DurableCanaryReport",
@@ -659,6 +722,7 @@ __all__ = [
     "UnclassifiedCanaryDiffError",
     "compare_reindex_generations",
     "load_canary_report",
+    "run_reindex_canary",
     "select_canary_sessions",
     "write_canary_report",
 ]
