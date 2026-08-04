@@ -9,13 +9,14 @@ green, while the real blocks read model must report the changed row.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-import polylogue.maintenance.reindex_canary as reindex_canary
 from polylogue.maintenance.reindex_canary import (
     CanaryDifferenceReview,
     CanaryDiffReport,
@@ -311,7 +312,9 @@ def test_selector_refuses_unknown_or_non_replayable_explicit_sessions(tmp_path: 
         select_canary_sessions(index, pathology_session_ids=("codex-session:alpha",))
 
 
-def test_run_reindex_canary_compares_its_own_inactive_generation(tmp_path: Path, monkeypatch) -> None:
+def test_run_reindex_canary_compares_its_own_inactive_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     current = tmp_path / "current.db"
     current.touch()
     generation_id = "gen-canary"
@@ -344,13 +347,12 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(tmp_path: Path,
         "polylogue.maintenance.reindex_canary.select_canary_sessions", lambda *args, **kwargs: selection
     )
     monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", lambda request: Receipt())
-    monkeypatch.setattr(
-        "polylogue.maintenance.reindex_canary.compare_reindex_generations",
-        lambda current_path, candidate_path, *, session_ids: (
-            captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
-            or _empty_comparison(current_path, candidate_path, session_ids)
-        ),
-    )
+
+    def fake_compare(current_path: Path, candidate_path: Path, *, session_ids: tuple[str, ...]) -> CanaryDiffReport:
+        captured.update({"paths": (current_path, candidate_path), "session_ids": session_ids})
+        return _empty_comparison(current_path, candidate_path, session_ids)
+
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.compare_reindex_generations", fake_compare)
 
     result = run_reindex_canary(root, input_index=current, no_promote=True)
 
@@ -358,7 +360,7 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(tmp_path: Path,
     assert captured["paths"] == (current, candidate)
 
 
-def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch) -> None:
+def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     current = tmp_path / "current.db"
     current.touch()
     arbitrary = tmp_path / "arbitrary.db"
@@ -499,7 +501,9 @@ def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path) -> No
 
     loaded = load_canary_report(report_path)
 
-    summary = loaded["comparison"]["summary"]
+    comparison_payload = loaded["comparison"]
+    assert isinstance(comparison_payload, dict)
+    summary = comparison_payload["summary"]
     assert isinstance(summary, dict)
     assert summary["difference_count"] == len(reviews)
     assert summary["unexpected_count"] == len(reviews)
@@ -522,7 +526,7 @@ def test_canary_report_uses_unique_temporary_names(tmp_path: Path, monkeypatch: 
         )
         for difference in comparison.differences
     )
-    original = reindex_canary.tempfile.NamedTemporaryFile
+    original = tempfile.NamedTemporaryFile
     names: list[str] = []
 
     def recording_named_temporary_file(*args: Any, **kwargs: Any) -> Any:
@@ -530,7 +534,7 @@ def test_canary_report_uses_unique_temporary_names(tmp_path: Path, monkeypatch: 
         names.append(stream.name)
         return stream
 
-    monkeypatch.setattr(reindex_canary.tempfile, "NamedTemporaryFile", recording_named_temporary_file)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", recording_named_temporary_file)
     write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
     write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
 
@@ -562,7 +566,7 @@ def test_canary_report_cleans_temporary_file_when_replace_fails(
     def fail_replace(source: object, destination: object) -> None:
         raise OSError("replace failed")
 
-    monkeypatch.setattr(reindex_canary.os, "replace", fail_replace)
+    monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
         write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
 
