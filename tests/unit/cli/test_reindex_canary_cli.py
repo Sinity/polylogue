@@ -9,10 +9,14 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.maintenance import _reindex_canary as command_module
 from polylogue.maintenance.reindex_canary import (
+    CanaryDifferenceReview,
     CanaryDiffReport,
     CanaryRunResult,
     CanarySelection,
+    DifferenceClassification,
+    DifferenceOperation,
     DurableCanaryReport,
+    RowDifference,
     UnclassifiedCanaryDiffError,
     run_reindex_canary,
 )
@@ -39,6 +43,38 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
         differences=differences,  # type: ignore[arg-type]
     )
     return CanaryRunResult(selection=selection, comparison=comparison, rebuild_receipt={"status": "replayed"})
+
+
+def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
+    difference = RowDifference(
+        table="session_profiles",
+        operation=DifferenceOperation.CHANGED,
+        identity=(("session_id", "codex-session:sample"),),
+        before={"message_count": 1},
+        after={"message_count": 2},
+        changed_columns=("message_count",),
+        classification=DifferenceClassification.UNEXPECTED,
+        rationale="unreviewed",
+    )
+    result = _run_result(index_path, differences=(difference,))
+    return CanaryRunResult(
+        selection=result.selection,
+        comparison=result.comparison,
+        rebuild_receipt={
+            "archive_root": str(index_path.parent),
+            "selected_raw_count": 1,
+            "status": "replayed",
+            "materialized": True,
+            "generation": {
+                "generation_id": "gen-canary",
+                "owner_id": "owner",
+                "archive_root": str(index_path.parent),
+                "index_path": str(result.comparison.candidate_index),
+                "state": "inactive",
+                "source_snapshot": "snapshot",
+            },
+        },
+    )
 
 
 def test_reindex_canary_cli_requires_no_promote(tmp_path: Path) -> None:
@@ -83,12 +119,14 @@ def test_reindex_canary_cli_routes_selection_and_report_without_rebuild_duplicat
         return DurableCanaryReport(
             selection=run_result.selection,
             comparison=run_result.comparison,
+            rebuild_receipt=run_result.rebuild_receipt,
             reviews=(),
         )
 
     monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", fake_run)
     monkeypatch.setattr("polylogue.maintenance.reindex_canary.write_canary_report", fake_write)
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.load_canary_report", lambda path: {})
 
     result = CliRunner().invoke(
         cli,
@@ -159,13 +197,91 @@ def test_reindex_canary_cli_refuses_to_write_unclassified_report(
     )
 
     assert result.exit_code == 1
-    assert "classification is incomplete" in result.output
+    assert "require --review-manifest" in result.output
+
+
+def test_reindex_canary_cli_persists_review_manifest_for_nonempty_differences(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI's real report writer accepts an explicit per-difference review."""
+
+    index_path = tmp_path / "index.db"
+    index_path.touch()
+    report_path = tmp_path / "canary.json"
+    review_path = tmp_path / "reviews.json"
+    run_result = _nonempty_run_result(index_path)
+    difference = run_result.comparison.differences[0]
+    assert isinstance(difference, RowDifference)
+    review = CanaryDifferenceReview.for_difference(
+        difference,
+        classification=DifferenceClassification.EXPECTED,
+        reference="polylogue-review",
+        rationale="reviewed materializer change",
+    )
+    review_path.write_text(json.dumps({"reviews": [review.to_dict()]}), encoding="utf-8")
+    monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
+    monkeypatch.setattr("polylogue.maintenance.reindex_canary.run_reindex_canary", lambda *args, **kwargs: run_result)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--input",
+            str(index_path),
+            "--report",
+            str(report_path),
+            "--review-manifest",
+            str(review_path),
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert persisted["reviews"] == [review.to_dict()]
+    assert persisted["comparison"]["summary"]["expected_count"] == 1
+
+
+def test_reindex_canary_cli_refuses_nonempty_differences_without_review_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    index_path = tmp_path / "index.db"
+    index_path.touch()
+    monkeypatch.setattr(command_module, "archive_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "polylogue.maintenance.reindex_canary.run_reindex_canary",
+        lambda *args, **kwargs: _nonempty_run_result(index_path),
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--input",
+            str(index_path),
+            "--report",
+            str(tmp_path / "canary.json"),
+            "--no-promote",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "require --review-manifest" in result.output
 
 
 def test_shared_canary_runner_uses_existing_inactive_rebuild_route(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    current_index = tmp_path / "current.db"
+    current_index = tmp_path / "index.db"
     candidate_index = tmp_path / ".index-generations" / "gen-test" / "index.db"
     current_index.touch()
     candidate_index.parent.mkdir(parents=True)

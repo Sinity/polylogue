@@ -61,6 +61,12 @@ class ExpectedDifference:
     operations: tuple[DifferenceOperation, ...] = ()
     columns: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        if len(self.operations) != 1:
+            raise ValueError("expected differences require exactly one operation")
+        if not self.columns:
+            raise ValueError("expected differences require a non-empty changed-column signature")
+
     def matches(
         self,
         *,
@@ -70,11 +76,9 @@ class ExpectedDifference:
     ) -> bool:
         if self.table != table:
             return False
-        if self.operations and operation not in self.operations:
+        if operation is not self.operations[0]:
             return False
-        if not self.columns:
-            return True
-        return bool(changed_columns) and set(changed_columns).issubset(self.columns)
+        return tuple(changed_columns) == self.columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,7 +290,7 @@ def run_reindex_canary(
         raise CanarySelectionError("reindex canary requires --no-promote")
     from polylogue.config import resolve_archive_root
     from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-    from polylogue.storage.archive_identity import ArchiveLocation
+    from polylogue.storage.archive_identity import ArchiveLocation, TierFileIdentity
 
     root = Path(archive_root)
     if root.resolve() == resolve_archive_root().resolve():
@@ -294,7 +298,12 @@ def run_reindex_canary(
             "reindex canary refuses the configured live archive root; "
             "run it against an explicitly provisioned isolated canary archive"
         )
-    current_index = Path(input_index) if input_index is not None else ArchiveLocation.resolve(root).active_index_path
+    location = ArchiveLocation.resolve(root)
+    current_index = location.active_index_path
+    if input_index is not None:
+        supplied = TierFileIdentity.resolve("index", Path(input_index))
+        if not location.active_index.same_file(supplied):
+            raise CanarySelectionError("input index is not the configured archive active generation")
     selection = select_canary_sessions(
         current_index,
         sessions_per_origin=sessions_per_origin,
@@ -432,6 +441,7 @@ class DurableCanaryReport:
 
     selection: CanarySelection
     comparison: CanaryDiffReport
+    rebuild_receipt: dict[str, object]
     reviews: tuple[CanaryDifferenceReview, ...]
 
     @property
@@ -443,6 +453,7 @@ class DurableCanaryReport:
             "schema_version": 1,
             "selection": self.selection.to_dict(),
             "comparison": self.comparison.to_dict(),
+            "rebuild_receipt": self.rebuild_receipt,
             "reviews": [review.to_dict() for review in self.reviews],
         }
 
@@ -452,6 +463,7 @@ def write_canary_report(
     *,
     selection: CanarySelection,
     comparison: CanaryDiffReport,
+    rebuild_receipt: dict[str, object],
     reviews: Iterable[CanaryDifferenceReview],
 ) -> DurableCanaryReport:
     """Persist a reviewed report, refusing any incomplete classification.
@@ -462,6 +474,11 @@ def write_canary_report(
     requested report path, never either SQLite generation.
     """
 
+    _validate_rebuild_receipt(
+        rebuild_receipt,
+        selected_raw_ids=selection.selected_raw_ids,
+        candidate_index=comparison.candidate_index,
+    )
     review_list = tuple(reviews)
     review_by_key: dict[tuple[str, DifferenceOperation, tuple[tuple[str, object], ...]], CanaryDifferenceReview] = {}
     duplicate_keys: list[object] = []
@@ -501,7 +518,12 @@ def write_canary_report(
         for difference in comparison.differences
     )
     reviewed_comparison = replace(comparison, differences=reviewed_differences)
-    durable = DurableCanaryReport(selection=selection, comparison=reviewed_comparison, reviews=review_list)
+    durable = DurableCanaryReport(
+        selection=selection,
+        comparison=reviewed_comparison,
+        rebuild_receipt=rebuild_receipt,
+        reviews=review_list,
+    )
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(durable.to_dict(), ensure_ascii=False, indent=2, sort_keys=True)
@@ -531,6 +553,48 @@ def write_canary_report(
     return durable
 
 
+def _validate_rebuild_receipt(
+    receipt: object,
+    *,
+    selected_raw_ids: Iterable[str],
+    candidate_index: Path | str,
+) -> None:
+    if not isinstance(receipt, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no rebuild receipt")
+    archive_root = receipt.get("archive_root")
+    selected_raw_count = receipt.get("selected_raw_count")
+    generation = receipt.get("generation")
+    if (
+        not isinstance(archive_root, str)
+        or not archive_root
+        or selected_raw_count != len(tuple(selected_raw_ids))
+        or receipt.get("status") != "replayed"
+        or receipt.get("materialized") is not True
+        or not isinstance(generation, dict)
+    ):
+        raise UnclassifiedCanaryDiffError("canary report has invalid rebuild receipt")
+    generation_archive_root = generation.get("archive_root")
+    generation_index = generation.get("index_path")
+    required_generation = (
+        generation.get("generation_id"),
+        generation.get("owner_id"),
+        generation_archive_root,
+        generation_index,
+        generation.get("source_snapshot"),
+    )
+    if (
+        generation.get("state") != "inactive"
+        or not all(isinstance(value, str) and value for value in required_generation)
+        or not isinstance(generation_archive_root, str)
+        or not isinstance(generation_index, str)
+    ):
+        raise UnclassifiedCanaryDiffError("canary report has incomplete candidate generation provenance")
+    if Path(archive_root).resolve() != Path(generation_archive_root).resolve():
+        raise UnclassifiedCanaryDiffError("canary report rebuild receipt and candidate archive roots disagree")
+    if Path(generation_index).resolve() != Path(candidate_index).resolve():
+        raise UnclassifiedCanaryDiffError("canary report rebuild receipt does not identify the compared candidate")
+
+
 def load_canary_report(path: Path) -> dict[str, object]:
     """Read and structurally revalidate a durable report's review coverage."""
 
@@ -551,6 +615,20 @@ def load_canary_report(path: Path) -> dict[str, object]:
     if not isinstance(raw_reviews, list):
         raise UnclassifiedCanaryDiffError("canary report has no reviews list")
     reviews = tuple(_review_from_dict(item) for item in raw_reviews)
+    selection = payload.get("selection")
+    if not isinstance(selection, dict):
+        raise UnclassifiedCanaryDiffError("canary report has no selection object")
+    selected_raw_ids = selection.get("selected_raw_ids")
+    candidate_index = comparison.get("candidate_index")
+    if not isinstance(selected_raw_ids, list) or not all(isinstance(value, str) for value in selected_raw_ids):
+        raise UnclassifiedCanaryDiffError("canary report has invalid selected raw ids")
+    if not isinstance(candidate_index, str):
+        raise UnclassifiedCanaryDiffError("canary report has no candidate index")
+    _validate_rebuild_receipt(
+        payload.get("rebuild_receipt"),
+        selected_raw_ids=cast(list[str], selected_raw_ids),
+        candidate_index=candidate_index,
+    )
     difference_keys = tuple(_difference_key(difference) for difference in differences)
     review_keys = tuple(review.key for review in reviews)
     if len(set(difference_keys)) != len(difference_keys) or len(set(review_keys)) != len(review_keys):
@@ -642,6 +720,15 @@ def _review_from_dict(value: object) -> CanaryDifferenceReview:
         reference=reference,
         rationale=rationale,
     )
+
+
+def load_canary_review_manifest(path: Path) -> tuple[CanaryDifferenceReview, ...]:
+    """Load the explicit per-difference review manifest accepted by the CLI."""
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("reviews"), list):
+        raise UnclassifiedCanaryDiffError("canary review manifest must contain a reviews list")
+    return tuple(_review_from_dict(item) for item in cast(list[object], payload["reviews"]))
 
 
 def _summary_for_differences(differences: tuple[RowDifference, ...]) -> dict[str, object]:
@@ -815,14 +902,20 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
 
 def _read_model_tables(connection: sqlite3.Connection) -> set[str]:
     rows = connection.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'"
     ).fetchall()
     result: set[str] = set()
     for row in rows:
         table = str(row[0])
         if table in _EXCLUDED_TABLES or table.startswith("messages_fts") or table.startswith("blocks_command_trigram"):
             continue
-        columns = _table_columns(connection, table)
+        try:
+            columns = _table_columns(connection, table)
+        except sqlite3.OperationalError:
+            # A canonical view whose backing table is itself absent is not a
+            # second independent schema delta. The missing base relation is
+            # still reported below without making the comparison unreadable.
+            continue
         if table in _CORE_TABLES or any(column in columns for column in _SESSION_SCOPE_COLUMNS):
             result.add(table)
     return result
@@ -837,11 +930,13 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> tuple[str, ...
 
 
 def _table_primary_key(connection: sqlite3.Connection, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
+    if table == "actions" and "tool_use_block_id" in columns:
+        return ("tool_use_block_id",)
     rows = connection.execute(f"PRAGMA table_xinfo({_quote_identifier(table)})").fetchall()
     primary_key = [(int(row[5]), str(row[1])) for row in rows if int(row[5]) > 0 and int(row[6]) not in (1, 2)]
     if primary_key:
         return tuple(name for _position, name in sorted(primary_key))
-    for preferred in ("session_id", "message_id", "block_id", "event_id", "policy_id"):
+    for preferred in ("tool_use_block_id", "session_id", "message_id", "block_id", "event_id", "policy_id"):
         if preferred in columns:
             return (preferred,)
     return columns
@@ -960,7 +1055,6 @@ def _table_rows(
         placeholders = ", ".join("?" for _ in session_ids)
         query += " WHERE " + " OR ".join(f"{_quote_identifier(column)} IN ({placeholders})" for column in scope_columns)
         parameters = session_ids * len(scope_columns)
-    query += " ORDER BY rowid" if table not in {"sessions", "messages", "blocks", "session_links"} else ""
     result: dict[tuple[object, ...], dict[str, object]] = {}
     primary_key = _table_primary_key(connection, table, columns)
     for row in connection.execute(query, parameters):
