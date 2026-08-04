@@ -1002,6 +1002,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "workspace chatgpt-lifecycle-anchor-audit",
+        "workspace",
+        "Census the current quarantined ChatGPT corpus for lifecycle-anchor conflicts.",
+        "devtools.chatgpt_lifecycle_anchor_audit",
+        use_when=(
+            "Run the read-only parser-to-classifier census behind the historical ChatGPT mapping-order defect. "
+            "It emits only aggregate, sanitized evidence and never reclassifies source rows or graph gates."
+        ),
+        examples=(
+            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive",
+            "devtools workspace chatgpt-lifecycle-anchor-audit --archive-root /path/to/archive --receipt docs/audits/receipt.json",
+        ),
+    ),
+    CommandSpec(
         "workspace raw-live-source-reconciliation-apply",
         "workspace",
         "Promote quarantined raw evidence proven correct by live-source verification.",

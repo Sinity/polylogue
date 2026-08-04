@@ -620,13 +620,11 @@ def test_refuses_generation_lifecycle_state_change_despite_duration_tolerance() 
 
 
 def test_refuses_different_content_moved_generation_lifecycle_anchor() -> None:
-    """A moved anchor does not excuse different lifecycle content.
+    """Classifier-only guard: a moved anchor does not excuse changed content.
 
-    This is the red twin for the proposed, deliberately unlanded comparison
-    exception in polylogue-uqwd. A future exception may fold one orphaned
-    lifecycle event per side only when the non-anchor content is equal. It
-    must keep this different-state pair as a conflict even though the event
-    anchor moves between revisions.
+    This deliberately constructs ParsedSession values and therefore does not
+    cover ChatGPT parser selection or mapping-order stability. The end-to-end
+    regression in test_parsers_chatgpt.py owns that upstream contract.
     """
 
     def revision(raw_id: str, anchor: str, state: str) -> MembershipRevision:

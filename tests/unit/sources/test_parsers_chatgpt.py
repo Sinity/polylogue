@@ -1557,6 +1557,47 @@ def test_chatgpt_generation_timing_anchor_is_stable_across_mapping_order() -> No
     assert anchor_forward == anchor_reversed
 
 
+def test_chatgpt_mapping_order_does_not_create_revision_conflict() -> None:
+    """The parser's stable tie-break reaches the membership classifier.
+
+    The historical implementation used mapping insertion position as the final
+    timing-candidate tiebreak. The two otherwise identical export orders then
+    anchored their lifecycle event to different messages, which made the
+    production revision classifier quarantine both raws as a conflict.
+    """
+    from polylogue.archive.session_revision_membership import (
+        MembershipRevision,
+        _relation,
+        classify_membership_revisions,
+    )
+
+    user = _branch_node("u1", "user", "do the work", parent=None, children=["node_a"])
+    node_a = _branch_node("node_a", "assistant", "first draft", parent="u1", children=["node_b"])
+    node_b = _branch_node("node_b", "assistant", "final draft", parent="node_a", children=[])
+    for node in (node_a, node_b):
+        node["message"]["metadata"] = {"finished_duration_sec": 5}
+
+    def parsed(order: list[dict[str, Any]]) -> ParsedSession:
+        return chatgpt_parse(
+            {"id": "tie-break-order", "mapping": {node["id"]: node for node in order}, "current_node": "node_b"},
+            "fallback-id",
+        )
+
+    left, right = parsed([user, node_a, node_b]), parsed([user, node_b, node_a])
+    revisions = [
+        MembershipRevision(raw_id, session_revision_projection(session))
+        for raw_id, session in (("raw-left", left), ("raw-right", right))
+    ]
+
+    assert left.session_events[0].source_message_provider_id == right.session_events[0].source_message_provider_id
+    assert revisions[0].projection.event_contents == revisions[1].projection.event_contents
+    assert _relation(revisions[0].projection, revisions[1].projection) == "equal"
+    result = classify_membership_revisions(revisions, existing_accepted_raw_id="raw-left")
+    assert result.accepted_raw_ids == ("raw-left",)
+    assert result.equivalent_raw_ids == ("raw-right",)
+    assert result.ambiguous_raw_ids == ()
+
+
 # ---------------------------------------------------------------------------
 # #1744 — non-`parts` content is preserved (code interpreter, execution output)
 # ---------------------------------------------------------------------------
