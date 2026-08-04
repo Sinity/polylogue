@@ -482,7 +482,6 @@ def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
     from polylogue.storage.fts import dangling_repair
     from polylogue.storage.sqlite.connection_profile import (
         BOUNDED_REPAIR_MMAP_SIZE_BYTES,
-        DAEMON_WRITE_MMAP_SIZE_BYTES,
     )
 
     archive_db = tmp_path / "index.db"
@@ -504,10 +503,10 @@ def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
     assert stages.repair_messages_fts_surface(archive_db) is True
     assert observed == {
         "main": BOUNDED_REPAIR_MMAP_SIZE_BYTES,
-        "source_tier": DAEMON_WRITE_MMAP_SIZE_BYTES,
-        "user_tier": DAEMON_WRITE_MMAP_SIZE_BYTES,
-        "embeddings": DAEMON_WRITE_MMAP_SIZE_BYTES,
-        "ops_tier": DAEMON_WRITE_MMAP_SIZE_BYTES,
+        "source_tier": 0,
+        "user_tier": 0,
+        "embeddings": 0,
+        "ops_tier": 0,
     }
 
 

@@ -14,12 +14,17 @@ empty would make ``test_at_risk_when_limit_at_or_below_budget`` fail to warn.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
+from collections.abc import Awaitable, Callable
+from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from polylogue.config import MAX_MEMORY_BUDGET_BYTES
+from polylogue.storage.sqlite.async_sqlite import configure_connection, configure_read_connection
 from polylogue.storage.sqlite.connection_profile import (
     BOUNDED_REPAIR_CACHE_SIZE_KIB,
     BOUNDED_REPAIR_MMAP_SIZE_BYTES,
@@ -31,14 +36,107 @@ from polylogue.storage.sqlite.connection_profile import (
     MEMORY_BUDGET_BYTES,
     OBSERVATION_JOURNAL_CACHE_SIZE_KIB,
     READ_CACHE_SIZE_KIB,
+    READ_CONNECTION_PROFILE,
     READ_MMAP_SIZE_BYTES,
     WRITE_CACHE_SIZE_KIB,
+    WRITE_CONNECTION_PROFILE,
     WRITE_MMAP_SIZE_BYTES,
     MappedBytesBudgetCheck,
+    SQLiteConnectionProfile,
     check_mapped_bytes_budget_against_cgroup_limit,
     log_mapped_bytes_budget_check,
     mapped_bytes_budget,
+    open_connection,
+    open_daemon_connection,
 )
+
+_ATTACHED_SCHEMAS = ("source_tier", "user_tier", "embeddings", "ops_tier")
+
+
+def _seed_attached_archive_tiers(root: Path) -> None:
+    for filename in ("source.db", "user.db", "embeddings.db", "ops.db"):
+        sqlite3.connect(root / filename).close()
+
+
+def _mmap_values(conn: sqlite3.Connection) -> dict[str, int]:
+    return {
+        schema: int(conn.execute(f"PRAGMA {schema}.mmap_size").fetchone()[0]) for schema in ("main", *_ATTACHED_SCHEMAS)
+    }
+
+
+def test_all_connection_profiles_scope_mmap_to_main() -> None:
+    profiles: tuple[SQLiteConnectionProfile, ...] = (
+        WRITE_CONNECTION_PROFILE,
+        READ_CONNECTION_PROFILE,
+    )
+    from polylogue.storage.sqlite.connection_profile import (
+        BULK_BUILD_WRITE_CONNECTION_PROFILE,
+        DAEMON_WRITE_CONNECTION_PROFILE,
+    )
+
+    profiles += (DAEMON_WRITE_CONNECTION_PROFILE, BULK_BUILD_WRITE_CONNECTION_PROFILE)
+    for profile in profiles:
+        mmap_statements = tuple(statement for statement in profile.pragma_statements if "mmap_size" in statement)
+        assert mmap_statements == (f"PRAGMA main.mmap_size = {profile.mmap_size_bytes}",)
+
+
+@pytest.mark.parametrize(
+    ("factory", "configured_mmap_size"),
+    (
+        (open_connection, WRITE_MMAP_SIZE_BYTES),
+        (open_daemon_connection, DAEMON_WRITE_MMAP_SIZE_BYTES),
+    ),
+)
+def test_sync_attached_tier_profiles_map_main_only(
+    tmp_path: Path,
+    factory: Callable[[str | Path], sqlite3.Connection],
+    configured_mmap_size: int,
+) -> None:
+    _seed_attached_archive_tiers(tmp_path)
+    conn = factory(tmp_path / "index.db")
+    try:
+        assert _mmap_values(conn) == {
+            "main": configured_mmap_size,
+            "source_tier": 0,
+            "user_tier": 0,
+            "embeddings": 0,
+            "ops_tier": 0,
+        }
+    finally:
+        conn.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("configure", "configured_mmap_size"),
+    (
+        (configure_connection, WRITE_MMAP_SIZE_BYTES),
+        (configure_read_connection, READ_MMAP_SIZE_BYTES),
+    ),
+)
+async def test_async_attached_tier_profiles_map_main_only(
+    tmp_path: Path,
+    configure: Callable[[aiosqlite.Connection], Awaitable[None]],
+    configured_mmap_size: int,
+) -> None:
+    _seed_attached_archive_tiers(tmp_path)
+    conn = await aiosqlite.connect(tmp_path / "index.db")
+    try:
+        await configure(conn)
+        values: dict[str, int] = {}
+        for schema in ("main", *_ATTACHED_SCHEMAS):
+            cursor = await conn.execute(f"PRAGMA {schema}.mmap_size")
+            row = await cursor.fetchone()
+            values[schema] = int(row[0])
+        assert values == {
+            "main": configured_mmap_size,
+            "source_tier": 0,
+            "user_tier": 0,
+            "embeddings": 0,
+            "ops_tier": 0,
+        }
+    finally:
+        await conn.close()
 
 
 def _import_profile_values(*, budget_bytes: int | None) -> dict[str, int]:

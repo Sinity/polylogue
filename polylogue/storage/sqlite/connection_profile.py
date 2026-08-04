@@ -61,7 +61,11 @@ class SQLiteConnectionProfile:
             statements.append(f"PRAGMA synchronous = {self.synchronous}")
         statements.extend(
             (
-                f"PRAGMA mmap_size = {self.mmap_size_bytes}",
+                # Qualify the schema explicitly.  An unqualified mmap_size
+                # pragma becomes the default for databases attached later,
+                # charging every sibling tier against a budget that counts
+                # this profile once.
+                f"PRAGMA main.mmap_size = {self.mmap_size_bytes}",
                 f"PRAGMA temp_store = {self.temp_store}",
             )
         )
