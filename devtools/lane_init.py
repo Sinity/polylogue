@@ -116,8 +116,13 @@ def append_ledger(root: Path, record: dict[str, object]) -> Path:
     return path
 
 
-def _run(cmd: Sequence[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(cmd), cwd=cwd, text=True, capture_output=True, check=False)
+def _run(
+    cmd: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(list(cmd), cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
 
 def _branch_exists(root: Path, branch: str) -> bool:
@@ -146,7 +151,13 @@ def _provision_venv(worktree: Path) -> str | None:
     cmd = ["uv", "sync", "--extra", "dev-common", "--extra", "speed"]
     if (worktree / "uv.lock").exists():
         cmd.append("--frozen")
-    result = _run(cmd, cwd=worktree)
+    env = os.environ.copy()
+    # A coordinator commonly has its own editable venv activated. Letting uv
+    # inherit it recreates the shared-venv escape lane-init is meant to prevent.
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("PYTHONHOME", None)
+    env["UV_PROJECT_ENVIRONMENT"] = str(worktree / ".venv")
+    result = _run(cmd, cwd=worktree, env=env)
     if result.returncode != 0:
         return f"uv sync failed: {result.stderr.strip()[-800:]}"
     return None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from subprocess import CompletedProcess
 
 from devtools import lane_init
 
@@ -52,3 +53,25 @@ def test_guard_check_runs_lane_interpreter_from_lane_root(tmp_path: Path) -> Non
     python.chmod(0o755)
 
     assert lane_init._guard_check(lane) is None
+
+
+def test_provision_venv_forces_the_lane_environment(tmp_path: Path, monkeypatch) -> None:
+    lane = tmp_path / "lane"
+    lane.mkdir()
+    monkeypatch.setenv("VIRTUAL_ENV", "/coordinator/.venv")
+    monkeypatch.setenv("PYTHONHOME", "/coordinator/pythonhome")
+    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/coordinator/.venv")
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd, *, cwd=None, env=None):
+        captured.update(cmd=cmd, cwd=cwd, env=env)
+        return CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(lane_init, "_run", fake_run)
+
+    assert lane_init._provision_venv(lane) is None
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert "VIRTUAL_ENV" not in env
+    assert "PYTHONHOME" not in env
+    assert env["UV_PROJECT_ENVIRONMENT"] == str(lane / ".venv")
