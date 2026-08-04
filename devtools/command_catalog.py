@@ -349,6 +349,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "verify schema-inference-gate",
+        "verification",
+        "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
+        "devtools.schema_inference_gate",
+        use_when=(
+            "Run before schema inference or the 818fy rebuild. Declare every external source root represented in "
+            "source.db; the command scans those roots and runs BlobStore's full verifier without mutating the archive."
+        ),
+        examples=(
+            "devtools verify schema-inference-gate --archive-root /path/to/archive "
+            "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json",
+            "devtools verify schema-inference-gate --archive-root /path/to/archive "
+            "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json --json",
+        ),
+    ),
+    CommandSpec(
         "release readiness",
         "release",
         "Validate the externally-presentable release gate definition.",
