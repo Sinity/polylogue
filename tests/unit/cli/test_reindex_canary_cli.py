@@ -34,6 +34,7 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
         session_ids=selection.selected_session_ids,
         compared_tables=("sessions",),
         missing_tables=(),
+        missing_columns=(),
         differences=differences,  # type: ignore[arg-type]
     )
     return CanaryRunResult(selection=selection, comparison=comparison, rebuild_receipt={"status": "replayed"})
@@ -184,6 +185,7 @@ def test_shared_canary_runner_uses_existing_inactive_rebuild_route(tmp_path: Pat
             session_ids=session_ids,
             compared_tables=("sessions",),
             missing_tables=(),
+            missing_columns=(),
             differences=(),
         )
 

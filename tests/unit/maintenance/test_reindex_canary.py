@@ -116,6 +116,28 @@ def test_differ_reports_real_core_and_derived_row_changes(tmp_path: Path) -> Non
     assert all(item.classification is DifferenceClassification.UNEXPECTED for item in report.differences)
 
 
+def test_missing_tables_and_columns_are_explicit_unexpected_differences(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    with sqlite3.connect(candidate) as connection:
+        connection.execute("ALTER TABLE session_profiles DROP COLUMN tags_json")
+        connection.execute("DROP TABLE blocks")
+        connection.commit()
+
+    report = compare_reindex_generations(current, candidate)
+
+    assert report.missing_tables == ("blocks",)
+    assert report.missing_columns == (("session_profiles", ("tags_json",)),)
+    schema_differences = [item for item in report.differences if item.identity[0][0] == "__schema__"]
+    assert {(item.table, item.operation) for item in schema_differences} == {
+        ("blocks", DifferenceOperation.REMOVED),
+        ("session_profiles", DifferenceOperation.REMOVED),
+    }
+    assert report.unexpected_count == len(report.differences)
+
+
 def test_expected_difference_is_structurally_accounted_for(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
@@ -140,6 +162,34 @@ def test_expected_difference_is_structurally_accounted_for(tmp_path: Path) -> No
     assert all(item.classification is DifferenceClassification.EXPECTED for item in profile_changes)
     assert all("polylogue-example" in item.rationale for item in profile_changes)
     assert report.expected_count == len(profile_changes)
+
+
+def test_expected_difference_cannot_hide_extra_changed_columns(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate, profile_message_count=2)
+    with sqlite3.connect(candidate) as connection:
+        connection.execute("UPDATE session_profiles SET tags_json = ?", ('{"extra":true}',))
+        connection.commit()
+
+    report = compare_reindex_generations(
+        current,
+        candidate,
+        expected=(
+            ExpectedDifference(
+                table="session_profiles",
+                columns=("message_count",),
+                bead_ref="polylogue-example",
+                rationale="the reviewed materializer change updates this aggregate",
+            ),
+        ),
+    )
+
+    profile_changes = [item for item in report.differences if item.table == "session_profiles"]
+    assert len(profile_changes) == 1
+    assert profile_changes[0].changed_columns == ("tags_json", "message_count")
+    assert profile_changes[0].classification is DifferenceClassification.UNEXPECTED
 
 
 def test_selected_sessions_bound_the_canary_to_a_real_subset(tmp_path: Path) -> None:
