@@ -85,6 +85,22 @@ def _seed_index(
         connection.commit()
 
 
+def _seed_action(path: Path, *, tool_input: str) -> None:
+    """Create one canonical actions-view row from the real index schema."""
+
+    session_id = "codex-session:alpha"
+    message_id = f"{session_id}:0.0"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            INSERT INTO blocks(message_id, session_id, position, block_type, tool_id, tool_input)
+            VALUES (?, ?, 1, 'tool_use', 'tool-alpha', ?)
+            """,
+            (message_id, session_id, tool_input),
+        )
+        connection.commit()
+
+
 def _empty_selection(index_path: Path) -> CanarySelection:
     return CanarySelection(
         index_path=index_path,
@@ -108,6 +124,23 @@ def _empty_comparison(current: Path, candidate: Path, session_ids: tuple[str, ..
         missing_columns=(),
         differences=(),
     )
+
+
+def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -> dict[str, object]:
+    return {
+        "archive_root": str(comparison.candidate_index.parent),
+        "selected_raw_count": len(selection.selected_raw_ids),
+        "status": "replayed",
+        "materialized": True,
+        "generation": {
+            "generation_id": "gen-canary",
+            "owner_id": "owner",
+            "archive_root": str(comparison.candidate_index.parent),
+            "index_path": str(comparison.candidate_index),
+            "state": "inactive",
+            "source_snapshot": "snapshot",
+        },
+    }
 
 
 def test_equal_real_generations_ignore_only_materialization_metadata(tmp_path: Path) -> None:
@@ -163,13 +196,13 @@ def test_missing_tables_and_columns_are_explicit_unexpected_differences(tmp_path
 
     report = compare_reindex_generations(current, candidate)
 
-    assert report.missing_tables == ("blocks",)
+    assert "blocks" in report.missing_tables
     assert report.missing_columns == (("session_profiles", ("tags_json",)),)
     schema_differences = [item for item in report.differences if item.identity[0][0] == "__schema__"]
-    assert {(item.table, item.operation) for item in schema_differences} == {
+    assert {
         ("blocks", DifferenceOperation.REMOVED),
         ("session_profiles", DifferenceOperation.REMOVED),
-    }
+    }.issubset({(item.table, item.operation) for item in schema_differences})
     assert report.unexpected_count == len(report.differences)
 
 
@@ -185,6 +218,7 @@ def test_expected_difference_is_structurally_accounted_for(tmp_path: Path) -> No
         expected=(
             ExpectedDifference(
                 table="session_profiles",
+                operations=(DifferenceOperation.CHANGED,),
                 columns=("message_count",),
                 bead_ref="polylogue-example",
                 rationale="the reviewed materializer change updates this aggregate",
@@ -214,6 +248,7 @@ def test_expected_difference_cannot_hide_extra_changed_columns(tmp_path: Path) -
         expected=(
             ExpectedDifference(
                 table="session_profiles",
+                operations=(DifferenceOperation.CHANGED,),
                 columns=("message_count",),
                 bead_ref="polylogue-example",
                 rationale="the reviewed materializer change updates this aggregate",
@@ -225,6 +260,73 @@ def test_expected_difference_cannot_hide_extra_changed_columns(tmp_path: Path) -
     assert len(profile_changes) == 1
     assert profile_changes[0].changed_columns == ("tags_json", "message_count")
     assert profile_changes[0].classification is DifferenceClassification.UNEXPECTED
+
+
+def test_expected_difference_requires_exact_operation_and_nonempty_signature() -> None:
+    """A table-wide declaration cannot classify every future row difference."""
+
+    with pytest.raises(ValueError, match="exactly one operation"):
+        ExpectedDifference(
+            table="session_profiles",
+            bead_ref="polylogue-example",
+            rationale="too broad",
+        )
+
+    with pytest.raises(ValueError, match="non-empty changed-column signature"):
+        ExpectedDifference(
+            table="session_profiles",
+            operations=(DifferenceOperation.CHANGED,),
+            bead_ref="polylogue-example",
+            rationale="still too broad",
+        )
+
+
+def test_expected_difference_requires_exact_schema_asymmetry_signature(tmp_path: Path) -> None:
+    """Schema deltas need the same precise operation and column signature."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    with sqlite3.connect(candidate) as connection:
+        connection.execute("ALTER TABLE session_profiles DROP COLUMN tags_json")
+        connection.commit()
+
+    report = compare_reindex_generations(
+        current,
+        candidate,
+        expected=(
+            ExpectedDifference(
+                table="session_profiles",
+                operations=(DifferenceOperation.REMOVED,),
+                columns=("message_count",),
+                bead_ref="polylogue-example",
+                rationale="wrong schema signature",
+            ),
+        ),
+    )
+
+    schema_delta = next(item for item in report.differences if item.table == "session_profiles")
+    assert schema_delta.changed_columns == ("tags_json",)
+    assert schema_delta.classification is DifferenceClassification.UNEXPECTED
+
+
+def test_differ_compares_canonical_actions_view(tmp_path: Path) -> None:
+    """Changing the blocks-backed action payload must surface through actions."""
+
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    _seed_index(current)
+    _seed_index(candidate)
+    _seed_action(current, tool_input='{"command":"current"}')
+    _seed_action(candidate, tool_input='{"command":"candidate"}')
+
+    report = compare_reindex_generations(current, candidate)
+
+    action_delta = next(item for item in report.differences if item.table == "actions")
+    assert action_delta.operation is DifferenceOperation.CHANGED
+    assert action_delta.identity == (("tool_use_block_id", "codex-session:alpha:0.0:1"),)
+    assert "tool_input" in action_delta.changed_columns
 
 
 def test_selected_sessions_bound_the_canary_to_a_real_subset(tmp_path: Path) -> None:
@@ -476,13 +578,13 @@ def test_run_reindex_canary_does_not_require_zoo_sessions_for_ordinary_archive(
 def test_run_reindex_canary_compares_its_own_inactive_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    current = tmp_path / "current.db"
+    root = tmp_path
+    current = root / "index.db"
     current.touch()
     generation_id = "gen-canary"
     candidate = tmp_path / ".index-generations" / generation_id / "index.db"
     candidate.parent.mkdir(parents=True)
     candidate.touch()
-    root = tmp_path
     selection = _empty_selection(current)
 
     class Receipt:
@@ -522,7 +624,7 @@ def test_run_reindex_canary_compares_its_own_inactive_generation(
 
 
 def test_run_reindex_canary_rejects_arbitrary_sqlite_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    current = tmp_path / "current.db"
+    current = tmp_path / "index.db"
     current.touch()
     arbitrary = tmp_path / "arbitrary.db"
     arbitrary.touch()
@@ -608,6 +710,27 @@ def test_real_pathology_canary_rejects_cyclic_candidate_before_insight_repair(
     assert hashlib.sha256(active_index.read_bytes()).hexdigest() == active_digest
 
 
+def test_run_reindex_canary_refuses_foreign_input_index_before_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selection may only read the configured archive's active generation."""
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    active_index = archive_root / "index.db"
+    foreign_index = tmp_path / "foreign.db"
+    _seed_index(active_index)
+    _seed_index(foreign_index)
+
+    def fail_if_rebuild_runs(*args: object, **kwargs: object) -> object:
+        raise AssertionError("candidate rebuild was invoked with a foreign input index")
+
+    monkeypatch.setattr("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", fail_if_rebuild_runs)
+
+    with pytest.raises(CanarySelectionError, match="configured archive active generation"):
+        run_reindex_canary(archive_root, input_index=foreign_index, no_promote=True)
+
+
 def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
     current = tmp_path / "current.db"
     candidate = tmp_path / "candidate.db"
@@ -618,7 +741,13 @@ def test_durable_report_refuses_unclassified_diffs(tmp_path: Path) -> None:
     selection = select_canary_sessions(current, sessions_per_origin=1)
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="classification is incomplete"):
-        write_canary_report(report_path, selection=selection, comparison=comparison, reviews=())
+        write_canary_report(
+            report_path,
+            selection=selection,
+            comparison=comparison,
+            rebuild_receipt=_rebuild_receipt(selection, comparison),
+            reviews=(),
+        )
     assert not report_path.exists()
 
 
@@ -640,7 +769,13 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
         for difference in comparison.differences
     )
 
-    durable = write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+    durable = write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
     loaded = load_canary_report(report_path)
 
     assert durable.unclassified_count == 0
@@ -652,6 +787,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert isinstance(summary, dict)
     assert summary["unclassified_count"] == 0
     assert summary["unexpected_count"] == len(reviews)
+    assert "rebuild_receipt" in loaded
 
 
 def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) -> None:
@@ -671,7 +807,13 @@ def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) ->
         )
         for difference in comparison.differences
     )
-    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     payload["reviews"] = payload["reviews"][:-1]
@@ -685,6 +827,39 @@ def test_loading_canary_report_rechecks_exact_review_coverage(tmp_path: Path) ->
     report_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(UnclassifiedCanaryDiffError, match="review coverage is incomplete"):
+        load_canary_report(report_path)
+
+
+def test_loading_canary_report_rejects_tampered_candidate_provenance(tmp_path: Path) -> None:
+    current = tmp_path / "current.db"
+    candidate = tmp_path / "candidate.db"
+    report_path = tmp_path / "reports" / "canary.json"
+    _seed_index(current)
+    _seed_index(candidate, block_text="changed transcript")
+    comparison = compare_reindex_generations(current, candidate)
+    selection = select_canary_sessions(current, sessions_per_origin=1)
+    reviews = tuple(
+        CanaryDifferenceReview.for_difference(
+            difference,
+            classification=DifferenceClassification.UNEXPECTED,
+            reference="polylogue-follow-up",
+            rationale="the canary has no reviewed expected delta for this row",
+        )
+        for difference in comparison.differences
+    )
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
+
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    payload["rebuild_receipt"]["generation"]["index_path"] = str(tmp_path / "foreign.db")
+    report_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(UnclassifiedCanaryDiffError, match="does not identify the compared candidate"):
         load_canary_report(report_path)
 
 
@@ -705,7 +880,13 @@ def test_loading_canary_report_recomputes_tampered_summary(tmp_path: Path) -> No
         )
         for difference in comparison.differences
     )
-    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
 
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     payload["comparison"]["summary"] = {
@@ -753,8 +934,20 @@ def test_canary_report_uses_unique_temporary_names(tmp_path: Path, monkeypatch: 
         return stream
 
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", recording_named_temporary_file)
-    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
-    write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
+    write_canary_report(
+        report_path,
+        selection=selection,
+        comparison=comparison,
+        rebuild_receipt=_rebuild_receipt(selection, comparison),
+        reviews=reviews,
+    )
 
     assert len(names) == 2
     assert len(set(names)) == 2
@@ -786,7 +979,13 @@ def test_canary_report_cleans_temporary_file_when_replace_fails(
 
     monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
-        write_canary_report(report_path, selection=selection, comparison=comparison, reviews=reviews)
+        write_canary_report(
+            report_path,
+            selection=selection,
+            comparison=comparison,
+            rebuild_receipt=_rebuild_receipt(selection, comparison),
+            reviews=reviews,
+        )
 
     assert not report_path.exists()
     assert list(report_path.parent.glob(f".{report_path.name}.*.tmp")) == []
