@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import gzip
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -188,6 +189,8 @@ class TestCommitProviderSchemaWritesRealFiles:
             providers=(_PROVIDER,),
             package_receipt=result.handoff.to_payload(),
             campaign_mode=True,
+            gate_receipt_path=_gate_receipt(output_dir),
+            archive_root=output_dir.parent / "archive",
         )
         assert manifest.receipt_state == "package_receipt_attached"
         assert len(manifest.entries) == 1
@@ -207,7 +210,25 @@ class TestCommitProviderSchemaWritesRealFiles:
                 providers=(_PROVIDER,),
                 package_receipt=result.handoff.to_payload(),
                 campaign_mode=True,
+                gate_receipt_path=_gate_receipt(output_dir),
+                archive_root=output_dir.parent / "archive",
             )
+
+    def test_commit_rejects_receipt_for_archive_a_when_generation_targets_archive_b(self, tmp_path: Path) -> None:
+        output_dir = tmp_path / "providers"
+        request = replace(
+            _request(output_dir),
+            db_path=tmp_path / "archive-b" / "index.db",
+        )
+        bundle = _bundle(
+            version="v1",
+            schema={"type": "object", "properties": {"id": {"type": "string"}}},
+            sample_count=5,
+        )
+
+        with patch("polylogue.schemas.generation.workflow._build_provider_bundle", return_value=bundle):
+            with pytest.raises(ValueError, match="db_path must identify the active index"):
+                commit_provider_schema(request)
 
     def test_commit_requires_an_accepted_gate_receipt(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
@@ -291,6 +312,8 @@ class TestCommitProviderSchemaWritesRealFiles:
                 providers=(_PROVIDER,),
                 package_receipt=result.handoff.to_payload(),
                 campaign_mode=True,
+                gate_receipt_path=_gate_receipt(output_dir),
+                archive_root=output_dir.parent / "archive",
             )
         manifest = compile_inferred_corpus_manifest(
             registry=SchemaRegistry(storage_root=output_dir),
@@ -416,7 +439,7 @@ class TestCommitProviderSchemaWritesRealFiles:
                 provider="not-a-real-provider-k45pq",
                 output_dir=output_dir,
                 archive_root=output_dir.parent / "archive",
-                db_path=output_dir.parent / "index.db",
+                db_path=output_dir.parent / "archive" / "index.db",
                 full_corpus=True,
                 schema_inference_gate_receipt_path=_gate_receipt(output_dir),
             )

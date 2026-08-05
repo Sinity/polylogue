@@ -82,9 +82,16 @@ def _accepted_gate_receipt_digest(path: Path | None, *, archive_root: Path) -> s
     )
 
 
-def _target_archive_root(request: SchemaCommitRequest) -> Path:
+def _target_archive_location(request: SchemaCommitRequest) -> ArchiveLocation:
     configured_root = request.archive_root or default_archive_root()
-    return ArchiveLocation.resolve(configured_root).configured_root
+    location = ArchiveLocation.resolve(configured_root)
+    expected_db_path = location.active_index_path.resolve(strict=False)
+    if request.db_path is not None and request.db_path.resolve(strict=False) != expected_db_path:
+        raise ValueError(
+            "schema commit db_path must identify the active index of the configured archive; "
+            f"expected={expected_db_path}, actual={request.db_path.resolve(strict=False)}"
+        )
+    return location
 
 
 def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommitResult:
@@ -92,9 +99,10 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     output_dir = output_dir.absolute()
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
     existing_handoff = load_schema_inference_receipt(handoff_path) if handoff_path.exists() else None
+    archive_location = _target_archive_location(request)
     gate_receipt_digest = _accepted_gate_receipt_digest(
         request.schema_inference_gate_receipt_path,
-        archive_root=_target_archive_root(request),
+        archive_root=archive_location.configured_root,
     )
     if existing_handoff is not None and existing_handoff.gate_receipt_digest != gate_receipt_digest:
         raise ValueError(
@@ -117,7 +125,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
 
     generation_results = generate_all_schemas(
         output_dir,
-        db_path=request.db_path,
+        db_path=archive_location.active_index_path,
         providers=[request.provider],
         max_samples=request.max_samples,
         privacy_config=privacy_config_from_payload(request.privacy_config),

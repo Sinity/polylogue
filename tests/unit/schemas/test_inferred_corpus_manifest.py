@@ -8,6 +8,10 @@ from typing import cast
 import pytest
 
 from polylogue.core.json import JSONValue
+from polylogue.maintenance.schema_inference_gate import (
+    run_schema_inference_gate,
+    schema_inference_gate_receipt_digest,
+)
 from polylogue.schemas.operator.receipt import (
     SchemaInferenceUnsupportedDecision,
     build_schema_inference_receipt,
@@ -25,10 +29,24 @@ from tests.infra.inferred_corpus import (
     read_inferred_corpus_manifest,
     write_inferred_corpus_manifest,
 )
+from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
 
 
 def _registry() -> SchemaRegistry:
     return SchemaRegistry(storage_root=SCHEMA_DIR)
+
+
+def _authoritative_gate(tmp_path: Path) -> tuple[Path, Path, str]:
+    archive_root = tmp_path / "archive"
+    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
+    _seed_archive(archive_root)
+    result = run_schema_inference_gate(
+        archive_root,
+        receipt_path=receipt_path,
+        ground_truth_roots={"codex-session": (tmp_path / "archive-codex-ground-truth",)},
+    )
+    assert result.passed
+    return archive_root, receipt_path, schema_inference_gate_receipt_digest(result.payload)
 
 
 def _catalog_keys(registry: SchemaRegistry) -> set[CorpusManifestKey]:
@@ -95,12 +113,15 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
 def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:
     registry = _registry()
     provider = "codex"
-    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest="a" * 64)
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
         providers=(provider,),
         package_receipt=receipt.to_payload(),
         campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
     )
     path = tmp_path / "campaign.json"
 
@@ -117,7 +138,13 @@ def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) ->
     )
     write_inferred_corpus_manifest(tampered, path)
     with pytest.raises(ValueError, match="package/version/element hashes|generator schema changed"):
-        read_inferred_corpus_manifest(path, campaign_mode=True, registry=registry)
+        read_inferred_corpus_manifest(
+            path,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
 
     tampered_key = replace(supported.key, construct_support=())
     tampered_entry = replace(supported, key=tampered_key)
@@ -131,7 +158,13 @@ def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) ->
         ),
     )
     with pytest.raises(ValueError, match="classifier output changed"):
-        build_inferred_corpus_convergence_handoff(tampered, campaign_mode=True, registry=registry)
+        build_inferred_corpus_convergence_handoff(
+            tampered,
+            campaign_mode=True,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
 
 
 def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
@@ -145,19 +178,22 @@ def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
         compile_inferred_corpus_manifest(registry=_registry(), campaign_mode=True)
 
 
-def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decisions() -> None:
+def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decisions(tmp_path: Path) -> None:
     registry = _registry()
     provider = "codex"
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
     receipt = build_schema_inference_receipt(
         registry,
         provider=provider,
-        gate_receipt_digest="a" * 64,
+        gate_receipt_digest=gate_digest,
     )
     compile_inferred_corpus_manifest(
         registry=registry,
         providers=(provider,),
         package_receipt=receipt.to_payload(),
         campaign_mode=True,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
     )
 
     tampered_gate = replace(receipt, gate_receipt_digest="b" * 64)
@@ -174,13 +210,32 @@ def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decision
             providers=(provider,),
             package_receipt=tampered_package.to_payload(),
             campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
         )
 
 
-def test_bundled_registry_relation_annotations_share_one_receipt_classification() -> None:
+def test_campaign_rejects_fabricated_gate_digest_even_when_shape_is_valid(tmp_path: Path) -> None:
+    registry = _registry()
+    archive_root, gate_receipt_path, _gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest="a" * 64)
+
+    with pytest.raises(ValueError, match="does not match the authoritative PASS receipt"):
+        compile_inferred_corpus_manifest(
+            registry=registry,
+            providers=("codex",),
+            package_receipt=receipt.to_payload(),
+            campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
+
+
+def test_bundled_registry_relation_annotations_share_one_receipt_classification(tmp_path: Path) -> None:
     registry = _registry()
     provider = "chatgpt"
-    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest="a" * 64)
+    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
         providers=(provider,),
@@ -251,6 +306,8 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
             providers=(provider,),
             package_receipt=tampered_unsupported.to_payload(),
             campaign_mode=True,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
         )
 
 

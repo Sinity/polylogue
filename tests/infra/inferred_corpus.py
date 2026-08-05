@@ -18,6 +18,7 @@ from typing import Literal, TypeAlias, cast
 
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
+from polylogue.maintenance.schema_inference_gate import validate_schema_inference_gate_receipt
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.operator.receipt import (
     SchemaInferenceReceipt,
@@ -224,6 +225,25 @@ def _require_inference_handoff(manifest: InferredCorpusManifest) -> SchemaInfere
     return SchemaInferenceReceipt.from_payload(manifest.package_receipt)
 
 
+def _validate_authoritative_gate_binding(
+    receipt: SchemaInferenceReceipt,
+    *,
+    gate_receipt_path: Path | None,
+    archive_root: Path | None,
+) -> None:
+    if gate_receipt_path is None or archive_root is None:
+        raise ValueError("campaign mode requires an authoritative gate receipt path and archive root")
+    try:
+        payload = json.loads(gate_receipt_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"unable to read authoritative schema-inference gate receipt: {exc}") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("authoritative schema-inference gate receipt must be a JSON object")
+    gate_digest = validate_schema_inference_gate_receipt(payload, archive_root=archive_root)
+    if receipt.gate_receipt_digest != gate_digest:
+        raise ValueError("schema-inference handoff gate receipt digest does not match the authoritative PASS receipt")
+
+
 @dataclass(frozen=True)
 class InferredCorpusConvergenceHandoff:
     """Exact executable manifest subset admitted to the convergence loop."""
@@ -379,7 +399,12 @@ def write_inferred_corpus_manifest(manifest: InferredCorpusManifest, path: Path)
 
 
 def read_inferred_corpus_manifest(
-    path: Path, *, campaign_mode: bool = False, registry: RuntimeSchemaRegistryLike | None = None
+    path: Path,
+    *,
+    campaign_mode: bool = False,
+    registry: RuntimeSchemaRegistryLike | None = None,
+    gate_receipt_path: Path | None = None,
+    archive_root: Path | None = None,
 ) -> InferredCorpusManifest:
     """Read and validate a persisted manifest before exposing executable rows."""
 
@@ -399,7 +424,13 @@ def read_inferred_corpus_manifest(
         if registry is None:
             raise ValueError("campaign mode requires a live schema registry")
         providers = tuple(sorted({entry.key.provider for entry in manifest.entries}))
-        _validate_inference_handoff(manifest, registry, providers=providers)
+        _validate_inference_handoff(
+            manifest,
+            registry,
+            providers=providers,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
     return manifest
 
 
@@ -414,11 +445,19 @@ def build_inferred_corpus_convergence_handoff(
     *,
     campaign_mode: bool = False,
     registry: RuntimeSchemaRegistryLike | None = None,
+    gate_receipt_path: Path | None = None,
+    archive_root: Path | None = None,
 ) -> InferredCorpusConvergenceHandoff:
     """Bind every supported row from memory or persisted disk to convergence."""
 
     persisted_manifest = (
-        read_inferred_corpus_manifest(manifest, campaign_mode=campaign_mode, registry=registry)
+        read_inferred_corpus_manifest(
+            manifest,
+            campaign_mode=campaign_mode,
+            registry=registry,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
         if isinstance(manifest, Path)
         else manifest
     )
@@ -427,7 +466,13 @@ def build_inferred_corpus_convergence_handoff(
         if registry is None:
             raise ValueError("campaign mode requires a live schema registry")
         providers = tuple(sorted({entry.key.provider for entry in persisted_manifest.entries}))
-        _validate_inference_handoff(persisted_manifest, registry, providers=providers)
+        _validate_inference_handoff(
+            persisted_manifest,
+            registry,
+            providers=providers,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
     selections = tuple(_selection_for_entry(entry) for entry in persisted_manifest.entries if entry.spec is not None)
     handoff = InferredCorpusConvergenceHandoff(
         manifest_id=persisted_manifest.manifest_id,
@@ -618,6 +663,8 @@ def compile_inferred_corpus_manifest(
     wire_formats: Mapping[str, WireFormat] | None = None,
     providers: Sequence[str] | None = None,
     campaign_mode: bool = False,
+    gate_receipt_path: Path | None = None,
+    archive_root: Path | None = None,
 ) -> InferredCorpusManifest:
     """Compile every persisted package/version/element into a typed manifest."""
 
@@ -639,7 +686,13 @@ def compile_inferred_corpus_manifest(
     )
     assert_inferred_corpus_manifest_complete(manifest, registry, providers=providers)
     if campaign_mode:
-        _validate_inference_handoff(manifest, registry, providers=providers)
+        _validate_inference_handoff(
+            manifest,
+            registry,
+            providers=providers,
+            gate_receipt_path=gate_receipt_path,
+            archive_root=archive_root,
+        )
     return manifest
 
 
@@ -648,8 +701,15 @@ def _validate_inference_handoff(
     registry: RuntimeSchemaRegistryLike,
     *,
     providers: Sequence[str] | None,
+    gate_receipt_path: Path | None,
+    archive_root: Path | None,
 ) -> None:
     receipt = _require_inference_handoff(manifest)
+    _validate_authoritative_gate_binding(
+        receipt,
+        gate_receipt_path=gate_receipt_path,
+        archive_root=archive_root,
+    )
     if not manifest.supported_specs:
         raise ValueError("campaign mode has no executable synthetic corpus selection")
     expected_packages = package_hashes_for_registry(cast(SchemaReceiptRegistry, registry), providers)
