@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -314,36 +316,60 @@ def test_unsafe_import_auto_control_reverts_clock_skewed_stale_snapshot(tmp_path
     assert shown[0]["status"] == "open"
 
 
-@pytest.mark.parametrize(
-    "route",
-    ["bare-wrapper", "symlink-wrapper", "script-recursion", "script-symlink-recursion", "interpreter-recursion"],
-)
-def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: str) -> None:
-    """Wrapper aliases and script recursion fail before the guard lock."""
-    deployed = tmp_path / "deployed"
-    scripts = deployed / "scripts"
-    scripts.mkdir(parents=True)
-    shutil.copy2(ROOT / "scripts" / "bd", scripts / "bd")
-    (scripts / "bd").chmod(0o755)
-    guard = deployed / "devtools" / "bd_reimport_guard.py"
+def _setup_guard_linked_worktree(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
+    """Create a real Git common directory and linked worktree for route checks."""
+    env = _bd_environment(tmp_path)
+    repo = tmp_path / "coordinator"
+    lane = tmp_path / "recursion-lane"
+    repo.mkdir()
+    _run(["git", "init", "--initial-branch=main"], repo, env)
+    _run(["git", "config", "user.email", "test@example.invalid"], repo, env)
+    _run(["git", "config", "user.name", "Beads guard test"], repo, env)
+    (repo / "anchor").write_text("anchor\n")
+    _run(["git", "add", "anchor"], repo, env)
+    _run(["git", "commit", "-m", "anchor"], repo, env)
+    _run(["git", "branch", "recursion-lane"], repo, env)
+    _run(["git", "worktree", "add", str(lane), "recursion-lane"], repo, env)
+
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    wrapper = scripts / "bd"
+    shutil.copy2(ROOT / "scripts" / "bd", wrapper)
+    wrapper.chmod(0o755)
+    guard = repo / "devtools" / "bd_reimport_guard.py"
     guard.parent.mkdir()
     shutil.copy2(ROOT / "devtools" / "bd_reimport_guard.py", guard)
-    wrapper = scripts / "bd"
-    probe = tmp_path / "probe"
-    probe.mkdir()
 
-    env = os.environ.copy()
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    env["XDG_RUNTIME_DIR"] = str(runtime)
     tool_dirs: list[str] = []
-    for tool in ("sh", "dirname", "readlink", "python3"):
-        executable = shutil.which(tool)
-        assert executable is not None
-        directory = str(Path(executable).parent)
+    for executable in ("git", "sh", "readlink", "python3"):
+        resolved = shutil.which(executable)
+        assert resolved is not None
+        directory = str(Path(resolved).parent)
         if directory not in tool_dirs:
             tool_dirs.append(directory)
     env["PATH"] = os.pathsep.join((str(scripts), *tool_dirs))
+    common_dir_text = _run(["git", "rev-parse", "--git-common-dir"], lane, env).stdout.strip()
+    common_dir = Path(common_dir_text)
+    if not common_dir.is_absolute():
+        common_dir = lane / common_dir
+    return env, repo, lane, common_dir.resolve()
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "bare-wrapper",
+        "symlink-wrapper",
+        "script-recursion",
+        "script-symlink-recursion",
+        "interpreter-recursion-versioned",
+        "interpreter-recursion-renamed",
+    ],
+)
+def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: str) -> None:
+    """Aliases and interpreter-mediated recursion fail before the common lock."""
+    env, _repo, lane, common_dir = _setup_guard_linked_worktree(tmp_path)
+    wrapper = lane.parent / "coordinator" / "scripts" / "bd"
     if route == "bare-wrapper":
         env["POLYLOGUE_BD_REAL"] = "bd"
     elif route == "symlink-wrapper":
@@ -363,12 +389,16 @@ def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: 
         recursive.chmod(0o755)
         env["POLYLOGUE_BD_REAL"] = str(recursive)
     else:
-        recursive = tmp_path / "interpreter-recursive-bd"
-        recursive.write_text(f'#!/bin/sh\nexec /bin/sh -c \'exec {wrapper!s} "$@"\' sh "$@"\n')
+        interpreter = tmp_path / ("python3.14" if route.endswith("versioned") else "renamed-interpreter")
+        shutil.copy2(Path(sys.executable).resolve(), interpreter)
+        interpreter.chmod(0o755)
+        recursive = tmp_path / route
+        python_code = f"import os; os.execv({str(wrapper)!r}, [{str(wrapper)!r}, *os.sys.argv[1:]])"
+        recursive.write_text(f'#!/bin/sh\nexec {interpreter!s} -c {shlex.quote(python_code)} "$@"\n')
         recursive.chmod(0o755)
         env["POLYLOGUE_BD_REAL"] = str(recursive)
 
-    result = subprocess.run([str(wrapper), "--help"], cwd=probe, env=env, capture_output=True, text=True, timeout=10)
+    result = subprocess.run([str(wrapper), "--help"], cwd=lane, env=env, capture_output=True, text=True, timeout=10)
     expected_returncode = 126 if route != "bare-wrapper" else 127
     assert result.returncode == expected_returncode
-    assert not list(runtime.iterdir())
+    assert not (common_dir / "polylogue-bd-guard.lock").exists()

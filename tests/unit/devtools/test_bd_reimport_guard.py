@@ -51,8 +51,8 @@ def test_validated_real_bd_path_rejects_script_recursion(tmp_path: Path) -> None
 
 
 def test_validated_real_bd_path_accepts_explicit_launcher_target(tmp_path: Path) -> None:
-    binary = tmp_path / "bd-bin"
-    binary.write_bytes(b"\x7fELF\x02\x01")
+    binary = tmp_path / "bd"
+    binary.write_bytes(b"\x7fELF\x02\x01Go buildinf:")
     binary.chmod(0o755)
     launcher = tmp_path / "bd-launcher"
     launcher.write_text(f'#!/bin/sh\nexec {binary!s} "$@"\n')

@@ -243,6 +243,22 @@ _INTERPRETER_NAMES = frozenset(
         "zsh",
     }
 )
+_INTERPRETER_NAME_PATTERNS = (
+    re.compile(r"^(?:python|python[23]|pypy|pypy3)(?:[.]\d+)*$"),
+    re.compile(r"^(?:bash|dash|fish|ksh|zsh|csh|tcsh)(?:[.]\d+)*$"),
+    re.compile(r"^(?:perl|ruby|lua|luajit|node|php|tclsh|wish)(?:[.]\d+)*$"),
+)
+_ELF_MAGIC = b"\x7fELF"
+_KNOWN_INTERPRETER_RUNTIME_MARKERS = (
+    b"libpython",
+    b"libperl",
+    b"libruby",
+    b"liblua",
+    b"libnode",
+    b"libphp",
+    b"libtcl",
+)
+_KNOWN_NON_INTERPRETER_MARKERS = (b"Go buildinf:",)
 
 
 def _resolve_launcher_target(target: str, launcher: Path) -> Path:
@@ -259,8 +275,33 @@ def _resolve_launcher_target(target: str, launcher: Path) -> Path:
 
 
 def _is_interpreter(path: Path) -> bool:
-    """Return whether a launcher target is an interpreter entry point."""
-    return path.name in _INTERPRETER_NAMES or Path(os.path.realpath(path)).name in _INTERPRETER_NAMES
+    """Return whether a launcher target is an interpreter entry point.
+
+    Names alone are insufficient: versioned interpreter binaries and copied
+    interpreters can have arbitrary basenames. For ELF targets, inspect the
+    binary for runtime-library identity markers. Unknown ELF identity is
+    handled by the caller as a fail-closed route rather than guessed safe.
+    """
+    resolved = Path(os.path.realpath(path))
+    names = (path.name, resolved.name)
+    if any(name in _INTERPRETER_NAMES for name in names):
+        return True
+    if any(pattern.fullmatch(name) for name in names for pattern in _INTERPRETER_NAME_PATTERNS):
+        return True
+    try:
+        payload = resolved.read_bytes()
+    except OSError:
+        return False
+    return payload.startswith(_ELF_MAGIC) and any(marker in payload for marker in _KNOWN_INTERPRETER_RUNTIME_MARKERS)
+
+
+def _is_known_non_interpreter_binary(path: Path) -> bool:
+    """Return whether an ELF target has an identity safe for a launcher chain."""
+    try:
+        payload = Path(os.path.realpath(path)).read_bytes()
+    except OSError:
+        return False
+    return payload.startswith(_ELF_MAGIC) and any(marker in payload for marker in _KNOWN_NON_INTERPRETER_MARKERS)
 
 
 def _validate_executable_route(path: Path, wrapper: Path, seen: set[Path]) -> None:
@@ -292,6 +333,12 @@ def _validate_executable_route(path: Path, wrapper: Path, seen: set[Path]) -> No
     # accept launcher chains whose next target is itself explicit.
     if _is_interpreter(target):
         raise ValueError("refusing unresolved interpreter launcher route")
+    try:
+        target_header = Path(os.path.realpath(target)).read_bytes()[:4]
+    except OSError as exc:
+        raise ValueError(f"real Beads launcher target is unreadable: {target}") from exc
+    if target_header == _ELF_MAGIC and not _is_known_non_interpreter_binary(target):
+        raise ValueError("refusing launcher with unresolved executable identity")
     _validate_executable_route(target, wrapper, seen)
 
 
