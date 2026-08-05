@@ -15,7 +15,7 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationReport,
 )
 from polylogue.sources.dispatch import parse_payload
-from polylogue.storage.index_generation import IndexGenerationStore
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -104,6 +104,29 @@ def _no_corpus_failure(monkeypatch: pytest.MonkeyPatch) -> None:
             ]
         ),
     )
+
+
+def _simulate_pointer_swap_crash(root: Path, receipt_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    store = IndexGenerationStore.for_archive_root(root)
+    receipt = cast(dict[str, object], json.loads(receipt_path.read_text(encoding="utf-8")))
+    generation_payload = cast(dict[str, object], receipt["generation"])
+    generation_id = str(generation_payload["generation_id"])
+    original_write = IndexGenerationStore._write
+
+    def crash_after_pointer_swap(self: IndexGenerationStore, generation: IndexGeneration) -> None:
+        if generation.generation_id == generation_id and generation.state == "active":
+            raise RuntimeError("simulated crash after index pointer swap")
+        original_write(self, generation)
+
+    monkeypatch.setattr(IndexGenerationStore, "_write", crash_after_pointer_swap)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        forward.activate_forward(receipt_path=receipt_path)
+    monkeypatch.setattr(IndexGenerationStore, "_write", original_write)
+
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "activating"
+    assert store.active_pointer.resolve(strict=True) == Path(str(generation_payload["index_path"])).resolve(strict=True)
+    assert store.load(generation_id).state == "promoting"
+    return receipt
 
 
 def _write_raw_backed_session(root: Path, native_id: str) -> None:
@@ -199,6 +222,96 @@ def test_activation_refuses_source_metadata_mutation_after_candidate_gate(
         forward.activate_forward(receipt_path=receipt_path)
 
     assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+
+
+def test_recovery_refuses_durable_source_mutation_after_pointer_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+    _simulate_pointer_swap_crash(root, receipt_path, monkeypatch)
+
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = 'mutated-after-pointer-swap'")
+        conn.commit()
+
+    with pytest.raises(forward.IndexFastForwardError, match="source evidence changed"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    store = IndexGenerationStore.for_archive_root(root)
+    assert receipt["status"] == "activating"
+    assert store.load(str(receipt["generation"]["generation_id"])).state == "promoting"
+
+
+def test_recovery_refuses_candidate_mutation_after_pointer_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+    receipt = _simulate_pointer_swap_crash(root, receipt_path, monkeypatch)
+    generation_payload = cast(dict[str, object], receipt["generation"])
+    generation_path = Path(str(generation_payload["index_path"]))
+
+    with generation_path.open("ab") as handle:
+        handle.write(b"candidate mutation")
+
+    with pytest.raises(forward.IndexFastForwardError, match="clone bytes changed"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    store = IndexGenerationStore.for_archive_root(root)
+    assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "activating"
+    assert store.load(str(generation_payload["generation_id"])).state == "promoting"
+
+
+def test_recovery_completes_only_after_current_strict_acceptance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+    _simulate_pointer_swap_crash(root, receipt_path, monkeypatch)
+
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO message_embedding_refs(message_id, session_id, origin, embedding_input_hash)
+            VALUES ('codex-session:source-backed-session:no-such-message', 'codex-session:source-backed-session', 'codex-session', ?)
+            """,
+            (b"r" * 32,),
+        )
+        conn.commit()
+
+    with pytest.raises(forward.IndexFastForwardError, match="embeddings-refs-liveness"):
+        forward.activate_forward(receipt_path=receipt_path)
+
+    store = IndexGenerationStore.for_archive_root(root)
+    receipt = cast(dict[str, object], json.loads(receipt_path.read_text(encoding="utf-8")))
+    generation_payload = cast(dict[str, object], receipt["generation"])
+    assert receipt["status"] == "activating"
+    assert store.load(str(generation_payload["generation_id"])).state == "promoting"
+
+
+def test_recovery_accepts_unchanged_pointer_swap_after_revalidation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None
+) -> None:
+    root = _archive(tmp_path)
+    monkeypatch.setattr(forward, "running_daemon_pid", lambda _config: None)
+    receipt_path = tmp_path / "transition.json"
+    forward.prepare_forward(archive_root=root, receipt_path=receipt_path)
+    receipt = _simulate_pointer_swap_crash(root, receipt_path, monkeypatch)
+
+    recovered = forward.activate_forward(receipt_path=receipt_path)
+
+    assert recovered["status"] == "activated"
+    store = IndexGenerationStore.for_archive_root(root)
+    generation_payload = cast(dict[str, object], receipt["generation"])
+    assert store.load(str(generation_payload["generation_id"])).state == "active"
 
 
 def test_activation_refuses_waived_embedding_orphan_at_strict_candidate_gate(
