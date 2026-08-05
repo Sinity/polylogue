@@ -376,7 +376,8 @@ def test_schema_generate_rejects_receipt_for_a_different_archive(
     monkeypatch.setattr(schema_generate, "infer_schema", pytest.fail)
 
     assert schema_generate.main(["--provider", "chatgpt", "--schema-inference-receipt", str(receipt_a)]) == 1
-    assert "different archive" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "different archive" in error or "attestation" in error
 
 
 @pytest.mark.parametrize("mutation", ["replaced", "stale"])
@@ -399,7 +400,7 @@ def test_schema_generate_rejects_replaced_or_stale_receipt(
 
     assert schema_generate.main(["--provider", "chatgpt", "--schema-inference-receipt", str(receipt)]) == 1
     error = capsys.readouterr().err
-    assert "digest mismatch" in error or "stale" in error
+    assert "digest mismatch" in error or "stale" in error or "attestation" in error
 
 
 def test_schema_generate_rejects_stale_non_source_tier(

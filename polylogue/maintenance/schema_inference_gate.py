@@ -27,6 +27,11 @@ from uuid import uuid4
 from polylogue.maintenance.archive_verification import CORPUS_FIDELITY_CHECKS, verify_archive
 from polylogue.maintenance.offline_guard import running_daemon_pid
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
+from polylogue.storage.backup_attestation import (
+    BackupAttestationError,
+    sign_verification_receipt,
+    verify_verification_receipt,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 from polylogue.storage.introspection import table_exists
@@ -700,6 +705,22 @@ def _external_inventory(roots: Sequence[Path]) -> list[_ExternalGroundTruthFile]
     return inventory
 
 
+def _validate_external_ground_truth_roots(archive_root: Path, roots: Sequence[Path]) -> None:
+    """Reject archive-owned bytes from posing as independent source evidence."""
+
+    protected = (archive_root.resolve(), (archive_root / "blob").resolve())
+    for root in roots:
+        candidate = root.resolve()
+        for owned in protected:
+            try:
+                candidate.relative_to(owned)
+            except ValueError:
+                continue
+            raise SchemaInferenceGateError(
+                f"ground-truth root must be external to the archive and blob namespace: {candidate}"
+            )
+
+
 def _external_receipt(
     item: _ExternalGroundTruthFile,
     disposition: ExternalDisposition,
@@ -822,6 +843,16 @@ def _ground_truth_evidence(
                 evidence[origin] = {"exempt": True, "reason": declared.get("reason")}
                 continue
             declared_roots = tuple(Path(path).expanduser().resolve() for path in root_map.get(origin, ()))
+            try:
+                _validate_external_ground_truth_roots(archive_root, declared_roots)
+            except SchemaInferenceGateError as exc:
+                errors.append(f"ground truth for {origin} is invalid: {exc}")
+                evidence[origin] = {
+                    "exempt": False,
+                    "declared_roots": [str(path) for path in declared_roots],
+                    "passed": False,
+                }
+                continue
             unavailable = [str(path) for path in declared_roots if not path.exists()]
             if not declared_roots or unavailable:
                 errors.append(f"ground truth for {origin} is unavailable or undeclared")
@@ -1100,13 +1131,14 @@ def _int_or_zero(value: object) -> int:
 def schema_inference_gate_receipt_digest(payload: Mapping[str, object]) -> str:
     """Digest every receipt field except the self-authenticating digest."""
 
-    body = {key: value for key, value in payload.items() if key != "receipt_sha256"}
+    body = {key: value for key, value in payload.items() if key not in {"receipt_sha256", "attestations"}}
     encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _write_json(path: Path, payload: dict[str, object]) -> None:
+def _write_json(path: Path, payload: dict[str, object], *, authority_paths: Mapping[str, Path]) -> None:
     payload["receipt_sha256"] = schema_inference_gate_receipt_digest(payload)
+    payload = sign_verification_receipt(payload, authority_paths=authority_paths)
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     try:
@@ -1190,6 +1222,11 @@ def validate_schema_inference_gate_receipt(
         raise SchemaInferenceGateError("schema-inference gate receipt is not a PASS")
     if payload.get("receipt_sha256") != schema_inference_gate_receipt_digest(payload):
         raise SchemaInferenceGateError("schema-inference gate receipt content digest mismatch")
+    try:
+        verify_verification_receipt(payload, tier="source", live_tier_path=root / "source.db")
+        verify_verification_receipt(payload, tier="user", live_tier_path=root / "user.db")
+    except BackupAttestationError as exc:
+        raise SchemaInferenceGateError(f"schema-inference gate receipt attestation is invalid: {exc}") from exc
     generated_at = _parse_receipt_time(payload.get("generated_at"))
     current_time = (now or datetime.now(UTC)).astimezone(UTC)
     age = current_time - generated_at
@@ -1292,6 +1329,8 @@ def _run_schema_inference_gate_locked(
     reasons = [
         str(_as_dict(result).get("reason")) for result in gate_results.values() if _as_dict(result).get("reason")
     ]
+    if not source_gates.get("source_counts"):
+        reasons.append("schema inference requires at least one reconciled source raw")
     if not source_schema_ok:
         reasons.append("source.db schema identity is missing or does not match the packaged schema")
     if not bool(fidelity.get("passed")):
@@ -1349,7 +1388,11 @@ def _run_schema_inference_gate_locked(
         },
         "pass_fail_reasons": reasons,
     }
-    _write_json(safe_receipt_path, payload)
+    _write_json(
+        safe_receipt_path,
+        payload,
+        authority_paths={"source": root / "source.db", "user": root / "user.db"},
+    )
     return SchemaInferenceGateResult(payload)
 
 

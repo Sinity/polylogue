@@ -18,6 +18,7 @@ from pathlib import Path
 
 from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
 from polylogue.config import get_config
+from polylogue.maintenance.schema_inference_gate import authorize_schema_generation
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 
@@ -64,6 +65,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Preview what a commit would change without writing to --output-dir.",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
+    parser.add_argument(
+        "--schema-inference-receipt",
+        type=Path,
+        help="Fresh authoritative PASS receipt from devtools verify schema-inference-gate.",
+    )
     return parser
 
 
@@ -81,17 +87,25 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     output_dir = args.output_dir if args.output_dir is not None else DEFAULT_OUTPUT_DIR
 
-    result = commit_provider_schema(
-        SchemaCommitRequest(
-            provider=str(args.provider),
-            output_dir=output_dir,
-            db_path=get_config().db_path,
-            max_samples=args.max_samples,
-            privacy_config=privacy_config,
-            full_corpus=bool(args.full_corpus),
-            dry_run=bool(args.dry_run),
-        )
+    config = get_config()
+    if not args.dry_run and args.schema_inference_receipt is None:
+        print("schema-commit: --schema-inference-receipt is required when persisting schema packages", file=sys.stderr)
+        return 1
+    request = SchemaCommitRequest(
+        provider=str(args.provider),
+        output_dir=output_dir,
+        db_path=config.db_path,
+        max_samples=args.max_samples,
+        privacy_config=privacy_config,
+        full_corpus=bool(args.full_corpus),
+        dry_run=bool(args.dry_run),
     )
+    if args.dry_run:
+        result = commit_provider_schema(request)
+    else:
+        archive_root = getattr(config, "archive_root", None) or config.db_path.parent
+        with authorize_schema_generation(archive_root, args.schema_inference_receipt):
+            result = commit_provider_schema(request)
 
     if not result.success:
         error = result.generation.error or "Schema generation failed"

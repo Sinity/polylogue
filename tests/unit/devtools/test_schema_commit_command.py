@@ -8,6 +8,8 @@ covered end-to-end in ``tests/unit/schemas/test_operator_commit.py``.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,6 +23,11 @@ from polylogue.schemas.operator.models import SchemaCommitRequest, SchemaCommitR
 @dataclass(frozen=True)
 class _ConfigStub:
     db_path: Path
+
+
+@contextmanager
+def _allow_schema_generation(*_args: object, **_kwargs: object) -> Iterator[dict[str, object]]:
+    yield {}
 
 
 def test_schema_commit_forwards_request_and_defaults_output_dir(
@@ -42,8 +49,11 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
 
     monkeypatch.setattr(schema_commit, "get_config", fake_get_config)
     monkeypatch.setattr(schema_commit, "commit_provider_schema", fake_commit)
+    monkeypatch.setattr(schema_commit, "authorize_schema_generation", _allow_schema_generation)
 
-    assert schema_commit.main(["--provider", "chatgpt"]) == 0
+    assert (
+        schema_commit.main(["--provider", "chatgpt", "--schema-inference-receipt", str(tmp_path / "receipt.json")]) == 0
+    )
 
     assert len(captured) == 1
     request = captured[0]
@@ -52,6 +62,16 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     assert request.db_path == tmp_path / "archive.db"
     assert request.full_corpus is True
     assert request.dry_run is False
+
+
+def test_schema_commit_refuses_persistence_without_authoritative_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(schema_commit, "commit_provider_schema", pytest.fail)
+
+    assert schema_commit.main(["--provider", "chatgpt"]) == 1
+    assert "schema-inference-receipt is required" in capsys.readouterr().err
 
 
 def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -87,6 +107,7 @@ def test_schema_commit_json_output_reports_success(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(schema_commit, "authorize_schema_generation", _allow_schema_generation)
     monkeypatch.setattr(
         schema_commit,
         "commit_provider_schema",
@@ -102,7 +123,12 @@ def test_schema_commit_json_output_reports_success(
         ),
     )
 
-    assert schema_commit.main(["--provider", "chatgpt", "--json"]) == 0
+    assert (
+        schema_commit.main(
+            ["--provider", "chatgpt", "--json", "--schema-inference-receipt", str(tmp_path / "receipt.json")]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["provider"] == "chatgpt"
@@ -117,6 +143,7 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(schema_commit, "authorize_schema_generation", _allow_schema_generation)
     monkeypatch.setattr(
         schema_commit,
         "commit_provider_schema",
@@ -128,7 +155,12 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
         ),
     )
 
-    assert schema_commit.main(["--provider", "broken-provider", "--json"]) == 1
+    assert (
+        schema_commit.main(
+            ["--provider", "broken-provider", "--json", "--schema-inference-receipt", str(tmp_path / "receipt.json")]
+        )
+        == 1
+    )
     payload = json.loads(capsys.readouterr().out)
     assert payload["success"] is False
     assert payload["error"] == "No samples"
@@ -139,6 +171,7 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
     not report a clean exit code -- the whole point of the report is that a
     bad promotion can't land unnoticed."""
     monkeypatch.setattr(schema_commit, "get_config", lambda: _ConfigStub(db_path=tmp_path / "archive.db"))
+    monkeypatch.setattr(schema_commit, "authorize_schema_generation", _allow_schema_generation)
     monkeypatch.setattr(
         schema_commit,
         "commit_provider_schema",
@@ -154,4 +187,6 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
         ),
     )
 
-    assert schema_commit.main(["--provider", "chatgpt"]) == 1
+    assert (
+        schema_commit.main(["--provider", "chatgpt", "--schema-inference-receipt", str(tmp_path / "receipt.json")]) == 1
+    )

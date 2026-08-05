@@ -183,6 +183,16 @@ def test_clean_archive_runs_actual_blobstore_verifier_and_external_reconciliatio
     } == before
 
 
+def test_empty_archive_cannot_authorize_schema_inference(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+
+    payload = _run(root, tmp_path, ground_truth_roots={})
+
+    assert payload["verdict"] == "FAIL"
+    assert "schema inference requires at least one reconciled source raw" in payload["pass_fail_reasons"]
+
+
 def test_gate_rejects_stale_non_source_tier_schema_identity(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     ground_truth = _seed_archive(root)
@@ -275,6 +285,19 @@ def test_extra_external_file_is_rejected_by_bidirectional_reconciliation(tmp_pat
     assert origin["count_discrepancy"] is True
     assert origin["byte_discrepancy"] is True
     assert any("external file(s) have no source raw match" in reason for reason in payload["pass_fail_reasons"])
+
+
+def test_archive_owned_blob_cannot_pose_as_external_ground_truth(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _seed_archive(root)
+    blob_path = next(path for path in (root / "blob").rglob("*") if path.is_file())
+
+    payload = _run(root, tmp_path, ground_truth=blob_path)
+
+    assert payload["verdict"] == "FAIL"
+    assert any(
+        "must be external to the archive and blob namespace" in reason for reason in payload["pass_fail_reasons"]
+    )
 
 
 def test_cross_origin_external_source_is_rejected_and_recorded(tmp_path: Path) -> None:
