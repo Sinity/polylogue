@@ -112,6 +112,39 @@ def test_import_explain_zip_propagates_member_decode_skip(tmp_path: Path) -> Non
     assert payload.skipped[0].reason.startswith("decode failure:")
 
 
+def test_import_explain_zip_recovers_path_classified_json_record_array(tmp_path: Path) -> None:
+    """Explain applies decoded-session evidence before a workflow path skip."""
+    archive = tmp_path / "workflow-json.zip"
+    records = [
+        {
+            "sessionId": "explain-json-session",
+            "parentUuid": None,
+            "type": "user",
+            "message": {"role": "user", "content": "explain this session"},
+            "uuid": "explain-json-user",
+            "timestamp": "2025-01-01T00:00:00Z",
+        },
+        {
+            "sessionId": "explain-json-session",
+            "parentUuid": "explain-json-user",
+            "type": "assistant",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "explained"}]},
+            "uuid": "explain-json-assistant",
+            "timestamp": "2025-01-01T00:00:01Z",
+        },
+    ]
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("workflows/explain.json", json.dumps(records))
+
+    payload = explain_import_path(archive, source_name="claude-code")
+
+    assert payload.produced.sessions >= 1
+    assert not any(
+        row.source_path and row.source_path.endswith("workflow-json.zip:workflows/explain.json")
+        for row in payload.skipped
+    )
+
+
 def test_import_explain_zip_rejects_oversized_member_before_read(
     tmp_path: Path,
     monkeypatch: MonkeyPatch,

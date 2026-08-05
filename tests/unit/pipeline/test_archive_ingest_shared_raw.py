@@ -36,6 +36,7 @@ sessions instead of writing a duplicate raw row.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import zipfile
 from collections.abc import Iterator
@@ -358,6 +359,52 @@ async def test_archive_ingest_large_ordinary_zip_jsonl_skips_delayed_artifact_sc
 
     assert result.parse_failures == 0
     assert result.counts["sessions"] == 1
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_path_classified_zip_json_record_array_reaches_parser(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """Decoded Claude records outrank a non-session workflow snapshot path."""
+    archive_root = workspace_env["archive_root"]
+    journal_zip = _write_large_zip_member(
+        tmp_path / "sessions",
+        "workflows/wf-json.json",
+        json.dumps(
+            [
+                {
+                    "sessionId": "json-array-session",
+                    "parentUuid": None,
+                    "type": "user",
+                    "message": {"role": "user", "content": "recover JSON records"},
+                    "uuid": "json-array-user",
+                    "timestamp": "2025-01-01T00:00:00Z",
+                },
+                {
+                    "sessionId": "json-array-session",
+                    "parentUuid": "json-array-user",
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "recovered reply"}],
+                    },
+                    "uuid": "json-array-assistant",
+                    "timestamp": "2025-01-01T00:00:01Z",
+                },
+            ]
+        ).encode(),
+    )
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=journal_zip)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] >= 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
 
 
 @pytest.mark.asyncio

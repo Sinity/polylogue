@@ -1409,7 +1409,7 @@ def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path:
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b"".join(
-        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(32)
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(64)
     ) + (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
         b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
@@ -3964,7 +3964,11 @@ def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(
     source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
     source.parent.mkdir(parents=True)
     source.write_bytes(
-        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b"".join(
+            b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+            for index in range(64)
+        )
+        + b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
         b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
         b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
         b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'

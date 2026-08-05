@@ -10,6 +10,8 @@ from typing import IO
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact_path
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -201,13 +203,27 @@ def zip_entry_session_artifact(
     *,
     provider: Provider,
 ) -> ArtifactClassification | None:
-    """Stream a JSONL member before applying a terminal artifact path rule."""
-    if not info.filename.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
-        return None
+    """Decode a member before applying a terminal artifact path rule."""
     from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 
-    with open_bounded_zip_entry(zf, info.filename) as handle:
-        return jsonl_session_artifact(handle, provider=provider)
+    lower_name = info.filename.lower()
+    if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+        with open_bounded_zip_entry(zf, info.filename) as handle:
+            return jsonl_session_artifact(handle, provider=provider)
+    if not lower_name.endswith(".json"):
+        return None
+    try:
+        with open_bounded_zip_entry(zf, info.filename) as handle:
+            payload = json_loads(handle.read())
+    except JSONDecodeError:
+        return None
+    # Deliberately omit source_path. The caller is asking whether decoded
+    # content can override a non-session path rule, so reapplying that rule
+    # here would make the evidence check circular.
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+
+    artifact = classify_artifact(payload, provider=provider)
+    return artifact if artifact.parse_as_session else None
 
 
 def zip_entry_provider_hint(entry_name: str, fallback_provider: str | Provider) -> Provider:

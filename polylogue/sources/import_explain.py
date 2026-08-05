@@ -22,6 +22,7 @@ from polylogue.sources.decoder_zip import (
     MAX_UNCOMPRESSED_SIZE,
     ZipBombError,
     open_bounded_zip_entry,
+    zip_entry_session_artifact,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -552,11 +553,29 @@ def _explain_zip(
     try:
         with zipfile.ZipFile(path) as archive:
             for info in archive.infolist():
+                path_classification = classify_artifact_path(info.filename, provider=provider_hint)
+                decoded_session_artifact: ArtifactClassification | None = None
+                if path_classification is not None and not path_classification.parse_as_session:
+                    try:
+                        decoded_session_artifact = zip_entry_session_artifact(
+                            archive,
+                            info,
+                            provider=provider_hint,
+                        )
+                    except ZipBombError as exc:
+                        skipped.append(
+                            ImportSkippedRowPayload(
+                                reason=f"zip entry rejected: {exc}",
+                                source_path=f"{path}:{info.filename}",
+                            )
+                        )
+                        continue
                 skip_reason, aggregate_total = _zip_entry_skip_reason(
                     info,
                     aggregate_total=aggregate_total,
                     zip_path=path,
                     provider_hint=provider_hint,
+                    decoded_session_artifact=decoded_session_artifact,
                 )
                 if skip_reason is not None:
                     skipped.append(
@@ -623,6 +642,7 @@ def _zip_entry_skip_reason(
     aggregate_total: int,
     zip_path: Path,
     provider_hint: Provider,
+    decoded_session_artifact: ArtifactClassification | None = None,
 ) -> tuple[str | None, int]:
     """Return a skip reason (if any) plus the aggregate-total that should
     carry forward to the next entry.
@@ -650,7 +670,11 @@ def _zip_entry_skip_reason(
     # instead of ``/``/start-of-string and no rule could ever match.
     del zip_path
     path_classification = classify_artifact_path(info.filename, provider=provider_hint)
-    if path_classification is not None and not path_classification.parse_as_session:
+    if (
+        path_classification is not None
+        and not path_classification.parse_as_session
+        and decoded_session_artifact is None
+    ):
         return path_classification.reason or "not a session artifact", aggregate_total
     projected_total = aggregate_total + info.file_size
     if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:

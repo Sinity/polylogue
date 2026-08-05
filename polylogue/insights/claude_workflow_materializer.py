@@ -261,17 +261,18 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
 def _raw_payload_has_session_evidence(blob_store: BlobStore, row: sqlite3.Row) -> bool:
     """Keep session-shaped JSON payloads out of path-only artifact inventory."""
     path = Path(str(row["source_path"]))
-    try:
-        payload = blob_store.read_all(bytes(row["blob_hash"]).hex())
-    except (OSError, ValueError):
-        return False
+    blob_hash = bytes(row["blob_hash"]).hex()
     if path.suffix.lower() == ".jsonl":
-        return jsonl_session_artifact(payload, provider=Provider.CLAUDE_CODE) is not None
+        try:
+            return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=Provider.CLAUDE_CODE) is not None
+        except (OSError, ValueError):
+            return False
     if path.suffix.lower() != ".json":
         return False
     try:
-        document = json_loads(payload)
-    except JSONDecodeError:
+        with blob_store.open(blob_hash) as handle:
+            document = json_loads(handle.read())
+    except (OSError, JSONDecodeError, ValueError):
         return False
     return classify_artifact(document, provider=Provider.CLAUDE_CODE).parse_as_session
 

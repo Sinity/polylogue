@@ -114,7 +114,12 @@ class _SessionEmitter:
             )
             return
 
-        yield from self._emit_individual(handle, stream_name, pre_read_bytes=pre_read_bytes)
+        yield from self._emit_individual(
+            handle,
+            stream_name,
+            pre_read_bytes=pre_read_bytes,
+            session_artifact=session_artifact,
+        )
 
     def _emit_grouped(
         self,
@@ -168,6 +173,7 @@ class _SessionEmitter:
         stream_name: str,
         *,
         pre_read_bytes: bytes | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         """Individual items: each payload = one session."""
         unpack = not (stream_name.lower().endswith(".json") and self._ctx.should_group)
@@ -180,6 +186,7 @@ class _SessionEmitter:
             _iter_json_stream(handle, stream_name, unpack_lists=unpack),
             stream_name=stream_name,
             whole_file_raw=whole_file_raw,
+            session_artifact=session_artifact,
         )
 
     def _emit_individual_payloads(
@@ -188,11 +195,18 @@ class _SessionEmitter:
         *,
         stream_name: str,
         whole_file_raw: RawSessionData | None = None,
+        session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         source_index = 0
         for payload in payloads:
             try:
                 resolved = self._resolve_payload(payload)
+                if session_artifact is not None:
+                    resolved = _ResolvedPayload(
+                        provider=resolved.provider,
+                        artifact=session_artifact,
+                        schema_resolution=resolved.schema_resolution,
+                    )
                 if not resolved.artifact.parse_as_session:
                     continue
 

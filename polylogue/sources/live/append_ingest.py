@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -79,7 +80,13 @@ def _ingest_append_plans_archive(
         _add_timing(timings, "append.archive_init", t0)
 
     t0 = time.perf_counter()
-    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.decoders import _iter_json_stream
+    from polylogue.sources.dispatch import (
+        STREAM_RECORD_PROVIDERS,
+        parse_payload,
+        parse_stream_payload,
+        require_positive_conversational_evidence,
+    )
     from polylogue.sources.revision_backfill import (
         _declared_non_session_artifact_classification,
         parse_retained_raw_sessions,
@@ -205,13 +212,22 @@ def _ingest_append_plans_archive(
                     # ``fallback_id`` exactly when its own record stream
                     # carries no session_meta of its own, which is always
                     # true for an append delta.
-                    sessions = require_positive_conversational_evidence(
-                        parse_payload(
+                    if provider in STREAM_RECORD_PROVIDERS:
+                        parsed_sessions = parse_stream_payload(
+                            provider,
+                            _iter_json_stream(BytesIO(plan.payload), plan.path.name),
+                            plan.native_id_hint or plan.path.stem,
+                            source_path=str(plan.path),
+                        )
+                    else:
+                        parsed_sessions = parse_payload(
                             provider,
                             payloads,
                             plan.native_id_hint or plan.path.stem,
                             source_path=str(plan.path),
-                        ),
+                        )
+                    sessions = require_positive_conversational_evidence(
+                        parsed_sessions,
                         provider=provider,
                         source_path=str(plan.path),
                     )
