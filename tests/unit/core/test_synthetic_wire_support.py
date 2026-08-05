@@ -13,6 +13,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.schemas import validator as validator_module
+from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
@@ -21,6 +22,8 @@ from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
 from polylogue.schemas.synthetic.selection import select_synthetic_schema
 from polylogue.schemas.synthetic.wire_formats import UnsupportedSyntheticWireRouteError
 from polylogue.schemas.validator import SchemaValidator
+from polylogue.sources import dispatch as dispatch_module
+from polylogue.sources.parsers.base_models import ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 
 
@@ -49,6 +52,42 @@ def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> N
     assert all(entry.parsed_message_count > 0 for entry in supported)
     assert all(entry.construct_coverage is not None and entry.construct_coverage.complete for entry in supported)
     assert receipt.complete
+
+
+def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_parse_payload = dispatch_module.parse_payload
+
+    def drop_first_coverage_witness(
+        provider: str,
+        payload: object,
+        fallback_id: str,
+        _depth: int = 0,
+        *,
+        schema_resolution: SchemaResolution | None = None,
+        source_path: str | None = None,
+    ) -> list[ParsedSession]:
+        if fallback_id.endswith(":1"):
+            return []
+        return original_parse_payload(
+            provider,
+            payload,
+            fallback_id,
+            _depth,
+            schema_resolution=schema_resolution,
+            source_path=source_path,
+        )
+
+    monkeypatch.setattr(dispatch_module, "parse_payload", drop_first_coverage_witness)
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+
+    entry = next(item for item in receipt.entries if item.provider == "chatgpt")
+    dropped = next(witness for witness in entry.parser_witnesses if witness.index == 0)
+    assert entry.parsed_session_count > 0
+    assert dropped.parsed_session_count == 0
+    assert dropped.parsed_message_count == 0
+    assert not dropped.healthy
+    assert not entry.healthy
+    assert not receipt.complete
 
 
 def test_support_receipt_is_deterministic() -> None:
@@ -92,6 +131,57 @@ def test_supported_selection_uses_declared_route_format() -> None:
             continue
         selection = select_synthetic_schema(provider, registry_factory=lambda: registry)
         assert selection.wire_format == route.wire_format
+
+
+def test_selection_reuses_resolved_default_package_for_schema_and_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = SchemaRegistry()
+    original_get_package = registry.get_package
+    original_get_element_schema = registry.get_element_schema
+    original_get_workload_profile = registry.get_workload_profile
+    resolved_package = original_get_package("chatgpt", version="v1")
+    assert resolved_package is not None
+    requested_schema_versions: list[str] = []
+    requested_profile_versions: list[str] = []
+
+    def divergent_default_package(provider: str, version: str = "default") -> object:
+        if provider == "chatgpt" and version == "default":
+            return resolved_package
+        return original_get_package(provider, version=version)
+
+    def record_schema_version(
+        provider: str,
+        *,
+        version: str = "default",
+        element_kind: str | None = None,
+    ) -> SchemaRecord | None:
+        if provider == "chatgpt":
+            requested_schema_versions.append(version)
+            if version == "default":
+                return original_get_element_schema(provider, version="v2", element_kind=element_kind)
+        return original_get_element_schema(provider, version=version, element_kind=element_kind)
+
+    def record_profile_version(provider: str, version: str = "default") -> SchemaRecord | None:
+        if provider == "chatgpt":
+            requested_profile_versions.append(version)
+        return original_get_workload_profile(provider, version=version)
+
+    monkeypatch.setattr(registry, "get_package", divergent_default_package)
+    monkeypatch.setattr(registry, "get_element_schema", record_schema_version)
+    monkeypatch.setattr(registry, "get_workload_profile", record_profile_version)
+
+    selection = select_synthetic_schema("chatgpt", registry_factory=lambda: registry)
+
+    assert selection.package_version == resolved_package.version
+    assert SyntheticCorpus.from_selection(selection).package_version == resolved_package.version
+    assert selection.schema == original_get_element_schema(
+        "chatgpt",
+        version=resolved_package.version,
+        element_kind=resolved_package.default_element_kind,
+    )
+    assert requested_schema_versions == [resolved_package.version]
+    assert requested_profile_versions == [resolved_package.version]
 
 
 def test_antigravity_metadata_only_source_has_no_language_server_session(tmp_path: Path) -> None:

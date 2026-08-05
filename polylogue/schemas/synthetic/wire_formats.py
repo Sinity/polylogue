@@ -7,6 +7,7 @@ tree vs. linear vs. JSONL, and message location paths.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
@@ -87,6 +88,30 @@ class ConstructCoverage:
 
 
 @dataclass(frozen=True)
+class WireParserWitness:
+    """One schema witness exercised through the production parser route."""
+
+    index: int
+    exercised_keywords: tuple[str, ...]
+    parsed_session_count: int
+    parsed_message_count: int
+    validation_error: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return (
+            bool(self.exercised_keywords)
+            # Some valid provider-wire witnesses describe envelope metadata
+            # that the parser preserves as a session while intentionally
+            # yielding no conversational message.  The ordinary baseline
+            # artifact still supplies the route-level positive message proof;
+            # each witness must prove parser admission independently.
+            and self.parsed_session_count > 0
+            and self.validation_error is None
+        )
+
+
+@dataclass(frozen=True)
 class WireSupportEntry:
     """One provider row in the support receipt."""
 
@@ -100,6 +125,7 @@ class WireSupportEntry:
     parsed_message_count: int
     construct_coverage: ConstructCoverage | None
     validation_error: str | None = None
+    parser_witnesses: tuple[WireParserWitness, ...] = ()
 
     @property
     def healthy(self) -> bool:
@@ -110,6 +136,8 @@ class WireSupportEntry:
             and self.construct_coverage is not None
             and self.construct_coverage.complete
             and self.validation_error is None
+            and bool(self.parser_witnesses)
+            and all(witness.healthy for witness in self.parser_witnesses)
         )
 
 
@@ -156,6 +184,17 @@ class WireSupportReceipt:
                     "parsed_session_count": entry.parsed_session_count,
                     "parsed_message_count": entry.parsed_message_count,
                     "validation_error": entry.validation_error,
+                    "parser_witnesses": [
+                        {
+                            "index": witness.index,
+                            "exercised_keywords": list(witness.exercised_keywords),
+                            "parsed_session_count": witness.parsed_session_count,
+                            "parsed_message_count": witness.parsed_message_count,
+                            "validation_error": witness.validation_error,
+                            "healthy": witness.healthy,
+                        }
+                        for witness in entry.parser_witnesses
+                    ],
                     "construct_coverage": (
                         {
                             "schema_keywords": list(entry.construct_coverage.schema_keywords),
@@ -929,6 +968,7 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
         payloads: list[JSONValue] = []
         validation_error: str | None = None
         selection = None
+        parser_witnesses: list[WireParserWitness] = []
         try:
             selection = select_synthetic_schema(
                 provider,
@@ -951,18 +991,71 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
             ]
             validator = SchemaValidator(selection.schema, strict=False)
             validation_results: list[ValidationResult] = []
-            for index, raw in enumerate(raw_items):
-                import json
+            schema_resolution = None
+            if selection.element_kind is not None:
+                from polylogue.schemas.packages import SchemaResolution
 
+                schema_resolution = SchemaResolution(
+                    provider=selection.provider,
+                    package_version=selection.package_version,
+                    element_kind=selection.element_kind,
+                    exact_structure_id=None,
+                    bundle_scope=None,
+                    reason="package_default",
+                )
+            for index, raw in enumerate(raw_items):
                 if route.wire_format.encoding == "jsonl":
                     payload: JSONValue = [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
                     payload_items = payload if isinstance(payload, list) else []
                 else:
                     payload = json.loads(raw)
                     payload_items = [payload] if isinstance(payload, (dict, list)) else []
-                payloads.extend(payload_items)
-                validation_results.extend(validator.validate(item) for item in payload_items)
-                parsed_sessions.extend(parse_payload(provider, payload, f"synthetic-wire-receipt:{provider}:{index}"))
+                artifact_results = [validator.validate(item) for item in payload_items]
+                validation_results.extend(artifact_results)
+                artifact_validation_error = (
+                    "; ".join(error for result in artifact_results for error in result.errors) or None
+                )
+                artifact_coverage = construct_coverage(selection.schema, payload_items)
+                parse_error: str | None = None
+                artifact_sessions = []
+                try:
+                    artifact_sessions = parse_payload(
+                        provider,
+                        payload,
+                        f"synthetic-wire-receipt:{provider}:{index}",
+                        schema_resolution=schema_resolution,
+                    )
+                except Exception as exc:  # Keep the witness failure in the receipt.
+                    parse_error = f"{type(exc).__name__}: {exc}"
+                parsed_sessions.extend(artifact_sessions)
+                if index == 0:
+                    if (
+                        artifact_sessions
+                        and any(session.messages for session in artifact_sessions)
+                        and artifact_validation_error is None
+                    ):
+                        payloads.extend(payload_items)
+                    continue
+
+                parser_witnesses.append(
+                    WireParserWitness(
+                        index=index - 1,
+                        exercised_keywords=artifact_coverage.exercised_keywords,
+                        parsed_session_count=len(artifact_sessions),
+                        parsed_message_count=sum(len(session.messages) for session in artifact_sessions),
+                        validation_error=parse_error or artifact_validation_error,
+                    )
+                )
+                # A parser route must earn the right to contribute its raw
+                # witness to aggregate schema coverage.  Otherwise a dropped
+                # witness can be masked by another artifact's parsed counts.
+                if (
+                    artifact_sessions
+                    and any(session.messages for session in artifact_sessions)
+                    and artifact_validation_error is None
+                    and parse_error is None
+                ):
+                    payloads.extend(payload_items)
             schema_valid = bool(validation_results) and all(result.is_valid for result in validation_results)
             if not schema_valid:
                 validation_error = "; ".join(error for result in validation_results for error in result.errors) or (
@@ -994,6 +1087,7 @@ def build_wire_support_receipt(*, registry: object | None = None, seed: int = 20
                 parsed_message_count=sum(len(session.messages) for session in parsed_sessions),
                 construct_coverage=coverage,
                 validation_error=validation_error,
+                parser_witnesses=tuple(parser_witnesses),
             )
         )
 
@@ -1013,6 +1107,7 @@ __all__ = [
     "WireCapabilityStatus",
     "WireEncoding",
     "WireFormat",
+    "WireParserWitness",
     "WireRoute",
     "WireSupportEntry",
     "WireSupportReceipt",

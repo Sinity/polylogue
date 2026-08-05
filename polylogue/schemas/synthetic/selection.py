@@ -69,7 +69,11 @@ def select_synthetic_schema(
             )
         schema = registry.get_element_schema(
             canonical_provider,
-            version=version,
+            # ``get_package`` resolves aliases such as ``default``.  Reuse
+            # that exact package identity for every subsequent load so a
+            # registry cannot pair one package's manifest with another
+            # package's element schema.
+            version=package.version,
             element_kind=resolved_element_kind,
         )
         canonical_version = package.version
