@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -224,7 +225,7 @@ def test_chunked_proof_queries_cover_archive_scale_ids(tmp_path: Path, monkeypat
     active = IndexGenerationStore.for_archive_root(root).active_pointer.resolve()
 
     manifest = forward._sample_manifest(root, active, limit=3)
-    session_ids = tuple(session_id for entry in manifest for session_id in entry["session_ids"])
+    session_ids = tuple(session_id for entry in manifest for session_id in cast(list[str], entry["session_ids"]))
     with sqlite3.connect(active) as conn:
         hashes = forward._canonical_hashes(conn, session_ids)
 

@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Callable, Iterator
 from contextlib import closing, suppress
 from dataclasses import asdict
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -353,6 +354,10 @@ def _hash_query_in_chunks(
     return _hash_rows(_query_rows_in_chunks(conn, sql_for_marks, values))
 
 
+def _scoped_table_sql(marks: str, *, table_name: str, key_column: str, order_by: str) -> str:
+    return f'SELECT * FROM "{table_name}" WHERE "{key_column}" IN ({marks}) ORDER BY {order_by}'
+
+
 def _canonical_hashes(conn: sqlite3.Connection, session_ids: tuple[str, ...]) -> dict[str, object]:
     if not session_ids:
         return {"sessions": "", "messages": "", "blocks": "", "fts": "", "scoped": {}}
@@ -373,11 +378,10 @@ def _canonical_hashes(conn: sqlite3.Connection, session_ids: tuple[str, ...]) ->
     ):
         columns = [str(info[1]) for info in conn.execute(f'PRAGMA table_info("{table_name}")')]
         order_by = ", ".join(str(index) for index in range(1, len(columns) + 1))
+
         scoped[table_name] = _hash_query_in_chunks(
             conn,
-            lambda marks, table_name=table_name, key_column=key_column, order_by=order_by: (
-                f'SELECT * FROM "{table_name}" WHERE "{key_column}" IN ({marks}) ORDER BY {order_by}'
-            ),
+            partial(_scoped_table_sql, table_name=table_name, key_column=key_column, order_by=order_by),
             session_ids,
         )
     return {
