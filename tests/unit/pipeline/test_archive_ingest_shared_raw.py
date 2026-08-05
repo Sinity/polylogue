@@ -8,7 +8,7 @@ a file into two `ParsedSession`s that share the identical captured raw bytes.
 
 Before this fix, `pipeline/services/archive_ingest.py`'s one-shot importer
 (`parse_sources_archive` / `write_pair`) wrote a SEPARATE `raw_sessions` row
-per split session via `write_raw_and_parsed_result`, whose raw_id is derived
+per split session via `admit_raw_and_parsed_result`, whose raw_id is derived
 from `deterministic_raw_session_id(..., native_id=session.provider_session_id)`
 (see `write_source_raw_session`). Two sessions parsed from the SAME bytes
 therefore produced TWO DIFFERENT raw_id rows differentiated only by
@@ -37,15 +37,21 @@ sessions instead of writing a duplicate raw row.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.config import Source
+from polylogue.pipeline.services import archive_ingest
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.sources.parsers.base import ParsedSession, RawSessionData
+from polylogue.sources.source_parsing import iter_source_sessions_with_raw
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
+def _write_carryover_chain(root: Path, *, session_prefix: str = "") -> tuple[Path, Path]:
     """Write parent-session.jsonl (real "parent" session) + child-session.jsonl
     (a 1-record carryover of parent's tail under `sessionId=parent-session`,
     then real "child-session" content) -- the exact structural shape found in
@@ -55,6 +61,8 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
     on, so the fixture must use real-shaped filenames, not human-readable
     stand-ins, to exercise it honestly).
     """
+    parent_session = f"{session_prefix}parent-session"
+    child_session = f"{session_prefix}child-session"
     parent_file = root / "parent-session.jsonl"
     child_file = root / "child-session.jsonl"
 
@@ -75,8 +83,8 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
     parent_file.write_text(
         "\n".join(
             [
-                rec("parent-session", "p-u1", "user", "p1"),
-                rec("parent-session", "p-a1", "assistant", "p2", parent_uuid="p-u1"),
+                rec(parent_session, "p-u1", "user", "p1"),
+                rec(parent_session, "p-a1", "assistant", "p2", parent_uuid="p-u1"),
             ]
         )
         + "\n"
@@ -87,14 +95,14 @@ def _write_carryover_chain(root: Path) -> tuple[Path, Path]:
                 # Boundary carryover: same conversation thread, still tagged
                 # with the PARENT's sessionId, referencing parent's last uuid.
                 rec(
-                    "parent-session",
+                    parent_session,
                     "carryover",
                     "user",
                     "[Request interrupted by user for tool use]",
                     parent_uuid="p-a1",
                 ),
-                rec("child-session", "c-u1", "user", "c1"),
-                rec("child-session", "c-a1", "assistant", "c2", parent_uuid="c-u1"),
+                rec(child_session, "c-u1", "user", "c1"),
+                rec(child_session, "c-a1", "assistant", "c2", parent_uuid="c-u1"),
             ]
         )
         + "\n"
@@ -114,6 +122,18 @@ def _raw_rows_for_path(source_db: Path, source_path: str) -> list[tuple[str, str
     return [(str(r[0]), r[1]) for r in rows]
 
 
+def _membership_rows(source_db: Path, raw_id: str) -> set[tuple[str, str]]:
+    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    try:
+        rows = conn.execute(
+            "SELECT logical_source_key, provider_session_id FROM raw_session_memberships WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {(str(row[0]), str(row[1])) for row in rows}
+
+
 @pytest.mark.asyncio
 async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
     """Two sessions split from ONE Claude Code file's bytes must NOT produce
@@ -131,10 +151,15 @@ async def test_grouped_carryover_sessions_share_one_raw_row(tmp_path: Path, work
     rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
     # Anti-vacuity: this is the production dependency under test --
     # write_pair's shared-raw cache (pipeline/services/archive_ingest.py).
-    # Deleting that cache (reverting to one write_raw_and_parsed_result call
+    # Deleting that cache (reverting to one admit_raw_and_parsed_result call
     # per split session, each deriving its own native_id-based raw_id) makes
     # this assertion fail with TWO rows instead of one.
     assert len(rows) == 1, f"expected exactly one raw row for child-session.jsonl's bytes, got {rows}"
+    assert rows[0][1] is None
+    assert _membership_rows(archive_root / "source.db", rows[0][0]) == {
+        ("claude-code:parent-session:child-session", "parent-session:child-session"),
+        ("claude-code:child-session", "child-session"),
+    }
 
     # Both split sessions must still have been indexed -- but as of
     # bd polylogue-jc4q the 1-record carryover no longer collides identity
@@ -302,3 +327,104 @@ async def test_reingesting_identical_bytes_resolves_to_the_same_raw_id(
 
     assert len(second_rows) == 1, f"re-ingest must not create a second raw row, got {second_rows}"
     assert second_rows[0][0] == first_raw_id, "raw_id must be deterministic across re-acquisitions of identical bytes"
+
+
+@pytest.mark.asyncio
+async def test_reordered_grouped_reingest_keeps_raw_identity_and_memberships(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real importer must tolerate a different grouped-session order on retry."""
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "0")
+    archive_root = workspace_env["archive_root"]
+    root = tmp_path / "sessions"
+    root.mkdir()
+    _parent_file, child_file = _write_carryover_chain(root)
+    sources = [Source(name="claude-code", path=child_file)]
+
+    original_iter = iter_source_sessions_with_raw
+    calls = 0
+
+    def reordered_iter(source: Source, **kwargs: Any) -> Iterator[tuple[RawSessionData | None, ParsedSession]]:
+        nonlocal calls
+        pairs = list(original_iter(source, **kwargs))
+        if calls == 1:
+            pairs.reverse()
+        calls += 1
+        yield from pairs
+
+    monkeypatch.setattr(archive_ingest, "iter_source_sessions_with_raw", reordered_iter)
+
+    first_result = await parse_sources_archive(archive_root, sources)
+    assert first_result.parse_failures == 0
+    first_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
+    assert len(first_rows) == 1
+    first_raw_id = first_rows[0][0]
+
+    second_result = await parse_sources_archive(archive_root, sources)
+    assert second_result.parse_failures == 0
+    assert calls == 2
+    second_rows = _raw_rows_for_path(archive_root / "source.db", str(child_file))
+
+    assert second_rows == [(first_raw_id, None)]
+    assert _membership_rows(archive_root / "source.db", first_raw_id) == {
+        ("claude-code:parent-session:child-session", "parent-session:child-session"),
+        ("claude-code:child-session", "child-session"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_batched_grouped_ingest_commits_census_before_next_raw(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grouped raw publication must not wait behind the index message batch."""
+    monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
+    # Keep the index transaction open across both files. The default production
+    # threshold has the same shape for this small demo-sized input.
+    monkeypatch.setenv("POLYLOGUE_INGEST_COMMIT_BATCH_MESSAGES", "1000")
+    archive_root = workspace_env["archive_root"]
+    first_root = tmp_path / "first"
+    second_root = tmp_path / "second"
+    first_root.mkdir()
+    second_root.mkdir()
+    _first_parent, first_child = _write_carryover_chain(first_root)
+    _second_parent, second_child = _write_carryover_chain(second_root, session_prefix="second-")
+
+    original_census = ArchiveStore.replace_raw_membership_census
+    census_calls = 0
+
+    def require_source_transaction(
+        archive: ArchiveStore,
+        raw_id: str,
+        sessions: list[ParsedSession] | None,
+        **kwargs: Any,
+    ) -> None:
+        nonlocal census_calls
+        census_calls += 1
+        assert kwargs["manage_transaction"] is True
+        original_census(archive, raw_id, sessions, **kwargs)
+
+    monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=first_child), Source(name="claude-code", path=second_child)],
+        parse_workers=1,
+    )
+
+    # Anti-vacuity: this calls the production grouped parser, raw admission,
+    # source census, and index writer with a positive batch threshold. Removing
+    # the source-tier transaction ownership fix fails at the first real census
+    # call, and without that guard the next file's publisher blocks on the
+    # census transaction's source.db write lock.
+    assert result.parse_failures == 0
+    assert census_calls == 4
+    assert result.counts["sessions"] == 4
+    assert len(_raw_rows_for_path(archive_root / "source.db", str(first_child))) == 1
+    assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 4

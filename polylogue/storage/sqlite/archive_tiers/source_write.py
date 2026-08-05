@@ -49,6 +49,17 @@ class ContentExcisedError(RuntimeError):
         )
 
 
+PENDING_RAW_LOGICAL_SOURCE_PREFIX = "pending-raw:"
+
+
+def pending_raw_logical_source_key(*, origin: Origin | str, source_path: str, source_index: int, raw_id: str) -> str:
+    """Return the typed identity used until a parser proves the session key."""
+    origin_value = _enum_value(origin)
+    if origin_value is None:
+        raise ValueError("origin is required for pending raw identity")
+    return f"{PENDING_RAW_LOGICAL_SOURCE_PREFIX}{origin_value}:{source_index}:{source_path}:{raw_id}"
+
+
 def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes) -> bool:
     """Return ``True`` if ``blob_hash`` is recorded in the durable excision ledger.
 
@@ -729,6 +740,7 @@ def write_source_raw_session_blob_ref(
     raw_id: str | None = None,
     blob_publication_receipt_id: str | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
+    artifact: ArchiveSourceArtifact | None = None,
     revision: RawRevisionEnvelope | None = None,
     manage_transaction: bool = True,
 ) -> str:
@@ -832,6 +844,8 @@ def write_source_raw_session_blob_ref(
                     publication_receipt_id=additional_ref.publication_receipt_id,
                 ),
             )
+        if artifact is not None:
+            _insert_artifact(conn, resolved_raw_id, artifact)
     return resolved_raw_id
 
 
@@ -856,14 +870,20 @@ def bind_source_raw_revision(
                 predecessor_source_revision = ?, predecessor_raw_id = ?, baseline_raw_id = ?, append_start_offset = ?,
                 append_end_offset = ?, acquisition_generation = ?, revision_authority = ?
             WHERE raw_id = ?
-              AND revision_kind = 'unknown'
-              AND revision_authority = 'quarantined'
-              AND logical_source_key IS NULL
-              AND source_revision IS NULL
+              AND (
+                  (
+                      revision_kind = 'unknown'
+                      AND revision_authority = 'quarantined'
+                      AND logical_source_key IS NULL
+                      AND source_revision IS NULL
+                  )
+                  OR logical_source_key LIKE ?
+              )
             """,
             (
                 *_revision_values(revision),
                 raw_id,
+                f"{PENDING_RAW_LOGICAL_SOURCE_PREFIX}%",
             ),
         )
         if cursor.rowcount != 1:
@@ -1346,6 +1366,7 @@ __all__ = [
     "ArchiveSourceBlobRef",
     "CaptureModeResolution",
     "ContentExcisedError",
+    "PENDING_RAW_LOGICAL_SOURCE_PREFIX",
     "deterministic_blob_hash",
     "deterministic_history_sidecar_id",
     "deterministic_raw_session_id",
@@ -1360,6 +1381,7 @@ __all__ = [
     "read_archive_raw_session_envelope",
     "record_capture_mode_observation",
     "record_excised_blob_hash",
+    "pending_raw_logical_source_key",
     "upsert_raw_artifact",
     "write_history_sidecar",
     "write_source_raw_session",

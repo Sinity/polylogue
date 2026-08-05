@@ -177,6 +177,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
     admit_raw_and_parsed_result,
+    admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
@@ -2100,6 +2101,7 @@ class ArchiveStore:
         native_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        post_parse: bool = False,
     ) -> str:
         return write_raw_payload(
             self,
@@ -2113,6 +2115,7 @@ class ArchiveStore:
             native_id=native_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            post_parse=post_parse,
         )
 
     def raw_native_id(self, raw_id: str) -> str | None:
@@ -2177,6 +2180,7 @@ class ArchiveStore:
         raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
         revision: RawRevisionEnvelope | None = None,
+        post_parse: bool = False,
     ) -> str:
         return write_raw_blob_ref(
             self,
@@ -2190,6 +2194,7 @@ class ArchiveStore:
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             revision=revision,
+            post_parse=post_parse,
         )
 
     def admit_raw_artifact_payload(
@@ -2201,6 +2206,7 @@ class ArchiveStore:
         acquired_at_ms: int,
         classification: ArtifactClassification,
         source_index: int = 0,
+        raw_id: str | None = None,
         blob_publication_receipt_id: str | None = None,
     ) -> RawAdmissionResult:
         """Route a non-conversational artifact payload through the raw-admission chokepoint.
@@ -2215,6 +2221,34 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             classification=classification,
             source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
+
+    def admit_raw_artifact_blob_ref(
+        self,
+        *,
+        provider: Provider,
+        blob_hash_hex: str,
+        blob_size: int,
+        source_path: str,
+        acquired_at_ms: int,
+        classification: ArtifactClassification,
+        source_index: int = 0,
+        raw_id: str | None = None,
+        blob_publication_receipt_id: str | None = None,
+    ) -> RawAdmissionResult:
+        """Route a prepublished non-conversational blob through typed admission."""
+        return admit_raw_artifact_blob_ref(
+            self,
+            provider=provider,
+            blob_hash_hex=blob_hash_hex,
+            blob_size=blob_size,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            classification=classification,
+            source_index=source_index,
+            raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
 
@@ -2636,6 +2670,8 @@ class ArchiveStore:
         acquired_at_ms: int,
         logical_source_key: str,
         source_index: int = 0,
+        raw_id: str | None = None,
+        shared_raw: bool = False,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "append",
         manage_transaction: bool = True,
@@ -2657,6 +2693,8 @@ class ArchiveStore:
             acquired_at_ms=acquired_at_ms,
             logical_source_key=logical_source_key,
             source_index=source_index,
+            raw_id=raw_id,
+            shared_raw=shared_raw,
             stage_timings_s=stage_timings_s,
             stage_timing_prefix=stage_timing_prefix,
             manage_transaction=manage_transaction,

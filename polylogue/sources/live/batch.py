@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
+from itertools import islice
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -125,7 +126,10 @@ from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from polylogue.sources.revision_backfill import (
+    _declared_non_session_artifact_classification,
+    parse_retained_raw_sessions,
+)
 from polylogue.sources.source_acquisition_components import (
     _DETECTION_PREFIX_SIZE,
     ZipEntryReadContext,
@@ -2143,6 +2147,45 @@ class LiveBatchProcessor:
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
+                    artifact_sample: list[object] = []
+                    if payload is not None and Path(record.source_path).suffix.lower() in {".jsonl", ".ndjson"}:
+                        try:
+                            artifact_sample = list(islice(_iter_json_stream(BytesIO(payload), source_name), 64))
+                        except Exception:
+                            artifact_sample = []
+                    artifact_classification = _declared_non_session_artifact_classification(
+                        provider,
+                        record.source_path,
+                        sample=artifact_sample,
+                    )
+                    if artifact_classification is not None:
+                        explicit_raw_id = record.raw_id if record.blob_hash is not None else None
+                        if payload is None:
+                            source_raw_id = archive.admit_raw_artifact_blob_ref(
+                                provider=provider,
+                                blob_hash_hex=blob_hash,
+                                blob_size=record.blob_size,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                raw_id=explicit_raw_id,
+                                classification=artifact_classification,
+                                blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            ).raw_id
+                        else:
+                            source_raw_id = archive.admit_raw_artifact_payload(
+                                provider=provider,
+                                payload=payload,
+                                source_path=record.source_path,
+                                source_index=record.source_index or 0,
+                                acquired_at_ms=acquired_at_ms,
+                                raw_id=explicit_raw_id,
+                                classification=artifact_classification,
+                                blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            ).raw_id
+                        result.raw_ids[record.raw_id] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     source_write_started = time.perf_counter()
                     if payload is None:
                         source_raw_id = archive.write_raw_blob_ref(
@@ -2162,6 +2205,7 @@ class LiveBatchProcessor:
                             raw_id=(record.raw_id if record.blob_hash is not None else None),
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            post_parse=True,
                         )
                         source_write_name = "full.source_raw_blob_ref_write"
                     else:
@@ -2173,6 +2217,7 @@ class LiveBatchProcessor:
                             source_index=record.source_index or 0,
                             acquired_at_ms=acquired_at_ms,
                             blob_publication_receipt_id=record.blob_publication_receipt_id,
+                            post_parse=True,
                         )
                         source_write_name = "full.source_raw_write"
                     record_timings[source_write_name] = time.perf_counter() - source_write_started
@@ -2185,16 +2230,6 @@ class LiveBatchProcessor:
                         # touches the stale derived tier. Same admit-and-skip
                         # shape as the OriginSpec fact-artifact branch below,
                         # just a different reason for stopping short of parse.
-                        result.raw_ids[record.raw_id] = source_raw_id
-                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
-                        continue
-                    artifact_rule = artifact_rule_for_path(provider, record.source_path)
-                    if artifact_rule is not None and artifact_rule.parse_policy != "session":
-                        # OriginSpec fact artifacts are valid raw authority even
-                        # though provider session parsing intentionally returns
-                        # no sessions.  Admit the raw revision and let the
-                        # convergence materializer project it into generic work
-                        # evidence instead of treating it as a failed JSON file.
                         result.raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue

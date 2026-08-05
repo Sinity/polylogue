@@ -21,6 +21,7 @@ from types import TracebackType
 from typing import BinaryIO, Final, Literal, cast
 
 from polylogue import logging as _polylogue_logging
+from polylogue.archive.artifact_taxonomy.models import ArtifactClassification
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -2454,13 +2455,13 @@ class _ParsedSessionSpill:
         return sessions, payload_bytes
 
 
-def _is_declared_non_session_artifact(
+def _declared_non_session_artifact_classification(
     provider: Provider,
     source_path: str,
     *,
     sample: Sequence[object] = (),
-) -> bool:
-    """Return whether this raw revision must not be session-parsed on replay.
+) -> ArtifactClassification | None:
+    """Classify a declared non-session raw revision before session admission.
 
     polylogue-b508: retained raw revisions include OriginSpec-declared fact
     artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
@@ -2497,12 +2498,15 @@ def _is_declared_non_session_artifact(
     behavior exactly, so every existing caller is unaffected until it opts
     in.
     """
-    rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None:
-        return rule.parse_policy != "session"
-    if not sample:
-        return False
     from polylogue.archive.artifact_taxonomy import classify_artifact
+
+    rule = artifact_rule_for_path(provider, source_path)
+    if rule is not None and rule.parse_policy != "session":
+        classification = classify_artifact([], provider=provider, source_path=source_path)
+        if not classification.parse_as_session:
+            return classification
+    if not sample:
+        return None
     from polylogue.core.json import JSONValue
 
     # ``sample`` records come from ``_iter_json_stream`` (this module's own
@@ -2512,7 +2516,17 @@ def _is_declared_non_session_artifact(
     # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
     # a type-identity bridge, not a real behavior narrowing.
     classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
-    return not classification.parse_as_session
+    return classification if not classification.parse_as_session else None
+
+
+def _is_declared_non_session_artifact(
+    provider: Provider,
+    source_path: str,
+    *,
+    sample: Sequence[object] = (),
+) -> bool:
+    """Return whether this raw revision must not be session-parsed on replay."""
+    return _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None
 
 
 def _parse_one(

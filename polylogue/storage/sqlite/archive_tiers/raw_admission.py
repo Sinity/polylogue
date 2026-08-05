@@ -64,6 +64,12 @@ is not one of the five named arms (all five presuppose a prior head to
 compare against); it is handled as a distinct ``BASELINE`` outcome: the
 first-ever observation is recorded as a ``FULL``/``ASSERTED`` revision.
 
+The ``POST_PARSE_PENDING`` outcome is a separate acquisition-preservation
+contract for live and streaming callers that must record bytes before parsing
+can finish. It writes a deterministic raw row with a typed, quarantined
+pending key. The later parser bind replaces that envelope with the provider's
+accepted revision, while a retry of the same observation is idempotent.
+
 This module composes the existing low-level writers in
 ``source_write.py`` (``write_source_raw_session``,
 ``deterministic_blob_hash``) rather than re-implementing raw-row
@@ -87,7 +93,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
     deterministic_blob_hash,
+    deterministic_raw_session_id,
+    pending_raw_logical_source_key,
     write_source_raw_session,
+    write_source_raw_session_blob_ref,
 )
 
 
@@ -100,6 +109,7 @@ class RawAdmissionArm(StrEnum):
     SUPERSEDE = "supersede"
     ARTIFACT = "artifact"
     REFUSED_AMBIGUOUS = "refused_ambiguous"
+    POST_PARSE_PENDING = "post_parse_pending"
 
 
 _ByteRelation = Literal["duplicate", "append", "supersede", "ambiguous"]
@@ -153,6 +163,30 @@ def _enum_value(value: object) -> str | None:
     return str(value)
 
 
+def _assert_existing_raw_observation_identity(
+    conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    origin: Origin | str,
+    native_id: str | None,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+) -> bool:
+    """Return whether an explicit raw id already names the same observation."""
+    row = conn.execute(
+        "SELECT origin, native_id, source_path, source_index, blob_hash, blob_size FROM raw_sessions WHERE raw_id = ?",
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    expected = (_enum_value(origin), native_id, source_path, source_index, blob_hash, blob_size)
+    if tuple(row) != expected:
+        raise ValueError(f"raw id is already bound to different acquisition evidence: {raw_id}")
+    return True
+
+
 def admit_raw_observation(
     conn: sqlite3.Connection,
     *,
@@ -163,8 +197,10 @@ def admit_raw_observation(
     payload: bytes,
     acquired_at_ms: int,
     native_id: str | None = None,
-    logical_source_key: str,
+    logical_source_key: str | None = None,
     prior_head: PriorRawHead | None = None,
+    raw_id: str | None = None,
+    post_parse: bool = False,
     artifact: ArtifactClassification | None = None,
     blob_publication_receipt_id: str | None = None,
     additional_blob_refs: tuple[ArchiveSourceBlobRef, ...] = (),
@@ -173,10 +209,10 @@ def admit_raw_observation(
 ) -> RawAdmissionResult:
     """Decide and apply exactly one typed resolution arm for one raw observation.
 
-    ``logical_source_key`` is required even for the ``BASELINE``/``ARTIFACT``
-    outcomes that do not compare against a prior head -- every write this
-    function makes carries a real revision envelope, never the nullable
-    ``revision=None`` fallback the lower-level writers otherwise default to.
+    ``logical_source_key`` is required for the ``BASELINE``/``ARTIFACT``
+    outcomes that do not compare against a prior head. ``post_parse=True`` is
+    the separate pre-parse preservation contract and derives a typed pending
+    key instead of accepting a nullable revision.
 
     ``additional_blob_refs`` forwards through to the underlying
     ``write_source_raw_session`` call for the session-content arms (BASELINE/
@@ -185,8 +221,61 @@ def admit_raw_observation(
     ``ARTIFACT`` arm: a non-conversational artifact payload has no parsed
     attachments of its own.
     """
-    if not logical_source_key:
+    if post_parse and (logical_source_key is not None or prior_head is not None or artifact is not None):
+        raise ValueError("post-parse admission cannot combine a logical key, prior head, or artifact")
+    if not post_parse and not logical_source_key:
         raise ValueError("logical_source_key is required for raw admission")
+
+    if post_parse:
+        blob_hash = deterministic_blob_hash(payload)
+        resolved_raw_id = raw_id or deterministic_raw_session_id(
+            origin,
+            source_path,
+            source_index,
+            blob_hash,
+            native_id,
+        )
+        pending_key = pending_raw_logical_source_key(
+            origin=origin,
+            source_path=source_path,
+            source_index=source_index,
+            raw_id=resolved_raw_id,
+        )
+        if _assert_existing_raw_observation_identity(
+            conn,
+            raw_id=resolved_raw_id,
+            origin=origin,
+            native_id=native_id,
+            source_path=source_path,
+            source_index=source_index,
+            blob_hash=blob_hash,
+            blob_size=len(payload),
+        ):
+            return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=resolved_raw_id)
+        admitted_raw_id = write_source_raw_session(
+            conn,
+            origin=origin,
+            capture_mode=capture_mode,
+            source_path=source_path,
+            source_index=source_index,
+            payload=payload,
+            acquired_at_ms=acquired_at_ms,
+            native_id=native_id,
+            raw_id=resolved_raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+            additional_blob_refs=additional_blob_refs,
+            revision=RawRevisionEnvelope(
+                logical_source_key=pending_key,
+                kind=RawRevisionKind.FULL,
+                source_revision=blob_hash.hex(),
+                acquisition_generation=0,
+                authority=RawRevisionAuthority.QUARANTINED,
+            ),
+            manage_transaction=manage_transaction,
+        )
+        return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=admitted_raw_id)
+
+    assert logical_source_key is not None
 
     if artifact is not None and not artifact.parse_as_session:
         return _admit_artifact(
@@ -198,6 +287,7 @@ def admit_raw_observation(
             payload=payload,
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
+            raw_id=raw_id,
             artifact=artifact,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=manage_transaction,
@@ -263,6 +353,7 @@ def admit_raw_observation(
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
+            raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=additional_blob_refs,
             revision=RawRevisionEnvelope(
@@ -296,6 +387,7 @@ def admit_raw_observation(
             payload=resolved_payload,
             acquired_at_ms=acquired_at_ms,
             native_id=native_id,
+            raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=additional_blob_refs,
             revision=RawRevisionEnvelope(
@@ -336,6 +428,7 @@ def admit_raw_observation(
         payload=resolved_payload,
         acquired_at_ms=acquired_at_ms,
         native_id=native_id,
+        raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         additional_blob_refs=additional_blob_refs,
         revision=RawRevisionEnvelope(
@@ -356,6 +449,125 @@ def admit_raw_observation(
     )
 
 
+def admit_raw_blob_observation(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    capture_mode: Provider | str | None = None,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+    acquired_at_ms: int,
+    native_id: str | None = None,
+    raw_id: str | None = None,
+    blob_publication_receipt_id: str | None = None,
+) -> RawAdmissionResult:
+    """Admit a prepublished, memory-bounded raw blob pending post-parse identity."""
+    if len(blob_hash) != 32:
+        raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    resolved_raw_id = raw_id or deterministic_raw_session_id(
+        origin,
+        source_path,
+        source_index,
+        blob_hash,
+        native_id,
+    )
+    if _assert_existing_raw_observation_identity(
+        conn,
+        raw_id=resolved_raw_id,
+        origin=origin,
+        native_id=native_id,
+        source_path=source_path,
+        source_index=source_index,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+    ):
+        return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=resolved_raw_id)
+    pending_key = pending_raw_logical_source_key(
+        origin=origin,
+        source_path=source_path,
+        source_index=source_index,
+        raw_id=resolved_raw_id,
+    )
+    admitted_raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=origin,
+        capture_mode=capture_mode,
+        source_path=source_path,
+        source_index=source_index,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+        acquired_at_ms=acquired_at_ms,
+        native_id=native_id,
+        raw_id=resolved_raw_id,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=pending_key,
+            kind=RawRevisionKind.FULL,
+            source_revision=blob_hash.hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.QUARANTINED,
+        ),
+        manage_transaction=True,
+    )
+    return RawAdmissionResult(arm=RawAdmissionArm.POST_PARSE_PENDING, raw_id=admitted_raw_id)
+
+
+def admit_raw_artifact_blob_observation(
+    conn: sqlite3.Connection,
+    *,
+    origin: Origin | str,
+    capture_mode: Provider | str | None = None,
+    source_path: str,
+    source_index: int,
+    blob_hash: bytes,
+    blob_size: int,
+    acquired_at_ms: int,
+    raw_id: str | None = None,
+    classification: ArtifactClassification,
+    blob_publication_receipt_id: str | None = None,
+) -> RawAdmissionResult:
+    """Admit a prepublished non-session artifact with typed authority."""
+    if classification.parse_as_session:
+        raise ValueError("artifact admission requires a non-session classification")
+    if len(blob_hash) != 32:
+        raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    artifact_id = artifact_observation_id(
+        source_name=_enum_value(origin),
+        source_path=source_path,
+        source_index=source_index,
+    )
+    admitted_raw_id = write_source_raw_session_blob_ref(
+        conn,
+        origin=origin,
+        capture_mode=capture_mode,
+        source_path=source_path,
+        source_index=source_index,
+        blob_hash=blob_hash,
+        blob_size=blob_size,
+        acquired_at_ms=acquired_at_ms,
+        raw_id=raw_id,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        artifact=ArchiveSourceArtifact(
+            artifact_id=artifact_id,
+            origin=origin,
+            source_path=source_path,
+            artifact_kind=classification.cohort,
+            classification_reason=classification.reason,
+            support_status=ArtifactSupportStatus.UNKNOWN,
+            parse_as_session=False,
+            schema_eligible=classification.schema_eligible,
+            first_observed_at_ms=acquired_at_ms,
+            last_observed_at_ms=acquired_at_ms,
+            source_index=source_index,
+        ),
+        revision=None,
+        manage_transaction=True,
+    )
+    return RawAdmissionResult(arm=RawAdmissionArm.ARTIFACT, raw_id=admitted_raw_id, artifact_id=artifact_id)
+
+
 def _admit_artifact(
     conn: sqlite3.Connection,
     *,
@@ -366,6 +578,7 @@ def _admit_artifact(
     payload: bytes,
     acquired_at_ms: int,
     native_id: str | None,
+    raw_id: str | None,
     artifact: ArtifactClassification,
     blob_publication_receipt_id: str | None,
     manage_transaction: bool,
@@ -385,6 +598,7 @@ def _admit_artifact(
         payload=payload,
         acquired_at_ms=acquired_at_ms,
         native_id=native_id,
+        raw_id=raw_id,
         blob_publication_receipt_id=blob_publication_receipt_id,
         # Artifacts are acquisition-evidence, not part of any revision
         # chain: no logical_source_key/predecessor tracking applies to a
@@ -412,5 +626,7 @@ __all__ = [
     "PriorRawHead",
     "RawAdmissionArm",
     "RawAdmissionResult",
+    "admit_raw_artifact_blob_observation",
+    "admit_raw_blob_observation",
     "admit_raw_observation",
 ]

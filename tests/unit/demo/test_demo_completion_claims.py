@@ -61,6 +61,35 @@ async def test_completion_claim_experiment_has_a_stable_manifest_and_structural_
 
 
 @pytest.mark.asyncio
+async def test_demo_receipts_resolves_shared_raw_source_material(tmp_path: Path) -> None:
+    """The receipt route follows grouped raw identity through membership rows."""
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+
+    result = inspect_demo_receipts(archive_root)
+
+    # Anti-vacuity: seed_demo_archive runs the production grouped Codex ingest,
+    # while inspect_demo_receipts runs the real evidence lookup. The old
+    # raw_sessions.native_id query returns no row because grouped raw admission
+    # stores native_id=NULL and records demo-receipts in memberships instead.
+    assert result.ok is True
+    assert result.raw_id is not None
+    assert result.raw_blob_sha256 is not None
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT r.raw_id, lower(hex(r.blob_hash))
+            FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.origin = 'codex-session'
+              AND m.logical_source_key = 'codex:demo-receipts'
+              AND m.provider_session_id = 'demo-receipts'
+            """
+        ).fetchall()
+    assert rows == [(result.raw_id, result.raw_blob_sha256)]
+
+
+@pytest.mark.asyncio
 async def test_completion_claim_experiment_goes_red_when_structural_failure_or_repair_is_withheld(
     tmp_path: Path,
 ) -> None:
