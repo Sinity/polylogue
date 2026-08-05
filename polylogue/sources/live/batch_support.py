@@ -577,12 +577,12 @@ def _jsonl_provider_and_session_artifact(
 ) -> tuple[Provider, bool]:
     records = _jsonl_sample_from_path(path)
     provider = (detect_provider(records) if records else None) or fallback_provider
+    if records and classify_artifact(records, provider=provider).parse_as_session:
+        return provider, True
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
         return provider, path_classification.parse_as_session
-    if not records:
-        return provider, False
-    return provider, classify_artifact(records, provider=provider, source_path=path).parse_as_session
+    return provider, False
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
@@ -638,9 +638,6 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
         return hermes_state.looks_like_state_db_path(
             path
         ) or hermes_verification.looks_like_verification_evidence_db_path(path)
-    path_classification = classify_artifact_path(path, provider=provider)
-    if path_classification is not None:
-        return path_classification.parse_as_session
     if path.suffix.lower() == ".jsonl":
         records: list[JSONValue] = []
         for line in BytesIO(payload):
@@ -653,9 +650,13 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
                 records.append(json_loads(raw))
             except JSONDecodeError:
                 continue
-        if not records:
-            return False
-        return classify_artifact(records, provider=provider, source_path=path).parse_as_session
+        if records and classify_artifact(records, provider=provider).parse_as_session:
+            return True
+        path_classification = classify_artifact_path(path, provider=provider)
+        return path_classification.parse_as_session if path_classification is not None else False
+    path_classification = classify_artifact_path(path, provider=provider)
+    if path_classification is not None:
+        return path_classification.parse_as_session
     try:
         document = json_loads(payload)
     except JSONDecodeError:

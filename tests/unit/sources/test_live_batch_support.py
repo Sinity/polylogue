@@ -1306,7 +1306,7 @@ def test_unclassified_large_non_jsonl_is_not_streamed_as_session_artifact(
 
 
 def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_path: Path) -> None:
-    """Full live acquisition keeps fact sidecars and admits a real session."""
+    """Full live acquisition keeps non-session evidence and repairs session-shaped journals."""
     root = tmp_path / ".claude"
     metadata_path = root / "projects" / "project" / "subagents" / "agent-a.meta.json"
     journal_path = root / "projects" / "project" / "subagents" / "workflows" / "wf-run-1" / "journal.jsonl"
@@ -1350,9 +1350,9 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
 
     assert result.succeeded_file_count == 3
     assert result.failed_file_count == 0
-    assert result.ingested_session_count == 1
+    assert result.ingested_session_count == 2
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         rows = conn.execute(
             """
@@ -1366,11 +1366,9 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
 
     assert [(Path(row[0]).name, row[1], row[2], row[3]) for row in rows] == [
         ("agent-a.meta.json", "agent_sidecar_meta", "unknown", 0),
-        ("journal.jsonl", "workflow_journal", "unknown", 0),
     ]
     expected_payloads = {
         metadata_path.name: metadata_payload,
-        journal_path.name: journal_payload,
     }
     for source_path, _kind, _support_status, _parse_as_session, blob_hash in rows:
         blob_hash_hex = bytes(blob_hash).hex()
@@ -3957,6 +3955,63 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
     assert raw is not None
     assert raw[1:] == (None, "unknown", "quarantined")
     assert artifact == ("workflow_journal", 0, raw[0])
+
+
+def test_full_batch_session_shaped_workflow_journal_reaches_parser_idempotently(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
+        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
+        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
+        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
+    )
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    first = asyncio.run(processor.ingest_files([source], emit_event=False))
+    second = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert first.ingested_session_count == 1
+    assert first.failed_file_count == 0
+    assert second.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+
+
+def test_full_batch_malformed_workflow_journal_remains_typed_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    source = root / "subagents" / "workflows" / "wf-batch" / "journal.jsonl"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'{"contentKey":"broken"\n')
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=CursorStore(tmp_path / "index.db"),
+        parser_fingerprint="test-parser",
+    )
+
+    metrics = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
+            "workflow_journal",
+            0,
+        )
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
 def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retries(

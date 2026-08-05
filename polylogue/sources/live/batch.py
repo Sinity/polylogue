@@ -2150,7 +2150,14 @@ class LiveBatchProcessor:
                         provider,
                         record.source_path,
                     )
-                    if artifact_classification is not None:
+                    if artifact_classification is not None and (
+                        payload is None
+                        or not _parse_payload_as_session_artifact(
+                            Path(record.source_path),
+                            provider=provider,
+                            payload=payload,
+                        )
+                    ):
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(
@@ -2443,7 +2450,12 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
-                                parsed_by_raw_id = self._parse_raw_revision_chain(archive, plan)
+                                parsed_by_raw_id = self._parse_raw_revision_chain(
+                                    archive,
+                                    plan,
+                                    current_raw_id=source_raw_id,
+                                    current_session=session,
+                                )
                                 session_id, applied_raw_ids = archive.apply_raw_revision_replay(
                                     plan,
                                     parsed_by_raw_id,
@@ -2625,10 +2637,21 @@ class LiveBatchProcessor:
                     )
         return result
 
-    def _parse_raw_revision_chain(self, archive: Any, plan: Any) -> dict[str, Any]:
+    def _parse_raw_revision_chain(
+        self,
+        archive: Any,
+        plan: Any,
+        *,
+        current_raw_id: str | None = None,
+        current_session: ParsedSession | None = None,
+    ) -> dict[str, Any]:
         parsed_by_raw_id: dict[str, Any] = {}
         for raw_id in plan.accepted_raw_ids:
-            sessions = self._parse_retained_raw_sessions(archive, raw_id)
+            sessions = (
+                [current_session]
+                if raw_id == current_raw_id and current_session is not None
+                else self._parse_retained_raw_sessions(archive, raw_id)
+            )
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
