@@ -25,6 +25,42 @@ def test_main_rejects_unknown_command() -> None:
     assert guard.main(["frobnicate", "post-checkout"]) == 1
 
 
+def test_validated_real_bd_path_accepts_absolute_binary(tmp_path: Path) -> None:
+    binary = tmp_path / "bd"
+    binary.write_bytes(b"\x7fELF\x02\x01")
+    binary.chmod(0o755)
+
+    assert guard._validated_real_bd_path(str(binary)) == binary
+
+
+def test_validated_real_bd_path_rejects_wrapper_symlink() -> None:
+    wrapper = Path(__file__).resolve().parents[3] / "scripts" / "bd"
+
+    with pytest.raises(ValueError, match="recursive wrapper"):
+        guard._validated_real_bd_path(str(wrapper))
+
+
+def test_validated_real_bd_path_rejects_script_recursion(tmp_path: Path) -> None:
+    recursive = tmp_path / "bd-recursive"
+    wrapper = Path(__file__).resolve().parents[3] / "scripts" / "bd"
+    recursive.write_text(f'#!/bin/sh\nexec {wrapper!s} "$@"\n')
+    recursive.chmod(0o755)
+
+    with pytest.raises(ValueError, match="recursive wrapper"):
+        guard._validated_real_bd_path(str(recursive))
+
+
+def test_validated_real_bd_path_accepts_explicit_launcher_target(tmp_path: Path) -> None:
+    binary = tmp_path / "bd-bin"
+    binary.write_bytes(b"\x7fELF\x02\x01")
+    binary.chmod(0o755)
+    launcher = tmp_path / "bd-launcher"
+    launcher.write_text(f'#!/bin/sh\nexec {binary!s} "$@"\n')
+    launcher.chmod(0o755)
+
+    assert guard._validated_real_bd_path(str(launcher)) == launcher
+
+
 # --- merge_rows: the monotonic per-row merge engine --------------------------
 
 

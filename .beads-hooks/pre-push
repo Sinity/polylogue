@@ -20,8 +20,19 @@ fi
 
 python -m devtools.pre_push_gate "$UPDATES_FILE"
 
-_bd_command="$(CDPATH= cd -- "$(dirname -- "$0")/../scripts" && pwd -P)/bd"
-if [ ! -x "$_bd_command" ]; then _bd_command="$(command -v bd 2>/dev/null || true)"; fi
+_bd_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+if [ -n "$_bd_common_dir" ]; then
+  case "$_bd_common_dir" in
+    /*) ;;
+    *) _bd_common_dir="$(pwd -P)/$_bd_common_dir" ;;
+  esac
+fi
+if [ -n "$_bd_common_dir" ] && [ -d "$_bd_common_dir" ]; then
+  _bd_common_dir="$(CDPATH= cd -- "$_bd_common_dir" && pwd -P)"
+  _bd_command="$(CDPATH= cd -- "$_bd_common_dir/.." && pwd -P)/scripts/bd"
+else
+  _bd_command=
+fi
 
 # --- BEGIN BEADS INTEGRATION v1.0.4 ---
 # This section is managed by beads. Do not remove these markers.

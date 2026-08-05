@@ -51,6 +51,9 @@ import fcntl
 import hashlib
 import json
 import os
+import re
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -221,6 +224,66 @@ def build_receipt(
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+_EXEC_TARGET = re.compile(r"(?m)^\s*exec(?:\s+-a\s+(?:'[^']*'|\"[^\"]*\"|\S+))?\s+(?:'([^']+)'|\"([^\"]+)\"|(\S+))")
+
+
+def _resolve_launcher_target(target: str, launcher: Path) -> Path:
+    if target.startswith("$"):
+        raise ValueError("refusing dynamic launcher route")
+    if target.startswith("/"):
+        return Path(target)
+    if "/" in target:
+        return launcher.parent / target
+    resolved = shutil.which(target)
+    if resolved is None:
+        raise ValueError(f"launcher target is unavailable: {target}")
+    return Path(resolved)
+
+
+def _validate_executable_route(path: Path, wrapper: Path, seen: set[Path]) -> None:
+    resolved = Path(os.path.realpath(path))
+    if resolved in seen:
+        raise ValueError("refusing recursive wrapper route")
+    if resolved == wrapper:
+        raise ValueError("refusing recursive wrapper route")
+    seen.add(resolved)
+    try:
+        header = resolved.read_bytes()[:2]
+    except OSError as exc:
+        raise ValueError(f"real Beads binary is unreadable: {resolved}") from exc
+    if header != b"#!":
+        return
+    try:
+        launcher = resolved.read_text(errors="replace")
+    except OSError as exc:
+        raise ValueError(f"real Beads launcher is unreadable: {resolved}") from exc
+    if "POLYLOGUE_BD_REAL" in launcher:
+        raise ValueError("refusing dynamic launcher route")
+    targets = [next(value for value in groups if value) for groups in _EXEC_TARGET.findall(launcher)]
+    if len(targets) != 1:
+        raise ValueError("refusing launcher without one explicit executable target")
+    _validate_executable_route(_resolve_launcher_target(targets[0], resolved), wrapper, seen)
+
+
+def _validated_real_bd_path(path: str) -> Path:
+    """Validate the delegated Beads executable before taking the shared lock."""
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        raise ValueError("real Beads binary path must be absolute")
+    resolved = Path(os.path.realpath(candidate))
+    wrapper = Path(os.path.realpath(_repo_root() / "scripts" / "bd"))
+    if resolved == wrapper:
+        raise ValueError("refusing recursive wrapper route")
+    try:
+        mode = resolved.stat().st_mode
+    except OSError as exc:
+        raise ValueError(f"real Beads binary is unavailable: {resolved}") from exc
+    if not stat.S_ISREG(mode) or not os.access(resolved, os.X_OK):
+        raise ValueError(f"real Beads binary is not an executable file: {resolved}")
+    _validate_executable_route(resolved, wrapper, set())
+    return resolved
 
 
 def _invocation_directory(args: list[str]) -> Path:
@@ -496,6 +559,11 @@ def cmd_invoke(args: list[str]) -> int:
         return 1
 
     bd_command, *bd_args = args
+    try:
+        bd_command = str(_validated_real_bd_path(bd_command))
+    except ValueError as exc:
+        print(f"bd guard: {exc}", file=sys.stderr)
+        return 126
     invocation_dir = _invocation_directory(bd_args)
     candidate_path = _find_candidate_jsonl(invocation_dir)
     lock = _acquire_invocation_lock(invocation_dir)

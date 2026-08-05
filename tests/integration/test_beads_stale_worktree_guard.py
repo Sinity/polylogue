@@ -1,8 +1,10 @@
 """Regression coverage for the linked-worktree Beads import guard.
 
-This exercises the production post-checkout hook and the installed ``bd``
-binary against a temporary git repository and temporary embedded Dolt store.
-It never opens the repository's shared Beads database.
+The fixture has a deployed coordinator checkout and a linked lane created
+before deployment. The lane therefore retains the historical relative
+``.beads-hooks`` and ``.envrc`` paths while Git routes hooks through the
+coordinator's shared common-directory installation. It never opens this
+checkout's Beads database.
 """
 
 from __future__ import annotations
@@ -17,18 +19,14 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+BASE_COMMIT = "a516b3caa791ef84a1a4133d217e39c20123651a"
 
 
 def _installed_bd() -> str | None:
-    """Resolve the Nix-installed binary even when this checkout's shim is on PATH."""
-    configured = os.environ.get("POLYLOGUE_BD_REAL")
-    if configured and Path(configured).resolve() != (ROOT / "scripts/bd").resolve():
-        return configured
-    scripts_dir = str((ROOT / "scripts").resolve())
+    """Resolve the installed binary without using this checkout's wrapper."""
+    scripts_dir = (ROOT / "scripts").resolve()
     search_path = os.pathsep.join(
-        entry
-        for entry in os.environ.get("PATH", "").split(os.pathsep)
-        if Path(entry or ".").resolve() != Path(scripts_dir)
+        entry for entry in os.environ.get("PATH", "").split(os.pathsep) if Path(entry or ".").resolve() != scripts_dir
     )
     return shutil.which("bd", path=search_path)
 
@@ -58,6 +56,7 @@ def _bd_environment(tmp_path: Path) -> dict[str, str]:
         "BEADS_DIR",
         "BEADS_DOLT_SERVER_DATABASE",
         "BEADS_DOLT_SERVER_PORT",
+        "POLYLOGUE_BD_REAL",
     ):
         env.pop(key, None)
     env.update(
@@ -103,15 +102,6 @@ def _write_import_policy(repo: Path, import_auto: bool) -> None:
     config_path.write_text(updated)
 
 
-def _set_export_timestamp(repo: Path, issue_id: str, updated_at: str) -> None:
-    export_path = repo / ".beads" / "issues.jsonl"
-    rows = [json.loads(line) for line in export_path.read_text().splitlines()]
-    matching_rows = [row for row in rows if row.get("id") == issue_id]
-    assert len(matching_rows) == 1
-    matching_rows[0]["updated_at"] = updated_at
-    export_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
-
-
 def _set_export_row(repo: Path, issue_id: str, **updates: object) -> None:
     export_path = repo / ".beads" / "issues.jsonl"
     rows = [json.loads(line) for line in export_path.read_text().splitlines()]
@@ -121,31 +111,45 @@ def _set_export_row(repo: Path, issue_id: str, **updates: object) -> None:
     export_path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows))
 
 
+def _historical_file(relative_path: str) -> str:
+    result = subprocess.run(
+        ["git", "show", f"{BASE_COMMIT}^:{relative_path}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _deploy_current_common_checkout(repo: Path) -> None:
+    hooks = repo / ".beads-hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    for hook in ("post-checkout", "post-merge", "pre-commit", "pre-push", "prepare-commit-msg"):
+        target = hooks / hook
+        shutil.copy2(ROOT / ".beads-hooks" / hook, target)
+        target.chmod(0o755)
+
+    envrc = repo / ".envrc"
+    shutil.copy2(ROOT / ".envrc", envrc)
+    wrapper = repo / "scripts" / "bd"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "scripts" / "bd", wrapper)
+    wrapper.chmod(0o755)
+    guard = repo / "devtools" / "bd_reimport_guard.py"
+    guard.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "devtools" / "bd_reimport_guard.py", guard)
+
+
 def _setup_stale_worktree(
     tmp_path: Path,
     import_auto: bool,
-    stale_snapshot_updated_at: str | None = None,
-) -> tuple[str, dict[str, str], Path, Path, Path]:
+) -> tuple[str, dict[str, str], Path, Path]:
     bd = _installed_bd()
     if bd is None:
         pytest.skip("bd is not installed")
 
     env = _bd_environment(tmp_path)
-    wrapper_dir = tmp_path / "bin"
-    wrapper_dir.mkdir()
-    invocation_log = tmp_path / "bd-invocations.log"
-    real_wrapper = wrapper_dir / "bd-real"
-    real_wrapper.write_text(
-        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$BD_GUARD_COMMAND_LOG"\nexec "$BD_GUARD_REAL_BD" "$@"\n'
-    )
-    real_wrapper.chmod(0o755)
-    env["BD_GUARD_COMMAND_LOG"] = str(invocation_log)
-    env["BD_GUARD_REAL_BD"] = bd
-    env["POLYLOGUE_BD_REAL"] = str(real_wrapper)
-    # The lane deliberately does not contain a copy of the new files. The
-    # machine-level devshell path supplies the current checkout's stable
-    # wrapper, just as an operator shell does after entering this repo.
-    env["PATH"] = os.pathsep.join((str(ROOT / "scripts"), str(wrapper_dir), env["PATH"]))
     repo = tmp_path / "coordinator"
     lane = tmp_path / "stale-lane"
     repo.mkdir()
@@ -156,55 +160,58 @@ def _setup_stale_worktree(
     _run([bd, "init", "--prefix", "guard", "--quiet", "--non-interactive", "--skip-hooks", "--skip-agents"], repo, env)
     _write_import_policy(repo, import_auto)
 
-    # Keep setup commits hook-free, then point the linked lane at the actual
-    # production hook path for the checkout that exercises the guard.
+    # This is the branch-point checkout: it has only the historical relative
+    # hook and envrc paths, with no current wrapper or guard files.
+    historical_hooks = repo / ".beads-hooks"
+    historical_hooks.mkdir()
+    historical_hook = historical_hooks / "post-checkout"
+    historical_hook.write_text(_historical_file(".beads-hooks/post-checkout"))
+    historical_hook.chmod(0o755)
+    (repo / ".envrc").write_text(_historical_file(".envrc"))
+
     setup_hooks = repo / ".setup-hooks"
     setup_hooks.mkdir()
     _run(["git", "config", "core.hooksPath", str(setup_hooks)], repo, env)
-
     _run([bd, "create", "coordinator-owned issue", "--type", "bug"], repo, env)
     _run([bd, "export", "-o", ".beads/issues.jsonl"], repo, env)
     issue_rows = _json_from_output(_run([bd, "list", "--json"], repo, env).stdout)
     assert isinstance(issue_rows, list) and len(issue_rows) == 1
     issue_id = issue_rows[0]["id"]
-    if stale_snapshot_updated_at is not None:
-        _set_export_timestamp(repo, issue_id, stale_snapshot_updated_at)
 
-    _run(["git", "add", ".beads"], repo, env)
-    _run(["git", "commit", "-m", "baseline Beads snapshot"], repo, env)
-    _run(["git", "config", "core.hooksPath", str(ROOT / ".beads-hooks")], repo, env)
+    _run(["git", "add", ".beads", ".beads-hooks", ".envrc"], repo, env)
+    _run(["git", "commit", "-m", "historical Beads snapshot"], repo, env)
     _run(["git", "branch", "stale-lane"], repo, env)
     _run(["git", "worktree", "add", str(lane), "stale-lane"], repo, env)
+
+    # Deployment happens only in the common coordinator checkout. The shared
+    # absolute hook path is what protects the stale lane's historical files.
+    _deploy_current_common_checkout(repo)
+    _run(["git", "add", ".beads-hooks", ".envrc", "scripts/bd", "devtools/bd_reimport_guard.py"], repo, env)
+    _run(["git", "commit", "-m", "deploy Beads guard"], repo, env)
+    _run(["git", "config", "core.hooksPath", str(repo / ".beads-hooks")], repo, env)
+
+    env["PATH"] = os.pathsep.join((str(repo / "scripts"), env["PATH"]))
     _run([bd, "close", issue_id, "--reason", "coordinator close"], repo, env)
-    invocation_log.write_text("")
-    return issue_id, env, repo, lane, invocation_log
+    assert not (lane / "scripts" / "bd").exists()
+    assert (lane / ".envrc").read_text() == _historical_file(".envrc")
+    assert (lane / ".beads-hooks" / "post-checkout").read_text() == _historical_file(".beads-hooks/post-checkout")
+    return issue_id, env, repo, lane
 
 
-def test_stale_worktree_plain_read_preserves_coordinator_write_when_env_reenables_import(tmp_path: Path) -> None:
-    """A stale branch cannot overwrite a coordinator close before its read.
-
-    Production dependency exercised: Git invokes the committed
-    ``.beads-hooks/post-checkout`` shim, which invokes Beads' real hook import
-    gate. The fixture clears ambient ``BD_IMPORT_AUTO`` before setup, then sets
-    it to ``true`` only for the stale lane. The production shim must clear that
-    unsafe Viper override before it can re-enable imports.
-    """
-    issue_id, env, _repo, lane, invocation_log = _setup_stale_worktree(tmp_path, import_auto=True)
+def test_stale_worktree_plain_read_preserves_coordinator_write(tmp_path: Path) -> None:
+    """A stale branch's historical hook path cannot overwrite a close."""
+    issue_id, env, _repo, lane = _setup_stale_worktree(tmp_path, import_auto=True)
     env["BD_IMPORT_AUTO"] = "true"
-    _run(["git", "switch", "--detach", "HEAD"], lane, env)
 
+    _run(["git", "switch", "--detach", "HEAD"], lane, env)
     shown = _json_from_output(_run(["bd", "show", issue_id, "--json"], lane, env).stdout)
     assert isinstance(shown, list) and len(shown) == 1
     assert shown[0]["status"] == "closed"
 
-    delegated_commands = invocation_log.read_text().splitlines()
-    imported = any(command.startswith("import ") for command in delegated_commands)
-    assert not imported, "the stale row must be filtered before the real bd entry point sees it"
-
 
 def test_bd_wrapper_preserves_legitimate_newer_snapshot_import(tmp_path: Path) -> None:
-    """The guard rejects stale rows without disabling genuinely newer rows."""
-    issue_id, env, _repo, lane, _invocation_log = _setup_stale_worktree(tmp_path, import_auto=True)
+    """The guard rejects stale rows without disabling newer rows."""
+    issue_id, env, _repo, lane = _setup_stale_worktree(tmp_path, import_auto=True)
     _set_export_row(
         lane,
         issue_id,
@@ -220,24 +227,72 @@ def test_bd_wrapper_preserves_legitimate_newer_snapshot_import(tmp_path: Path) -
 
 
 def test_unsafe_import_auto_control_reverts_clock_skewed_stale_snapshot(tmp_path: Path) -> None:
-    """The config mutation reaches the importer and reopens the stale issue.
+    """The installed Beads importer remains a causal unsafe control."""
+    issue_id, env, _repo, lane = _setup_stale_worktree(tmp_path, import_auto=True)
+    _set_export_row(lane, issue_id, status="open", updated_at="2099-01-01T00:00:00Z")
+    env["BD_IMPORT_AUTO"] = "true"
 
-    This is the causal negative control for the protected test. It removes the
-    production ``import.auto: false`` mutation while retaining the same actual
-    git checkout and installed Beads engine. A clock-skewed branch snapshot
-    has a later ``updated_at`` despite containing the old open status, so the
-    importer accepts it over the coordinator's close.
-    """
-    issue_id, env, _repo, lane, invocation_log = _setup_stale_worktree(
-        tmp_path,
-        import_auto=True,
-        stale_snapshot_updated_at="2099-01-01T00:00:00Z",
-    )
+    bd = _installed_bd()
+    assert bd is not None
+    unsafe_hooks = tmp_path / "unsafe-hooks"
+    unsafe_hooks.mkdir()
+    unsafe_hook = unsafe_hooks / "post-checkout"
+    unsafe_hook.write_text(f"#!/bin/sh\nexec {bd} import .beads/issues.jsonl\n")
+    unsafe_hook.chmod(0o755)
+    _run(["git", "config", "core.hooksPath", str(unsafe_hooks)], lane, env)
     _run(["git", "switch", "--detach", "HEAD"], lane, env)
-
-    shown = _json_from_output(_run([env["BD_GUARD_REAL_BD"], "show", issue_id, "--json"], lane, env).stdout)
+    shown = _json_from_output(_run([bd, "show", issue_id, "--json"], lane, env).stdout)
     assert isinstance(shown, list) and len(shown) == 1
     assert shown[0]["status"] == "open"
 
-    delegated_commands = invocation_log.read_text().splitlines()
-    assert any(command.startswith("import ") for command in delegated_commands)
+
+@pytest.mark.parametrize("route", ["bare-wrapper", "symlink-wrapper", "script-recursion", "script-symlink-recursion"])
+def test_bd_wrapper_rejects_recursive_real_binary_routes(tmp_path: Path, route: str) -> None:
+    """Wrapper aliases and script recursion fail before the guard lock."""
+    deployed = tmp_path / "deployed"
+    scripts = deployed / "scripts"
+    scripts.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts" / "bd", scripts / "bd")
+    (scripts / "bd").chmod(0o755)
+    guard = deployed / "devtools" / "bd_reimport_guard.py"
+    guard.parent.mkdir()
+    shutil.copy2(ROOT / "devtools" / "bd_reimport_guard.py", guard)
+    wrapper = scripts / "bd"
+    probe = tmp_path / "probe"
+    probe.mkdir()
+
+    env = os.environ.copy()
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    env["XDG_RUNTIME_DIR"] = str(runtime)
+    tool_dirs: list[str] = []
+    for tool in ("sh", "dirname", "readlink", "python3"):
+        executable = shutil.which(tool)
+        assert executable is not None
+        directory = str(Path(executable).parent)
+        if directory not in tool_dirs:
+            tool_dirs.append(directory)
+    env["PATH"] = os.pathsep.join((str(scripts), *tool_dirs))
+    if route == "bare-wrapper":
+        env["POLYLOGUE_BD_REAL"] = "bd"
+    elif route == "symlink-wrapper":
+        alias = tmp_path / "bd-alias"
+        alias.symlink_to(wrapper)
+        env["POLYLOGUE_BD_REAL"] = str(alias)
+    elif route == "script-recursion":
+        recursive = tmp_path / "recursive-bd"
+        recursive.write_text(f'#!/bin/sh\nexec {wrapper!s} "$@"\n')
+        recursive.chmod(0o755)
+        env["POLYLOGUE_BD_REAL"] = str(recursive)
+    else:
+        alias = tmp_path / "bd-alias"
+        alias.symlink_to(wrapper)
+        recursive = tmp_path / "recursive-bd"
+        recursive.write_text(f'#!/bin/sh\nexec {alias!s} "$@"\n')
+        recursive.chmod(0o755)
+        env["POLYLOGUE_BD_REAL"] = str(recursive)
+
+    result = subprocess.run([str(wrapper), "--help"], cwd=probe, env=env, capture_output=True, text=True, timeout=10)
+    expected_returncode = 126 if route != "bare-wrapper" else 127
+    assert result.returncode == expected_returncode
+    assert not list(runtime.iterdir())

@@ -104,10 +104,11 @@ bead's cited facts against master before coding.
   the main checkout and left ~1700 uncommitted lines in the live tree. The
   same check warns when the worktree's frozen `.beads/issues.jsonl` has gone
   stale relative to the main checkout. All ordinary `bd` invocations must
-  resolve to `scripts/bd` through the devshell or the hook-local path. That
-  wrapper compares rows with live Dolt state, imports only new/strictly newer
-  rows, and disables Beads' blind automatic import for the delegated command.
-  Do not bypass it with the absolute Nix-store binary. Lanes still make no bd
+  resolve to the deployed common-checkout `scripts/bd` through the devshell or
+  Git's shared absolute `core.hooksPath`. That wrapper compares rows with live
+  Dolt state, imports only new/strictly newer rows, and disables Beads' blind
+  automatic import for the delegated command. Do not bypass it with the
+  absolute Nix-store binary. Lanes still make no bd
   writes; coordinators audit and re-apply explicit Beads writes at merge-train
   boundaries before exporting state (polylogue-2ara).
 - **Serial heavy, parallel light.** Serialize anything sharing the pytest
