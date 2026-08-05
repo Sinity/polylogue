@@ -52,6 +52,7 @@ from polylogue.maintenance.corpus_fidelity import (
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_gc import BLOB_REF_LIVENESS_JOIN
 from polylogue.storage.introspection import table_exists
+from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -193,9 +194,17 @@ def archive_verification_check_json(check: OutcomeCheck) -> JSONDocument:
     return payload
 
 
-def _error_check(name: str, summary: str, *, exc: Exception | None = None) -> ArchiveVerificationCheck:
-    evidence: dict[str, Any] = {"error": str(exc)} if exc is not None else {}
-    return ArchiveVerificationCheck(name=name, status=OutcomeStatus.ERROR, summary=summary, count=1, evidence=evidence)
+def _error_check(
+    name: str,
+    summary: str,
+    *,
+    exc: Exception | None = None,
+    evidence: dict[str, Any] | None = None,
+) -> ArchiveVerificationCheck:
+    payload = dict(evidence or {})
+    if exc is not None:
+        payload["error"] = str(exc)
+    return ArchiveVerificationCheck(name=name, status=OutcomeStatus.ERROR, summary=summary, count=1, evidence=payload)
 
 
 def _skip_check(name: str, summary: str) -> ArchiveVerificationCheck:
@@ -996,6 +1005,53 @@ def _check_blob_refs_liveness(archive_root: Path, sample_limit: int) -> ArchiveV
         count=total_orphans,
         details=[f"{ref_type}:{ref_id}" for ref_type, ids in samples_by_type.items() for ref_id in ids],
         evidence={"orphans_by_ref_type": orphans_by_type, "orphan_samples_by_ref_type": samples_by_type},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Check: raw failure lifecycle
+# ---------------------------------------------------------------------------
+
+
+def _check_raw_failure_lifecycle(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    """Require typed evidence for every retained raw parse/validation failure."""
+    snapshot = read_raw_failure_lifecycle(_tier_path(archive_root, ArchiveTier.SOURCE), sample_limit=sample_limit)
+    evidence = snapshot.to_dict()
+    if not snapshot.available:
+        return _error_check(
+            "raw-failure-lifecycle",
+            str(snapshot.reason or "raw failure lifecycle is unavailable"),
+            evidence=evidence,
+        )
+    if snapshot.unexplained:
+        return ArchiveVerificationCheck(
+            name="raw-failure-lifecycle",
+            status=OutcomeStatus.ERROR,
+            summary=(
+                f"{snapshot.unexplained:,} raw failure(s) lack typed deferred/terminal evidence; "
+                "reindex is unsafe until each is classified"
+            ),
+            count=snapshot.unexplained,
+            details=[
+                f"{sample.get('origin', 'unknown')}:{sample.get('artifact_kind') or '<none>'}"
+                for sample in snapshot.samples
+                if sample.get("lifecycle") == "unexplained"
+            ],
+            evidence=evidence,
+        )
+    known = snapshot.deferred + snapshot.terminal
+    status = OutcomeStatus.WARNING if known else OutcomeStatus.OK
+    summary = (
+        f"{known:,} raw failure(s) classified ({snapshot.deferred:,} deferred, {snapshot.terminal:,} terminal)"
+        if known
+        else "no raw parse or validation failures"
+    )
+    return ArchiveVerificationCheck(
+        name="raw-failure-lifecycle",
+        status=status,
+        summary=summary,
+        count=known,
+        evidence=evidence,
     )
 
 
@@ -2258,6 +2314,12 @@ ARCHIVE_VERIFICATION_CHECKS: tuple[ArchiveVerificationCheckSpec, ...] = (
         ArchiveVerificationCheckClass.LIVENESS,
     ),
     ArchiveVerificationCheckSpec(
+        "raw-failure-lifecycle",
+        "Every retained raw parse or validation failure has typed deferred or terminal lifecycle evidence.",
+        _check_raw_failure_lifecycle,
+        ArchiveVerificationCheckClass.STATE_INVARIANT,
+    ),
+    ArchiveVerificationCheckSpec(
         "pathology-zoo-invariants",
         "Every present pathology-zoo member satisfies its production-owned invariant.",
         _check_pathology_zoo_invariants,
@@ -2495,5 +2557,6 @@ __all__ = [
     "ArchiveVerificationReport",
     "ArchiveVerificationWaiver",
     "DEFAULT_SAMPLE_LIMIT",
+    "read_raw_failure_lifecycle",
     "verify_archive",
 ]
