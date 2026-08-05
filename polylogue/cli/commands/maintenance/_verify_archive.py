@@ -65,10 +65,15 @@ def verify_archive_command(
     temporarily busy under a concurrent rebuild -- never aborts the others;
     each independently reports ok/warning/error/skip plus evidence numbers.
 
-    Exit code is non-zero when any check reports an error (or, with
-    ``--strict``, a warning).
+    Exit code is non-zero when any check reports an unwaived error. With
+    ``--strict``, every selected check must be ``ok``: warnings, skips, and
+    waived errors fail the command.
     """
-    from polylogue.maintenance.archive_verification import verify_archive
+    from polylogue.maintenance.archive_verification import (
+        ARCHIVE_VERIFICATION_CHECK_NAMES,
+        passes_strict_acceptance,
+        verify_archive,
+    )
 
     try:
         report = verify_archive(
@@ -87,7 +92,13 @@ def verify_archive_command(
     else:
         _render_plain(report)
 
-    if report.blocking or (strict and report.warning_count > 0):
+    if report.blocking or (
+        strict
+        and not passes_strict_acceptance(
+            report,
+            required_checks=selected_checks or ARCHIVE_VERIFICATION_CHECK_NAMES,
+        )
+    ):
         raise SystemExit(1)
 
 
