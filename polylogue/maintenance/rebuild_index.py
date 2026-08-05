@@ -819,7 +819,7 @@ async def rebuild_index_from_source(request: RebuildIndexRequest) -> RebuildInde
         raise RuntimeError(reason)
     from polylogue.maintenance.archive_verification import verify_archive
 
-    source_liveness = verify_archive(root, checks=("blob-refs-liveness",))
+    source_liveness = verify_archive(root, checks=("blob-refs-liveness", "raw-failure-lifecycle"))
     if source_liveness.blocking:
         failing = "; ".join(
             f"{check.name}: {check.summary}"

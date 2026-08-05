@@ -71,6 +71,27 @@ def test_rebuild_source_preflight_rejects_orphaned_blob_refs_before_generation_c
     assert not (root / ".index-generations").exists()
 
 
+def test_rebuild_source_preflight_rejects_unexplained_raw_failure(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _init_empty_source(root)
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size,
+                acquired_at_ms, parse_error
+            ) VALUES ('raw-failed', 'codex-session', 'failed', '/x', ?, 10, 100, 'unexpected parser failure')
+            """,
+            (b"u" * 32,),
+        )
+        conn.commit()
+
+    with pytest.raises(RuntimeError, match="raw-failure-lifecycle"):
+        rebuild_index_from_source_sync(RebuildIndexRequest(archive_root=root))
+
+    assert not (root / ".index-generations").exists()
+
+
 def test_rebuild_preflight_exposes_unreconciled_source_ref_types(tmp_path: Path) -> None:
     root = tmp_path / "archive"
     _init_empty_source(root)
