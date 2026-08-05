@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -10,6 +11,16 @@ from devtools.preflight_ledger import build_preflight_ledger
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+def _mapping(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    return cast(dict[str, object], value)
+
+
+def _list(value: object) -> list[object]:
+    assert isinstance(value, list)
+    return cast(list[object], value)
 
 
 def _initialize_all_tiers(root: Path) -> None:
@@ -114,33 +125,38 @@ def test_preflight_reports_quarantine_and_missing_census_by_origin(tmp_path: Pat
     )
 
     report = build_preflight_ledger(tmp_path, limit=4, now=datetime(2026, 8, 5, tzinfo=UTC))
-    source = report["checks"]["source"]
-    by_origin = {item["origin"]: item for item in source["by_origin"]}
+    source = _mapping(_mapping(report["checks"])["source"])
+    totals = _mapping(source["totals"])
+    by_origin = {str(item["origin"]): item for item in (_mapping(value) for value in _list(source["by_origin"]))}
+    codex = by_origin["codex-session"]
+    codex_quarantine = _mapping(codex["quarantine"])
+    codex_census = _mapping(codex["census_coverage"])
+    claude = by_origin["claude-code-session"]
+    claude_quarantine = _mapping(claude["quarantine"])
+    claude_census = _mapping(claude["census_coverage"])
+    semantics = _mapping(source["semantics"])
 
     assert report["read_only"] is True
     assert report["mutation_operations"] == []
     assert report["state"] == "blocked"
     assert source["state"] == "unknown"
-    assert source["totals"]["raw_count"] == 14_489
-    assert source["totals"]["quarantined_count"] == 9_032
-    assert source["totals"]["missing_census_count"] == 7_301
-    assert source["totals"]["quarantined_size"]["bytes"] == round((46.8 + 7.9) * gib)
-    assert source["totals"]["missing_census_size"]["bytes"] == round((9.602 + 2.275) * gib)
-    assert by_origin["codex-session"]["quarantine"]["count"] == 5_203
-    assert by_origin["codex-session"]["quarantine"]["size"]["gib"] == pytest.approx(46.8, abs=0.001)
-    assert by_origin["codex-session"]["census_coverage"]["missing_count"] == 922
-    assert by_origin["codex-session"]["census_coverage"]["missing_size"]["bytes"] == round(9.602 * gib)
-    assert by_origin["codex-session"]["census_coverage"]["missing_size"]["gib"] == pytest.approx(9.602, abs=0.001)
-    assert by_origin["claude-code-session"]["quarantine"]["count"] == 3_829
-    assert by_origin["claude-code-session"]["quarantine"]["size"]["gib"] == pytest.approx(7.9, abs=0.001)
-    assert by_origin["claude-code-session"]["census_coverage"]["missing_count"] == 6_379
-    assert by_origin["claude-code-session"]["census_coverage"]["missing_size"]["bytes"] == round(2.275 * gib)
-    assert by_origin["claude-code-session"]["census_coverage"]["missing_size"]["gib"] == pytest.approx(2.275, abs=0.001)
-    assert source["semantics"]["quarantine"] == "authority_pending, not automatically bad"
-    assert (
-        source["semantics"]["missing_census"]
-        == "coverage_unknown, never terminal or actionable without a census verdict"
-    )
+    assert totals["raw_count"] == 14_489
+    assert totals["quarantined_count"] == 9_032
+    assert totals["missing_census_count"] == 7_301
+    assert _mapping(totals["quarantined_size"])["bytes"] == round((46.8 + 7.9) * gib)
+    assert _mapping(totals["missing_census_size"])["bytes"] == round((9.602 + 2.275) * gib)
+    assert codex_quarantine["count"] == 5_203
+    assert _mapping(codex_quarantine["size"])["gib"] == pytest.approx(46.8, abs=0.001)
+    assert codex_census["missing_count"] == 922
+    assert _mapping(codex_census["missing_size"])["bytes"] == round(9.602 * gib)
+    assert _mapping(codex_census["missing_size"])["gib"] == pytest.approx(9.602, abs=0.001)
+    assert claude_quarantine["count"] == 3_829
+    assert _mapping(claude_quarantine["size"])["gib"] == pytest.approx(7.9, abs=0.001)
+    assert claude_census["missing_count"] == 6_379
+    assert _mapping(claude_census["missing_size"])["bytes"] == round(2.275 * gib)
+    assert _mapping(claude_census["missing_size"])["gib"] == pytest.approx(2.275, abs=0.001)
+    assert semantics["quarantine"] == "authority_pending, not automatically bad"
+    assert semantics["missing_census"] == "coverage_unknown, never terminal or actionable without a census verdict"
 
 
 def test_preflight_fails_closed_on_missing_census_relation(tmp_path: Path) -> None:
@@ -151,10 +167,10 @@ def test_preflight_fails_closed_on_missing_census_relation(tmp_path: Path) -> No
 
     report = build_preflight_ledger(tmp_path)
 
-    source = report["checks"]["source"]
+    source = _mapping(_mapping(report["checks"])["source"])
     assert source["state"] == "unknown"
     assert report["ok"] is False
-    assert "source" in report["blocking_checks"]
+    assert "source" in _list(report["blocking_checks"])
     assert "raw_membership_census" in source["reason"]
 
 
@@ -181,8 +197,11 @@ def test_preflight_exposes_schema_and_convergence_failures_without_writing(tmp_p
     report = build_preflight_ledger(tmp_path)
 
     after = {path.name: path.read_bytes() for path in tmp_path.glob("*.db")}
-    assert report["checks"]["schema"]["state"] == "fail"
-    assert "source" in report["checks"]["schema"]["schema_mismatches"]
-    assert report["checks"]["convergence_debt"]["failed_count"] == 3
-    assert report["checks"]["convergence_debt"]["state"] == "fail"
+    checks = _mapping(report["checks"])
+    schema = _mapping(checks["schema"])
+    convergence_debt = _mapping(checks["convergence_debt"])
+    assert schema["state"] == "fail"
+    assert "source" in _list(schema["schema_mismatches"])
+    assert convergence_debt["failed_count"] == 3
+    assert convergence_debt["state"] == "fail"
     assert before == after
