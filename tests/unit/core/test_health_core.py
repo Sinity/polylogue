@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -133,6 +134,95 @@ def test_raw_frontier_readiness_check_errors_on_missing_source_evidence(tmp_path
     assert check.status is VerifyStatus.ERROR
     assert check.count == 1
     assert check.breakdown["missing_source_raw_count"] == 1
+
+
+def test_public_readiness_route_blocks_cursor_ahead_source_selection(tmp_path: Path) -> None:
+    """The real readiness report must carry the cursor violation to convergence state."""
+
+    from polylogue.config import Config
+    from polylogue.readiness import run_archive_readiness
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
+        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    source_path = tmp_path / "session.jsonl"
+    unmaterialized_path = tmp_path / "unmaterialized.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, acquisition_generation, revision_authority
+            ) VALUES ('raw-baseline', 'codex-session', 'session-1', ?, 0, ?,
+                      10, 1, 'codex:session-1', 'full', 'revision-0', 0, 'byte_proven')
+            """,
+            (str(source_path), bytes(32)),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, logical_source_key, revision_kind,
+                source_revision, acquisition_generation, revision_authority
+            ) VALUES ('raw-unmaterialized', 'codex-session', 'session-2', ?, 0, ?,
+                      10, 2, 'codex:session-2', 'full', 'revision-0', 0, 'byte_proven')
+            """,
+            (str(unmaterialized_path), bytes(31) + b"x"),
+        )
+        conn.commit()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
+            VALUES ('session-1', 'codex-session', 'raw-baseline', 'session', ?)
+            """,
+            (bytes(32),),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_revision_heads (
+                logical_source_key, session_id, accepted_raw_id,
+                accepted_source_revision, accepted_content_hash,
+                accepted_frontier_kind, accepted_frontier,
+                acquisition_generation, append_end_offset, decided_at_ms
+            ) VALUES ('codex:session-1', 'codex-session:session-1', 'raw-baseline',
+                      'revision-0', ?, 'byte', 10, 0, NULL, 2)
+            """,
+            (bytes(32),),
+        )
+        conn.commit()
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor (source_path, byte_offset, updated_at_ms)
+            VALUES (?, 20, 1)
+            """,
+            (str(source_path),),
+        )
+        conn.execute(
+            """
+            INSERT INTO ingest_cursor (source_path, byte_offset, updated_at_ms)
+            VALUES (?, 42, 2)
+            """,
+            (str(unmaterialized_path),),
+        )
+        conn.commit()
+
+    report = run_archive_readiness(
+        Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
+    )
+
+    check = next(check for check in report.checks if check.name == "raw_frontier_integrity")
+    assert check.status.value == "error"
+    assert check.breakdown["cursor_ahead_count"] == 1
+    assert report.raw_frontier_integrity["cursor_ahead_status"] == "violated"
+    assert report.raw_frontier_integrity["cursor_authority_gap_count"] == 1
+    gap_samples = cast(list[dict[str, object]], report.raw_frontier_integrity["cursor_authority_gap_samples"])
+    assert gap_samples[0]["state"] == "source_raws_without_accepted_head"
+    assert report.archive_convergence["converging"] is True
 
 
 @pytest.mark.parametrize(

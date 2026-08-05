@@ -1241,8 +1241,14 @@ def _drain_raw_materialization_once(
     function is ever scheduled onto the writer hold; passing ``None``
     (the flag-off default) reproduces the exact unmodified in-hold parse.
     """
+    from polylogue.paths import archive_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    if reason := raw_frontier_source_selection_block_reason(archive_root()):
+        raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
+
     from polylogue.config import Config
-    from polylogue.paths import archive_root, render_root
+    from polylogue.paths import render_root
     from polylogue.product import raw_authority
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 

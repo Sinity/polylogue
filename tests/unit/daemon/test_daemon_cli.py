@@ -576,6 +576,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         fake_restore_direct_blob_reference_debt,
@@ -617,6 +618,25 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "frontier_limit": 8,
         "max_pass_seconds": daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS,
     }
+
+
+def test_drain_raw_materialization_once_blocks_unsafe_cursor_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+        lambda _root: "1 ingest cursor row committed past accepted raw material",
+    )
+
+    with pytest.raises(RuntimeError, match="source-selection gate blocked"):
+        daemon_cli._drain_raw_materialization_once()
+
+    assert not archive.exists()
 
 
 def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -940,6 +960,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         lambda *_args, **_kwargs: FakeRestoreResult(),
