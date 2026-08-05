@@ -460,10 +460,11 @@ class RebuildIndexReceipt:
     # requested IDs to prove the set, count, source snapshot, and candidate
     # identity all agree.
     selection_evidence: dict[str, object] = field(default_factory=dict)
-    # A full raw_sessions hash taken after replay. Unlike source_snapshot,
-    # this deliberately includes parser and governance state so report
-    # consumption can reject post-rebuild state mutation.
-    raw_sessions_state_after: str | None = None
+    # The immutable source-evidence hash taken after replay. This is separate
+    # from the generation's before-replay source_snapshot so report
+    # consumption can reject source drift without treating parser or
+    # governance state as part of the canary's identity.
+    source_evidence_after: str | None = None
     #: Wall-clock seconds per rebuild stage for THIS pass.
     #:
     #: Three full rebuilds ran without this, so the only cost breakdown
@@ -477,7 +478,7 @@ class RebuildIndexReceipt:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "receipt_schema_version": 2,
+            "receipt_schema_version": 3,
             "archive_root": self.archive_root,
             "raw_session_count": self.raw_session_count,
             "selected_raw_count": self.selected_raw_count,
@@ -490,7 +491,7 @@ class RebuildIndexReceipt:
             "transaction": self.transaction,
             "operation": self.operation,
             "selection_evidence": self.selection_evidence,
-            "raw_sessions_state_after": self.raw_sessions_state_after,
+            "source_evidence_after": self.source_evidence_after,
             "timings_s": self.timings_s,
             **self.replay,
         }
@@ -786,7 +787,6 @@ async def _rebuild_index_from_source_owned(
     from polylogue.storage.index_generation import (
         IndexGenerationStore,
         rebuild_source_evidence_snapshot,
-        source_revision_snapshot,
     )
     from polylogue.storage.repair import repair_session_insights
 
@@ -1197,7 +1197,7 @@ async def _rebuild_index_from_source_owned(
                     )
                     source_drifted = True
                 raise RuntimeError(f"source evidence changed while rebuilding {generation.generation_id}")
-            raw_sessions_state_after = source_revision_snapshot(root)
+            source_evidence_after = rebuild_source_evidence_snapshot(root)
             # polylogue-v6i3: bulk-build replay (bulk_build=True above) left
             # messages_fts/blocks_command_trigram/action_pairs/delegation_facts
             # empty or stale for every session -- repopulate all four
@@ -1350,7 +1350,7 @@ async def _rebuild_index_from_source_owned(
             recovery_state="promoted" if request.promote else "ready",
         ),
         selection_evidence=selection_evidence,
-        raw_sessions_state_after=raw_sessions_state_after,
+        source_evidence_after=source_evidence_after,
         timings_s=_receipt_timings(
             selection_s=selection_elapsed_s,
             replay=replay,

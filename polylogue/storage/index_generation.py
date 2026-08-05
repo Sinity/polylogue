@@ -884,8 +884,9 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
     Parse, validation, and revision-governance state are rebuild outputs or
     post-acquisition interpretation. They can legitimately change while the
     rebuild runs, so they must never invalidate its before/after source proof.
-    The selected columns capture durable raw identity, membership, and bytes in
-    deterministic raw-id order.
+    The selected columns capture durable raw identity, membership, and bytes,
+    together with acquired raw-payload references and capture-mode observations,
+    in deterministic order.
     """
     import hashlib
 
@@ -910,6 +911,42 @@ def rebuild_source_evidence_snapshot(archive_root: Path) -> str:
                     encoded = b"s" + value.encode()
                 else:
                     encoded = b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+        digest.update(b"raw_payload_refs\0")
+        blob_refs = conn.execute(
+            """
+            SELECT b.ref_type, b.ref_id, b.blob_hash, b.source_path,
+                   b.size_bytes, b.acquired_at_ms
+            FROM blob_refs AS b
+            JOIN raw_sessions AS r ON r.raw_id = b.ref_id
+            WHERE b.ref_type = 'raw_payload'
+            ORDER BY b.ref_id, b.blob_hash
+            """
+        )
+        for row in blob_refs:
+            for value in row:
+                if value is None:
+                    encoded = b"n"
+                elif isinstance(value, bytes):
+                    encoded = b"b" + value
+                elif isinstance(value, str):
+                    encoded = b"s" + value.encode()
+                else:
+                    encoded = b"i" + str(value).encode()
+                digest.update(len(encoded).to_bytes(8, "big"))
+                digest.update(encoded)
+        digest.update(b"raw_capture_observations\0")
+        observations = conn.execute(
+            """
+            SELECT raw_id, capture_mode, first_observed_at_ms
+            FROM raw_capture_observations
+            ORDER BY raw_id, capture_mode
+            """
+        )
+        for row in observations:
+            for value in row:
+                encoded = b"s" + value.encode() if isinstance(value, str) else b"i" + str(value).encode()
                 digest.update(len(encoded).to_bytes(8, "big"))
                 digest.update(encoded)
     return digest.hexdigest()

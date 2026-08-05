@@ -322,7 +322,7 @@ polylogue ops maintenance blob-reference-prune-orphans \
 
 ### `polylogue ops maintenance reindex-canary` — inactive-generation semantic diff
 
-Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`, writes a durable report, and refuses a report with unclassified differences. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
+Read-only with respect to the active index. Before a full reindex, this command selects a bounded representative set of sessions, rebuilds those raws into an inactive generation, and diffs the resulting sessions, messages, blocks, links, and derived rows against the active generation. It requires `--no-promote`. A run with observed differences writes an unreviewed durable report and exits non-zero. Re-run with `--review-manifest` to persist one classification per difference, then use `--consume-report` to validate the reviewed report and approve its evidence. Approval never authorizes promotion. Treat every difference as either an expected effect of a named repair or a newly discovered defect. It is a preflight gate, not a replacement for the full managed rebuild.
 
 ```bash
 polylogue ops maintenance reindex-canary \
@@ -332,6 +332,24 @@ polylogue ops maintenance reindex-canary \
   --report /realm/tmp/polylogue-reindex-canary.json \
   --no-promote \
   --output-format json
+```
+
+After reviewing the observed identities printed by the failed run, persist the classifications and validate the report:
+
+```bash
+polylogue ops maintenance reindex-canary \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --input /realm/tmp/polylogue-canary-archive/index.db \
+  --sample 100 \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --review-manifest /realm/tmp/polylogue-reindex-reviews.json \
+  --no-promote
+
+polylogue ops maintenance reindex-canary \
+  --archive-root /realm/tmp/polylogue-canary-archive \
+  --report /realm/tmp/polylogue-reindex-canary.json \
+  --consume-report \
+  --no-promote
 ```
 
 ### `polylogue ops maintenance verify-archive` — coherence gate

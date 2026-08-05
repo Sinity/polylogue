@@ -42,7 +42,7 @@ from polylogue.maintenance.reindex_canary import (
     write_canary_report,
 )
 from polylogue.sources.revision_backfill import RebuildDeadlineExceededError
-from polylogue.storage.index_generation import rebuild_source_evidence_snapshot, source_revision_snapshot
+from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -172,7 +172,7 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
         "source_snapshot": "snapshot",
     }
     return {
-        "receipt_schema_version": 2,
+        "receipt_schema_version": 3,
         "archive_root": str(comparison.candidate_index.parent),
         "selected_raw_count": len(selection.selected_raw_ids),
         "status": "replayed",
@@ -186,7 +186,7 @@ def _rebuild_receipt(selection: CanarySelection, comparison: CanaryDiffReport) -
             candidate_index=comparison.candidate_index,
             source_snapshot="snapshot",
         ),
-        "raw_sessions_state_after": "0" * 64,
+        "source_evidence_after": "0" * 64,
     }
 
 
@@ -599,8 +599,8 @@ def test_run_reindex_canary_accepts_split_root_active_pointer_through_real_valid
     assert isinstance(owner_id, str) and owner_id
     assert isinstance(source_snapshot, str) and source_snapshot
     assert source_snapshot == evidence_before == rebuild_source_evidence_snapshot(root)
-    assert receipt["receipt_schema_version"] == 2
-    assert receipt["raw_sessions_state_after"] == source_revision_snapshot(root)
+    assert receipt["receipt_schema_version"] == 3
+    assert receipt["source_evidence_after"] == rebuild_source_evidence_snapshot(root)
     assert hashlib.sha256(external_index.read_bytes()).hexdigest() == active_digest
     assert json.loads((candidate_path.parent / "generation.json").read_text(encoding="utf-8")) == generation
 
@@ -625,21 +625,33 @@ def test_real_no_promote_rebuild_changes_parse_state_without_evidence_drift(tmp_
 
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
-    payload = (
-        b"\n".join(
-            (
-                b'{"type":"session_meta","payload":{"id":"fresh","timestamp":"2026-08-05T00:00:00Z"}}',
-                b'{"type":"response_item","payload":{"type":"message","id":"fresh-user","role":"user","content":[{"type":"input_text","text":"hello"}]}}',
-                b'{"type":"response_item","payload":{"type":"message","id":"fresh-assistant","role":"assistant","content":[{"type":"output_text","text":"world"}]}}',
-            )
-        )
-        + b"\n"
-    )
+    payload = json.dumps(
+        {
+            "chat_messages": [
+                {"uuid": "fresh-user", "sender": "human", "text": "hello"},
+                {
+                    "uuid": "fresh-assistant",
+                    "sender": "assistant",
+                    "text": "world",
+                    "attachments": [
+                        {
+                            "id": "fresh-attachment",
+                            "name": "fresh.txt",
+                            "mimeType": "text/plain",
+                            "size": 16,
+                            "extracted_content": "attachment bytes",
+                        }
+                    ],
+                },
+            ]
+        }
+    ).encode()
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
+            provider=Provider.CLAUDE_AI,
             payload=payload,
-            source_path="fresh.jsonl",
+            source_path="fresh.json",
+            native_id="fresh",
             acquired_at_ms=1,
         )
     with sqlite3.connect(root / "source.db") as connection:
@@ -657,9 +669,15 @@ def test_real_no_promote_rebuild_changes_parse_state_without_evidence_drift(tmp_
             connection.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
             is not None
         )
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM blob_refs WHERE ref_id = ? AND ref_type = 'attachment'", (raw_id,)
+            ).fetchone()[0]
+            == 1
+        )
     assert receipt.generation["state"] == "inactive"
     assert receipt.generation["source_snapshot"] == evidence_before == rebuild_source_evidence_snapshot(root)
-    assert receipt.raw_sessions_state_after == source_revision_snapshot(root)
+    assert receipt.source_evidence_after == rebuild_source_evidence_snapshot(root)
     assert hashlib.sha256((root / "index.db").read_bytes()).hexdigest() == active_digest
 
 
@@ -980,7 +998,7 @@ def test_durable_report_persists_explicit_review_for_every_diff(tmp_path: Path) 
     assert durable.unclassified_count == 0
     assert report_path.exists()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == 5
+    assert payload["schema_version"] == 6
     comparison_payload = payload["comparison"]
     assert isinstance(comparison_payload, dict)
     summary = comparison_payload["summary"]

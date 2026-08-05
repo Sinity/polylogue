@@ -69,7 +69,7 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "reindex-canary",
         "_reindex_canary",
         "reindex_canary_command",
-        "Replay a representative inactive canary and persist its reviewed diff report.",
+        "Replay an inactive canary, persist observed or reviewed diff evidence, and validate reports.",
     ),
     (
         "raw-authority-frontier",

@@ -129,7 +129,7 @@ def test_real_report_preserves_receipt_and_independent_source_snapshots(
     assert {
         "archive_root",
         "receipt_schema_version",
-        "raw_sessions_state_after",
+        "source_evidence_after",
         "selected_raw_count",
         "selection_evidence",
         "status",
@@ -152,7 +152,7 @@ def test_real_report_preserves_receipt_and_independent_source_snapshots(
     assert provenance["archive_root"] == str(canary_root.resolve())
     assert provenance["candidate_generation"] == generation
     assert provenance["source_snapshot"] == generation["source_snapshot"]
-    assert provenance["raw_sessions_state_after"] == receipt["raw_sessions_state_after"]
+    assert provenance["source_evidence_after"] == receipt["source_evidence_after"]
     candidate_path = Path(str(generation["index_path"]))
     assert json.loads((candidate_path.parent / "rebuild-receipt.json").read_text(encoding="utf-8")) == receipt
     assert report_path.is_file()
@@ -384,6 +384,90 @@ def test_cli_consumes_valid_reviewed_real_report(tmp_path: Path, monkeypatch: py
     assert approved["promotion_authorized"] is False
 
 
+def test_cli_consumes_reviewed_report_after_parsed_state_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parser bookkeeping may evolve after replay without changing source evidence."""
+
+    canary_root, _observed_path, observed = _write_real_unreviewed_canary_report(
+        tmp_path, monkeypatch, name="parsed-state-canary"
+    )
+    comparison = observed["comparison"]
+    assert isinstance(comparison, dict)
+    differences = comparison["differences"]
+    assert isinstance(differences, list) and differences
+    review_path = tmp_path / "parsed-state-reviews.json"
+    review_path.write_text(
+        json.dumps(
+            {
+                "reviews": [
+                    {
+                        "table": difference["table"],
+                        "operation": difference["operation"],
+                        "identity": difference["identity"],
+                        "changed_columns": difference["changed_columns"],
+                        "classification": "expected",
+                        "reference": "polylogue-review",
+                        "rationale": "reviewed real canary difference",
+                    }
+                    for difference in differences
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    approved_path = tmp_path / "parsed-state-approved.json"
+    generated = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--input",
+            str(canary_root / "index.db"),
+            "--report",
+            str(approved_path),
+            "--review-manifest",
+            str(review_path),
+            "--sample",
+            "1",
+            "--no-promote",
+        ],
+        catch_exceptions=False,
+    )
+    assert generated.exit_code == 0, generated.output
+
+    with sqlite3.connect(canary_root / "source.db") as connection:
+        connection.execute("UPDATE raw_sessions SET parsed_at_ms = COALESCE(parsed_at_ms, 0) + 1")
+
+    consumed = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "ops",
+            "maintenance",
+            "reindex-canary",
+            "--archive-root",
+            str(canary_root),
+            "--report",
+            str(approved_path),
+            "--consume-report",
+            "--no-promote",
+            "--output-format",
+            "json",
+        ],
+        catch_exceptions=False,
+    )
+
+    assert consumed.exit_code == 0, consumed.output
+    approved = json.loads(consumed.stdout)
+    assert approved["decision"] == "evidence-approved"
+    assert approved["promotion_authorized"] is False
+
+
 def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> CanaryRunResult:
     selection = CanarySelection(
         index_path=index_path,
@@ -408,7 +492,7 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
         selection=selection,
         comparison=comparison,
         rebuild_receipt={
-            "receipt_schema_version": 2,
+            "receipt_schema_version": 3,
             "archive_root": str(index_path.parent),
             "selected_raw_count": len(selection.selected_raw_ids),
             "status": "replayed",
@@ -429,7 +513,7 @@ def _run_result(index_path: Path, *, differences: tuple[object, ...] = ()) -> Ca
                 candidate_index=comparison.candidate_index,
                 source_snapshot="snapshot",
             ),
-            "raw_sessions_state_after": "0" * 64,
+            "source_evidence_after": "0" * 64,
         },
     )
 
@@ -450,7 +534,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
         selection=result.selection,
         comparison=result.comparison,
         rebuild_receipt={
-            "receipt_schema_version": 2,
+            "receipt_schema_version": 3,
             "archive_root": str(index_path.parent),
             "selected_raw_count": 1,
             "status": "replayed",
@@ -471,7 +555,7 @@ def _nonempty_run_result(index_path: Path) -> CanaryRunResult:
                 candidate_index=result.comparison.candidate_index,
                 source_snapshot="snapshot",
             ),
-            "raw_sessions_state_after": "0" * 64,
+            "source_evidence_after": "0" * 64,
         },
     )
 
@@ -925,7 +1009,17 @@ def test_cli_canary_report_red_twin_rejects_replaced_candidate(tmp_path: Path, m
     assert "candidate index identity" in consumed.output
 
 
-@pytest.mark.parametrize("drift", ("active-pointer", "candidate-generation", "source-snapshot", "raw-state-after"))
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "active-pointer",
+        "candidate-generation",
+        "source-byte",
+        "source-blob-ref",
+        "source-observation",
+        "source-snapshot",
+    ),
+)
 def test_cli_canary_report_red_twin_rejects_lifecycle_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift: str
 ) -> None:
@@ -944,12 +1038,33 @@ def test_cli_canary_report_red_twin_rejects_lifecycle_drift(
         metadata = json.loads(candidate_metadata.read_text(encoding="utf-8"))
         metadata["owner_id"] = "replaced-owner"
         candidate_metadata.write_text(json.dumps(metadata), encoding="utf-8")
-    elif drift == "source-snapshot":
+    elif drift == "source-byte":
         with sqlite3.connect(canary_root / "source.db") as connection:
-            connection.execute("UPDATE raw_sessions SET acquired_at_ms = acquired_at_ms + 1")
+            connection.execute("UPDATE raw_sessions SET blob_hash = zeroblob(length(blob_hash))")
+    elif drift == "source-blob-ref":
+        with sqlite3.connect(canary_root / "source.db") as connection:
+            raw_id = connection.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id LIMIT 1").fetchone()[0]
+            connection.execute(
+                """
+                UPDATE blob_refs
+                SET acquired_at_ms = acquired_at_ms + 1
+                WHERE ref_type = 'raw_payload' AND ref_id = ?
+                """,
+                (raw_id,),
+            )
+    elif drift == "source-observation":
+        with sqlite3.connect(canary_root / "source.db") as connection:
+            raw_id = connection.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id LIMIT 1").fetchone()[0]
+            connection.execute(
+                """
+                INSERT INTO raw_capture_observations (raw_id, capture_mode, first_observed_at_ms)
+                VALUES (?, 'gemini', 999)
+                """,
+                (raw_id,),
+            )
     else:
         with sqlite3.connect(canary_root / "source.db") as connection:
-            connection.execute("UPDATE raw_sessions SET parsed_at_ms = parsed_at_ms + 1")
+            connection.execute("UPDATE raw_sessions SET acquired_at_ms = acquired_at_ms + 1")
 
     consumed = CliRunner().invoke(
         cli,
