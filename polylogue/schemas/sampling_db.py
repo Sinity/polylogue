@@ -205,6 +205,7 @@ def _build_raw_payload_envelope_for_row(
             source_path=row.source_path,
             fallback_provider=row.provider_token or str(source_name),
             jsonl_dict_only=config.sample_granularity == "record",
+            sqlite_immutable=True,
         ),
         compacted_payload is not None,
     )

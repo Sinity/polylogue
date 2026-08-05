@@ -155,6 +155,9 @@ not classify orphaned canonical blobs and never runs GC.
 
 ```bash
 polylogue ops maintenance blob-namespace-quarantine --output-format json
+polylogue ops maintenance blob-namespace-quarantine --plan \
+  --backup-manifest /path/to/verified-source-backup/manifest.json \
+  --output-format json
 polylogue ops maintenance blob-namespace-quarantine --apply \
   --backup-manifest /path/to/verified-source-backup/manifest.json \
   --receipt-dir /path/to/new/namespace-quarantine-receipt \
@@ -162,6 +165,18 @@ polylogue ops maintenance blob-namespace-quarantine --apply \
 polylogue ops maintenance blob-namespace-quarantine --recover \
   --receipt-dir /path/to/existing/namespace-quarantine-receipt
 ```
+
+`--plan` is the backup-gated operator audit. It authenticates the supplied
+source-tier backup against an immutable read of `source.db`, then emits a
+typed census of canonical blobs, SQLite `-wal`/`-shm` sidecars, `.blob.*`
+temporary files, and other invalid entries. It does not create receipts,
+checkpoint SQLite, move files, delete files, or change archive rows. Run this
+plan before any later offline quarantine decision.
+
+This plan is an offline safety prerequisite, not a production cleanup receipt
+or a complete bead-closure claim. The full-hash pristine receipt required by
+`r9xsj` remains a separate residual dependency, and production cleanup remains
+a separate operator-authorized residual dependency. No receipt is claimed here.
 
 Apply requires the daemon stopped, no archive writer lease, the archive-wide
 exclusive maintenance lease, a successful attested source-tier backup manifest

@@ -376,6 +376,11 @@ def build_raw_payload_envelope(
 ) -> RawPayloadEnvelope:
     """Decode raw payload and attach canonical provider/wire-format identity.
 
+    The default preserves live-source marker semantics, where an active SQLite
+    database may need its WAL. Callers inspecting retained content-addressed
+    blobs must pass ``sqlite_immutable=True`` so SQLite cannot create ``-wal``
+    or ``-shm`` namespace entries beside the blob.
+
     When *raw_content* is a :class:`~pathlib.Path`, JSONL payloads are
     decoded line-by-line from disk before being materialized into a
     Python list. This avoids reading the whole file into one byte string,

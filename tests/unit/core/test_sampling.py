@@ -6,8 +6,10 @@ and load_samples_from_sessions with JSON/JSONL fixtures.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -581,6 +583,77 @@ class TestLoadSamplesFromDb:
                 "reason": "artifact_taxonomy:Hermes SQLite evidence sidecar",
             }
         ]
+
+    def test_hermes_sqlite_schema_sampling_keeps_blob_namespace_pristine(self, tmp_path: Path) -> None:
+        """Schema sampling decodes retained SQLite blobs through an immutable URI."""
+        from polylogue.storage.blob_store import get_blob_store
+
+        db = _archive_index_db(tmp_path)
+        sqlite_path = tmp_path / "state.db"
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(
+                """
+                CREATE TABLE schema_version(version INTEGER NOT NULL);
+                INSERT INTO schema_version(version) VALUES (16);
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    source TEXT,
+                    model_config TEXT,
+                    parent_session_id TEXT,
+                    started_at REAL
+                );
+                CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    tool_calls TEXT,
+                    timestamp REAL NOT NULL,
+                    observed INTEGER DEFAULT 0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    compacted INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO sessions(id, model_config, started_at) VALUES ('hermes-root', '{}', 1.0);
+                INSERT INTO messages(session_id, role, content, timestamp)
+                VALUES ('hermes-root', 'assistant', 'hello', 2.0);
+                """
+            )
+            conn.commit()
+        content = sqlite_path.read_bytes()
+        raw_id = _insert_raw_session(
+            db_path=db,
+            origin="hermes-session",
+            source_path="/original/profile/state.db",
+            raw_content=content,
+        )
+
+        outcomes: list[dict[str, object]] = []
+        units = list(
+            iter_schema_units(
+                "hermes",
+                db_path=db,
+                full_corpus=True,
+                terminal_recorder=lambda **outcome: outcomes.append(outcome),
+            )
+        )
+        verification = get_blob_store().verify_all()
+
+        assert units == []
+        assert outcomes == [
+            {
+                "raw_id": raw_id,
+                "status": "unsupported",
+                "artifact_kind": None,
+                "source_path": "/original/profile/state.db",
+                "reason": "no_schema_eligible_units",
+            }
+        ]
+        assert verification.passed, verification.failures
+        assert verification.checked == 1
+        blob_path = get_blob_store().blob_path(hashlib.sha256(content).hexdigest())
+        assert not blob_path.with_name(blob_path.name + "-wal").exists()
+        assert not blob_path.with_name(blob_path.name + "-shm").exists()
 
     def test_explicit_db_path_zero_units_does_not_scan_session_dir(
         self,
