@@ -126,19 +126,23 @@ def acquire_antigravity_conversations_once(archive_root: Path) -> int:
 
     root = antigravity_path()
     conversations_dir = root / "conversations"
-    if not conversations_dir.is_dir():
-        return 0
-    all_ids = frozenset(path.stem for path in conversations_dir.glob("*.pb"))
-    if not all_ids:
-        return 0
-
-    acquired_ids = _acquired_pb_cascade_ids(archive_root / "source.db")
-    missing_ids = sorted(all_ids - acquired_ids)
-    if not missing_ids:
-        return 0
-    batch_ids = frozenset(missing_ids[:ANTIGRAVITY_ACQUISITION_MAX_PER_TICK])
-
     source = Source(name="antigravity", path=root)
+    if conversations_dir.is_dir():
+        all_ids = frozenset(path.stem for path in conversations_dir.glob("*.pb"))
+        if not all_ids:
+            return 0
+
+        acquired_ids = _acquired_pb_cascade_ids(archive_root / "source.db")
+        missing_ids = sorted(all_ids - acquired_ids)
+        if not missing_ids:
+            return 0
+        batch_ids = frozenset(missing_ids[:ANTIGRAVITY_ACQUISITION_MAX_PER_TICK])
+    else:
+        # Still enter the shared source iterator so the daemon emits the
+        # structured coverage gap. This must remain a real iterator route:
+        # older versions could yield brain metadata fragments here.
+        batch_ids = frozenset()
+
     blob_root = archive_root / "blob"
     blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)

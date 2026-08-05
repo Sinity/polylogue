@@ -44,7 +44,7 @@ def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
         document = json_loads(path.read_bytes())
     except (JSONDecodeError, OSError):
         return False
-    return classify_artifact(document, provider=provider).parse_as_session
+    return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
 
 def iter_antigravity_language_server_sessions(
@@ -92,9 +92,11 @@ def iter_antigravity_language_server_sessions(
     conversations_dir = source.path / "conversations"
     if not conversations_dir.is_dir():
         logger.warning(
-            "Antigravity conversation export unavailable for %s: no conversations directory; "
-            "brain metadata remains artifact-only and this source has no session coverage",
-            source.path,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="conversations_directory_missing",
+            action="restore the conversations/ directory or configure the language-server export",
         )
         return
 
@@ -110,30 +112,36 @@ def iter_antigravity_language_server_sessions(
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:
         logger.warning(
-            "Antigravity conversation export unavailable for %s; brain metadata remains artifact-only "
-            "and this source has no session coverage: %s",
-            source.path,
-            exc,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="language_server_unavailable",
+            action="install or configure the language-server export and rerun acquisition",
+            detail=str(exc),
         )
     except antigravity.AntigravityPartialExportError as exc:
         # Mid-export failure: some sessions were obtained before the abort.
         # Surface obtained-vs-expected loudly instead of replacing the lost
         # conversations with unrelated per-artifact fragments.
         logger.error(
-            "Antigravity language-server export of %s truncated mid-iteration: "
-            "obtained %d of %d sessions; %d remain uncovered; brain metadata remains artifact-only: %s",
-            source.path,
-            exc.obtained,
-            exc.expected,
-            max(exc.expected - exc.obtained, 0),
-            exc,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="partial_language_server_export",
+            action="resolve the export failure and rerun acquisition for the uncovered conversations",
+            obtained=exc.obtained,
+            expected=exc.expected,
+            uncovered=max(exc.expected - exc.obtained, 0),
+            detail=str(exc),
         )
     except antigravity.AntigravityExportError as exc:
         logger.warning(
-            "Antigravity conversation export failed for %s; brain metadata remains artifact-only "
-            "and this source has no session coverage: %s",
-            source.path,
-            exc,
+            "antigravity_coverage_gap",
+            source_name="antigravity",
+            source_path=str(source.path),
+            reason="language_server_export_failed",
+            action="repair the language-server export and rerun acquisition",
+            detail=str(exc),
         )
 
 
