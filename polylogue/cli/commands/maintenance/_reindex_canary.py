@@ -58,7 +58,7 @@ import click
 @click.option(
     "--consume-report",
     is_flag=True,
-    help="Validate and approve an existing durable report without rebuilding or promoting.",
+    help="Validate evidence only. This neither rebuilds nor authorizes promotion.",
 )
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 @click.option(
@@ -106,11 +106,11 @@ def reindex_canary_command(
             raise click.ClickException(str(exc)) from exc
         except (OSError, RuntimeError, ValueError) as exc:
             raise click.ClickException(str(exc)) from exc
-        result_payload = {**payload, "decision": "approved"}
+        result_payload = {**payload, "decision": "evidence-approved", "promotion_authorized": False}
         if output_format == "json":
             click.echo(json.dumps(result_payload, indent=2, sort_keys=True))
             return
-        click.echo("Decision:     approved")
+        click.echo("Decision:     evidence approved; promotion is not authorized")
         click.echo(f"Report:       {report_path}")
         return
 
